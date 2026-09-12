@@ -12,6 +12,7 @@ import {
 } from "../src/modules/sources/sourceRecipes/recipeInterpreter.js";
 import { validateCustomSourceHandlerOutput } from "../src/modules/sources/customSources/customSourceContractValidator.js";
 import type { CustomSourceRunnerSettings } from "../src/modules/sources/customSources/customSourceRunner.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
 
 const ORIGIN = "https://sources.example";
 
@@ -34,6 +35,9 @@ function runInput(
     endpointUrl: `${ORIGIN}/list`,
     sourceName: "Example Source",
     primaryEndpointContent,
+    // The production guard refuses to resolve `.example`; this test's fetch is
+    // stubbed, so the boundary only has to let the origin through.
+    guard: publicAddressGuard,
     ...overrides,
   };
 }
@@ -206,6 +210,26 @@ describe("runSourceRecipe", () => {
     expect(result.status).toBe("failed");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result.step_traces[0]).toMatchObject({ primitive: "fetch_page", status: "failed" });
+    await cleanup(result);
+  });
+
+  /**
+   * The envelope's origin allowlist is a recipe's own declaration, so it can
+   * name a private address; the outbound boundary is what refuses one.
+   */
+  it("rejects a live fetch into this instance's own network even when the envelope allows that origin", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const recipe: SourceRecipeDefinition = {
+      recipe_version: "source.recipe.v1",
+      steps: [{ type: "fetch_page", url: "http://169.254.169.254/latest/meta-data", bind: "page" }],
+      output: { items_var: "page" },
+    };
+    const result = await runSourceRecipe(instanceSettings(), runInput(recipe, "scan", LIST_HTML, {
+      policyEnvelope: policyEnvelope({ allowed_network_origins: ["http://169.254.169.254"] }),
+    }));
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("Outbound URL is not allowed");
+    expect(fetchMock).not.toHaveBeenCalled();
     await cleanup(result);
   });
 

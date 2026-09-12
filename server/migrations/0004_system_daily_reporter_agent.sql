@@ -1,0 +1,3 @@
+ALTER TABLE "agents" DROP CONSTRAINT "ck_agents_agent_kind";--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_agents_system_daily_reporter_per_space" ON "agents" USING btree ("space_id") WHERE (((agent_kind)::text = 'system_daily_reporter'::text) AND ((status)::text = 'active'::text));--> statement-breakpoint
+ALTER TABLE "agents" ADD CONSTRAINT "ck_agents_agent_kind" CHECK ((agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text, ('system_daily_reporter'::character varying)::text]));

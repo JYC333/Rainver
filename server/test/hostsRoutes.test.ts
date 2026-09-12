@@ -4,10 +4,12 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { hostsModule } from "../src/modules/hosts/index.js";
+import { resolveHostApiBaseUrl } from "../src/modules/runs/runWorkSurface.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
 import type { CurrentUser } from "../src/modules/auth/identity.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { __resetHostRegisterRateLimitForTests, HOST_REGISTER_MAX_ATTEMPTS } from "../src/modules/hosts/pairingRateLimit.js";
 
 /** A daemon's whole hello, as `helloInfo()` sends it; the wire requires all of it. */
 const HELLO_INFO = {
@@ -84,16 +86,31 @@ function httpBaseUrl(): string {
   return `http://127.0.0.1:${address.port}`;
 }
 
+function hostSocket(token?: string): WebSocket {
+  const url = `${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`;
+  if (!token) return new WebSocket(url);
+  return new (WebSocket as unknown as {
+    new (url: string, init: { headers: Record<string, string> }): WebSocket;
+  })(url, { headers: { Authorization: `Bearer ${token}` } });
+}
+
 const db = useTestDatabase(import.meta.filename);
 
 beforeAll(async () => {
   if (!db.available) return;
-  app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [hostsModule]);
+  // "localhost" is the trusted proxy, so forwarded headers from inject() and the
+  // test's own socket are believed — a callback address that ignores them has
+  // to ignore them even then.
+  app = buildModuleServer(loadConfig({
+    SERVER_DATABASE_URL: db.connectionUri,
+    SERVER_TRUSTED_PROXY_HOST: "localhost",
+  }), [hostsModule]);
   await app.listen({ port: 0, host: "127.0.0.1" });
 });
 
 afterEach(() => {
   __setAuthRepositoryForTests(null);
+  __resetHostRegisterRateLimitForTests();
 });
 
 beforeEach(async () => {
@@ -191,6 +208,25 @@ describe("hosts routes", () => {
       payload: { pairing_code: "bogus", ...HELLO_INFO },
     });
     expect(response.statusCode).toBe(401);
+  });
+
+  it("rate-limits unauthenticated host registration attempts", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    for (let i = 0; i < HOST_REGISTER_MAX_ATTEMPTS; i += 1) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/hosts/register",
+        payload: { pairing_code: "bogus", ...HELLO_INFO },
+      });
+      expect(response.statusCode).toBe(401);
+    }
+    const limited = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/register",
+      payload: { pairing_code: "bogus", ...HELLO_INFO },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ error: "host_register_rate_limited" });
   });
 
   it("lets a bearer-authenticated host revoke itself and invalidates that token", async (ctx) => {
@@ -501,11 +537,10 @@ describe("hosts routes", () => {
     expect(noAuth.statusCode).toBe(401);
   });
 
-  it("keeps the control-plane address the daemon reports, so a proxy address can be derived", async (ctx) => {
-    // The daemon sends `server_url` because the server cannot guess an address
-    // a paired machine can resolve. Dropping it at this wire boundary is
-    // silent: every provider-bound run on the host then fails dispatch with
-    // provider_proxy_not_reachable, and nothing upstream looks broken.
+  it("hands a paired host FRONTEND_URL whatever the daemon or the request claims", async (ctx) => {
+    // Where a Run's children send their bearer token is configuration. A
+    // daemon's own `server_url` and a request's forwarded host are attested by
+    // someone else; neither may move it.
     if (!db.available || !app || !db.pool) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
     const issue = await app.inject({
@@ -518,11 +553,12 @@ describe("hosts routes", () => {
     const register = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
+      headers: { "x-forwarded-host": "evil.example", "x-forwarded-proto": "https" },
       payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" },
     });
     const { token } = register.json();
 
-    const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
+    const socket = hostSocket(token);
     await new Promise<void>((resolve, reject) => {
       socket.addEventListener("open", () => {
         socket.send(JSON.stringify({
@@ -540,8 +576,8 @@ describe("hosts routes", () => {
       setTimeout(() => reject(new Error("timed out waiting for hello_ack")), 5000);
     });
 
-    const row = await db.pool.query("SELECT daemon_server_url FROM hosts WHERE id = $1", [hostId]);
-    expect(row.rows[0]?.daemon_server_url).toBe("http://laptop.local:3000");
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    expect(await resolveHostApiBaseUrl(db.pool, config, hostId)).toBe(new URL(config.frontendUrl).origin);
 
     const closed = new Promise<void>((resolve) => socket.addEventListener("close", () => resolve()));
     socket.close();
@@ -565,7 +601,7 @@ describe("hosts routes", () => {
     });
     const { token } = register.json();
 
-    const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
+    const socket = hostSocket(token);
     const helloAck = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.addEventListener("open", () => {
         socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64", daemon_version: "0.1.0" }));
@@ -694,7 +730,7 @@ describe("hosts routes", () => {
     });
     const { token } = register.json();
 
-    const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
+    const socket = hostSocket(token);
     await new Promise<void>((resolve, reject) => {
       socket.addEventListener("open", () => {
         socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64", daemon_version: "0.1.0" }));
@@ -722,33 +758,63 @@ describe("hosts routes", () => {
     expect(closeCode).toBe(1008);
   });
 
-  it("rejects a WebSocket hello with an invalid token and a heartbeat before hello", async (ctx) => {
+  it("rejects a WebSocket upgrade without a host bearer, a heartbeat before hello, and a mismatched hello token", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
-    const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
-    const rejection = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
+    __setAuthRepositoryForTests(stubAuth());
+    const issue = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/pairing-codes",
+      headers: { cookie: authCookie(OWNER_TOKEN) },
+      payload: { name: "WS Auth Box" },
+    });
+    const register = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/register",
+      payload: { pairing_code: issue.json().pairing_code, ...HELLO_INFO, platform: "linux", arch: "x64" },
+    });
+    const { token } = register.json();
+
+    // The *answer*, not merely "it did not open": an `error`-or-`close` assertion
+    // is satisfied by a crash, a refused connection, or the server being gone,
+    // so it could not tell a refusal from an outage. The upgrade must be
+    // answered 401.
+    const unauthenticated = await app!.inject({
+      method: "GET",
+      url: "/internal/hosts/ws",
+      headers: {
+        connection: "Upgrade",
+        upgrade: "websocket",
+        "sec-websocket-version": "13",
+        "sec-websocket-key": Buffer.from("0123456789abcdef").toString("base64"),
+      },
+    });
+    expect(unauthenticated.statusCode).toBe(401);
+
+    const socket = hostSocket(token);
+    const beforeHello = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
       let frame: Record<string, unknown> | undefined;
-      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token: "not-a-real-token", ...HELLO_INFO })));
+      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "heartbeat", ...HELLO_INFO })));
       socket.addEventListener("message", (event) => {
         frame = JSON.parse(String(event.data));
       });
       socket.addEventListener("close", (event) => resolve({ frame: frame ?? {}, code: event.code }));
       setTimeout(() => reject(new Error("timed out waiting for close")), 5000);
     });
-    expect(rejection.frame).toMatchObject({ type: "error", detail: "invalid_token" });
-    expect(rejection.code).toBe(1008);
-
-    const socket2 = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
-    const beforeHello = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
-      let frame: Record<string, unknown> | undefined;
-      socket2.addEventListener("open", () => socket2.send(JSON.stringify({ type: "heartbeat", ...HELLO_INFO })));
-      socket2.addEventListener("message", (event) => {
-        frame = JSON.parse(String(event.data));
-      });
-      socket2.addEventListener("close", (event) => resolve({ frame: frame ?? {}, code: event.code }));
-      setTimeout(() => reject(new Error("timed out waiting for close")), 5000);
-    });
     expect(beforeHello.frame).toMatchObject({ type: "error", detail: "not_authenticated" });
     expect(beforeHello.code).toBe(1008);
+
+    const mismatch = hostSocket(token);
+    const rejection = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
+      let frame: Record<string, unknown> | undefined;
+      mismatch.addEventListener("open", () => mismatch.send(JSON.stringify({ type: "hello", token: "not-a-real-token", ...HELLO_INFO })));
+      mismatch.addEventListener("message", (event) => {
+        frame = JSON.parse(String(event.data));
+      });
+      mismatch.addEventListener("close", (event) => resolve({ frame: frame ?? {}, code: event.code }));
+      setTimeout(() => reject(new Error("timed out waiting for close")), 5000);
+    });
+    expect(rejection.frame).toMatchObject({ type: "error", detail: "invalid_token" });
+    expect(rejection.code).toBe(1008);
   });
 
   it("rejects a second WebSocket hello instead of switching the connection identity", async (ctx) => {
@@ -766,7 +832,7 @@ describe("hosts routes", () => {
       payload: { pairing_code: issue.json().pairing_code, ...HELLO_INFO, platform: "linux", arch: "x64" },
     });
     const { token } = register.json();
-    const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
+    const socket = hostSocket(token);
     const rejection = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
       let frame: Record<string, unknown> | undefined;
       let helloAcked = false;
@@ -799,17 +865,13 @@ describe("hosts routes", () => {
     });
     const { pairing_code: pairingCode } = issue.json();
 
-    const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
-    const rejection = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
-      let frame: Record<string, unknown> | undefined;
-      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token: pairingCode, ...HELLO_INFO })));
-      socket.addEventListener("message", (event) => {
-        frame = JSON.parse(String(event.data));
-      });
-      socket.addEventListener("close", (event) => resolve({ frame: frame ?? {}, code: event.code }));
-      setTimeout(() => reject(new Error("timed out waiting for close")), 5000);
+    const socket = hostSocket(pairingCode);
+    const failed = await new Promise<boolean>((resolve, reject) => {
+      socket.addEventListener("open", () => resolve(false));
+      socket.addEventListener("error", () => resolve(true));
+      socket.addEventListener("close", () => resolve(true));
+      setTimeout(() => reject(new Error("timed out waiting for pairing-code upgrade to fail")), 5000);
     });
-    expect(rejection.frame).toMatchObject({ type: "error", detail: "invalid_token" });
-    expect(rejection.code).toBe(1008);
+    expect(failed).toBe(true);
   });
 });

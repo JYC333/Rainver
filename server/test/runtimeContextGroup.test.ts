@@ -12,7 +12,8 @@ import { checkpointMetering } from "../src/modules/runtimeContext/continuity/sem
 import { resolveUsageAttribution } from "../src/modules/usage/attribution.js";
 import { RuntimeContextPlanner } from "../src/modules/runtimeContext/planner.js";
 import { SealedPayloadCipher } from "../src/modules/runtimeContext/sealedPayloadCrypto.js";
-import { revalidateExecutionDestination } from "../src/modules/runtimeContext/productionAcquisition.js";
+import { createProductionRetrievalAuthorization, revalidateExecutionDestination } from "../src/modules/runtimeContext/productionAcquisition.js";
+import { persistRunContextTaint } from "../src/modules/runs/contextTaint.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { seedConversationMessages } from "./support/domainSeeds.js";
@@ -1248,5 +1249,164 @@ describe("runtimeContextPolicyResolver", () => {
         retrieval_enabled: false,
       });
     });
+  });
+});
+
+describe("runtimeContextRetrievalAttributionDb", () => {
+  const SPACE = "30000000-0000-4000-8000-000000000001";
+  const ADMIN = "30000000-0000-4000-8000-000000000002";
+  const OWNER_B = "30000000-0000-4000-8000-000000000003";
+  const AGENT = "30000000-0000-4000-8000-000000000004";
+  const VERSION = "30000000-0000-4000-8000-000000000005";
+  const RUN = "30000000-0000-4000-8000-000000000006";
+  const CONTROL = "30000000-0000-4000-8000-000000000007";
+  const MEMORY = "30000000-0000-4000-8000-000000000008";
+  const PROVIDER = "30000000-0000-4000-8000-000000000009";
+
+  const db = useTestDatabase(`${import.meta.filename}#runtimeContextRetrievalAttributionDb`);
+
+  beforeEach(async () => {
+    if (!db.available) return;
+    await resetTables(
+      db.pool,
+      ["memory_entries", "execution_control_snapshots", "runs", "agent_versions", "agents", "space_memberships", "users", "spaces"],
+      { cascade: true },
+    );
+    await db.pool.query(
+      `INSERT INTO spaces (id, name, type, oversight_mode, created_at, updated_at)
+       VALUES ($1,'Team','household','full',now(),now())`,
+      [SPACE],
+    );
+    for (const [id, name, role] of [[ADMIN, "Admin", "admin"], [OWNER_B, "Owner B", "member"]] as const) {
+      await db.pool.query(
+        `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$2,'active',now(),now())`,
+        [id, name],
+      );
+      await db.pool.query(
+        `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,'active',now(),now())`,
+        [randomUUID(), SPACE, id, role],
+      );
+    }
+    await db.pool.query(
+      `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, created_at, updated_at, visibility, access_level)
+       VALUES ($1,$2,$3,'Agent','active','standard',now(),now(),'private','full')`,
+      [AGENT, SPACE, ADMIN],
+    );
+    await db.pool.query(
+      `INSERT INTO agent_versions (id, agent_id, space_id, version_label, system_prompt, model_config_json, runtime_config_json, context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, runtime_policy_json, created_at)
+       VALUES ($1,$2,$3,'v1','test','{}','{}','{}','{}','[]','{}','{}',now())`,
+      [VERSION, AGENT, SPACE],
+    );
+    await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
+    await db.pool.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, adapter_type, required_sandbox_level, instructed_by_user_id, owner_user_id, visibility, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'agent','manual','running','live','model_api','none',$5,$5,'private',now(),now())`,
+      [RUN, SPACE, AGENT, VERSION, ADMIN],
+    );
+    await db.pool.query(
+      `INSERT INTO execution_control_snapshots (id, space_id, run_id, snapshot_json, created_at)
+       VALUES ($1,$2,$3,$4::jsonb,now())`,
+      [CONTROL, SPACE, RUN, JSON.stringify(controlSnapshot())],
+    );
+    await db.pool.query(
+      `INSERT INTO memory_entries (
+         id, space_id, scope_type, memory_type, status, visibility, access_level, sensitivity_level,
+         confidence, importance, version, access_count, title, content, owner_user_id, created_at, updated_at
+       ) VALUES (
+         $1,$2,'user','fact','active','private','full','normal',
+         1,0.5,1,0,'B private fact','Only B should own this taint.',$3,now(),now()
+       )`,
+      [MEMORY, SPACE, OWNER_B],
+    );
+  });
+
+  function controlSnapshot(): ExecutionControlSnapshot {
+    return {
+      id: CONTROL,
+      version: 2,
+      space_id: SPACE,
+      actor: { type: "user", user_id: ADMIN },
+      project_id: null,
+      project_folder_id: null,
+      agent_id: AGENT,
+      work_context_scope_id: RUN,
+      work_context_setup_ref: null,
+      project_brief_ref: null,
+      project_instruction_ref: null,
+      readable_scope: {
+        space_id: SPACE,
+        allowed_source_types: [],
+        unrestricted_source_categories: [],
+        explicit_reference_types: [],
+        explicit_reference_max: 0,
+        pinned_reference_types: [],
+        pinned_reference_max: 0,
+        retrieval_enabled: true,
+        retrieval_max_candidates: 8,
+        explicit_reference_sensitivity_ceiling: "highly_restricted",
+        allowed_source_ids: [],
+        excluded_source_ids: [],
+        sensitivity_ceiling: "highly_restricted",
+      },
+      egress: {
+        destination_type: "model_provider",
+        destination_id: PROVIDER,
+        sensitivity_ceiling: "highly_restricted",
+        external_egress_allowed: true,
+        allowed_provider_ids: [PROVIDER],
+      },
+      tool_grant_refs: [],
+      credential_channel_ref: null,
+      sandbox_profile_ref: null,
+      approval_refs: [],
+      persistence: {
+        event_capture_allowed: true,
+        checkpoint_allowed: true,
+        memory_proposals_allowed: false,
+        sealed_payload_retention_seconds: 60,
+      },
+      output_contract: { schema_ref: null, unstructured_output_allowed: true, max_output_tokens: 1000 },
+      governing_policy_version_refs: [{ type: "runtime_context_policy_version", id: "policy-v1", version: "1" }],
+      policy_decision_refs: [],
+      created_at: "2026-09-11T00:00:00.000Z",
+    };
+  }
+
+  it("records the canonical owner when an instructing admin retrieves another member's private memory", async () => {
+    const authorization = await createProductionRetrievalAuthorization(db.pool).authorize({
+      request: {
+        spaceId: SPACE,
+        userId: ADMIN,
+        agentId: AGENT,
+        executionControlSnapshotId: CONTROL,
+        query: "B private fact",
+        objectTypes: ["memory_entry"],
+        maxResults: 5,
+        mode: "hybrid",
+      },
+      result: {
+        object_type: "memory_entry",
+        object_id: MEMORY,
+        title: "B private fact",
+        snippet: "Only B should own this taint.",
+        score: 1,
+        evidence: { kind: "lexical_match", source: "projection" },
+        matched_fields: ["text"],
+      },
+    });
+    expect(authorization).toMatchObject({
+      ownerUserId: OWNER_B,
+      visibility: "private",
+    });
+
+    const taint = await persistRunContextTaint(db.pool, {
+      runId: RUN,
+      spaceId: SPACE,
+      instructingUserId: ADMIN,
+      runVisibility: "private",
+      items: [{ ownerUserId: authorization.ownerUserId, visibility: authorization.visibility }],
+    });
+    expect(taint.non_instructing_owner_user_ids).toEqual([OWNER_B]);
   });
 });

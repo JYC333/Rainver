@@ -422,7 +422,6 @@ export class AutonomyService {
               risk_level: "low",
               policy_context_json: {
                 automation_id: input.automation.id,
-                automation_pre_authorized: true,
                 autonomy_tick_id: initialized.observed.tick_id,
                 autonomy_candidate_id: candidateId,
                 autonomous_admission: trace,

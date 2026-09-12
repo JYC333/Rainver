@@ -16,6 +16,7 @@ import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, runtimeProfileContainerPath, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
 import { isPackagedAdapter, resolvePackagedAdapter } from "./adapterInstallation.js";
 import { egressProxyEnv, proxyBypassHosts, type EgressProfile, type EgressProxyHandle } from "./egressProxy.js";
+import { ensureCodexStrictSandboxConfig } from "./codexStrictSandbox.js";
 
 export interface LaunchWorkspace {
   kind: "location" | "managed";
@@ -888,7 +889,21 @@ async function launchRun(
   // instead would take `~/.gitconfig`, `~/.ssh/config` and the proxy variables
   // away from every Task run on a paired machine, which no part of this was
   // meant to do.
-  let baseEnv: Record<string, string> = { ...process.env } as Record<string, string>;
+  //
+  // The default is the credential-cleared environment, not `process.env` whole.
+  // Every branch below narrows, so the bare spread was reachable only when a
+  // frame carries no `provider_binding` — which the wire contract allows and
+  // today's single producer never sends. Reachable or not, the default for
+  // "we do not yet know what this run is" must not be the one that hands the
+  // runtime an ambient `ANTHROPIC_API_KEY`. This keeps `~/.gitconfig`,
+  // `~/.ssh/config` and the proxy variables: it drops vendor prefixes only.
+  // `?? ""` means "drop every vendor prefix", which is the right answer for a
+  // frame that does not say what it is running — and the wrong one to arrive at
+  // by accident, since it also takes `GOOGLE_APPLICATION_CREDENTIALS` from a
+  // Task run that needs gcloud. Today's single producer always sends a real
+  // adapter type; the wire contract allows it to be absent, and this is what
+  // that case gets.
+  let baseEnv: Record<string, string> = clearVendorCredentialEnv(process.env, frame.adapter_type ?? "");
   let bindingEnv: Record<string, string> = {};
   let workSurfaceEnv: Record<string, string> = {};
   // Kept out of the binding block so the strict namespace below can bind them:
@@ -974,6 +989,30 @@ async function launchRun(
   let spawnCommandArgs = spawnArgs;
   let spawnEnv: Record<string, string> = { ...baseEnv, ...derivedEnv };
   const strict = config.trust === "strict";
+  if (strict && frame.adapter_type === "codex_cli") {
+    // This Run's own profile — the Agent × container one (`profileDir`), never
+    // the login home. `profileDir` is set in the same branch that resolves
+    // `loginHome`, so the old third fallback could not be reached — and had it
+    // been, this would have rewritten the config the managed login shares
+    // across every Agent and every Room on this installation.
+    const codexHome = derivedEnv.CODEX_HOME
+      ?? (profileDir ? join(profileDir, ".codex") : null);
+    if (codexHome) {
+      try {
+        await ensureCodexStrictSandboxConfig(codexHome);
+      } catch (error) {
+        send({
+          type: "complete",
+          run_id: frame.run_id,
+          launch_id: frame.launch_id,
+          exit_code: 1,
+          timed_out: false,
+          error: `Could not relax Codex's vendor sandbox inside this host's namespace: ${error instanceof Error ? error.message : String(error)}`,
+        });
+        return;
+      }
+    }
+  }
   // fd 3 carries the namespace's readiness handshake; a trusted host has no
   // fourth stream and keeps the three it always had.
   let stdio: Array<"pipe"> = ["pipe", "pipe", "pipe"];

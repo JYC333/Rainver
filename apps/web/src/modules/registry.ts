@@ -103,6 +103,8 @@ export interface Module {
   perspectiveType: PerspectiveType
   /** Hide direct UI entry points unless the active Space role is owner/admin. Routes still guard themselves. */
   requiresSpaceAdmin?: boolean
+  /** Hide direct UI entry points unless the current user is the instance admin. */
+  requiresInstanceAdmin?: boolean
   component: LazyExoticComponent<ComponentType>
 }
 
@@ -400,6 +402,7 @@ export const MODULE_REGISTRY: Module[] = [
     source: 'built_in', capabilityId: undefined,
     enabled: true, visible: false, planned: false,
     perspectiveType: 'neutral',
+    requiresInstanceAdmin: true,
     component: lazy(() => import('./instance_settings/InstanceSettingsPage')),
   },
   {
@@ -440,6 +443,7 @@ export const MODULE_REGISTRY: Module[] = [
     source: 'built_in', capabilityId: undefined,
     enabled: true, visible: false, planned: false,
     perspectiveType: 'space-scoped',
+    requiresSpaceAdmin: true,
     component: lazy(() => import('./retrieval_settings/RetrievalSettingsPage')),
   },
 
@@ -451,6 +455,7 @@ export const MODULE_REGISTRY: Module[] = [
     source: 'built_in', capabilityId: undefined,
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
+    requiresSpaceAdmin: true,
     component: lazy(() => import('./plugins/PluginsPage')),
   },
 
@@ -471,6 +476,7 @@ export const MODULE_REGISTRY: Module[] = [
     source: 'built_in', capabilityId: undefined,
     enabled: true, visible: false, planned: false,
     perspectiveType: 'space-scoped',
+    requiresSpaceAdmin: true,
     component: lazy(() => import('./space_settings/SpaceSettingsPage')),
   },
   {
@@ -517,6 +523,7 @@ export const MODULE_REGISTRY: Module[] = [
     source: 'built_in', capabilityId: undefined,
     enabled: true, visible: false, planned: false,
     perspectiveType: 'space-scoped',
+    requiresSpaceAdmin: true,
     component: lazy(() => import('./network_profiles/NetworkProfilesPage')),
   },
   {

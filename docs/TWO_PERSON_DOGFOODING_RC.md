@@ -107,17 +107,18 @@ Do not rely on any of these for daily dogfood workflows.
 | Public sharing | Not implemented |
 | Public launch / SaaS | Not in scope |
 | Remote multi-tenant deployment | Not in scope |
-| API key persistence UI | Feature-gated if not yet implemented |
-| Workspace console persisted sessions | Feature-gated if not yet implemented |
+| API key persistence UI | Feature-gated; schema has no `api_keys` table |
+| Workspace console persisted sessions | Feature-gated if the surface is off |
 | Any runtime adapter bypassing the credential resolver | Blocked by `RunOrchestrationService` design |
 | Any runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` contract |
 | File mutation not protected by approved proposal + PathPolicy | Blocked by code patch apply boundary |
 
-**UI status of planned-but-not-built surfaces:**
+**UI status of stub or hidden surfaces:**
 
-- `Knowledge` — registry entry with `planned: true`; displays "soon" badge; non-interactive.
-- `Cards` — registry entry with `planned: true`; displays "soon" badge; non-interactive.
-- `Time` — registry entry with `planned: true`; displays "soon" badge; non-interactive.
+- `Knowledge` — implemented (`planned: false`); Wiki / Notes / Sources.
+- `Cards` — `/cards` is `enabled: false`, `visible: false`, `planned: true`.
+  Knowledge › Cards is an empty-state placeholder.
+- `Time` — `planned: true` stub; no backend.
 
 No connector marketplace, crawler, or automatic system self-evolution controls appear in the frontend.
 
@@ -307,14 +308,14 @@ Verify the scheduler registry started the backup task in startup logs:
 INFO  scheduler registry started tasks=...backup_scheduler...
 ```
 
-Or trigger a manual backup and confirm:
+Or trigger a manual backup and confirm (instance administrator session):
 ```bash
 curl -s -X POST http://localhost:3000/api/v1/system/backups/manual \
-  -H "X-API-Key: <dogfood-api-key>"
+  --cookie 'session_id=<admin-session>'
 # Expected: {"status": "ok", "backup": "manual-YYYYMMDD-HHMMSS.tar.gz"}
 
 curl -s http://localhost:3000/api/v1/system/backups \
-  -H "X-API-Key: <dogfood-api-key>"
+  --cookie 'session_id=<admin-session>'
 # Expected: list with at least one archive containing backup_manifest.json
 ```
 
@@ -528,10 +529,10 @@ docker compose -p rainver-dev -f ops/compose/docker-compose.dev.yml logs server 
 
 ### Trigger a manual backup (API, or offline CLI)
 
-**API (server running):**
+**API (server running, instance administrator session):**
 ```bash
 curl -s -X POST http://localhost:3000/api/v1/system/backups/manual \
-  -H "X-API-Key: <dogfood-api-key>"
+  --cookie 'session_id=<admin-session>'
 # Expected: {"status": "ok", "backup": "manual-YYYYMMDD-HHMMSS.tar.gz"}
 ```
 
@@ -546,7 +547,7 @@ ops/scripts/system/backup.sh --mode dev
 
 ```bash
 curl -s http://localhost:3000/api/v1/system/backups \
-  -H "X-API-Key: <dogfood-api-key>"
+  --cookie 'session_id=<admin-session>'
 # Expected: JSON list of archives with name, size, created_at
 
 # Or list on filesystem
@@ -839,12 +840,12 @@ Backup manifest inspected: <yes / no>
 | `Credential.secret_ref` full decryption deferred | Only `ModelProvider` encrypted keys decryptable; full secret_ref deferred |
 | Obsolete agents-module runtime path | Runtime execution uses `RuntimeAdapterSpec`; new adapters must start there |
 | Most PolicyEngine enforcement points not yet wired to persisted policy | Active classes: `memory.private_placement`, `run.user_private_scope`; structural write boundary via sentinel; rest documented in `PRODUCT_AND_BOUNDARIES.md` |
-| Artifact archive/delete API not yet implemented | Artifacts accumulate; deferred |
-| Activity archive/delete not yet implemented | Deferred |
+| Artifact archive/delete API | Not implemented; artifacts accumulate. See [unimplemented-from-guides.md](../.agent/plans/unimplemented-from-guides.md) §17 |
+| Activity archive | Implemented (`PATCH /api/v1/activity/:activityId/archive`). No hard-delete API |
 | Workspace stale status has no recovery UI | Operator must use `PATCH /workspaces/{id}` |
 | Instance update has no automatic rollback | A failed stage ends the job; recovery is the documented host procedure |
-| Local advisory lock only (single-host) | Distributed locking is future scope |
+| Local advisory lock only (single-host) | Current fact; see [unimplemented-from-guides.md](../.agent/plans/unimplemented-from-guides.md) §21 |
 | Cloud/offsite backup absent | Manual GPG + offsite upload if required |
-| `context_sources` table removed from schema | A future first-class Source model would be a new table |
-| QuickCapture `ask` mode still routes to `/sessions` | Correct for real conversations; UX deferred |
-| QuickCapture `process` mode creates new Activity | Acceptable; product refinement deferred |
+| `context_sources` table removed from schema | Sources is the current model |
+| QuickCapture `ask` mode still routes to `/sessions` | Current behavior for real conversations |
+| QuickCapture `process` mode creates new Activity | Current behavior |

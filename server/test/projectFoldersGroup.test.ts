@@ -53,6 +53,20 @@ describe("projectFoldersRoutes", () => {
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/git/diff", {
         diff: "", path: null, truncated: false, redacted: false,
       });
+      // The four reads above spawn `git` on the owner's paired machine and
+      // write a policy record naming the requested path, and `SameSite=Lax`
+      // sends the session cookie on a top-level cross-site GET. So they refuse
+      // a request another site caused, and one that carries no fetch metadata
+      // and nothing first-party at all. The plain list and get above are
+      // ordinary reads and stay open.
+      for (const path of ["tree", "file?path=README.md", "git/status", "git/diff"]) {
+        const url = `/api/v1/projects/project-1/folders/folder-1/${path}`;
+        const crossSite = await app.inject({ method: "GET", url, headers: { "sec-fetch-site": "cross-site" } });
+        expect(crossSite.statusCode, path).toBe(403);
+        const bare = await app.inject({ method: "GET", url });
+        expect(bare.statusCode, path).toBe(403);
+      }
+
       const activated = await app.inject({
         method: "POST",
         url: "/api/v1/projects/project-1/folders/folder-1/locations/location-2/activate",
@@ -65,7 +79,10 @@ describe("projectFoldersRoutes", () => {
 
   async function expectJson(method: "GET", url: string, expected: unknown): Promise<void> {
     if (!app) throw new Error("test app not initialized");
-    const response = await app.inject({ method, url });
+    // Same-origin, as the web client's own `fetch` is: the folder read routes
+    // spawn `git` on the owner's machine, so they refuse a cross-site request
+    // and a request carrying no fetch metadata at all.
+    const response = await app.inject({ method, url, headers: { "sec-fetch-site": "same-origin" } });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(expected);
   }

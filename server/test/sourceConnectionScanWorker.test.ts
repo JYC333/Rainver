@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
 import { __setArxivThrottleForTests } from "../src/modules/sources/connectors/arxivThrottle.js";
 import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { handleSourceRetrievalTestSql } from "./support/sourceRetrievalTestSql.js";
@@ -326,7 +327,7 @@ describe("SourceExtractionWorker connection_scan", () => {
       },
     }));
 
-    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "succeeded" });
 
     const dedupeLookup = db.calls.find(call => call.sql.includes("canonical_uri = $3::text"));
@@ -385,7 +386,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(rssFeed(), { status: 200 }));
 
-    await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(db.calls.some(call => call.sql.includes("INSERT INTO source_items"))).toBe(false);
     expect(db.calls.some(call => call.sql.includes("UPDATE source_items") && call.sql.includes("SET title = $3"))).toBe(true);
@@ -402,7 +403,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(raw, { status: 200 }));
 
-    await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     const insert = db.calls.find(call => call.sql.includes("INSERT INTO source_items"));
     expect(insert?.params[3]).toBe("external_url");
@@ -426,12 +427,15 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 304 }));
 
-    await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, request] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe("https://example.test/feed.xml");
-    expect(request?.redirect).toBe("follow");
+    // Manual, because each hop's address is checked and pinned before it is
+    // dialled; letting the client follow a redirect is how a public URL reaches
+    // an internal service.
+    expect(request?.redirect).toBe("manual");
     const requestHeaders = new Headers(request?.headers);
     expect(requestHeaders.get("If-None-Match")).toBe("\"old\"");
     expect(requestHeaders.get("If-Modified-Since")).toBe("Tue, 30 Jun 2026 08:00:00 GMT");
@@ -450,7 +454,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(rssFeed(), { status: 200 }));
 
-    await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     const followUp = db.calls.find(call =>
       call.sql.includes("INSERT INTO extraction_jobs") && call.params[5] === "extract_text"
@@ -471,7 +475,7 @@ describe("SourceExtractionWorker connection_scan", () => {
       .mockResolvedValueOnce(new Response(rssFeed(), { status: 200 }))
       .mockResolvedValueOnce(new Response("<html><body><article>Full article text.</article></body></html>", { status: 200 }));
 
-    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "succeeded" });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -510,7 +514,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(rssFeed(), { status: 200 }));
 
-    await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(db.calls.some(call => call.sql.includes("INSERT INTO source_items"))).toBe(false);
     const followUp = db.calls.find(call =>
@@ -529,7 +533,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(rssFeed(), { status: 200 }));
 
-    await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     const itemUpdate = db.calls.find(call =>
       call.sql.includes("UPDATE source_items") && call.sql.includes("SET title = $3")
@@ -553,7 +557,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(rssFeed(), { status: 200 }));
 
-    await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(db.calls.some(call => call.sql.includes("INSERT INTO extraction_jobs"))).toBe(false);
   });
@@ -568,7 +572,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(arxivFeed(), { status: 200 }));
 
-    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "succeeded" });
 
     const [requestUrl] = vi.mocked(globalThis.fetch).mock.calls[0] ?? [];
@@ -619,7 +623,7 @@ describe("SourceExtractionWorker connection_scan", () => {
       .mockResolvedValueOnce(new Response(null, { status: 500 }))
       .mockResolvedValueOnce(new Response(arxivFeed(), { status: 200 }));
 
-    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "succeeded" });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -636,7 +640,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(null, { status: 500 }));
 
-    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "failed" });
 
     // A provider 5xx is now worth a narrower ask before the segment is failed:
@@ -682,7 +686,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response(null, { status: 400 }));
 
-    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "failed" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -697,7 +701,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     const fetchMock = vi.spyOn(globalThis, "fetch");
 
-    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "failed" });
 
     expect(fetchMock).not.toHaveBeenCalled();
@@ -723,7 +727,7 @@ describe("SourceExtractionWorker connection_scan", () => {
       .replace("Abstract text for the agent paper.", "A".repeat(3000));
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(longFeed, { status: 200 }));
 
-    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "succeeded" });
 
     const insert = db.calls.find(call => call.sql.includes("INSERT INTO source_items"));
@@ -743,7 +747,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     });
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(arxivFeed(), { status: 200 }));
 
-    await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     const linkCall = db.calls.find(call => call.sql.includes("INSERT INTO evidence_links"));
     expect(linkCall?.sql).toContain("FROM extracted_evidence ev");
@@ -765,7 +769,7 @@ describe("SourceExtractionWorker connection_scan", () => {
       .mockResolvedValueOnce(new Response(null, { status: 304 }))
       .mockResolvedValueOnce(new Response("<html><body><article>Retried full text.</article></body></html>", { status: 200 }));
 
-    await expect(new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1"))
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "succeeded" });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);

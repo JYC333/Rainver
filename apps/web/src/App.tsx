@@ -11,6 +11,7 @@ import { Skeleton } from './components/ui/skeleton'
 import LoginPage from './pages/LoginPage'
 import AcceptInvitationPage from './pages/AcceptInvitationPage'
 import { useAuth } from './contexts/AuthContext'
+import { RequireInstanceAdmin, RequireSpaceAdmin } from './core/RequireRole'
 
 const HomePage = lazy(() => import('./modules/home/HomePage'))
 
@@ -48,13 +49,16 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 }
 
 /** A registered module rendered as a route element. */
-function moduleRoute({ path, component: Page, hasSubRoutes }: Module) {
+function moduleRoute({ path, component: Page, hasSubRoutes, requiresSpaceAdmin, requiresInstanceAdmin }: Module) {
   const routePath = hasSubRoutes ? path.replace(/^\//, '') + '/*' : path.replace(/^\//, '')
+  let page = <SuspensePage><Page /></SuspensePage>
+  if (requiresInstanceAdmin) page = <RequireInstanceAdmin>{page}</RequireInstanceAdmin>
+  else if (requiresSpaceAdmin) page = <RequireSpaceAdmin>{page}</RequireSpaceAdmin>
   return (
     <Route
       key={path}
       path={routePath}
-      element={<SuspensePage><Page /></SuspensePage>}
+      element={page}
     />
   )
 }

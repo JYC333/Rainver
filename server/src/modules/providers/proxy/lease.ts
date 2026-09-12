@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { InvocationAuditRefs } from "@rainver/protocol";
+import type { CredentialSpendAuthorization } from "../../policy/credentialSpend.js";
 
 export interface ProviderProxyLeaseInput {
   run_id: string;
@@ -111,6 +112,11 @@ export function setProviderProxyBaseUrlForProcess(
   processProviderProxyExternalBaseUrl = externalBaseUrl ? externalBaseUrl.replace(/\/+$/, "") : null;
 }
 
+/** The proxy's published base for remote hosts; null when this deployment has not published one. */
+export function providerProxyExternalBaseUrl(): string | null {
+  return processProviderProxyExternalBaseUrl;
+}
+
 /**
  * Where one lease lives under a proxy base URL. The shape is the proxy's own
  * routing contract (`server.ts` splits the path back into route and lease id),
@@ -122,23 +128,28 @@ export function providerProxyLeaseUrl(baseUrl: string, route: ProviderProxyRoute
   return `${baseUrl.replace(/\/+$/, "")}/${route}/${encodeURIComponent(leaseId)}`;
 }
 
-export function providerProxyLeaseBaseUrl(route: ProviderProxyRoute, leaseId: string): string {
-  if (!processProviderProxyBaseUrl) {
-    throw new Error("Provider proxy listener is not started.");
-  }
-  return providerProxyLeaseUrl(processProviderProxyBaseUrl, route, leaseId);
+/** The proxy's in-network listener, as the built-in host reaches it; null before it starts. */
+export function providerProxyInNetworkBaseUrl(): string | null {
+  return processProviderProxyBaseUrl;
 }
 
-/** Null when this deployment has not published the proxy for remote hosts. */
-export function providerProxyExternalLeaseUrl(route: ProviderProxyRoute, leaseId: string): string | null {
-  if (!processProviderProxyExternalBaseUrl) return null;
-  return providerProxyLeaseUrl(processProviderProxyExternalBaseUrl, route, leaseId);
-}
 
 export class ProviderProxyLeaseRegistry {
   private readonly leases = new Map<string, ResolvedProviderProxyLease>();
 
-  create(input: ProviderProxyLeaseInput): ProviderProxyLease {
+  /**
+   * A lease lets the proxy spend a server-held key on its holder's behalf, so
+   * one is only minted from the spend `authorizeCredentialSpend` decided for
+   * this Run on this provider.
+   */
+  create(authorization: CredentialSpendAuthorization, input: ProviderProxyLeaseInput): ProviderProxyLease {
+    if (
+      authorization.space_id !== input.space_id
+      || authorization.run_id !== input.run_id
+      || authorization.provider_id !== input.provider_id
+    ) {
+      throw new Error("A credential authorization covers one Run's spend on one provider; it cannot mint this lease.");
+    }
     this.pruneExpired();
     const token = randomBytes(32).toString("base64url");
     const record: ResolvedProviderProxyLease = {

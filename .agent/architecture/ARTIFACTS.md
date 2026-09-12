@@ -30,6 +30,8 @@ artifact's production context remains unchanged.
   - `GET /api/v1/artifacts/{artifact_id}`
   - `GET /api/v1/artifacts/{artifact_id}/export`
 - Artifact reads are scoped by space identity and artifact visibility.
+  `access_level=summary` returns metadata without inline content; export
+  requires effective `full` and 404s otherwise.
 - Project-Folder-scoped `space_shared` artifacts require `artifacts.project_folder_id`. Non-owner
   list/read/export access must provide matching Project Folder context and pass the
   Project-inherited Project Folder ACL: personal-space Project Folders are readable inside

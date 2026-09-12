@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { validateCustomSourceHandlerOutput } from "../src/modules/sources/customSources/customSourceContractValidator.js";
 import { fetchCustomSourceEndpointHtml } from "../src/modules/sources/customSources/customSourceEndpointFetch.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
 import { generateCustomSourceHandlerSource } from "../src/modules/sources/customSources/customSourceHandlerTemplate.js";
 import { cleanupSandbox, CustomSourceRunner, type CustomSourceRunnerSettings } from "../src/modules/sources/customSources/customSourceRunner.js";
 
@@ -28,7 +29,7 @@ describe("sourceCustomSourceEndpointFetch", () => {
         return new Response("hello pi world", { status: 200 });
       });
 
-      const html = await fetchCustomSourceEndpointHtml(`${ORIGIN}/redirect-same-origin`, runnerSettings(), POLICY_ENVELOPE);
+      const html = await fetchCustomSourceEndpointHtml(`${ORIGIN}/redirect-same-origin`, runnerSettings(), POLICY_ENVELOPE, null, publicAddressGuard);
       expect(html).toBe("hello pi world");
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(fetchMock.mock.calls[1]?.[0]).toBe(`${ORIGIN}/ok`);
@@ -40,7 +41,7 @@ describe("sourceCustomSourceEndpointFetch", () => {
       );
 
       await expect(
-        fetchCustomSourceEndpointHtml(`${ORIGIN}/redirect-off-origin`, runnerSettings(), POLICY_ENVELOPE),
+        fetchCustomSourceEndpointHtml(`${ORIGIN}/redirect-off-origin`, runnerSettings(), POLICY_ENVELOPE, null, publicAddressGuard),
       ).rejects.toThrow("not allowed by the handler policy envelope");
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
@@ -52,6 +53,8 @@ describe("sourceCustomSourceEndpointFetch", () => {
         `${ORIGIN}/ok`,
         runnerSettings({ download_bytes_max: 8 }),
         { ...POLICY_ENVELOPE, limits: { ...POLICY_ENVELOPE.limits, max_download_bytes: 8 } },
+        null,
+        publicAddressGuard,
       );
       expect(Buffer.byteLength(html, "utf8")).toBeLessThanOrEqual(8);
       expect(html).toBe("hello pi");

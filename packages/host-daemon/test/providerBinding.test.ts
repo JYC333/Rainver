@@ -2,7 +2,7 @@ import { link as hardLink, lstat, mkdir, mkdtemp, readFile, rename, rm, stat, sy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "../src/providerBinding.js";
+import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, helperProcessEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "../src/providerBinding.js";
 import type { ProviderBindingFrame } from "../src/execution.js";
 
 // This machine is a trusted host: its own login state sits in its environment
@@ -566,5 +566,56 @@ describe("a login link that stopped pointing where it should", () => {
     // certainly not by a copy.
     expect((await lstat(target)).isSymbolicLink()).toBe(true);
     await expect(readFile(target, "utf8")).resolves.toBe('{"token":"live"}');
+  });
+});
+
+describe("environment for a daemon-side helper process", () => {
+  const ambient = {
+    PATH: "/usr/bin",
+    HOME: "/home/owner",
+    ANTHROPIC_API_KEY: "sk-ant-live",
+    CLAUDE_CODE_OAUTH_TOKEN: "oauth",
+    OPENAI_API_KEY: "sk-openai",
+    GOOGLE_API_KEY: "goog",
+    CLAUDE_CONFIG_DIR: "/home/owner/.claude",
+    CODEX_HOME: "/home/owner/.codex",
+    XDG_RUNTIME_DIR: "/run/user/1000",
+  };
+
+  it("keeps the machine's toolchain and drops every vendor credential for a helper serving no runtime", () => {
+    // An installer serves no runtime, so nothing is exempt.
+    const env = helperProcessEnv(ambient);
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.HOME).toBe("/home/owner");
+    // Not the XDG prefix: `XDG_RUNTIME_DIR` is how a git credential helper
+    // reaches the keyring.
+    expect(env.XDG_RUNTIME_DIR).toBe("/run/user/1000");
+    for (const key of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "GOOGLE_API_KEY", "CLAUDE_CONFIG_DIR", "CODEX_HOME"]) {
+      expect(env, key).not.toHaveProperty(key);
+    }
+  });
+
+  it("drops the named runtime's own credentials, by prefix rather than by a two-key denylist", () => {
+    // The defect: each call site deleted `ANTHROPIC_API_KEY` and
+    // `CLAUDE_CODE_OAUTH_TOKEN` beside a whole `process.env` spread, so any
+    // other key under the same prefix went straight through.
+    const env = helperProcessEnv({ ...ambient, ANTHROPIC_AUTH_TOKEN: "other", CLAUDE_API_KEY: "another" }, "claude_code");
+    for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) {
+      expect(env, key).not.toHaveProperty(key);
+    }
+    // Another vendor's key is not this runtime's to prefer, and a Task run may
+    // legitimately need it.
+    expect(env.OPENAI_API_KEY).toBe("sk-openai");
+  });
+
+  it("keeps the state roots back for a helper that reads the machine's own history", () => {
+    // `CLAUDE_CONFIG_DIR` and `CLAUDE_API_KEY` share a prefix and are opposite
+    // kinds of thing: clearing by prefix sent an ambient `session/list` to the
+    // default location, which reported the machine as having no history at all.
+    const env = helperProcessEnv(ambient, "claude_code", { keepStateRoots: true });
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/home/owner/.claude");
+    expect(env.CODEX_HOME).toBe("/home/owner/.codex");
+    expect(env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
   });
 });

@@ -65,6 +65,9 @@ function makeStore(
     deleteProvider: unsupported,
     grantProviderToSpace: unsupported,
     revokeProviderGrant: unsupported,
+    async authorizeCredentialSpend() {
+      return {} as never;
+    },
     async getInvocationTarget(_spaceId, providerId) {
       const t = targets[providerId ?? "default"];
       if (!t) throw new ProviderInvocationError(404, `no provider ${providerId}`);
@@ -194,6 +197,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([{ status: 200 }]);
 
     await expect(completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       ...CHAT,
       provider_id: "p1",
       metering: {},
@@ -212,6 +216,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([{ status: 200 }]);
 
     await expect(completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       ...CHAT,
       provider_id: "p1",
       metering: { source_resource_type: "run", source_resource_id: "missing-run" },
@@ -231,7 +236,7 @@ describe("provider invocation resilience", () => {
       { status: 200 },
     ]);
 
-    const result = await completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" });
+    const result = await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, provider_id: "p1" });
 
     expect(result.content).toBe("ok");
     expect(attempts.map((a) => a.key)).toEqual(["k1", "k1"]);
@@ -254,7 +259,7 @@ describe("provider invocation resilience", () => {
       { status: 200 },
     ]);
 
-    const result = await completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" });
+    const result = await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, provider_id: "p1" });
 
     expect(result.content).toBe("ok");
     expect(attempts.map((a) => a.key)).toEqual(["k1", "k2"]);
@@ -283,7 +288,7 @@ describe("provider invocation resilience", () => {
     );
     const attempts = scriptedHttp([{ status: 401 }, { status: 200 }]);
 
-    await completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" });
+    await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, provider_id: "p1" });
 
     expect(attempts.map((a) => a.key)).toEqual(["bad", "good"]);
     expect(outcomes[0].outcome).toMatchObject({
@@ -305,6 +310,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([{ status: 402 }, { status: 200 }]);
 
     const result = await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       ...CHAT,
       provider_id: "p1",
       model: "explicit-model-for-p1",
@@ -353,6 +359,7 @@ describe("provider invocation resilience", () => {
     });
 
     const result = await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       ...CHAT,
       provider_id: "p1",
       model: "explicit-model-for-p1",
@@ -408,7 +415,7 @@ describe("provider invocation resilience", () => {
       },
     });
 
-    const result = await completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" });
+    const result = await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, provider_id: "p1" });
 
     expect(result.content).toBe("fallback ok");
     // One same-key retry — the ordinary transient budget, not the larger one
@@ -427,7 +434,7 @@ describe("provider invocation resilience", () => {
       },
     });
 
-    await expect(completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" }))
+    await expect(completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, provider_id: "p1" }))
       .rejects.toMatchObject({ code: "provider_stream_terminated" });
     expect(calls).toBe(2);
   });
@@ -455,7 +462,7 @@ describe("provider invocation resilience", () => {
       },
     });
 
-    const result = await completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" });
+    const result = await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, provider_id: "p1" });
 
     expect(result.content).toBe("ok");
     expect(delays).toEqual([500, 1000, 1500]);
@@ -500,6 +507,7 @@ describe("provider invocation resilience", () => {
     });
 
     const result = await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       ...CHAT,
       provider_id: "minimax",
       system: "Return JSON only.",
@@ -551,6 +559,7 @@ describe("provider invocation resilience", () => {
     const { max_tokens: _unused, ...chatWithoutMaxTokens } = CHAT;
 
     await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       ...chatWithoutMaxTokens,
       provider_id: "minimax",
       model: "MiniMax-M2.7",
@@ -573,7 +582,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([{ status: 400, body: { error: "bad request" } }]);
 
     await expect(
-      completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" }),
+      completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, provider_id: "p1" }),
     ).rejects.toThrow(ProviderInvocationError);
     expect(attempts).toHaveLength(1);
   });
@@ -584,7 +593,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([]);
 
     await expect(
-      completeProviderChat(store, "space-1", { ...CHAT, provider_id: "p1" }),
+      completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, provider_id: "p1" }),
     ).rejects.toMatchObject({ statusCode: 503 });
     expect(attempts).toHaveLength(0);
   });
@@ -606,6 +615,7 @@ describe("provider invocation resilience", () => {
     ]);
 
     const result = await completeProviderText(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "net",
       system: "sys",
       user: "hello",
@@ -639,6 +649,7 @@ describe("provider invocation resilience", () => {
     ]);
 
     await completeProviderText(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "p1",
       system: "sys",
       user: "hello",
@@ -729,6 +740,7 @@ describe("provider invocation resilience", () => {
     }]);
 
     await completeProviderText(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "p1",
       system: "",
       user: "hello",
@@ -758,6 +770,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([{ status: 200 }]);
 
     const result = await completeProviderText(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "p1",
       system: "",
       user: "hello",
@@ -788,6 +801,7 @@ describe("provider invocation resilience", () => {
     }]);
 
     await completeProviderText(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "p1",
       system: "",
       user: "hello",
@@ -818,6 +832,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([{ status: 200 }, { status: 200 }]);
 
     await expect(completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       ...CHAT,
       provider_id: "p1",
     })).rejects.toMatchObject({ code: "usage_metering_failed", statusCode: 502 });
@@ -842,6 +857,7 @@ describe("provider invocation resilience", () => {
     ]);
 
     const result = await completeProviderEmbedding(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "p1",
       model: "embed-model",
       inputs: ["alpha"],
@@ -879,6 +895,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([{ status: 200 }]);
 
     const result = await completeProviderEmbedding(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "p1",
       inputs: ["alpha"],
       metering: { subject_user_id: "user-1" },
@@ -911,6 +928,7 @@ describe("provider invocation resilience", () => {
     ]);
 
     const result = await completeProviderEmbedding(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "p1",
       inputs: ["alpha"],
       task: "retrieval_embedding",
@@ -951,6 +969,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([{ status: 200 }, { status: 200 }]);
 
     await expect(completeProviderEmbedding(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "p1",
       inputs: ["alpha"],
       metering: { subject_user_id: "user-1" },
@@ -971,6 +990,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([{ status: 402 }, { status: 200 }]);
 
     await completeProviderEmbedding(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "p1",
       model: "explicit-embed-model",
       inputs: ["alpha"],
@@ -992,6 +1012,7 @@ describe("provider invocation resilience", () => {
     const attempts = scriptedHttp([{ status: 200 }]);
 
     await completeProviderEmbedding(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       inputs: ["alpha"],
       task: "retrieval_embedding",
       metering: { subject_user_id: "user-1" },
@@ -1018,6 +1039,7 @@ describe("provider invocation resilience", () => {
     ]);
 
     const result = await completeProviderEmbedding(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "ze",
       inputs: ["alpha"],
       dimensions: 2560,
@@ -1057,6 +1079,7 @@ describe("provider invocation resilience", () => {
     ]);
 
     const result = await completeProviderEmbedding(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "co",
       inputs: ["alpha", "beta"],
       dimensions: 1536,
@@ -1107,6 +1130,7 @@ describe("provider invocation resilience", () => {
     }, { status: 200 }]);
 
     await expect(completeProviderRerank(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "p1",
       query: "alpha",
       documents: ["alpha result"],
@@ -1142,6 +1166,7 @@ describe("provider invocation resilience", () => {
     ]);
 
     const result = await completeProviderRerank(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "ze",
       query: "alpha",
       documents: ["doc a", "doc b"],
@@ -1198,6 +1223,7 @@ describe("provider invocation resilience", () => {
     ]);
 
     const result = await completeProviderRerank(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "co",
       query: "alpha",
       documents: ["doc a", "doc b"],

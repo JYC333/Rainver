@@ -17,12 +17,20 @@ import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { hostInstallationIds } from "../hosts/capabilities.js";
 import type { PromptProvenance } from "../prompts/provenance.js";
 import {
+  contentAccessLevelSql,
   contentOwnerFilterSql,
   contentReadSql,
   contentVisibilityParamFilterSql,
 } from "../access/contentAccessSql.js";
-import { isContentVisibility } from "../access/contentAccessTypes.js";
-import { contentOwnerFromDb } from "../access/contentAccessQuery.js";
+import {
+  bodyWithheld,
+  isContentVisibility,
+  type ContentAccessLevel,
+  type WithAccessLevel,
+} from "../access/contentAccessTypes.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
+import { assertAgentOwner, canChangeAgent } from "./agentAccess.js";
 import { canReadProject, canWriteProject } from "../projects/access.js";
 import {
   DEFAULT_MEMORY_POLICY,
@@ -298,9 +306,23 @@ const VERSION_COLUMN_NAMES = [
 ] as const;
 
 const VERSION_COLUMNS = VERSION_COLUMN_NAMES.join(", ");
+const AGENT_ACCESS = contentResourceDefinition("agent")!;
 
 function versionColumns(alias: string): string {
   return VERSION_COLUMN_NAMES.map((column) => `${alias}.${column}`).join(", ");
+}
+
+function agentSelectColumns(userExpr: string): string {
+  return `${AGENT_COLUMNS},
+    ${contentAccessLevelSql({ definition: AGENT_ACCESS, alias: "a", userExpr })} AS effective_access_level`;
+}
+
+function versionForAccess(
+  row: AgentVersionRecord,
+  level: ContentAccessLevel,
+): AgentVersionRecord {
+  if (!bodyWithheld(level)) return row;
+  return { ...row, system_prompt: null };
 }
 
 const ASSISTANT_SETTINGS_KEY = SETTINGS_KEYS.assistantDefault;
@@ -483,8 +505,8 @@ export class PgAgentRepository {
       }
     }
     params.push(filters.limit, filters.offset);
-    const result = await this.pool.query<AgentRecord>(
-      `SELECT ${AGENT_COLUMNS}
+    const result = await this.pool.query<WithAccessLevel<AgentRecord>>(
+      `SELECT ${agentSelectColumns("$2")}
          FROM agents a
          LEFT JOIN agent_versions av ON av.id = a.current_version_id
 ${DEFAULT_RUNTIME_PROFILE_JOIN}
@@ -495,21 +517,6 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       params,
     );
     return result.rows.map(agentOut);
-  }
-
-  async get(spaceId: string, agentId: string): Promise<AgentOut | null> {
-    const result = await this.pool.query<AgentRecord>(
-      `SELECT ${AGENT_COLUMNS}
-         FROM agents a
-         LEFT JOIN agent_versions av ON av.id = a.current_version_id
-${DEFAULT_RUNTIME_PROFILE_JOIN}
-         LEFT JOIN model_providers mp ON mp.id = COALESCE(arp.model_provider_id, av.model_provider_id)
-        WHERE a.space_id = $1 AND a.id = $2
-          AND a.agent_kind <> 'system_assistant'
-        LIMIT 1`,
-      [spaceId, agentId],
-    );
-    return result.rows[0] ? agentOut(result.rows[0]) : null;
   }
 
   /**
@@ -525,10 +532,11 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   async getSystemAssistantInTransaction(
     db: Queryable,
     spaceId: string,
-    projectId: string | null = null,
+    projectId: string | null,
+    viewerUserId: string | null,
   ): Promise<AgentOut | null> {
-    const result = await db.query<AgentRecord>(
-      `SELECT ${AGENT_COLUMNS}
+    const result = await db.query<WithAccessLevel<AgentRecord>>(
+      `SELECT ${agentSelectColumns("$3")}
          FROM agents a
          LEFT JOIN agent_versions av ON av.id = a.current_version_id
 ${DEFAULT_RUNTIME_PROFILE_JOIN}
@@ -540,7 +548,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
                OR a.project_id = $2::varchar)
         ORDER BY a.created_at ASC, a.id ASC
         LIMIT 1`,
-      [spaceId, projectId],
+      [spaceId, projectId, viewerUserId],
     );
     return result.rows[0] ? agentOut(result.rows[0]) : null;
   }
@@ -617,8 +625,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   }
 
   async getVisible(spaceId: string, userId: string, agentId: string): Promise<AgentOut | null> {
-    const result = await this.pool.query<AgentRecord>(
-      `SELECT ${AGENT_COLUMNS}
+    const result = await this.pool.query<WithAccessLevel<AgentRecord>>(
+      `SELECT ${agentSelectColumns("$3")}
          FROM agents a
          LEFT JOIN agent_versions av ON av.id = a.current_version_id
 ${DEFAULT_RUNTIME_PROFILE_JOIN}
@@ -666,7 +674,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     if (agent.agent_kind === "system_assistant") {
       return agent.project_id ? canWriteProject(this.pool, spaceId, agent.project_id, userId) : false;
     }
-    return Boolean(await this.getVisible(spaceId, userId, agentId));
+    // Profiles decide where the Agent runs and on whose host: changing them
+    // is changing the Agent.
+    return canChangeAgent(this.pool, { spaceId, userId }, agentId);
   }
 
   async listRuntimeProfiles(
@@ -1082,9 +1092,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       status?: string;
     },
   ): Promise<AgentOut> {
-    if (!(await contentOwnerFromDb(this.pool, { spaceId, userId }, "agent", agentId))) {
-      throw new HttpError(404, "Agent not found");
-    }
+    await assertAgentOwner(this.pool, { spaceId, userId }, agentId);
     const now = new Date().toISOString();
     const result = await this.pool.query<AgentRecord>(
       `UPDATE agents
@@ -1108,7 +1116,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       ],
     );
     if (!result.rows[0]) throw new HttpError(404, "Agent not found");
-    const updated = await this.get(spaceId, agentId);
+    const updated = await this.getAgentWithClient(this.pool, spaceId, agentId, userId);
     if (!updated) throw new HttpError(404, "Agent not found");
     return updated;
   }
@@ -1132,7 +1140,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       runtimeConfigJson?: Record<string, unknown> | null;
     },
   ): Promise<AgentOut> {
-    await this.requireAgent(spaceId, agentId);
+    await assertAgentOwner(this.pool, { spaceId, userId: patch.userId }, agentId);
     return withTransaction(this.pool, async (client) => {
       const current = await this.lockCurrentVersion(client, spaceId, agentId);
       if (!current) throw new HttpError(404, "Agent has no current version");
@@ -1215,14 +1223,18 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         `UPDATE agents SET current_version_id = $3, updated_at = $4 WHERE space_id = $1 AND id = $2`,
         [spaceId, agentId, newVersion.id, now],
       );
-      const updated = await this.getAgentWithClient(client, spaceId, agentId);
+      const updated = await this.getAgentWithClient(client, spaceId, agentId, patch.userId);
       if (!updated) throw new HttpError(404, "Agent not found");
       return updated;
     });
   }
 
-  async getCurrentVersion(spaceId: string, agentId: string): Promise<AgentVersionRecord | null> {
-    await this.requireAgent(spaceId, agentId);
+  async getCurrentVersion(
+    spaceId: string,
+    userId: string,
+    agentId: string,
+  ): Promise<AgentVersionRecord | null> {
+    const decision = await this.requireReadableAgent(spaceId, userId, agentId);
     const result = await this.pool.query<AgentVersionRecord>(
       `SELECT ${versionColumns("av")}
          FROM agents a
@@ -1231,7 +1243,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         LIMIT 1`,
       [spaceId, agentId],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    return row ? versionForAccess(row, decision) : null;
   }
 
   /**
@@ -1397,7 +1410,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       // system-managed Agent's current version *is* the record, and it is the
       // column this branch reads. A second copy in agent metadata would add a
       // timestamp nobody reads and a way for the two to disagree.
-      const settled = await this.getAgentWithClient(client, input.spaceId, input.agentId);
+      const settled = await this.getAgentWithClient(client, input.spaceId, input.agentId, null);
       if (!settled) throw new HttpError(404, "Active system-managed Agent not found");
       return settled;
     }
@@ -1430,13 +1443,17 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       );
     }
 
-    const reconciled = await this.getAgentWithClient(client, input.spaceId, input.agentId);
+    const reconciled = await this.getAgentWithClient(client, input.spaceId, input.agentId, null);
     if (!reconciled) throw new HttpError(404, "Active system-managed Agent not found");
     return reconciled;
   }
 
-  async listVersions(spaceId: string, agentId: string): Promise<AgentVersionRecord[]> {
-    await this.requireAgent(spaceId, agentId);
+  async listVersions(
+    spaceId: string,
+    userId: string,
+    agentId: string,
+  ): Promise<AgentVersionRecord[]> {
+    const decision = await this.requireReadableAgent(spaceId, userId, agentId);
     const result = await this.pool.query<AgentVersionRecord>(
       `SELECT ${VERSION_COLUMNS}
          FROM agent_versions
@@ -1444,25 +1461,18 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         ORDER BY created_at DESC, id DESC`,
       [spaceId, agentId],
     );
-    return result.rows;
+    return result.rows.map((row) => versionForAccess(row, decision));
   }
 
   async getVersion(
     spaceId: string,
+    userId: string,
     agentId: string,
     versionId: string,
   ): Promise<AgentVersionRecord> {
-    await this.requireAgent(spaceId, agentId);
-    const result = await this.pool.query<AgentVersionRecord>(
-      `SELECT ${VERSION_COLUMNS}
-         FROM agent_versions
-        WHERE space_id = $1 AND agent_id = $2 AND id = $3
-        LIMIT 1`,
-      [spaceId, agentId, versionId],
-    );
-    const row = result.rows[0];
-    if (!row) throw new HttpError(404, "AgentVersion not found for this agent in this space");
-    return row;
+    const decision = await this.requireReadableAgent(spaceId, userId, agentId);
+    const row = await this.loadVersionRow(spaceId, agentId, versionId);
+    return versionForAccess(row, decision);
   }
 
   async restoreVersion(
@@ -1471,7 +1481,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     versionId: string,
     userId: string,
   ): Promise<AgentOut> {
-    const source = await this.getVersion(spaceId, agentId, versionId);
+    await assertAgentOwner(this.pool, { spaceId, userId }, agentId);
+    const source = await this.loadVersionRow(spaceId, agentId, versionId);
     return withTransaction(this.pool, async (client) => {
       if (!(await this.lockCurrentVersion(client, spaceId, agentId))) {
         throw new HttpError(404, "Agent has no current version");
@@ -1500,7 +1511,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         `UPDATE agents SET current_version_id = $3, updated_at = $4 WHERE space_id = $1 AND id = $2`,
         [spaceId, agentId, version.id, new Date().toISOString()],
       );
-      const updated = await this.getAgentWithClient(client, spaceId, agentId);
+      const updated = await this.getAgentWithClient(client, spaceId, agentId, userId);
       if (!updated) throw new HttpError(404, "Agent not found");
       return updated;
     });
@@ -1508,13 +1519,10 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
 
   /** The Space's own Assistant, never a Project's — this backs the Space-level
    * Assistant settings, which are personal preferences and not per-Project. */
-  async getDefaultAssistant(spaceId: string): Promise<AgentOut | null> {
-    const result = await this.pool.query<AgentRecord>(
-      `SELECT ${AGENT_COLUMNS}
+  async defaultAssistantId(spaceId: string): Promise<string | null> {
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT a.id
          FROM agents a
-         LEFT JOIN agent_versions av ON av.id = a.current_version_id
-${DEFAULT_RUNTIME_PROFILE_JOIN}
-         LEFT JOIN model_providers mp ON mp.id = COALESCE(arp.model_provider_id, av.model_provider_id)
         WHERE a.space_id = $1
           AND a.agent_kind = 'system_assistant'
           AND a.status = 'active'
@@ -1523,17 +1531,16 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         LIMIT 1`,
       [spaceId],
     );
-    return result.rows[0] ? agentOut(result.rows[0]) : null;
+    return result.rows[0]?.id ?? null;
   }
 
   async getAssistantSettings(spaceId: string): Promise<AssistantSettingsRecord> {
     const store = new ScopedSettingsStore(this.pool);
     const existing = await store.get(ASSISTANT_SETTINGS_DEFINITION, spaceId);
     if (existing.row) return assistantSettingsRecordFromRead(spaceId, existing);
-    const assistant = await this.getDefaultAssistant(spaceId);
     const created = await store.createIfMissing(ASSISTANT_SETTINGS_DEFINITION, spaceId, {
       ...ASSISTANT_SETTINGS_DEFAULTS,
-      assistant_agent_id: assistant?.id ?? null,
+      assistant_agent_id: await this.defaultAssistantId(spaceId),
     });
     return assistantSettingsRecordFromRead(spaceId, created);
   }
@@ -1544,9 +1551,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     options: { actorUserId?: string | null } = {},
   ): Promise<AssistantSettingsRecord> {
     const existing = await this.getAssistantSettings(spaceId);
-    const assistant = existing.assistant_agent_id ? null : await this.getDefaultAssistant(spaceId);
     const next: AssistantSettingsValue = {
-      assistant_agent_id: existing.assistant_agent_id ?? assistant?.id ?? null,
+      assistant_agent_id: existing.assistant_agent_id ?? await this.defaultAssistantId(spaceId),
       response_style: Object.hasOwn(patch, "response_style")
         ? enumStringOrNull(patch.response_style, ASSISTANT_RESPONSE_STYLES, "response_style")
         : existing.response_style,
@@ -1767,6 +1773,39 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     if (!found.rows[0]) throw new HttpError(404, "Agent not found");
   }
 
+  private async requireReadableAgent(
+    spaceId: string,
+    userId: string,
+    agentId: string,
+  ): Promise<ContentAccessLevel> {
+    await this.requireAgent(spaceId, agentId);
+    const decision = await contentDecisionFromDb(
+      this.pool,
+      { spaceId, userId },
+      "agent",
+      agentId,
+    );
+    if (decision === "deny") throw new HttpError(404, "Agent not found");
+    return decision;
+  }
+
+  private async loadVersionRow(
+    spaceId: string,
+    agentId: string,
+    versionId: string,
+  ): Promise<AgentVersionRecord> {
+    const result = await this.pool.query<AgentVersionRecord>(
+      `SELECT ${VERSION_COLUMNS}
+         FROM agent_versions
+        WHERE space_id = $1 AND agent_id = $2 AND id = $3
+        LIMIT 1`,
+      [spaceId, agentId, versionId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new HttpError(404, "AgentVersion not found for this agent in this space");
+    return row;
+  }
+
   private async lockCurrentVersion(
     db: Queryable,
     spaceId: string,
@@ -1887,7 +1926,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       enabled: true,
       isDefault: true,
     });
-    const created = await this.getAgentWithClient(client, input.spaceId, agentId);
+    const created = await this.getAgentWithClient(client, input.spaceId, agentId, input.ownerUserId);
     if (!created) throw new Error("Agent insert returned no row");
     return created;
   }
@@ -2224,20 +2263,26 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     return `v${max + 1}`;
   }
 
+  /**
+   * The Agent as the person who just wrote it sees it: the level is computed
+   * for `viewerUserId`, so a response never carries a prompt its reader could
+   * not otherwise read, and never withholds one from its owner.
+   */
   private async getAgentWithClient(
     client: Queryable,
     spaceId: string,
     agentId: string,
+    viewerUserId: string | null,
   ): Promise<AgentOut | null> {
-    const result = await client.query<AgentRecord>(
-      `SELECT ${AGENT_COLUMNS}
+    const result = await client.query<WithAccessLevel<AgentRecord>>(
+      `SELECT ${agentSelectColumns("$3")}
          FROM agents a
          LEFT JOIN agent_versions av ON av.id = a.current_version_id
 ${DEFAULT_RUNTIME_PROFILE_JOIN}
          LEFT JOIN model_providers mp ON mp.id = COALESCE(arp.model_provider_id, av.model_provider_id)
         WHERE a.space_id = $1 AND a.id = $2
         LIMIT 1`,
-      [spaceId, agentId],
+      [spaceId, agentId, viewerUserId],
     );
     return result.rows[0] ? agentOut(result.rows[0]) : null;
   }

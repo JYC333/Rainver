@@ -5,6 +5,7 @@ import type {
   AutomationRepositoryPort,
   AutomationRow,
 } from "./repository.js";
+import type { FireResponsibility } from "./targetSupport.js";
 
 export interface AutomationTargetPreflightInput {
   targetType: AutomationTargetType;
@@ -15,6 +16,13 @@ export interface AutomationTargetPreflightInput {
   projectId: string | null | undefined;
   automationPreAuthorized: boolean;
   configJson: Record<string, unknown> | null | undefined;
+  /**
+   * The origin the Run this preflight is deciding will actually carry
+   * (`fireResponsibility`). A configuration-time preflight has no fire to
+   * decide and asks the unattended question, which is what the automation will
+   * do when it next runs on its own.
+   */
+  triggerOrigin: "manual" | "automation";
 }
 
 export interface AutomationFireInput {
@@ -52,6 +60,12 @@ export interface AutomationTargetExecutionContext {
   automation: AutomationRow;
   fireInput: AutomationFireInput;
   triggerType: string;
+  /**
+   * Whose work this fire is and under which origin, decided once by
+   * `fireResponsibility` and used by the preflight above as well as by every
+   * Run this execution creates (ADR 0003 §5).
+   */
+  responsibility: FireResponsibility;
   preflightSnapshot: Record<string, unknown>;
   advanceSchedule: boolean;
 }

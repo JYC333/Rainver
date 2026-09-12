@@ -4,121 +4,94 @@
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  13. Mobile Client Layer  [PLANNED]                  │
-│     PWA, offline queue, swipe review                │
-│     apps/web/src/ (mobile layout variants)          │
-├─────────────────────────────────────────────────────┤
-│  12. Product UI / Shell Layer                        │
-│     Shell, NavRail, CommandPalette, PanelLayout     │
-│     Activity Inbox, Memory Review, Knowledge, Cards │
+│  12. Product UI / Shell                             │
+│     Shell, GlobalRail, SceneSidebar, capture        │
 │     apps/web/src/                                   │
 ├─────────────────────────────────────────────────────┤
-│  11. Files & Code Layer                              │
-│     File browser, git diff review, run logs,        │
-│     artifact review, diff approval UI               │
+│  11. Files & Code                                   │
+│     tree, file, git status, git diff (read-only)    │
+│     server/src/modules/projectFolders + hosts       │
 ├─────────────────────────────────────────────────────┤
-│  10. Runtime Adapter / Sandbox Layer                 │
-│     RuntimeAdapterSpec, the host daemon CLI adapter     │
-│     typed Delivery, worktree/sandbox governance     │
-│     server/src/modules/runtimeContext + runs         │
+│  10. Runtime / host daemon                          │
+│     RuntimeAdapterSpec, rainver-host, Delivery      │
+│     server/src/modules/runtimeContext + runs + hosts│
 ├─────────────────────────────────────────────────────┤
-│  10b. Deployment Layer                               │
-│     DeployerClient → Unix socket → host deployer    │
-│     DeploymentJob records, whitelisted scripts       │
-│     server/src/modules/deployment + deployer  │
+│  10b. Deployment                                    │
+│     deployment_jobs + deployer pull (ADR 0020)      │
+│     server/src/modules/deployment + deployer        │
 ├─────────────────────────────────────────────────────┤
-│   9. Proposal / Approval Layer                       │
-│     Generalized Proposal, ApprovalEvent, Artifact   │
-│     memory_update, code_patch, artifact review      │
-│     server/src/modules/proposals + artifacts  │
+│   9. Proposal / Approval                            │
+│     ProposalApplierRegistry                         │
+│     server/src/modules/proposals                    │
 ├─────────────────────────────────────────────────────┤
-│   8. Governance / Policy Layer                       │
-│     PolicyEngine: allow / deny / require_approval   │
-│     server/src/modules/policy                 │
+│   8. Governance / Policy                            │
+│     server/src/modules/policy                       │
 ├─────────────────────────────────────────────────────┤
-│   7. Capability Layer                                │
-│     YAML manifests, code, prompts, tests            │
-│     Lifecycle: draft → testing → enabled            │
-│     catalog/capabilities/ + server catalog    │
+│   7. Capability / Evolution                         │
+│     catalog + capabilities + evolution              │
 ├─────────────────────────────────────────────────────┤
-│   6. Learning Layer  [PARTIAL / PLANNED]             │
-│     FlashCards, CardReview, FSRS scheduling         │
-│     Media cards (image occlusion, audio cloze)      │
-│     server/migrations + future module         │
+│   6. Learning HTTP (no Cards UI)                    │
+│     server/src/modules/learning                     │
+│     cards tables exist with no write path           │
 ├─────────────────────────────────────────────────────┤
-│   5. Knowledge Layer  [MVP IMPLEMENTED]              │
-│     KnowledgeItem, ObjectRelation, Source,          │
-│     KnowledgeItemSource, note_links                 │
-│     Structured, agent-generated, proposal-gated     │
-│     server/src/modules/knowledge              │
+│   5. Knowledge                                      │
+│     KnowledgeItem, notes, object_relations          │
+│     server/src/modules/knowledge + ontology         │
 ├─────────────────────────────────────────────────────┤
-│   4. Memory Layer                                    │
-│     Scoped long-term context (not raw data)         │
-│     MemoryStore, typed acquisition, evolution       │
-│     server/src/modules/memory + runtimeContext       │
+│   4. Memory                                         │
+│     server/src/modules/memory + runtimeContext      │
 ├─────────────────────────────────────────────────────┤
-│   3. Activity Layer                                  │
-│     Raw inputs: user_input, web_capture, file_import │
-│     ActivityRecord -> proposals -> memory/knowledge │
-│     server/src/modules/activity               │
+│   3. Activity / Sources / Capture                   │
+│     server/src/modules/activity + sources + capture │
 ├─────────────────────────────────────────────────────┤
-│   2. User / Agent Layer                              │
-│     User (identity, membership)                     │
-│     Agent (profile, policy, adapters, runs)         │
-│     server/src/modules/auth + agents          │
+│   2. User / Agent                                   │
+│     server/src/modules/auth + agents                │
 ├─────────────────────────────────────────────────────┤
-│   1. Space Layer                                     │
-│     Space, SpaceMembership                          │
-│     All data scoped by space_id                     │
-│     server/migrations + modules/spaces        │
+│   1. Space                                          │
+│     server/src/modules/spaces                       │
 └─────────────────────────────────────────────────────┘
 ```
+
+The web app is also a PWA. There is no mobile-specific product layer and
+no general WebSocket event bus. Agent-turn SSE exists at
+`GET /api/v1/runs/{runId}/turn/stream`.
 
 ## Key Cross-Cutting Concerns
 
 - **space_id** — every record carries it; the primary isolation boundary
-- **Run is the central execution object** — every agent invocation creates a Run; Run produces Activities, Artifacts, and Proposals; Session is conversation-level, Run is execution-level
-- **Proposal gate** — memory and code changes require explicit proposal approval before durable mutation
-- **Runtime-agnostic core** — Agent is a product-level actor; Runtime Adapter (capability, model_api, claude_code, codex_cli, opencode, ...) is a replaceable execution backend; Model Provider (Anthropic, OpenAI, MiniMax, an OpenAI-compatible endpoint, ...) is the underlying LLM, its vendor identity and capabilities recorded in the server's vendor registry. These three are distinct. Tool-using / filesystem Claude work goes through the `claude_code` CLI RuntimeAdapterSpec. Per ADR 0008 the governing invariant is **credential channel isolation** — an Anthropic API key must never enter a Claude Code CLI subprocess env; server-owned encrypted Provider task and `model_api` channels resolve the key in process (never via ambient CLI env) and pass it to the managed chat adapter as a parameter, and may serve any provider including Anthropic. Agent-facing model calls require Runtime Context Delivery rather than a public Provider Chat bypass.
-- **Execution isolation** — every CLI Run uses a host daemon: strict bubblewrap isolation on the built-in host, native execution on a paired trusted host. The daemon resolves a Location or managed workspace and can modify it directly; diffs are uploaded for review. The server does not provision a CLI worktree or subprocess fallback. See `modules/hosts.md`.
-- **Runtime Context Gateway** — the sole typed acquisition, model-aware planning,
-  ordered Delivery, live reauthorization, safe Invocation Snapshot, and
-  continuity boundary for in-process invocations. Host CLI invocations receive
-  their prompt and work surface and retain vendor-session continuity
-- **Invocation Snapshot** — immutable safe record of one actual Delivery attempt;
-  stores refs, hashes, budget and acknowledgement metadata, never raw context
-- **Run outputs** — host daemons upload diffs and declared output files; the
-  server materializes artifacts and applies the canonical proposal rules
-- **MemoryProvider** — abstract interface for memory backends; `LocalMemoryProvider` is the only enabled provider in MVP
-- **Module registry** — `server/src/gateway/routeRegistry.ts` (backend) and `apps/web/src/modules/registry.ts` (frontend) are the single sources of truth for which features are active; see [ADR 0006](decisions/0006-plugin-module-architecture.md)
-- **Client-server protocol** — REST (current) + WebSocket events + SSE streaming (planned)
-- **Partial offline support** — mobile captures and card reviews can queue offline and sync on reconnect; memory writes and proposal apply remain server-authoritative, and agent execution stays authoritative to the control plane's server host or a paired execution host (never the client — see [decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-plane-execution-hosts.md)); see [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md)
-- **Run resilience fields** — status includes `degraded`; mode includes `live|dry_run`; temporal fields are explicit; artifacts are exportable; proposals have urgency/deadline
-- **Home aggregate APIs** — Home UI consumes lightweight backend read models
-  (`/api/v1/me/*`, `/api/v1/home/summary`) only; no full ContextPackage and no
-  frontend reconstruction of proposal/activity/runtime logic
+- **Run is the central execution object** — Session is conversation-level,
+  Run is execution-level
+- **Proposal gate** — durable Memory / Knowledge / code-patch and other
+  registered types require apply through `ProposalApplierRegistry`
+- **Runtime-agnostic core** — Agent, RuntimeAdapterSpec, and ModelProvider
+  are distinct. Credential channels follow ADR 0008
+- **Execution isolation** — CLI Runs use a host daemon (ADR 0016)
+- **Runtime Context Gateway** — typed acquisition, planning, Delivery,
+  snapshot, continuity
+- **Module registry** — `server/src/gateway/routeRegistry.ts` and
+  `apps/web/src/modules/registry.ts`
+- **Home aggregates** — `/api/v1/me/*`, `/api/v1/home/summary`
 
 ## Where Does a New Feature Belong?
 
 | Feature type | Layer | Module path |
 |---|---|---|
-| New data entity tied to a space | Layer 1–2 | `server/migrations/` + owning server module |
-| New agent capability or tool | Layer 7 | `catalog/capabilities/<id>/` |
-| New AI-driven analysis or transformation | Layers 7–9 | capability + proposal modules |
+| New data entity tied to a space | Layer 1–2 | `server/src/db/schema/` + owning module |
+| New agent capability or tool | Layer 7 | `catalog/capabilities/<id>/` and/or `capabilities` |
 | New permission rule | Layer 8 | `server/src/modules/policy/` |
 | New memory scope or type | Layer 4 | `server/src/modules/memory/` |
-| New raw capture source | Layer 3 | `server/src/modules/activity/` |
-| New structured knowledge type | Layer 5 | `server/src/modules/knowledge/` |
-| New review card type | Layer 6 | future server module + migrations |
-| New UI view (web) | Layer 12 | `apps/web/src/modules/<name>/` |
-| New UI view (mobile-primary) | Layer 13 | `apps/web/src/modules/<name>/` mobile variants |
-| New runtime adapter (CLI or SDK) | Layer 10 | `server/src/modules/runtimeAdapters/` — see `modules/runtime-adapters.md` |
+| New raw capture source | Layer 3 | `server/src/modules/activity/` or `capture` |
+| New structured knowledge type | Layer 5 | `server/src/modules/knowledge/` + ontology registry |
+| New UI view | Layer 12 | `apps/web/src/modules/<name>/` + `registry.ts` |
+| New runtime adapter | Layer 10 | `server/src/modules/runtimeAdapters/` |
 | Project Folder file operation | Layer 11 | `server/src/modules/projectFolders/` |
-| New optional feature module | All | add to `server/src/gateway/routeRegistry.ts` + `apps/web/src/modules/registry.ts` |
+| New optional feature module | — | PluginHost + `plugins/official/` |
 
-## Runtime Targets (MVP)
+## Runtime Targets
 
 - **Runtime**: Linux / WSL2 / server (Docker Compose)
-- **UI**: Browser (React SPA) — also serves as PWA
-- **Mobile**: PWA (same codebase, mobile layout variants)
-- **Desktop**: Deferred — see [decisions/0005](decisions/0005-desktop-runtime.md)
+- **UI**: Browser (React SPA / PWA)
+- **Desktop**: Tauri scaffold only — [0005](decisions/0005-desktop-runtime.md)
+
+Unimplemented layers (mobile product, sync, Cards UI, generic WS):
+[plans/unimplemented-from-guides.md](plans/unimplemented-from-guides.md).

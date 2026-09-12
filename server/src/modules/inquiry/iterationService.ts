@@ -20,7 +20,7 @@ import {
 } from "./stepService.js";
 import { RetrievalProjectionService } from "../retrieval/index.js";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { assertThreadReadable } from "./threadAccess.js";
 import { recordThreadRevision } from "./threadRevisionService.js";
 import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
 import { tryQueueAdviceForFocusedThread } from "./adviceJob.js";
@@ -83,17 +83,17 @@ export class InquiryIterationService {
 
     const result = await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
+      // The person's own content gate, not Project membership alone. A
+      // conclusion on a Thread the person cannot read would commit and then
+      // produce no row in the Project's updates, which the read model drops
+      // for exactly that reason — a direct write with no review-after is the
+      // one thing ADR 0017 §4 does not allow.
+      await assertThreadReadable(db, identity, projectId, threadId, "change");
       const threadRow = await db.query<ThreadRow>(
-        // The reader's own content gate, not Project membership alone. A
-        // conclusion on a Thread the person cannot read would commit and then
-        // produce no row in the Project's updates, which the read model drops
-        // for exactly that reason — a direct write with no review-after is the
-        // one thing ADR 0017 §4 does not allow.
         `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
           WHERE t.object_id = $1 AND t.space_id = $2 AND t.project_id = $3
-            AND ${contentReadSql("space_object", "so", "$4")}
           FOR UPDATE OF t`,
-        [threadId, identity.spaceId, projectId, identity.userId],
+        [threadId, identity.spaceId, projectId],
       );
       const thread = threadRow.rows[0];
       if (!thread) throw new HttpError(404, "Thread not found");
@@ -304,6 +304,7 @@ export class InquiryIterationService {
 
   async listIterations(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
     const rows = await this.db.query(
       `SELECT i.* FROM inquiry_iterations i
          JOIN inquiry_threads t ON t.object_id = i.thread_id AND t.space_id = i.space_id
@@ -316,6 +317,7 @@ export class InquiryIterationService {
 
   async listRevisions(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
     const rows = await this.db.query(
       `SELECT r.id, r.thread_id, r.version, r.kind, r.statement, r.answer_state,
               r.evaluation_state, r.confidence, r.state_snapshot_json,
@@ -342,6 +344,9 @@ export class InquiryIterationService {
     body: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+    // A child or superseding branch copies this Thread's fields, so reaching
+    // it is required before any branch of the command.
+    await assertThreadReadable(this.db, identity, projectId, threadId, "change");
     const revisionKind = requiredString(body.revision_kind, "revision_kind");
     if (revisionKind !== "wording_only" && revisionKind !== "semantic_change") {
       throw new HttpError(422, "revision_kind must be wording_only or semantic_change");
@@ -415,12 +420,21 @@ export class InquiryIterationService {
       // child/supersede: create a new Thread carrying the revised definition.
       // The historical Thread is deliberately not mutated before the branch.
       const newThreadId = randomUUID();
+      // The branch copies this Thread's fields, so it starts no wider than this
+      // Thread: same visibility and level. Selected-people grants are not
+      // copied, which leaves such a branch with its new owner alone.
+      const sourceRoot = await db.query<{ visibility: string; access_level: string }>(
+        `SELECT visibility, access_level FROM space_objects WHERE id = $1 AND space_id = $2`,
+        [threadId, identity.spaceId],
+      );
       const branchObject = buildSpaceObjectInsert({
         id: newThreadId,
         spaceId: identity.spaceId,
         objectType: "inquiry_thread",
         title: newStatement,
         ownerUserId: identity.userId,
+        visibility: sourceRoot.rows[0]!.visibility,
+        accessLevel: sourceRoot.rows[0]!.access_level,
         primaryProjectId: projectId,
         createdByUserId: identity.userId,
         createdAt: now,
@@ -595,6 +609,7 @@ export class InquiryIterationService {
     body: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "change");
     const now = new Date().toISOString();
 
     return withQueryableTransaction(this.db, async (db) => {
@@ -611,6 +626,11 @@ export class InquiryIterationService {
       const nextPriority = requestedPriority ?? thread.priority;
       if (!Number.isInteger(nextPriority)) throw new HttpError(422, "priority must be an integer");
       const nextOwner = hasOwn(body, "owner_user_id") ? optionalString(body.owner_user_id) : thread.owner_user_id;
+      // Ownership is what makes a private Thread readable, so handing a Thread
+      // to someone else is its owner's call alone.
+      if (nextOwner !== thread.owner_user_id && thread.owner_user_id !== null && thread.owner_user_id !== identity.userId) {
+        throw new HttpError(403, "Only the Thread's owner can reassign it");
+      }
       if (nextOwner) {
         const owner = await db.query(
           `SELECT 1 FROM space_memberships
@@ -740,6 +760,7 @@ export class InquiryIterationService {
    */
   async listSteps(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
     const rows = await listSteps(this.db, { spaceId: identity.spaceId, projectId, threadId });
     return rows.map(stepToOut);
   }
@@ -758,6 +779,7 @@ export class InquiryIterationService {
 
   async listWorkEvents(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
     const rows = await this.db.query(
       `SELECT e.* FROM inquiry_thread_work_events e
          JOIN inquiry_threads t ON t.object_id = e.thread_id AND t.space_id = e.space_id
@@ -776,6 +798,7 @@ export class InquiryIterationService {
     provenance?: ThreadEventProvenance,
   ): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "change");
     const toStatus = requiredString(body.lifecycle_status, "lifecycle_status");
     const allowed = ["active", "resolved", "rejected", "archived"] as const;
     if (!allowed.includes(toStatus as (typeof allowed)[number])) {

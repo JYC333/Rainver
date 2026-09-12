@@ -13,6 +13,7 @@ import {
 import { accessibleProjectIds, canAccessProject } from "./projectAccess.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 import { resolveOversightLevel } from "../access/oversightResolver.js";
 import { memoryAgentScopeReadSql, memorySensitivityReadSql } from "./memorySensitivitySql.js";
 import { ContentAccessAuditService } from "../contentAccess/audit.js";
@@ -102,6 +103,12 @@ export interface MemoryRow extends MemoryAuthFields {
 
 const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
 
+/** Viewer-facing memory SELECT over alias `me`: includes the effective access level. */
+export function memoryColumnsWithAccess(userExpr: string): string {
+  return `${MEMORY_COLUMNS},
+    ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr })} AS effective_access_level`;
+}
+
 /**
  * server memory **read** model. A scoped SQL query loads candidate rows, then
  * `canReadMemory` filters them in app code (so pagination is applied to the
@@ -190,7 +197,7 @@ export class PgMemoryReadRepository {
     where.push(contentReadSql("memory", "me", userExpr));
     where.push(memorySensitivityReadSql("me", userExpr));
     where.push(memoryAgentScopeReadSql("me", userExpr));
-    const result = await this.db.query<MemoryRow>(
+    const result = await this.db.query<WithAccessLevel<MemoryRow>>(
       `SELECT ${MEMORY_COLUMNS},
               ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr })} AS effective_access_level
          FROM memory_entries me
@@ -226,7 +233,7 @@ export class PgMemoryReadRepository {
     userId: string,
     memoryId: string,
   ): Promise<MemoryOut | null> {
-    const result = await this.db.query<MemoryRow>(
+    const result = await this.db.query<WithAccessLevel<MemoryRow>>(
       `SELECT ${MEMORY_COLUMNS},
               ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr: "$3" })} AS effective_access_level
          FROM memory_entries me
@@ -283,7 +290,7 @@ export class PgMemoryReadRepository {
     where.push(contentReadSql("memory", "me", userExpr));
     where.push(memorySensitivityReadSql("me", userExpr));
     where.push(memoryAgentScopeReadSql("me", userExpr));
-    const result = await this.db.query<MemoryRow>(
+    const result = await this.db.query<WithAccessLevel<MemoryRow>>(
       `SELECT ${MEMORY_COLUMNS},
               ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr })} AS effective_access_level
          FROM memory_entries me
@@ -373,11 +380,11 @@ export class PgMemoryReadRepository {
    * projects in a fixed number of queries (see `accessibleProjectIds`); rows
    * with no `project_id` are kept.
    */
-  private async filterByProjectAccess(
-    rows: MemoryRow[],
+  private async filterByProjectAccess<Row extends MemoryRow>(
+    rows: Row[],
     spaceId: string,
     userId: string,
-  ): Promise<MemoryRow[]> {
+  ): Promise<Row[]> {
     const accessible = await accessibleProjectIds(
       this.db,
       spaceId,
@@ -415,10 +422,10 @@ export class PgMemoryReadRepository {
     const found = anchor.rows[0];
     if (!found) return { items: [] };
     const rootId = found.root_memory_id ?? found.id;
-    const rows = await this.db.query<MemoryRow & {
+    const rows = await this.db.query<WithAccessLevel<MemoryRow> & {
       run_id: string | null; session_id: string | null; rationale: string | null; agent_id: string | null;
     }>(
-      `SELECT ${MEMORY_COLUMNS}, me.agent_id,
+      `SELECT ${memoryColumnsWithAccess("$3")}, me.agent_id,
               prov.prov_run_id AS run_id,
               prov.evidence_json->>'session_id' AS session_id,
               prov.evidence_json->>'rationale' AS rationale
@@ -434,7 +441,7 @@ export class PgMemoryReadRepository {
         WHERE me.space_id = $1 AND me.deleted_at IS NULL
           AND (me.id = $2 OR me.root_memory_id = $2)
         ORDER BY me.created_at ASC`,
-      [spaceId, rootId],
+      [spaceId, rootId, userId],
     );
     const oversightLevel = await resolveOversightLevel(this.db, spaceId, userId);
     const readable = rows.rows.filter((row) => canReadMemory(row, { userId, spaceId, oversightLevel }));
@@ -458,14 +465,14 @@ export class PgMemoryReadRepository {
     };
   }
 
-  private serialize(row: MemoryRow, viewerUserId: string): MemoryOut {
+  private serialize(row: WithAccessLevel<MemoryRow>, viewerUserId: string): MemoryOut {
     return serializeMemoryRow(row, viewerUserId);
   }
 }
 
 /** Serialize a memory row to the `MemoryOut` wire shape with summary-only
  * redaction (shared by the read model and the apply accept-result builder). */
-export function serializeMemoryRow(row: MemoryRow, viewerUserId: string): MemoryOut {
+export function serializeMemoryRow(row: WithAccessLevel<MemoryRow>, viewerUserId: string): MemoryOut {
   const redact = shouldRedactMemoryContent(row, viewerUserId);
   if (row.scope_type !== "user" && row.scope_type !== "project" && row.scope_type !== "agent") {
     throw new MemoryReadValidationError("memory scope must be user, project or agent");

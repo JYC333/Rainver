@@ -12,6 +12,8 @@ import { Badge, StatusBadge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
+import { SafeExternalLink } from '../../components/SafeExternalLink'
+import { safeHttpUrl } from '../../lib/safeHttpUrl'
 import { Pagination } from '../../components/ui/pagination'
 import { Input } from '../../components/ui/input'
 import { Select } from '../../components/ui/select'
@@ -204,12 +206,12 @@ function SourceItemCard({
           <XCircle className="size-3.5" />
           Ignore
         </Button>
-        {item.source_uri && (
+        {safeHttpUrl(item.source_uri) && (
           <Button type="button" size="sm" variant="ghost" asChild>
-            <a href={item.source_uri} target="_blank" rel="noreferrer">
+            <SafeExternalLink href={item.source_uri}>
               <ExternalLink className="size-3.5" />
               Source
-            </a>
+            </SafeExternalLink>
           </Button>
         )}
       </div>

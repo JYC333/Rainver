@@ -1,4 +1,5 @@
 import type { Queryable } from "../routeUtils/common.js";
+import { runReadSql } from "../access/contentAccessSql.js";
 import { declaredRequiredOutputs, missingRequiredOutputs } from "./settlement.js";
 
 /**
@@ -36,6 +37,15 @@ export async function taskCompletionState(
   spaceId: string,
   taskId: string,
   requiredOutputsJson: unknown,
+  /**
+   * Whose view the gate is computed in. Required: an optional viewer meant a
+   * caller that forgot it judged the Task against the whole ledger, so a close
+   * that succeeded — or a `missing` list that came back shorter — told the
+   * person that an evaluation or an output they cannot see exists. The system
+   * settlement worker, which genuinely must judge the Task's real state, says
+   * so by name (`missingRequiredOutputsForSettlement`).
+   */
+  viewerUserId: string,
 ): Promise<TaskCompletionState> {
   const evaluation = await db.query<{ recommendation: string | null }>(
     `SELECT e.recommendation
@@ -47,12 +57,13 @@ export async function taskCompletionState(
             JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
            WHERE tr.task_id = $2 AND tr.space_id = $1
              AND tr.role NOT IN ('planning', 'review')
+             AND ${runReadSql("$3")}
            ORDER BY r.created_at DESC, r.id DESC
            LIMIT 1
         )
       ORDER BY e.created_at DESC, e.id DESC
       LIMIT 1`,
-    [spaceId, taskId],
+    [spaceId, taskId, viewerUserId],
   );
   const row = evaluation.rows[0];
   const missing = await missingRequiredOutputs(
@@ -60,6 +71,7 @@ export async function taskCompletionState(
     spaceId,
     taskId,
     declaredRequiredOutputs(requiredOutputsJson),
+    viewerUserId,
   );
   return completionFrom(row?.recommendation ?? null, row !== undefined, missing);
 }

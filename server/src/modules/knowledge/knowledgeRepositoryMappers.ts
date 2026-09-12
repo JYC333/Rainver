@@ -16,8 +16,14 @@ import type {
 } from "./knowledgeRepositoryRows.js";
 import { isKnowledgeRetrievalProjectedRelation } from "./retrievalObjectTypes.js";
 import { isContentOwner } from "../access/contentAccessPolicy.js";
+import { bodyWithheld, type ContentAccessLevel, type WithAccessLevel } from "../access/contentAccessTypes.js";
 
-export function knowledgeSummaryOut(row: KnowledgeItemRow): Record<string, unknown> {
+function isSummaryOnly(row: { effective_access_level: ContentAccessLevel }): boolean {
+  return bodyWithheld(row.effective_access_level);
+}
+
+export function knowledgeSummaryOut(row: WithAccessLevel<KnowledgeItemRow>): Record<string, unknown> {
+  const summaryOnly = isSummaryOnly(row);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -26,7 +32,7 @@ export function knowledgeSummaryOut(row: KnowledgeItemRow): Record<string, unkno
     knowledge_kind: row.knowledge_kind,
     slug: row.slug,
     title: row.title,
-    content_preview: row.excerpt ?? (row.plain_text ?? row.content).slice(0, 280),
+    content_preview: summaryOnly ? row.excerpt : row.excerpt ?? (row.plain_text ?? row.content).slice(0, 280),
     excerpt: row.excerpt,
     status: row.status,
     visibility: row.visibility,
@@ -39,19 +45,21 @@ export function knowledgeSummaryOut(row: KnowledgeItemRow): Record<string, unkno
   };
 }
 
-export function knowledgeItemOut(row: KnowledgeItemRow, sourceRefs: Record<string, unknown>[]): Record<string, unknown> {
+export function knowledgeItemOut(row: WithAccessLevel<KnowledgeItemRow>, sourceRefs: Record<string, unknown>[]): Record<string, unknown> {
+  const summaryOnly = isSummaryOnly(row);
   return {
     ...knowledgeSummaryOut(row),
     root_item_id: row.root_item_id,
     supersedes_item_id: row.supersedes_item_id,
     redirect_to_item_id: row.redirect_to_item_id,
     aliases: stringArray(row.aliases_json),
-    content: row.content,
-    content_json: optionalObject(row.content_json),
+    content: summaryOnly ? null : row.content,
+    content_json: summaryOnly ? null : optionalObject(row.content_json),
     content_format: row.content_format,
     content_schema_version: numberValue(row.content_schema_version) ?? 1,
-    plain_text: row.plain_text,
-    source_refs: sourceRefs,
+    plain_text: summaryOnly ? null : row.plain_text,
+    // A source ref's evidence carries an excerpt of the item's own content.
+    source_refs: summaryOnly ? sourceRefs.map(({ evidence_json: _evidence, ...ref }) => ref) : sourceRefs,
     pinned_source_ref: optionalObject(row.pinned_source_ref_json),
     owner_user_id: row.owner_user_id,
     created_by_user_id: row.created_by_user_id,
@@ -65,14 +73,15 @@ export function knowledgeItemOut(row: KnowledgeItemRow, sourceRefs: Record<strin
   };
 }
 
-export function claimSummaryOut(row: ClaimRow): Record<string, unknown> {
+export function claimSummaryOut(row: WithAccessLevel<ClaimRow>): Record<string, unknown> {
+  const summaryOnly = isSummaryOnly(row);
   return {
     id: row.id,
     space_id: row.space_id,
     subject_object_id: row.subject_object_id,
-    subject_text: row.subject_text,
+    subject_text: summaryOnly ? null : row.subject_text,
     claim_kind: row.claim_kind,
-    claim_text: row.claim_text,
+    claim_text: summaryOnly ? null : row.claim_text,
     normalized_claim_hash: row.normalized_claim_hash,
     confidence: row.confidence,
     confidence_method: row.confidence_method,
@@ -87,7 +96,7 @@ export function claimSummaryOut(row: ClaimRow): Record<string, unknown> {
   };
 }
 
-export function claimOut(row: ClaimRow, sources: Record<string, unknown>[]): Record<string, unknown> {
+export function claimOut(row: WithAccessLevel<ClaimRow>, sources: Record<string, unknown>[]): Record<string, unknown> {
   return {
     ...claimSummaryOut(row),
     holder_object_id: row.holder_object_id,
@@ -96,7 +105,7 @@ export function claimOut(row: ClaimRow, sources: Record<string, unknown>[]): Rec
     valid_from: dateIso(row.valid_from),
     valid_until: dateIso(row.valid_until),
     observed_at: dateIso(row.observed_at),
-    metadata: objectValue(row.metadata_json),
+    metadata: isSummaryOnly(row) ? {} : objectValue(row.metadata_json),
     sources,
     owner_user_id: row.owner_user_id,
     created_by_user_id: row.created_by_user_id,
@@ -109,14 +118,17 @@ export function claimOut(row: ClaimRow, sources: Record<string, unknown>[]): Rec
   };
 }
 
-export function claimSourceOut(row: ClaimSourceRow): Record<string, unknown> {
+/** A claim's evidence row; a summary-level reader of the claim is withheld its quote. */
+export function claimSourceOut(row: ClaimSourceRow, withheld: boolean): Record<string, unknown> {
   const out = normalizeDates({ ...row });
   delete out.source_policy_snapshot_json;
   delete out.metadata_json;
   return {
     ...out,
+    locator: withheld ? null : out.locator,
+    quote_excerpt: withheld ? null : out.quote_excerpt,
     source_policy_snapshot: objectValue(row.source_policy_snapshot_json),
-    metadata: objectValue(row.metadata_json),
+    metadata: withheld ? {} : objectValue(row.metadata_json),
   };
 }
 
@@ -146,13 +158,14 @@ export function sourceSummaryOut(row: SourceRow): Record<string, unknown> {
   };
 }
 
-export function sourceOut(row: SourceRow): Record<string, unknown> {
+export function sourceOut(row: WithAccessLevel<SourceRow>): Record<string, unknown> {
+  const summaryOnly = isSummaryOnly(row);
   return {
     ...sourceSummaryOut(row),
-    content_ref: row.content_ref,
-    raw_text: row.raw_text,
+    content_ref: summaryOnly ? null : row.content_ref,
+    raw_text: summaryOnly ? null : row.raw_text,
     summary: row.summary,
-    metadata: objectValue(row.metadata_json),
+    metadata: summaryOnly ? {} : objectValue(row.metadata_json),
     created_by_user_id: row.created_by_user_id,
   };
 }
@@ -171,7 +184,7 @@ function notePlacementsOut(value: unknown): Array<Record<string, unknown>> {
   });
 }
 
-export function noteSummaryOut(row: NoteRow): Record<string, unknown> {
+export function noteSummaryOut(row: WithAccessLevel<NoteRow>): Record<string, unknown> {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -184,7 +197,8 @@ export function noteSummaryOut(row: NoteRow): Record<string, unknown> {
     role_project_id: row.role_project_id,
     placements: notePlacementsOut(row.placements),
     version: numberValue(row.version) ?? 1,
-    content_hash: row.content_hash,
+    // A hash confirms a guessed body, so it is withheld with the body.
+    content_hash: isSummaryOnly(row) ? null : row.content_hash,
     updated_by_user_id: row.updated_by_user_id,
     updated_by_run_id: row.updated_by_run_id,
     created_at: dateIso(row.created_at),
@@ -193,12 +207,13 @@ export function noteSummaryOut(row: NoteRow): Record<string, unknown> {
   };
 }
 
-export function noteOut(row: NoteRow): Record<string, unknown> {
+export function noteOut(row: WithAccessLevel<NoteRow>): Record<string, unknown> {
+  const summaryOnly = isSummaryOnly(row);
   return {
     ...noteSummaryOut(row),
-    content_json: optionalObject(row.content_json),
+    content_json: summaryOnly ? null : optionalObject(row.content_json),
     content_schema_version: numberValue(row.content_schema_version) ?? 1,
-    plain_text: row.plain_text,
+    plain_text: summaryOnly ? null : row.plain_text,
     created_from_activity_id: row.created_from_activity_id,
     created_by_user_id: row.created_by_user_id,
     archived_at: dateIso(row.archived_at),

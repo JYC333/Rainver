@@ -81,6 +81,21 @@ export function visibleMessagePathSql(input: {
 }
 
 /**
+ * The human transcript of a Room conversation: the visible path, minus
+ * `room_display = internal` execution instructions. Agent replay and
+ * continuation lookups still read those rows; list/preview/summary surfaces
+ * that people see must not.
+ */
+export function visibleRoomTranscriptSql(input: {
+  alias: string;
+  spaceParam: string;
+  sessionParam: string;
+}): string {
+  return `${visibleMessagePathSql(input)}
+    AND COALESCE(${input.alias}.metadata_json->>'room_display', 'conversation') <> 'internal'`;
+}
+
+/**
  * Where a new message lands, given the message it replies to.
  *
  * Appending to the tip continues that branch. Replying to anything else forks:

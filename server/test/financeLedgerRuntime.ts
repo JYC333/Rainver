@@ -66,7 +66,7 @@ export interface FinanceLedgerRuntime {
   engine: {
     financeLedgerEngine: {
       loadFromText(text: string, filename?: string): { entries: Array<{ type: string }>; errors: LedgerErrorForTest[]; options: Record<string, string> };
-      loadFromDb(db: unknown, spaceId: string, bookId: string): Promise<{ entries: Array<{ type: string }>; errors: LedgerErrorForTest[]; options: Record<string, string> }>;
+      loadFromDb(db: unknown, spaceId: string, bookId: string, viewerUserId?: string): Promise<{ entries: Array<{ type: string }>; errors: LedgerErrorForTest[]; options: Record<string, string> }>;
       exportEntries(entries: readonly unknown[], options?: Record<string, string>): string;
     };
   };
@@ -80,13 +80,13 @@ export interface FinanceLedgerRuntime {
       openAccount(db: unknown, spaceId: string, bookId: string, input: Record<string, unknown>): Promise<Record<string, string>>;
       listAccounts(db: unknown, spaceId: string, bookId: string, viewerUserId?: string): Promise<Array<Record<string, unknown>>>;
       setAccountVisibility(db: unknown, spaceId: string, bookId: string, accountId: string, userId: string, visibility: string): Promise<Record<string, unknown>>;
-      getAccountLedger(db: unknown, spaceId: string, bookId: string, accountId: string, viewerUserId?: string): Promise<Array<Record<string, unknown>>>;
+      getAccountLedger(db: unknown, spaceId: string, bookId: string, accountId: string, viewerUserId: string): Promise<Array<Record<string, unknown>>>;
       listFinanceBooks(db: unknown, spaceId: string): Promise<Array<Record<string, string>>>;
       listDirectives(db: unknown, spaceId: string, bookId: string, filters?: Record<string, string>): Promise<Array<Record<string, unknown>>>;
       createTransactionDraft(db: unknown, spaceId: string, bookId: string, userId: string, input: Record<string, unknown>): Promise<Record<string, string>>;
       postDirective(db: unknown, spaceId: string, bookId: string, directiveId: string): Promise<Record<string, string>>;
-      computeBalances(db: unknown, spaceId: string, bookId: string, options?: { viewerUserId?: string; scope?: string }): Promise<Array<Record<string, unknown>>>;
-      closeAccount(db: unknown, spaceId: string, bookId: string, accountId: string, date: string): Promise<Record<string, string>>;
+      computeBalances(db: unknown, spaceId: string, bookId: string, options: { viewerUserId: string; scope?: string }): Promise<Array<Record<string, unknown>>>;
+      closeAccount(db: unknown, spaceId: string, bookId: string, accountId: string, date: string, viewerUserId: string): Promise<Record<string, string>>;
       importBeancount(db: unknown, spaceId: string, bookId: string, userId: string, input: Record<string, unknown>): Promise<ImportResultForTest>;
       exportBeancount(db: unknown, spaceId: string, bookId: string, userId: string): Promise<ExportResultForTest>;
       postImportBatch(db: unknown, spaceId: string, bookId: string, importSourceId: string, proposalId?: string | null): Promise<{ posted: number }>;

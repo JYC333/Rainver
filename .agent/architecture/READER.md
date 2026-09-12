@@ -7,7 +7,9 @@ or Project Research synthesis.
 
 The server entry points are `/api/v1/reader/*`. Document resolvers are supplied
 by Sources for `source_item` and `source_snapshot`, and by Project Research for
-`research_report`. Every resolver applies its domain permission checks before
+`research_report`. `research_notebook` is an ordinary Note: it uses the
+`space_object` content-access gate and requires `full` access, the same as
+Notes detail. Every resolver applies its domain permission checks before
 returning content. Research reference resolution additionally applies source
 consent and returns only `unavailable` for inaccessible references.
 

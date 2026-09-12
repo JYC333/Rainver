@@ -12,8 +12,11 @@ import { AGENT_SCOPE_MEMORY_TYPES, PERSONA_MEMORY_TYPE } from "./memoryApplyRepo
  * §1–§2 name as their single exception: an Agent's persona. Its origin test
  * runs the other way round because a persona is delivered in every Room the
  * Agent sits in, so a person in a turn must not carry that reach, while an
- * Agent concluding something about itself outside anyone's turn is bounded by
- * the notification and the one-step restore.
+ * Agent concluding something about itself during work its **own owner** set up
+ * is bounded by the notification and the one-step restore. Whether the write
+ * then applies or waits for the owner is `decidePersonaWrite`'s call, not this
+ * one: what the flag below buys is passage past the origin gate, so that §5's
+ * table gets to decide at all.
  *
  * Resolved **here**, from the tool input for a create and from the target row
  * for a revision — never from anything a prompt asserted about itself, and

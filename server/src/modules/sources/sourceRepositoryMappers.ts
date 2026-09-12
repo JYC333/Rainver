@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import {
   HttpError,
   dateIso,
@@ -11,8 +12,8 @@ import type {
   SourceItemRow,
 } from "./sourceRepositoryRows.js";
 
-export function itemOut(row: SourceItemRow) {
-  const summaryOnly = row.effective_access_level === "summary";
+export function itemOut(row: WithAccessLevel<SourceItemRow>) {
+  const summaryOnly = bodyWithheld(row.effective_access_level);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -48,7 +49,8 @@ export function itemOut(row: SourceItemRow) {
     search_index_ref: summaryOnly ? null : row.search_index_ref,
     embedding_index_ref: summaryOnly ? null : row.embedding_index_ref,
     metadata_json: summaryOnly ? null : row.metadata_json ?? null,
-    effective_access_level: row.effective_access_level ?? "full",
+    // What was actually served, never a default: a missing level withheld.
+    effective_access_level: summaryOnly ? "summary" : "full",
     created_at: dateIso(row.created_at),
     updated_at: dateIso(row.updated_at),
   };
@@ -77,8 +79,8 @@ export function jobOut(row: ExtractionJobRow) {
   };
 }
 
-export function evidenceOut(row: EvidenceRow) {
-  const summaryOnly = row.effective_access_level === "summary";
+export function evidenceOut(row: WithAccessLevel<EvidenceRow>) {
+  const summaryOnly = bodyWithheld(row.effective_access_level);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -102,7 +104,8 @@ export function evidenceOut(row: EvidenceRow) {
     confidence: row.confidence,
     status: row.status,
     metadata_json: summaryOnly ? null : row.metadata_json ?? null,
-    effective_access_level: row.effective_access_level ?? "full",
+    // What was actually served, never a default: a missing level withheld.
+    effective_access_level: summaryOnly ? "summary" : "full",
     created_by_user_id: row.created_by_user_id,
     created_by_agent_id: row.created_by_agent_id,
     created_by_run_id: row.created_by_run_id,
@@ -166,7 +169,7 @@ export type ProjectSourceItemOutRow = SourceItemRow & {
   project_link_updated_at: unknown;
 };
 
-export function projectSourceItemOut(row: ProjectSourceItemOutRow) {
+export function projectSourceItemOut(row: WithAccessLevel<ProjectSourceItemOutRow>) {
   return {
     id: row.project_link_id,
     space_id: row.project_link_space_id,

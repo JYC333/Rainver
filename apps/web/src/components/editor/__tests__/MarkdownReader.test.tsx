@@ -43,7 +43,10 @@ describe('MarkdownReader', () => {
     expect(screen.getByText('em').tagName).toBe('EM')
     expect(screen.getByText('strike').tagName).toBe('S')
     expect(screen.getByText('code').tagName).toBe('CODE')
-    expect(screen.getByRole('img', { name: 'alt text' })).toHaveAttribute('src', 'https://example.com/img.png')
+    // A cross-origin image in model-authored markdown is a link, not an
+    // `<img>` the browser fetches — see `readerImages.test.tsx`. What this
+    // case is about is that the node type mounts at all.
+    expect(screen.getByRole('link', { name: /alt text/ })).toHaveAttribute('href', 'https://example.com/img.png')
   })
 
   it('renders an empty document without throwing', async () => {

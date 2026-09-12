@@ -28,6 +28,21 @@ export function fakeAuthRepository(role: "owner" | "admin" | "reviewer" | "membe
   };
 }
 
+/** An auth repository that refuses every identity with 401, for unauthenticated-route tests. */
+export function deniedAuthRepository(): AuthRepository {
+  return {
+    async resolveIdentity() {
+      return { ok: false, reason: "denied", statusCode: 401, body: JSON.stringify({ detail: "Not authenticated" }) };
+    },
+    async getSpaceForUser() { throw new Error("not used"); },
+    async getCurrentUser() { throw new Error("not used"); },
+    async getUserSpaces() { throw new Error("not used"); },
+    async logout() { throw new Error("not used"); },
+    async findOrCreateFromGoogle() { throw new Error("not used"); },
+    async createSession() { throw new Error("not used"); },
+  };
+}
+
 /** A Space retrieval settings row as the knowledge routes read it. */
 export function retrievalSettingsRow() {
   return {

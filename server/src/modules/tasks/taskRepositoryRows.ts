@@ -1,4 +1,4 @@
-import type { RunRecord } from "../runs/repository.js";
+import type { VisibleRunRecord } from "../runs/repository.js";
 
 export interface BoardRow {
   id: string;
@@ -83,7 +83,7 @@ export interface TaskRow {
   deleted_at: unknown;
 }
 
-export interface TaskRunListRow extends RunRecord {
+export interface TaskRunListRow extends VisibleRunRecord {
   task_run_id: string;
   task_run_space_id: string;
   task_run_task_id: string;

@@ -11,7 +11,7 @@ import {
 import type {
   SpaceRetrievalSettingsUpdate,
 } from "@rainver/protocol";
-import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { isSpaceOwnerOrAdmin, roleGrantRefusal, SPACE_ROLE_LADDER } from "../access/roles.js";
 import { seedSpaceDefaults } from "./spaceSeeds.js";
 
 export interface SpaceCreateInput {
@@ -23,7 +23,8 @@ export interface SpaceCreateInput {
 
 export interface InvitationCreateInput {
   email: string;
-  role?: "guest" | "member" | "reviewer" | "admin";
+  /** Checked against the inviter's own role by `roleGrantRefusal`. */
+  role?: string;
 }
 
 export interface SpaceResult {
@@ -263,8 +264,10 @@ export class PgSpaceRepository implements SpaceRepository {
       return { statusCode: 403, detail: "Personal spaces cannot have additional members" };
     }
 
-    const token = rawInvitationToken();
     const roleToGrant = input.role ?? "member";
+    const refusal = roleGrantRefusal(SPACE_ROLE_LADDER, role, roleToGrant);
+    if (refusal) return refusal;
+    const token = rawInvitationToken();
     const id = randomUUID();
     const res = await this.pool.query<{
       status: string;

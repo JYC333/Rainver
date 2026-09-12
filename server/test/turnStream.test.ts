@@ -112,6 +112,34 @@ describe("run turn", () => {
     expect(response.statusCode).toBe(404);
   });
 
+  /**
+   * This stream hijacks the reply and writes its header block straight to the
+   * socket, so nothing Fastify adds afterwards reaches it — including the
+   * `onSend` hook that marks every API response `no-store`. It had said
+   * `no-cache`, which forbids *reuse* without revalidation but explicitly
+   * permits a shared cache to **store** the body. The body is live
+   * conversation turns.
+   *
+   * `no-transform` matters only on a stream: an intermediary that re-buffers
+   * the response holds every event until it ends.
+   */
+  it("tells caches not to keep a conversation stream", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    await seedManagedRun("run-headers");
+    await db.pool!.query("UPDATE runs SET status='succeeded' WHERE id='run-headers'");
+
+    const response = await app.inject({ method: "GET", url: "/api/v1/runs/run-headers/turn/stream" });
+
+    expect(response.headers["cache-control"]).toBe("no-store, no-cache, must-revalidate, private, no-transform");
+    expect(response.headers["content-type"]).toContain("text/event-stream");
+    expect(response.headers["cache-control"]).toContain("no-transform");
+    // Written by hand once per stream, which is how the server marker came to
+    // be missing from two of the three.
+    expect(response.headers["x-request-id"]).toBeTruthy();
+    expect(response.headers["x-rainver-server"]).toBeTruthy();
+    expect(response.headers["x-accel-buffering"]).toBe("no");
+  });
+
   it("streams a snapshot, then a frame per change, and stops when the turn ends", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     await seedManagedRun("run-4");

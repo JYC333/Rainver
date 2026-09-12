@@ -38,7 +38,11 @@ export {
   type RuntimeContextPlanningRequest,
 } from "./planningService.js";
 export { ContextWindowReconciliationRepository } from "./reconciliationRepository.js";
-export { createProductionRuntimeContextPlanningService } from "./productionAcquisition.js";
+export {
+  createProductionRetrievalAuthorization,
+  createProductionRuntimeContextPlanningService,
+  retrievalContextSourceAttribution,
+} from "./productionAcquisition.js";
 export { ContextWindowPlanner, RuntimeContextPlanningError, type WindowPlannerInput } from "./windowPlanner.js";
 export {
   MANAGED_RENDERER_VERSION,

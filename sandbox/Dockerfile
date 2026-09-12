@@ -34,11 +34,13 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY packages/protocol/package.json ./packages/protocol/
 COPY packages/agent-cli/package.json ./packages/agent-cli/
 COPY packages/folder-read/package.json ./packages/folder-read/
+COPY packages/outbound-guard/package.json ./packages/outbound-guard/
 COPY packages/host-daemon/package.json ./packages/host-daemon/
 RUN pnpm install --frozen-lockfile \
     --filter @rainver/protocol \
     --filter @rainver/agent-cli \
     --filter @rainver/folder-read \
+    --filter @rainver/outbound-guard \
     --filter @rainver/host-daemon
 
 COPY packages/protocol/tsconfig.json packages/protocol/tsconfig.build.json ./packages/protocol/
@@ -50,6 +52,11 @@ RUN pnpm --filter @rainver/agent-cli build
 COPY packages/folder-read/tsconfig.json packages/folder-read/tsconfig.build.json ./packages/folder-read/
 COPY packages/folder-read/src ./packages/folder-read/src
 RUN pnpm --filter @rainver/folder-read build
+# The one outbound boundary: the block list and the pinned-address fetch the
+# control plane's Source fetches go through.
+COPY packages/outbound-guard/tsconfig.json packages/outbound-guard/tsconfig.build.json ./packages/outbound-guard/
+COPY packages/outbound-guard/src ./packages/outbound-guard/src
+RUN pnpm --filter @rainver/outbound-guard build
 COPY packages/host-daemon/tsconfig.json packages/host-daemon/tsconfig.build.json ./packages/host-daemon/
 COPY packages/host-daemon/src ./packages/host-daemon/src
 RUN pnpm --filter @rainver/host-daemon build
@@ -87,6 +94,8 @@ COPY packages/agent-cli/package.json ./packages/agent-cli/package.json
 COPY --from=deps /app/packages/agent-cli/dist ./packages/agent-cli/dist
 COPY packages/folder-read/package.json ./packages/folder-read/package.json
 COPY --from=deps /app/packages/folder-read/dist ./packages/folder-read/dist
+COPY packages/outbound-guard/package.json ./packages/outbound-guard/package.json
+COPY --from=deps /app/packages/outbound-guard/dist ./packages/outbound-guard/dist
 COPY packages/host-daemon/package.json ./packages/host-daemon/package.json
 COPY --from=deps /app/packages/host-daemon/dist ./packages/host-daemon/dist
 COPY --from=deps /app/packages/host-daemon/node_modules ./packages/host-daemon/node_modules

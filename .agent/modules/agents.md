@@ -272,15 +272,21 @@ Context Memory candidate authority, which is a different change, deferred in
 to a vendor context file, and the CLI's own auto-memory is scratch Rainver never
 reads, imports or promotes.
 
-**Who may change a persona is decided by who set the Run going**, read from
-the **root** Run's `trigger_origin` (`systemActions/effectiveTriggerOrigin.ts`,
-so a delegated child is judged by what started the chain) together with
-`runs.instructed_by_user_id`, and never from the prompt. The owner's own turn produces a proposal decided in that turn; any
-other member's turn produces a proposal only the owner can accept
-(`required_owner_user_id`, by identity and not by role). Owner-only proposal
-text is never stored in the shared Room message; the Room reader projects it
-from the proposal authority only for that owner, so the member who asked gets
-nothing. An unattended Run applies it directly and records it where the write happened.
+**Who may change a persona is decided by who is responsible for the Run**,
+read from the **root** Run's `trigger_origin` and `instructed_by_user_id`
+together (`systemActions/effectiveRunTrigger.ts`,
+one row, so a delegated child is judged by what started the chain), and never
+from the prompt. Person-facing run create always stamps `manual`; a client
+cannot send `automation` to skip the in-turn proposal. The owner's own turn
+produces a proposal decided in that turn; any other member's turn produces a
+proposal only the owner can accept (`required_owner_user_id`, by identity and
+not by role). Owner-only proposal text is never stored in the shared Room
+message; the Room reader projects it from the proposal authority only for that
+owner, so the member who asked gets nothing. An unattended Run applies it
+directly — and records it where the write happened — **only when the person
+responsible for that unattended work is the Agent's owner**; anyone else's
+Automation, tick or job leaves the same proposal their turn would have
+(ADR 0003 §5).
 A **revision** is `agent.persona_revised`, carrying what it replaced as well as
 what it now says, with a one-step `restore_memory` that retires the new version
 and brings the previous one back. A **first** persona replaced nothing, so it
@@ -341,7 +347,7 @@ AgentVersion:
 AgentRuntimeProfile:
   id, agent_id, space_id
   name
-  adapter_type                 — model_api, claude_code, codex_cli, ... (`capability` is planned/disabled)
+  adapter_type                 — model_api, claude_code, codex_cli, ... (`capability` is declared and disabled)
   model_provider_id            — optional ModelProvider binding
   model_name                   — optional model id for the selected provider
   runtime_config_json          — resolved runtime config, including CLI tool version and an
@@ -459,11 +465,20 @@ There are two paths, by who is making the change:
 **Version restore — `POST /api/v1/agents/{agent_id}/versions/{version_id}/restore`.**
    Appends a brand-new `AgentVersion` whose config is copied from the selected prior version,
    then advances `current_version_id`. The selected version is never mutated or reactivated;
-   history stays append-only.
+   history stays append-only. Restore, like every other Agent mutation (identity,
+   config, runtime-profile writes), passes the one owner gate `assertAgentOwner`
+   (`agents/agentAccess.ts`, 404 on refusal): the owner may; an unowned
+   system-managed Agent (Project Research, source annotation, source
+   post-processing) only the Space's owner or admin may; the Assistant is never
+   changed through these paths — its runtime profiles follow its Project's
+   write boundary.
 
 **Read endpoints for the config UI:**
    `GET /agents/{id}/current-version` (current `AgentVersionOut` config snapshot),
-   `GET /agents/{id}/versions` + `/versions/{version_id}` (history + detail),
+   `GET /agents/{id}/versions` + `/versions/{version_id}` (history + detail).
+   These use the same Agent content ACL as `GET /agents/{id}` (404 on deny).
+   A `summary` viewer keeps version metadata and loses `system_prompt`.
+   Also:
    `GET /agents/{id}/proposals?status=pending` (proposals linked to the agent — config updates
    plus run-emitted proposals), `GET /agents/{id}/runs` (run history),
    `GET /agent-templates/{id}/versions/{version_id}` (template version config for the library
@@ -507,11 +522,12 @@ remains; every card is backed by an API call.
   credential choices. Raw JSON appears only behind an explicit **Advanced** disclosure (Runtime
   tab, Versions view).
 
-Out of scope for this slice (not built): full scheduled reflection execution, full task/idea/wiki
-product pages, marketplace/sharing/import/export, template inheritance, runtime use of templates,
-direct memory writes, and any faked frontend data. Custom-template authoring UI is also deferred
-(the backend create/publish endpoints exist, but the slice surfaces system/space/user templates
-for use rather than authoring new ones).
+Not built on this surface: full scheduled reflection execution, marketplace /
+sharing / import / export, template inheritance, runtime use of templates,
+direct memory writes, or faked frontend data. Template create/publish
+endpoints exist; the Agents UI does not author custom templates.
+
+Unimplemented template authoring: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ## Built-in Templates (no built-in concrete agents)
 

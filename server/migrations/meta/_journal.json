@@ -29,6 +29,13 @@
       "when": 1788833810727,
       "tag": "0003_host_runtime_usage_and_changes",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789162984741,
+      "tag": "0004_system_daily_reporter_agent",
+      "breakpoints": true
     }
   ]
 }

@@ -8,6 +8,7 @@ import type { ServerConfig } from "../../../config.js";
 import { resolvePrompt } from "../../prompts/resolver.js";
 import { resolveProviderCommandStore } from "../../providers/commands/store.js";
 import { completeProviderMessages } from "../../providers/invocation/invocation.js";
+import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
 
 export const RESEARCH_QUERY_INTENT_PROMPT_KEY = "research_query.intent_plan";
@@ -15,6 +16,8 @@ export const RESEARCH_QUERY_INTENT_PROMPT_KEY = "research_query.intent_plan";
 export interface ResearchIntentExecution {
   modelProviderId?: string;
   modelName?: string;
+  /** Who the intent planning spends for. */
+  spend: CredentialSpendBasis;
 }
 
 export class ResearchIntentPlanner {
@@ -23,10 +26,10 @@ export class ResearchIntentPlanner {
   async plan(
     identity: SpaceUserIdentity,
     context: ResearchContext,
-    execution: ResearchIntentExecution = {},
+    execution?: ResearchIntentExecution,
   ): Promise<ResearchSemanticQuery> {
     const validatedContext = protocol.ResearchContextSchema.parse(context);
-    if (!execution.modelProviderId) return heuristicResearchIntent(validatedContext);
+    if (!execution?.modelProviderId) return heuristicResearchIntent(validatedContext);
 
     const resolved = await resolvePrompt(this.db, {
       spaceId: identity.spaceId,
@@ -51,6 +54,7 @@ export class ResearchIntentPlanner {
         task: "research_query_intent_plan",
       },
       egressPolicy: { externalEgressEnabled: true },
+      spend: execution.spend,
     });
     if (!response.structured_output) throw new HttpError(502, "Research query intent planner returned no structured output");
     return protocol.ResearchSemanticQuerySchema.parse({

@@ -1,4 +1,5 @@
 import type { ProviderFailureClass } from "../invocation/resilience.js";
+import type { CredentialSpendAuthorization, CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import type { UsageAttribution, UsageObservation } from "../../usage/index.js";
 
 export type RotationStrategy = "fill_first" | "round_robin" | "least_used" | "random";
@@ -156,6 +157,15 @@ export interface ProviderCommandStore {
     providerId: string,
     grantSpaceId: string,
   ): Promise<void>;
+  /**
+   * Decides a spend before any key is resolved. Throws
+   * `CredentialSpendDeniedError` when the basis does not authorize it.
+   */
+  authorizeCredentialSpend(
+    spaceId: string,
+    providerId: string | null,
+    basis: CredentialSpendBasis,
+  ): Promise<CredentialSpendAuthorization>;
   getInvocationTarget(
     spaceId: string,
     providerId?: string | null,

@@ -190,9 +190,19 @@ class FakeRepo implements RunExecutionRepositoryPort {
   executionLocked = false;
   authorizationRuns: Array<Pick<RunRecord, "project_id" | "project_folder_id" | "agent_id">> = [];
 
+  /**
+   * Other Runs this one refers to, by id. A delegated Run's credential spend is
+   * decided on the top of its parent chain, which the delegation tests name
+   * `run-root` and model as a person's own Run.
+   */
+  runsById = new Map<string, RunRecord>([
+    ["run-root", run({ id: "run-root", root_run_id: null, parent_run_id: null })],
+    ["run-parent", run({ id: "run-parent", root_run_id: "run-root", parent_run_id: "run-root" })],
+  ]);
+
   async getRun(spaceId: string, runId: string): Promise<RunRecord | null> {
     this.calls.push(`get:${spaceId}:${runId}`);
-    return this.run;
+    return this.run?.id === runId ? this.run : this.runsById.get(runId) ?? this.run;
   }
 
   async resolveRunActorId(
@@ -813,6 +823,8 @@ describe("RunOrchestrationService", () => {
       "get:space-1:run-1",
       "lock:run-1:worker-1:job-1",
       "running:run-1",
+      // The credential gate decides a delegated Run on its root.
+      "get:space-1:run-root",
       "actor:user-1",
       "step:adapter_started:running",
       "event:adapter_invoked:running",

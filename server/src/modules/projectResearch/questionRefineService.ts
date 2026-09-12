@@ -7,6 +7,7 @@ import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 import { resolvePrompt } from "../prompts/resolver.js";
 import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import { completeProviderMessages } from "../providers/invocation/invocation.js";
+import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import { ProjectResearchExecutionProfileService, type ResearchExecutionSelection } from "./executionProfileService.js";
 import {
   RESEARCH_QUESTION_REFINEMENT_OUTPUT_CONTRACT,
@@ -67,6 +68,7 @@ type InvokeRefinement = (input: {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   task?: string;
   outputFormat?: StructuredOutputContract;
+  spend: CredentialSpendBasis;
 }) => Promise<Record<string, unknown>>;
 
 let invokeRefinementOverride: InvokeRefinement | null = null;
@@ -99,6 +101,7 @@ export class ProjectResearchQuestionRefineService {
           project_id: input.projectId,
           task: input.task ?? "project_research_question_refine",
         },
+        spend: input.spend,
       });
       if (!response.structured_output) throw new HttpError(502, "Question refinement provider returned no structured output");
       return response.structured_output;
@@ -195,6 +198,8 @@ export class ProjectResearchQuestionRefineService {
     identity: SpaceUserIdentity,
     projectId: string,
     body: Record<string, unknown>,
+    /** The person refining the Question, or the pipeline job their request queued. */
+    spend: CredentialSpendBasis,
   ): Promise<QuestionRefinementResult & { assessment_session: QuestionAssessmentConversation }> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const threadId = requiredString(body.thread_id, "thread_id");
@@ -245,6 +250,7 @@ export class ProjectResearchQuestionRefineService {
         throw new HttpError(500, "Project Research question refinement prompt is not resolvable");
       }
       const output = await this.invoke({
+        spend,
         spaceId: identity.spaceId,
         userId: identity.userId,
         projectId,
@@ -298,6 +304,7 @@ export class ProjectResearchQuestionRefineService {
             throw new Error("Question sub-question repair prompt is not resolvable");
           }
           const repaired = await this.invoke({
+            spend,
             spaceId: identity.spaceId,
             userId: identity.userId,
             projectId,

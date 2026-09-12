@@ -6,9 +6,9 @@ Load this file for any task that changes structure, models, APIs, or agent behav
 
 ## Data Boundaries
 
-**B1** — `core/` must remain open-source-ready. It must not contain private instance data, real user memory, secrets, or deployment-specific config.
+**B1** — The source repository must remain open-source-ready. It must not contain private instance data, real user memory, secrets, or deployment-specific config.
 
-**B2** — `instance/` contains all deployment-specific state: database, logs, config, secrets, storage, cache. It is never committed to source control.
+**B2** — Deployment-specific state lives under `RAINVER_ROOT` (host parent of `dev/`, `test/`, `prod/`) and the running instance root `RAINVER_HOME`: database, logs, config, secrets, storage, cache. It is never committed to source control.
 
 **B3** — One deployment instance can host many spaces. Do not create one instance per user or one instance per space.
 
@@ -48,7 +48,7 @@ and remain subject to the Project ACL on every read.
 
 **B9** — Memory is scoped long-term context, not raw business data. Raw input must enter `activity_records` first.
 
-**B10** — The proposal applier is the only writer of active memory. An Agent's memory write applies directly only when it is a new version, carries full provenance, comes from a `manual`-origin session, and changes no reach — no wider visibility, no higher sensitivity, not about another person, not replacing human-authored content. Any write that changes reach, and any write from an unattended origin, is a proposal a person approves, **with one named exception: an Agent's persona entry**, below. Agent Memory (`scope_type = 'agent'`) is the Agent's own: `agent_id` owns it, a note carries the Room it was learned in — null only when the Run speaks in no Room and the person who set it going is the Agent's owner, which is the direct-chat case — and is delivered only to an audience that Room's active human members already contained, and widening a note means promotion to Project Memory as a proposal. A persona entry has no origin Room and is delivered everywhere by design, so it inverts the origin test for the reason ADR 0003 §5 and ADR 0017 §1–§2 give — a `manual` turn proposes it and only the Agent's owner may accept, an unattended origin applies it, recorded for the owner with what it replaced and reversed in one step — and it is the only place that inversion holds; ADR 0003 §4 records the residual Room crossing that follows as accepted and bounds it there. There is no cap on how much may be remembered — the volume mechanism is a circuit breaker that pauses one person's writing in a session and raises it as a fault, never a queue of writes to approve. Memory is never a black box: every entry shows its provenance and version chain, and a person archives or restores their own directly, without a proposal.
+**B10** — The proposal applier is the only writer of active memory. An Agent's memory write applies directly only when it is a new version, carries full provenance, comes from a `manual`-origin session, and changes no reach — no wider visibility, no higher sensitivity, not about another person, not replacing human-authored content. Any write that changes reach, and any write from an unattended origin, is a proposal a person approves, **with one named exception: an Agent's persona entry**, below. Agent Memory (`scope_type = 'agent'`) is the Agent's own: `agent_id` owns it, a note carries the Room it was learned in — null only when the Run speaks in no Room and the person who set it going is the Agent's owner, which is the direct-chat case — and is delivered only to an audience that Room's active human members already contained, and widening a note means promotion to Project Memory as a proposal. A persona entry has no origin Room and is delivered everywhere by design, so it inverts the origin test for the reason ADR 0003 §5 and ADR 0017 §1–§2 give — a `manual` turn proposes it and only the Agent's owner may accept, and unattended work the Agent's **own owner** set going applies it, recorded for the owner with what it replaced and reversed in one step, while work anyone else scheduled is a proposal for the owner like their turn would be — and it is the only place that inversion holds; ADR 0003 §4 records the residual Room crossing that follows as accepted and bounds it there. There is no cap on how much may be remembered — the volume mechanism is a circuit breaker that pauses one person's writing in a session and raises it as a fault, never a queue of writes to approve. Memory is never a black box: every entry shows its provenance and version chain, and a person archives or restores their own directly, without a proposal.
 
 **B11** — Successful reads of registered content are written to
 `content_access_logs` only when the viewer differs from the resource owner.
@@ -325,11 +325,12 @@ is the instance's built-in host, the daemon inside the `sandbox-runner`
 container: every Run is wrapped in a fresh rootless bubblewrap namespace built
 from an empty root and an explicit bind allowlist. The vendor CLI's own
 sandbox is *intended* to be relaxed inside it so there is exactly one boundary,
-but that half is **not implemented**: the daemon exports
-`RAINVER_STRICT_SANDBOX=1` and nothing consumes it (deferred register). A
+and the daemon does that for Codex by writing `sandbox_mode = "workspace-write"`
+into the copy's `config.toml` before spawn. `RAINVER_STRICT_SANDBOX=1` is still
+exported for anything downstream that reads it. A
 nested vendor sandbox does not fail — that was assumed, never tested, and is
 false; it stacks a read-only policy over the Run's own workspace instead
-(measured 2026-09-08, ADR 0016 §2). **Trusted** is a paired
+(measured 2026-09-08, ADR 0016 §2) unless that config.toml switch is present. **Trusted** is a paired
 personal machine: native process spawn, no namespace, the machine's own login
 state (from B68, reached through the Agent's own runtime profile rather than
 the machine's `HOME`) unless the Run carries an explicit ModelProvider binding
@@ -496,7 +497,7 @@ account instead of the subscription this profile was given.
 
 ## Module / Plugin Boundaries
 
-**B33** — Server modules should prefer shared gateway/db/protocol helpers over direct cross-module coupling. Cross-domain imports are allowed only when they express an explicit product boundary recorded in the relevant architecture doc or ADR, and they must not bypass the owning module's public route/service boundary.
+**B33** — Server modules should prefer shared gateway/db/protocol helpers over direct cross-module coupling. Cross-domain imports are allowed only when they express an explicit product boundary recorded in the relevant architecture doc or ADR, and they must not bypass the owning module's public route/service boundary. A read predicate that more than one domain needs belongs in `modules/access/`, not in the domain the data is named after: `runReadSql` / `proposalReadSql` / `artifactReadSql` / `runInheritedReadSql` are read by tasks, projectWork, agentGroups, sources, plans and frontendSupport, and each of those importing them from `runs` would be exactly the coupling this rule exists to prevent. The canonical `runs`, `proposals`, `artifacts` and `projects` repositories still compose the same pair by hand beside their own predicates rather than calling these — recorded at the helpers' own definition, and the reason a term added to one of them does not yet reach every reader.
 
 **B34** — Every server module's HTTP routes must live in `server/src/modules/<module>/routes.ts` and be mounted through `server/src/gateway/routeRegistry.ts`. Official plugin package routes live under `plugins/official/<plugin_id>/server/src/`, are compiled into `server/dist/official-plugins/<plugin_id>/`, and are mounted only through `PluginHost` after core `SERVER_MODULES` and before the catch-all. Routes must not be registered directly in `server.ts`, `index.ts`, or ad hoc shared API files.
 
@@ -663,4 +664,4 @@ code.
 
 **B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin (`manual` executes; anything unattended is `require_approval`), with one exception — an Agent writing its own persona on an `agent`-scope entry, a first one as much as a revision, which is governed instead by ADR 0003 §5 and named in B10 — and by bounds set before the work runs (fan-out ≤ 5 per turn as an execution ceiling, with the narrower conversational pacing of ADR 0019; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
 
-**B22** — The project is open source. Do not put private data, real user memory, or non-shareable credentials into `core/`; see B1/B2.
+**B22** — The project is open source. Do not put private data, real user memory, or non-shareable credentials into the source repository; see B1/B2.

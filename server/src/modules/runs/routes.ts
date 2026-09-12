@@ -9,7 +9,9 @@ import { PgActivityRepository } from "../activity/repository.js";
 import { PgArtifactRepository } from "../artifacts/repository.js";
 import { PgProposalRepository } from "../proposals/repository.js";
 import { dbPool, page, sendRouteError } from "../routeUtils/common.js";
-import { PgRunRepository, type RunRecord } from "./repository.js";
+import { PgRunRepository, type RunRecord, type VisibleRunRecord } from "./repository.js";
+import { bodyWithheld } from "../access/contentAccessTypes.js";
+import { authorizeRunCommand, authorizeRunResume } from "./runCommandAuthority.js";
 import type { RunOrchestrationService } from "./orchestrationService.js";
 import { enqueueAgentRunJob } from "./agentRunHandler.js";
 import { RunMaterializationService } from "./materializationService.js";
@@ -25,7 +27,6 @@ import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope, logicalRunInput } from "./runInputEnvelope.js";
 import {
   NonTerminalRunError,
-  RunNotFoundError,
 } from "./finalizationService.js";
 import {
   artifactSummaryToOut,
@@ -35,7 +36,9 @@ import {
   runFinalizationToOut,
   runLineageToOut,
   runStatusToOut,
+  runAttemptToOut,
   runStepToOut,
+  runSupervisorDecisionToOut,
   runToOut,
   verificationResultToOut,
 } from "./runReadModel.js";
@@ -175,7 +178,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return { run, transport: new CliAgentToolTransport(context.config) };
   }
 
-  app.get("/internal/runs/:runId/tools", async (request, reply) => {
+  // Under `/api/v1`, not `/internal`, because a Run's children call it from
+  // wherever they execute — including a paired machine, which reaches the
+  // instance through its public URL. Production nginx forwards `/api/` and the
+  // host WebSocket and nothing else, so the `/internal` spelling worked only in
+  // dev, where Vite proxied all of `/internal`. The gate is the Run's own
+  // bearer token, which is what `/internal` never was: that prefix carries the
+  // instance token, and no Run has it.
+  app.get("/api/v1/runs/:runId/tools", async (request, reply) => {
     const scope = await runToolRequest(request, reply);
     if (!scope) return reply;
     const tools = await scope.transport.list(scope.run);
@@ -185,7 +195,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     });
   });
 
-  app.get("/internal/runs/:runId/tools/:actionId", async (request, reply) => {
+  app.get("/api/v1/runs/:runId/tools/:actionId", async (request, reply) => {
     const scope = await runToolRequest(request, reply);
     if (!scope) return reply;
     const actionId = params(request).actionId ?? "";
@@ -202,7 +212,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     });
   });
 
-  app.post("/internal/runs/:runId/tools/:actionId", async (request, reply) => {
+  app.post("/api/v1/runs/:runId/tools/:actionId", async (request, reply) => {
     const scope = await runToolRequest(request, reply);
     if (!scope) return reply;
     const actionId = params(request).actionId ?? "";
@@ -248,6 +258,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     // Execution parameters (prompt, model, adapter config, sandbox, timeouts)
     // are never accepted from the request body.
     const services = commandServices(context);
+    try {
+      await authorizeRunCommand(services.repository, identity, runId, "execute");
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
     await services.orchestration.executeRun({
       run_id: runId,
       space_id: identity.spaceId,
@@ -294,9 +309,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const runId = params(request).runId ?? "";
     const body = jsonBody(request);
     const services = commandServices(context);
-    const before = await services.repository.getVisibleRun(identity.spaceId, identity.userId, runId);
-    if (!before) {
-      return reply.code(404).send({ detail: "Run not found in this space." });
+    let before: VisibleRunRecord;
+    try {
+      before = await authorizeRunCommand(services.repository, identity, runId, "stop");
+    } catch (error) {
+      return sendRouteError(reply, error);
     }
     const result = await services.orchestration.cancelRun({
       run_id: runId,
@@ -358,15 +375,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         { runId: run.id, limit: 200, offset: 0 },
       ),
     ]);
+    const summaryOnly = bodyWithheld(run.effective_access_level);
     const output = recordValue(run.output_json);
     return reply.send({
       schema_version: "run_io.v1",
       run_id: run.id,
-      input: logicalRunInput(assembleRunInputEnvelope(run)),
-      output: output.schema_version === "run_output.v1" ? output : null,
-      events: events
-        .filter((event) => LOGICAL_RUNTIME_EVENT_TYPES.has(event.event_type))
-        .map(runEventToOut),
+      input: summaryOnly ? null : logicalRunInput(assembleRunInputEnvelope(run)),
+      output: summaryOnly || output.schema_version !== "run_output.v1" ? null : output,
+      events: summaryOnly
+        ? []
+        : events
+          .filter((event) => LOGICAL_RUNTIME_EVENT_TYPES.has(event.event_type))
+          .map((event) => runEventToOut(event, run.effective_access_level)),
       artifact_refs: artifacts.items.map((artifact) => ({
         id: artifact.id,
         artifact_type: artifact.artifact_type,
@@ -435,13 +455,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/runs/:runId/trace", async (request, reply) => {
     const result = await visibleRun(context, request, reply);
     if (!result) return reply;
-    const { repository, run } = result;
+    const { repository, run, identity } = result;
     const [steps, events, artifacts, proposals, children, invocationSnapshots, finalization] = await Promise.all([
       repository.listRunSteps(run.space_id, run.id),
       repository.listRunEvents(run.space_id, run.id),
       repository.listArtifactSummaries(run.space_id, run.id),
       repository.listProposalSummaries(run.space_id, run.id),
-      repository.listChildRuns(run.space_id, run.id),
+      repository.listChildRuns(run.space_id, run.id, identity.userId),
       new InvocationSnapshotService(dbPool(context.config))
         .listSafeForInvocation(run.space_id, run.id),
       repository.getLatestRunFinalization(run.space_id, run.id),
@@ -452,11 +472,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       agent_version: null,
       model_provider: null,
       invocation_snapshots: invocationSnapshots,
-      steps: steps.map(runStepToOut),
-      events: events.map(runEventToOut),
+      steps: steps.map((step) => runStepToOut(step, run.effective_access_level)),
+      events: events.map((event) => runEventToOut(event, run.effective_access_level)),
       artifacts: artifacts.map(artifactSummaryToOut),
       proposals: proposals.map((proposal) => proposalSummaryToOut(proposal)),
-      finalization: finalization ? runFinalizationToOut(finalization) : null,
+      finalization: finalization ? runFinalizationToOut(finalization, run.effective_access_level) : null,
       parent: null,
       children: children.map(runLineageToOut),
     });
@@ -472,6 +492,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/runs/:runId/turn", async (request, reply) => {
     const result = await visibleRun(context, request, reply);
     if (!result) return reply;
+    if (bodyWithheld(result.run.effective_access_level)) {
+      return reply.code(404).send({ detail: "Run not found" });
+    }
     const turn = await loadRunTurn(dbPool(context.config), {
       spaceId: result.run.space_id,
       runId: result.run.id,
@@ -487,9 +510,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       result.repository.listRunAttempts(result.run.space_id, result.run.id),
       result.repository.listRunSupervisorDecisions(result.run.space_id, result.run.id),
     ]);
+    const level = result.run.effective_access_level;
     return reply.send({
-      attempts,
-      supervisor_decisions: supervisorDecisions,
+      attempts: attempts.map((attempt) => runAttemptToOut(attempt, level)),
+      supervisor_decisions: supervisorDecisions.map((decision) => runSupervisorDecisionToOut(decision, level)),
     });
   });
 
@@ -498,13 +522,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     const runId = params(request).runId ?? "";
     const repository = PgRunRepository.fromConfig(context.config);
+    let run: VisibleRunRecord;
     try {
-      const run = await repository.getVisibleRun(
-        identity.spaceId,
-        identity.userId,
-        runId,
-      );
-      if (!run) throw new RunNotFoundError(runId);
+      run = await authorizeRunCommand(repository, identity, runId, "finalize");
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+    try {
       if (!isHardTerminalRunStatus(run.status)) {
         throw new NonTerminalRunError(
           `Run '${runId}' is not terminal (status='${run.status}').`,
@@ -525,11 +549,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (!finalization) {
         throw new Error("Run finalization completed without a persisted record.");
       }
-      return reply.send(runFinalizationToOut(finalization));
+      return reply.send(runFinalizationToOut(finalization, run.effective_access_level));
     } catch (error) {
-      if (error instanceof RunNotFoundError) {
-        return reply.code(404).send({ detail: error.message });
-      }
       if (error instanceof NonTerminalRunError) {
         return reply.code(422).send({ detail: error.message });
       }
@@ -549,7 +570,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         detail: `No finalization found for run '${result.run.id}'. POST /runs/${result.run.id}/finalize first.`,
       });
     }
-    return reply.send(runFinalizationToOut(finalization));
+    return reply.send(runFinalizationToOut(finalization, result.run.effective_access_level));
   });
 
   app.get("/api/v1/runs/:runId/finalizations", async (request, reply) => {
@@ -559,7 +580,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       result.run.space_id,
       result.run.id,
     );
-    return reply.send(finalizations.map(runFinalizationToOut));
+    return reply.send(finalizations.map((finalization) => runFinalizationToOut(finalization, result.run.effective_access_level)));
   });
 
   app.get("/api/v1/runs/:runId/evaluation", async (request, reply) => {
@@ -574,7 +595,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         detail: `No evaluation found for run '${result.run.id}'. POST /runs/${result.run.id}/finalize first.`,
       });
     }
-    return reply.send(runEvaluationToOut(evaluation));
+    return reply.send(runEvaluationToOut(evaluation, result.run.effective_access_level));
   });
 
   app.get("/api/v1/runs/:runId/evaluations", async (request, reply) => {
@@ -584,7 +605,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       result.run.space_id,
       result.run.id,
     );
-    return reply.send(evaluations.map(runEvaluationToOut));
+    return reply.send(evaluations.map((evaluation) => runEvaluationToOut(evaluation, result.run.effective_access_level)));
   });
 
   app.get("/api/v1/runs/:runId/verification", async (request, reply) => {
@@ -594,7 +615,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       result.run.space_id,
       result.run.id,
     );
-    return reply.send(verifications.map(verificationResultToOut));
+    return reply.send(verifications.map((verification) => verificationResultToOut(verification, result.run.effective_access_level)));
   });
 
   app.get("/api/v1/runs/:runId/verifications", async (request, reply) => {
@@ -604,7 +625,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       result.run.space_id,
       result.run.id,
     );
-    return reply.send(verifications.map(verificationResultToOut));
+    return reply.send(verifications.map((verification) => verificationResultToOut(verification, result.run.effective_access_level)));
   });
 
   app.get("/api/v1/runs/:runId", async (request, reply) => {
@@ -626,24 +647,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     const repository = PgRunRepository.fromConfig(context.config);
     const runId = params(request).runId ?? "";
-    const run = await repository.getVisibleRun(identity.spaceId, identity.userId, runId);
-    if (!run) {
-      return reply.code(404).send({ detail: "Run not found in this space" });
+    let authorized: Awaited<ReturnType<typeof authorizeRunResume>>;
+    try {
+      authorized = await authorizeRunResume(dbPool(context.config), repository, identity, runId);
+    } catch (error) {
+      return sendRouteError(reply, error);
     }
-    if (run.status !== "waiting_for_review") {
-      return reply
-        .code(409)
-        .send({ detail: `Run is not waiting for review (current status: ${run.status})` });
-    }
+    const { run } = authorized;
     const grantedAt = new Date().toISOString();
-    const runError = recordValue(run.error_json);
-    if (typeof runError.authorization_request_id === "string") {
-      return reply.code(409).send({
-        detail: "Authorization-request Runs reconcile automatically after the request is decided.",
-        authorization_request_id: runError.authorization_request_id,
-      });
-    }
-    const supervisorReview = runError.supervisor_review === true;
+    const supervisorReview = authorized.kind === "supervisor_review";
     const updated = supervisorReview
       ? await repository.resumeRunAfterSupervisorReview({
           run_id: runId,
@@ -680,9 +692,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     const repository = PgRunRepository.fromConfig(context.config);
     const runId = params(request).runId ?? "";
-    const run = await repository.getVisibleRun(identity.spaceId, identity.userId, runId);
-    if (!run) {
-      return reply.code(404).send({ detail: "Run not found in this space" });
+    let run: VisibleRunRecord;
+    try {
+      run = await authorizeRunCommand(repository, identity, runId, "abandon");
+    } catch (error) {
+      return sendRouteError(reply, error);
     }
     if (run.status !== "waiting_for_review") {
       return reply
@@ -766,7 +780,7 @@ async function visibleRun(
   context: ModuleContext,
   request: FastifyRequest,
   reply: FastifyReply,
-): Promise<{ repository: PgRunRepository; run: RunRecord; identity: RunsIdentity } | null> {
+): Promise<{ repository: PgRunRepository; run: VisibleRunRecord; identity: RunsIdentity } | null> {
   const identity = await resolveIdentity(context, request, reply);
   if (!identity) return null;
   const repository = PgRunRepository.fromConfig(context.config);
@@ -781,7 +795,7 @@ async function visibleRun(
 
 async function runToOutWithProvider(
   repository: PgRunRepository,
-  run: RunRecord,
+  run: VisibleRunRecord,
 ): Promise<Record<string, unknown>> {
   const [provider, remote] = await Promise.all([
     repository.getModelProviderSummary(run.space_id, run.model_provider_id),

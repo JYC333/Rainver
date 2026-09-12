@@ -48,7 +48,7 @@ export const RAIL_ITEMS: RailItem[] = [
   // ADR 0016 D11: Command Center is the default landing page for a Space
   // (see App.tsx's `spaces/:spaceId` index redirect) — placed first among
   // the space-scoped rail items so it reads as the space's home surface.
-  { id: 'command-center', label: 'Command Center', to: '/command-center', icon: Server, scope: 'space', mobile: true },
+  { id: 'command-center', label: 'Command Center', to: '/command-center', icon: Server, scope: 'space' },
   { id: 'inbox',      label: 'Inbox',      to: '/activity',    icon: Inbox,       scope: 'space', mobile: true },
   { id: 'library',    label: 'Library',    to: '/library',     icon: Library,     scope: 'space', mobile: true },
   { id: 'source',     label: 'Sources',    to: '/sources',      icon: Rss,         scope: 'space' },
@@ -64,6 +64,7 @@ export const RAIL_ITEMS: RailItem[] = [
   { id: 'settings',   label: 'Settings',   to: '/settings',    icon: Settings,    scope: 'home',  footer: true },
 ]
 
+/** Narrow-viewport primary destinations. Keep this to five short labels. */
 export const MOBILE_TAB_ITEMS = RAIL_ITEMS.filter(i => i.mobile)
 
 /**

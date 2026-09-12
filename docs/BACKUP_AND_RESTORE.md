@@ -157,11 +157,11 @@ log a strong warning. See `server/src/modules/backups/guard.ts`.
 ### API
 
 ```bash
-# Trigger a manual full-system backup
-curl -X POST http://localhost:3000/api/v1/system/backups/manual -H "X-API-Key: <key>"
+# Trigger a manual full-system backup (instance administrator session)
+curl -X POST http://localhost:3000/api/v1/system/backups/manual --cookie 'session_id=<admin-session>'
 
 # List backups
-curl http://localhost:3000/api/v1/system/backups -H "X-API-Key: <key>"
+curl http://localhost:3000/api/v1/system/backups --cookie 'session_id=<admin-session>'
 ```
 
 ---

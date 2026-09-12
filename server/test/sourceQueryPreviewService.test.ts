@@ -104,6 +104,43 @@ describe('SourceQueryPreviewService', () => {
     expect(result.approximate_hit_count).toBe(42)
   })
 
+  /**
+   * A provider key belongs in `credentialHeaders`, never merged into `headers`.
+   *
+   * `headers` is sent on every hop; `credentialHeaders` is what the outbound
+   * guard drops when a redirect leaves the first origin, and what makes it
+   * refuse an https→http downgrade. Merged in, a key whose header is not one of
+   * the three names the guard recognises by default — Semantic Scholar's
+   * `x-api-key`, Brave's `X-Subscription-Token` — travelled to whatever origin
+   * the upstream named.
+   *
+   * Asserted with a credential actually resolved, because with none the two
+   * spellings produce identical arguments and the test passes against the bug.
+   */
+  it('hands a resolved provider credential to the guard as a credential, not as an ordinary header', async () => {
+    const seen: Array<{ headers?: Record<string, string>; credentialHeaders?: Record<string, string> }> = []
+    const service = new SourceQueryPreviewService(
+      fakeDb([]),
+      async (_url, options) => {
+        seen.push({ headers: options.headers, credentialHeaders: options.credentialHeaders })
+        return okResponse()
+      },
+      undefined,
+      async () => ({ header_name: 'x-api-key', header_value: 'REAL-PROVIDER-KEY' }),
+    )
+
+    await service.preview(identity, {
+      provider_key: 'arxiv',
+      query: { mode: 'search', search_query: 'agent memory' },
+      credential_id: 'cred-1',
+    })
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.credentialHeaders).toEqual({ 'x-api-key': 'REAL-PROVIDER-KEY' })
+    // And nowhere else: `headers` goes to every redirect target.
+    expect(JSON.stringify(seen[0]!.headers ?? {})).not.toContain('REAL-PROVIDER-KEY')
+  })
+
   it('does not retry a non-transient client error', async () => {
     let calls = 0
     const service = new SourceQueryPreviewService(fakeDb([]), async () => {

@@ -1,8 +1,8 @@
 import { createServer, type Server } from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { isBlockedAddress } from "@rainver/outbound-guard";
 import {
   egressProxyEnv,
-  isBlockedAddress,
   policyAllows,
   proxyBypassHosts,
   startEgressProxy,
@@ -17,6 +17,8 @@ import {
  * — and the policy a cooperating runtime is held to.
  */
 describe("what a Run may reach", () => {
+  // The list itself is `@rainver/outbound-guard`'s, shared with the control
+  // plane; what these pin is that the daemon judges by that list.
   it("refuses a private address however it is spelled", () => {
     // The spellings a caller uses when it does not want to be recognised.
     // A block list that only matches the canonical form is not a block list —

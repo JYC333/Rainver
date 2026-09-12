@@ -209,9 +209,9 @@ Audited 2026-08-27, found untouched by the ADR 0012 audit:
 
 It is not absorbed: `memory_entries` is an independent root, not a
 `space_objects` row, so its edges cannot live in `object_relations` today.
-Deciding between "shrink to what is written" and "model as a declared link
-type set once memory joins the ontology" is deferred; recorded here so the
-next audit does not rediscover it.
+The disposition (shrink to what is written, or declare a link-type set if
+Memory joins the ontology) is not decided.
+See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ## Non-goals
 

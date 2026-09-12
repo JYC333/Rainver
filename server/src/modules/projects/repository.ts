@@ -19,6 +19,7 @@ import { assertProjectOwnerLevel, assertProjectWriter, canWriteProject, isProjec
 import { assertProjectReadable } from "./access.js";
 import { projectRetrievalRegistry } from "./retrievalAdapter.js";
 import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { assertCanGrantRole } from "../access/roles.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
 import { memorySensitivityReadSql } from "../memory/memorySensitivitySql.js";
 import { PgRunRepository } from "../runs/repository.js";
@@ -84,7 +85,8 @@ const PUBLIC_SUMMARY_REDACTION_VERSION = "project_public_summary.v1";
 const PUBLIC_SUMMARY_MAX_CHARS = 4000;
 
 const MEMBER_COLUMNS = `id, space_id, project_id, user_id, role, status, created_at, updated_at`;
-const PROJECT_MEMBER_ROLES = new Set(["owner", "member", "viewer"]);
+/** Project member roles, lowest first. */
+const PROJECT_ROLE_LADDER: readonly string[] = ["viewer", "member", "owner"];
 const PUBLIC_SUMMARY_REVIEW_STATUSES = new Set(["draft", "approved", "archived"]);
 
 export class PgProjectRepository {
@@ -543,7 +545,10 @@ export class PgProjectRepository {
     await this.requireProjectAdmin(identity, project);
     const userId = requiredString(body.user_id, "user_id");
     const role = optionalString(body.role) ?? "member";
-    if (!PROJECT_MEMBER_ROLES.has(role)) throw new HttpError(422, "invalid project member role");
+    assertCanGrantRole(PROJECT_ROLE_LADDER, await this.grantableProjectRole(identity, project), role);
+    // Changing someone's role gives up their current one, so it takes the same
+    // standing: a Space admin does not demote the Project's owner.
+    await this.assertMayReplaceRole(identity, project, userId);
     // Only an active member of the space can be added to one of its projects.
     const member = await this.db.query<{ one: number }>(
       `SELECT 1 AS one FROM space_memberships
@@ -566,6 +571,9 @@ export class PgProjectRepository {
   async removeMember(identity: SpaceUserIdentity, projectId: string, userId: string): Promise<void> {
     const project = await this.requireProjectRow(identity.spaceId, projectId);
     await this.requireProjectAdmin(identity, project);
+    // Removing someone gives up the role they hold, so it takes the standing to
+    // grant it — otherwise remove-and-re-add would demote anyone.
+    await this.assertMayReplaceRole(identity, project, userId);
     await this.db.query(
       `DELETE FROM project_members WHERE space_id = $1 AND project_id = $2 AND user_id = $3`,
       [identity.spaceId, projectId, userId],
@@ -583,6 +591,34 @@ export class PgProjectRepository {
     const spaceRole = role.rows[0]?.role;
     if (spaceRole === "owner" || spaceRole === "admin") return;
     throw new HttpError(403, "Requires project owner or space owner/admin role");
+  }
+
+  /**
+   * The highest Project role this person may hand out. The Project's owner and
+   * the Space's owner hand out any; a Space admin runs the roster but does not
+   * make owners.
+   */
+  private async grantableProjectRole(identity: SpaceUserIdentity, project: ProjectRow): Promise<string | null> {
+    if (project.owner_user_id === identity.userId) return "owner";
+    const role = await this.db.query<{ role: string }>(
+      `SELECT role FROM space_memberships
+        WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [identity.spaceId, identity.userId],
+    );
+    const spaceRole = role.rows[0]?.role;
+    if (spaceRole === "owner") return "owner";
+    if (spaceRole === "admin") return "member";
+    return null;
+  }
+
+  /** Taking away the role a member holds now takes the standing to grant it. */
+  private async assertMayReplaceRole(identity: SpaceUserIdentity, project: ProjectRow, userId: string): Promise<void> {
+    const current = await this.db.query<{ role: string }>(
+      `SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [project.id, userId],
+    );
+    if (!current.rows[0]) return;
+    assertCanGrantRole(PROJECT_ROLE_LADDER, await this.grantableProjectRole(identity, project), current.rows[0].role);
   }
 
   private async requireProjectRow(spaceId: string, projectId: string): Promise<ProjectRow> {

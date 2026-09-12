@@ -37,9 +37,15 @@ export class FinanceLedgerEngine {
   /**
    * Loads the committed (posted) directive stream from PostgreSQL as raw
    * ledger entries. Entries are sorted but not transformed, so pads remain
-   * pad directives; validation runs on a transformed copy.
+   * pad directives; validation runs on a transformed copy. A viewer omits
+   * other members' private accounts and any directive that names them.
    */
-  async loadFromDb(db: Queryable, spaceId: string, bookId: string): Promise<LedgerLoadResult> {
+  async loadFromDb(
+    db: Queryable,
+    spaceId: string,
+    bookId: string,
+    viewerUserId?: string,
+  ): Promise<LedgerLoadResult> {
     const [
       book,
       ledgerOptions,
@@ -65,9 +71,9 @@ export class FinanceLedgerEngine {
       this.directiveRepository.listPluginDirectives(db, spaceId, bookId),
       this.directiveRepository.listTagStackEvents(db, spaceId, bookId),
       this.directiveRepository.listMetaStackEvents(db, spaceId, bookId),
-      this.repository.listAccounts(db, spaceId, bookId),
+      this.repository.listAccounts(db, spaceId, bookId, viewerUserId),
       this.repository.listCommodities(db, spaceId, bookId),
-      this.repository.listTransactions(db, spaceId, bookId),
+      this.repository.listTransactions(db, spaceId, bookId, viewerUserId),
       this.directiveRepository.listBalanceAssertions(db, spaceId, bookId, "posted"),
       this.directiveRepository.listPads(db, spaceId, bookId, "posted"),
       this.directiveRepository.listPrices(db, spaceId, bookId, "posted"),
@@ -77,6 +83,9 @@ export class FinanceLedgerEngine {
       this.directiveRepository.listDocuments(db, spaceId, bookId, "posted"),
       this.directiveRepository.listCustoms(db, spaceId, bookId, "posted"),
     ]);
+
+    const visibleAccountNames = new Set(accounts.map((account) => account.name));
+    const accountVisible = (name: string) => !viewerUserId || visibleAccountNames.has(name);
 
     const options: Record<string, string> = {};
     if (book) {
@@ -136,6 +145,7 @@ export class FinanceLedgerEngine {
     }
 
     for (const balance of balances) {
+      if (!accountVisible(balance.account_name)) continue;
       entries.push({
         type: "balance",
         date: balance.date,
@@ -149,6 +159,7 @@ export class FinanceLedgerEngine {
       });
     }
     for (const pad of pads) {
+      if (!accountVisible(pad.account_name) || !accountVisible(pad.source_account_name)) continue;
       entries.push({
         type: "pad",
         date: pad.date,
@@ -169,6 +180,7 @@ export class FinanceLedgerEngine {
       });
     }
     for (const note of notes) {
+      if (!accountVisible(note.account_name)) continue;
       entries.push({
         type: "note",
         date: note.date,
@@ -201,6 +213,7 @@ export class FinanceLedgerEngine {
       });
     }
     for (const document of documents) {
+      if (!accountVisible(document.account_name)) continue;
       entries.push({
         type: "document",
         date: document.date,
@@ -253,8 +266,9 @@ export class FinanceLedgerEngine {
     db: Queryable,
     spaceId: string,
     bookId: string,
+    viewerUserId?: string,
   ): Promise<{ content: string; errors: LedgerError[] }> {
-    const loaded = await this.loadFromDb(db, spaceId, bookId);
+    const loaded = await this.loadFromDb(db, spaceId, bookId, viewerUserId);
     return { content: this.exporter.export(loaded.entries, loaded.options), errors: loaded.errors };
   }
 

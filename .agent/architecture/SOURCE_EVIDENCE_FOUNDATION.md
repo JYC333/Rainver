@@ -215,42 +215,7 @@ merged into one generic "evidence" table.
   belong on `ProvenanceLink`, not on either evidence stack. See the knowledge
   provenance path (`source_refs` → `ProvenanceLink(target_type="knowledge")`).
 
-### Promotion rule: source candidate → curated wiki evidence (SPEC — not yet implemented)
+### Promotion from source candidate to curated wiki evidence
 
-When a user (or an agent acting on a user's behalf) decides that a source
-`ExtractedEvidence` candidate should become durable, curated wiki evidence, it is
-**promoted** — it is not auto-converted.
-
-1. **Trigger.** Promotion is an explicit user action over an `ExtractedEvidence`
-   row whose `status="active"`. Being used in a run context
-   (`EvidenceLink(link_type="used_in_context")`) does **not** trigger or imply
-   promotion.
-2. **Review-gated.** Promotion goes through a knowledge proposal (e.g. a
-   `knowledge_source_promote` proposal type, or the existing knowledge source
-   creation path), never a direct write. The proposal payload carries the source
-   `extracted_evidence_id` plus the target `knowledge_item_id` (optional) and the
-   intended `relation_type` for the resulting `KnowledgeItemSource`.
-3. **Apply.** On acceptance, `ProposalApplyService` (knowledge branch):
-   - creates one `Source` row, mapping evidence fields → source fields
-     (`source_uri`→`uri`, `source_title`→`title`, `content_excerpt`→`summary`/`raw_text`,
-     evidence kind → an allowed `Source.source_type` such as `webpage`/`article`/
-     `manual_reference`);
-   - optionally creates a `KnowledgeItemSource` link to the target KnowledgeItem
-     when one was supplied;
-   - records origin provenance from the new `Source` back to the originating
-     candidate via `ProvenanceLink` (`source_type="extracted_evidence"`,
-     `target_type="source"`) — never by overloading evidence-stack fields.
-4. **Trust mapping.** Sources trust (`trusted`/`normal`/`untrusted`) does not
-   silently become a knowledge trust value; the promotion records the originating
-   trust in provenance, and the curated `Source` is then governed by knowledge
-   rules.
-5. **Idempotency.** Promoting the same `ExtractedEvidence` twice must not create
-   duplicate `Source` rows — dedup on `content_hash` or on the recorded
-   `extracted_evidence` provenance origin.
-6. **Permissions / space boundary.** Promotion is same-space only; cross-space
-   promotion is denied. Existing knowledge create / source CRUD policy gates
-   apply. Agent/run provenance is not human-ownership authority for private or
-   selected-user Knowledge.
-
-This promotion path is the **only** sanctioned bridge between the two stacks.
-Absent it, the stacks stay fully independent.
+Not implemented. The two stacks stay independent. Extracted design:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §10.

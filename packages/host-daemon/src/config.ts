@@ -1,4 +1,5 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { isLoopbackAddress } from "@rainver/outbound-guard";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -87,6 +88,35 @@ export function normalizeServerUrl(raw: string): string {
   return `${url.origin}${pathname}`;
 }
 
+/**
+ * Whether this URL host is this machine.
+ *
+ * The two named forms, and otherwise an *address* — `startsWith("127.")` was
+ * true of `127.evil.com`, a hostname somebody else controls and can point
+ * anywhere, which is exactly the thing plain HTTP must not be allowed for.
+ */
+export function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (host === "localhost" || host === "localhost.localdomain") return true;
+  return isLoopbackAddress(host);
+}
+
+/**
+ * Pairing sends a one-time code and returns a long-lived host token. Plain
+ * HTTP is only allowed on loopback, where the packets never leave this machine.
+ * The built-in host does not go through this — it adopts a published credential
+ * over the Compose network.
+ */
+export function assertPairableServerUrl(raw: string): string {
+  const serverUrl = normalizeServerUrl(raw);
+  const url = new URL(serverUrl);
+  if (url.protocol === "https:") return serverUrl;
+  if (url.protocol === "http:" && isLoopbackHostname(url.hostname)) return serverUrl;
+  throw new Error(
+    `Plain HTTP is only allowed for localhost (got ${url.origin}). Use HTTPS, or register via http://127.0.0.1 when the control plane is on this machine.`,
+  );
+}
+
 export function configDir(): string {
   return process.env[CONFIG_DIR_ENV] ?? join(homedir(), ".rainver-host");
 }
@@ -102,13 +132,30 @@ export async function loadConfig(): Promise<DaemonConfig | null> {
     if (typeof parsed.server_url !== "string" || typeof parsed.host_id !== "string" || typeof parsed.token !== "string") {
       throw new Error(`Malformed daemon config at ${configPath()}`);
     }
+    // A config written before strict mode existed is a paired machine — the
+    // only thing this daemon could have been then.
+    const trust = parsed.trust === "strict" ? "strict" : "trusted";
     return {
-      server_url: normalizeServerUrl(parsed.server_url),
+      // The same rule pairing applied, re-applied on read: a config file is an
+      // ordinary file on the user's machine, and one edited afterwards would
+      // otherwise send this host's bearer token to a plain-HTTP address
+      // off-box.
+      //
+      // The built-in host is exempt for the reason `assertPairableServerUrl`
+      // already gives — it adopts a credential the instance published to it
+      // over the Compose network, where the control plane is
+      // `http://server:8010` and there is no pairing at all. The exemption is
+      // decided by `builtinCredentialPath()`, an environment variable set only
+      // inside the `sandbox-runner` container, and *not* by `parsed.trust`:
+      // that field lives in the same file this check distrusts, so an edit that
+      // pointed `server_url` at a plain-HTTP address off-box could have set
+      // `"trust":"strict"` in the same stroke and turned the check off.
+      server_url: builtinCredentialPath()
+        ? normalizeServerUrl(parsed.server_url)
+        : assertPairableServerUrl(parsed.server_url),
       host_id: parsed.host_id,
       token: parsed.token,
-      // A config written before strict mode existed is a paired machine —
-      // the only thing this daemon could have been then.
-      trust: parsed.trust === "strict" ? "strict" : "trusted",
+      trust,
       workspaces: parsed.workspaces ?? {},
     };
   } catch (error) {

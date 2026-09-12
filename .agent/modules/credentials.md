@@ -27,7 +27,8 @@ read for those credentials is an HTTP call against the vendor's own endpoint
 under a database row lock. These credentials are owner-only, never pooled, and
 never handed to a subprocess: ADR 0008's rule is that a provider key does not
 travel through a CLI's environment, and a managed subscription is spent through
-the provider proxy instead.
+the provider proxy instead. Decrypted material is resolved in-process only;
+no HTTP route, including `/internal/*`, returns an API key or OAuth token.
 
 ## What a CLI's login is instead
 

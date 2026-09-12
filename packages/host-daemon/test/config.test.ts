@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { configPath, loadConfig, normalizeServerUrl, removeConfig, requireConfig, saveConfig } from "../src/config.js";
+import { configPath, loadConfig, normalizeServerUrl, assertPairableServerUrl, removeConfig, requireConfig, saveConfig } from "../src/config.js";
 import { runService } from "../src/commands/run.js";
 
 let dir: string;
@@ -34,14 +34,30 @@ describe("normalizeServerUrl", () => {
     expect(() => normalizeServerUrl("ftp://rainver.example")).toThrow(/http:\/\/ or https:\/\//);
     expect(() => normalizeServerUrl("https://user:pw@rainver.example")).toThrow(/credentials/);
   });
+});
 
-  it("normalizes a stored server_url on load", async () => {
-    await saveConfig({ server_url: "https://rainver.example/", host_id: "host-1", token: "t", trust: "trusted", workspaces: {} });
-    expect((await loadConfig())?.server_url).toBe("https://rainver.example");
+describe("assertPairableServerUrl", () => {
+  it("allows https and loopback http", () => {
+    expect(assertPairableServerUrl("https://rainver.example/")).toBe("https://rainver.example");
+    expect(assertPairableServerUrl("http://127.0.0.1:8010")).toBe("http://127.0.0.1:8010");
+    expect(assertPairableServerUrl("http://localhost:3000")).toBe("http://localhost:3000");
+  });
+
+  it("rejects cleartext pairing to a non-loopback host", () => {
+    expect(() => assertPairableServerUrl("http://192.168.1.5:8010")).toThrow(/localhost/);
+    expect(() => assertPairableServerUrl("http://rainver.example")).toThrow(/localhost/);
+    // A name that merely begins `127.` is a hostname somebody else controls
+    // and can point anywhere; only an address is loopback.
+    expect(() => assertPairableServerUrl("http://127.evil.example")).toThrow(/localhost/);
+    expect(() => assertPairableServerUrl("http://127.0.0.1.nip.io")).toThrow(/localhost/);
   });
 });
 
 describe("daemon config", () => {
+  it("normalizes a stored server_url on load", async () => {
+    await saveConfig({ server_url: "https://rainver.example/", host_id: "host-1", token: "t", trust: "trusted", workspaces: {} });
+    expect((await loadConfig())?.server_url).toBe("https://rainver.example");
+  });
   it("returns null before registration", async () => {
     expect(await loadConfig()).toBeNull();
   });
@@ -93,5 +109,41 @@ describe("daemon config", () => {
     await mkdir(dir, { recursive: true });
     await writeFile(configPath(), JSON.stringify({ token: "only-a-token" }));
     await expect(loadConfig()).rejects.toThrow(/Malformed daemon config/);
+  });
+
+  async function writeConfig(config: Record<string, unknown>): Promise<void> {
+    const { writeFile, mkdir } = await import("node:fs/promises");
+    await mkdir(dir, { recursive: true });
+    await writeFile(configPath(), JSON.stringify(config));
+  }
+
+  it("re-applies the pairing URL rule on every read, not only at pairing time", async () => {
+    // The config file is an ordinary file on the owner's machine. One edited
+    // after pairing — or written by anything else that can reach the
+    // directory — would otherwise send this host's bearer token to a
+    // plain-HTTP address off-box on the next start.
+    await writeConfig({ server_url: "http://192.168.1.5:8010", host_id: "host-1", token: "t", trust: "trusted", workspaces: {} });
+    await expect(loadConfig()).rejects.toThrow(/localhost/);
+    await writeConfig({ server_url: "http://127.evil.example", host_id: "host-1", token: "t", trust: "trusted", workspaces: {} });
+    await expect(loadConfig()).rejects.toThrow(/localhost/);
+  });
+
+  it("does not let the config's own trust field turn that re-check off", async () => {
+    // `trust` lives in the file the check distrusts: an edit that pointed
+    // `server_url` off-box could set `"trust":"strict"` in the same stroke.
+    // The built-in host's exemption is decided by an environment variable set
+    // only inside the `sandbox-runner` container instead.
+    await writeConfig({ server_url: "http://192.168.1.5:8010", host_id: "host-1", token: "t", trust: "strict", workspaces: {} });
+    await expect(loadConfig()).rejects.toThrow(/localhost/);
+  });
+
+  it("exempts the built-in host, which adopts a published credential over the Compose network", async () => {
+    process.env.RAINVER_BUILTIN_HOST_CREDENTIAL = join(dir, "builtin-credential.json");
+    try {
+      await writeConfig({ server_url: "http://server:8010/", host_id: "host-1", token: "t", trust: "trusted", workspaces: {} });
+      expect((await loadConfig())?.server_url).toBe("http://server:8010");
+    } finally {
+      delete process.env.RAINVER_BUILTIN_HOST_CREDENTIAL;
+    }
   });
 });

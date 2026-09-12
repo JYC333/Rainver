@@ -5,6 +5,7 @@ import { Badge } from '../../components/ui/badge'
 import { Card } from '../../components/ui/card'
 import { EmptyState } from '../../components/ui/empty-state'
 import { SpaceLink as Link } from '../../core/spaceNav'
+import { SafeExternalLink } from '../../components/SafeExternalLink'
 
 type Feedback = 'interesting' | 'neutral' | 'never'
 
@@ -44,9 +45,9 @@ export function InformationDigestView({ digest, project = false, onSerendipityFe
               </div>
             </div>
             {item.source_uri && (
-              <a className="text-muted-foreground hover:text-foreground" href={item.source_uri} target="_blank" rel="noreferrer" aria-label={`Open source for ${item.title}`}>
+              <SafeExternalLink className="text-muted-foreground hover:text-foreground" href={item.source_uri} aria-label={`Open source for ${item.title}`}>
                 <ExternalLink className="size-4" />
-              </a>
+              </SafeExternalLink>
             )}
           </div>
           {(item.summary || item.excerpt) && <p className="text-sm text-muted-foreground">{item.summary ?? item.excerpt}</p>}

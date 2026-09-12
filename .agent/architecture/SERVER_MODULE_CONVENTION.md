@@ -3,7 +3,7 @@
 > **Status:** established 2026-06-11. Source of truth is the code under
 > `server/src/`. Companions:
 > [`SERVER_FOUNDATION.md`](SERVER_FOUNDATION.md) (the service),
-> [`SERVER_OWNERSHIP.md`](SERVER_OWNERSHIP.md) (owned and deferred surfaces).
+> [`SERVER_OWNERSHIP.md`](SERVER_OWNERSHIP.md) (owned surfaces and fail-closed gaps).
 
 `server` is the **client-facing backend**. This document
 defines the internal structure every server-owned module follows, so

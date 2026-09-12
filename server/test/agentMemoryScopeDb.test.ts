@@ -346,14 +346,15 @@ describe("who may change what an Agent has become", () => {
     expect(proposal.rows[0]?.payload_json).toMatchObject({ required_owner_user_id: OWNER });
   });
 
-  it("applies what the Agent concluded on its own outside anyone's turn", async () => {
+  it("applies what the Agent concluded during its owner's own unattended work", async () => {
     if (!db.available) return;
     // ADR 0003 §5's third row, and ADR 0017's one named exception to its
-    // origin gate: nobody asked, so there is no turn to trust with this
-    // reach, and the notification plus the one-step restore are the bound.
+    // origin gate: nobody is in the turn, and the person who set this work
+    // going is the Agent's own owner, so the notification plus the one-step
+    // restore are the bound.
     await db.pool.query(
-      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = NULL, session_id = NULL WHERE id = $1`,
-      [RUN_ID],
+      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = $2, session_id = NULL WHERE id = $1`,
+      [RUN_ID, OWNER],
     );
     const result = await (await dispatcher()).dispatch(remember({
       memory_type: "persona", content: "I have learned to check my own claims before stating them",
@@ -365,7 +366,49 @@ describe("who may change what an Agent has become", () => {
     });
   });
 
-  it("refuses a note from a run nobody asked for, which only a persona may be", async () => {
+  it("leaves an automation somebody else set up waiting for the Agent's owner", async () => {
+    if (!db.available) return;
+    // D1. An admin or a Project writer may own an Automation that targets
+    // another member's Agent, and unattended is not the same as unowned: the
+    // reach is every Room this Agent sits in either way, so the person who
+    // set the work up gets no more than they would get by asking in a turn.
+    await db.pool.query(
+      `UPDATE runs SET trigger_origin = 'automation', instructed_by_user_id = $2, session_id = NULL WHERE id = $1`,
+      [RUN_ID, MEMBER],
+    );
+    const result = await (await dispatcher()).dispatch(remember({
+      memory_type: "persona", content: "I do whatever this automation tells me",
+    }));
+
+    expect(result.modelResult, JSON.stringify(result.modelResult)).toMatchObject({ ok: true, outcome: "proposed" });
+    expect(await agentRows()).toEqual([]);
+    const proposal = await db.pool.query<{ payload_json: Record<string, unknown> }>(
+      `SELECT payload_json FROM proposals WHERE space_id = $1`, [SPACE],
+    );
+    expect(proposal.rows[0]?.payload_json).toMatchObject({
+      target_scope: "agent",
+      agent_id: AGENT_ID,
+      required_owner_user_id: OWNER,
+    });
+  });
+
+  it("applies the same automation when it is the Agent owner's own", async () => {
+    if (!db.available) return;
+    await db.pool.query(
+      `UPDATE runs SET trigger_origin = 'automation', instructed_by_user_id = $2, session_id = NULL WHERE id = $1`,
+      [RUN_ID, OWNER],
+    );
+    const result = await (await dispatcher()).dispatch(remember({
+      memory_type: "persona", content: "I check my own claims before stating them",
+    }));
+
+    expect(result.modelResult, JSON.stringify(result.modelResult)).toMatchObject({ ok: true, outcome: "remembered" });
+    expect((await agentRows())[0]).toMatchObject({
+      scope_type: "agent", memory_type: "persona", owner_user_id: OWNER, origin_room_id: null,
+    });
+  });
+
+  it("refuses a note from a run nobody asked for", async () => {
     if (!db.available) return;
     await db.pool.query(
       `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = NULL WHERE id = $1`, [RUN_ID],
@@ -383,7 +426,15 @@ describe("who may change what an Agent has become", () => {
     expect(decidePersonaWrite({ ...base, triggerOrigin: "manual", instructedByUserId: OWNER })).toBe("proposal_in_turn");
     expect(decidePersonaWrite({ ...base, triggerOrigin: "manual", instructedByUserId: MEMBER })).toBe("proposal_owner");
     for (const origin of ["automation", "autonomous", "job", "system"]) {
-      expect(decidePersonaWrite({ ...base, triggerOrigin: origin, instructedByUserId: null }), origin).toBe("apply");
+      // Unattended work the owner set up is the one case that applies.
+      expect(decidePersonaWrite({ ...base, triggerOrigin: origin, instructedByUserId: OWNER }), origin).toBe("apply");
+      // Someone else's unattended work reaches every Room this Agent sits in
+      // just as their turn would, so it waits for the owner exactly the same.
+      expect(decidePersonaWrite({ ...base, triggerOrigin: origin, instructedByUserId: MEMBER }), origin)
+        .toBe("proposal_owner");
+      // Nobody responsible at all is nobody to trust with that reach either.
+      expect(decidePersonaWrite({ ...base, triggerOrigin: origin, instructedByUserId: null }), origin)
+        .toBe("proposal_owner");
     }
     // No owner at all is not "apply": the applier refuses it before this is
     // consulted, and a proposal for nobody is not a decision either.
@@ -394,8 +445,8 @@ describe("who may change what an Agent has become", () => {
   it("keeps one active persona per Agent", async () => {
     if (!db.available) return;
     await db.pool.query(
-      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = NULL, session_id = NULL WHERE id = $1`,
-      [RUN_ID],
+      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = $2, session_id = NULL WHERE id = $1`,
+      [RUN_ID, OWNER],
     );
     const first = await (await dispatcher()).dispatch(remember({ memory_type: "persona", content: "First" }, "p1"));
     expect(first.modelResult, JSON.stringify(first.modelResult)).toMatchObject({ outcome: "remembered" });
@@ -429,10 +480,15 @@ describe("revising what the Agent already knows", () => {
     return id;
   }
 
-  async function unattended() {
+  /**
+   * The Agent owner's own unattended work — an Automation or an autonomy tick
+   * they set up. ADR 0003 §5's third row needs a responsible person, and only
+   * the owner's makes a persona write apply.
+   */
+  async function unattended(responsibleUserId: string | null = OWNER) {
     await db.pool.query(
-      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = NULL, session_id = NULL WHERE id = $1`,
-      [RUN_ID],
+      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = $2, session_id = NULL WHERE id = $1`,
+      [RUN_ID, responsibleUserId],
     );
   }
 
@@ -471,12 +527,13 @@ describe("revising what the Agent already knows", () => {
     const laterRun = randomUUID();
     await db.pool.query(
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-                         created_at, updated_at, owner_user_id, visibility, project_id, permission_snapshot_json)
-       VALUES ($1,$2,$3,$4,'agent','autonomous','running','live',now(),now(),$5,'private',$6,$7::jsonb)`,
+                         created_at, updated_at, owner_user_id, visibility, instructed_by_user_id, project_id,
+                         permission_snapshot_json)
+       VALUES ($1,$2,$3,$4,'agent','autonomous','running','live',now(),now(),$5,'private',$5,$6,$7::jsonb)`,
       [laterRun, SPACE, AGENT_ID, AGENT_VERSION_ID, OWNER, PROJECT,
         JSON.stringify({ tool_grants: [{ action_id: "memory.remember" }, { action_id: "memory.revise" }] })],
     );
-    const revised = await (await dispatcher({ id: laterRun, trigger_origin: "autonomous", instructed_by_user_id: null, session_id: null }))
+    const revised = await (await dispatcher({ id: laterRun, trigger_origin: "autonomous", instructed_by_user_id: OWNER, session_id: null }))
       .dispatch(revise(persona.id, "As I have since found"));
     expect(revised.modelResult, JSON.stringify(revised.modelResult)).toMatchObject({ ok: true, outcome: "revised" });
   });
@@ -815,8 +872,8 @@ describe("telling the owner what changed while nobody was asking", () => {
       [personaId, SPACE, OWNER, AGENT_ID, `agent:${AGENT_ID}`],
     );
     await db.pool.query(
-      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = NULL, session_id = NULL WHERE id = $1`,
-      [RUN_ID],
+      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = $2, session_id = NULL WHERE id = $1`,
+      [RUN_ID, OWNER],
     );
 
     const revised = await (await dispatcher()).dispatch({
@@ -893,8 +950,8 @@ describe("telling the owner what changed while nobody was asking", () => {
     // persona replaced nothing, so offering that button would be a control
     // that can only refuse.
     await db.pool.query(
-      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = NULL WHERE id = $1`,
-      [RUN_ID],
+      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = $2 WHERE id = $1`,
+      [RUN_ID, OWNER],
     );
     await (await dispatcher()).dispatch(remember({ memory_type: "persona", content: "who I am" }));
 
@@ -919,9 +976,9 @@ describe("telling the owner what changed while nobody was asking", () => {
       [personaId, SPACE, OWNER, AGENT_ID, `agent:${AGENT_ID}`],
     );
     await db.pool.query(
-      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = NULL, session_id = NULL,
+      `UPDATE runs SET trigger_origin = 'autonomous', instructed_by_user_id = $2, session_id = NULL,
                        project_id = NULL WHERE id = $1`,
-      [RUN_ID],
+      [RUN_ID, OWNER],
     );
     const revised = await (await dispatcher({ project_id: null })).dispatch({
       id: "revise-persona",

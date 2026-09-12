@@ -7,6 +7,7 @@ import { loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCom
 import { parseAcpAuthMethods } from "./acpProbe.js";
 import { holdAdapter, resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { terminalAuthAvailable } from "./terminalAuth.js";
+import { clearVendorCredentialEnv } from "./providerBinding.js";
 
 /**
  * An interactive login for one installation of a runtime, run on this
@@ -42,9 +43,13 @@ function resolveAuthAgentLaunch(frame: LoginOpenFrame): { command: string; args:
   return { ...resolveAcpLaunch(rawCommand!, args, OWN_INSTALLATION, frame.adapter_type), home };
 }
 
+function loginAmbient(adapterType: string): Record<string, string> {
+  return clearVendorCredentialEnv(process.env, adapterType);
+}
+
 /** What fixed login program to run for one copy. */
 export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[]; env: Record<string, string>; home: string; login: ToolLoginSpec | null } {
-  const ambient = Object.fromEntries(Object.entries(process.env).filter((pair): pair is [string, string] => typeof pair[1] === "string"));
+  const ambient = loginAmbient(frame.adapter_type);
   if (frame.auth_method && frame.login_action) throw new Error("Choose either ACP authentication or CLI login");
   if (frame.login_action === "logout") return resolveLogoutCommand(frame, ambient);
   if (frame.login_action === "cli") {
@@ -119,11 +124,8 @@ function resolveLogoutCommand(
   };
 }
 
-function sanitizedEnv(extra: Record<string, string>, home: string): Record<string, string> {
-  const env = { ...process.env, ...extra, HOME: home } as Record<string, string>;
-  delete env.ANTHROPIC_API_KEY;
-  delete env.OPENAI_API_KEY;
-  return env;
+function sanitizedEnv(extra: Record<string, string>, home: string, adapterType: string): Record<string, string> {
+  return { ...loginAmbient(adapterType), ...extra, HOME: home };
 }
 
 function acpErrorText(value: unknown): string {
@@ -144,7 +146,7 @@ function openAgentAuthSession(
   const child = spawn(launch.command, launch.args, {
     cwd: launch.home,
     stdio: ["pipe", "pipe", "pipe"],
-    env: sanitizedEnv(launch.env, launch.home),
+    env: sanitizedEnv(launch.env, launch.home, frame.adapter_type),
   });
   log(`ACP authenticate ${frame.adapter_type} ${frame.installation}: ${method.id}`);
   let buffer = "";
@@ -300,10 +302,6 @@ export function openLoginSession(
   const pty = ptyArgv(resolved.command);
   log(`login ${frame.adapter_type} ${frame.installation}: ${resolved.command.join(" ")}`);
   const env: Record<string, string> = { ...resolved.env, TERM: "xterm-256color", COLUMNS: String(LOGIN_TERMINAL_COLS), LINES: String(LOGIN_TERMINAL_ROWS) };
-  // A vendor login must not pick up an API key from the ambient environment
-  // and skip the flow the person came here for.
-  delete env.ANTHROPIC_API_KEY;
-  delete env.OPENAI_API_KEY;
   const child: ChildProcess = spawn(pty.command, pty.args, { env, cwd: resolved.home, stdio: ["pipe", "pipe", "pipe"] });
   // Held until this session ends, so a replacement of this copy waits rather
   // than deleting the directory the login is writing its credential into.

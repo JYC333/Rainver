@@ -471,10 +471,7 @@ export default function HomePage() {
   const failedRunSpaces = useMemo(() => (s ? s.recent_runs.filter(r => r.status === 'failed').map(r => r.space_id) : []), [s])
 
   return (
-    <div
-      className="min-h-full"
-      style={{ maxWidth: 1440, margin: '0 auto', padding: '16px 20px 96px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 300px', gap: 18, alignItems: 'start' }}
-    >
+    <div className="page-dashboard">
       {/* main */}
       <div className="flex flex-col gap-5 min-w-0">
         <div className="flex flex-col gap-1">

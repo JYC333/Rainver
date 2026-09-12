@@ -16,6 +16,7 @@ import { verifyIntegrationNode, verifyPlanIntegration } from "./integrationVerif
 import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler.js";
 import { InputBindingResolutionError, resolveNodeInputs } from "../execution/nodeInputResolver.js";
 import type { WorkflowNodeInputBinding } from "@rainver/protocol";
+import { runReadSql } from "../access/contentAccessSql.js";
 
 export interface AgentPlanProposalInput {
   sourceTaskId: string;
@@ -206,11 +207,20 @@ export class PgPlanRepository {
                     ORDER BY re.evaluated_at DESC, re.id DESC LIMIT 1
                  ) evaluation ON true
                 WHERE pnr.plan_node_id = n.id AND pnr.space_id = n.space_id
+                  -- The same predicate the Runs tab on this page applies.
+                  -- Without it the plan panel answered what the tab beside it
+                  -- refused: plan_nodes carries no visibility of its own, so
+                  -- the Run's is the only thing that decides. It applies
+                  -- before the LIMIT, so a node whose newest Run this viewer
+                  -- cannot read reports the newest one they can, and a node
+                  -- with none reports nothing — which is what the node looks
+                  -- like from where they stand.
+                  AND ${runReadSql("$3")}
                 ORDER BY pnr.created_at DESC, pnr.id DESC LIMIT 1
              ) latest ON true
             WHERE n.space_id = $1 AND n.plan_version_id = $2
             ORDER BY n.created_at ASC, n.id ASC`,
-          [identity.spaceId, versionRow.id],
+          [identity.spaceId, versionRow.id, identity.userId],
         )
       : { rows: [] as Array<PlanNodeRow & { run_id: string | null; run_status: string | null; outcome_status: string | null }> };
     return {

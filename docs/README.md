@@ -35,7 +35,7 @@ context and Skills; an operations guide describes procedures, not runtime prompt
 | [POLICY_AND_PRIVACY_BOUNDARIES.md](POLICY_AND_PRIVACY_BOUNDARIES.md) | Policy enforcement inventory and invariants |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | Threat model and sandbox/security assumptions |
 | [SANDBOX_POLICY.md](SANDBOX_POLICY.md) | Sandbox execution policy |
-| [FEDERATED_ACCESS_MODEL.md](FEDERATED_ACCESS_MODEL.md) | Deferred federated access model |
+| [FEDERATED_ACCESS_MODEL.md](FEDERATED_ACCESS_MODEL.md) | Federation is not implemented |
 
 ## Runtime And Agents
 
@@ -53,10 +53,11 @@ context and Skills; an operations guide describes procedures, not runtime prompt
 | [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md) | Backup, restore, DB dump/restore, verification |
 | [TWO_PERSON_DOGFOODING_RC.md](TWO_PERSON_DOGFOODING_RC.md) | Dogfooding release criteria |
 
-## Roadmaps
+## Plans
 
 | Document | Description |
 |---|---|
-| [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md) | Explicitly deferred work items |
-| [MEMORY_CONTEXT_ROADMAP.md](MEMORY_CONTEXT_ROADMAP.md) | Memory context future directions |
+| [../.agent/plans/unimplemented-from-guides.md](../.agent/plans/unimplemented-from-guides.md) | Designs extracted from current-state guides |
+| [FUTURE_ROADMAP.md](FUTURE_ROADMAP.md) | Pointer to that inventory |
+| [MEMORY_CONTEXT_ROADMAP.md](MEMORY_CONTEXT_ROADMAP.md) | Pointer to Memory/context current-state docs |
 | [architecture/evolution-substrate.md](architecture/evolution-substrate.md) | Evolution substrate pointer → see EVOLUTION_CORE.md |

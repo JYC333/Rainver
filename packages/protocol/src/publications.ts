@@ -37,13 +37,20 @@ export type CreatePublicationRequest = z.infer<typeof CreatePublicationRequestSc
 export const PublicationImportSummarySchema = z.object({
   id: IdSchema,
   imported_resource_type: PublicationResourceTypeSchema,
-  imported_resource_id: IdSchema,
+  /**
+   * The row the importer made in their own Space. Null for anyone but them: a
+   * colleague who learns the id of someone's private copy can ask for it by id
+   * on every surface that takes one.
+   */
+  imported_resource_id: IdSchema.nullable(),
   imported_by_user_id: IdSchema,
   created_at: ISODateTimeSchema,
 }).strict();
 export type PublicationImportSummary = z.infer<typeof PublicationImportSummarySchema>;
 
 export const PublicationImportSchema = PublicationImportSummarySchema.extend({
+  /** The importer's own response about their own copy: always named. */
+  imported_resource_id: IdSchema,
   publication_id: IdSchema,
   target_space_id: IdSchema,
   publication_version: z.number().int().positive(),
@@ -58,7 +65,12 @@ export const ContentPublicationSchema = z.object({
   source_resource_id: IdSchema,
   version: z.number().int().positive(),
   snapshot_schema_version: z.number().int().positive(),
-  snapshot_hash: z.string().length(64),
+  /**
+   * Withheld with the body it hashes: once a publication is revoked, a hash of
+   * content the reader may no longer see still answers "is this the text?" for
+   * every guess they can make. The publisher keeps seeing it.
+   */
+  snapshot_hash: z.string().length(64).nullable(),
   title: z.string(),
   snapshot: PublicationSnapshotSchema,
   published_by_user_id: IdSchema,

@@ -72,6 +72,9 @@ describe("ProviderQueryRewriter", () => {
       async getTaskChain() {
         return null;
       },
+      async authorizeCredentialSpend() {
+        return {} as never;
+      },
       async getInvocationTarget() {
         return {
           provider: {
@@ -96,6 +99,9 @@ describe("ProviderQueryRewriter", () => {
     return {
       async getTaskChain() {
         return null;
+      },
+      async authorizeCredentialSpend() {
+        return {} as never;
       },
       async getInvocationTarget() {
         return {
@@ -135,7 +141,7 @@ describe("ProviderQueryRewriter", () => {
         return chatResponse('["postgres indexing strategies", "db index tuning"]');
       },
     });
-    const rewriter = new ProviderQueryRewriter(fakeStore(), { providerId: "p1", promptResolver: registryPromptResolver });
+    const rewriter = new ProviderQueryRewriter(fakeStore(), { spend: { kind: "person", user_id: "user-1" }, providerId: "p1", promptResolver: registryPromptResolver });
     expect(await rewriter.rewrite("space-1", "viewer-1", "pg indexes")).toEqual([
       "postgres indexing strategies",
       "db index tuning",
@@ -151,6 +157,7 @@ describe("ProviderQueryRewriter", () => {
       },
     });
     const rewriter = new ProviderQueryRewriter(fakeStore(), {
+      spend: { kind: "person", user_id: "user-1" },
       providerId: "p1",
       promptResolver: async (_spaceId, _viewerUserId, query) => ({
         system: "custom rewrite system",
@@ -174,7 +181,7 @@ describe("ProviderQueryRewriter", () => {
         return new Response("upstream boom", { status: 500 });
       },
     });
-    const rewriter = new ProviderQueryRewriter(fakeStore(), { providerId: "p1", promptResolver: registryPromptResolver });
+    const rewriter = new ProviderQueryRewriter(fakeStore(), { spend: { kind: "person", user_id: "user-1" }, providerId: "p1", promptResolver: registryPromptResolver });
     expect(await rewriter.rewrite("space-1", "viewer-1", "pg indexes")).toBeNull();
   });
 
@@ -187,6 +194,7 @@ describe("ProviderQueryRewriter", () => {
       },
     });
     const rewriter = new ProviderQueryRewriter(fakeStore(), {
+      spend: { kind: "person", user_id: "user-1" },
       providerId: "p1",
       promptResolver: registryPromptResolver,
       egressPolicy: { externalEgressEnabled: false },
@@ -208,6 +216,7 @@ describe("ProviderQueryRewriter", () => {
       },
     });
     const rewriter = new ProviderQueryRewriter(fakeLocalStore(), {
+      spend: { kind: "person", user_id: "user-1" },
       providerId: "local",
       promptResolver: registryPromptResolver,
       egressPolicy: { externalEgressEnabled: false },
@@ -225,7 +234,7 @@ describe("ProviderQueryRewriter", () => {
         return chatResponse("I cannot rewrite this query.");
       },
     });
-    const rewriter = new ProviderQueryRewriter(fakeStore(), { providerId: "p1", promptResolver: registryPromptResolver });
+    const rewriter = new ProviderQueryRewriter(fakeStore(), { spend: { kind: "person", user_id: "user-1" }, providerId: "p1", promptResolver: registryPromptResolver });
     expect(await rewriter.rewrite("space-1", "viewer-1", "pg indexes")).toBeNull();
   });
 
@@ -238,6 +247,7 @@ describe("ProviderQueryRewriter", () => {
       },
     });
     const rewriter = new ProviderQueryRewriter(fakeStore(), {
+      spend: { kind: "person", user_id: "user-1" },
       providerId: "p1",
       promptResolver: async () => null,
     });
@@ -252,7 +262,7 @@ describe("ProviderQueryRewriter", () => {
         throw new Error("provider must not be called for an empty query");
       },
     });
-    const rewriter = new ProviderQueryRewriter(fakeStore(), { providerId: "p1" });
+    const rewriter = new ProviderQueryRewriter(fakeStore(), { spend: { kind: "person", user_id: "user-1" }, providerId: "p1" });
     expect(await rewriter.rewrite("space-1", "viewer-1", "   ")).toBeNull();
   });
 });

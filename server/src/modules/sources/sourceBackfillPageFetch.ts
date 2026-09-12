@@ -35,6 +35,8 @@ export function pageSizeLadder(requested: number): number[] {
 export interface BackfillPageRequest {
   url: string;
   headers: Record<string, string>;
+  /** Kept apart from `headers` so it stops at the first origin; see `fetchSource`. */
+  credentialHeaders?: Record<string, string>;
 }
 
 export interface BackfillPageResult {

@@ -4,7 +4,7 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { runsModule } from "../src/modules/runs/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setRunsCommandServicesFactoryForTests, __setRunsIdentityForTests, __setRunsReadResponseForTests } from "../src/modules/runs/routes.js";
-import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { VisibleRunRecord } from "../src/modules/runs/repository.js";
 
 let app: FastifyInstance;
 
@@ -15,7 +15,7 @@ afterEach(async () => {
   await app?.close();
 });
 
-function run(overrides: Partial<RunRecord> = {}): RunRecord {
+function run(overrides: Partial<VisibleRunRecord> = {}): VisibleRunRecord {
   return {
     id: "run-1",
     space_id: "space-1",
@@ -36,6 +36,8 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     error_message: null,
     started_at: "2026-06-12T10:00:00.000Z",
     ended_at: null,
+    owner_user_id: "user-1",
+    effective_access_level: "full",
     ...overrides,
   };
 }

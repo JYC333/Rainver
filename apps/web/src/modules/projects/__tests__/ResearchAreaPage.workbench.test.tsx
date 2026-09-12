@@ -13,6 +13,9 @@ vi.mock('sonner', () => ({
 vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Space One' }),
 }))
+vi.mock('../../../contexts/AuthContext', () => ({
+  useAuth: () => ({ currentUser: { id: 'user-1' } }),
+}))
 
 vi.mock('../../../core/spaceNav', () => ({
   useSpaceNavigate: () => vi.fn(),
@@ -478,7 +481,7 @@ describe('Research Area workbench', () => {
       workflow('workflow-1', 'Does caching improve latency?'),
       workflow('workflow-2', 'Does batching improve throughput?'),
     ] as never)
-    window.localStorage.setItem('project:project-1:research-workflow', 'workflow-2')
+    window.localStorage.setItem('rainver:research-workflow:user-1:project-1', 'workflow-2')
 
     renderArea()
 
@@ -489,7 +492,7 @@ describe('Research Area workbench', () => {
       expect(projectResearchApi.checkpoints).toHaveBeenCalledWith('project-1', 'workflow-2')
     })
     expect(projectResearchApi.checkpoints).not.toHaveBeenCalledWith('project-1', 'workflow-1')
-    window.localStorage.removeItem('project:project-1:research-workflow')
+    window.localStorage.removeItem('rainver:research-workflow:user-1:project-1')
   })
 
   it('does not flash the initial intake setup while research data is loading', async () => {

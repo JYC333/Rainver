@@ -7,7 +7,12 @@ import {
   type WorkLoopStageKey,
 } from "@rainver/protocol";
 import { dateIso, HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import {
+  artifactReadSql,
+  contentReadSql,
+  runInheritedReadSql,
+  runReadSql,
+} from "../access/contentAccessSql.js";
 import { assertProjectReadable, canWriteProject } from "../projects/access.js";
 import { completionFrom, taskCompletionState } from "./completion.js";
 import { declaredRequiredOutputs } from "./settlement.js";
@@ -80,6 +85,7 @@ const CARD_SELECT = `
         FROM task_runs tr
         JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
        WHERE tr.task_id = t.id AND tr.space_id = t.space_id
+         AND ${runReadSql("$3")}
          AND r.status NOT IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned', 'waiting_for_review')
     ) active ON true
     LEFT JOIN LATERAL (
@@ -88,6 +94,7 @@ const CARD_SELECT = `
         JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
        WHERE tr.task_id = t.id AND tr.space_id = t.space_id
          AND tr.role NOT IN ('planning', 'review')
+         AND ${runReadSql("$3")}
        ORDER BY r.created_at DESC, r.id DESC
        LIMIT 1
     ) latest ON true
@@ -103,6 +110,7 @@ const CARD_SELECT = `
         FROM task_artifacts ta
         JOIN artifacts a ON a.id = ta.artifact_id AND a.space_id = ta.space_id
        WHERE ta.space_id = t.space_id AND ta.task_id = t.id AND ta.role = 'output'
+         AND ${artifactReadSql("$3")}
     ) outputs ON true
 `;
 
@@ -283,11 +291,12 @@ export async function getTaskWorkView(
               JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
              WHERE tr.task_id = $2 AND tr.space_id = $1
                AND tr.role NOT IN ('planning', 'review')
+               AND ${runReadSql("$3")}
              ORDER BY r.created_at DESC, r.id DESC
              LIMIT 1
           )
         ORDER BY e.created_at DESC, e.id DESC LIMIT 1`,
-      [identity.spaceId, taskId],
+      [identity.spaceId, taskId, identity.userId],
     ),
     db.query<{
       id: string; event_kind: string; occurred_at: string; data_json: Record<string, unknown>;
@@ -303,30 +312,33 @@ export async function getTaskWorkView(
          LEFT JOIN users au ON au.id = a.user_id
          LEFT JOIN agents ag ON ag.id = a.agent_id
         WHERE e.space_id = $1 AND e.subject_type = 'task' AND e.subject_id = $2
+          AND ${runInheritedReadSql("e.data_json->>'run_id'", "e.space_id", "$3")}
         ORDER BY e.occurred_at DESC, e.id DESC
         LIMIT ${WORK_VIEW_EVENT_LIMIT}`,
-      [identity.spaceId, taskId],
+      [identity.spaceId, taskId, identity.userId],
     ),
     db.query<{ id: string; status: string; role: string; created_at: string }>(
       `SELECT r.id, r.status, tr.role, r.created_at
          FROM task_runs tr
          JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
         WHERE tr.space_id = $1 AND tr.task_id = $2
+          AND ${runReadSql("$3")}
         ORDER BY r.created_at DESC, r.id DESC
         LIMIT ${WORK_VIEW_RUN_LIMIT}`,
-      [identity.spaceId, taskId],
+      [identity.spaceId, taskId, identity.userId],
     ),
     db.query<{ artifact_type: string }>(
       `SELECT DISTINCT lower(a.artifact_type) AS artifact_type
          FROM task_artifacts ta
          JOIN artifacts a ON a.id = ta.artifact_id AND a.space_id = ta.space_id
-        WHERE ta.space_id = $1 AND ta.task_id = $2 AND ta.role = 'output'`,
-      [identity.spaceId, taskId],
+        WHERE ta.space_id = $1 AND ta.task_id = $2 AND ta.role = 'output'
+          AND ${artifactReadSql("$3")}`,
+      [identity.spaceId, taskId, identity.userId],
     ),
     // The same rule the Board card and the manual-close gate use. Asking a
     // different question here is what let the tab say a Task was ready while
     // the write path refused to close it.
-    taskCompletionState(db, identity.spaceId, taskId, task.required_outputs_json),
+    taskCompletionState(db, identity.spaceId, taskId, task.required_outputs_json, identity.userId),
     db.query<{ entity_type: string; entity_id: string; role: string }>(
       `SELECT entity_type, entity_id, role
          FROM task_entity_links
@@ -338,6 +350,10 @@ export async function getTaskWorkView(
     // rather than the capped event list above: a Task with more history than
     // the cap would otherwise read as never having framed or planned, and the
     // rail would call that "not started" rather than "done".
+    // Deliberately without the Run term the event list above carries: this
+    // reads stage *keys* and no content, and gating it would make the rail
+    // claim a Task never reached a stage it reached in a Room the reader is
+    // not in — hiding the Task's own shape rather than anyone's words.
     db.query<{ stage_key: string }>(
       `SELECT DISTINCT e.data_json->>'to_stage' AS stage_key
          FROM project_work_events e

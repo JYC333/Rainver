@@ -13,15 +13,21 @@
 
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { resolveIdentity } from "../routeUtils/common.js";
 import { catalogSummary, listAgentTemplates, listCapabilities } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const catalogRoot = context.config.catalogRoot;
-  app.get("/api/v1/server/catalog", async () => catalogSummary(catalogRoot));
-  app.get("/api/v1/server/catalog/capabilities", async () =>
-    listCapabilities(catalogRoot),
-  );
-  app.get("/api/v1/server/catalog/agent-templates", async () =>
-    listAgentTemplates(catalogRoot),
-  );
+  app.get("/api/v1/server/catalog", async (request, reply) => {
+    if (!(await resolveIdentity(context.config, request, reply))) return reply;
+    return catalogSummary(catalogRoot);
+  });
+  app.get("/api/v1/server/catalog/capabilities", async (request, reply) => {
+    if (!(await resolveIdentity(context.config, request, reply))) return reply;
+    return listCapabilities(catalogRoot);
+  });
+  app.get("/api/v1/server/catalog/agent-templates", async (request, reply) => {
+    if (!(await resolveIdentity(context.config, request, reply))) return reply;
+    return listAgentTemplates(catalogRoot);
+  });
 }

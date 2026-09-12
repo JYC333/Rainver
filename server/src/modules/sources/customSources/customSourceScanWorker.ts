@@ -15,6 +15,7 @@ import { CustomSourceMaterializationService } from "./customSourceMaterializer.j
 import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter.js";
 import { enqueueItemsForAnnotation } from "../../sourceAnnotation/index.js";
 import { fetchCustomSourceEndpointHtml } from "./customSourceEndpointFetch.js";
+import type { OutboundGuard } from "../outboundUrlSafety.js";
 import { CustomSourceCredentialService } from "./customSourceCredentialService.js";
 import { computeNextCheckAt } from "../sourceScanCadence.js";
 import {
@@ -44,6 +45,12 @@ export async function runPendingCustomSourceHandlerRuns(
   db: Queryable,
   config: ServerConfig,
   batchLimit = 10,
+  /**
+   * The outbound boundary live fetches go through. Production leaves it out and
+   * gets the instance's guard; a test supplies one pinned at its own fixture
+   * server, because the guard refuses loopback by design.
+   */
+  guard?: OutboundGuard,
 ): Promise<number> {
   const pending = await db.query<QueuedRunRow>(
     `SELECT shr.id, shr.space_id, shr.source_connection_id, shr.handler_version_id, shr.extraction_job_id,
@@ -60,7 +67,7 @@ export async function runPendingCustomSourceHandlerRuns(
   for (const run of pending.rows) {
     let didProcess = false;
     try {
-      didProcess = await runOne(db, config, run);
+      didProcess = await runOne(db, config, run, guard);
     } catch (error) {
       await recordRunFailure(db, run, error);
       didProcess = true;
@@ -75,6 +82,7 @@ export async function runCustomSourceHandlerScanJob(
   config: ServerConfig,
   jobId: string,
   spaceId: string,
+  guard?: OutboundGuard,
 ): Promise<boolean> {
   const result = await db.query<QueuedRunRow>(
     `SELECT shr.id, shr.space_id, shr.source_connection_id, shr.handler_version_id, shr.extraction_job_id,
@@ -89,10 +97,10 @@ export async function runCustomSourceHandlerScanJob(
   );
   const run = result.rows[0];
   if (!run) return false;
-  return runOne(db, config, run);
+  return runOne(db, config, run, guard);
 }
 
-async function runOne(db: Queryable, config: ServerConfig, run: QueuedRunRow): Promise<boolean> {
+async function runOne(db: Queryable, config: ServerConfig, run: QueuedRunRow, guard?: OutboundGuard): Promise<boolean> {
   const now = new Date().toISOString();
   const claimed = await db.query(
     `UPDATE source_handler_runs
@@ -147,7 +155,7 @@ async function runOne(db: Queryable, config: ServerConfig, run: QueuedRunRow): P
   try {
     const fetchedHtml = blockReason
       ? ""
-      : await fetchCustomSourceEndpointHtml(connection.endpoint_url, settings, policyEnvelope, credential);
+      : await fetchCustomSourceEndpointHtml(connection.endpoint_url, settings, policyEnvelope, credential, guard);
 
     const handlerInput: CustomSourceHandlerInput = {
       contract_version: "custom_source.handler_input.v1",
@@ -175,7 +183,7 @@ async function runOne(db: Queryable, config: ServerConfig, run: QueuedRunRow): P
 
     const runnerResult = blockReason
       ? ({ status: "blocked", reason: blockReason } as const)
-      : await executeCustomSourceHandler(db, config, settings, { version, policyEnvelope, handlerInput, credential });
+      : await executeCustomSourceHandler(db, config, settings, { version, policyEnvelope, handlerInput, credential, guard });
 
     if (runnerResult.status === "blocked") {
       await db.query(

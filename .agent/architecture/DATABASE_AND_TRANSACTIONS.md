@@ -504,12 +504,11 @@ and domain keys only; no member id leaves the repository.
 | Job queue / handlers | Short standalone commits; auxiliary events isolated | Handler execution |
 | Project Folder archive/unregister | Single-row status update commit; physical directory left untouched | None |
 | BackupService | Independent from ORM — no business commits | Tar/snapshot/file IO |
-| Deployment/deployer client | No durable DB job state currently | High: socket/network |
+| Deployment/deployer client | `deployment_jobs` persist (ADR 0020); socket/network remains outside the DB | High: socket/network |
 
-## Known Future Work
-
-- **Distributed multi-host locking** — current single-process advisory lock does not extend to multi-host. Requires a real distributed lock service.
-- **Stronger RunStep ordering under distributed writers** — current `MAX()+1` approach is not safe under concurrent writers. Requires DB sequence or distributed counter.
+Advisory locks are process-local. `RunStep` ordering uses `MAX()+1`.
+Unimplemented multi-host locking ideas:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §21.
 
 ## Schema Authoring (drizzle-kit as a generator)
 

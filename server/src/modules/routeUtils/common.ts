@@ -4,6 +4,7 @@ import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { introspectIdentity } from "../auth/identity.js";
+import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
 
 export type { Pool };
 
@@ -103,7 +104,9 @@ function logServerRouteError(reply: FastifyReply, error: unknown): void {
     error_code: (error as { code?: unknown }).code ?? null,
     reason: error.message,
     diagnostics: (error as { diagnostics?: unknown }).diagnostics ?? null,
-    provider_response_text: typeof responseText === "string" ? responseText.slice(0, 8000) : null,
+    provider_response_text: typeof responseText === "string"
+      ? redactSecretPatterns(responseText).slice(0, 8000)
+      : null,
   }, "route request failed");
 }
 

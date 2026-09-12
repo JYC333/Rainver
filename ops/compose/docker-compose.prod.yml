@@ -39,17 +39,20 @@ services:
       - RAINVER_ENV=prod
       - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-rainver}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required for production}@postgres:5432/${POSTGRES_DB:-rainver}}
       - SANDBOX_RUNNER_SERVER_HOST=server
+      # The only peer whose X-Forwarded-* the server believes (nginx).
+      - SERVER_TRUSTED_PROXY_HOST=frontend
       # Binding a paired execution host to a ModelProvider needs the provider
       # proxy reachable from that machine, which needs a port that survives a
       # restart. Fixed here so the published mapping below is stable; the
       # in-network sandbox path is unaffected either way.
+      - PROVIDER_PROXY_LISTEN_HOST=0.0.0.0
       - PROVIDER_PROXY_PORT=${PROVIDER_PROXY_PORT:-28421}
       # PROVIDER_PROXY_EXTERNAL_BASE_URL is deliberately NOT set here: an
       # `environment:` entry overrides `env_file`, so declaring it would
       # silently blank out the generated `.server.env` value. Set it in the
       # instance `.env`, which is what `.server.env` is generated from.
-      # Unset means remote binding is unavailable, and dispatch says so rather
-      # than handing a host a URL it cannot resolve.
+      # Unset, a paired host gets an address derived from an http:
+      # FRONTEND_URL plus this port; an https: FRONTEND_URL needs it set.
     ports:
       # Loopback by default: reachable from this machine only. Widening this
       # bind is the deliberate step that exposes lease traffic to the local

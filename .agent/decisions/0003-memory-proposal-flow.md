@@ -42,8 +42,9 @@ A memory write is a proposal when it would:
   (`manual`) — post-session reflection, activity-to-memory pipelines,
   consolidation and maintenance jobs, and every external import keep the
   proposal flow unchanged. **Persona is the one exception**, for the reason
-  section 5 gives;
-- revise an Agent's persona in a `manual`-origin Run (section 5);
+  section 5 gives, and only when the unattended work is the Agent owner's own;
+- revise an Agent's persona, unless the Run is unattended work the Agent's
+  own owner set going (section 5);
 - be a `memory_maintenance_packet` (bulk change by construction).
 
 ### 2. Bounded writes (applied directly, as a new version)
@@ -184,27 +185,52 @@ The owner's static `agents.role_instruction` is a different field with a
 different author and is not touched by any of this: the person sets the role,
 the Agent evolves the persona, and the prompt renders role first.
 
-### 5. Who may change a persona is decided by who triggered the Run
+### 5. Who may change a persona is decided by who is responsible for the Run
 
 A persona entry is delivered in every Room and every conversation, so a person
-who can talk to an Agent must not be able to rewrite what every other person's
-turns will see. The rule is enforced at the applier from `runs.trigger_origin`
-and `runs.instructed_by_user_id` against `agents.owner_user_id` — never from
-the prompt, which is the thing being defended against:
+who can talk to an Agent — or who can schedule work for it — must not be able
+to rewrite what every other person's turns will see. The rule is enforced at
+the applier from `runs.trigger_origin` and `runs.instructed_by_user_id` against
+`agents.owner_user_id` — never from the prompt, which is the thing being
+defended against:
 
-| Run trigger | Persona write |
-|---|---|
-| `manual`, instructed by the Agent's owner | a proposal decided in the turn; applied on accept |
-| `manual`, instructed by anyone else | a proposal pending for the owner; nothing applied, and neither the preview nor its content is projected to the instructing person |
-| `automation`, `autonomous`, `job`, `delegation`, `system` | applied directly as a new version, with the section 3 notification and one-step restore |
+| Run trigger | Responsible person | Persona write |
+|---|---|---|
+| `manual` | the Agent's owner | a proposal decided in the turn; applied on accept |
+| `manual` | anyone else | a proposal pending for the owner; nothing applied, and neither the preview nor its content is projected to the instructing person |
+| `automation`, `autonomous`, `job`, `delegation`, `system` | the Agent's owner | applied directly as a new version, with the section 3 notification and one-step restore |
+| the same | anyone else, or nobody | a proposal pending for the owner |
+
+The **responsible person** is the root Run's `instructed_by_user_id`: who asked
+in the turn, or who set the unattended work up. Every writer of a Run that can
+reach a memory write stamps it with that person — an Automation's owner, an
+autonomy tick's owner, the person whose plan or workflow the job is executing —
+and a Run that names nobody is read as "not the owner". A person who merely set the work running is
+not the responsible person: firing another member's Automation without
+supplying a prompt runs *its* configured prompt, so the Run is stamped
+`automation` and instructed by the Automation's owner, exactly as the schedule
+would have stamped it; firing it with a prompt of one's own is that person
+asking, and starts a `manual` Run instructed by them. Which of the two it is
+decides row three against row four, so the stamping is part of this rule and
+not an implementation detail beneath it.
 
 The origin read here is the **effective** one: a Run delegated from another
-Agent carries `delegation`, but the question is whether a *person* asked, and
-for a delegated Run the answer is on its root. A `delegation` Run under a
-`manual` root is therefore row one or two, not row three — otherwise one hop of
-`agent.delegate` would be a prompt-reachable way to apply a persona change with
-nobody deciding it, which is the thing this table exists to prevent. The policy
-gate resolves the same way, so the two cannot disagree about one Run.
+Agent carries `delegation`, but the question is who is behind this work, and
+for a delegated Run the answer is on its root — both columns are read from the
+same row. A `delegation` Run under a `manual` root is therefore row one or two,
+not row three — otherwise one hop of `agent.delegate` would be a
+prompt-reachable way to apply a persona change with nobody deciding it, which
+is the thing this table exists to prevent. The policy gate resolves the origin
+the same way, so the two cannot disagree about one Run; what the gate decides
+is passage past the *origin* boundary, and this table then decides the write,
+because denying an unattended persona write at the gate would leave the owner
+nothing to decide.
+
+Rows three and four together are the point: unattended is not the same as
+unowned. An Agent concluding something about itself while doing its owner's own
+work is the case the notification and the restore cover. The same conclusion
+reached under work somebody *else* scheduled reaches every Room this Agent sits
+in just as their turn would have, and gets no more than their turn would get.
 
 The third row is the deliberate exception to section 1's "any origin other
 than `manual` is a proposal", and the same exception is the one
@@ -215,13 +241,15 @@ way round. The policy layer scopes that exemption to a persona write on an
 `agent`-scope entry produced specifically by `memory.remember` or
 `memory.revise`; `memory.write` stays origin-gated for everything else.
 
-The reason the two rows are the other way round
+The reason the rows run the other way round
 from everywhere else: a person in a turn asking for a change is exactly the
 input that must not be trusted with reach this wide, while an Agent concluding
-something about itself outside anyone's turn is the case the notification and
-the restore already cover. "Alice asked the Agent to change" and "the Agent
-concluded on its own during Alice's turn" are indistinguishable at the
-mechanism level and do not need to be: the second row covers both.
+something about itself outside anyone's turn, in work its own owner set up, is
+the case the notification and the restore already cover. "Alice asked the Agent
+to change" and "the Agent concluded on its own during Alice's turn" are
+indistinguishable at the mechanism level and do not need to be: the second row
+covers both, and the fourth covers the same pair when Alice scheduled the work
+instead of speaking in it.
 
 "The instructing person cannot approve it" needs a mechanism, because proposal
 decision authority in this codebase is role-based (`required_approver_role`),
@@ -284,6 +312,15 @@ did this Agent learn" is section 4, and it is the only one.
   audience rule as a read gate with promotion to Project Memory as the only
   widening path, and the statement that a CLI's own auto-memory is outside
   Memory and never imported (§6).
+- **2026-09-11** — §5 gained its fourth row: an unattended Run applies a
+  persona write directly only when the person responsible for that unattended
+  work is the Agent's owner, and otherwise leaves a proposal pending for the
+  owner. The responsible person is the root Run's `instructed_by_user_id`, and
+  the section now states what each unattended writer must stamp there —
+  including that firing an Automation without supplying a prompt runs the
+  Automation owner's work, not the firing person's. Before this, any origin
+  but `manual` applied, so a member who could fire or schedule another member's
+  Agent could rewrite what every Room saw with nobody deciding it.
 - **2026-09-06 (later)** — the note audience is measured by the Room read gate
   rather than the roster: measuring by roster understated a mainline, whose
   members are enrolled on first open, and delivered a limited Room's note into

@@ -393,8 +393,91 @@ describe("publication routes", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json().items[0]).toMatchObject({
       status: "revoked",
+      title: "Report",
+      snapshot: {
+        schema_version: 1,
+        resource_type: "artifact",
+        title: "Report",
+        payload: {},
+      },
       import: { imported_resource_id: "artifact-copy" },
     });
+    expect(response.json().items[0].snapshot.payload).not.toHaveProperty("content");
+    // Withheld with the body it hashes: a hash of content this reader may no
+    // longer see still answers "is this the text?" for every guess.
+    expect(response.json().items[0].snapshot_hash).toBeNull();
+  });
+
+  it("does not name someone else's imported copy", async () => {
+    const query = vi.fn(async (sql: string) => {
+      const normalized = sql.replace(/\s+/g, " ");
+      if (normalized.includes("FROM content_publications cp")) {
+        return {
+          rows: [{
+            ...publicationRow({ source_space_id: "source-space", status: "active" }),
+            target_space_ids: ["space-1"],
+            import_id: "import-1",
+            imported_resource_type: "artifact",
+            imported_resource_id: "artifact-copy",
+            // Imported by a colleague, not by the person asking.
+            imported_by_user_id: "user-2",
+            imported_at: "2026-07-10T11:00:00.000Z",
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${normalized}`);
+    });
+    vi.mocked(getDbPool).mockReturnValue({ query } as never);
+    app = buildModuleServer(config(), [publicationsModule]);
+
+    const response = await app.inject({ method: "GET", url: "/api/v1/publications?view=received" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items[0].import).toMatchObject({
+      imported_by_user_id: "user-2",
+      imported_resource_id: null,
+    });
+  });
+
+  it("does not return a revoked snapshot body to a target-space member on GET", async () => {
+    const query = vi.fn(async (sql: string) => {
+      const normalized = sql.replace(/\s+/g, " ");
+      if (normalized.includes("FROM content_publications cp")) {
+        return {
+          rows: [{
+            ...publicationRow({
+              source_space_id: "source-space",
+              status: "revoked",
+              revoked_at: "2026-07-10T12:00:00.000Z",
+              revoked_by_user_id: "publisher-1",
+            }),
+            target_space_ids: ["space-1"],
+            import_id: "import-1",
+            imported_resource_type: "artifact",
+            imported_resource_id: "artifact-copy",
+            imported_by_user_id: "user-1",
+            imported_at: "2026-07-10T11:00:00.000Z",
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${normalized}`);
+    });
+    vi.mocked(getDbPool).mockReturnValue({ query } as never);
+    app = buildModuleServer(config(), [publicationsModule]);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/publications/publication-1",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: "revoked",
+      snapshot: { payload: {} },
+    });
+    expect(response.json().snapshot.payload).not.toHaveProperty("content");
   });
 
   it("revokes future imports without deleting existing copies", async () => {
@@ -423,6 +506,7 @@ describe("publication routes", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json().status).toBe("revoked");
+    expect(response.json().snapshot).toEqual(artifactSnapshot());
     expect(query.mock.calls.some(([sql]) => /DELETE\s+FROM\s+content_publication_imports/i.test(String(sql)))).toBe(false);
   });
 });

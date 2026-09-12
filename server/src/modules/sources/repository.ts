@@ -16,6 +16,7 @@ import {
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
 import { SourceExtractionWorker } from "./extractionWorker.js";
+import type { OutboundGuard } from "./outboundUrlSafety.js";
 import { upsertCanonicalEvidence } from "./evidenceIdentity.js";
 import { runCustomSourceHandlerScanJob } from "./customSources/customSourceScanWorker.js";
 import { RECIPE_SCAN_JOB_IMPLEMENTATION, runSourceRecipeScanJob } from "./sourceRecipes/recipeScanWorker.js";
@@ -73,6 +74,7 @@ import {
   sourceItemReadableClause,
 } from "./sourceItemAccess.js";
 import { ProjectSourceBindingRepository } from "../projects/projectSourceBindingRepository.js";
+import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 
 const EVIDENCE_LINK_TYPES = new Set([
   "supports",
@@ -176,6 +178,12 @@ export class PgSourcesRepository {
   constructor(
     private readonly db: Queryable,
     private readonly config: ServerConfig,
+    /**
+     * The outbound boundary the scan workers this repository drives fetch
+     * through. Production leaves it out and gets the instance's guard; a test
+     * supplies one pinned at its own fixture server.
+     */
+    private readonly guard?: OutboundGuard,
   ) {}
 
   async listItems(identity: SpaceUserIdentity, filters: {
@@ -245,7 +253,7 @@ export class PgSourcesRepository {
       `SELECT count(*)::text AS total FROM source_items si ${stateJoin} ${where}`,
       params,
     );
-    const rows = await this.db.query<SourceItemRow>(
+    const rows = await this.db.query<WithAccessLevel<SourceItemRow>>(
       `SELECT ${itemColumnsWithCurrentUserState("si")},
               ${contentAccessLevelSql({ definition: SOURCE_ITEM_ACCESS, alias: "si", userExpr: "$2" })} AS effective_access_level
          FROM source_items si
@@ -343,7 +351,10 @@ export class PgSourcesRepository {
       sourceItemId: row.id,
     });
     await this.reindexItemForRetrieval(identity.spaceId, row.id, "source_manual_url");
-    return itemOut(row);
+    // Read back through the gate: the write path's rows carry no viewer level.
+    const created = await this.getItemRow(identity, row.id);
+    if (!created) throw new HttpError(404, "Source item not found");
+    return itemOut(created);
   }
 
   async itemAction(identity: SpaceUserIdentity, itemId: string, body: Record<string, unknown>) {
@@ -475,9 +486,9 @@ export class PgSourcesRepository {
   }
 
   async runJob(identity: SpaceUserIdentity, jobId: string) {
-    await runSourceRecipeScanJob(this.db, this.config, jobId, identity.spaceId);
-    await runCustomSourceHandlerScanJob(this.db, this.config, jobId, identity.spaceId);
-    const worker = new SourceExtractionWorker(this.db, this.config);
+    await runSourceRecipeScanJob(this.db, this.config, jobId, identity.spaceId, this.guard);
+    await runCustomSourceHandlerScanJob(this.db, this.config, jobId, identity.spaceId, this.guard);
+    const worker = new SourceExtractionWorker(this.db, this.config, this.guard);
     await worker.runPendingJob(jobId, identity.spaceId);
     const result = await this.db.query<ExtractionJobRow>(
       `SELECT ${JOB_COLUMNS} FROM extraction_jobs WHERE space_id = $1 AND id = $2`,
@@ -566,7 +577,7 @@ export class PgSourcesRepository {
     }
     const where = `WHERE ${clauses.join(" AND ")}`;
     const total = await this.db.query<{ total: string }>(`SELECT count(*)::text AS total FROM extracted_evidence ${where}`, params);
-    const rows = await this.db.query<EvidenceRow>(
+    const rows = await this.db.query<WithAccessLevel<EvidenceRow>>(
       `SELECT ${EVIDENCE_COLUMNS},
               ${evidenceEffectiveAccessLevelSql("extracted_evidence", "$2")} AS effective_access_level
          FROM extracted_evidence ${where} ORDER BY updated_at DESC, id DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
@@ -665,7 +676,9 @@ export class PgSourcesRepository {
       });
     }
     await this.reindexEvidenceForRetrieval(identity.spaceId, row.id, "source_evidence_create");
-    return evidenceOut(row);
+    const created = await this.getEvidenceRow(identity, row.id);
+    if (!created) throw new HttpError(404, "Evidence not found");
+    return evidenceOut(created);
   }
 
   async getEvidence(identity: SpaceUserIdentity, evidenceId: string) {
@@ -706,7 +719,9 @@ export class PgSourcesRepository {
     );
     const row = result.rows[0]!;
     await this.reindexEvidenceForRetrieval(identity.spaceId, row.id, "source_evidence_update");
-    return evidenceOut(row);
+    const updated = await this.getEvidenceRow(identity, row.id);
+    if (!updated) throw new HttpError(404, "Evidence not found");
+    return evidenceOut(updated);
   }
 
   async listEvidenceLinks(identity: SpaceUserIdentity, filters: {
@@ -878,7 +893,7 @@ export class PgSourcesRepository {
       `SELECT count(*)::text AS total ${joins} ${where}`,
       params,
     );
-    const rows = await this.db.query<ProjectSourceItemOutRow>(
+    const rows = await this.db.query<WithAccessLevel<ProjectSourceItemOutRow>>(
       `SELECT psil.id AS project_link_id,
               psil.space_id AS project_link_space_id,
               psil.project_id AS project_link_project_id,
@@ -1209,7 +1224,7 @@ export class PgSourcesRepository {
   }
 
   private async getItemRow(identity: SpaceUserIdentity, itemId: string, requireFull = false) {
-    const result = await this.db.query<SourceItemRow>(
+    const result = await this.db.query<WithAccessLevel<SourceItemRow>>(
       `SELECT ${itemColumnsWithCurrentUserState("si")},
               ${contentAccessLevelSql({ definition: SOURCE_ITEM_ACCESS, alias: "si", userExpr: "$2" })} AS effective_access_level
          FROM source_items si
@@ -1357,7 +1372,7 @@ export class PgSourcesRepository {
   }
 
   private async getEvidenceRow(identity: SpaceUserIdentity, evidenceId: string, requireFull = false) {
-    const result = await this.db.query<EvidenceRow>(
+    const result = await this.db.query<WithAccessLevel<EvidenceRow>>(
       `SELECT ${evidenceColumnsForAlias("ee")},
               ${evidenceEffectiveAccessLevelSql("ee", "$3")} AS effective_access_level
          FROM extracted_evidence ee

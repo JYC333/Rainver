@@ -22,6 +22,14 @@ class AgentGroupServiceDb {
     if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) {
       return { rows: [], rowCount: null };
     }
+    // First, because a query's own FROM identifies it no matter what
+    // predicates it embeds. The delegation reads carry the Run predicate
+    // inline, which names `room_read_run` and `runs` — so the arms below,
+    // which key on those, answered the delegation queries with a row of the
+    // wrong shape once the Room term was added to them.
+    if (sql.includes("FROM run_delegations")) {
+      return { rows: [], rowCount: 0 };
+    }
     if (sql.includes("INSERT INTO agent_run_groups")) {
       return {
         rows: [{
@@ -77,6 +85,13 @@ class AgentGroupServiceDb {
         rowCount: this.rootRunId ? 1 : 0,
       };
     }
+    // Before the `room_read_run` arm for the same reason the `FROM runs r` arm
+    // is after it: the timeline's message read now carries the Run predicate,
+    // so its SQL mentions `room_read_run` too and would otherwise be answered
+    // with an `allowed` row instead of a message list.
+    if (sql.includes("FROM agent_run_messages")) {
+      return { rows: [], rowCount: 0 };
+    }
     if (sql.includes("room_read_run")) {
       // `roomRunReadAccessSql`, the Room-boundary probe `getVisibleRun` runs.
       // This fake models neither `rooms` nor `room_user_members`, so it
@@ -84,10 +99,14 @@ class AgentGroupServiceDb {
       // runs against real PostgreSQL. Two things about this arm:
       // it must precede the `"FROM runs r"` arm, because the probe's subquery
       // says `FROM runs room_run` and would otherwise be answered with a run
-      // row carrying no `allowed` column — reading as a denial; and it keys on
+      // row carrying no `allowed` column — reading as a denial; it keys on
       // the predicate's own table alias rather than on `"AS allowed"`, which
       // two unrelated queries also end in, so an unmodelled path still reaches
-      // the fallback that throws instead of being silently allowed.
+      // the fallback that throws instead of being silently allowed; and it
+      // must not answer for a query that merely *embeds* the predicate. The
+      // delegation reads now carry the Room term inline, and this arm answered
+      // them with `{ allowed: true }`, which their callers read as one row of
+      // their own shape — a policy-record list of `[undefined]`.
       return { rows: [{ allowed: true } as Row], rowCount: 1 };
     }
     if (sql.includes("FROM runs r")) {
@@ -124,12 +143,6 @@ class AgentGroupServiceDb {
         rows: [...this.members].map(agentId => memberRecord(agentId)) as Row[],
         rowCount: this.members.size,
       };
-    }
-    if (sql.includes("FROM agent_run_messages")) {
-      return { rows: [], rowCount: 0 };
-    }
-    if (sql.includes("FROM run_delegations")) {
-      return { rows: [], rowCount: 0 };
     }
     if (sql.includes("AS effective_access_level")) {
       return {

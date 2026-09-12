@@ -38,6 +38,7 @@ import type {
   ProviderInfo,
 } from "../commands/store.js";
 import type { ProviderTaskAttemptRefs } from "../commands/types.js";
+import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import type { UsageAttribution, UsageObservation } from "../../usage/index.js";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import { classifyProviderFailure, type ProviderResilienceDecision } from "./resilience.js";
@@ -76,6 +77,8 @@ export interface ProviderChatRequestBody {
   /** Managed Runtime Context deliveries authorize one physical provider only. */
   allow_provider_fallback?: boolean;
   metering: ProviderMeteringContext;
+  /** Why this key is being spent; decided before any key is resolved. */
+  spend: CredentialSpendBasis;
 }
 
 export interface ProviderChatResponseBody {
@@ -1164,6 +1167,16 @@ export async function completeProviderChat(
   spaceId: string,
   body: ProviderChatRequestBody,
 ): Promise<ProviderChatInvocationResult> {
+  await store.authorizeCredentialSpend(spaceId, body.provider_id || null, body.spend);
+  return completeAuthorizedProviderChat(store, spaceId, body);
+}
+
+/** The chat path once its spend is decided; every exported entry decides first. */
+async function completeAuthorizedProviderChat(
+  store: ProviderCommandStore,
+  spaceId: string,
+  body: ProviderChatRequestBody,
+): Promise<ProviderChatInvocationResult> {
   assertMeteringContext(body.metering);
   const attribution = await resolveProviderUsageAttribution(
     store,
@@ -1270,6 +1283,7 @@ export interface ProviderTextCompletionInput {
   task?: string | null;
   egressPolicy?: RetrievalEgressPolicy | null;
   metering: ProviderMeteringContext;
+  spend: CredentialSpendBasis;
 }
 
 export interface ProviderMessagesCompletionInput {
@@ -1288,6 +1302,7 @@ export interface ProviderMessagesCompletionInput {
   egressPolicy?: RetrievalEgressPolicy | null;
   allow_provider_fallback?: boolean;
   metering: ProviderMeteringContext;
+  spend: CredentialSpendBasis;
 }
 
 /**
@@ -1317,6 +1332,7 @@ export async function completeProviderText(
     task: input.task,
     egressPolicy: input.egressPolicy,
     metering: input.metering,
+    spend: input.spend,
   });
 }
 
@@ -1348,11 +1364,13 @@ export async function completeProviderMessages(
     egressPolicy: input.egressPolicy,
     allow_provider_fallback: input.allow_provider_fallback,
     metering: meteringContext(input.metering, input.task),
+    spend: input.spend,
   });
 
   // A structured contract is bound to the selected Research provider/model.
   // Auxiliary task policies may intentionally reroute generic work, but they
   // must not silently replace a Research execution contract.
+  await store.authorizeCredentialSpend(spaceId, input.provider_id || null, input.spend);
   const taskChain = input.output_format || !input.task || input.allow_provider_fallback === false
     ? null
     : await store.getTaskChain(spaceId, input.task);
@@ -1360,7 +1378,7 @@ export async function completeProviderMessages(
   if (taskChain) {
     for (const entry of taskChain) {
       try {
-        const result = await completeProviderChat(store, spaceId, chatBody(entry.provider_id, entry.model));
+        const result = await completeAuthorizedProviderChat(store, spaceId, chatBody(entry.provider_id, entry.model));
         return {
           text: result.content,
           provider: result.provider,
@@ -1390,7 +1408,7 @@ export async function completeProviderMessages(
     }
   }
 
-  const result = await completeProviderChat(store, spaceId, chatBody(input.provider_id, input.model));
+  const result = await completeAuthorizedProviderChat(store, spaceId, chatBody(input.provider_id, input.model));
   return {
     text: result.content,
     provider: result.provider,
@@ -1416,6 +1434,7 @@ export interface ProviderEmbeddingInput {
   task?: string;
   egressPolicy?: RetrievalEgressPolicy | null;
   metering: ProviderMeteringContext;
+  spend: CredentialSpendBasis;
 }
 
 export interface ProviderEmbeddingResult {
@@ -1436,6 +1455,7 @@ export interface ProviderRerankInput {
   task?: string;
   egressPolicy?: RetrievalEgressPolicy | null;
   metering: ProviderMeteringContext;
+  spend: CredentialSpendBasis;
 }
 
 export interface ProviderRerankResult {
@@ -1457,6 +1477,7 @@ export async function completeProviderEmbedding(
   input: ProviderEmbeddingInput,
 ): Promise<ProviderEmbeddingResult> {
   if (input.inputs.length === 0) return { vectors: [], model: "", usage: {} };
+  await store.authorizeCredentialSpend(spaceId, input.provider_id ?? null, input.spend);
   assertMeteringContext(input.metering);
   const attribution = await resolveProviderUsageAttribution(
     store,
@@ -1798,6 +1819,7 @@ export async function completeProviderRerank(
   input: ProviderRerankInput,
 ): Promise<ProviderRerankResult> {
   if (input.documents.length === 0) return { scores: [], model: "", usage: {} };
+  await store.authorizeCredentialSpend(spaceId, input.provider_id ?? null, input.spend);
   assertMeteringContext(input.metering);
   const attribution = await resolveProviderUsageAttribution(
     store,
@@ -2098,10 +2120,12 @@ export async function listProviderModels(
   store: ProviderCommandStore,
   spaceId: string,
   providerId: string,
-  subjectUserId?: string | null,
+  subjectUserId: string | null,
+  spend: CredentialSpendBasis,
 ): Promise<{ models: string[]; source: "configured" | "live" }> {
   const configured = await store.listConfiguredModels(spaceId, providerId);
   if (configured.length > 0) return { models: configured, source: "configured" };
+  await store.authorizeCredentialSpend(spaceId, providerId, spend);
   const target = await store.getInvocationTarget(spaceId, providerId, subjectUserId);
   const provider = target.provider;
   const apiKey = target.candidates.find((c) => c.api_key)?.api_key ?? null;

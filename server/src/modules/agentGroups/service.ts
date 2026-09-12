@@ -744,10 +744,11 @@ export class AgentGroupRunService {
       repo.listMessages({
         space_id: identity.spaceId,
         group_id: groupId,
+        viewer_user_id: identity.userId,
         limit: page.limit,
         offset: page.offset,
       }),
-      repo.listDelegations(identity.spaceId, groupId),
+      repo.listDelegations(identity.spaceId, groupId, identity.userId),
     ]);
     return { group, members, messages, delegations };
   }
@@ -769,7 +770,7 @@ export class AgentGroupRunService {
     const [artifactIds, proposalIds, policyDecisionRecordIds] = await Promise.all([
       repo.listArtifactIdsForRuns(identity.spaceId, identity.userId, runIds),
       repo.listProposalIdsForRuns(identity.spaceId, identity.userId, runIds),
-      repo.listPolicyDecisionRecordIdsForGroup(identity.spaceId, groupId),
+      repo.listPolicyDecisionRecordIdsForGroup(identity.spaceId, groupId, identity.userId),
     ]);
     return {
       group: timeline.group,

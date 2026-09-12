@@ -26,7 +26,10 @@ All durable-data API routes require authentication via `get_identity()` or
 All other routes, including system-metadata endpoints, are auth-gated:
 
 - `GET /capabilities`, `GET /capabilities/{id}`, `POST /capabilities/reload`
+- `GET /api/v1/server/catalog`, `/catalog/capabilities`, `/catalog/agent-templates`
+- `GET /api/v1/server/notifications/webhooks/policy`, `POST .../webhooks/dispatch`
 - `GET /jobs/handlers`
+- `GET /api/v1/system/backups`, `POST /api/v1/system/backups/manual` — instance-admin gated
 - `POST /hosts/{hostId}/installations/{adapterType}`, `.../rollback`, `DELETE .../{installation}` — instance-admin gated for the built-in host, owner-gated for a paired machine
 - `GET /providers/vendors`, `/providers/presets`
 
@@ -118,14 +121,50 @@ no-oracle behavior — the caller cannot distinguish "not found" from "not permi
 
 `private` content is owner-readable, `space_shared` is readable to scope-eligible
 members, and `selected_users` is readable to the owner and active same-Space
-grantees. `access_level=summary` withholds full content from non-owners. Project Folder
+grantees. `access_level=summary` withholds full content from non-owners.
+**It fails closed:** `bodyWithheld` (`access/contentAccessTypes.ts`) serves a
+body only when the viewer's computed level is exactly `full`, so an
+unexpected level value withholds. Every serializer that carries a body takes
+only a row with the level computed: `WithAccessLevel<Row>` (Agents,
+artifacts, activity, knowledge items, claims, knowledge sources, notes,
+source items, evidence, post-processing decisions, memory), `VisibleRunRecord`
+for Runs, or an explicit level for Run detail records. The base row types have
+no level field, so a read path that forgot to compute the level does not
+compile. Write responses (Agent, activity, source item, evidence, knowledge
+source) are read back through the gated query, so they carry the writer's
+level instead of withholding from their own author.
+
+A summary viewer is withheld, on these surfaces:
+- **Knowledge / Notes:** detail bodies, list previews, retrieval text, note
+  `content_hash`, and note revision history (a summary reader gets 404 there).
+- **Knowledge sources:** `raw_text`, `content_ref` and metadata.
+- **Claims:** `claim_text`, `subject_text` and metadata, and the claim
+  evidence's quote and locator.
+- **Item↔source links and item `source_refs`:** the link quote and note, and
+  the evidence excerpt.
+- **Activity:** `content` and `metadata_json`.
+- **Artifacts:** inline bodies and export.
+- **Runs:**
+  - `output_json`, and the turn / turn-stream body;
+  - on `/trace`, the step input/output summaries, event summaries, and
+    error text and metadata;
+  - the free-text and JSON detail of attempts, supervisor decisions,
+    evaluations, finalizations and verifications;
+  - a Task's run list.
+- **Agents:** `system_prompt` on the Agent row, version snapshots, and every
+  write response, which is computed for the acting user.
+
+Reader
+`research_notebook` uses the same `space_object` gate as Notes and requires
+`full` to return a body. Project Folder
 and project scope are independent from visibility. Space owner/admin roles may
 manage access policy but do not bypass read policy **by default**; the single
 exception is the creation-time, immutable Space oversight mode (below), scoped
 to reads within that Space.
 
 Every persisted context-snapshot item records the source content's owner and
-visibility. The Run aggregates those rows into `context_taint_json`: the
+visibility, taken from the canonical retrieved row rather than the instructing
+user. The Run aggregates those rows into `context_taint_json`: the
 narrowest input visibility and the distinct owners other than the instructing
 user. Durable Run outputs consume that summary. An output influenced by another
 user defaults to `selected_users` for the instructing user and contributing
@@ -266,8 +305,8 @@ Room-derived output therefore carries `roomRunReadAccessSql` alongside
 the content predicate, so a list cannot show what its detail page then 404s
 on. It is applied by `runs.listRuns` and `runs.getVisibleRun`; the Home and
 cross-space Run lists and the failed-run count, and the Home Proposal and
-Artifact lists (`frontendSupport`'s `runReadSql`, `proposalReadSql`,
-`artifactReadSql`); the Project Pulse in-progress count; and the canonical
+Artifact lists (`access/contentAccessSql.ts`'s `runReadSql`,
+`proposalReadSql`, `artifactReadSql`, which `frontendSupport` calls); the Project Pulse in-progress count; and the canonical
 Proposal and Artifact repository reads. It also gates Proposal accept, reject
 and egress approval (`proposals/applyService.ts`), so widening it widens a
 write authority — which is why the predicate has no mainline exemption even
@@ -279,13 +318,28 @@ Project member who never opened it decide that Run's Proposals.
 Some reads are covered by their parent rather than by this predicate.
 `listRunIdsForGroup`, `listArtifactIdsForRuns` and `listProposalIdsForRuns`
 sit behind `requireReadableGroup`, which checks Room membership directly.
-`listTaskRuns`, `listTaskArtifacts` and `listTaskProposals` sit behind a
-content predicate on the Task with no Room term — no path writes a Room-scoped
-Run into `task_runs` today, so those are latent rather than live, and they are
-where to look first if one ever does. The Board read model's run and output
-columns (`boardReadModel.ts`, through `task_runs` / `task_artifacts`) are the
-same latent class. `listPolicyDecisionRecordIdsForGroup` carries no viewer
-predicate at all and rests entirely on its parent. The daily-report artifact
+`listTaskRuns`, `listTaskArtifacts`, `listTaskProposals` and
+`listTaskEvaluations` carry both terms: the content predicate and the Room term,
+through the shared `runReadSql` / `proposalReadSql` / `artifactReadSql` in
+`access/contentAccessSql.ts`. An evaluation and a Project work event are judged
+by the Run that produced them (`runInheritedReadSql`), and a work event names
+its Run inside `data_json`. The Board and Task work-view run, evaluation, and
+output columns (`boardReadModel.ts`) read through the same helpers, so a shared
+Task cannot surface another member's private Run status, evaluation summary, or
+output types — from a Room or otherwise. Task dispatch refuses a `session_id`
+that names a Room conversation, so no Room-scoped Run reaches `task_runs` in the
+first place; the Room term on those lists is the second of the two.
+
+**The close gate is computed in the asking person's view.** `taskCompletionState`
+and `missingRequiredOutputs` take a required viewer: an optional one meant a
+caller that forgot it judged the Task against the whole ledger, so a close that
+succeeded, or a shorter `missing` list, told the person that an evaluation or an
+output they cannot see exists. The settlement worker, which decides what actually
+happened to a Task and must see every output, says so by name
+(`missingRequiredOutputsForSettlement`). `listPolicyDecisionRecordIdsForGroup`
+and the group timeline's `listDelegations` join each delegation's parent (and
+child, when present) Run and apply the Run content predicate, so a readable
+group does not leak PDR ids or delegation text from a private child Run. The daily-report artifact
 reads (`dailyReports/`) carry no Room term either; in practice they are
 restricted to the viewer's own non-Room artifacts, but they have not been
 audited against this rule. Cross-space reads always fail regardless of oversight;
@@ -364,6 +418,45 @@ reachability — run before anything is spent, under the caller's identity.
 See [modules/rooms.md](../modules/rooms.md) and
 [ADR 0018](../decisions/0018-room-as-visibility-boundary.md).
 
+### Commands on shared records
+
+Reading a record and acting on it are different standings. Each kind of
+command has one authorizer, and every path that issues the command goes
+through it:
+
+- **Agents.** `assertAgentOwner` (`agents/agentAccess.ts`) gates identity,
+  config, version restore and runtime-profile writes: the owner; for an unowned
+  system-managed Agent, the Space's owner or admin; never the Assistant, whose
+  runtime profiles follow its Project's writers. An automation may name only an
+  Agent its creator can read.
+- **Inquiry Threads.** `assertThreadReadable` (`inquiry/threadAccess.ts`) is the
+  root's content predicate, 404 on refusal, on every Thread path: sub-resources,
+  signals and candidates, advice, retrieval, and knowledge extraction and
+  promotion. Its purpose argument keeps Space oversight to reads: a change needs
+  the person's own reach, and a publication such as a Delta Brief draws only on
+  Threads shared with the Space. Only a Thread's owner reassigns it; a child or
+  superseding Thread, and a Knowledge candidate taken from a Thread, start no
+  wider than their source.
+- **Runs.** `authorizeRunCommand` (`runs/runCommandAuthority.ts`) gates
+  execute, stop, finalize, resume and abandon: the Run is visible, and the
+  caller is its owner or instructing person. Granting a policy pause's approval
+  is decided instead by approval authority over the recorded risk
+  (`roleMayApproveRisk`). A child Run's parent must be readable by its creator,
+  child lists apply the Run predicate, and a person-started create refuses
+  `trigger_origin` and `run_type: system`.
+- **Proposals.** `authorizeProposalDecision` gives accept, reject, rollback and
+  egress approval one reach rule (same Space, the decision's state, readable,
+  inside a readable Room for a Run's proposal); each decision adds its own
+  authority.
+- **Roles.** `assertCanGrantRole` (`access/roles.ts`) gates every role grant: a
+  known role, no higher than the granter's, and owner only from an owner — Space
+  invitations and Project member add, role change or removal (taking a role away
+  needs the standing to grant it). Room roles never come from a request:
+  invitations add `member`, and only the current owner transfers ownership. The
+  one other way to Room ownership is claiming a suspended Room — one whose owner
+  can no longer write the Project — by the Project owner or a Space owner/admin,
+  a recovery path rather than a grant between people.
+
 ---
 
 ## 4. Session Access Policy
@@ -384,6 +477,9 @@ are readable/writable only through `/rooms/{roomId}/conversations/*`.
   assigns `role='user'` and does not accept client metadata. Assistant role,
   Run identity, artifact references, and action previews are server-owned.
 - An unauthorized request must not return any message content.
+- Room `room_display = internal` instructions stay off the human transcript,
+  the Project conversation list preview/count, and conversation summaries.
+  Agent replay still reads them.
 
 Enforcement is at the SQL query layer: `Session.space_id == space_id`,
 `Session.user_id == user_id`, and `Session.room_id IS NULL` are all applied as
@@ -440,6 +536,29 @@ Additional invariants:
   The fail-closed behavior is tested.
 - Memory writes require policy/proposal gating: there is no public direct-write
   active-memory path accessible without policy enforcement.
+- Person-facing run create (`POST /api/v1/agents/:agentId/runs` and Task
+  dispatch) always records `trigger_origin = manual`. The client cannot label a
+  live turn as unattended to apply a persona without in-turn owner review, or
+  treat an attended write as automation. Unattended origins are stamped only by
+  scheduler and automation writers.
+- A persona write applies from an unattended Run only when the person
+  responsible for that work — the root Run's `instructed_by_user_id` — is the
+  Agent's owner (ADR 0003 §5). Another member's Automation, autonomy tick or
+  job leaves a proposal pending for the owner, exactly as their turn would, so
+  scheduling work against an Agent is not a way to rewrite what every Room it
+  sits in will see. Unattended writers stamp the responsible person: firing an
+  Automation without supplying a prompt runs the Automation owner's configured
+  prompt and is instructed by that owner, not by whoever pressed fire. That
+  holds for the two targets that run an Agent — `agent_run` and `workflow`.
+  The retrieval-maintenance, context-ops and information-digest targets still
+  stamp the firing person on their `automation` Runs; those Runs run in
+  process, dispatch no system action and reach no memory write, and their
+  person is the owner of the owner-private output they produce.
+- Publication import of a memory snapshot writes through
+  `PgMemoryApplyRepository.applyPublicationImport`: a new private user-scope
+  row attributed to the importer, with user-confirmation provenance. It does
+  not insert `memory_entries` from the publications adapter, and it cannot
+  import agent-scope types.
 - `MemoryProposalApplier.apply_create()` and `apply_update()` block grant-derived proposals
   from applying to non-personal target spaces without prior egress approval.
 
@@ -576,8 +695,13 @@ artifact payloads or full memory content is returned — pointer metadata only i
 `/publications` never resolves a live source resource for a target Space. Publishing
 requires source ownership/full access plus active membership in every explicit target.
 Discovery requires active membership in the current target Space. Import verifies the
-immutable snapshot hash and creates a new private target-Space resource. Revocation
-blocks future imports without deleting existing copies.
+immutable snapshot hash and creates a new private target-Space resource through
+the owning domain writer (Memory uses `PgMemoryApplyRepository`). Revocation
+blocks future imports without deleting existing copies. After revoke, list and
+GET still name the publication to a target Space that already imported, but
+they return an empty snapshot payload there; only the publisher still receives
+the snapshot body. The imported copy is the surviving content, and it stays
+private to the importer.
 
 ### 8d. PersonalMemoryGrants
 
@@ -644,14 +768,50 @@ the recipient remains an active member.
 
 ## 9. Credential, Provider, and Runtime Secrecy
 
-- Provider API responses explicitly exclude `api_key`. The internal provider
-  invocation target (which carries the decrypted key) must not be exposed
-  outside the service/adapter layer.
+- Provider API responses explicitly exclude `api_key`. Decrypted keys exist
+  only in-process at resolve time and are passed as a call parameter; they
+  must not appear in a DTO, log, environment variable, or HTTP body,
+  including `/internal/*`. There is no HTTP credential-resolve hatch, and no
+  internal route that spends a key on a caller's say-so.
+- Structured request logs carry no headers at all: Fastify's default `req`
+  serializer emits method, url, host and remote address, and nothing else, and
+  no route logs a request or response body. The redact paths in
+  `gateway/logging.ts` are defense in depth for the day a serializer changes —
+  they are unreachable while the default one is in place, and are listed here
+  as belt-and-braces, not as the mechanism. pino matches a redact path exactly,
+  with no substring rule, so each spelling is listed on its own:
+  `authorization` **and** `proxy-authorization`, `cookie`, `x-api-key`,
+  `api-key`, `x-goog-api-key`, `anthropic-auth-token`,
+  `x-rainver-internal-token`, and the response's `set-cookie`. Provider error
+  bodies logged from 5xx routes pass through `redactSecretPatterns` before
+  persistence — that one is a live path, not defense in depth.
 - ModelProvider credentials are user-owned resources. Active-space use is
   controlled by explicit grant rows; ungranted use fails before secret
   resolution. Provider edit and key replacement are owner-only; Space
   owners/admins may disable grants for their Space without reading or editing
   secret material.
+- One authorizer, `authorizeCredentialSpend` (`policy/credentialSpend.ts`),
+  decides every ModelProvider spend before a key is resolved or a proxy lease
+  is minted. The provider invocation layer calls it for every chat, embedding
+  and rerank call; a proxy lease cannot be created without its result; and the
+  Run executor calls it before a server-host Run starts. Each spend names its
+  basis:
+  - a person in the request being served (`manual`);
+  - a Run, decided on its root Run, since a delegated, Plan or Workflow child
+    has no authority of its own. An `automation` or `autonomous` root spends
+    only while the Automation that fired it holds an active credential grant,
+    read at spend time through `automation_runs`, so revoking the grant stops
+    a Run queued under it;
+  - an unattended job's setup, re-read at spend time: a scheduled daily
+    report, scheduled imported-session extraction, Inquiry advice, Room
+    conversation summaries and titles, Runtime Context checkpoints, retrieval
+    embedding backfills, the research pipeline, and scheduled source
+    post-processing. [modules/policy.md](../modules/policy.md) lists what each
+    re-reads.
+
+  An unattended spend with no authorization record is denied, not sent for
+  approval, because nobody is present to approve it. A missing origin is never
+  treated as `manual`.
 - **A CLI's login is not a control-plane credential** ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)
   §7, B45–B49). It lives with the copy on the host that runs it, in that
   copy's own state directory. The control plane brokers none of it, stores no
@@ -737,6 +897,120 @@ Namespace preflight failure is fail-closed.
   server-side sandbox was deleted, since the root remains a configured
   location on the machine.
 - Artifact read checks verify space and visibility before a stored file is resolved.
+- Custom Source handler load and retention use the same relative-path + `isInside`
+  refusal (`customSources/artifactStoragePath.ts`); a `../` `storage_path` cannot
+  `require()` or unlink a file outside the artifact root.
+
+**Official plugin personal rows.** Diary routes and jobs key every read and
+write by `identity.userId`; the jobs API has no create surface, and a
+reflection job's `user_id` is stamped at enqueue from that identity. Finance
+`visibility = private` personal accounts are hidden from other Space members
+on account list, ledger, balances, transaction list/directives, and Beancount
+export — not only on the account catalog. Production `INSERT INTO
+memory_entries` remains only `memoryApplyRepository`; a new plugin type that
+wrote that table directly would bypass ADR 0003.
+
+**Reads are grouped by what kind of data they return, and each kind has one
+helper.** A list that answers something the detail page refuses is the defect
+this arrangement exists to prevent.
+
+- **Run-derived rows** — Runs, Proposals, Artifacts, `task_runs`,
+  `task_evaluations`, Project work events, agent-group messages — go through
+  `runReadSql` / `proposalReadSql` / `artifactReadSql` / `runInheritedReadSql`
+  in `access/contentAccessSql.ts`. They were in `frontendSupport`, which meant
+  every other domain that shows a Run's output wrote the pair itself or forgot
+  the Room half.
+- **Room transcript** — every reader of `messages` that answers a *person*
+  uses `visibleRoomTranscriptSql`, applied unconditionally rather than behind a
+  flag a caller could pass `false` to. Agent replay and continuation lookups
+  still read the internal rows through `visibleMessagePathSql`, which is the
+  point of storing them in order. A domain-event continuation is stored as a
+  `user_instruction` so replay sees it in order, and is marked
+  `room_display = internal`, so the Room transcript, the pick-by-id surface,
+  the context window and the agent-group timeline all leave it out; the group a
+  continuation opens is named after the event, not after the machine's own
+  prompt.
+- **Notes and Knowledge** — one read (the content predicate plus the Phase 2
+  access level) and one write check, `assertWritableSpaceObject`: anything but
+  `space_shared` belongs to its owner, a Project-bound object also needs writer
+  authority in that Project, and a reader served the object at `summary` may not
+  replace the body they are not shown. Readable is not writable — a
+  `selected_users` grant hands out reading. Every note mutation goes through it:
+  update, rollback, delete, placement add and remove, share revoke, tree
+  reorder, a notebook-chat edit, and the capture relocation that takes blocks
+  out of someone's note. The deleted-note purge deletes only notes its caller
+  could have deleted; Space-wide it was one route that destroyed every member's
+  wastebasket with no object named in the request.
+  Knowledge *items* and *claims* keep their own owner-only mutation rule
+  (`canMutateKnowledge`), which is stricter than this one, not looser;
+  unifying them would widen who may edit a shared item and is left alone
+  deliberately. Free-text search matches a *body*
+  only at `full` access; the title stays searchable at every level, because a
+  search that still matched a withheld body handed it back a character at a
+  time. The retrieval projection carries `owner_user_id`, not whoever created
+  the row.
+- **Source decision items** — a review action that republishes an item's
+  content reads it as the reviewer, and demands full access
+  (`sourceItemFullContentReadClause`). A Proposal built from Source material
+  takes the narrowest visibility of what it quotes rather than a hard-coded
+  `space_shared`, and a briefing's output artifacts go through the Artifact
+  predicate.
+- **Finance ledger** — `findAccountForViewer` is the one resolver for every
+  account id, with a `writable` mode for close and visibility changes; import
+  validation loads the ledger *this person* can see, and the server names the
+  imported file so the filename filter over validation errors cannot be pointed
+  at the stored ledger's own errors. An account this person may not change
+  answers "not found", not one of three different 403s.
+- **Publications** — a revoked snapshot's `snapshot_hash` is withheld with the
+  body it hashes, and an import block names the imported copy only to the person
+  who imported it.
+
+**Outbound HTTP to a user-influenced URL.** One boundary,
+`@rainver/outbound-guard`, reached from the server through `fetchGuarded`
+(`server/src/modules/sources/outboundUrlSafety.ts`). Every Source, Recipe,
+Custom Source and manual-URL fetch goes through it — the scan and backfill
+paths, the extract/snapshot paths, and the declarative interpreters'
+`fetch_page` / `follow_link` / `download_asset` / `paginate` steps.
+
+- Only `http:`/`https:` URLs without embedded credentials.
+- The host is resolved and refused when **any** answer is private, loopback,
+  link-local (including cloud metadata), unique-local, CGNAT, IPv6 multicast or
+  site-local, or one of the IPv6 spellings that carries an IPv4 address inside
+  it (IPv4-compatible, NAT64, 6to4, Teredo). It is the same list the host
+  daemon's egress proxy blocks, because it is the same module.
+- **The connection is pinned to the address that was checked.** The guard hands
+  the HTTP client a lookup that answers with that address, so a resolver cannot
+  answer public for the check and private for the connect. TLS still validates
+  against the hostname.
+- Redirects are followed manually and every hop is checked and pinned again.
+  A credential — a Source connection's API key header — is sent only while the
+  chain is still on the first origin, and an `https` → `http` redirect on a
+  credentialed fetch is refused outright. That holds for a credential the
+  caller passes as one: `credentialHeaders`, not `headers`. `headers` is sent
+  on every hop by definition, so merging a provider key into it defeats both
+  rules for any header name outside the three the guard always treats as
+  credentials — which is how two preview paths sent a Semantic Scholar or Brave
+  key to a redirect target. The port type now carries the field, so a caller
+  has somewhere to put it.
+- Bodies are read with a byte ceiling and the rest is cancelled; a non-OK or 304
+  response's body is not read at all. The whole chain, name resolution included,
+  runs under a deadline.
+- A blocked address and a name that resolves nowhere answer with the same
+  message and the same persisted diagnostics, so the refusal is not an oracle
+  for which internal names exist.
+- Accepted leftovers. The Open Skill importer
+  (`capabilities/skillImporter.ts`) is bounded by a host allowlist rather than
+  by this guard: it follows redirects itself and re-checks the final URL after
+  the transfer, so a redirect off `raw.githubusercontent.com` would be dialled
+  before being refused, and it reads the whole body before applying its own size
+  limit rather than reading under a ceiling. The host daemon's egress proxy resolves without a DNS
+  timeout of its own; a hung resolver stalls that one CONNECT, which the Run's
+  own budget still bounds.
+- Provider (ModelProvider) calls are deliberately **outside** this boundary: a
+  `base_url` may name a private or loopback address, because a local Ollama is a
+  real deployment. Accepted leftover: a member can probe internal addresses
+  through the models list and the connection test; responses do not echo
+  upstream bodies.
 
 ### Deployment and network exposure
 
@@ -765,7 +1039,256 @@ Namespace preflight failure is fail-closed.
   the pull loop runs in the deployer sidecar, which is the only container that talks to
   docker.sock or a registry.
 - The instance must not be exposed directly to the public internet. Production TLS
-  termination, rate limiting, and general CSRF-token hardening are not implemented.
+  termination is a deployment concern. Mutating cookie-authenticated requests refuse
+  any explicit `Origin` other than the configured frontend (`FRONTEND_URL`); there
+  is no request-derived same-host fallback. Session cookies are always
+  `HttpOnly`, `SameSite=Lax`, and `Secure`. The server believes `X-Forwarded-*`
+  only from the frontend proxy (`SERVER_TRUSTED_PROXY_HOST`, resolved by name,
+  one hop), so `request.ip` is the client that proxy saw; a direct peer such as
+  a Run on the built-in host cannot choose it. Pairing-code registration is
+  rate-limited per client IP (10 attempts / 10 minutes, persisted under the
+  instance cache) — IPv6 by /64, because a /64 is the smallest block an ISP
+  hands out and counting whole addresses let one caller take the quota once per
+  address. Expired buckets are dropped and the map is capped, so an
+  unauthenticated caller cannot grow it, and the window is written out off the
+  request's own stack. The pairing code is 13 Crockford base32 characters — 65
+  bits — with a ten-minute life, so guessing it is not what the limiter is for.
+  The host WebSocket upgrade requires a
+  host bearer; a pairing code is not a bearer, and an upgrade without one is
+  answered 401.
+  The Run tool surface lives at `/api/v1/runs/:runId/tools…`, gated by the Run's
+  own bearer token: a paired host's children reach the instance through
+  `FRONTEND_URL`, and nginx forwards `/api/` and `/internal/hosts/ws` and
+  nothing else. The dev Vite proxy forwards that one WebSocket path rather than
+  all of `/internal`, so dev exposes exactly what production does.
+  A GET whose effects reach past its response — the host and subscription login
+  streams, which start a vendor login on the owner's machine, and the four
+  Project Folder reads, which spawn `git` there and write a policy-audit row
+  naming the requested path — goes through `stateChangingReadAllowed`. It reads
+  three terms **in order**, and **fails closed**. An explicit `Origin` decides
+  it, judged against `FRONTEND_URL`: that is the browser naming who caused the
+  request, and it comes first so that a frontend served from a sibling host of
+  the API still works. With no `Origin`, `Sec-Fetch-Site` is what is left, and
+  only `same-origin` or `none` — the person's own address bar — is accepted;
+  `same-site` is not, because a top-level navigation from any host under the
+  same registrable domain sends exactly that, with no `Origin` and with the
+  `SameSite=Lax` cookie attached. And a request carrying neither header, and
+  none of this client's own, is refused rather than allowed — a top-level
+  cross-site navigation from a browser that sends no fetch metadata carries no
+  `Origin` either, and allowing that case was the hole. `SameSite=Lax` sends the cookie on a
+  top-level cross-site GET, so these needed the check a POST gets for free. A
+  route whose only effect is its response must not use it: the host usage route
+  is a cache read of `host_runtime_usage` — the probe is the POST beside it —
+  and guarding it would refuse an ordinary cross-origin read for nothing. The OAuth pair,
+  `GET /api/v1/auth/google` and its callback, creates a session by design and is
+  protected by its own state cookie instead. It is **not** the only GET left
+  that writes: a detail read records a `content_access_logs` row, `GET
+  /api/v1/memory/:memoryId` bumps `access_count` and `last_accessed_at`, the
+  information-digest reads rebuild their own rows, and a few others ensure a
+  draft or an id on first read. Those are recorded rather than guarded — each
+  needs a resource id the caller already knows, and the writes are the read's
+  own bookkeeping — with one consequence worth stating: an attacker who knows a
+  memory id can drive a forced read from another site, which both delays that
+  memory's demotion and writes an access-log row naming the victim as reader. A cookie-authenticated **write** takes a
+  `Sec-Fetch-Site` term beside its `Origin` check too, but a weaker one: it
+  refuses an explicit cross-site value and otherwise allows, including a
+  request carrying neither header, because a non-browser caller — a host
+  daemon, the Run CLI — sends neither and `SameSite=Lax` covers the browser.
+  The read check has no such fallback available, so it fails closed. Requiring `application/json`
+  on writes was considered and not adopted: the property it buys is what
+  `Sec-Fetch-Site` already decides, and the activity import route takes a real
+  `multipart/form-data` upload, so the rule would need an exception for the one
+  route most worth guarding. General CSRF-token hardening is not implemented.
+
+Every `/api/` response carries `Cache-Control: no-store, no-cache,
+must-revalidate, private` — from one `onSend` hook, and from
+`sseResponseHeaders` for the three event streams that write their own header
+block with `reply.raw.writeHead` — flushed to the socket before any hook could
+set a header, whether or not the route also hijacks the reply (one of the three
+does). Those had each hand-written `no-cache`, which forbids reuse without
+revalidation but permits a shared cache to *store* the body; one of them
+carries live conversation turns. They add `no-transform`, which matters only on
+a stream: an intermediary that re-buffers the response holds every event until
+it ends — the surface is somebody's
+private content answered against their session cookie, and a route that forgot
+the header would be invisible. It is set in Fastify rather than with an nginx
+`add_header` on the API location, because nginx *replaces* the inherited
+`add_header` set in any location that uses one, so setting it there would
+silently drop every security header from API responses.
+
+The production frontend nginx sends `nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy`, `Cross-Origin-Opener-Policy: same-origin`, a
+`Permissions-Policy` that denies the device APIs the app does not use — with
+`microphone=(self)`, which voice capture on the Capture page needs and which
+denying would have broken in production only — and a same-origin CSP — defined **once** in `apps/web/security-headers.conf` and
+`include`d by every location that sets a header of its own, because five
+hand-maintained copies is how one of them came to disagree with the others.
+`img-src` allows `https:`, and that is deliberate: the Library reader renders a
+captured article with the article's own remote images
+(`image_policy: "remote_reference"`), so this header cannot be the layer that
+stops a model-named one. Tightening it broke every captured article's images,
+and only in production, since dev serves no headers — the same split the theme
+script was moved out of `index.html` to close. The **renderer** is the boundary
+instead: chat markdown and every model-authored document render a cross-origin
+image as a link and never fetch it, and the reading core's `remoteImages` is off
+unless a caller opts in, which only the captured-article surface does. `http:`
+stays out, as does every bare scheme on every other directive. Getting the
+second layer back for images needs a trusted image-host allowlist, which O3
+defers until there is a real need. `style-src` still allows inline styles — the
+UI library writes them, and a nonce needs a request context a static file
+server does not have. The theme script that runs before first paint is a file
+rather than inline, because `script-src 'self'` blocked it: it silently did
+nothing in production and worked in dev, where Vite serves no CSP. The desktop
+(Tauri) shell has a policy set rather than `csp: null`; it is close to this one
+and **unverified** — the shell is an unbuilt scaffold (ADR 0005), its webview
+origin is not the instance, and nobody has run it against a control plane.
+
+**No model-authored text loads an external image** (D5). One
+`safeStreamdownProps` config is spread by every renderer, and it holds three
+defences, because no one of them covers the whole surface:
+
+- its `img` component renders a cross-origin source as an ordinary link —
+  domain visible, full URL on hover, new tab — instead of an `<img>`.
+  Click-to-load was rejected: the click sends the same URL, so it only turns
+  zero-click into one-click;
+- `urlTransform` blanks a `src` that is neither same-origin nor `http(s)`. It
+  is called only for the keys in `html-url-attributes`, which is why it cannot
+  be the whole answer;
+- the **sanitize schema** drops `<source>`. `<picture>` resolves to its first
+  matching `<source>`, so an external `srcset` there fetches with no click —
+  and the same-origin `<img>` the component renders is what activates it, since
+  a `<picture>` with no `<img>` fetches nothing. `srcSet` is not a key
+  `urlTransform` sees and `components` governs only elements we name, so
+  neither of the other two defences reaches it.
+
+Streamdown's default pipeline *is* `rehype-raw` → `rehype-sanitize` →
+`rehype-harden`, so model-written HTML is parsed into real elements and a raw
+`<img>` arrives at the same component as a markdown one. `skipHtml` does **not**
+help: it visits `raw` nodes after the unified run and `rehype-raw` has already
+consumed them, so it finds none and silently does nothing — the prop was
+removed rather than trusted. What stands between model-written HTML and the DOM
+is the sanitize schema, which is why tightening it is the fix above and not a
+precaution. An image the instance serves itself still renders inline.
+
+The same rule reaches the *other* renderer. A Library summary or digest is
+written by a Run over ingested third-party items and is displayed through the
+Tiptap reading core, not through Streamdown — so that core takes the decision
+too, as an explicit `remoteImages` flag that is off unless the caller says
+otherwise. One renderer with one answer for both kinds of document was how a
+digest could be induced to fetch from a host the model named.
+
+The flag is passed down rather than decided at the workspace, because
+`ReaderWorkspace` renders more than one kind of document too: a captured
+article, whose images are part of what the person chose to read, and a research
+report, which a synthesis Run wrote over the same ingested items. Only the
+captured-article page opts in. Deciding it one level up would have given both
+the same answer, and the report's projection emitting no image nodes today is
+not a property worth resting on.
+
+Two differences worth stating rather than discovering. An external *link* in
+chat goes through Streamdown's confirmation modal; the link a blocked image
+degrades to does not, because it is our own anchor — it is one click, against
+two, and it carries more information than a text link does (the domain in the
+text, the full URL in the tooltip). And a blocked image does not always reach
+that link: a `data:` source, or one carrying embedded credentials, renders as
+nothing at all, and a source `rehype-harden` rejects first gets its own
+placeholder. D5's promise holds for the ordinary case.
+
+The PWA service worker must not cache authenticated `GET /api/v1/*` bodies; the
+app deletes that cache unconditionally at boot as well as on logout and on a
+401, because a cache written by an older build outlives the code that stopped
+writing it. Logout clears local and session storage against a list of what to
+**keep**, not what to delete — a delete-list retained every new content key
+until somebody remembered to add its prefix — and announces itself to this
+browser's other tabs, which would otherwise keep a rendered page full of the
+previous person's content. A 401 announces the same way, since a session
+revoked server-side otherwise reaches only the tab that happened to ask. The
+keep-list holds appearance and layout only; one entry, `rainver:scene-collapsed`,
+is a map keyed by scene id, which is safe while scene ids come from the static
+module registry and would not be if one ever became a Space or Project id.
+Clearing is deliberately lossy in the harmless direction: a person's Context
+Ops explain presets go with it. The browser treats server-authored in-app hrefs as
+same-origin paths only, resolved through `URL` rather than judged as text:
+`/..//evil.example` passes every textual rule and the browser then collapses it
+to `//evil.example`. The same rule decides the OAuth `next` parameter
+server-side. Avatar images accept `http(s)` and refuse `data:`.
+
+### What a spawned process inherits, and what is written down about it
+
+- **One environment builder per kind of spawn.** A Run gets either the ambient
+  allowlist (`filterAmbientEnv`, for a bound or strict Run, where the container
+  contributes nothing) or the machine's environment minus the vendor
+  credentials (`clearVendorCredentialEnv`, for a host-login Run on the owner's
+  own machine, which needs its PATH, git and ssh configuration — dropping those
+  would take real things away from the runs this branch exists for). Every
+  helper the daemon spawns *that runs a vendor runtime* — an adapter installer,
+  the `--version` and `login --help` probes, the Codex usage probe, an ACP
+  `session/list` — goes through `helperProcessEnv`, the same credential-cleared
+  rule. Each of those used to spread `process.env` whole, or delete two named
+  keys beside it. `keepStateRoots` is the one exception, for a helper that reads
+  the machine's *own* history: `CLAUDE_CONFIG_DIR` and `CODEX_HOME` name where
+  state lives, not a credential, and clearing them by prefix sent
+  `session/list` to the default location and reported the machine as empty. The
+  daemon's non-vendor spawns — `git`, `systemctl`, the installer shell script a
+  person typed — take the machine's environment as it is: fixed arguments,
+  trusted binaries, and nothing that echoes an environment back.
+- **The daemon refuses a redirect** on every call that carries a credential:
+  the control-plane calls, each carrying this host's bearer token — registration
+  exchanges a pairing code for a long-lived one — and the Claude usage probe,
+  which carries the owner's OAuth access token. The one deliberate exception is
+  the adapter *download*: an archive comes from a third-party publisher through
+  the ACP registry, and a GitHub release asset always 302s to
+  `objects.githubusercontent.com`, so refusing would break the ordinary case.
+  Nothing of ours travels with it, and the https requirement is re-applied to
+  where the download actually landed. Its config's `server_url` is re-checked on
+  read, not only at pairing time — plain HTTP only for an address that is this
+  machine. "This machine" is judged as an address: `startsWith("127.")` was true
+  of `127.evil.com`. The built-in host is exempt, because it adopts a credential
+  the instance published to it over the Compose network, where the control plane
+  is `http://server:8010` and there is no pairing at all; the exemption is
+  decided by an environment variable set only inside that container, not by the
+  config's own `trust` field, which lives in the file the check distrusts.
+- **Codex's strict-host sandbox rewrite** sets the *top-level* `sandbox_mode`
+  and writes only inside the Run's own profile directory — the Agent × container
+  profile, never the installation's login home, which every Agent on the host
+  shares. TOML scopes a key to the table above it, so matching `sandbox_mode`
+  anywhere rewrote the first named profile's key instead — leaving the default
+  the Run actually reads untouched, and quietly changing a profile configured
+  for something else. Recognising where the top-level table ends took three
+  conjuncts, each added after the previous one was found insufficient: a table
+  header is a bracketed name **alone on its line** (a bare leading `[` also
+  matched a multi-line array's continuation), **at bracket depth zero** (a final
+  array element carries no trailing comma and so reads exactly like a header),
+  counted over the line with **strings and comments removed** (one unbalanced
+  `[` inside either pinned the depth and disabled the scan entirely). The scan
+  for an existing key carries the same string-awareness, or a `sandbox_mode`
+  line inside a multi-line string is rewritten instead of the real one — which
+  leaves Codex starting cleanly and the Run silently unable to write.
+- **Evidence and audit redaction.** One module (`runs/evidenceRedaction.ts`)
+  decides what a secret looks like in free text. It covers what
+  `\b(token|secret)` could not — `\b` does not fire between `_` and a letter,
+  so `access_token=`, `refresh_token=`, `id_token=` and `client_secret=` all
+  went through — plus quoted JSON keys, a bare `?key=`, `AIza…`, GitHub tokens,
+  JWTs and `Basic`. A value that is one of the words a process uses to say a
+  credential is *absent* is deliberately left alone: redacting `secret: absent`
+  hides the answer and protects nothing. The pattern that keys on a *name* is
+  anchored rather than led by an unbounded quantifier: a greedy `[\w.-]*` in
+  front of the alternation made the scan quadratic, and a member-authored Custom
+  Source handler that logged 64 KiB on one line held the event loop for eight
+  seconds. The anchoring is what protects the unbounded callers —
+  `redactSecretPatterns` is handed a Custom Source handler's whole log, and a
+  5xx provider body, with no ceiling of its own. `redactEvidenceText`, which
+  persists, additionally truncates before it scans, reading a little past the
+  cut so a credential straddling it is still matched whole rather than left as
+  a head too short to recognise.
+- **The policy audit sanitizer** (`policy/sanitizer.ts`) is a different
+  mechanism on different input — decision metadata, not request logs — and it
+  matches key names by case-insensitive *substring*, so `api-key` covers
+  `x-goog-api-key`. Bare `authorization` is deliberately **not** on its list:
+  substring-matched inside the policy module, which is about authorization, it
+  would redact `authorization_request_id` and every other field that links an
+  audit row to its decision. `proxy-authorization` is covered where it actually
+  arrives — the request-log redact paths above.
 
 ### A Run's network reach on the built-in host
 
@@ -798,6 +1321,90 @@ entirely, which the `host-egress` bridge still permits; making it one needs a
 userspace network helper under `--unshare-net`, recorded in the deferred
 register.
 
+The 2026-09-10 backend security review sequence covered credential egress,
+the memory/proposal write gate, isolation-exception read residue, unattended
+credential spend, and persistence / extract / plugin / deployer paths. The
+sequencing plan is retired; git history holds it. Accepted leftovers from
+that sequence stay accepted: pairing-code display, Origin + `SameSite=Lax`
+CSRF without a token, CSP `style-src 'unsafe-inline'`, invite tokens in URLs,
+proxy leases not pinning model/path (ADR 0008), the on-disk master key,
+revoke-after-lease host files, a new plugin type inserting `memory_entries`
+directly, finance `validate` error text that may name a hidden account,
+workflow node Runs using `trigger_origin = job` (fail-closed), and deployer
+internal-token reuse for stage events (ADR 0020; deferred-register
+acceptance).
+
+The 2026-09-11 unreviewed-surfaces sequence reviewed context injection,
+Knowledge/Notes/Reader/Capture, membership, notifications/backup, and Sources
+extract. It closed `research_notebook` note ACL, Knowledge/Notes `summary`
+body withholding, retrieval `context_taint` owner attribution, and
+post-processing decision item ACL. The sequencing plan is retired; git
+history holds it. Accepted leftovers from that sequence stay accepted:
+memory-maintenance scans still exclude only `highly_restricted` (ordinary
+`private` may appear in an owner-private report); Room rolling-summary
+workers do not receive structured `external_untrusted` (attach-time fence
+prose remains inside copied content); `recordDetailRead` is not on every
+detail surface; there is no Space leave/remove API (orphan private rows
+after a membership ends remain); Source `GET /jobs` and
+`GET /evidence-links` are Space-scoped metadata.
+
+The 2026-09-11 skipped-surfaces sequence closed Agent version GET/restore
+ACL (same content gate as `GET /agents/:id`; restore is owner-only for an
+owned Agent), Activity/Artifact/Run-turn `/io` `summary` body withholding,
+`code_patch` rollback using the same `proposal.apply` and
+`project_folder.write_patch` gates as accept, and stale `cancelling` recovery
+settling as `cancelled` rather than a retryable `orphaned`. The sequencing
+plan is retired; git history holds it. Accepted leftovers from that sequence
+stay accepted: Dev Vite bind-all (token still required); Reader artifact
+omitting `roomRunReadAccessSql`; `code_patch` payload bytes that live remote
+browse would refuse; Learning Space-global `project_id IS NULL` visibility;
+Home summary counts as Space-wide oracles.
+
+The 2026-09-11 security remediation sequence fixed the findings of the three
+reviews above by mechanism rather than by patch: one summary-withholding type,
+one authorizer per kind of shared command, one credential-spend authorizer, one
+persona-write rule, one outbound HTTP guard, one read predicate per data class,
+one spawn-environment builder, and one place that decides what a browser may
+fetch and keep. The plan is retired; git history holds it, and each phase's
+commit message states what it changed and why.
+
+It closed three of the leftovers listed above. The dev Vite `/internal` proxy
+now forwards only `/internal/hosts/ws`, which is what production nginx forwards,
+so dev no longer exposes routes production does not. Cookie-authenticated
+writes, and the GETs whose effects reach past their response, now take a
+`Sec-Fetch-Site` term beside the `Origin` check. And chat markdown no longer
+loads an external image at all.
+
+Accepted leftovers from this sequence: CSP `style-src 'unsafe-inline'` stays,
+because the UI library writes inline styles and a nonce needs a request context
+a static file server does not have. CSRF is still Origin plus `Sec-Fetch-Site`
+plus `SameSite=Lax`, with no token. A ModelProvider `base_url` may still name a
+private address (D2). An external *link* in chat can still carry data in its URL
+when a person clicks it — rendering cannot close that, because the root is
+prompt injection into the model's output, and the link is shown with its
+confirmation step rather than removed; external *images* no longer load on their
+own (D5). A trusted image-host allowlist is deferred (O3) until a real need
+appears — and it is now the thing that would let `img-src` drop `https:` again.
+
+Two more, found by the integration review and recorded rather than fixed, both
+outside what this plan set out to do. **Knowledge body search has a hit/miss
+oracle through the retrieval index**: `bodyMatchSql` gates an `ILIKE` on `full`
+access, but the sibling `retrieval_chunks` search matches `tsv`/`plain_text`
+with no viewer term, and although revalidation redacts the returned text, the
+row still comes back as a hit — so a summary-level reader can probe candidate
+substrings and reconstruct a withheld body a piece at a time. Closing it means
+giving that search a viewer predicate, which is a design change to the retrieval
+module. **The Open Skill importer reads a response body with no ceiling**
+(`capabilities/skillImporter.ts`): `await response.text()` runs before the byte
+limit is checked, across up to 200 package files, so a member pointing it at
+large files in a repository they control can exhaust server memory. It is
+bounded by a host allowlist, which is why it was left outside the outbound guard
+— but the body half needs no redirect and no cooperation from the host. The finance plugin's transaction create is not atomic, which needs a
+transaction port on `PluginHostContext`. And `completeTask` judges completion in
+the asking person's view while settlement judges the same Task unscoped, so an
+Agent can be refused a close that settlement then accepts — each half is right
+on its own.
+
 ---
 
 ## 11. Dogfooding Readiness
@@ -814,7 +1421,10 @@ enforced. Project Folder path traversal is blocked. Artifact export is space- an
 visibility-gated. Credential secrets are not exposed in API responses. Egress approval for
 personal memory is enforced and tested.
 
-Test coverage: 1127 passing tests (unit / contracts / invariants / workflows).
+Test coverage: 4248 server tests across 435 files, plus 915 in the web client
+(unit / contracts / invariants / workflows). A count goes stale the week it is
+written; what it is here for is the order of magnitude and the fact that the
+durable-behaviour tests run against real PostgreSQL rather than a fake.
 
 ---
 

@@ -160,8 +160,9 @@ mutate definitions.
 for a capability. It can store runtime preference, prompt overrides, source
 mode, output policy, budget, and review policy.
 
-The first implementation stores capability enablement configuration. Broader
-profile surfaces remain future work.
+The implementation stores capability enablement configuration. Broader
+profile surfaces are not implemented
+([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §12).
 
 ### CapabilityPack
 
@@ -375,11 +376,12 @@ a native execution path exists.
 
 ## Current Limitations
 
-- The native `capability` runtime adapter is still planned and disabled.
+- The native `capability` runtime adapter is declared and disabled.
 - Import preview supports safe GitHub `blob`/`tree` package roots and
   `raw.githubusercontent.com` URLs that resolve to `SKILL.md`.
 - Registry, local workspace, upload, and official-catalog skill source types
-  remain modeled but not implemented.
+  are modeled and not implemented
+  ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §12).
 - Binary asset storage is not implemented; binary/non-text assets are kept as
   package inventory metadata where GitHub exposes blob metadata.
 - No native web search service is implemented.

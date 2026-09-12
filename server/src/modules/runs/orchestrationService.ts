@@ -70,10 +70,7 @@ import { RuntimeContextPolicyRepository } from "../policy/runtimeContextPolicyRe
 import { PgRouteDecisionRepository } from "../routing/repository.js";
 import { RunApprovalRequiredError, RunPreparationError } from "./orchestrationErrors.js";
 import { resolveSandboxLevelForRuntime } from "./runRepositoryHelpers.js";
-import {
-  credentialPolicyMetadata,
-  managedExecutionPolicyFromContract,
-} from "../policy/managedExecutionPolicy.js";
+import { authorizeCredentialSpend, CredentialSpendDeniedError } from "../policy/credentialSpend.js";
 import {
   adapterFailureEnvelope,
   adapterTimeoutEnvelope,
@@ -201,6 +198,7 @@ export interface RunExecutionRepositoryPort {
     space_id: string;
     approval_code: string;
     message: string;
+    risk_level: RunApprovalRequiredError["riskLevel"];
     paused_at: string;
   }): Promise<RunRecord | null>;
   markRunWaitingForDependency(input: {
@@ -1593,6 +1591,7 @@ export class RunOrchestrationService {
           space_id: run.space_id,
           approval_code: error.code,
           message,
+          risk_level: error.riskLevel,
           paused_at: completedAt,
         });
         return {
@@ -1877,14 +1876,6 @@ export class RunOrchestrationService {
     const runtimeConfig = recordValue(run.runtime_config_json);
     const callerConfig = input.command_source === "http" ? {} : input.adapter_config ?? {};
     const contract = recordValue(run.contract_snapshot_json);
-    const managedPolicy = managedExecutionPolicyFromContract(run.contract_snapshot_json);
-    const policyContext = recordValue(contract.policy_context_json);
-    const credentialMetadata = {
-      ...credentialPolicyMetadata(managedPolicy),
-      ...(run.trigger_origin === "autonomous"
-        ? { automation_pre_authorized: policyContext.automation_pre_authorized === true }
-        : {}),
-    };
     // The immutable run contract is authoritative. An internal execution
     // caller may supply a fallback risk for legacy runs, but it can never
     // downgrade a critical contract to reach a weaker sandbox.
@@ -1955,43 +1946,30 @@ export class RunOrchestrationService {
       );
       if (decisionId) base.policy_decision_record_ids.push(decisionId);
     }
-    // D1: a remote host never gets a server-brokered credential, so this
-    // check is structurally moot for it — gated explicitly rather than
-    // relying only on `run.model_provider_id` staying unset for every
-    // present and future remote code path.
-    if (hostKind === "server" && run.model_provider_id && !this.hasGrantedApproval(run, "policy_requires_approval_runtime_use_credential")) {
-      const decisionId = await this.enforcePolicyRequest(
-        {
-          action: "runtime.use_credential",
-          actor_type: "run",
-          actor_id: run.id,
-          space_id: run.space_id,
-          resource_type: "model_provider",
-          resource_id: run.model_provider_id,
-          resource_space_id: run.space_id,
-          run_id: run.id,
-          context: {
-            adapter_type: run.adapter_type,
-            command_source: input.command_source,
-            trigger_origin: run.trigger_origin,
-            ...credentialMetadata,
-            risk_level: base.risk_level,
+    // Only a server-host Run's recorded provider is the one it spends; a
+    // remote Run's backend is decided at launch, where its lease is
+    // authorized. The key is decided again where it is spent — each
+    // managed-API turn and each lease — so this check exists to fail the Run
+    // before any work starts, not as the only one.
+    if (hostKind === "server" && run.model_provider_id) {
+      try {
+        const authorization = await authorizeCredentialSpend(
+          this.config,
+          { space_id: run.space_id, provider_id: run.model_provider_id, basis: { kind: "run", run } },
+          {
+            enforcer: this.adapters.policyEnforcer,
+            readRun: (spaceId, runId) => this.repository.getRun(spaceId, runId),
           },
-          metadata_json: {
-            adapter_type: run.adapter_type,
-            command_source: input.command_source,
-            trigger_origin: run.trigger_origin,
-            ...credentialMetadata,
-            credential_kind: "model_provider",
-            provider_id: run.model_provider_id,
-          },
-          force_record: false,
-        },
-        "policy_requires_approval_runtime_use_credential",
-        "policy_denied_runtime_use_credential",
-        "runtime.use_credential denied by policy.",
-      );
-      if (decisionId) base.policy_decision_record_ids.push(decisionId);
+        );
+        if (authorization.policy_decision_record_id) {
+          base.policy_decision_record_ids.push(authorization.policy_decision_record_id);
+        }
+      } catch (error) {
+        if (error instanceof CredentialSpendDeniedError) {
+          throw new RunPreparationError("policy_denied_runtime_use_credential", error.message);
+        }
+        throw error;
+      }
     }
     // The server-host CLI branch that lived here — resolving a runtime-tool
     // version and gating a `cli_profile` credential — is gone with the path it
@@ -2015,8 +1993,10 @@ export class RunOrchestrationService {
       ? await this.adapters.policyEnforcer(policyRequest)
       : await enforce(this.config, await loadActionRegistry(), policyRequest);
     if (policy.status !== "allow") {
-      if (policy.error_code === "policy_requires_approval") {
-        throw new RunApprovalRequiredError(requiresApprovalCode, policy.message ?? fallbackMessage);
+      // An approval pause records the gate's risk, which decides who may grant
+      // it; a gate that asked for approval without a decision is refused.
+      if (policy.error_code === "policy_requires_approval" && policy.decision) {
+        throw new RunApprovalRequiredError(requiresApprovalCode, policy.message ?? fallbackMessage, policy.decision.risk_level);
       }
       throw new RunPreparationError(deniedCode, policy.message ?? fallbackMessage);
     }
@@ -2654,7 +2634,7 @@ export class RunOrchestrationService {
         // The daemon adapter resolves this run's model backend itself: the
         // Runtime Context gateway is skipped for a run handed to a daemon, so
         // nothing upstream has done it.
-        { config: this.config, ...this.adapters.hostCli },
+        { config: this.config, policyEnforcer: this.adapters.policyEnforcer, ...this.adapters.hostCli },
       );
     }
     return RUNTIME_EXECUTORS[spec.executor_family](this.config, run, input, this.adapters);

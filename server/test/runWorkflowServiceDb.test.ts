@@ -185,6 +185,7 @@ describe("save run as workflow (real Postgres)", () => {
           project_folder_id: null,
           visibility: "space_shared",
           created_by_user_id: USER,
+          owner_user_id: null,
           created_by_agent_id: null,
           created_by_run_id: runId,
           project_id: null,

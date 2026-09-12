@@ -2,6 +2,7 @@ import type { BriefCandidate, SynthesisResult, Synthesizer } from "../index.js";
 import { getDbPool } from "../../../db/pool.js";
 import { completeProviderText } from "../../providers/invocation/invocation.js";
 import type { ProviderCommandStore } from "../../providers/commands/store.js";
+import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import { retrievalEgressAllowed, ALLOW_ALL_EGRESS, type RetrievalEgressPolicy } from "../egress/egressPolicy.js";
 import { writePolicyAudit } from "../../policy/auditWriter.js";
 import { resolveRetrievalSynthesisSystemPrompt } from "../promptRegistry.js";
@@ -26,6 +27,8 @@ export interface ProviderSynthesizerOptions {
   systemPromptResolver?: SynthesisSystemPromptResolver | null;
   /** W9 egress policy; when egress is disabled the synthesizer sends nothing. */
   egressPolicy?: RetrievalEgressPolicy;
+  /** Who the searches this helper serves spend for. */
+  spend: CredentialSpendBasis;
 }
 
 /**
@@ -47,11 +50,13 @@ export class ProviderSynthesizer implements Synthesizer {
   private readonly surface: string | null;
   private readonly systemPromptResolver: SynthesisSystemPromptResolver | null;
   private readonly egressPolicy: RetrievalEgressPolicy;
+  private readonly spend: CredentialSpendBasis;
 
   constructor(
     private readonly store: ProviderCommandStore,
-    options: ProviderSynthesizerOptions = {},
+    options: ProviderSynthesizerOptions,
   ) {
+    this.spend = options.spend;
     this.providerId = options.providerId ?? null;
     this.databaseUrl = options.databaseUrl ?? null;
     this.surface = options.surface ?? null;
@@ -98,6 +103,7 @@ export class ProviderSynthesizer implements Synthesizer {
         task: RETRIEVAL_SYNTHESIS_TASK,
         egressPolicy: effectivePolicy,
         metering: { subject_user_id: viewerUserId },
+        spend: this.spend,
       });
     } catch {
       return null;

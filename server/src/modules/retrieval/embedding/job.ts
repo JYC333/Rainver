@@ -6,6 +6,7 @@ import type { JobHandlerRegistry } from "../../jobs/handlerRegistry.js";
 import { resolveProviderCommandStore } from "../../providers/commands/store.js";
 import { RetrievalEmbeddingStore } from "../index.js";
 import { readSpaceRetrievalSettings } from "../settings.js";
+import { loadViewerSpaceRole } from "../sourcePolicy.js";
 import {
   DEFAULT_EMBED_BATCH,
   RETRIEVAL_EMBEDDING_JOB,
@@ -18,7 +19,8 @@ type RetrievalEmbeddingBackfillQueue = Pick<PgJobQueueRepository, "enqueue" | "l
 
 export interface RetrievalEmbeddingBackfillEnqueueInput {
   spaceId: string;
-  userId?: string | null;
+  /** Whose action queued the backfill; it spends as theirs. */
+  userId: string;
   batchLimit?: number;
   priority?: number;
   maxAttempts?: number;
@@ -73,7 +75,7 @@ export async function enqueueRetrievalEmbeddingBackfillWithQueue(
   const job = await queue.enqueue({
     job_type: RETRIEVAL_EMBEDDING_JOB,
     space_id: input.spaceId,
-    user_id: input.userId ?? null,
+    user_id: input.userId,
     priority: input.priority ?? -10,
     max_attempts: input.maxAttempts ?? 3,
     payload: {
@@ -107,17 +109,21 @@ export function registerRetrievalEmbeddingHandler(
       throw new Error(`${RETRIEVAL_EMBEDDING_JOB} payload space_id does not match envelope space_id`);
     }
     const batchLimit = numberValue(job.payload.batch_limit) ?? DEFAULT_EMBED_BATCH;
+    const userId = job.user_id;
+    if (!userId) throw new Error(`${RETRIEVAL_EMBEDDING_JOB} missing envelope user_id`);
     const retrievalSettings = await readSpaceRetrievalSettings(db, spaceId);
     const egressPolicy = { externalEgressEnabled: retrievalSettings.externalEgressEnabled };
     const service = new RetrievalEmbeddingBackfillService(
       db,
-      new ProviderEmbedder(store, null, egressPolicy, job.user_id
-        ? { subject_user_id: job.user_id }
-        : {
-            meter_subject_type: "space_system",
-            meter_subject_id: RETRIEVAL_EMBEDDING_JOB,
-            space_system_task: true,
-          }),
+      // A person's action queued this, so it spends as theirs for as long as
+      // they are still a member of the Space whose content it indexes.
+      new ProviderEmbedder(store, null, egressPolicy, { subject_user_id: userId }, {
+        kind: "setup",
+        setup: "retrieval_embedding",
+        record_id: job.job_id,
+        user_id: userId,
+        still_authorized: async () => (await loadViewerSpaceRole(db, spaceId, userId)) !== null,
+      }),
       async (event) => {
         await writePolicyAudit(config.databaseUrl!, {
           space_id: spaceId,

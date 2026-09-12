@@ -173,6 +173,7 @@ export async function resolveRetrievalToolBinding(
         egressPolicy,
         queryEmbedder: new ProviderQueryEmbedder(
           store,
+          { kind: "run", run },
           null,
           undefined,
           settings.embeddingDimensions,
@@ -180,12 +181,14 @@ export async function resolveRetrievalToolBinding(
         ),
         reranker: settings.rerankEnabled
           ? new ProviderReranker(store, {
+              spend: { kind: "run", run },
               databaseUrl: config.databaseUrl,
               surface: spec.artifactSurface,
               egressPolicy,
             })
           : undefined,
         synthesizer: new ProviderSynthesizer(store, {
+          spend: { kind: "run", run },
           databaseUrl: config.databaseUrl,
           surface: spec.artifactSurface,
           egressPolicy,

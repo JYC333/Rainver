@@ -43,6 +43,29 @@ export function validateRunCreateInput(input: RunCreateInput): void {
 }
 
 /**
+ * Person-facing run create (agent HTTP create, Task dispatch) always records
+ * `manual`. The client cannot label a live turn as unattended to skip the
+ * persona in-turn proposal (ADR 0003 §5) or, conversely, mark an attended
+ * write as automation. Unattended origins are stamped only by the scheduler
+ * and automation writers.
+ */
+export const PERSON_STARTED_TRIGGER_ORIGIN = "manual" as const;
+
+/**
+ * A person-started create names what to run, never how the Run is labelled:
+ * the server stamps the origin, and a `system` Run is the server's own.
+ * Refused rather than ignored, so no client believes it set either.
+ */
+export function assertPersonStartedRunRequest(body: Record<string, unknown>): void {
+  if (Object.hasOwn(body, "trigger_origin")) {
+    throw new RunCreateValidationError("trigger_origin is set by the server", 422);
+  }
+  if (body.run_type === "system") {
+    throw new RunCreateValidationError("run_type 'system' is reserved for the server", 422);
+  }
+}
+
+/**
  * The floor a vendor CLI run starts from.
  *
  * A Folder-bound run baselines at `worktree` — "works in a working copy of the

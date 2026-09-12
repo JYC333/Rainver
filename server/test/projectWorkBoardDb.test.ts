@@ -59,14 +59,21 @@ async function makeTask(input: {
   );
 }
 
-async function makeRunWithEvaluation(taskId: string, recommendation: string | null): Promise<string> {
+async function makeRunWithEvaluation(
+  taskId: string,
+  recommendation: string | null,
+  options: { visibility?: string; status?: string; summary?: string } = {},
+): Promise<string> {
   const runId = randomUUID();
   await db.pool!.query(
     `INSERT INTO runs (
        id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type,
-       trigger_origin, status, mode, owner_user_id, created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, 'sandboxed', 'agent', 'manual', 'succeeded', 'live', $6, now(), now())`,
-    [runId, SPACE, AGENT, VERSION, PROJECT, OWNER],
+       trigger_origin, status, mode, owner_user_id, visibility, created_at, updated_at
+     ) VALUES ($1, $2, $3, $4, $5, 'sandboxed', 'agent', 'manual', $7, 'live', $6, $8, now(), now())`,
+    [
+      runId, SPACE, AGENT, VERSION, PROJECT, OWNER,
+      options.status ?? "succeeded", options.visibility ?? "space_shared",
+    ],
   );
   await db.pool!.query(
     `INSERT INTO task_runs (id, space_id, task_id, run_id, role, created_at)
@@ -75,9 +82,9 @@ async function makeRunWithEvaluation(taskId: string, recommendation: string | nu
   );
   if (recommendation !== null) {
     await db.pool!.query(
-      `INSERT INTO task_evaluations (id, space_id, task_id, run_id, evaluator_type, recommendation, created_at)
-       VALUES ($1, $2, $3, $4, 'system', $5, now())`,
-      [randomUUID(), SPACE, taskId, runId, recommendation],
+      `INSERT INTO task_evaluations (id, space_id, task_id, run_id, evaluator_type, recommendation, summary, created_at)
+       VALUES ($1, $2, $3, $4, 'system', $5, $6, now())`,
+      [randomUUID(), SPACE, taskId, runId, recommendation, options.summary ?? null],
     );
   }
   return runId;
@@ -234,6 +241,78 @@ describe("project board read model", () => {
     const asMember = await getProjectBoard(db.pool!, { spaceId: SPACE, userId: OTHER }, PROJECT);
     expect(asOwner.cards.map((card) => card.title).sort()).toEqual(["Private", "Shared"]);
     expect(asMember.cards.map((card) => card.title)).toEqual(["Shared"]);
+  });
+
+  it("hides another member's private Run on a shared Task", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask({ id: task, title: "Shared" });
+    const privateRunId = await makeRunWithEvaluation(task, "accept", {
+      visibility: "private",
+      summary: "Owner-only verdict",
+    });
+    const member = { spaceId: SPACE, userId: OTHER };
+
+    const ownerBoard = await getProjectBoard(db.pool!, owner, PROJECT);
+    const memberBoard = await getProjectBoard(db.pool!, member, PROJECT);
+    expect(ownerBoard.cards.find((card) => card.id === task)).toMatchObject({
+      latest_run_status: "succeeded",
+      evaluation_recommendation: "accept",
+      completion: { ok: true, missing: [] },
+    });
+    expect(memberBoard.cards.find((card) => card.id === task)).toMatchObject({
+      latest_run_status: null,
+      evaluation_recommendation: null,
+      active_run_count: 0,
+      completion: { ok: false, missing: ["evaluation"] },
+    });
+
+    const ownerView = await getTaskWorkView(db.pool!, owner, task);
+    const memberView = await getTaskWorkView(db.pool!, member, task);
+    expect(ownerView.runs.map((run) => run.id)).toContain(privateRunId);
+    expect(ownerView.evaluation).toMatchObject({ summary: "Owner-only verdict", recommendation: "accept" });
+    expect(memberView.runs.map((run) => run.id)).not.toContain(privateRunId);
+    expect(memberView.evaluation).toBeNull();
+    expect(memberView.completion).toEqual({ ok: false, missing: ["evaluation"] });
+  });
+
+  /**
+   * A work event carries the Run's own words — a `task.reported` summary is
+   * whatever the Agent wrote — and names its Run inside `data_json`. The Task
+   * work view and the Project updates feed must agree about who may read it;
+   * the feed is the surface most people actually read.
+   */
+  it("keeps a private Run's work event off both the work view and the updates feed", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const member = { spaceId: SPACE, userId: OTHER };
+    const task = randomUUID();
+    await makeTask({ id: task, title: "Reported task" });
+    const privateRunId = await makeRunWithEvaluation(task, "accept", { visibility: "private" });
+    const actorId = await resolveUserActorId(db.pool!, SPACE, OWNER);
+    // Written through the real writer, naming its Run the way a Run-produced
+    // event does. Hand-inserting `data_json.run_id` would have tested a shape
+    // no production writer produces.
+    await appendProjectWorkEvent(db.pool!, {
+      spaceId: SPACE,
+      projectId: PROJECT,
+      eventKind: "task.reported",
+      subjectType: "task",
+      subjectId: task,
+      actorId,
+      correlationId: privateRunId,
+      runId: privateRunId,
+      data: { summary: "Owner-only report", outcome: "done", via: "agent" },
+    });
+
+    const ownerView = await getTaskWorkView(db.pool!, owner, task);
+    const memberView = await getTaskWorkView(db.pool!, member, task);
+    expect(ownerView.events.some((event) => event.event_kind === "task.reported")).toBe(true);
+    expect(memberView.events.some((event) => event.event_kind === "task.reported")).toBe(false);
+
+    const ownerFeed = await getProjectUpdates(db.pool!, owner, PROJECT, null);
+    const memberFeed = await getProjectUpdates(db.pool!, member, PROJECT, null);
+    expect(ownerFeed.items.some((item) => item.event_kind === "task.reported")).toBe(true);
+    expect(memberFeed.items.some((item) => item.event_kind === "task.reported")).toBe(false);
   });
 
   it("draws one Board's columns even when the Project has two", async (ctx) => {
@@ -894,6 +973,21 @@ describe("inquiry advancement in the Project's account", () => {
   const threads = () => new InquiryThreadService(db.pool!);
   const iterations = () => new InquiryIterationService(db.pool!);
   const run = { runId: "44444444-4444-4444-8444-444444444444", agentId: AGENT };
+
+  // The Run has to exist: a work event names its Run in `data_json`, and the
+  // updates feed reads the event only while that Run is readable. A fixture
+  // that invented a Run id modelled a state no writer produces.
+  beforeEach(async () => {
+    if (!db.available) return;
+    await db.pool!.query(
+      `INSERT INTO runs (
+         id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type,
+         trigger_origin, status, mode, owner_user_id, visibility, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, 'sandboxed', 'agent', 'manual', 'succeeded', 'live', $6, 'space_shared', now(), now())
+       ON CONFLICT (id) DO NOTHING`,
+      [run.runId, SPACE, AGENT, VERSION, PROJECT, OWNER],
+    );
+  });
 
   it("records a Thread an Agent created, attributes it to the Agent, and undoes it by archiving", async (ctx) => {
     if (!db.available) return ctx.skip();

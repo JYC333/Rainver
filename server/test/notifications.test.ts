@@ -4,11 +4,15 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { notificationsModule } from "../src/modules/notifications/index.js";
 import { loadConfig } from "../src/config.js";
 import { startMockUpstream, type MockUpstream } from "./support/mockUpstream.js";
+import { __setAuthIdentityForTests, __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
+import { deniedAuthRepository } from "./support/routeFakes.js";
 
 let app: FastifyInstance;
 let target: MockUpstream | undefined;
 
 afterEach(async () => {
+  __setAuthIdentityForTests(null);
+  __setAuthRepositoryForTests(null);
   await app?.close();
   const current = target;
   target = undefined;
@@ -16,7 +20,18 @@ afterEach(async () => {
 });
 
 describe("notification webhook egress", () => {
+  it("requires authentication for webhook policy", async () => {
+    __setAuthRepositoryForTests(deniedAuthRepository());
+    app = buildModuleServer(loadConfig({}), [notificationsModule]);
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/server/notifications/webhooks/policy",
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
   it("exposes webhook egress policy state", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     app = buildModuleServer(loadConfig({}), [notificationsModule]);
     const res = await app.inject({
       method: "GET",
@@ -32,6 +47,7 @@ describe("notification webhook egress", () => {
   });
 
   it("denies dispatch by default with a server error envelope", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     app = buildModuleServer(loadConfig({}), [notificationsModule]);
     const res = await app.inject({
       method: "POST",
@@ -52,6 +68,7 @@ describe("notification webhook egress", () => {
   });
 
   it("dispatches JSON to an allowlisted target without forwarding client secrets", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     target = await startMockUpstream((_req, res) => {
       res.writeHead(204);
       res.end();
@@ -96,6 +113,7 @@ describe("notification webhook egress", () => {
   });
 
   it("denies targets outside the allowlist without echoing the denied URL", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     app = buildModuleServer(
       loadConfig({
         SERVER_ENABLE_NOTIFICATION_WEBHOOK_EGRESS: "true",

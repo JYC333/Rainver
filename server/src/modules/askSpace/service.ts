@@ -301,6 +301,7 @@ export class AskSpaceService {
             ctx,
           })
         : await new ProviderSynthesizer(ctx.store, {
+            spend: { kind: "person", user_id: input.userId },
             databaseUrl: this.config.databaseUrl,
             surface: "ask_space_combined",
             egressPolicy: ctx.egressPolicy,
@@ -332,6 +333,7 @@ export class AskSpaceService {
       egressPolicy: ctx.egressPolicy,
       queryEmbedder: new ProviderQueryEmbedder(
         ctx.store,
+        { kind: "person", user_id: input.userId },
         null,
         undefined,
         ctx.embeddingDimensions,
@@ -339,12 +341,14 @@ export class AskSpaceService {
       ),
       reranker: ctx.rerankEnabled
         ? new ProviderReranker(ctx.store, {
+            spend: { kind: "person", user_id: input.userId },
             databaseUrl: this.config.databaseUrl,
             surface: cfg.surface,
             egressPolicy: ctx.egressPolicy,
           })
         : undefined,
       synthesizer: new ProviderSynthesizer(ctx.store, {
+        spend: { kind: "person", user_id: input.userId },
         databaseUrl: this.config.databaseUrl,
         surface: cfg.surface,
         egressPolicy: ctx.egressPolicy,

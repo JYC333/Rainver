@@ -10,6 +10,7 @@ import {
   acquireArxivRequestSlot,
 } from "../src/modules/sources/connectors/arxivThrottle.js";
 import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
 import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { simplePdfBytes } from "./fixtures/simplePdf.js";
@@ -161,7 +162,7 @@ describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
       { status: 200 },
     ));
 
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("succeeded");
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -193,7 +194,7 @@ describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
         headers: { "content-type": "application/pdf" },
       }));
 
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("succeeded");
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://arxiv.org/html/2402.08954");
@@ -221,7 +222,7 @@ describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
     const db = new ExtractionDb("extract_text", "https://arxiv.org/abs/2402.08954");
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Not found", { status: 404 }));
 
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("failed");
     const finish = db.calls.find((call) => call.sql.includes("SET status = $3"));
@@ -236,7 +237,7 @@ describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
       { status: 200 },
     ));
 
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("succeeded");
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -253,7 +254,7 @@ describe("SourceExtractionWorker arXiv HTML-first extraction", () => {
       { status: 200, headers: { "content-type": "text/html" } },
     ));
 
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("succeeded");
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://arxiv.org/html/2402.08954");

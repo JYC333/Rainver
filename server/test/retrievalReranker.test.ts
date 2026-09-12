@@ -161,6 +161,9 @@ describe("ProviderReranker", () => {
       async getTaskChain() {
         return null;
       },
+      async authorizeCredentialSpend() {
+        return {} as never;
+      },
       async getInvocationTarget() {
         return {
           provider: {
@@ -192,6 +195,9 @@ describe("ProviderReranker", () => {
     return {
       async getTaskChain() {
         return null;
+      },
+      async authorizeCredentialSpend() {
+        return {} as never;
       },
       async getInvocationTarget() {
         return {
@@ -233,7 +239,7 @@ describe("ProviderReranker", () => {
         );
       },
     });
-    const reranker = new ProviderReranker(zeroEntropyStore(), { providerId: "ze" });
+    const reranker = new ProviderReranker(zeroEntropyStore(), { spend: { kind: "person", user_id: "user-1" }, providerId: "ze" });
 
     expect(await reranker.rerank("space-1", "viewer-1", "query", candidates)).toEqual([
       { objectType: "knowledge_item", objectId: "doc-b", score: 0.95 },
@@ -247,7 +253,7 @@ describe("ProviderReranker", () => {
         return chatResponse('[{"index": 1, "score": 0.9}, {"index": 0, "score": 0.2}]');
       },
     });
-    const reranker = new ProviderReranker(fakeStore(), { providerId: "p1", systemPromptResolver });
+    const reranker = new ProviderReranker(fakeStore(), { spend: { kind: "person", user_id: "user-1" }, providerId: "p1", systemPromptResolver });
     const scores = await reranker.rerank("space-1", "viewer-1", "query", candidates);
     expect(scores).toEqual([
       { objectType: "knowledge_item", objectId: "doc-b", score: 0.9 },
@@ -261,7 +267,7 @@ describe("ProviderReranker", () => {
         return new Response("upstream boom", { status: 500 });
       },
     });
-    const reranker = new ProviderReranker(fakeStore(), { providerId: "p1", systemPromptResolver });
+    const reranker = new ProviderReranker(fakeStore(), { spend: { kind: "person", user_id: "user-1" }, providerId: "p1", systemPromptResolver });
     expect(await reranker.rerank("space-1", "viewer-1", "query", candidates)).toBeNull();
   });
 
@@ -271,7 +277,7 @@ describe("ProviderReranker", () => {
         return chatResponse("I cannot rank these documents.");
       },
     });
-    const reranker = new ProviderReranker(fakeStore(), { providerId: "p1", systemPromptResolver });
+    const reranker = new ProviderReranker(fakeStore(), { spend: { kind: "person", user_id: "user-1" }, providerId: "p1", systemPromptResolver });
     expect(await reranker.rerank("space-1", "viewer-1", "query", candidates)).toBeNull();
   });
 
@@ -282,6 +288,7 @@ describe("ProviderReranker", () => {
       },
     });
     const reranker = new ProviderReranker(fakeStore(), {
+      spend: { kind: "person", user_id: "user-1" },
       providerId: "p1",
       databaseUrl: "postgres://audit",
       surface: "knowledge_search",
@@ -320,6 +327,7 @@ describe("ProviderReranker", () => {
       },
     });
     const reranker = new ProviderReranker(zeroEntropyStore(), {
+      spend: { kind: "person", user_id: "user-1" },
       providerId: "ze",
       databaseUrl: "postgres://audit",
     });
@@ -348,7 +356,7 @@ describe("ProviderReranker", () => {
         throw new Error("provider must not be called for an empty set");
       },
     });
-    const reranker = new ProviderReranker(fakeStore(), { providerId: "p1" });
+    const reranker = new ProviderReranker(fakeStore(), { spend: { kind: "person", user_id: "user-1" }, providerId: "p1" });
     expect(await reranker.rerank("space-1", "viewer-1", "query", [])).toBeNull();
   });
 
@@ -361,6 +369,7 @@ describe("ProviderReranker", () => {
       },
     });
     const reranker = new ProviderReranker(fakeStore(), {
+      spend: { kind: "person", user_id: "user-1" },
       providerId: "p1",
       systemPromptResolver: async () => null,
     });

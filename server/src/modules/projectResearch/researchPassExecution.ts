@@ -136,6 +136,8 @@ async function startResearchReconcilePassLocked(
       contentJson: researchPassDefinition(lockedOperation.id, reason, event),
     },
     triggerType: "project_research_event",
+    // Project Research drives itself; no person fired this.
+    triggerOrigin: "automation",
     inputJson: {
       project_research: {
         operation_id: lockedOperation.id,

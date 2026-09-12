@@ -2,7 +2,9 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { JobHandlerRegistry } from "../jobs/handlerRegistry.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
-import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { canWriteProject } from "../projects/access.js";
+import { readableThreadIds } from "./threadAccess.js";
 import { pinnedResearchThreadId } from "../projectResearch/workflowOntology.js";
 import { InquiryAdviceService, type AdviceTriggerKind } from "./adviceService.js";
 import { completeBackgroundStep } from "./stepService.js";
@@ -149,7 +151,18 @@ export async function runInquiryAdviceJob(
     projectId,
     threadId,
     triggerKind as AdviceTriggerKind,
-    { beforePersist: (tx) => adviceJobMayPersist(tx, job.job_id) },
+    {
+      beforePersist: (tx) => adviceJobMayPersist(tx, job.job_id),
+      // The person's own action on a focused Thread queued this, so it spends
+      // as theirs — but only while they can still change that Thread.
+      spend: {
+        kind: "setup",
+        setup: "inquiry_advice",
+        record_id: threadId,
+        user_id: userId,
+        still_authorized: () => adviceStillAuthorized(db, { spaceId: job.space_id, userId }, projectId, threadId),
+      },
+    },
   );
   if (!advice) return { thread_id: threadId, superseded: true };
   return {
@@ -239,6 +252,17 @@ export async function tryQueueAdviceForWorkflowThread(
   } catch {
     // Intentionally swallowed — see the doc comment above.
   }
+}
+
+/** Whether the person whose action queued this advice can still act on the Thread. */
+async function adviceStillAuthorized(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  projectId: string,
+  threadId: string,
+): Promise<boolean> {
+  if (!(await canWriteProject(db, identity.spaceId, projectId, identity.userId))) return false;
+  return (await readableThreadIds(db, identity, [threadId], "change")).has(threadId);
 }
 
 export function registerInquiryAdviceHandler(

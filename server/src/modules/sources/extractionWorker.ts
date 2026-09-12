@@ -13,6 +13,7 @@ import { extractPdfReaderContent } from "./pdfExtract.js";
 import { arxivHtmlUrl, arxivPdfUrl, parseArxivReference } from "./connectors/arxiv.js";
 import { acquireArxivRequestSlot } from "./connectors/arxivThrottle.js";
 import { fetchSource, type SourceFetchResult } from "./sourceFetch.js";
+import type { OutboundGuard } from "./outboundUrlSafety.js";
 import { normalizeUrl, sourceDomain } from "./sourceRepositoryMappers.js";
 import { projectSourceRoutingHook } from "../projects/projectSourceRoutingRegistry.js";
 import {
@@ -30,7 +31,7 @@ import {
   SourceFetchFailure,
   type SourceFetchFailureDiagnostics,
 } from "./sourceConnectionFetch.js";
-import { fetchBackfillPageWithNarrowing } from "./sourceBackfillPageFetch.js";
+import { fetchBackfillPageWithNarrowing, type BackfillPageRequest } from "./sourceBackfillPageFetch.js";
 import {
   getSourceChannelScanTask,
   upsertSourceChannelScanTask,
@@ -108,7 +109,19 @@ export class SourceExtractionWorker {
   constructor(
     private readonly db: Queryable,
     private readonly config: ServerConfig,
+    /**
+     * The outbound boundary every fetch in this worker goes through. Left out
+     * in production, where the instance's guard resolves and pins the address;
+     * a test supplies one pinned at its own fixture server, because the guard
+     * refuses loopback for exactly the reason it exists.
+     */
+    private readonly guard?: OutboundGuard,
   ) {}
+
+  /** Spread into a fetch's options so the worker's guard, if any, reaches it. */
+  private get guardOption(): { guard?: OutboundGuard } {
+    return this.guard ? { guard: this.guard } : {};
+  }
 
   async runPendingJob(jobId: string, spaceId: string): Promise<ExtractionJobRow> {
     const now = new Date().toISOString();
@@ -319,13 +332,16 @@ export class SourceExtractionWorker {
       connectorKey: connection.connector_key,
     };
     const maxDownloadBytes = await this.maxDownloadBytes(job.space_id);
+    const credentialHeaders = credential ? { [credential.header_name]: credential.header_value } : undefined;
     const buildRequest = (window: Record<string, unknown>) => {
       const spec = isBackfillJob(job)
         ? handler.buildBackfillRequest(executableChannel, window, cursor as unknown as Record<string, unknown>)
         : handler.buildScanRequest(executableChannel, cursor as unknown as Record<string, unknown>);
-      const requestHeaders = { ...headers, ...(spec.headers ?? {}) };
-      if (credential) requestHeaders[credential.header_name] = credential.header_value;
-      return { url: spec.url, headers: requestHeaders };
+      return {
+        url: spec.url,
+        headers: { ...headers, ...(spec.headers ?? {}) },
+        ...(credentialHeaders ? { credentialHeaders } : {}),
+      };
     };
 
     let pageSize = backfillMaxItems(job.metadata_json);
@@ -343,9 +359,11 @@ export class SourceExtractionWorker {
         handler,
         url: request.url,
         headers: request.headers,
+        ...(request.credentialHeaders ? { credentialHeaders: request.credentialHeaders } : {}),
         maxDownloadBytes,
         backfill: false,
         provider,
+        ...this.guardOption,
       });
     }
     const completedAt = new Date().toISOString();
@@ -467,21 +485,23 @@ export class SourceExtractionWorker {
     handler: SourceConnectorHandler;
     provider: { providerKey: string; providerDisplayName: string; connectorKey: string };
     maxDownloadBytes: number;
-    buildRequest: (window: Record<string, unknown>) => { url: string; headers: Record<string, string> };
-  }): Promise<{ response: SourceFetchResult; request: { url: string; headers: Record<string, string> }; pageSize: number }> {
+    buildRequest: (window: Record<string, unknown>) => BackfillPageRequest;
+  }): Promise<{ response: SourceFetchResult; request: BackfillPageRequest; pageSize: number }> {
     return fetchBackfillPageWithNarrowing({
       window: record(record(input.job.metadata_json).window),
       requestedPageSize: backfillMaxItems(input.job.metadata_json),
       narrowingAllowed: input.handler.getCapabilities().supports_page_size_narrowing,
       buildRequest: input.buildRequest,
-      fetchPage: ({ url, headers, timeoutMs }) => fetchSourceConnection({
+      fetchPage: ({ url, headers, credentialHeaders, timeoutMs }) => fetchSourceConnection({
         handler: input.handler,
         url,
         headers,
+        ...(credentialHeaders ? { credentialHeaders } : {}),
         maxDownloadBytes: input.maxDownloadBytes,
         backfill: true,
         provider: input.provider,
         timeoutMs,
+        ...this.guardOption,
       }),
     });
   }
@@ -1225,7 +1245,7 @@ export class SourceExtractionWorker {
     const maxDownloadBytes = await this.maxDownloadBytes(spaceId);
     const arxivRef = parseArxivReference(sourceUri);
     if (!arxivRef) {
-      const response = await fetchSource(sourceUri, { maxDownloadBytes });
+      const response = await fetchSource(sourceUri, { maxDownloadBytes, ...this.guardOption });
       if (!response.ok) {
         throw new HttpError(502, `Failed to fetch source URL (${response.status})`);
       }
@@ -1245,7 +1265,7 @@ export class SourceExtractionWorker {
     for (const candidate of candidates) {
       await acquireArxivRequestSlot();
       try {
-        const response = await fetchSource(candidate.url, { maxDownloadBytes });
+        const response = await fetchSource(candidate.url, { maxDownloadBytes, ...this.guardOption });
         if (!response.ok) {
           throw new HttpError(502, `Failed to fetch source URL (${response.status})`);
         }

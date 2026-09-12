@@ -336,13 +336,27 @@ const ruleMemoryScope: Rule = (ctx) => {
   return null;
 };
 
+/**
+ * Origins that mean a person asked for this in a conversation. Exported so
+ * everything that turns on "did someone ask" reads the same set — a second
+ * copy is how one surface starts treating a scheduled wake-up as attended.
+ * Listed as an allowlist of the attended ones rather than a denylist, so a
+ * new origin is gated until someone decides it should not be.
+ */
+export const ATTENDED_TRIGGER_ORIGINS = new Set(["manual"]);
+
 const ruleUseCredential: Rule = (ctx) => {
   const action = str(ctx.action);
   if (action !== "runtime.use_credential") return null;
 
   const spaceId = ctx.space_id;
   const resourceSpaceId = ctx.resource_space_id;
-  const triggerOrigin = str(ctx.trigger_origin) || "manual";
+  // Absent rather than defaulted to `manual`: a missing origin cannot be
+  // assumed to have had a person at the keyboard. Callers that spawn a
+  // `delegation` child must pass `effectiveRunTrigger` (the root), not
+  // the child column — otherwise an unattended root spends a key as if
+  // someone asked.
+  const triggerOrigin = str(ctx.trigger_origin);
 
   if (resourceSpaceId && spaceId && resourceSpaceId !== spaceId) {
     return makeDecision({
@@ -358,7 +372,7 @@ const ruleUseCredential: Rule = (ctx) => {
   if (allowsManagedCredentialUse(triggerOrigin, ctx)) {
     return makeDecision({
       decision: "allow",
-      message: "Managed source/research execution is covered by the user's setup authorization.",
+      message: "Unattended spend is covered by the setup authorization its person recorded.",
       risk_level: "high",
       reason_code: "credential_managed_preauthorized",
       policy_rule_id: "credential_managed_preauthorized_allow",
@@ -379,23 +393,16 @@ const ruleUseCredential: Rule = (ctx) => {
       });
     }
     return makeDecision({
-      decision: "require_approval",
-      message: "Automation-authorized credential use requires explicit approval.",
+      decision: "deny",
+      message: "This Automation has no standing credential grant, and nobody is present to approve the spend.",
       risk_level: "high",
-      reason_code: "credential_automation_origin",
-      required_approver_role: "owner",
-      policy_rule_id: "credential_automation_require_approval",
-      audit_code: "credential_automation_origin",
+      reason_code: "credential_automation_grant_missing",
+      policy_rule_id: "credential_automation_grant_missing_deny",
+      audit_code: "credential_automation_grant_missing",
     });
   }
 
-  if (
-    triggerOrigin === "manual" ||
-    triggerOrigin === "user" ||
-    triggerOrigin === "api" ||
-    triggerOrigin === "delegation" ||
-    !triggerOrigin
-  ) {
+  if (ATTENDED_TRIGGER_ORIGINS.has(triggerOrigin)) {
     return makeDecision({
       decision: "allow",
       message: "Same-space user-mediated credential use allowed.",
@@ -406,7 +413,17 @@ const ruleUseCredential: Rule = (ctx) => {
     });
   }
 
-  return null;
+  // Denied rather than sent for approval: an unattended spend has nobody
+  // present to approve it, so an approval request would wait forever. A
+  // missing origin lands here too — it cannot be assumed attended.
+  return makeDecision({
+    decision: "deny",
+    message: `Credential spend from an unattended '${triggerOrigin || "unknown"}' origin has no authorization record.`,
+    risk_level: "high",
+    reason_code: "credential_unattended_unauthorized",
+    policy_rule_id: "credential_unattended_deny",
+    audit_code: "credential_unattended_unauthorized",
+  });
 };
 
 const ruleToolPermission: Rule = (ctx) => {
@@ -872,18 +889,6 @@ const ORIGIN_GATED_PROJECT_WRITES = new Set([
   // and what remains for policy is the origin.
   "memory.write",
 ]);
-/**
- * Every origin that is not a person in a conversation. Listed as an allowlist
- * of the attended ones rather than a denylist, so a new origin is gated until
- * someone decides it should not be — the safe direction for a write nobody
- * asked for.
- */
-/**
- * Origins that mean a person asked for this in a conversation. Exported so
- * everything that turns on "did someone ask" reads the same set — a second
- * copy is how one surface starts treating a scheduled wake-up as attended.
- */
-export const ATTENDED_TRIGGER_ORIGINS = new Set(["manual"]);
 
 const ruleUnattendedProjectWrite: Rule = (ctx) => {
   const action = str(ctx.action);
@@ -894,10 +899,16 @@ const ruleUnattendedProjectWrite: Rule = (ctx) => {
   if (triggerOrigin && ATTENDED_TRIGGER_ORIGINS.has(triggerOrigin)) return null;
   // The one named exception, and it is named in both records: ADR 0003 §5 and
   // ADR 0017 §1–§2. An Agent's persona entry has its origin test the other way
-  // round — a person in a turn proposes it, an unattended origin applies it —
-  // because a persona reaches every Room the Agent sits in, so a turn must not
-  // carry it, while an Agent concluding something about itself is bounded by
-  // one revision per Run, a notification to the owner, and a one-step restore.
+  // round — a person in a turn proposes it, the Agent owner's own unattended
+  // work applies it — because a persona reaches every Room the Agent sits in,
+  // so a turn must not carry it, while an Agent concluding something about
+  // itself under work its owner set up is bounded by one revision per Run, a
+  // notification to the owner, and a one-step restore.
+  //
+  // What this rule grants is passage past the *origin* gate, not the write:
+  // `decidePersonaWrite` then applies §5's table, and an unattended Run whose
+  // responsible person is not the Agent's owner leaves a proposal for the
+  // owner. Denying here instead would leave the owner nothing to decide.
   //
   // Scoped to a persona write on an agent-scope entry, resolved server-side by
   // `memoryPolicyContext` from the input or the target row. Never by removing

@@ -14,9 +14,10 @@ import type {
 import { redactSecretPatterns } from "../../runs/evidenceRedaction.js";
 import {
   fetchAllowedOriginResponse,
-  truncateToByteLimit,
+  guardedResponseText,
   type CustomSourceFetchCredential,
 } from "./customSourceEndpointFetch.js";
+import type { GuardedResponse, OutboundGuard } from "../outboundUrlSafety.js";
 import {
   buildListItems,
   buildSinglePageItem,
@@ -84,6 +85,8 @@ interface PipelineContext {
   deadlineAt: number;
   /** Resolved once per run by the caller (never by this module) from `policyEnvelope.credential_ref` — see `customSourceCredentialService.ts`. Injected into every live fetch this interpreter makes; never exposed to `handlerInput` or logs. */
   credential: CustomSourceFetchCredential | null;
+  /** The outbound boundary every live fetch in this run goes through. */
+  guard?: OutboundGuard;
 }
 
 export interface CustomSourcePipelineRunInput {
@@ -91,6 +94,7 @@ export interface CustomSourcePipelineRunInput {
   handlerInput: CustomSourceHandlerInput;
   pipeline: CustomSourcePipelineDefinition;
   credential?: CustomSourceFetchCredential | null;
+  guard?: OutboundGuard;
 }
 
 export async function runCustomSourcePipeline(
@@ -113,6 +117,7 @@ export async function runCustomSourcePipeline(
     warnings: [],
     deadlineAt: Date.now() + limits.timeout_ms,
     credential: input.credential ?? null,
+    ...(input.guard ? { guard: input.guard } : {}),
   };
 
   try {
@@ -209,6 +214,16 @@ function requireVar<K extends PipelineVar["kind"]>(
   return found as Extract<PipelineVar, { kind: K }>;
 }
 
+/** One place the two network-facing options are assembled, so no step forgets the body ceiling or the guard. */
+function fetchOptions(ctx: { limits: { max_download_bytes: number }; credential: CustomSourceFetchCredential | null; guard?: OutboundGuard; deadlineAt: number }) {
+  return {
+    signal: AbortSignal.timeout(remainingMs(ctx as PipelineContext)),
+    credential: ctx.credential,
+    maxDownloadBytes: ctx.limits.max_download_bytes,
+    ...(ctx.guard ? { guard: ctx.guard } : {}),
+  };
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -229,12 +244,9 @@ async function execFetchPage(
     return;
   }
   checkDeadline(ctx);
-  const response = await fetchAllowedOriginResponse(step.url, ctx.policyEnvelope.allowed_network_origins, {
-    signal: AbortSignal.timeout(remainingMs(ctx)),
-    credential: ctx.credential,
-  });
+  const response = await fetchAllowedOriginResponse(step.url, ctx.policyEnvelope.allowed_network_origins, fetchOptions(ctx));
   if (!response.ok) throw new PipelineStepError(`fetch_page(${step.bind}): HTTP ${response.status} from ${step.url}`);
-  const text = truncateToByteLimit(await response.text(), ctx.limits.max_download_bytes);
+  const text = guardedResponseText(response);
   ctx.vars.set(step.bind, { kind: "html", value: text, sourceUrl: step.url });
 }
 
@@ -282,15 +294,12 @@ async function execFollowLink(
     const item = itemsVar.value[i]!;
     let text: string;
     try {
-      const response = await fetchAllowedOriginResponse(item.source_uri, ctx.policyEnvelope.allowed_network_origins, {
-        signal: AbortSignal.timeout(remainingMs(ctx)),
-        credential: ctx.credential,
-      });
+      const response = await fetchAllowedOriginResponse(item.source_uri, ctx.policyEnvelope.allowed_network_origins, fetchOptions(ctx));
       if (!response.ok) {
         ctx.warnings.push(`follow_link: ${item.source_uri} returned HTTP ${response.status}`);
         continue;
       }
-      text = truncateToByteLimit(await response.text(), ctx.limits.max_download_bytes);
+      text = guardedResponseText(response);
     } catch (error) {
       ctx.warnings.push(`follow_link: ${item.source_uri} failed: ${errorMessage(error)}`);
       continue;
@@ -324,12 +333,9 @@ async function execDownloadAsset(
       break;
     }
     checkDeadline(ctx);
-    let response: Response;
+    let response: GuardedResponse;
     try {
-      response = await fetchAllowedOriginResponse(item.source_uri, ctx.policyEnvelope.allowed_network_origins, {
-        signal: AbortSignal.timeout(remainingMs(ctx)),
-        credential: ctx.credential,
-      });
+      response = await fetchAllowedOriginResponse(item.source_uri, ctx.policyEnvelope.allowed_network_origins, fetchOptions(ctx));
     } catch (error) {
       ctx.warnings.push(`download_asset: ${item.source_uri} failed: ${errorMessage(error)}`);
       continue;
@@ -343,11 +349,11 @@ async function execDownloadAsset(
       ctx.warnings.push(`download_asset: ${item.source_uri} mime type ${mimeType} not in mime_allowlist`);
       continue;
     }
-    const buf = Buffer.from(await response.arrayBuffer());
-    if (buf.byteLength > ctx.limits.max_download_bytes) {
+    if (response.truncated) {
       ctx.warnings.push(`download_asset: ${item.source_uri} exceeded max_download_bytes, skipped`);
       continue;
     }
+    const buf = Buffer.from(response.bytes);
     const filePath = await writeSnapshotBuffer(ctx, buf, extensionForMime(mimeType));
     item.snapshots.push({ snapshot_type: "download", file_path: filePath, mime_type: mimeType });
     ctx.filesWritten += 1;
@@ -378,12 +384,9 @@ async function execPaginate(
     const nextUrl = resolveNextPageUrl(step.next_page, currentUrl, currentHtml, pageIndex);
     if (!nextUrl) break;
     checkDeadline(ctx);
-    let response: Response;
+    let response: GuardedResponse;
     try {
-      response = await fetchAllowedOriginResponse(nextUrl, ctx.policyEnvelope.allowed_network_origins, {
-        signal: AbortSignal.timeout(remainingMs(ctx)),
-        credential: ctx.credential,
-      });
+      response = await fetchAllowedOriginResponse(nextUrl, ctx.policyEnvelope.allowed_network_origins, fetchOptions(ctx));
     } catch (error) {
       ctx.warnings.push(`paginate: failed to fetch page ${pageIndex + 1}: ${errorMessage(error)}`);
       break;
@@ -392,7 +395,7 @@ async function execPaginate(
       ctx.warnings.push(`paginate: page ${pageIndex + 1} returned HTTP ${response.status}`);
       break;
     }
-    currentHtml = truncateToByteLimit(await response.text(), ctx.limits.max_download_bytes);
+    currentHtml = guardedResponseText(response);
     currentUrl = nextUrl;
   }
 

@@ -66,6 +66,12 @@ function wsUrl(serverUrl: string): string {
   return `${serverUrl.replace(/^http/, "ws")}/internal/hosts/ws`;
 }
 
+function openHostSocket(endpoint: string, token: string): WebSocket {
+  return new (WebSocket as unknown as {
+    new (url: string, init: { headers: Record<string, string> }): WebSocket;
+  })(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+}
+
 /**
  * One inbound frame, parsed against the shared wire contract.
  *
@@ -254,7 +260,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
   return new Promise((resolve, reject) => {
     const endpoint = wsUrl(serverUrl);
     log(`connecting to ${endpoint}`);
-    const socket = new WebSocket(endpoint);
+    const socket = openHostSocket(endpoint, token);
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     let helloAcked = false;
     let updateRestartTimer: ReturnType<typeof setInterval> | null = null;
@@ -274,7 +280,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     let runtimeProbes: RuntimeProbe[] | undefined = lastRuntimeProbes;
     const sendHeartbeat = () => {
       void currentWorkspaces()
-        .then((ws) => helloInfo(ws, serverUrl, runtimeProbes, log))
+        .then((ws) => helloInfo(ws, runtimeProbes, log))
         .then((info) => sendOnThisConnection({ type: "heartbeat", ...info }));
       // Fire-and-forget, and deliberately after the heartbeat is already on
       // its way: counting starts an agent process per runtime, so it must
@@ -286,7 +292,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     };
 
     socket.addEventListener("open", () => {
-      void currentWorkspaces().then((ws) => helloInfo(ws, serverUrl, runtimeProbes, log)).then((info) => {
+      void currentWorkspaces().then((ws) => helloInfo(ws, runtimeProbes, log)).then((info) => {
         // Reclaims the directories of runs this daemon is no longer executing
         // — their outputs, their work surface, and the per-run profile an
         // older layout put there. A run still launching, running, or uploading

@@ -4,20 +4,21 @@
 
 Implemented for built-in RSS, Atom, watched web page, arXiv, OpenAlex,
 Semantic Scholar, and credentialed Brave Web Search providers
-with HTML-first extraction), manual URL, candidate evidence,
-reader, structured reader document extraction, project_folder/project routing flows,
-Level 2 Source Recipe creation through Phase 8, and the Custom Source backend
-create flow through Phase 8.
+(with HTML-first extraction), manual URL, candidate evidence,
+reader, structured reader document extraction, and project_folder/project
+routing flows.
 Source Recipe plan/create/dry-run/activate routes, proposal activation,
 scan-worker materialization, the `/sources` Create Source card, Source Detail
 normal/Advanced split, `source_runs` read model, and declarative-pipeline
 bridge into `source_recipe_versions` are wired. Custom Source proposal
 payloads/appliers, Sources frontend create/detail surfaces, and Space/Instance
-Settings surfaces are wired. Custom Source repair/rollback (Phase 9) and
-credentialed source support (Phase 10) are implemented backend-only (no
-frontend surface yet). Phase 12 hardening (rate limiting, artifact retention,
-an observability read model) is implemented; Phase 11 (browser/Python
-evaluation) was deliberately skipped.
+Settings surfaces are wired. Custom Source repair/rollback and credentialed
+source support are backend-only (no dedicated frontend). Rate limiting,
+artifact retention, and an observability read model exist. There is no
+browser or Python handler evaluation.
+
+Unimplemented Custom Source UI/sandbox ideas:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11.
 
 ## Purpose
 
@@ -391,6 +392,48 @@ the saved URL to a `SourceConnection` and queue content extraction. A manually
 saved URL may later change its attached source; source-scanned items keep their
 original connection as provenance and are not source-reassignable.
 
+### Outbound fetch boundary
+
+Every live fetch this module makes — connection scan, backfill page, manual URL,
+`extract_text`/`snapshot`, the Custom Source pre-fetch, and the declarative
+pipeline and Recipe interpreters' `fetch_page` / `follow_link` /
+`download_asset` / `paginate` steps — goes through `fetchGuarded`
+(`outboundUrlSafety.ts`), the server's entry into `@rainver/outbound-guard`.
+The guard refuses an address inside this instance's own network, connects to
+the address it checked rather than resolving the name a second time, re-checks
+every redirect hop, drops a connection credential the moment the chain leaves
+the first origin, and reads the body under a byte ceiling and a deadline. Do not
+add another HTTP client here, and do not put a credential in `headers`: the
+fetch options keep `credentialHeaders` separate so it cannot be replayed to a
+redirect target.
+
+A Custom Source or Recipe fetch composes its policy envelope's
+`allowed_network_origins` into that same guard, so the origin allowlist and the
+address check are consulted together on every hop rather than as two steps a
+caller could get half right.
+
+Every entry point that fetches takes an optional guard
+(`SourceExtractionWorker`, `PgSourcesRepository`, the scan workers, the Recipe
+create/dry-run services). Production passes nothing and gets the instance's
+strict guard; tests pass one pinned at their own fixture server, because the
+production guard has no way to switch itself off.
+
+### Reading a decision item, a briefing and a screening list
+
+A review action that republishes a Source item's content — `extract_evidence`
+writes it into Evidence, `create_proposal` writes it into a Proposal body —
+reads the item as the reviewer and demands full access
+(`sourceItemFullContentReadClause`): the ordinary item gate, connection consent
+included, plus the level, and without oversight, because supervising a member's
+item is not permission to publish it. A Proposal built from Source material
+takes the narrowest visibility of what it quotes rather than a hard-coded
+`space_shared`, and an item served at `summary` narrows it to `private`.
+
+A briefing's run list is reached through the reader's own subscription, but its
+output artifacts are ordinary content and go through the Artifact predicate. The
+Project Research screening review reads its items as the reviewer, so a
+reviewer's own subscription is what makes a connected item readable there.
+
 ### Reader and structured extraction
 
 `extract_text` and the extracted side of `snapshot` jobs fetch source HTML and
@@ -545,7 +588,9 @@ owns that job, the rule cursor, and the run audit rows:
   not advance the rule cursor. `item_decisions_json` records
   `relevant`/`maybe`/`not_relevant` decisions. Relevance lives in
   `source_post_processing_item_decisions`; item reading state lives per user in
-  `source_item_user_states`.
+  `source_item_user_states`. List/get/action on those decisions reuses
+  `sourceItemReadableClause`. `queue_content` and `extract_evidence` additionally
+  require `full` item access.
 - Project Research screening sends at most 10 source items to one structured
   output run. Explicit recovery jobs are split into the same batches, so a
   large baseline never becomes one oversized model request; each batch remains

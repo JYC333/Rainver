@@ -3,9 +3,11 @@ import type { ServerConfig } from "../../../config.js";
 import { HttpError, type Queryable } from "../../routeUtils/common.js";
 import { resolveProviderCommandStore } from "../../providers/commands/store.js";
 import { completeProviderText } from "../../providers/invocation/invocation.js";
+import { canReadProject } from "../../projects/access.js";
 import type { SemanticCheckpointProviderPort } from "./service.js";
 import type { RetrievalEgressPolicy } from "../../retrieval/egress/egressPolicy.js";
 import {
+  loadViewerSpaceRole,
   loadSourcePolicySnapshots,
   loadSourceConnectionIdsForTargets,
   sourceConnectionIdsFromMetadata,
@@ -62,6 +64,7 @@ export class ManagedSemanticCheckpointProvider implements SemanticCheckpointProv
     const sourcePolicies = sourceIds.length > 0
       ? sourceEgressPoliciesForSnapshots(await loadSourcePolicySnapshots(this.db, input.spaceId, sourceIds))
       : undefined;
+    const metering = await checkpointMetering(this.db, input.spaceId, input.workContextScopeId);
     const completion = await completeProviderText(resolveProviderCommandStore(this.config), input.spaceId, {
       provider_id: "",
       model: null,
@@ -78,7 +81,21 @@ export class ManagedSemanticCheckpointProvider implements SemanticCheckpointProv
           ? { payloadSourceConnectionIds: sourceIds, sourcePolicies }
           : {}),
       },
-      metering: await checkpointMetering(this.db, input.spaceId, input.workContextScopeId),
+      metering,
+      // Nobody is present: the work context's setup authorizes the spend, for
+      // as long as its person can still reach what the checkpoint reads.
+      spend: {
+        kind: "setup",
+        setup: "context_checkpoint",
+        record_id: input.workContextScopeId,
+        user_id: metering.subject_user_id,
+        still_authorized: () => checkpointSetupStillAuthorizes(
+          this.db,
+          input.spaceId,
+          input.workContextScopeId,
+          metering.subject_user_id,
+        ),
+      },
     });
     return {
       extraction: parseJsonObject(completion.text),
@@ -196,4 +213,21 @@ export async function checkpointMetering(
     throw new HttpError(409, `Work context scope '${workContextScopeId}' has no setup to meter its checkpoint extraction to`);
   }
   return { subject_user_id: row.user_id, project_id: row.project_id ?? null };
+}
+
+/**
+ * Whether the work context still belongs to this person and they can still
+ * read what it covers: its latest setup names them, they are an active member,
+ * and they can read its Project when it has one.
+ */
+async function checkpointSetupStillAuthorizes(
+  db: Queryable,
+  spaceId: string,
+  workContextScopeId: string,
+  userId: string,
+): Promise<boolean> {
+  const current = await checkpointMetering(db, spaceId, workContextScopeId).catch(() => null);
+  if (current?.subject_user_id !== userId) return false;
+  if ((await loadViewerSpaceRole(db, spaceId, userId)) === null) return false;
+  return current.project_id ? canReadProject(db, spaceId, current.project_id, userId) : true;
 }

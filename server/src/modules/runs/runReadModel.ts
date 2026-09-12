@@ -7,13 +7,25 @@ import type {
   RunEventDetailRecord,
   RunEvaluationRecord,
   RunFinalizationRecord,
+  RunAttemptRecord,
   RunRecord,
   RunStepDetailRecord,
+  VisibleRunRecord,
 } from "./repository.js";
+import { bodyWithheld, type ContentAccessLevel } from "../access/contentAccessTypes.js";
 import type { VerificationResultRecord } from "./verification/index.js";
 
+/**
+ * A Run the caller has just created or acted on outside a visible read: its
+ * owner gets the body, anyone else the summary. Fails closed for everyone
+ * but the owner, like `bodyWithheld`.
+ */
+export function runViewFor(run: RunRecord, viewerUserId: string): VisibleRunRecord {
+  return { ...run, effective_access_level: run.owner_user_id === viewerUserId ? "full" : "summary" };
+}
+
 export function runToOut(
-  run: RunRecord,
+  run: VisibleRunRecord,
   provider: ModelProviderSummaryRecord | null = null,
   options: { executes_remotely?: boolean } = {},
 ): Record<string, unknown> {
@@ -51,9 +63,11 @@ export function runToOut(
     ended_at: run.ended_at ?? null,
     created_at: run.created_at ?? null,
     updated_at: run.updated_at ?? null,
-    error_message: run.error_message ?? null,
-    error_json: run.error_json ?? null,
-    output_json: run.output_json ?? null,
+    // A failure's text can quote what the Run produced, like its attempts'
+    // error detail; a summary viewer still sees the status.
+    error_message: bodyWithheld(run.effective_access_level) ? null : run.error_message ?? null,
+    error_json: bodyWithheld(run.effective_access_level) ? null : run.error_json ?? null,
+    output_json: bodyWithheld(run.effective_access_level) ? null : run.output_json ?? null,
     usage: runUsageToOut(run.usage),
     selected_adapter_type: run.adapter_type ?? null,
     capability_id: run.capability_id ?? null,
@@ -85,7 +99,7 @@ function runUsageToOut(usage: RunRecord["usage"]): Record<string, unknown> | nul
   };
 }
 
-export function runStatusToOut(run: RunRecord): Record<string, unknown> {
+export function runStatusToOut(run: VisibleRunRecord): Record<string, unknown> {
   return {
     id: run.id,
     status: run.status,
@@ -94,11 +108,17 @@ export function runStatusToOut(run: RunRecord): Record<string, unknown> {
     trigger_origin: run.trigger_origin,
     started_at: run.started_at ?? null,
     ended_at: run.ended_at ?? null,
-    error_message: run.error_message ?? null,
+    error_message: bodyWithheld(run.effective_access_level) ? null : run.error_message ?? null,
   };
 }
 
-export function runEvaluationToOut(row: RunEvaluationRecord): Record<string, unknown> {
+/**
+ * The Run-detail records below restate what a Run produced: its output,
+ * evidence and failure text. A summary-level viewer keeps statuses, outcomes
+ * and times, and is withheld those fields, as `/io` withholds the output.
+ */
+export function runEvaluationToOut(row: RunEvaluationRecord, level: ContentAccessLevel): Record<string, unknown> {
+  const withheld = bodyWithheld(level);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -109,14 +129,15 @@ export function runEvaluationToOut(row: RunEvaluationRecord): Record<string, unk
     failure_layer: row.failure_layer,
     failure_reason_code: row.failure_reason_code,
     trajectory_status: row.trajectory_status,
-    evidence_json: row.evidence_json ?? null,
-    rule_trace_json: row.rule_trace_json ?? null,
-    notes: row.notes,
+    evidence_json: withheld ? null : row.evidence_json ?? null,
+    rule_trace_json: withheld ? null : row.rule_trace_json ?? null,
+    notes: withheld ? null : row.notes,
     evaluated_at: row.evaluated_at,
   };
 }
 
-export function verificationResultToOut(row: VerificationResultRecord): Record<string, unknown> {
+export function verificationResultToOut(row: VerificationResultRecord, level: ContentAccessLevel): Record<string, unknown> {
+  const withheld = bodyWithheld(level);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -125,16 +146,17 @@ export function verificationResultToOut(row: VerificationResultRecord): Record<s
     verifier_type: row.verifier_type,
     verifier_version: row.verifier_version,
     status: row.status,
-    summary: row.summary,
-    evidence_refs_json: row.evidence_refs_json ?? null,
-    details_json: row.details_json ?? null,
+    summary: withheld ? null : row.summary,
+    evidence_refs_json: withheld ? null : row.evidence_refs_json ?? null,
+    details_json: withheld ? null : row.details_json ?? null,
     started_at: row.started_at,
     completed_at: row.completed_at,
     created_at: row.created_at,
   };
 }
 
-export function runFinalizationToOut(row: RunFinalizationRecord): Record<string, unknown> {
+export function runFinalizationToOut(row: RunFinalizationRecord, level: ContentAccessLevel): Record<string, unknown> {
+  const withheld = bodyWithheld(level);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -148,16 +170,17 @@ export function runFinalizationToOut(row: RunFinalizationRecord): Record<string,
     failure_layer: row.failure_layer,
     failure_reason_code: row.failure_reason_code,
     trajectory_status: row.trajectory_status,
-    skipped_reasons_json: row.skipped_reasons_json ?? null,
-    error_json: row.error_json ?? null,
-    metadata_json: row.metadata_json ?? null,
+    skipped_reasons_json: withheld ? null : row.skipped_reasons_json ?? null,
+    error_json: withheld ? null : row.error_json ?? null,
+    metadata_json: withheld ? null : row.metadata_json ?? null,
     finalized_at: row.finalized_at,
     created_at: row.created_at,
   };
 }
 
 
-export function runStepToOut(row: RunStepDetailRecord): Record<string, unknown> {
+export function runStepToOut(row: RunStepDetailRecord, level: ContentAccessLevel): Record<string, unknown> {
+  const withheld = bodyWithheld(level);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -176,17 +199,18 @@ export function runStepToOut(row: RunStepDetailRecord): Record<string, unknown> 
     proposal_id: row.proposal_id,
     started_at: row.started_at,
     ended_at: row.ended_at,
-    input_summary: row.input_summary,
-    output_summary: row.output_summary,
+    input_summary: withheld ? null : row.input_summary,
+    output_summary: withheld ? null : row.output_summary,
     error_type: row.error_type,
-    error_message: row.error_message,
-    metadata_json: row.metadata_json ?? {},
+    error_message: withheld ? null : row.error_message,
+    metadata_json: withheld ? {} : row.metadata_json ?? {},
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
 }
 
-export function runEventToOut(row: RunEventDetailRecord): Record<string, unknown> {
+export function runEventToOut(row: RunEventDetailRecord, level: ContentAccessLevel): Record<string, unknown> {
+  const withheld = bodyWithheld(level);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -197,17 +221,27 @@ export function runEventToOut(row: RunEventDetailRecord): Record<string, unknown
     event_index: row.event_index,
     event_type: row.event_type,
     status: row.status,
-    summary: row.summary,
+    summary: withheld ? null : row.summary,
     error_code: row.error_code,
-    error_message: row.error_message,
+    error_message: withheld ? null : row.error_message,
     project_folder_id: row.project_folder_id,
     artifact_id: row.artifact_id,
     proposal_id: row.proposal_id,
     data_exposure_level: row.data_exposure_level,
     trust_level: row.trust_level,
-    metadata_json: row.metadata_json ?? null,
+    metadata_json: withheld ? null : row.metadata_json ?? null,
     created_at: row.created_at,
   };
+}
+
+/** A retry attempt; its error detail is output-derived like the rest. */
+export function runAttemptToOut(row: RunAttemptRecord, level: ContentAccessLevel): Record<string, unknown> {
+  return { ...row, error_json: bodyWithheld(level) ? null : row.error_json ?? null };
+}
+
+/** A supervisor's retry decision; its metadata can carry the failure it read. */
+export function runSupervisorDecisionToOut(row: Record<string, unknown>, level: ContentAccessLevel): Record<string, unknown> {
+  return { ...row, metadata_json: bodyWithheld(level) ? null : row.metadata_json ?? null };
 }
 
 export function artifactSummaryToOut(row: ArtifactSummaryRecord): Record<string, unknown> {

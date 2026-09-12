@@ -345,24 +345,34 @@ describe("engine + registry default", () => {
     expect(d.decision).toBe("allow");
     expect(d.policy_rule_id).toBe("credential_same_space_manual_allow");
   });
-  it("runtime.use_credential same-space delegation allows", () => {
+  it("runtime.use_credential does not treat a missing origin as attended", () => {
+    const d = engineCheck(registry, {
+      action: "runtime.use_credential",
+      space_id: "s1",
+      resource_space_id: "s1",
+    });
+    expect(d.decision).toBe("deny");
+    expect(d.policy_rule_id).toBe("credential_unattended_deny");
+  });
+  it("runtime.use_credential does not treat a raw delegation origin as attended", () => {
     const d = engineCheck(registry, {
       action: "runtime.use_credential",
       space_id: "s1",
       resource_space_id: "s1",
       trigger_origin: "delegation",
     });
-    expect(d.decision).toBe("allow");
-    expect(d.policy_rule_id).toBe("credential_same_space_manual_allow");
+    expect(d.decision).toBe("deny");
+    expect(d.policy_rule_id).toBe("credential_unattended_deny");
   });
-  it("runtime.use_credential automation requires approval", () => {
+  it("runtime.use_credential denies an Automation with no standing grant: nobody is there to approve", () => {
     const d = engineCheck(registry, {
       action: "runtime.use_credential",
       space_id: "s1",
       resource_space_id: "s1",
       trigger_origin: "automation",
     });
-    expect(d.decision).toBe("require_approval");
+    expect(d.decision).toBe("deny");
+    expect(d.policy_rule_id).toBe("credential_automation_grant_missing_deny");
   });
   it("runtime.use_credential autonomous uses Automation standing authorization", () => {
     const denied = engineCheck(registry, {
@@ -378,7 +388,7 @@ describe("engine + registry default", () => {
       trigger_origin: "autonomous",
       automation_pre_authorized: true,
     });
-    expect(denied.decision).toBe("require_approval");
+    expect(denied.decision).toBe("deny");
     expect(allowed.decision).toBe("allow");
     expect(allowed.policy_rule_id).toBe("credential_automation_preauthorized_allow");
   });
@@ -418,7 +428,48 @@ describe("engine + registry default", () => {
       credential_pre_authorized: true,
       failure_policy: "fail_fast",
     });
-    expect(d.decision).toBe("require_approval");
+    expect(d.decision).toBe("deny");
+  });
+  it("runtime.use_credential allows the subscribed source annotation job", () => {
+    const d = engineCheck(registry, {
+      action: "runtime.use_credential",
+      space_id: "s1",
+      resource_space_id: "s1",
+      trigger_origin: "job",
+      managed_execution: "source_annotation",
+      credential_pre_authorized: true,
+      failure_policy: "fail_fast",
+    });
+    expect(d.decision).toBe("allow");
+    expect(d.policy_rule_id).toBe("credential_managed_preauthorized_allow");
+  });
+  it("runtime.use_credential allows an unattended setup only from a job, and only while it still authorizes", () => {
+    const setups = [
+      "daily_report",
+      "imported_session_extraction",
+      "inquiry_advice",
+      "room_summary",
+      "context_checkpoint",
+      "conversation_title",
+      "retrieval_embedding",
+      "research_pipeline",
+    ];
+    for (const setup of setups) {
+      const request = {
+        action: "runtime.use_credential",
+        space_id: "s1",
+        resource_space_id: "s1",
+        trigger_origin: "job",
+        managed_execution: setup,
+        credential_pre_authorized: true,
+      };
+      expect(engineCheck(registry, request).policy_rule_id, setup).toBe("credential_managed_preauthorized_allow");
+      const lapsed = engineCheck(registry, { ...request, credential_pre_authorized: false });
+      expect(lapsed.decision, setup).toBe("deny");
+      expect(lapsed.policy_rule_id, setup).toBe("credential_unattended_deny");
+      const otherOrigin = engineCheck(registry, { ...request, trigger_origin: "system" });
+      expect(otherOrigin.decision, setup).toBe("deny");
+    }
   });
   it("runtime.use_credential cross-space denies via space_boundary (runs before the credential rule)", () => {
     // rule_space_boundary precedes rule_use_credential, so a cross-space

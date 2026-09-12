@@ -348,7 +348,6 @@ function objectEdge(row: GraphEdgeRow): GraphProjectionEdge {
     kind: row.link_type,
     weight: row.confidence ?? undefined,
     metadata: {
-      evidenceSummary: row.evidence_summary ?? undefined,
       updatedAt: iso(row.updated_at),
     },
   };

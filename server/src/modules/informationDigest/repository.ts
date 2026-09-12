@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { contentAccessLevelSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { bodyWithheld } from "../access/contentAccessTypes.js";
 import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 
 const SOURCE_ITEM_ACCESS = contentResourceDefinition("source_item")!;
@@ -361,8 +362,8 @@ function hydrateCandidate(row: DigestCandidateRow): DigestCandidate {
   const { topic_candidates_json, effective_access_level, ...candidate } = row;
   return {
     ...candidate,
-    source_uri: effective_access_level === "summary" ? null : candidate.source_uri,
-    excerpt: effective_access_level === "summary" ? null : candidate.excerpt,
+    source_uri: bodyWithheld(effective_access_level) ? null : candidate.source_uri,
+    excerpt: bodyWithheld(effective_access_level) ? null : candidate.excerpt,
     topic_candidates: stringArray(topic_candidates_json),
   };
 }
@@ -377,8 +378,8 @@ function hydratePersistedItem(
   const { topic_candidates_json, component_scores_json, effective_access_level, ...item } = row;
   return {
     ...item,
-    source_uri: effective_access_level === "summary" ? null : item.source_uri,
-    excerpt: effective_access_level === "summary" ? null : item.excerpt,
+    source_uri: bodyWithheld(effective_access_level) ? null : item.source_uri,
+    excerpt: bodyWithheld(effective_access_level) ? null : item.excerpt,
     topic_candidates: stringArray(topic_candidates_json),
     component_scores: numberRecord(component_scores_json),
   };

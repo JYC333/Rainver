@@ -33,6 +33,17 @@ export interface WorkEventInput {
   occurredAt?: string;
   /** Groups every event produced by one advancement chain. */
   correlationId?: string | null;
+  /**
+   * The Run that produced this event, when one did.
+   *
+   * Written into `data_json.run_id` as well as the correlation column, because
+   * that is what the read predicate looks at: an event carries the Run's own
+   * words — a `task.reported` summary is whatever the Agent wrote — and is
+   * readable only while that Run is. A writer that set the correlation id alone
+   * left the event ungated, so naming the Run is one field here rather than a
+   * convention each caller has to remember inside `data`.
+   */
+  runId?: string | null;
   /** The event that caused this one. */
   causationId?: string | null;
   /**
@@ -77,7 +88,7 @@ export async function appendProjectWorkEvent(
   const id = randomUUID();
   const now = new Date().toISOString();
   const occurredAt = input.occurredAt ?? now;
-  const data = input.data ?? {};
+  const data = input.runId ? { ...(input.data ?? {}), run_id: input.runId } : (input.data ?? {});
 
   const inserted = await db.query<{ id: string }>(
     `INSERT INTO project_work_events (

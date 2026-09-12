@@ -101,9 +101,9 @@ ones are pruned. Manual archives are never pruned automatically.
 
 **Every BackupService archive contains `backup_manifest.json`** with format version, kind, timestamp, source root, included/excluded paths, db snapshot method, and warnings.
 
-**Manual trigger:**
+**Manual trigger** (instance administrator session; not a space-member API):
 ```bash
-curl -X POST http://localhost:3000/api/v1/system/backups/manual -H "X-API-Key: <key>"
+curl -X POST http://localhost:3000/api/v1/system/backups/manual --cookie 'session_id=<admin-session>'
 ```
 
 ## Backup — Offline: ops/scripts/system/backup.sh

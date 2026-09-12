@@ -45,9 +45,9 @@ describe("memory content access adapter", () => {
   });
 
   it("redacts content from non-owners when the effective level is summary", () => {
-    expect(shouldRedactMemoryContent(memory({ effective_access_level: "summary" }), "viewer-1")).toBe(true);
-    expect(shouldRedactMemoryContent(memory({ effective_access_level: "full" }), "viewer-1")).toBe(false);
-    expect(shouldRedactMemoryContent(memory({ owner_user_id: "viewer-1", access_level: "summary" }), "viewer-1")).toBe(false);
+    expect(shouldRedactMemoryContent({ ...memory(), effective_access_level: "summary" }, "viewer-1")).toBe(true);
+    expect(shouldRedactMemoryContent({ ...memory(), effective_access_level: "full" }, "viewer-1")).toBe(false);
+    expect(shouldRedactMemoryContent({ ...memory({ owner_user_id: "viewer-1" }), effective_access_level: "summary" }, "viewer-1")).toBe(false);
   });
 
   describe("highly_restricted sensitivity gate under Space oversight", () => {

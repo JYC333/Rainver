@@ -34,7 +34,6 @@ export interface HostRow {
   platform: string | null;
   arch: string | null;
   daemon_version: string | null;
-  daemon_server_url?: string | null;
   provider_proxy_base_url?: string | null;
   capabilities_json: Record<string, unknown> | null;
   default_adapter_type: string | null;
@@ -56,8 +55,6 @@ export interface HostOut {
   platform: string | null;
   arch: string | null;
   daemon_version: string | null;
-  /** The control-plane address this daemon reports it reaches. */
-  daemon_server_url: string | null;
   /** Explicit per-host proxy address; null means it is derived. */
   provider_proxy_base_url: string | null;
   capabilities_json: Record<string, unknown> | null;
@@ -76,8 +73,6 @@ export interface DaemonHelloInfo {
   platform?: string | null;
   arch?: string | null;
   daemon_version?: string | null;
-  /** The control-plane address this daemon reaches; see `hosts.daemon_server_url`. */
-  server_url?: string | null;
   capabilities_json?: Record<string, unknown> | null;
   /**
    * D1: which execution environment this is, distinct from `platform`
@@ -109,10 +104,22 @@ function rawToken(): string {
   return randomBytes(32).toString("base64url");
 }
 
+/** Crockford base32 without I/L/O/U — 13 characters is 65 bits, still retypeable. */
+const PAIRING_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+export const PAIRING_CODE_LENGTH = 13;
+
 function rawPairingCode(): string {
   // Short, easy to retype at a terminal prompt — this is a short-lived,
-  // one-time credential, not the long-lived bearer token.
-  return randomBytes(9).toString("base64url").replace(/[-_]/g, "").slice(0, 10).toUpperCase();
+  // one-time credential, not the long-lived bearer token. Each character is
+  // 5 uniform bits (the alphabet size divides 256), so case-folding and
+  // stripping no longer collapse the entropy the way a 10-char uppercase
+  // base64url slice did.
+  const bytes = randomBytes(PAIRING_CODE_LENGTH);
+  let code = "";
+  for (const byte of bytes) {
+    code += PAIRING_CODE_ALPHABET[byte % PAIRING_CODE_ALPHABET.length];
+  }
+  return code;
 }
 
 export function isStale(lastHeartbeatAt: string | null): boolean {
@@ -144,10 +151,6 @@ function hostOut(row: HostRow): HostOut {
     platform: row.platform,
     arch: row.arch,
     daemon_version: row.daemon_version,
-    // Both surfaced so the Command Center can show which proxy address a host
-    // will actually be handed, rather than making the operator guess whether
-    // the derived one is in play.
-    daemon_server_url: row.daemon_server_url ?? null,
     provider_proxy_base_url: row.provider_proxy_base_url ?? null,
     capabilities_json: row.capabilities_json,
     managed_workspaces_json: row.managed_workspaces_json ?? null,
@@ -157,7 +160,7 @@ function hostOut(row: HostRow): HostOut {
 }
 
 const HOST_COLUMNS = `id, owner_user_id, machine_id, environment_kind, name, kind, status, token_hash, pairing_code_expires_at,
-  last_heartbeat_at, platform, arch, daemon_version, daemon_server_url, provider_proxy_base_url,
+  last_heartbeat_at, platform, arch, daemon_version, provider_proxy_base_url,
   capabilities_json, managed_workspaces_json, default_adapter_type, created_at, updated_at`;
 
 export class PgHostRepository {
@@ -326,10 +329,6 @@ export class PgHostRepository {
               daemon_version = COALESCE($4, daemon_version),
               capabilities_json = COALESCE($5::jsonb, capabilities_json),
               managed_workspaces_json = COALESCE($6::jsonb, managed_workspaces_json),
-              -- Refreshed on every heartbeat, not only at pairing: a daemon
-              -- pointed at a new control-plane address should not keep handing
-              -- out lease URLs derived from the old one.
-              daemon_server_url = COALESCE($7, daemon_server_url),
               updated_at = now()
         WHERE id = $1 AND status <> 'revoked'`,
       [
@@ -339,7 +338,6 @@ export class PgHostRepository {
         info.daemon_version ?? null,
         info.capabilities_json ? JSON.stringify(info.capabilities_json) : null,
         info.managed_workspaces ? JSON.stringify(info.managed_workspaces) : null,
-        info.server_url ?? null,
       ],
     );
     if (info.workspace_reports || info.ambient_sessions) {

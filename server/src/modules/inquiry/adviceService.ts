@@ -9,11 +9,13 @@ import {
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
 import { assertProjectReadable, assertProjectWriter } from "../projects/access.js";
+import { assertThreadReadable } from "./threadAccess.js";
 import { InquiryIterationService } from "./iterationService.js";
 import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
 import { resolvePrompt } from "../prompts/resolver.js";
 import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import { completeProviderMessages } from "../providers/invocation/invocation.js";
+import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import { providerSupportsStructuredOutput } from "../providers/structuredOutputCapabilities.js";
 import { NEXT_FOCUS_KINDS, type NextFocusKind } from "./threadService.js";
 
@@ -105,6 +107,7 @@ type InvokeAdvice = (input: {
   providerId: string;
   model: string | null;
   system: string;
+  spend: CredentialSpendBasis;
 }) => Promise<Record<string, unknown>>;
 
 export interface AdviceGenerationOptions {
@@ -114,6 +117,8 @@ export interface AdviceGenerationOptions {
    * event that superseded the job cannot publish an older recommendation.
    */
   beforePersist: (db: Queryable) => Promise<boolean>;
+  /** What the job spends on: the setup its person's action recorded. */
+  spend: CredentialSpendBasis;
 }
 
 /**
@@ -147,6 +152,7 @@ export class InquiryAdviceService {
           project_id: input.projectId,
           task: "inquiry_next_step_advice",
         },
+        spend: input.spend,
       });
       if (!response.structured_output) throw new HttpError(502, "Inquiry advice provider returned no structured output");
       return response.structured_output;
@@ -167,6 +173,7 @@ export class InquiryAdviceService {
    */
   async getAdvice(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<InquiryThreadAdvice | null> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
     const row = await this.db.query<AdviceRow>(
       `SELECT a.*, t.version AS current_thread_version
          FROM inquiry_thread_advice a
@@ -180,6 +187,7 @@ export class InquiryAdviceService {
 
   async dismissAdvice(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<InquiryThreadAdvice> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "change");
     const row = await this.db.query<AdviceRow>(
       `UPDATE inquiry_thread_advice a
           SET status = 'dismissed', updated_at = $4
@@ -281,6 +289,7 @@ export class InquiryAdviceService {
     options?: AdviceGenerationOptions,
   ): Promise<InquiryThreadAdvice | null> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "change");
     const thread = await this.loadThreadContext(identity, projectId, threadId);
     if (thread.lifecycle_status !== "active") {
       throw new HttpError(422, "Advice is only generated for active Threads");
@@ -298,6 +307,9 @@ export class InquiryAdviceService {
       providerId: provider.id,
       model: provider.default_model,
       system,
+      // A person's request spends as that person; the automatic job spends on
+      // the setup its options name.
+      spend: options ? options.spend : { kind: "person", user_id: identity.userId },
     });
 
     const recommended = optionalString(output.recommended_focus_kind);

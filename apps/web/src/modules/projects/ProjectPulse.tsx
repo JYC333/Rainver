@@ -218,15 +218,17 @@ export default function ProjectPulse({
                 <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   {ATTENTION_CLASS_LABELS[cls]}
                 </p>
-                {attention.filter(item => item.attention_class === cls).map(item => (
+                {attention.filter(item => item.attention_class === cls).map(item => {
+                  const href = inProjectHref(projectId, item.href)
+                  return (
                   <Card key={item.id} className="flex items-start gap-2 p-3">
                     {cls === 'next_step'
                       ? <Compass className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                       : <CircleAlert className={`mt-0.5 size-4 shrink-0 ${cls === 'gate' ? 'text-destructive' : 'text-muted-foreground'}`} />}
                     <div className="min-w-0 flex-1">
-                      <Link to={inProjectHref(projectId, item.href)} className="text-sm font-medium hover:underline">
-                        {item.title}
-                      </Link>
+                      {href
+                        ? <Link to={href} className="text-sm font-medium hover:underline">{item.title}</Link>
+                        : <p className="text-sm font-medium">{item.title}</p>}
                       <p className="text-xs text-muted-foreground">
                         {item.summary ?? item.reason?.replace(/_/g, ' ')}
                       </p>
@@ -245,7 +247,8 @@ export default function ProjectPulse({
                       </Button>
                     )}
                   </Card>
-                ))}
+                  )
+                })}
               </div>
             ))}
           </div>

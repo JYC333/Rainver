@@ -19,7 +19,7 @@
  */
 
 import { z } from "zod";
-import { IdSchema, ISODateTimeSchema } from "./common.js";
+import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 
 const JsonObjectSchema = z.record(z.unknown());
 
@@ -526,6 +526,7 @@ export const CustomSourceCredentialDTOSchema = z
     header_value_prefix: z.string(),
     created_at: ISODateTimeSchema,
     updated_at: ISODateTimeSchema,
+    ...SecretResponseGuards,
   })
   .passthrough();
 export type CustomSourceCredentialDTO = z.infer<typeof CustomSourceCredentialDTOSchema>;

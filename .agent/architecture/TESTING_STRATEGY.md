@@ -74,7 +74,11 @@ Testcontainers instance and applies the baseline once to a template database
 named by the migrations' content hash. A test file declares
 `const db = useTestDatabase(__filename)` (`test/support/testDatabase.ts`) at
 module scope and gets its own clone of that template as `db.pool`, dropped in
-`afterAll`; tests start with `if (!db.available) return;`. Do not start a
+`afterAll`. When the container is unreachable the fixture reports every test in
+the file as skipped, never passed; hooks that use the pool still guard with
+`if (!db.available) return;`, since a hook cannot be skipped. CI sets
+`REQUIRE_TEST_POSTGRES=true`, which fails the run in global setup instead of
+skipping. Do not start a
 second container or create ad-hoc databases. A clone already carries the
 baseline, so never call `migrate()` on it; tests of the migration runner,
 plugin migrations, or a hand-authored schema pass `{ empty: true }` and

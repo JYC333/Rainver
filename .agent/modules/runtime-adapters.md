@@ -43,17 +43,17 @@ is retired. Do not reintroduce instance-level runtime adapter configuration.
 
 | adapter_type | kind | status | credentials | context | sandbox |
 |---|---|---|---|---|---|
-| `capability` | native | planned | none | none | none |
+| `capability` | native | declared / disabled | none | none | none |
 | `model_api` | managed_api | implemented | `model_provider_api_key` or owner-bound `managed_subscription_oauth` | none | none |
 | `ts_agent_host` | managed_api | implemented / disabled by default | `model_provider_api_key` (`server_runtime_host`) | canonical host request | none |
 | `claude_code` | local_cli | implemented | copy's own login on the host | rendered prompt + work surface | host daemon |
 | `codex_cli` | local_cli | implemented | copy's own login on the host | rendered prompt + work surface | host daemon |
 | `opencode` | local_cli | implemented (low trust by declaration) | copy's own login on the host | rendered prompt + work surface + locked agent control | host daemon |
-| `gemini_cli` | local_cli | planned | disabled | prompt/custom | worktree |
-| `custom` | custom | planned | disabled | custom | custom |
+| `gemini_cli` | local_cli | declared / disabled | disabled | prompt/custom | worktree |
+| `custom` | custom | declared / disabled | disabled | custom | custom |
 
-Planned adapters may appear in code/catalog metadata but cannot be enabled or
-executed. Every CLI Run now executes on a host daemon, so there is no
+Declared-but-disabled adapters may appear in code/catalog metadata but cannot
+be enabled or executed. Every CLI Run now executes on a host daemon, so there is no
 server-side Docker executor: `supports_one_shot_docker` on a spec is a
 declaration the orchestrator still checks (a critical Run on an adapter that
 does not declare it fails with `docker_sandbox_not_supported`), but no
@@ -111,7 +111,7 @@ built-in host is instance-admin gated. The surface is documented in
    invocation-layer fallback selected a different one.
 2. `server/src/modules/runtimeAdapters` validates that the adapter exists
    and is implemented.
-3. Native adapters are planned; no native capability executor is active today.
+3. No native capability executor is active. `adapter_type="capability"` is disabled.
 4. server local CLI runtime specs enter through
    `server/src/modules/runs/remoteHostCliAdapter.ts`. Shared local CLI execution
    details are split by responsibility: command rendering in
@@ -145,8 +145,9 @@ built-in host is instance-admin gated. The surface is documented in
    handed to a run is not a loopback URL: its host comes from
    `SANDBOX_RUNNER_SERVER_HOST` (default `server`, the Compose service name),
    so lease traffic crosses the deployment network. A paired execution host
-   needs `PROVIDER_PROXY_EXTERNAL_BASE_URL` as well, since it cannot resolve a
-   Compose service name. Provider
+   cannot resolve a Compose service name, so it gets its per-host override,
+   else `PROVIDER_PROXY_EXTERNAL_BASE_URL`, else an address derived from an
+   `http:` `FRONTEND_URL` plus `PROVIDER_PROXY_PORT`. Provider
    API keys are resolved only inside the server proxy and are not released to
    CLI subprocess env. When a provider is selected, upstream proxy/direct
    routing is taken from the Provider's NetworkProfile. No provider selected
@@ -285,11 +286,10 @@ never be returned for another copy or another machine.
 Managed API adapters do not detect a local executable. They are considered
 installed when implemented:
 
-- `model_api` and `ts_agent_host` execute provider-backed turns through server
-  `runs` and `POST /internal/runtime-host/execute` when runs authority is the
-  server. The provider key is released inside the server providers/credentials
-  broker over the internal channel and is never passed through ambient
-  environment variables.
+- `model_api` and `ts_agent_host` execute provider-backed turns in process:
+  `runs` hands each turn to `runtimeHost`, which spends the provider key inside
+  the server once `authorizeCredentialSpend` has decided the Run's spend. The
+  key is never passed through ambient environment variables.
 
 ### Project Research execution boundary
 
@@ -344,7 +344,9 @@ owner's capacity.
   These tools are not free-form provider tools and do not parse natural-language
   text server-side.
 
-General MCP/tool scheduling is deferred to the extended server runtime stage.
+There is no general MCP/tool scheduler.
+
+Unimplemented runtime ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §16.
 Local CLI adapters use the same `AgentToolGateway` through the Run-scoped REST
 tool surface — reached with the `rainver` command the executing side puts in
 front of the Run — rather than a separate tool authority.

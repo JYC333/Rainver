@@ -5,6 +5,7 @@ import {
   stringArray,
 } from "../routeUtils/common.js";
 import { shouldRedactMemoryContent } from "../memory/memoryReadAuth.js";
+import type { ContentAccessLevel } from "../access/contentAccessTypes.js";
 
 export const PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION = "project_public_summary.prompt.v1";
 export const PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION = "project_public_summary.v1";
@@ -36,6 +37,7 @@ export interface PublicSummaryPromptContext {
     owner_user_id: string | null;
     sensitivity_level: string | null;
     tags: unknown;
+    effective_access_level: ContentAccessLevel;
   }>;
   activities: Array<{
     id: string;

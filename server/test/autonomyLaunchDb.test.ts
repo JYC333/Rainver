@@ -8,6 +8,8 @@ import { registerEvolutionReviewAutonomyDiscoverer } from "../src/modules/evolut
 import { registerPeriodicDigestAutonomyDiscoverer } from "../src/modules/projects/autonomyDiscoverer.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { loadConfig } from "../src/config.js";
+import { authorizeCredentialSpend, CredentialSpendDeniedError } from "../src/modules/policy/credentialSpend.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
@@ -261,6 +263,30 @@ describeWithPostgres("bounded periodic digest launch", () => {
       run_id: coordinator.id,
       trigger_context_json: { autonomy_tick_id: result.tick_id },
     });
+  });
+
+  it("lets an autonomous Run spend only while its Automation holds a credential grant", async () => {
+    await seedProject(PROJECT_A, "Older Project", beforeNow(6 * DAY_MS));
+    await launch(1);
+    const child = await db.pool.query<{
+      id: string; space_id: string; parent_run_id: string | null; trigger_origin: string; contract_snapshot_json: unknown;
+    }>(
+      `SELECT id, space_id, parent_run_id, trigger_origin, contract_snapshot_json
+         FROM runs WHERE trigger_origin = 'autonomous'`,
+    );
+    // Named only as its coordinator's child, it is decided on the coordinator
+    // the Automation fired, and on that Automation's grant as it stands now.
+    const spend = () => authorizeCredentialSpend(
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
+      { space_id: SPACE, provider_id: null, basis: { kind: "run", run: child.rows[0]! } },
+    );
+    await expect(spend()).resolves.toMatchObject({ trigger_origin: "automation" });
+    await db.pool.query(
+      `UPDATE automation_credential_grants SET status = 'revoked', revoked_at = now(), revoked_by_user_id = $2
+        WHERE automation_id = $1`,
+      [AUTOMATION, USER],
+    );
+    await expect(spend()).rejects.toBeInstanceOf(CredentialSpendDeniedError);
   });
 
   it("serializes concurrent ticks so one logical candidate creates only one Run", async () => {

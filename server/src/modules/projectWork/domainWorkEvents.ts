@@ -79,7 +79,7 @@ export async function recordDomainWorkEvent(
     subjectId: input.subjectId,
     actorId,
     occurredAt: input.occurredAt,
-    ...(input.provenance?.runId ? { correlationId: input.provenance.runId } : {}),
+    ...(input.provenance?.runId ? { correlationId: input.provenance.runId, runId: input.provenance.runId } : {}),
     idempotencyKey: `${input.eventKind}:${input.subjectId}:${input.idempotencySuffix}`,
     data: {
       ...input.data,

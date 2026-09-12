@@ -48,11 +48,13 @@ import type { RunRecord } from "../src/modules/runs/runRepositoryTypes.js";
 import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { decidePersonaWrite } from "../src/modules/memory/memoryApplyRepository.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; // space owner + project owner
 const MEMBER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"; // plain space member, not a project member
+const ADMIN = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"; // may fire another member's automation
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 const OTHER_PROJECT = "66666666-6666-4666-8666-666666666666"; // lives in OTHER_SPACE
 const AGENT = "77777777-7777-4777-8777-777777777777";
@@ -80,7 +82,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "automation_runs", "automation_credential_grants", "automations", "scheduler_tasks", "jobs", "runs", "agent_runtime_profiles", "agent_versions", "agents", "source_items", "project_source_item_links", "project_source_bindings", "source_connections", "source_connectors", "project_folders", "project_members", "projects", "space_memberships", "users", "spaces"],
+    ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "automation_runs", "automation_credential_grants", "automations", "scheduler_tasks", "jobs", "task_runs", "tasks", "sessions", "room_user_members", "rooms", "runs", "agent_runtime_profiles", "agent_versions", "agents", "source_items", "project_source_item_links", "project_source_bindings", "source_connections", "source_connectors", "project_folders", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -90,7 +92,7 @@ beforeEach(async () => {
       [spaceId, name, now],
     );
   }
-  for (const userId of [OWNER, MEMBER]) {
+  for (const userId of [OWNER, MEMBER, ADMIN]) {
     await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)`,
       [userId, now],
@@ -98,8 +100,9 @@ beforeEach(async () => {
   }
   await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
-     VALUES ($1,$2,$3,'owner','active',$4,$4), ($5,$2,$6,'member','active',$4,$4)`,
-    [randomUUID(), SPACE, OWNER, now, randomUUID(), MEMBER],
+     VALUES ($1,$2,$3,'owner','active',$4,$4), ($5,$2,$6,'member','active',$4,$4),
+            ($7,$2,$8,'admin','active',$4,$4)`,
+    [randomUUID(), SPACE, OWNER, now, randomUUID(), MEMBER, randomUUID(), ADMIN],
   );
   await db.pool.query(
     `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
@@ -322,7 +325,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     ).rejects.toMatchObject({ code: "23503" });
   });
 
-  it("fire creates the run with the automation's project_id", async () => {
+  it("fire creates the run with the automation's project_id, as the person who asked", async () => {
     if (!db.available) return;
     const created = await service().create({
       spaceId: SPACE,
@@ -335,18 +338,77 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
         config_json: { target_type: "agent_run" },
       },
     });
+    // A manual fire carrying the person's own prompt is that person asking,
+    // not the automation running (ADR 0003 §5 / D1). The Run is theirs.
     const result = await service().fire({
       spaceId: SPACE,
       automationId: created.id,
       actorUserId: OWNER,
       prompt: "Analyze new papers",
     });
-    const run = await db.pool.query<{ project_id: string | null; trigger_origin: string }>(
-      `SELECT project_id, trigger_origin FROM runs WHERE id = $1`,
+    expect(result.trigger_origin).toBe("manual");
+    const run = await db.pool.query<{ project_id: string | null; trigger_origin: string; instructed_by_user_id: string }>(
+      `SELECT project_id, trigger_origin, instructed_by_user_id FROM runs WHERE id = $1`,
       [String(result.run_id)],
     );
     expect(run.rows[0]?.project_id).toBe(PROJECT);
-    expect(run.rows[0]?.trigger_origin).toBe("automation");
+    expect(run.rows[0]?.trigger_origin).toBe("manual");
+    expect(run.rows[0]?.instructed_by_user_id).toBe(OWNER);
+  });
+
+  it("runs the configured prompt as the automation's own work, whoever pressed fire", async () => {
+    if (!db.available) return;
+    // An admin or Project writer may fire another member's automation. Firing
+    // it with nothing supplied runs the configured prompt, which is the
+    // owner's work: the Run is stamped as the schedule would have stamped it,
+    // so nothing the firer did makes them responsible for what it writes
+    // (ADR 0003 §5 / D1). Who pressed it stays in `automation_runs`.
+    const created = await service().create({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Standing digest",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        trigger_type: "manual",
+        config_json: { target_type: "agent_run", prompt: "Summarize what arrived" },
+      },
+    });
+    const result = await service().fire({
+      spaceId: SPACE,
+      automationId: created.id,
+      actorUserId: ADMIN,
+    });
+    expect(result.trigger_origin).toBe("automation");
+    const run = await db.pool.query<{ trigger_origin: string; instructed_by_user_id: string; prompt: string | null }>(
+      `SELECT trigger_origin, instructed_by_user_id, prompt FROM runs WHERE id = $1`,
+      [String(result.run_id)],
+    );
+    expect(run.rows[0]).toMatchObject({
+      trigger_origin: "automation",
+      instructed_by_user_id: OWNER,
+      prompt: "Summarize what arrived",
+    });
+    const fire = await db.pool.query<{ triggered_by_user_id: string }>(
+      `SELECT triggered_by_user_id FROM automation_runs WHERE id = $1`,
+      [String(result.automation_run_id)],
+    );
+    expect(fire.rows[0]?.triggered_by_user_id).toBe(ADMIN);
+    // The seam: what this fire stamped is what ADR 0003 §5 reads. Asserting
+    // the columns alone would leave the two halves of D1 tested apart, and
+    // the rule is only as good as the stamping that feeds it.
+    expect(decidePersonaWrite({
+      ownerUserId: MEMBER, // an Agent belonging to someone other than the automation owner
+      roomId: null,
+      triggerOrigin: run.rows[0]!.trigger_origin,
+      instructedByUserId: run.rows[0]!.instructed_by_user_id,
+    })).toBe("proposal_owner");
+    expect(decidePersonaWrite({
+      ownerUserId: OWNER,
+      roomId: null,
+      triggerOrigin: run.rows[0]!.trigger_origin,
+      instructedByUserId: run.rows[0]!.instructed_by_user_id,
+    })).toBe("apply");
   });
 
   it("enforces an automation max_runs cap across direct fires", async () => {
@@ -443,6 +505,44 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       },
     } as Pick<RunRecord, "id" | "space_id" | "root_run_id" | "contract_snapshot_json">);
     expect(dispatch).toMatchObject({ allowed: false, error_code: "task_max_runs_exceeded" });
+  });
+
+  /**
+   * A Room is a visibility boundary and `task_runs` is read through the Task,
+   * so a Task Run may not be attached to a Room conversation. Nothing writes
+   * such a row today; this is what keeps it that way.
+   */
+  it("refuses to dispatch a Task Run into a Room conversation", async () => {
+    if (!db.available) return;
+    const taskId = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO tasks (id, space_id, project_id, title, status, created_by_user_id, visibility, created_at, updated_at)
+       VALUES ($1,$2,$3,'Roomed task','ready',$4,'space_shared',$5,$5)`,
+      [taskId, SPACE, PROJECT, OWNER, now],
+    );
+    const room = await db.pool.query<{ id: string }>(
+      `SELECT id FROM rooms WHERE space_id = $1 AND project_id = $2 AND is_mainline LIMIT 1`,
+      [SPACE, PROJECT],
+    );
+    const sessionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO sessions (id, space_id, room_id, project_id, title, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'Conversation','active',$5,$5)`,
+      [sessionId, SPACE, room.rows[0]!.id, PROJECT, now],
+    );
+
+    await expect(
+      new PgTaskRepository(db.pool).createTaskRun(
+        { spaceId: SPACE, userId: OWNER },
+        taskId,
+        { agent_id: AGENT, session_id: sessionId },
+      ),
+    ).rejects.toMatchObject({ statusCode: 422 });
+    expect((await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM task_runs WHERE space_id = $1 AND task_id = $2`,
+      [SPACE, taskId],
+    )).rows[0]?.count).toBe("0");
   });
 
   it("fails closed for missing sources and admits direct Workflow Runs atomically", async () => {
@@ -691,26 +791,79 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       workflow_version_id: WORKFLOW_VERSION,
     });
 
+    // Fired by somebody who is not its owner, and with nothing supplied: the
+    // execution is the owner's work, so every Run it creates names the owner
+    // as responsible (ADR 0003 §5 / D1), not the admin who pressed it.
     const fired = await service().fire({
       spaceId: SPACE,
       automationId: automation.id,
-      actorUserId: OWNER,
+      actorUserId: ADMIN,
     });
-    expect(fired).toMatchObject({ target_type: "workflow", workflow_version_id: WORKFLOW_VERSION });
+    expect(fired).toMatchObject({
+      target_type: "workflow",
+      workflow_version_id: WORKFLOW_VERSION,
+      trigger_origin: "automation",
+    });
     const execution = await db.pool.query<{ status: string; input_json: Record<string, unknown> }>(
       `SELECT status, input_json FROM workflow_executions WHERE id = $1`,
       [String(fired.workflow_execution_id)],
     );
     expect(execution.rows[0]?.status).toBe("running");
     expect(execution.rows[0]?.input_json).toMatchObject({ query: "bounded" });
-    const root = await db.pool.query<{ trigger_origin: string; workflow_input_json: Record<string, unknown> }>(
-      `SELECT trigger_origin, contract_snapshot_json->'workflow_input_json' AS workflow_input_json FROM runs WHERE id = $1`,
+    const root = await db.pool.query<{
+      trigger_origin: string; instructed_by_user_id: string; workflow_input_json: Record<string, unknown>;
+    }>(
+      `SELECT trigger_origin, instructed_by_user_id,
+              contract_snapshot_json->'workflow_input_json' AS workflow_input_json
+         FROM runs WHERE id = $1`,
       [String(fired.root_run_id)],
     );
     expect(root.rows[0]).toMatchObject({
       trigger_origin: "automation",
+      instructed_by_user_id: OWNER,
       workflow_input_json: { query: "bounded" },
     });
+    const children = await db.pool.query<{ trigger_origin: string; instructed_by_user_id: string }>(
+      `SELECT trigger_origin, instructed_by_user_id FROM runs WHERE parent_run_id = $1`,
+      [String(fired.root_run_id)],
+    );
+    expect(children.rows.length).toBeGreaterThan(0);
+    for (const child of children.rows) {
+      expect(child).toMatchObject({ trigger_origin: "job", instructed_by_user_id: OWNER });
+    }
+
+    // The same workflow fired with a prompt of the person's own is that person
+    // asking. The coordinator Run has to say so: the preflight admitted it as
+    // `manual`, the response reports `manual`, and the credential authority
+    // later walks up to this row — three answers about one fire, and they are
+    // the same answer only if the row carries the decision too.
+    const asked = await service().create({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Workflow automation on request",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        config_json: {
+          target_type: "workflow",
+          workflow_asset_key: "workflow.automation-test",
+          workflow_resolution: "pin",
+          input_json: { query: "bounded" },
+        },
+      },
+    });
+    const askedFire = await service().fire({
+      spaceId: SPACE,
+      automationId: asked.id,
+      actorUserId: ADMIN,
+      prompt: "Run this one for me",
+    });
+    expect(askedFire).toMatchObject({ trigger_origin: "manual" });
+    const askedRoot = await db.pool.query<{ trigger_origin: string; instructed_by_user_id: string }>(
+      `SELECT trigger_origin, instructed_by_user_id FROM runs WHERE id = $1`,
+      [String(askedFire.root_run_id)],
+    );
+    expect(askedRoot.rows[0]).toMatchObject({ trigger_origin: "manual", instructed_by_user_id: ADMIN });
     await expect(
       service().fire({ spaceId: SPACE, automationId: automation.id, actorUserId: OWNER }),
     ).rejects.toMatchObject({ statusCode: 409 });

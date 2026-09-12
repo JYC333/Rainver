@@ -69,6 +69,9 @@ function fakeStore(): ProviderCommandStore {
     },
     async revokeProviderGrant(_spaceId, _userId, _providerId, _grantSpaceId) {
     },
+    async authorizeCredentialSpend() {
+      return {} as never;
+    },
     async getInvocationTarget(_spaceId, providerId) {
       return {
         provider: {
@@ -264,21 +267,10 @@ describe("providers and credentials server authority", () => {
     expect(put.json()).toMatchObject({ task: "reflector" });
   });
 
-  it("owns internal credential resolution", async () => {
+  it("does not expose decrypted keys over the internal HTTP resolve hatch", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProviderCommandStoreForTests(fakeStore());
     app = buildModuleServer(await authorityConfig(), [providersModule]);
-
-    const denied = await app.inject({
-      method: "POST",
-      url: "/internal/providers-credentials/credentials/runtime/resolve",
-      payload: JSON.stringify({
-        kind: "model_provider_api_key",
-        space_id: "space-1",
-        provider_id: "provider-1",
-      }),
-    });
-    expect(denied.statusCode).toBe(401);
 
     const resolved = await app.inject({
       method: "POST",
@@ -293,31 +285,7 @@ describe("providers and credentials server authority", () => {
         provider_id: "provider-1",
       }),
     });
-    expect(resolved.statusCode).toBe(200);
-    expect(resolved.json()).toEqual({
-      kind: "model_provider_api_key",
-      provider_id: "provider-1",
-      api_key: "sk-test-provider",
-    });
-
-    const resolvedCredential = await app.inject({
-      method: "POST",
-      url: "/internal/providers-credentials/credentials/runtime/resolve",
-      headers: {
-        "content-type": "application/json",
-        "x-rainver-internal-token": "internal-token",
-      },
-      payload: JSON.stringify({
-        kind: "credential_api_key",
-        space_id: "space-1",
-        credential_id: "credential-1",
-      }),
-    });
-    expect(resolvedCredential.statusCode).toBe(200);
-    expect(resolvedCredential.json()).toEqual({
-      kind: "credential_api_key",
-      credential_id: "credential-1",
-      api_key: "sk-test-credential",
-    });
+    expect(resolved.statusCode).toBe(404);
+    expect(JSON.stringify(resolved.json())).not.toContain("sk-test");
   });
 });

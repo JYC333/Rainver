@@ -7,14 +7,21 @@
 
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
+import { resolveIdentity } from "../routeUtils/common.js";
 import { dispatchWebhookRoute, notificationWebhookPolicy } from "./service.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  app.get("/api/v1/server/notifications/webhooks/policy", async () =>
-    notificationWebhookPolicy(context.config),
-  );
+  app.get("/api/v1/server/notifications/webhooks/policy", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    return notificationWebhookPolicy(context.config);
+  });
   app.post(
     "/api/v1/server/notifications/webhooks/dispatch",
-    async (request, reply) => dispatchWebhookRoute(context.config, request, reply),
+    async (request, reply) => {
+      const identity = await resolveIdentity(context.config, request, reply);
+      if (!identity) return reply;
+      return dispatchWebhookRoute(context.config, request, reply);
+    },
   );
 }

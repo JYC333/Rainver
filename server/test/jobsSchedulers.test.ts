@@ -593,9 +593,10 @@ describe("SchedulerRegistry", () => {
 });
 
 describe("jobs route visibility", () => {
-  it("treats cross-space jobs as not found", () => {
-    expect(jobNotFoundForSpace({ space_id: "space-2" }, "space-1")).toBe(true);
-    expect(jobNotFoundForSpace({ space_id: "space-1" }, "space-1")).toBe(false);
+  it("treats cross-space and cross-user jobs as not found", () => {
+    expect(jobNotFoundForSpace({ space_id: "space-2", user_id: "user-1" }, "space-1", "user-1")).toBe(true);
+    expect(jobNotFoundForSpace({ space_id: "space-1", user_id: "user-2" }, "space-1", "user-1")).toBe(true);
+    expect(jobNotFoundForSpace({ space_id: "space-1", user_id: "user-1" }, "space-1", "user-1")).toBe(false);
   });
 
   it("maps database job rows to the public jobs schema", () => {
@@ -985,14 +986,53 @@ describe("AutomationService policy preflight", () => {
       prompt: "Run now",
     });
 
+    // The person supplied their own prompt, so this is them asking, not the
+    // automation running (ADR 0003 §5 / D1).
     expect(result).toMatchObject({
-      trigger_origin: "automation",
+      trigger_origin: "manual",
       preflight_executable: true,
     });
     expect(result.run_id).toEqual(expect.any(String));
     expect(result.automation_run_id).toEqual(expect.any(String));
     expect(repo.recordFireCalls).toBe(1);
     expect(fakePool.runPrompts).toEqual(["Run now"]);
+  });
+
+  it("preflights the fire under the origin the Run will actually carry", async () => {
+    // The preflight and the Run row are two authorities over one fire. Before
+    // ADR 0003 §5 / D1 the preflight asserted `automation` outright, so a
+    // person firing with their own prompt — a `manual` Run they could have
+    // started against the Agent directly — was refused for want of the
+    // automation's standing credential grant.
+    vi.mocked(enforce).mockResolvedValue({ status: "allow" });
+    const fakePool = new AgentAutomationFireFakePool();
+    dbPoolMock.current = fakePool;
+    const withoutGrant = () => new FakeAutomationRepository(
+      sampleAutomation({ config_json: { target_type: "agent_run", prompt: "Configured" } }),
+      "owner",
+      [],
+      { status: "active", current_version_id: "agent-version-1", version_id: "agent-version-1" },
+      false,
+    );
+
+    const asked = await new AutomationService(config, withoutGrant()).fire({
+      spaceId: "space-1",
+      automationId: "auto-1",
+      actorUserId: "owner-1",
+      prompt: "Run this for me",
+    });
+    expect(asked).toMatchObject({ trigger_origin: "manual" });
+
+    // The same automation firing its own prompt is unattended work, and that
+    // still needs the grant.
+    await expect(new AutomationService(config, withoutGrant()).fire({
+      spaceId: "space-1",
+      automationId: "auto-1",
+      actorUserId: "owner-1",
+    })).rejects.toMatchObject({
+      statusCode: 422,
+      message: expect.stringContaining("credential_automation_grant_missing"),
+    });
   });
 
   it("uses the configured prompt for unattended agent-run fires", async () => {
@@ -1138,6 +1178,10 @@ class FakeAutomationRepository {
 
   async assertProjectWriter(): Promise<void> {
     return;
+  }
+
+  async canReadAgent(): Promise<boolean> {
+    return true;
   }
 
   async canWriteProject(): Promise<boolean> {
@@ -1389,6 +1433,9 @@ class AgentAutomationFireFakePool implements Queryable {
           },
         ] as Row[],
       };
+    }
+    if (sql.includes("FROM automation_credential_grants")) {
+      return { rowCount: 0, rows: [] };
     }
     if (sql.includes("INSERT INTO runs")) {
       this.runPrompts.push(params[18]);

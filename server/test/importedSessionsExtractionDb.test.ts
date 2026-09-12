@@ -34,6 +34,7 @@ const LOCATION = "7fffffff-ffff-4fff-8fff-ffffffffffff";
 
 const db = useTestDatabase(import.meta.filename);
 const identity = { spaceId: SPACE, userId: OWNER };
+const attended = { kind: "person", user_id: OWNER } as const;
 
 function serverConfig() {
   return { databaseUrl: db.connectionUri } as never;
@@ -164,7 +165,7 @@ describe("imported history extraction", () => {
     expect(await service().pending(identity, PROJECT)).toEqual({ records: 0, sessions: 0 });
 
     const stub = stubExtractor(() => extraction());
-    const outcome = await service().extract(identity, PROJECT);
+    const outcome = await service().extract(identity, PROJECT, attended);
     expect(outcome.records_covered).toBe(0);
     expect(stub).not.toHaveBeenCalled();
   });
@@ -177,14 +178,14 @@ describe("imported history extraction", () => {
       ...extraction(),
       decisions: [{ id: randomUUID(), text: "Use ACP", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
-    const first = await service().extract(identity, PROJECT);
+    const first = await service().extract(identity, PROJECT, attended);
     expect(first.records_covered).toBe(1);
     expect(first.decisions).toBe(1);
 
     // Marked read whether or not anything was found: re-reading the same
     // records forever would spend model budget on the same silence.
     expect(await service().pending(identity, PROJECT)).toEqual({ records: 0, sessions: 0 });
-    const second = await service().extract(identity, PROJECT);
+    const second = await service().extract(identity, PROJECT, attended);
     expect(second.records_covered).toBe(0);
     expect(second.brief_proposal_id).toBeNull();
   });
@@ -195,7 +196,7 @@ describe("imported history extraction", () => {
       ...extraction(),
       decisions: [{ id: randomUUID(), text: "Rebuild the control group", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
-    const outcome = await service().extract(identity, PROJECT);
+    const outcome = await service().extract(identity, PROJECT, attended);
     expect(outcome.brief_proposal_id).not.toBeNull();
 
     const proposals = await db.pool.query<{ proposal_type: string; status: string }>(
@@ -222,7 +223,7 @@ describe("imported history extraction", () => {
         source_refs: [{ type: "imported_session_record", id }],
       })),
     }));
-    const outcome = await service().extract(identity, PROJECT);
+    const outcome = await service().extract(identity, PROJECT, attended);
     expect(outcome.facts).toBe(2);
 
     // One item on the Project's attention list, not one per fact.
@@ -245,7 +246,7 @@ describe("imported history extraction", () => {
         source_refs: [{ type: "imported_session_record", id: randomUUID() }],
       }],
     }));
-    const outcome = await service().extract(identity, PROJECT);
+    const outcome = await service().extract(identity, PROJECT, attended);
     expect(outcome.decisions).toBe(0);
     expect(outcome.brief_proposal_id).toBeNull();
   });
@@ -257,7 +258,7 @@ describe("imported history extraction", () => {
       ...extraction(),
       decisions: [{ id: randomUUID(), text: "Use ACP", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
-    const outcome = await service().extract(identity, PROJECT);
+    const outcome = await service().extract(identity, PROJECT, attended);
     // History says how the work went, not what the Project is for. A
     // placeholder goal published into the Brief is worse than an empty one:
     // the next Run reads it as the Project's purpose.
@@ -275,7 +276,7 @@ describe("imported history extraction", () => {
         decisions: [{ id: randomUUID(), text: "Use ACP", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
       };
     });
-    await service().extract(identity, PROJECT);
+    await service().extract(identity, PROJECT, attended);
     const proposal = await db.pool.query<{
       id: string;
       payload_json: { confirmed_decisions: string[]; source_refs: Array<{ id: string }> };
@@ -316,14 +317,14 @@ describe("imported history extraction", () => {
       ...extraction(),
       decisions: [{ id: randomUUID(), text: "Decision one", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
-    const first = await service().extract(identity, PROJECT);
+    const first = await service().extract(identity, PROJECT, attended);
 
     await seedSession("space_shared", [record("m2", "second decision"), record("m3", "and more")]);
     stubExtractor((ids) => ({
       ...extraction(),
       decisions: [{ id: randomUUID(), text: "Decision two", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
-    const second = await service().extract(identity, PROJECT);
+    const second = await service().extract(identity, PROJECT, attended);
 
     // Each proposal carries a complete replacement for the decision list, so
     // two pending ones would silently drop each other's work.
@@ -345,7 +346,7 @@ describe("imported history extraction", () => {
       ...extraction(),
       decisions: [{ id: randomUUID(), text: "Use ACP", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
-    const outcome = await service().extract(identity, PROJECT);
+    const outcome = await service().extract(identity, PROJECT, attended);
     expect(outcome.brief_proposal_id).toBeNull();
     // The records were read and paid for; losing what was found in them is the
     // one outcome worse than not extracting at all.
@@ -368,11 +369,11 @@ describe("imported history extraction", () => {
       return { text: JSON.stringify(extraction()), provider: "test", model: "test" } as never;
     });
 
-    const first = service().extract(identity, PROJECT);
+    const first = service().extract(identity, PROJECT, attended);
     await new Promise((resolve) => setTimeout(resolve, 100));
     // The batch is claimed before the model is called, so the second caller
     // finds nothing rather than paying for the same records again.
-    const second = await service().extract(identity, PROJECT);
+    const second = await service().extract(identity, PROJECT, attended);
     expect(second.records_covered).toBe(0);
     release!();
     expect((await first).records_covered).toBe(1);
@@ -382,7 +383,7 @@ describe("imported history extraction", () => {
   it("puts a claimed batch back when the model call fails, so the records are not lost", async () => {
     await seedSession("space_shared", [record("m1", "material")]);
     vi.spyOn(invocation, "completeProviderText").mockRejectedValue(new Error("provider unavailable"));
-    await expect(service().extract(identity, PROJECT)).rejects.toThrow(/provider unavailable/);
+    await expect(service().extract(identity, PROJECT, attended)).rejects.toThrow(/provider unavailable/);
     // A batch marked read but never proposed would be invisible to every
     // future extraction, and on the automatic path invisible to the person.
     expect(await service().pending(identity, PROJECT)).toEqual({ records: 1, sessions: 1 });
@@ -400,7 +401,7 @@ describe("imported history extraction", () => {
         source_refs: [{ type: "imported_session_record", id: ids[0] }],
       }],
     }));
-    const outcome = await service().extract(identity, PROJECT);
+    const outcome = await service().extract(identity, PROJECT, attended);
     expect(outcome.memory_packet_proposal_id).not.toBeNull();
 
     const packet = await db.pool.query<{
@@ -457,14 +458,14 @@ describe("imported history extraction", () => {
       ...extraction(),
       constraints: [{ id: randomUUID(), text: "Never run against prod", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
-    await service().extract(identity, PROJECT);
+    await service().extract(identity, PROJECT, attended);
 
     await seedSession("space_shared", [record("m2", "second"), record("m3", "third")]);
     stubExtractor((ids) => ({
       ...extraction(),
       constraints: [{ id: randomUUID(), text: "Tests need real Postgres", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
-    await service().extract(identity, PROJECT);
+    await service().extract(identity, PROJECT, attended);
 
     // The merge builds on the waiting proposal, not on the active Brief: the
     // proposal has not been accepted, so the active Brief does not yet hold
@@ -487,7 +488,7 @@ describe("imported history extraction", () => {
       ...extraction(),
       constraints: [{ id: randomUUID(), text: "Never run against prod", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
     }));
-    const outcome = await service().extract(identity, PROJECT);
+    const outcome = await service().extract(identity, PROJECT, attended);
     expect(outcome.brief_proposal_id).toBeNull();
     const packet = await db.pool.query<{ payload_json: { candidates: Array<{ text: string }> } }>(
       `SELECT payload_json FROM proposals WHERE id = $1`,
@@ -500,7 +501,7 @@ describe("imported history extraction", () => {
   it("finalizes a claim once its proposals exist, and releases one that was abandoned", async () => {
     await seedSession("space_shared", [record("m1", "material")]);
     stubExtractor(() => extraction());
-    await service().extract(identity, PROJECT);
+    await service().extract(identity, PROJECT, attended);
 
     // A finalized read is a bare id. Left as `claim:…` it would be swept back
     // 30 minutes later and the whole batch read — and paid for — again.

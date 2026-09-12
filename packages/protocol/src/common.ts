@@ -94,6 +94,9 @@ export const SECRET_RESPONSE_FIELDS = [
   "secret_ref",
   "encrypted_key",
   "credential_secret_ref",
+  "secret",
+  "access_token",
+  "refresh_token",
 ] as const;
 
 /** Spread into response object schemas to reject any secret-bearing payload. */
@@ -102,6 +105,9 @@ export const SecretResponseGuards = {
   secret_ref: z.never().optional(),
   encrypted_key: z.never().optional(),
   credential_secret_ref: z.never().optional(),
+  secret: z.never().optional(),
+  access_token: z.never().optional(),
+  refresh_token: z.never().optional(),
 };
 
 /** Protocol semantic version. Bump when the contract changes incompatibly. */

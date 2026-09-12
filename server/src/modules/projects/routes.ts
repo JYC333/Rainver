@@ -292,6 +292,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         // external egress is disabled.
         queryEmbedder: new ProviderQueryEmbedder(
           store,
+          { kind: "person", user_id: identity.userId },
           null,
           undefined,
           retrievalSettings.embeddingDimensions,
@@ -301,6 +302,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         // Reranker is off unless this space enables it; degrades to the fused order otherwise.
         reranker: retrievalSettings.rerankEnabled
           ? new ProviderReranker(store, {
+              spend: { kind: "person", user_id: identity.userId },
               databaseUrl: context.config.databaseUrl,
               surface: "project_public_summary_search",
               egressPolicy,
@@ -309,6 +311,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         // Query rewriter is off unless this space enables it; degrades to the original query.
         queryRewriter: retrievalSettings.queryRewriteEnabled
           ? new ProviderQueryRewriter(store, {
+              spend: { kind: "person", user_id: identity.userId },
               databaseUrl: context.config.databaseUrl,
               surface: "project_public_summary_search",
               egressPolicy,
@@ -352,6 +355,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         egressPolicy,
         queryEmbedder: new ProviderQueryEmbedder(
           store,
+          { kind: "person", user_id: identity.userId },
           null,
           undefined,
           retrievalSettings.embeddingDimensions,
@@ -359,12 +363,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         ),
         reranker: retrievalSettings.rerankEnabled
           ? new ProviderReranker(store, {
+              spend: { kind: "person", user_id: identity.userId },
               databaseUrl: context.config.databaseUrl,
               surface: "project_public_summary_brief",
               egressPolicy,
             })
           : undefined,
         synthesizer: new ProviderSynthesizer(store, {
+          spend: { kind: "person", user_id: identity.userId },
           databaseUrl: context.config.databaseUrl,
           surface: "project_public_summary_brief",
           egressPolicy,

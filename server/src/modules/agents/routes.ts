@@ -24,7 +24,8 @@ import {
   PgRunRepository,
   RunCreateValidationError,
 } from "../runs/repository.js";
-import { runToOut } from "../runs/runReadModel.js";
+import { runToOut, runViewFor } from "../runs/runReadModel.js";
+import { PERSON_STARTED_TRIGGER_ORIGIN, assertPersonStartedRunRequest } from "../runs/runRepositoryHelpers.js";
 import { resolveRunRemoteness } from "../runs/runRemoteness.js";
 import { RunBudgetExceededError, RunBudgetSourceReferenceError } from "../runs/budgetEnforcement.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
@@ -253,6 +254,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         dbPool(context.config),
         identity.spaceId,
         q.project_id ?? null,
+        identity.userId,
       );
       return reply.send({ assistant });
     } catch (error) {
@@ -367,7 +369,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         agent = await repo.updateConfig(identity.spaceId, agentId, configPatch(body, identity.userId));
       }
       if (!agent) {
-        agent = await repo.get(identity.spaceId, agentId);
+        agent = await repo.getVisible(identity.spaceId, identity.userId, agentId);
         if (!agent) return reply.code(404).send({ detail: "Agent not found" });
       }
       return reply.send(agent);
@@ -574,6 +576,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const version = await agentRepository().getCurrentVersion(
         identity.spaceId,
+        identity.userId,
         params(request).agentId ?? "",
       );
       if (!version) return reply.code(404).send({ detail: "Agent has no current version" });
@@ -589,6 +592,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const versions = await agentRepository().listVersions(
         identity.spaceId,
+        identity.userId,
         params(request).agentId ?? "",
       );
       return reply.send(versions);
@@ -604,6 +608,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const p = params(request);
       const version = await agentRepository().getVersion(
         identity.spaceId,
+        identity.userId,
         p.agentId ?? "",
         p.versionId ?? "",
       );
@@ -637,6 +642,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const body = jsonBody(request);
     const repository = PgRunRepository.fromConfig(context.config);
     try {
+      assertPersonStartedRunRequest(body);
       const projectFolderId = stringValue(body.project_folder_id);
       const projectId = stringValue(body.project_id);
       const creation = await resolveContentCreationContext(dbPool(context.config), {
@@ -657,7 +663,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         user_id: identity.userId,
         mode: stringValue(body.mode) ?? "live",
         run_type: stringValue(body.run_type) ?? "agent",
-        trigger_origin: stringValue(body.trigger_origin) ?? "manual",
+        trigger_origin: PERSON_STARTED_TRIGGER_ORIGIN,
         session_id: stringValue(body.session_id),
         project_folder_id: resolvedProjectFolderId,
         project_id: creation.projectId,
@@ -671,7 +677,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         workflow_version_id: null,
         visibility: creation.visibility,
       });
-      return reply.code(201).send(runToOut(run, null, {
+      return reply.code(201).send(runToOut(runViewFor(run, identity.userId), null, {
         executes_remotely: (await resolveRunRemoteness(dbPool(context.config), [run])).has(run.id),
       }));
     } catch (error) {

@@ -20,7 +20,6 @@ import { financeLedgerRepository, type InsertPostingRecord } from "./repository.
 
 export interface ImportBeancountInput {
   text: string;
-  filename?: string;
   sourceType?: string;
   sourceName?: string | null;
   /** Imports default to `proposed`; posting directly requires a clean file. */
@@ -49,7 +48,13 @@ export async function importBeancountToDb(
   userId: string,
   input: ImportBeancountInput,
 ): Promise<ImportBeancountResult> {
-  const filename = input.filename ?? "<import>";
+  // The server names the file being imported. It used to take the client's
+  // word for it, and the name is what decides which validation errors are
+  // reported back: a request naming the file `<db>` — the label this engine
+  // gives entries it loaded from the ledger — turned the "errors in your
+  // upload" list into a readout of the stored ledger's own errors, balance
+  // assertions over other members' accounts included.
+  const filename = importFilename(userId);
   const status = input.status ?? "proposed";
   const parsed = parseBeancountText(input.text, filename);
   const contentHash = createHash("sha256").update(input.text, "utf8").digest("hex");
@@ -72,7 +77,20 @@ export async function importBeancountToDb(
 
   // Validate the incoming file against the existing committed ledger so
   // references to already-open accounts do not report as unknown.
-  const dbLoaded = await financeLedgerEngine.loadFromDb(db, spaceId, bookId);
+  // Validated against the ledger *this person* can see. Loading the whole book
+  // meant a balance assertion in the upload was checked against totals that
+  // included accounts they may not read, and the difference was reported back
+  // to them.
+  //
+  // The consequence, deliberately taken: a `balance` assertion over a subtree
+  // that contains another member's private account is now checked against the
+  // part of that subtree the importer can see, so it can fail for them where it
+  // held for the book — and a `pad` whose source account is hidden never
+  // discharges. That is the honest answer from where they stand: a total they
+  // cannot see is a total they cannot assert. An import that trips it is
+  // refused only with `post_directly`; otherwise the directives land as
+  // `proposed` with the error attached.
+  const dbLoaded = await financeLedgerEngine.loadFromDb(db, spaceId, bookId, userId);
   const combined = transformEntries([...dbLoaded.entries, ...parsed.entries]);
   const validationErrors = validateEntries(combined).filter(
     (error) => error.source?.filename === filename,
@@ -127,7 +145,7 @@ export async function exportBeancountFromDb(
   bookId: string,
   userId: string,
 ): Promise<ExportBeancountResult> {
-  const rendered = await financeLedgerEngine.exportFromDb(db, spaceId, bookId);
+  const rendered = await financeLedgerEngine.exportFromDb(db, spaceId, bookId, userId);
   const contentHash = createHash("sha256").update(rendered.content, "utf8").digest("hex");
   const exportRow = await financeDirectiveRepository.insertExport(db, {
     spaceId,
@@ -165,7 +183,9 @@ class ImportPersister {
 
   async preload(): Promise<void> {
     const [accounts, commodities] = await Promise.all([
-      financeLedgerRepository.listAccounts(this.db, this.spaceId, this.bookId),
+      // The importer's own view of the book. Preloading every account let an
+      // import resolve — and post into — a member's private account by name.
+      financeLedgerRepository.listAccounts(this.db, this.spaceId, this.bookId, this.userId),
       financeLedgerRepository.listCommodities(this.db, this.spaceId, this.bookId),
     ]);
     for (const account of accounts) this.accounts.set(account.name, account);
@@ -248,6 +268,19 @@ class ImportPersister {
     switch (entry.type) {
       case "open": {
         if (!this.accounts.get(entry.account)) {
+          // The preload is this person's view of the book, so an account that
+          // is not in it may still exist as somebody's personal account. Opening
+          // it again trips the `(book_id, name)` uniqueness and surfaces a raw
+          // 23505 — which both crashes the import and says the name is taken.
+          // Refused the way every other unresolvable account name is.
+          if (await financeLedgerRepository.accountNameExists(this.db, this.spaceId, this.bookId, entry.account)) {
+            this.errors.push({
+              code: "unknown_account",
+              message: `Cannot persist reference to unknown account ${entry.account}`,
+              source: entry.source,
+            });
+            return;
+          }
           const account = await financeLedgerRepository.openAccount(this.db, {
             spaceId: this.spaceId,
             bookId: this.bookId,
@@ -272,6 +305,7 @@ class ImportPersister {
           this.bookId,
           account.id,
           entry.date,
+          this.userId,
         );
         this.accounts.set(closed.name, closed);
         await this.insertDirective(entry);
@@ -550,4 +584,14 @@ class ImportPersister {
     this.commodities.set(symbol, commodity);
     return commodity;
   }
+}
+
+/**
+ * The name recorded for an uploaded file.
+ *
+ * Server-chosen, and never one of the engine's own reserved labels, so the
+ * filename filter over validation errors can only ever select the upload's.
+ */
+function importFilename(userId: string): string {
+  return `<import:${userId}>`;
 }

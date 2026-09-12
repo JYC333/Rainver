@@ -13,6 +13,8 @@ import { textExtractionActionLabel, textExtractionDisabledReason } from '../sour
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Button } from '../../components/ui/button'
+import { SafeExternalLink } from '../../components/SafeExternalLink'
+import { safeHttpUrl } from '../../lib/safeHttpUrl'
 
 const RELEVANCE_ORDER: SourcePostProcessingItemRelevance[] = ['relevant', 'maybe', 'not_relevant']
 function orderedItemIds(briefing: SourcePostProcessingBriefingDetail): string[] {
@@ -73,7 +75,11 @@ export default function LibraryItemReaderPage() {
   if (!document) return <div className="p-6"><Button variant="ghost" size="sm" asChild><Link to={backTo}><ArrowLeft className="mr-1 size-4"/>{backLabel}</Link></Button><EmptyState title="Document not found" description="No readable content is available for this item. Try queueing content extraction first."/></div>
 
   const disabledReason = document.content_state ? textExtractionDisabledReason({ content_state: document.content_state, source_uri: document.source_uri }) : 'Text extraction is only available for source items.'
-  return <ReaderWorkspace document={document} annotations={annotations} onAnnotationsChange={setAnnotations}
+  // `remoteImages`: a captured article's images are part of the article the
+  // person chose to read (`image_policy: "remote_reference"`). The other caller
+  // of `ReaderWorkspace` renders a synthesis Run's output — model-authored over
+  // ingested third-party items — and deliberately does not pass it.
+  return <ReaderWorkspace remoteImages document={document} annotations={annotations} onAnnotationsChange={setAnnotations}
     header={({ panelOpen, togglePanel }) => <header className="flex shrink-0 items-center gap-3 border-b px-4 py-2">
       <Button variant="ghost" size="sm" asChild><Link to={backTo}><ArrowLeft className="mr-1 size-4"/>{backLabel}</Link></Button>
       {dayScoped && <div className="flex shrink-0 items-center gap-0.5">
@@ -81,7 +87,7 @@ export default function LibraryItemReaderPage() {
         <Button variant="ghost" size="icon" className="size-7" disabled={!next} asChild={Boolean(next)}>{next ? <Link to={itemPath(next)} aria-label="Next item"><ChevronRight className="size-4"/></Link> : <ChevronRight className="size-4"/>}</Button>
       </div>}
       <div className="min-w-0 flex-1"><h1 className="truncate text-sm font-medium">{document.title}</h1>{document.content_state && <p className="truncate text-xs text-muted-foreground">{document.document_type} · {document.content_state}</p>}</div>
-      {document.source_uri && <Button variant="ghost" size="icon" className="size-7" asChild><a href={document.source_uri} target="_blank" rel="noreferrer" aria-label="Open source URL"><ExternalLink className="size-4"/></a></Button>}
+      {safeHttpUrl(document.source_uri) && <Button variant="ghost" size="icon" className="size-7" asChild><SafeExternalLink href={document.source_uri} aria-label="Open source URL"><ExternalLink className="size-4"/></SafeExternalLink></Button>}
       <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={reextracting || disabledReason !== null} title={disabledReason ?? undefined} onClick={reextract}>
         {document.content_state === 'content_saved' ? <RefreshCw className="size-3.5"/> : <FileText className="size-3.5"/>}{reextracting ? 'Extracting...' : textExtractionActionLabel({ content_state: document.content_state ?? 'pending' })}
       </Button>

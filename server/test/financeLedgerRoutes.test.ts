@@ -335,6 +335,153 @@ describe("finance ledger routes", () => {
     expect(memberLedger.statusCode).toBe(404);
   });
 
+  it("does not leak private-account transactions or Beancount export to other members", async () => {
+    const bookId = await createBookViaApi();
+    const { checkingId, foodId } = await seedLedger(bookId);
+
+    const secret = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/accounts`,
+      payload: {
+        root_type: "Assets",
+        group: "Bank",
+        leaf: "Secret",
+        opened_at: "2026-01-01",
+        owner: "personal",
+        visible_to_space: false,
+        currencies: ["USD"],
+      },
+    });
+    expect(secret.statusCode).toBe(201);
+    const secretId = secret.json().account.id;
+
+    const hiddenExpense = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/accounts`,
+      payload: {
+        root_type: "Expenses",
+        group: "Personal",
+        leaf: "Hidden",
+        opened_at: "2026-01-01",
+        owner: "personal",
+        visible_to_space: false,
+        currencies: ["USD"],
+      },
+    });
+    expect(hiddenExpense.statusCode).toBe(201);
+    const hiddenExpenseId = hiddenExpense.json().account.id;
+
+    const privateTxn = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+      payload: {
+        date: "2026-07-03",
+        payee: "Secret Cafe",
+        narration: "Private coffee",
+        post: true,
+        postings: [
+          { account_id: secretId, amount: { number: "-4.00", commodity: "USD" } },
+          { account_id: hiddenExpenseId, amount: { number: "4.00", commodity: "USD" } },
+        ],
+      },
+    });
+    expect(privateTxn.statusCode).toBe(201);
+
+    const sharedTxn = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+      payload: {
+        date: "2026-07-02",
+        payee: "Tesco",
+        narration: "Groceries",
+        post: true,
+        postings: [
+          { account_id: checkingId, amount: { number: "-12.50", commodity: "USD" } },
+          { account_id: foodId, amount: { number: "12.50", commodity: "USD" } },
+        ],
+      },
+    });
+    expect(sharedTxn.statusCode).toBe(201);
+
+    const ownTransactions = await app!.inject({
+      method: "GET",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+    });
+    expect(ownTransactions.json().transactions.map((row: { payee: string }) => row.payee).sort()).toEqual(
+      ["Secret Cafe", "Tesco"],
+    );
+
+    const ownExport = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/export/beancount`,
+    });
+    expect(ownExport.statusCode).toBe(200);
+    expect(ownExport.json().content).toContain('2026-07-03 * "Secret Cafe" "Private coffee"');
+    expect(ownExport.json().content).toContain("open Assets:Bank:Secret");
+
+    guardState.userId = USER_2;
+    const memberTransactions = await app!.inject({
+      method: "GET",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+    });
+    expect(memberTransactions.json().transactions.map((row: { payee: string }) => row.payee)).toEqual(["Tesco"]);
+
+    const memberDirectives = await app!.inject({
+      method: "GET",
+      url: `/api/v1/finance/books/${bookId}/directives?type=transaction`,
+    });
+    expect(memberDirectives.json().directives).toHaveLength(1);
+
+    const memberExport = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/export/beancount`,
+    });
+    expect(memberExport.statusCode).toBe(200);
+    expect(memberExport.json().content).toContain('2026-07-02 * "Tesco" "Groceries"');
+    expect(memberExport.json().content).not.toContain("Secret Cafe");
+    expect(memberExport.json().content).not.toContain("Private coffee");
+    expect(memberExport.json().content).not.toContain("Assets:Bank:Secret");
+    expect(memberExport.json().content).not.toContain("Expenses:Personal:Hidden");
+  });
+
+  /**
+   * Closing is a write to the account, and a personal account is its owner's.
+   * The route used to run the UPDATE unscoped and hand back the row, which
+   * both changed someone else's account and confirmed it existed.
+   */
+  it("refuses to close another member's personal account, as a not-found", async () => {
+    const bookId = await createBookViaApi();
+    const created = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/accounts`,
+      payload: {
+        root_type: "Assets",
+        group: "Bank",
+        leaf: "Private",
+        opened_at: "2026-01-01",
+        owner: "personal",
+      },
+    });
+    const accountId = created.json().account.id;
+
+    guardState.userId = USER_2;
+    const rejected = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/accounts/${accountId}/close`,
+      payload: { date: "2026-06-01" },
+    });
+    expect(rejected.statusCode).toBe(404);
+
+    guardState.userId = USER_1;
+    const accepted = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/accounts/${accountId}/close`,
+      payload: { date: "2026-06-01" },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json().account.closed_at).toBe("2026-06-01");
+  });
+
   it("lets only the owner toggle personal account visibility", async () => {
     const bookId = await createBookViaApi();
     const created = await app!.inject({
@@ -356,7 +503,9 @@ describe("finance ledger routes", () => {
       url: `/api/v1/finance/books/${bookId}/accounts/${accountId}/visibility`,
       payload: { visibility: "private" },
     });
-    expect(rejected.statusCode).toBe(403);
+    // 404, not 403: a non-owner learns nothing about whether the id exists or
+    // whether it is someone's personal account.
+    expect(rejected.statusCode).toBe(404);
 
     guardState.userId = USER_1;
     const accepted = await app!.inject({
@@ -448,7 +597,6 @@ describe("finance ledger routes", () => {
           "  Expenses:Misc  3.00 USD",
           "",
         ].join("\n"),
-        filename: "coffee.beancount",
         post_directly: true,
       },
     });

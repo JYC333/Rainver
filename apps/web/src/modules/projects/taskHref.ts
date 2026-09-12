@@ -1,3 +1,5 @@
+import { safeAppPath } from '../../lib/safeHttpUrl'
+
 /**
  * Where a Task opens when you reach it from inside a Project.
  *
@@ -13,9 +15,13 @@ export function projectTaskHref(projectId: string, taskId: string): string {
 /**
  * Server-authored hrefs point at the top-level Task route because the adapter
  * that writes them serves cross-Project surfaces too. Inside a Project we
- * re-point them so the shell survives; anything else is passed through.
+ * re-point them so the shell survives. Anything that is not a same-origin
+ * app path is dropped — protocol-relative and scheme URLs must not reach
+ * React Router as `to`.
  */
-export function inProjectHref(projectId: string, href: string): string {
-  const task = /^\/tasks\/([^/?#]+)$/.exec(href)
-  return task?.[1] ? projectTaskHref(projectId, task[1]) : href
+export function inProjectHref(projectId: string, href: string): string | null {
+  const safe = safeAppPath(href)
+  if (!safe) return null
+  const task = /^\/tasks\/([^/?#]+)$/.exec(safe)
+  return task?.[1] ? projectTaskHref(projectId, task[1]) : safe
 }

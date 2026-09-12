@@ -706,6 +706,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       space_id: SPACE,
       approval_code: "policy_requires_approval_runtime_execute",
       message: "approval required",
+      risk_level: "high",
       paused_at: new Date().toISOString(),
     });
     expect(paused?.status).toBe("waiting_for_review");
@@ -995,6 +996,28 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     expect((await repository.listProposalSummaries(SPACE, runId)).map((proposal) =>
       proposal.status
     )).toEqual(["rejected", "rejected"]);
+  });
+
+  it("marks a stale cancelling run cancelled instead of retryable orphaned", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const runId = await seedRun();
+    const repository = new PgRunRepository(db.pool);
+    const startedAt = new Date(Date.now() - 120_000).toISOString();
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: startedAt });
+    await repository.markRunCancelling({
+      run_id: runId,
+      space_id: SPACE,
+      requested_at: new Date().toISOString(),
+      requested_by_user_id: USER,
+    });
+    await db.pool.query(
+      `UPDATE runs SET started_at = $3, updated_at = $3 WHERE space_id = $1 AND id = $2`,
+      [SPACE, runId, startedAt],
+    );
+    expect(await repository.recoverStaleRuns(60, new Date())).toBe(1);
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("cancelled");
+    expect((await repository.getLatestRunAttempt(SPACE, runId))?.status).toBe("cancelled");
+    expect(await repository.listOrphanedRunIds()).toEqual([]);
   });
 });
 

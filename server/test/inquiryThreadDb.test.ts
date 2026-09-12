@@ -8,6 +8,7 @@ import { buildSpaceObjectInsert } from "../src/db/spaceObjectWriter.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
 import { completeBackgroundStep } from "../src/modules/inquiry/stepService.js";
+import { DecisionCaseService } from "../src/modules/decisions/caseService.js";
 
 // Real-Postgres coverage for the Inquiry Core vertical slice: Thread
 // creation, working relations, Note links, the cognitive Iteration command,
@@ -27,7 +28,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["inquiry_thread_work_events", "inquiry_iterations", "inquiry_thread_statement_revisions", "inquiry_thread_personal_focus", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "inquiry_project_settings", "notes", "space_objects", "projects", "project_members", "space_memberships", "users", "spaces"],
+    ["inquiry_thread_work_events", "inquiry_iterations", "inquiry_thread_statement_revisions", "inquiry_thread_personal_focus", "inquiry_question_states", "inquiry_hypothesis_states", "inquiry_threads", "inquiry_project_settings", "decision_cases", "notes", "space_objects", "projects", "project_members", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -865,6 +866,72 @@ describe("Inquiry Core (real Postgres)", () => {
     const graph = await new InquiryGraphService(db.pool)
       .getCombinedProjectGraph(viewerIdentity(), PROJECT, { limit: 50 });
     expect(graph.nodes.map((node) => node.id)).not.toContain(thread.id);
+    const inquiryGraph = await new InquiryGraphService(db.pool)
+      .getInquiryGraph(viewerIdentity(), PROJECT);
+    expect(inquiryGraph.nodes.map((node) => node.id)).not.toContain(thread.id);
+    expect(inquiryGraph.nodes.some((node) => node.label === "Private question")).toBe(false);
+  });
+
+  it("does not leak a private Thread through a readable Thread's relations", async () => {
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const visible = await threadSvc.createThread(ownerIdentity(), PROJECT, {
+      kind: "question",
+      statement: "Shared question",
+    });
+    const hidden = await threadSvc.createThread(ownerIdentity(), PROJECT, {
+      kind: "hypothesis",
+      statement: "Secret hypothesis",
+    });
+    await threadSvc.addRelation(ownerIdentity(), PROJECT, {
+      from_thread_id: visible.id,
+      to_thread_id: hidden.id,
+      relation_kind: "proposes",
+    });
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
+      [randomUUID(), SPACE, PROJECT, VIEWER],
+    );
+    await db.pool.query(
+      `UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`,
+      [hidden.id as string, SPACE],
+    );
+    const detail = await threadSvc.getThread(viewerIdentity(), PROJECT, visible.id as string);
+    const relations = detail.relations as Array<{ to_thread_id: string; from_thread_id: string }>;
+    expect(relations.some((row) => row.to_thread_id === hidden.id || row.from_thread_id === hidden.id)).toBe(false);
+    const inquiryGraph = await new InquiryGraphService(db.pool)
+      .getInquiryGraph(viewerIdentity(), PROJECT);
+    expect(inquiryGraph.edges).toHaveLength(0);
+    expect(inquiryGraph.nodes.map((node) => node.id)).not.toContain(hidden.id);
+  });
+
+  it("does not leak a private Decision Case title from a readable Thread", async () => {
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const thread = await threadSvc.createThread(ownerIdentity(), PROJECT, {
+      kind: "question",
+      statement: "Shared question",
+    });
+    const decisionCase = await new DecisionCaseService(db.pool).createCase(ownerIdentity(), PROJECT, {
+      title: "Secret case title",
+      source_thread_ids: [thread.id],
+    });
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
+      [randomUUID(), SPACE, PROJECT, VIEWER],
+    );
+    await db.pool.query(
+      `UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`,
+      [decisionCase.id as string, SPACE],
+    );
+    const ownerDetail = await threadSvc.getThread(ownerIdentity(), PROJECT, thread.id as string);
+    expect((ownerDetail.decision_cases as Array<{ title: string }>).map((row) => row.title))
+      .toContain("Secret case title");
+    const viewerDetail = await threadSvc.getThread(viewerIdentity(), PROJECT, thread.id as string);
+    expect((viewerDetail.decision_cases as Array<{ title: string }>).map((row) => row.title))
+      .not.toContain("Secret case title");
   });
 
   it("database constraints reject cross-Project Inquiry references", async () => {
@@ -883,13 +950,14 @@ describe("Inquiry Core (real Postgres)", () => {
     // Thread edges are `object_relations` rows now, whose FK only guarantees
     // Space isolation — the composite (thread, project, space) key that used to
     // reject this is gone with the domain table. Project isolation for Thread
-    // structure is a service invariant, so that is what this asserts.
+    // structure is a service invariant, so that is what this asserts. A Thread
+    // outside the Project is unreachable from it, so it reads as not found.
     await expect(
       threads.addRelation(ownerIdentity(), PROJECT, {
         from_thread_id: first.id,
         to_thread_id: second.id,
         relation_kind: "related_to",
       }),
-    ).rejects.toMatchObject({ statusCode: 422 });
+    ).rejects.toMatchObject({ statusCode: 404 });
   });
 });

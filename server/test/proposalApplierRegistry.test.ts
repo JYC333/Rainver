@@ -93,7 +93,9 @@ function proposal(overrides: Partial<ApplyProposal> = {}): ApplyProposal {
     title: "Change policy",
     project_folder_id: null,
     project_id: null,
+    visibility: "space_shared",
     created_by_user_id: "user-1",
+    owner_user_id: null,
     payload_json: {
       name: "Scoped policy",
       domain: "runtime",

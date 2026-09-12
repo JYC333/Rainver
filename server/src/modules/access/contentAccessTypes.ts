@@ -50,6 +50,22 @@ export function isContentVisibility(value: unknown): value is ContentVisibility 
   return typeof value === "string" && CONTENT_VISIBILITIES.includes(value as ContentVisibility);
 }
 
+/**
+ * A row read through the content gate: it carries the viewer's computed level.
+ * Body-carrying serializers take only this shape, so a read path that did not
+ * compute the level does not compile.
+ */
+export type WithAccessLevel<T> = T & { effective_access_level: ContentAccessLevel };
+
+/**
+ * Whether a viewer at this level is withheld a resource's body. Fails closed:
+ * anything but an explicit `full` withholds, so a level column holding an
+ * unexpected value hides the body rather than serving it.
+ */
+export function bodyWithheld(level: ContentAccessLevel): boolean {
+  return level !== "full";
+}
+
 export function isContentAccessLevel(value: unknown): value is ContentAccessLevel {
   return typeof value === "string" && CONTENT_ACCESS_LEVELS.includes(value as ContentAccessLevel);
 }

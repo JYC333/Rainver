@@ -16,7 +16,7 @@ import { DeploymentService } from "./service.js";
  *
  * Compared against a Run's *effective* origin, not the raw column: a delegated
  * child carries `delegation` and inherits the question from its root
- * (`effectiveTriggerOrigin`).
+ * (`effectiveRunTrigger`).
  */
 export const DRAINED_TRIGGER_ORIGINS: ReadonlySet<string> = new Set([
   "automation",

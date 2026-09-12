@@ -76,6 +76,13 @@ function httpBaseUrl(): string {
   return `http://127.0.0.1:${address.port}`;
 }
 
+function hostSocket(token: string): WebSocket {
+  const url = `${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`;
+  return new (WebSocket as unknown as {
+    new (url: string, init: { headers: Record<string, string> }): WebSocket;
+  })(url, { headers: { Authorization: `Bearer ${token}` } });
+}
+
 beforeAll(async () => {
   if (!db.available) return;
   app = buildModuleServer(
@@ -210,7 +217,7 @@ describe("ACP registry agents", () => {
     expect(offline.statusCode).toBe(502);
     expect(offline.json()).toMatchObject({ ok: false, error: "host_offline" });
 
-    const socket = new WebSocket(`${httpBaseUrl().replace(/^http/, "ws")}/internal/hosts/ws`);
+    const socket = hostSocket(token);
     let resolveInstallFrame: (frame: Record<string, unknown>) => void = () => {};
     const installFrame = new Promise<Record<string, unknown>>((resolve) => { resolveInstallFrame = resolve; });
     const helloAck = new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -263,20 +270,39 @@ describe("ACP registry agents", () => {
     const methodRequired = await app.inject({
       method: "GET",
       url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream`,
+      // The login terminal is a stream the web client opens with its own
+      // `fetch`; the route refuses a cross-site GET, so the test sends what a
+      // browser does.
+      headers: { "sec-fetch-site": "same-origin" },
     });
     expect(methodRequired.statusCode).toBe(422);
     expect(methodRequired.json().detail).toMatch(/auth_method_id is required/);
+    // The same GET starts a vendor login on the owner's machine, and
+    // `SameSite=Lax` sends the session cookie on a top-level cross-site GET.
+    // So it refuses a request another site caused, and one carrying no fetch
+    // metadata and nothing first-party at all.
+    for (const headers of [{ "sec-fetch-site": "cross-site" }, {}]) {
+      const refused = await app.inject({
+        method: "GET",
+        url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream?auth_method_id=device`,
+        headers,
+      });
+      expect(refused.statusCode).toBe(403);
+      expect(refused.json().detail).toMatch(/Cross-site request refused/);
+    }
     // Logout is the spec's command or the CLI-login entry's `logout`; this
     // registry copy has neither, so it fails closed instead of guessing.
     const noLogout = await app.inject({
       method: "GET",
       url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream?login_action=logout`,
+      headers: { "sec-fetch-site": "same-origin" },
     });
     expect(noLogout.statusCode).toBe(422);
     expect(noLogout.json().detail).toMatch(/logout command/);
     const badAction = await app.inject({
       method: "GET",
       url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream?login_action=bogus`,
+      headers: { "sec-fetch-site": "same-origin" },
     });
     expect(badAction.statusCode).toBe(400);
     const seen: Record<string, unknown>[] = [];
@@ -296,7 +322,9 @@ describe("ACP registry agents", () => {
       }
     });
     const streamUrl = `${httpBaseUrl()}/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream?auth_method_id=device`;
-    const response = await fetch(streamUrl, { headers: { cookie: `session_id=${ADMIN_TOKEN}` } });
+    const response = await fetch(streamUrl, {
+      headers: { cookie: `session_id=${ADMIN_TOKEN}`, "sec-fetch-site": "same-origin" },
+    });
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
@@ -351,6 +379,7 @@ describe("ACP registry agents", () => {
     const unsupportedLogin = await app.inject({
       method: "GET",
       url: `/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream`,
+      headers: { "sec-fetch-site": "same-origin" },
     });
     expect(unsupportedLogin.statusCode).toBe(422);
     expect(unsupportedLogin.json().detail).toMatch(/does not advertise a supported login method/);

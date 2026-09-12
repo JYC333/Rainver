@@ -89,7 +89,7 @@ describe("projectResearchScreeningProgressDb", () => {
     if (!db.available) return;
     await resetTables(
       db.pool,
-      ["source_post_processing_item_decisions", "source_post_processing_runs", "jobs", "source_items", "source_backfill_plans", "project_research_checkpoints", "project_research_workflows", "project_operations", "agents", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "project_members", "projects", "space_memberships", "users", "spaces"],
+      ["source_post_processing_item_decisions", "source_post_processing_runs", "jobs", "source_channel_user_subscriptions", "source_items", "source_backfill_plans", "project_research_checkpoints", "project_research_workflows", "project_operations", "agents", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "project_members", "projects", "space_memberships", "users", "spaces"],
       { cascade: true },
     );
     const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
@@ -115,7 +115,26 @@ describe("projectResearchScreeningProgressDb", () => {
     );
   });
 
+  /**
+   * The screening review's *item list* reads Source items as the reviewer may
+   * read them, and a connected item is readable through the reviewer's own
+   * subscription to its channel — so the world has to carry one, as a real
+   * reviewer's does. The batch counts the checkpoint gate decides on are not
+   * scoped that way; see `screeningMaterialReviewCtes`.
+   */
+  async function seedChannelSubscription(): Promise<void> {
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO source_channel_user_subscriptions
+         (id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)
+       ON CONFLICT DO NOTHING`,
+      [randomUUID(), SPACE, CHANNEL, OWNER, now],
+    );
+  }
+
   async function seedSourceItem(id: string, title: string): Promise<void> {
+    await seedChannelSubscription();
     const now = new Date().toISOString();
     await db.pool.query(
       `INSERT INTO source_items (

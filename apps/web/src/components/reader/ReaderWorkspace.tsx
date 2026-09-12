@@ -12,13 +12,22 @@ import { activeAnnotationsInDocumentOrder, type ReaderAnnotationType } from './r
 
 export interface ReaderWorkspaceControls { panelOpen: boolean; togglePanel: () => void }
 
-export function ReaderWorkspace({ document, annotations, onAnnotationsChange, header, banner, onReferenceClick }: {
+export function ReaderWorkspace({ document, annotations, onAnnotationsChange, header, banner, onReferenceClick, remoteImages = false }: {
   document: ReaderDocumentPayload
   annotations: ReaderAnnotation[]
   onAnnotationsChange: (items: ReaderAnnotation[]) => void
   header?: (controls: ReaderWorkspaceControls) => ReactNode
   banner?: ReactNode
   onReferenceClick?: (referenceId: string) => void
+  /**
+   * Whether this document's cross-origin images may load inline. Off unless the
+   * caller says otherwise, because this component renders more than one kind of
+   * document: a captured article, whose images are part of the article the
+   * person chose to read, and a research report, which a synthesis Run wrote
+   * over ingested third-party items. Deciding it here would give both the same
+   * answer.
+   */
+  remoteImages?: boolean
 }) {
   const [threads, setThreads] = useState<ReaderCommentThread[]>([])
   const [panelOpen, setPanelOpen] = useState(true)
@@ -101,6 +110,7 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, he
         <ReaderAnnotationLayer annotations={annotations} selectedAnnotationId={selectedAnnotation?.id ?? null} onSelect={annotation => selectAnnotation(annotation)} />
         <div className="reader-column mx-auto px-6 py-10">
           <ReadOnlyTiptapReader ref={readerRef} contentJson={document.content_json} normalizedText={document.normalized_text}
+            remoteImages={remoteImages}
             onTextSelected={value => { setSelection(value); if (value) setSelectedAnnotation(null) }} onBlockFocused={setFocusedBlock}
             onAnnotationClick={id => { const annotation = annotations.find(item => item.id === id); if (annotation) selectAnnotation(annotation) }}
             onReferenceClick={onReferenceClick}

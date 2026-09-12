@@ -322,6 +322,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
       };
     });
     const generation = late.generateAdvice(identity(), PROJECT, THREAD, "iteration_recorded", {
+      spend: { kind: "person", user_id: identity().userId },
       beforePersist: (tx) => adviceJobMayPersist(tx, job.id),
     });
     await started;
@@ -376,6 +377,7 @@ describe("Inquiry next-step advice (real Postgres)", () => {
       rationale: "Generation that reached persistence first.",
       cited_refs: [],
     }).generateAdvice(identity(), PROJECT, THREAD, "iteration_recorded", {
+      spend: { kind: "person", user_id: identity().userId },
       beforePersist: async (tx) => {
         const mayPersist = await adviceJobMayPersist(tx, job.id);
         guardLocked();

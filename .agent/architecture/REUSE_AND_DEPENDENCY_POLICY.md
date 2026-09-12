@@ -196,7 +196,7 @@ what is installed.
 | Transactions | `withTransaction`, `withQueryableTransaction` | `server/src/db/tx.ts`, `server/src/modules/routeUtils/common.ts` |
 | Visibility predicates, role helpers, content-access SQL | `access` support package | `server/src/modules/access/` |
 | Outbound HTTP to model providers and CLI runtimes | `undici` + `ProxyAgent` through the network-profile transport | `server/src/modules/networkProfiles/transport.ts` |
-| Other outbound HTTP (source fetch, skill import, tool download) | native `fetch` at the call site — there is no shared client for these today; do not invent a second proxy or retry mechanism for them without changing this row | `server/src/modules/sources/sourceFetch.ts` |
+| Other outbound HTTP (source fetch, skill import, tool download) | `@rainver/outbound-guard`, through `fetchSource` / `fetchGuarded` — see the row below, which is the canonical one. Do not invent a second HTTP client or retry wrapper, and do not call native `fetch` for a URL a member can influence. The skill importer is the recorded exception: it is bounded by a host allowlist and reads a body with no ceiling | `server/src/modules/sources/sourceFetch.ts` |
 | WebSocket server | `@fastify/websocket` — **hosts channel only** | `server/src/modules/hosts/routes.ts` |
 | Server-sent events | `streaming` module | `server/src/modules/streaming/` |
 | Scoped settings | `ScopedSettingsStore` + typed descriptors | `server/src/modules/settings/` |
@@ -209,6 +209,10 @@ what is installed.
 | Managed agent/tool loop | `managedAgentLoopPort` + binding over `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai` | `server/src/modules/runs/managedAgentLoopPort.ts` |
 | Runtime adapter metadata (commands, flags, parsers, limits) | `RuntimeAdapterSpec` | `server/src/modules/runtimeAdapters/specs.ts` |
 | Project Folder path safety | `PathPolicy` | `packages/folder-read/src/pathPolicy.ts` |
+| Whether another site caused this request (CSRF, and a GET whose effects reach past its response) | `csrfOriginAllowed` / `stateChangingReadAllowed` | `server/src/gateway/csrfOrigin.ts` |
+| What a spawned process inherits | `filterAmbientEnv` (bound or strict Run) / `clearVendorCredentialEnv` (host-login Run) / `helperProcessEnv` (daemon helper) — one per kind of spawn, no fourth | `packages/host-daemon/src/providerBinding.ts` |
+| What a secret looks like in free text | `evidenceRedaction.ts` for server text; `redactSecretLikeDiff` for a Project Folder diff, which ships in the daemon and so cannot import it. One rule, two implementations — change both | `server/src/modules/runs/evidenceRedaction.ts`, `packages/folder-read/src/pathPolicy.ts` |
+| Outbound HTTP to a user-influenced URL (block list, redirect and credential rules, address pinning, body ceiling) | `@rainver/outbound-guard` — the server reaches it through `fetchGuarded`, the host daemon's egress proxy through `isBlockedAddress` | `packages/outbound-guard/src/`, `server/src/modules/sources/outboundUrlSafety.ts` |
 | Full-system backup | `BackupService` | `server/src/modules/backups/service.ts` |
 | XML parsing | `fast-xml-parser` | `server/src/modules/sources/` |
 | PDF text extraction | `unpdf` — confined to the extractor | `server/src/modules/sources/pdfExtract.ts` |

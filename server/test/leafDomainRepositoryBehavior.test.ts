@@ -34,6 +34,7 @@ function sourcesConfig(): ServerConfig {
     googleClientSecret: "",
     googleRedirectUri: "",
     frontendUrl: "http://localhost:5173",
+    trustedProxyHost: null,
     sessionExpireDays: 30,
     debug: true,
     dailyReportSchedulerEnabled: true,
@@ -74,6 +75,7 @@ function sourcesConfig(): ServerConfig {
     backupRoot: "/tmp/backups",
     backupAcceptNoBackup: false,
     backupDatabaseUrl: null,
+    providerProxyListenHost: "127.0.0.1",
     providerProxyPort: 0,
     providerProxyExternalBaseUrl: null,
   };
@@ -125,6 +127,7 @@ function activityRow(overrides: Record<string, unknown> = {}) {
     processed_at: null,
     discarded_at: null,
     aggregate_key: null,
+    effective_access_level: "full",
     ...overrides,
   };
 }
@@ -438,6 +441,8 @@ describe("Leaf domain repository behavior", () => {
   it("captures raw input as an activity record", async () => {
     const db = new FakeDb((sql) => {
       if (sql.includes("INSERT INTO activity_records")) return [activityRow()];
+      // create reads its row back through the access-level gate.
+      if (sql.includes("FROM activity_records")) return [activityRow()];
       throw new Error(`unexpected SQL: ${sql}`);
     });
 
@@ -1271,6 +1276,11 @@ describe("Leaf domain repository behavior", () => {
     const db = new FakeDb((sql) => {
       const norm = sql.replace(/\s+/g, " ");
       if (norm.includes("FROM notes n")) return [noteRow()];
+      // The one write check reads the object's own visibility and owner before
+      // any update: readable is not writable.
+      if (norm.includes("SELECT so.visibility, so.owner_user_id, so.primary_project_id")) {
+        return [{ visibility: "space_shared", owner_user_id: null, primary_project_id: null, effective_access_level: "full" }];
+      }
       if (sql.includes("UPDATE space_objects")) {
         updateCount += 1;
         return [];
@@ -1291,6 +1301,9 @@ describe("Leaf domain repository behavior", () => {
       seenSql.push(sql);
       const norm = sql.replace(/\s+/g, " ");
       if (norm.includes("FROM notes n")) return [noteRow()];
+      if (norm.includes("SELECT so.visibility, so.owner_user_id, so.primary_project_id")) {
+        return [{ visibility: "space_shared", owner_user_id: null, primary_project_id: null, effective_access_level: "full" }];
+      }
       if (sql.includes("UPDATE space_objects")) return [];
       if (sql.includes("SELECT id FROM note_collections")) {
         expect(params).toEqual(["collection-1", "space-1"]);

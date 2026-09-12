@@ -10,6 +10,7 @@ import {
 } from "../src/modules/sources/sourceConnectionFetch.js";
 import { fetchBackfillPageWithNarrowing, pageSizeLadder, PAGE_SIZE_FLOOR } from "../src/modules/sources/sourceBackfillPageFetch.js";
 import type { SourceConnectorHandler } from "../src/modules/sources/catalog/sourceConnectorRegistry.js";
+import { fixtureServerGuard } from "./support/outboundGuard.js";
 
 const handler = { prepareRequest: undefined } as unknown as SourceConnectorHandler;
 const provider = { providerKey: "arxiv", providerDisplayName: "arXiv", connectorKey: "arxiv_api" };
@@ -43,6 +44,7 @@ const fetchOnce = (path: string, timeoutMs?: number) => fetchSourceConnection({
   maxDownloadBytes: 1_000_000,
   backfill: true,
   provider,
+  guard: fixtureServerGuard,
   ...(timeoutMs ? { timeoutMs } : {}),
 });
 
@@ -62,8 +64,16 @@ describe("source fetch failure classification", () => {
     expect(diagnostics.elapsed_ms).toBeGreaterThan(0);
   });
 
-  it("keeps an unreachable host distinct from a slow one, and names the cause", async () => {
-    const error = await fetchSourceConnection({
+  /**
+   * A host that resolves nowhere and a host inside this instance's own network
+   * are the same failure here, on purpose: the outbound boundary answers both
+   * with one message, and the persisted diagnostics must not reintroduce the
+   * distinction the message removed. Both are reported as a connectivity
+   * problem — still distinct from a provider that answered slowly — and both
+   * carry no error code.
+   */
+  it("keeps an unreachable host distinct from a slow one, without saying why it was unreachable", async () => {
+    const unresolvable = await fetchSourceConnection({
       handler,
       // `.invalid` is reserved by RFC 2606, so this cannot resolve anywhere.
       url: "http://source-fetch-test.invalid/history",
@@ -73,10 +83,24 @@ describe("source fetch failure classification", () => {
       provider,
       timeoutMs: 5_000,
     }).catch((e: unknown) => e);
-    const { diagnostics } = error as SourceFetchFailure;
-    expect(diagnostics.failure_kind).toBe("network");
-    expect(diagnostics.error_code).toBe("ENOTFOUND");
-    expect(diagnostics.upstream_status).toBeNull();
+    const blocked = await fetchSourceConnection({
+      handler,
+      url: "http://127.0.0.1:9/history",
+      headers: {},
+      maxDownloadBytes: 1_000_000,
+      backfill: true,
+      provider,
+      timeoutMs: 5_000,
+    }).catch((e: unknown) => e);
+
+    for (const error of [unresolvable, blocked]) {
+      expect(error).toBeInstanceOf(SourceFetchFailure);
+      const { diagnostics } = error as SourceFetchFailure;
+      expect(diagnostics.failure_kind).toBe("network");
+      expect(diagnostics.error_code).toBeNull();
+      expect(diagnostics.upstream_status).toBeNull();
+    }
+    expect((unresolvable as SourceFetchFailure).message).toBe((blocked as SourceFetchFailure).message);
   });
 
   it("records an upstream status when the provider answered at all", async () => {

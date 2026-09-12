@@ -33,6 +33,8 @@ describe("loadConfig", () => {
     expect(c.instanceAdminEmail).toBeNull();
     expect(c.sessionExpireDays).toBe(30);
     expect(c.debug).toBe(false);
+    expect(c.providerProxyListenHost).toBe("127.0.0.1");
+    expect(c.providerProxyPort).toBe(0);
   });
 
   it("honors SERVER_* overrides and normalizes a trailing slash", () => {
@@ -167,13 +169,14 @@ describe("loadConfig", () => {
     expect(
       codeOf({ SERVER_ENABLE_NOTIFICATION_WEBHOOK_EGRESS: "true" }),
     ).toBe("missing_notification_webhook_allowlist");
+    expect(codeOf({ PROVIDER_PROXY_LISTEN_HOST: "0.0.0.0.1" })).toBe("invalid_listen_host");
   });
 });
 
 describe("config snapshot", () => {
   it("is immutable and identifies the config by schema version + content hash", () => {
     const snapshot = loadConfigSnapshot({});
-    expect(snapshot.schema_version).toBe(22);
+    expect(snapshot.schema_version).toBe(23);
     expect(snapshot.content_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(snapshot.loaded_at).toBeTruthy();
     expect(Object.isFrozen(snapshot)).toBe(true);

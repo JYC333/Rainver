@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { automationsApi, agentsApi, evolutionApi, projectsApi } from '../../api/client'
 import type { AutomationOut, AutomationTargetType, AutomationTriggerType, AgentOut, EvolvableAsset, EvolvableAssetVersion, Project, WorkflowExecutionSummary } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
+import { SpaceLink } from '../../core/spaceNav'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
@@ -416,7 +417,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
       {target === 'workflow' && (
         <div className="mb-3 rounded-md border border-border p-3">
           <div className="flex items-center justify-between gap-2"><p className="text-xs font-medium">Workflow executions</p><span className="text-[10px] text-muted-foreground">{executions.length} recent</span></div>
-          {executions.length === 0 ? <p className="mt-2 text-xs text-muted-foreground">No Workflow Execution has been fired yet.</p> : <div className="mt-2 space-y-1.5">{executions.map(execution => <div key={execution.workflow_execution_id} className="flex flex-wrap items-center justify-between gap-2 text-xs"><span className="font-mono text-muted-foreground">{execution.workflow_execution_id.slice(0, 8)}…</span><span>{execution.completed_node_count}/{execution.node_count} nodes</span><StatusBadge status={execution.status} /><span className="text-muted-foreground">{fmt(execution.created_at)}</span>{execution.root_run_id && <a href={`/runs/${execution.root_run_id}`} className="text-accent-foreground hover:underline">root run</a>}</div>)}</div>}
+          {executions.length === 0 ? <p className="mt-2 text-xs text-muted-foreground">No Workflow Execution has been fired yet.</p> : <div className="mt-2 space-y-1.5">{executions.map(execution => <div key={execution.workflow_execution_id} className="flex flex-wrap items-center justify-between gap-2 text-xs"><span className="font-mono text-muted-foreground">{execution.workflow_execution_id.slice(0, 8)}…</span><span>{execution.completed_node_count}/{execution.node_count} nodes</span><StatusBadge status={execution.status} /><span className="text-muted-foreground">{fmt(execution.created_at)}</span>{execution.root_run_id && <SpaceLink to={`/runs/${execution.root_run_id}`} className="text-accent-foreground hover:underline">root run</SpaceLink>}</div>)}</div>}
         </div>
       )}
 
@@ -426,10 +427,12 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
             onClick={async () => {
               setBusy(true)
               try {
-                const result = await automationsApi.fire(
-                  auto.id,
-                  target === 'agent_run' ? { prompt: cfgString(auto.config_json, 'prompt') || undefined } : {},
-                )
+                // Nothing supplied: "Run now" runs the automation's own
+                // configured prompt, which the server reads from the
+                // automation. Sending a copy of it here would make the Run
+                // read as this person asking for it, and ADR 0003 §5 decides
+                // a persona write on exactly that difference.
+                const result = await automationsApi.fire(auto.id)
                 if (result.skipped) toast.info(result.skip_reason ? `Skipped — ${result.skip_reason}` : 'Skipped')
                 else toast.success(target === 'agent_run' || target === 'workflow' ? 'Run queued' : 'Scan completed')
                 onChanged()

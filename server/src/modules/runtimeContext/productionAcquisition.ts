@@ -18,6 +18,7 @@ import { memoryRetrievalAdapter } from "../memory/retrievalAdapter.js";
 import { projectRetrievalAdapter } from "../projects/retrievalAdapter.js";
 import { sourceRetrievalAdapter } from "../sources/retrievalAdapter.js";
 import { inquiryRetrievalAdapter } from "../inquiry/retrievalAdapter.js";
+import { isContentVisibility } from "../access/contentAccessTypes.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import {
   loadSourcePolicySnapshots,
@@ -714,6 +715,24 @@ class PgRetrievalIntentProvider implements RuntimeContextRetrievalIntentPort {
   }
 }
 
+/** Stamps context-taint fields from the canonical source, not the instructing user. */
+export function retrievalContextSourceAttribution(canonical: {
+  ownerUserId: string | null;
+  visibility: string | null;
+}): {
+  ownerUserId: string | null;
+  visibility: ContextItem["visibility"];
+} {
+  return {
+    ownerUserId: canonical.ownerUserId,
+    visibility: isContentVisibility(canonical.visibility) ? canonical.visibility : "private",
+  };
+}
+
+export function createProductionRetrievalAuthorization(db: Pool): RetrievalContextAuthorizationPort {
+  return new PgRetrievalAuthorization(db);
+}
+
 class PgRetrievalAuthorization implements RetrievalContextAuthorizationPort {
   constructor(private readonly db: Pool) {}
 
@@ -756,8 +775,7 @@ class PgRetrievalAuthorization implements RetrievalContextAuthorizationPort {
     });
     return {
       sensitivity: "highly_restricted" as const,
-      visibility: "private" as const,
-      ownerUserId: request.userId,
+      ...retrievalContextSourceAttribution(canonical),
       egressEligible: eligible,
       revalidation: {
         status: "live" as const,

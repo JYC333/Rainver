@@ -45,7 +45,6 @@ describe("index smoke import", () => {
     expect(protocol.CredentialChannelMetadataSchema).toBeDefined();
 
     expect(protocol.ProviderCredentialsAuthoritySchema).toBeDefined();
-    expect(protocol.RuntimeCredentialResolveRequestSchema).toBeDefined();
     expect(protocol.RuntimeHostExecuteRequestSchema).toBeDefined();
     expect(protocol.RuntimeHostExecuteResponseSchema).toBeDefined();
     expect(protocol.RuntimeContextPolicyDocumentSchema).toBeDefined();

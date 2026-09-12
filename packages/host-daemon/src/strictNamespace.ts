@@ -80,26 +80,11 @@ const ETC = [
  * Environment a strict namespace always exports, whatever the runtime.
  *
  * `RAINVER_STRICT_SANDBOX` marks the namespace for anything downstream that
- * needs to know it is inside one. It does **not** switch the vendor CLI's own
- * sandbox off: nothing reads this variable, and the runtime-specific half —
- * the per-adapter setting that actually relaxes it — is not implemented.
- *
- * Measured 2026-09-08 in the real `sandbox-runner` container, with the real
- * `codex` 0.147.0 binary under the argv this file builds, because the reason
- * previously recorded here was wrong. A nested vendor sandbox does **not**
- * fail: user namespaces nest fine and `codex sandbox` exits 0 inside this one.
- * What it does is stack its own policy on top. Its default is `read-only`, so
- * the Run's own working directory and HOME — bound read-write by this
- * namespace — come back "Read-only file system" through it. That is the worse
- * failure: not a Run that refuses to start, but one that runs and silently
- * cannot write, with nothing in its output naming the second sandbox.
- *
- * The switch is known and was verified in the same place:
- * `sandbox_mode = "workspace-write"` (or `"danger-full-access"`) in the copy's
- * `config.toml` restores writes. Claude Code 2.1.263 has no vendor sandbox at
- * all and launches here unchanged. What is still unverified is what our own
- * pinned `codex-acp` adapter does with the setting, since we spawn it rather
- * than the vendor CLI. Tracked in `.agent/tasks/deferred-register.md`.
+ * needs to know it is inside one. Codex does not read it; the daemon consumes
+ * the same fact (`trust === "strict"`) by writing
+ * `sandbox_mode = "workspace-write"` into that copy's `config.toml` before
+ * spawn (`codexStrictSandbox.ts`), which is the switch measured to stop
+ * Codex's default read-only sandbox stacking on top of this namespace.
  */
 export const STRICT_SANDBOX_ENV: Readonly<Record<string, string>> = Object.freeze({
   RAINVER_STRICT_SANDBOX: "1",

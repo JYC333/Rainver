@@ -12,7 +12,7 @@ import {
   type SessionPage,
 } from "@rainver/protocol";
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
-import { ROOT_BRANCH_PATH, visibleMessagePathSql } from "./messagePath.js";
+import { ROOT_BRANCH_PATH, visibleRoomTranscriptSql } from "./messagePath.js";
 import {
   actionPreviewsForViewer,
   loadChatActionPreviewsByRunIds,
@@ -218,12 +218,20 @@ export class PgSessionRepository {
     return this.loadMessagePage(spaceId, sessionId, limit, offset);
   }
 
+  /**
+   * One page of a conversation, as a person may read it.
+   *
+   * The transcript predicate is applied to every session, not only to a Room's:
+   * `room_display = 'internal'` is written by `addRoomInternalInstruction`
+   * alone, so it is vacuous for an ordinary session — and a flag that decided
+   * whether to apply it was a second copy of the rule that a new caller could
+   * pass `false` to.
+   */
   private async loadMessagePage(
     spaceId: string,
     sessionId: string,
     limit: number,
     offset: number,
-    visibleRoomTranscriptOnly = false,
     /** One message by id, through this same projection rather than a second one. */
     messageId: string | null = null,
   ): Promise<MessageOut[]> {
@@ -252,14 +260,13 @@ export class PgSessionRepository {
              FROM messages m
             WHERE m.session_id = $1
               AND m.space_id = $2
-              AND ${visibleMessagePathSql({ alias: "m", spaceParam: "$2", sessionParam: "$1" })}
-              AND ($5::boolean = false OR COALESCE(m.metadata_json->>'room_display', 'conversation') <> 'internal')
-              AND ($6::varchar IS NULL OR m.id = $6)
+              AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "$2", sessionParam: "$1" })}
+              AND ($5::varchar IS NULL OR m.id = $5)
             ORDER BY m.path_depth DESC, m.id DESC
             LIMIT $3 OFFSET $4
          ) message_page
         ORDER BY message_page.path_depth ASC, message_page.id ASC`,
-      [sessionId, spaceId, limit, offset, visibleRoomTranscriptOnly, messageId],
+      [sessionId, spaceId, limit, offset, messageId],
     );
     return result.rows.map(messageToOut);
   }
@@ -302,7 +309,7 @@ export class PgSessionRepository {
       roomId,
     );
     if (!session) return null;
-    const messages = await this.loadMessagePage(spaceId, sessionId, limit, offset, true);
+    const messages = await this.loadMessagePage(spaceId, sessionId, limit, offset);
     return this.projectRoomActionPreviews(spaceId, userId, messages);
   }
 
@@ -322,7 +329,7 @@ export class PgSessionRepository {
   ): Promise<MessageOut | null> {
     const session = await this.getRoomConversation(spaceId, userId, sessionId, roomId);
     if (!session) return null;
-    const page = await this.loadMessagePage(spaceId, sessionId, 1, 0, true, messageId);
+    const page = await this.loadMessagePage(spaceId, sessionId, 1, 0, messageId);
     return (await this.projectRoomActionPreviews(spaceId, userId, page))[0] ?? null;
   }
 
@@ -343,8 +350,7 @@ export class PgSessionRepository {
       `SELECT m.id, m.role, m.content, m.created_at
          FROM messages m
         WHERE m.space_id = $1 AND m.session_id = $2 AND m.id = ANY($3::varchar[])
-          AND ${visibleMessagePathSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
-          AND COALESCE(m.metadata_json->>'room_display', '') <> 'internal'
+          AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
         ORDER BY m.path_depth ASC, m.id ASC`,
       [spaceId, sessionId, [...ids]],
     );
@@ -379,7 +385,7 @@ export class PgSessionRepository {
              FROM messages m
             WHERE m.session_id = $1
               AND m.space_id = $2
-              AND ${visibleMessagePathSql({ alias: "m", spaceParam: "$2", sessionParam: "$1" })}
+              AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "$2", sessionParam: "$1" })}
             ORDER BY m.path_depth DESC, m.id DESC
             LIMIT $3
          ) recent

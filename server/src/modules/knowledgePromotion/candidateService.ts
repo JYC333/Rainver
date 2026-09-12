@@ -12,6 +12,7 @@ import {
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
+import { assertThreadReadable } from "../inquiry/threadAccess.js";
 import type { PinnedSourceRef } from "./outbox.js";
 
 const CANDIDATE_KINDS = new Set(["concept", "lesson", "procedure", "decision", "summary"]);
@@ -112,9 +113,17 @@ export class KnowledgePromotionCandidateService {
   ): Promise<Record<string, unknown>> {
     const threadId = requiredString(body.thread_id, "thread_id");
     return this.create(identity, projectId, body, async (db) => {
-      const revision = await db.query<{ id: string; version: number; content_hash: string }>(
-        `SELECT id, version, content_hash FROM inquiry_thread_revisions
-          WHERE thread_id=$1 AND space_id=$2 AND project_id=$3 ORDER BY version DESC LIMIT 1`,
+      // A Candidate pins the Thread and is seen no more widely than the Thread
+      // is: only a Thread the person reaches on their own is a source. One
+      // from a Thread not shared with the Space stays private to the person
+      // who drew it, who can read that Thread.
+      await assertThreadReadable(db, identity, projectId, threadId, "change");
+      const revision = await db.query<{ id: string; version: number; content_hash: string; visibility: string }>(
+        `SELECT r.id, r.version, r.content_hash, so.visibility
+           FROM inquiry_thread_revisions r
+           JOIN space_objects so ON so.id = r.thread_id AND so.space_id = r.space_id
+          WHERE r.thread_id=$1 AND r.space_id=$2 AND r.project_id=$3
+          ORDER BY r.version DESC LIMIT 1`,
         [threadId, identity.spaceId, projectId],
       );
       if (!revision.rows[0]) throw new HttpError(422, "thread_id has no revisions to pin");
@@ -126,6 +135,9 @@ export class KnowledgePromotionCandidateService {
         sourceKind: "inquiry_thread",
         sourceId: threadId,
         sourceRef: ref,
+        ...(revision.rows[0].visibility === "space_shared"
+          ? { visibility: "space_shared" as const, ownerUserId: null }
+          : { visibility: "private" as const, ownerUserId: identity.userId }),
         ...(accessOverride ?? {}),
       };
     });

@@ -29,7 +29,6 @@ import { backupsModule } from "../modules/backups/index.js";
 import { providersModule } from "../modules/providers/index.js";
 import { networkProfilesModule } from "../modules/networkProfiles/index.js";
 import { acpAgentsModule } from "../modules/acpAgents/index.js";
-import { runtimeHostModule } from "../modules/runtimeHost/index.js";
 import { usageModule } from "../modules/usage/index.js";
 import { runsModule } from "../modules/runs/index.js";
 import { artifactsModule } from "../modules/artifacts/index.js";
@@ -116,7 +115,6 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   notificationsModule,
   networkProfilesModule,
   providersModule,
-  runtimeHostModule,
   usageModule,
   runsModule,
   artifactsModule,
@@ -187,7 +185,7 @@ export function registerServerRoutes(
 ): void {
   const context: ModuleContext = { config, snapshot: createConfigSnapshot(config), pluginHost };
 
-  registerGatewayConventions(app);
+  registerGatewayConventions(app, config);
 
   // 1. Server-owned modules (permanent).
   for (const module of SERVER_MODULES) {

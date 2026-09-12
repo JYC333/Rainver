@@ -11,7 +11,6 @@ import { z } from "zod";
 import {
   IdSchema,
   ISODateTimeSchema,
-  RunTriggerOriginSchema,
   SECRET_RESPONSE_FIELDS,
   SecretResponseGuards,
 } from "./common.js";
@@ -325,7 +324,6 @@ export const RUN_EXECUTION_ERROR_CODES = [
   "policy_denied_runtime_execute",
   "policy_denied_runtime_use_credential",
   "policy_requires_approval_runtime_execute",
-  "policy_requires_approval_runtime_use_credential",
   "produced_artifact_ingestion_error",
   "run_cancelled",
   "run_abandoned",
@@ -459,7 +457,6 @@ export const RunJobPayloadSchema = z
     simulate_failure: z.boolean().optional(),
     mode: z.string().nullish(),
     run_type: z.string().nullish(),
-    trigger_origin: RunTriggerOriginSchema.nullish(),
     session_id: IdSchema.nullish(),
     project_folder_id: IdSchema.nullish(),
     project_id: IdSchema.nullish(),

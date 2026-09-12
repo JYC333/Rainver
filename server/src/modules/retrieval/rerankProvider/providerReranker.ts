@@ -6,6 +6,7 @@ import {
   ProviderInvocationError,
 } from "../../providers/invocation/invocation.js";
 import type { ProviderCommandStore } from "../../providers/commands/store.js";
+import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import { retrievalEgressAllowed, ALLOW_ALL_EGRESS, type RetrievalEgressPolicy } from "../egress/egressPolicy.js";
 import { writePolicyAudit } from "../../policy/auditWriter.js";
 import { resolveRetrievalRerankSystemPrompt } from "../promptRegistry.js";
@@ -28,6 +29,8 @@ export interface ProviderRerankerOptions {
   systemPromptResolver?: RerankSystemPromptResolver | null;
   /** W9 egress policy; when egress is disabled the reranker sends nothing. */
   egressPolicy?: RetrievalEgressPolicy;
+  /** Who the searches this helper serves spend for. */
+  spend: CredentialSpendBasis;
 }
 
 /**
@@ -47,11 +50,13 @@ export class ProviderReranker implements Reranker {
   private readonly surface: string | null;
   private readonly systemPromptResolver: RerankSystemPromptResolver | null;
   private readonly egressPolicy: RetrievalEgressPolicy;
+  private readonly spend: CredentialSpendBasis;
 
   constructor(
     private readonly store: ProviderCommandStore,
-    options: ProviderRerankerOptions = {},
+    options: ProviderRerankerOptions,
   ) {
+    this.spend = options.spend;
     this.providerId = options.providerId ?? null;
     this.databaseUrl = options.databaseUrl ?? null;
     this.surface = options.surface ?? null;
@@ -99,6 +104,7 @@ export class ProviderReranker implements Reranker {
         task: RETRIEVAL_RERANK_TASK,
         egressPolicy: effectivePolicy,
         metering: { subject_user_id: viewerUserId },
+        spend: this.spend,
       });
     } catch {
       return null;
@@ -133,6 +139,7 @@ export class ProviderReranker implements Reranker {
         task: RETRIEVAL_RERANK_TASK,
         egressPolicy,
         metering: { subject_user_id: viewerUserId },
+        spend: this.spend,
       });
       const scores: RerankScore[] = [];
       const seen = new Set<number>();

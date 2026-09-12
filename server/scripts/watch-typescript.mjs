@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 const appRoot = resolve(import.meta.dirname, "../..");
 const protocolRoot = join(appRoot, "packages/protocol");
 const folderReadRoot = join(appRoot, "packages/folder-read");
+const outboundGuardRoot = join(appRoot, "packages/outbound-guard");
 const serverRoot = join(appRoot, "server");
 const pluginsRoot = join(appRoot, "plugins");
 const watchedPaths = [
@@ -14,6 +15,9 @@ const watchedPaths = [
   join(folderReadRoot, "src"),
   join(folderReadRoot, "tsconfig.json"),
   join(folderReadRoot, "tsconfig.build.json"),
+  join(outboundGuardRoot, "src"),
+  join(outboundGuardRoot, "tsconfig.json"),
+  join(outboundGuardRoot, "tsconfig.build.json"),
   join(serverRoot, "src"),
   join(serverRoot, "tsconfig.json"),
   pluginsRoot,
@@ -60,19 +64,26 @@ async function build() {
   buildRunning = true;
   do {
     buildPending = false;
-    console.log("[typescript-watch] compiling folder-read, protocol, server, and official plugins");
+    console.log("[typescript-watch] compiling folder-read, outbound-guard, protocol, server, and official plugins");
     const folderReadCode = await run(
       join(folderReadRoot, "node_modules/.bin/tsc"),
       ["-p", "tsconfig.build.json"],
       folderReadRoot,
     );
-    const protocolCode = folderReadCode === 0
+    const outboundGuardCode = folderReadCode === 0
+      ? await run(
+        join(outboundGuardRoot, "node_modules/.bin/tsc"),
+        ["-p", "tsconfig.build.json"],
+        outboundGuardRoot,
+      )
+      : folderReadCode;
+    const protocolCode = outboundGuardCode === 0
       ? await run(
       join(protocolRoot, "node_modules/.bin/tsc"),
       ["-p", "tsconfig.build.json"],
       protocolRoot,
     )
-      : folderReadCode;
+      : outboundGuardCode;
     const serverCode = protocolCode === 0
       ? await run(join(serverRoot, "node_modules/.bin/tsc"), ["-p", "tsconfig.json"], serverRoot)
       : protocolCode;

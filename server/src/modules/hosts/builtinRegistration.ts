@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Pool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
+import { builtinHostServerUrl } from "./controlPlaneUrl.js";
 import { PgHostRepository } from "./repository.js";
 
 /**
@@ -33,17 +34,6 @@ export function builtinHostCredentialPath(rainverHome: string): string {
   return join(rainverHome, "cache", "builtin-host", "registration.json");
 }
 
-/**
- * The address the built-in daemon reaches this control plane at.
- *
- * The same in-network name the sandbox path already uses: the built-in host is
- * a Compose service beside the server, not a machine on someone's LAN, so
- * unlike a paired host it needs no externally-resolvable address and no
- * operator configuration.
- */
-export function builtinHostServerUrl(config: ServerConfig): string {
-  return `http://${config.sandboxRunnerServerHost}:${config.port}`;
-}
 
 async function readPublished(path: string): Promise<BuiltinHostCredential | null> {
   try {

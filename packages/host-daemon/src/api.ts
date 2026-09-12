@@ -26,6 +26,12 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
   try {
     response = await fetch(url, {
       ...init,
+      // Never followed. Every call here carries this host's bearer token, and
+      // a redirect is the control plane telling this daemon to send it
+      // somewhere else — including from https to http, or to another origin.
+      // Registration is the one that matters most: it exchanges a pairing code
+      // for a long-lived token.
+      redirect: "error",
       headers: { "content-type": "application/json", ...init.headers },
     });
   } catch (error) {
@@ -78,7 +84,7 @@ function askRuntimeOptions(probes: RuntimeProbe[], log?: (line: string) => void)
       // than deleting the tree it is executing from.
       const options = await holdingAdapter(
         lookup.adapter_type,
-        () => probeAcpOptions(launch.command, launch.args, launch.env, cwd, undefined, failed),
+        () => probeAcpOptions(launch.command, launch.args, launch.env, cwd, undefined, failed, lookup.adapter_type),
       );
       if (options !== null && reportedProbeFailures.delete(key)) log?.(`${key}: login methods and options read successfully`);
       return options;
@@ -98,7 +104,6 @@ function askRuntimeOptions(probes: RuntimeProbe[], log?: (line: string) => void)
  */
 async function helloInfo(
   workspaces: Record<string, string> = {},
-  serverUrl?: string,
   probes?: RuntimeProbe[],
   log?: (line: string) => void,
 ): Promise<HostHelloInfo> {
@@ -123,7 +128,6 @@ async function helloInfo(
     workspace_reports: await collectWorkspaceStatus(workspaces),
     managed_workspaces: await listManagedWorkspaces(),
     ambient_sessions: ambientSessionCounts(),
-    ...(serverUrl ? { server_url: serverUrl } : {}),
   };
 }
 

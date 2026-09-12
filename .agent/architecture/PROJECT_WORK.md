@@ -270,7 +270,11 @@ questions from domain rows alone — which stage a Task is in, who is on the
 hook, why it cannot close — and reconstructing any of it in the browser would
 put a second copy of the rules where nothing tests them against the write path.
 Both are one statement plus their bounded detail queries; the completion check
-reads attached outputs in the same query rather than per card.
+reads attached outputs in the same query rather than per card. Run status,
+evaluation, and attached output types on those surfaces are filtered with the
+same `contentReadSql` the Task's `/runs` list uses: a shared Task does not
+reveal another member's private Run. The close-gate `taskCompletionState` used
+by writes stays unfiltered so the owner still closes against every Run.
 
 Card lanes are flow statuses. `cancelled` is archived off the Board, and
 `blocked` is an **overlay**: it keeps its own status and carries a
@@ -497,3 +501,27 @@ Project's mainline Room; the Agent they talk to is bound by the same rule
 (`modules/rooms.md`). A consequence worth knowing: a Task still bound to a
 soft-deleted Project cannot be edited by anyone, because writer authority is
 checked against a live Project.
+
+## Who a work surface answers to
+
+Every Run-derived row a Project surface shows goes through the shared read
+predicates in `modules/access/contentAccessSql.ts` — `runReadSql`,
+`proposalReadSql`, `artifactReadSql`, and `runInheritedReadSql` for a row that
+exists because of a Run. That is the Task's run/evaluation/artifact/proposal
+lists, the Board card columns, the Task work view, the Project updates feed and
+the undo path. A work event names its Run inside `data_json`, so that is what
+the predicate reads — `appendProjectWorkEvent` takes a `runId` and stamps it
+there, rather than leaving each writer to remember the convention, which is how
+three Agent-completion writers came to set only the correlation column and leave
+their events ungated; the visited-stage rail is the one deliberate exemption,
+because it reads stage keys and no content, and gating it would make the rail
+claim a Task never reached a stage it reached in a Room the reader is not in.
+
+The close gate (`taskCompletionState`, `missingRequiredOutputs`) is computed in
+the asking person's view, and the viewer is a required argument. The settlement
+worker decides what actually happened to a Task on behalf of nobody and must see
+every output; it says so by name (`missingRequiredOutputsForSettlement`) rather
+than by omitting an argument.
+
+Task dispatch refuses a `session_id` that names a Room conversation, so no
+Room-scoped Run reaches `task_runs`.

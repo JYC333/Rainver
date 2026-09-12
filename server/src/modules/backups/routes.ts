@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { requireInstanceAdmin } from "../routeUtils/access.js";
 import { BackupService } from "./service.js";
 import { readInstanceOperationsPolicy } from "../settings/index.js";
 
@@ -13,6 +14,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/system/backups", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
+    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
     if (!context.config.backupEnabled) {
       return reply.send([]);
     }
@@ -34,6 +36,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.post("/api/v1/system/backups/manual", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
+    if (!(await requireInstanceAdmin(context.config, identity, reply))) return reply;
     if (!context.config.backupEnabled) {
       return reply.code(503).send({
         detail: "Backup service not running — set BACKUP_ENABLED=true to enable",

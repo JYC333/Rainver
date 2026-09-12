@@ -512,13 +512,18 @@ Policy gates run in this order inside server run orchestration:
 
 1. **`runtime.execute`** — `PolicyGateway.enforce()` is called **before** credential resolution, Runtime Context Delivery preparation, and `adapter.execute()`. Rule-relevant fields (`agent_status`, `agent_tool_permissions`, `tool_name`, `adapter_type`, `trigger_origin`, etc.) are passed in `PolicyCheckRequest.context`; safe audit copies remain in `metadata_json`. Blocking decisions raise `PolicyGateBlocked`, are written once through `write_blocked_gate_audit()`, and fail the run.
 
-2. **`runtime.use_credential`** — called after adapter type resolution but
-   **before** a server-owned ModelProvider key fetch. The resource is the
-   selected ModelProvider in the Run's active Space; host-copy login is not
-   a server-brokered CLI profile grant. Active-space grant resolution happens before secret material
-   is loaded; missing or disabled grants fail closed. Cross-space credential →
-   hard DENY (CRITICAL). Automation origin → REQUIRE_APPROVAL. Same-space
-   manual/api/delegation → ALLOW. DENY → `error_code=policy_denied_runtime_use_credential`.
+2. **`runtime.use_credential`** — decided by `authorizeCredentialSpend`
+   **before** a server-owned ModelProvider key is fetched. The Run executor
+   calls it before a server-host Run starts; the provider layer decides again on
+   every managed-API turn, and proxy lease minting decides a daemon Run. The
+   resource is the selected ModelProvider in the Run's active Space; host-copy
+   login is not a server-brokered CLI profile grant. Active-space grant
+   resolution happens before secret material is loaded; missing or disabled
+   grants fail closed. Cross-space credential → hard DENY (CRITICAL). A Run is
+   decided on its root: a `manual` root → ALLOW; an `automation` or
+   `autonomous` root → ALLOW only while the firing Automation holds an active
+   credential grant, else DENY. DENY →
+   `error_code=policy_denied_runtime_use_credential`.
 
 3. **`context.inject_memory`** — resolved into the immutable execution-control snapshot before Runtime Context acquires Memory candidates. Cross-space without grant → hard DENY. DENY → Delivery preparation fails closed.
 
@@ -650,6 +655,13 @@ finalization dependencies.
   Supervisor terminal hold starts a new explicitly authorized attempt.
 - **`POST /api/v1/runs/{run_id}/abandon`** — human-reviewed abandon path that
   records a cancelled terminal outcome.
+
+Every command on a Run — execute, stop, finalize, resume, abandon — passes one
+authorizer (`runs/runCommandAuthority.ts`): the Run is visible to the caller,
+and the caller is its owner or the person who instructed it. A resume that
+grants a policy pause's approval is the exception: an approval is decided by
+approval authority over the risk the gate recorded (`roleMayApproveRisk`, the
+same table proposal apply uses), not by owning the Run.
 
 The finalize endpoint is the single write surface.
 

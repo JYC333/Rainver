@@ -1,6 +1,9 @@
 # Task board model
 
-This document describes the **agent-native task board** domain layer. It is backend-only; Kanban UI is deferred.
+This document describes the **agent-native task board** domain layer.
+The Project Board UI at `/projects/:projectId/board` reads
+`GET /projects/:id/board`. There is no separate space-level Kanban product
+outside the Project shell.
 
 ## Core separation
 

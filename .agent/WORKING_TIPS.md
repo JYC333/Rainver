@@ -62,7 +62,7 @@ Files & Code routes live inside the registered `projectFolders` module and
 are read-only: tree, file, git status, and git diff. The former Workspace
 Console's runtime-status/session create/detail/run/stop surface was a
 never-implemented stub and has been removed entirely — do not describe it as
-a current or planned local CLI execution path.
+a current local CLI execution path.
 
 **RuntimeAdapterSpec owns local CLI command semantics.**
 

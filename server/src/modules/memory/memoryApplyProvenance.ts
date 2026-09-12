@@ -87,6 +87,23 @@ export function userConfirmationEntry(
   };
 }
 
+/**
+ * An importer's copy of a published memory. The entry records the importer's
+ * act (as a `user_confirmation` source: the person who took the copy), but
+ * taking a copy is not a confirmation of what it says. So the entry carries
+ * the trust the publisher's row had, and a memory built from untrusted text
+ * stays untrusted when it crosses into another Space. An unrecognized or
+ * absent trust leaves the entry without one rather than defaulting upward.
+ */
+export function publicationImportEntry(importerUserId: string, snapshotTrust: string | null): ProvenanceEntry {
+  return {
+    source_type: "user_confirmation",
+    source_id: importerUserId,
+    ...(snapshotTrust && SOURCE_TRUST_VALUES.has(snapshotTrust) ? { source_trust: snapshotTrust } : {}),
+    evidence_json: { channel: "publication_import" },
+  };
+}
+
 export function proposalProvenanceEntry(
   proposalId: string,
   evidence?: Record<string, unknown>,

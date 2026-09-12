@@ -187,18 +187,16 @@ The following are explicitly out of scope for this system:
 - **E2EE / zero-knowledge architecture** — incompatible with control-plane-mediated memory management, and (per [ADR 0016](../decisions/0016-control-plane-execution-hosts.md)) still incompatible on a paired execution host: pairing extends trust to a specific machine, it does not make that machine zero-knowledge to the control plane
 - **Project Folder file local-first sync** — filesystem paths are server-authoritative; local sync introduces conflict resolution complexity that has no current payoff
 
-These may become relevant in future iterations, but should not influence current implementation decisions.
+These absences must not influence current implementation decisions.
 
 ---
 
-## 10. Practical Next Step
+## 10. Current constraint
 
-The current priority remains dogfooding the server-authoritative loop:
+Local-first compatibility is a **preservation constraint** on schema and API
+design. There is no local-first infrastructure. When adding new syncable
+objects, apply the column guidelines in section 3. When adding
+server-authoritative objects, do not expose them to offline mutation paths.
 
-```
-capture → ActivityRecord → Run / Proposal → review → Memory / Task
-```
-
-Local-first compatibility is a **preservation constraint** on schema and API design — not a feature to build. When adding new syncable objects, apply the column guidelines in section 3. When adding server-authoritative objects, ensure they are not inadvertently exposed to offline mutation paths.
-
-No local-first infrastructure should be built until at least one concrete client use case (mobile capture, offline task editing) is ready to ship. Design for compatibility; implement on demand.
+Unimplemented mobile/sync ideas:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §5.

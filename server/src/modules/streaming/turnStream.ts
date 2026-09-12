@@ -4,11 +4,13 @@ import type { RunTurn, TurnPart, TurnStreamFrame } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
-import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
+import { resolveRequestId } from "../../gateway/requestContext.js";
 import { resolveIdentity } from "../routeUtils/common.js";
+import { bodyWithheld } from "../access/contentAccessTypes.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { loadRunTurn } from "../runs/turnReadModel.js";
 import { subscribeChatTextDeltas } from "./conversationDeltaBus.js";
+import { sseResponseHeaders } from "../../gateway/sse.js";
 
 /**
  * The live turn, as parts.
@@ -58,7 +60,7 @@ export async function streamRunTurn(
   const db = getDbPool(config.databaseUrl);
   const repository = new PgRunRepository(db);
   const run = await repository.getVisibleRun(identity.spaceId, identity.userId, runId);
-  if (!run) {
+  if (!run || bodyWithheld(run.effective_access_level)) {
     return sendErrorEnvelope(reply, 404, errorEnvelope("run_not_found", "Run not found", requestId));
   }
 
@@ -238,13 +240,7 @@ function partType(printed: string): string {
 
 function startSse(reply: FastifyReply, requestId: string): ServerResponse {
   reply.hijack();
-  reply.raw.writeHead(200, {
-    "content-type": "text/event-stream; charset=utf-8",
-    "cache-control": "no-cache, no-transform",
-    connection: "keep-alive",
-    "x-accel-buffering": "no",
-    [REQUEST_ID_HEADER]: requestId,
-  });
+  reply.raw.writeHead(200, sseResponseHeaders(requestId));
   reply.raw.write(": connected\n\n");
   return reply.raw;
 }

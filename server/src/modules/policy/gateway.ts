@@ -17,6 +17,7 @@ import {
   type Decision,
   type PolicyDecision,
   type RiskLevel,
+  roleMayApproveRisk,
 } from "./decisions.js";
 import {
   getActionDefinition,
@@ -306,9 +307,6 @@ export const SUPPORTED_PROPOSAL_TYPES: ReadonlySet<string> = new Set(
   Object.keys(PROPOSAL_TYPE_RISK),
 );
 
-const ADMIN_MAX_RISK: RiskLevel = "high";
-const REVIEWER_MAX_RISK: RiskLevel = "medium";
-
 export class ProposalRiskLevelError extends Error {
   readonly riskValue: string;
   constructor(riskValue: string) {
@@ -442,10 +440,10 @@ export function checkProposalApplyPolicy(
   if (role === "owner") {
     return approveProposal(input, risk, "owner", "approved_owner", "proposal_apply_owner_allow", meta, requiredApproverRole);
   }
-  if (role === "admin" && RISK_RANK[risk] <= RISK_RANK[ADMIN_MAX_RISK]) {
+  if (role === "admin" && roleMayApproveRisk(role, risk)) {
     return approveProposal(input, risk, "admin", "approved_admin", "proposal_apply_admin_allow", meta, requiredApproverRole);
   }
-  if (role === "reviewer" && RISK_RANK[risk] <= RISK_RANK[REVIEWER_MAX_RISK]) {
+  if (role === "reviewer" && roleMayApproveRisk(role, risk)) {
     return approveProposal(input, risk, "reviewer", "approved_reviewer", "proposal_apply_reviewer_allow", meta, requiredApproverRole);
   }
 

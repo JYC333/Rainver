@@ -232,7 +232,7 @@ PolicyGateway section above for the allowed preflight-only sites.
 | Action | Enforcement Point | Decision inputs (context) | Behavior |
 |--------|------------------|-----------------------------|----------|
 | `runtime.execute` | `RunOrchestrationService` before adapter execution | `agent_status`, `tool_name`, `trigger_origin`, `adapter_type`, risk/sandbox fields | DENY/REQUIRE_APPROVAL prevents execution; records PolicyDecisionRecord + RunEvent |
-| `runtime.use_credential` | `RunOrchestrationService` before provider credential resolution for runtimes whose credential mode is `model_provider_api_key` | `trigger_origin`, `instructed_by_user_id`; `resource_space_id` from Credential row | DENY/REQUIRE_APPROVAL prevents credential resolution. A CLI runtime resolves no credential here — its login is held by its copy on the execution host (ADR 0016). **fail_closed**. |
+| `runtime.use_credential` | `authorizeCredentialSpend`, before any ModelProvider key is resolved or proxy lease minted (provider invocation, lease minting, and the Run executor) | `trigger_origin` of the person, the root Run, or an unattended setup; the live Automation grant; `resource_space_id` | DENY prevents credential resolution; unattended spend with no authorization record is denied, not sent for approval. A CLI runtime resolves no credential here — its login is held by its copy on the execution host (ADR 0016). **fail_closed**. |
 | `context.inject_memory` | `ContextPrepareService` via `enforce()` before context assembly | `trigger_origin` | Cross-space DENY; records PolicyDecisionRecord on DENY |
 | `context.render_for_runtime` | `RunOrchestrationService` before adapter execution | `has_context_taint` | Cross-space DENY; records PolicyDecisionRecord on DENY |
 | `artifact.persist` | `RunMaterializationService` via `enforce()` before file/row write | `artifact_type`, `visibility`, workspace/project IDs, storage shape | DENY/REQUIRE_APPROVAL blocks file and Artifact row; **fail_closed** durable audit. |
@@ -317,8 +317,13 @@ These actions are enforced exclusively via the `proposal.apply` gate
 These actions are registered in the action registry with `lifecycle_status=RESERVED` and
 `current_enforcement_point="not_implemented"`. `PolicyGateway` always denies reserved actions
 (DENY with `reason_code="policy_action_not_implemented"`, `audit_code="policy_action_not_implemented"`),
-regardless of `default_decision`. They document intended policy posture for future wiring.
-They are **not** wired to any business code call site yet.
+regardless of `default_decision`.
+They are **not** wired to any business code call site.
+Deployment jobs are instance-admin only (ADR 0020) and do not use
+`deployment.propose` / `deployment.execute`.
+
+Unimplemented reserved-action wiring:
+[`.agent/plans/unimplemented-from-guides.md`](../.agent/plans/unimplemented-from-guides.md) §22.
 
 | Action | Notes |
 |--------|-------|
@@ -332,8 +337,8 @@ They are **not** wired to any business code call site yet.
 | `proposal.approve` | Explicit approval row recording not yet wired |
 | `memory.read_private` | Private memory read path not yet wired |
 | `memory.promote_shared` | Memory visibility promotion not yet wired |
-| `deployment.propose` | Deployment proposal not yet wired |
-| `deployment.execute` | Deployment execution not yet wired (critical risk) |
+| `deployment.propose` | Reserved; deployment jobs do not use this action |
+| `deployment.execute` | Reserved; deployment jobs are instance-admin only (ADR 0020) |
 
 Actions completely absent from the registry (`agent.delegate`) fail
 closed via `unknown_policy_action` DENY if passed to `PolicyEngine` or `PolicyGateway`.

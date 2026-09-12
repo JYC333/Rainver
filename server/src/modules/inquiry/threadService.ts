@@ -13,6 +13,7 @@ import {
 } from "../routeUtils/common.js";
 import { getDbPool } from "../../db/pool.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
+import { assertThreadReadable, threadReadableSql } from "./threadAccess.js";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
 import { RetrievalProjectionService } from "../retrieval/index.js";
 import { inquiryRetrievalRegistry } from "./retrievalAdapter.js";
@@ -166,7 +167,7 @@ export class InquiryThreadService {
           return threadToOut(existing.rows[0]);
         }
       }
-      if (primaryParentId) await this.assertThreadInProject(db, identity.spaceId, projectId, primaryParentId);
+      if (primaryParentId) await assertThreadReadable(db, identity, projectId, primaryParentId, "change");
       // The root row carries identity, visibility, ownership, and provenance;
       // the writer enforces the B12H rules, including that a Project-owned
       // object cannot be created without its Project (see the
@@ -275,11 +276,15 @@ export class InquiryThreadService {
                 r.link_type AS relation_kind, r.created_at
            FROM object_relations r
            JOIN inquiry_threads ft ON ft.object_id = r.from_object_id AND ft.space_id = r.space_id
+           JOIN space_objects fso ON fso.id = ft.object_id AND fso.space_id = ft.space_id
            JOIN inquiry_threads tt ON tt.object_id = r.to_object_id AND tt.space_id = r.space_id
+           JOIN space_objects tso ON tso.id = tt.object_id AND tso.space_id = tt.space_id
           WHERE r.space_id = $1 AND r.status = 'active'
             AND ft.project_id = $3 AND tt.project_id = $3
-            AND (r.from_object_id = $2 OR r.to_object_id = $2)`,
-        [identity.spaceId, threadId, projectId],
+            AND (r.from_object_id = $2 OR r.to_object_id = $2)
+            AND ${contentReadSql("space_object", "fso", "$4")}
+            AND ${contentReadSql("space_object", "tso", "$4")}`,
+        [identity.spaceId, threadId, projectId, identity.userId],
       ).then((r) => r.rows),
       this.db.query(
         `SELECT r.id, r.to_object_id AS note_object_id,
@@ -302,8 +307,9 @@ export class InquiryThreadService {
            JOIN space_objects so ON so.id = c.object_id AND so.space_id = c.space_id
           WHERE r.space_id = $1 AND r.status = 'active' AND r.link_type = 'derived_from'
             AND c.project_id = $2 AND r.to_object_id = $3
+            AND ${contentReadSql("space_object", "so", "$4")}
           ORDER BY so.created_at DESC`,
-        [identity.spaceId, projectId, threadId],
+        [identity.spaceId, projectId, threadId, identity.userId],
       ).then((r) => r.rows),
       this.db.query(
         `SELECT 1 FROM inquiry_thread_personal_focus WHERE thread_id = $1 AND user_id = $2`,
@@ -342,8 +348,8 @@ export class InquiryThreadService {
 
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      await this.assertThreadInProject(db, identity.spaceId, projectId, fromThreadId);
-      await this.assertThreadInProject(db, identity.spaceId, projectId, toThreadId);
+      await assertThreadReadable(db, identity, projectId, fromThreadId, "change");
+      await assertThreadReadable(db, identity, projectId, toThreadId, "change");
       // Thread structure is an `object_relations` edge now (ADR 0011 decision
       // 3). The registry keeps it a direct write: the same words between Claims
       // are reviewed assertions, and the endpoint-specific declaration is what
@@ -397,9 +403,16 @@ export class InquiryThreadService {
       const removed = await db.query<{ from_thread_id: string; to_thread_id: string; relation_kind: string }>(
         `DELETE FROM object_relations
           WHERE id = $1 AND space_id = $2
-            AND from_object_id IN (SELECT object_id FROM inquiry_threads WHERE project_id = $3 AND space_id = $2)
+            AND from_object_id IN (
+              SELECT t.object_id FROM ${THREAD_FROM}
+               WHERE t.project_id = $3 AND t.space_id = $2 AND ${threadReadableSql("so", "$4", "change")}
+            )
+            AND to_object_id IN (
+              SELECT so.id FROM space_objects so
+               WHERE so.space_id = $2 AND ${threadReadableSql("so", "$4", "change")}
+            )
           RETURNING from_object_id AS from_thread_id, to_object_id AS to_thread_id, link_type AS relation_kind`,
-        [relationId, identity.spaceId, projectId],
+        [relationId, identity.spaceId, projectId, identity.userId],
       );
       const edge = removed.rows[0];
       if (edge) {
@@ -418,10 +431,10 @@ export class InquiryThreadService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      await this.assertThreadInProject(db, identity.spaceId, projectId, threadId);
+      await assertThreadReadable(db, identity, projectId, threadId, "change");
       if (parentThreadId) {
         if (parentThreadId === threadId) throw new HttpError(422, "A Thread cannot be its own parent");
-        await this.assertThreadInProject(db, identity.spaceId, projectId, parentThreadId);
+        await assertThreadReadable(db, identity, projectId, parentThreadId, "change");
         const cycle = await db.query(
           `WITH RECURSIVE descendants AS (
              SELECT object_id AS id FROM inquiry_threads WHERE primary_parent_id=$1 AND space_id=$2 AND project_id=$3
@@ -518,7 +531,7 @@ export class InquiryThreadService {
     }
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      await this.assertThreadInProject(db, identity.spaceId, projectId, threadId);
+      await assertThreadReadable(db, identity, projectId, threadId, "change");
       // A private Note is only linkable by its own owner — Project write
       // access to the Thread does not imply read access to another member's
       // private Note.
@@ -557,6 +570,7 @@ export class InquiryThreadService {
 
   async unlinkNote(identity: SpaceUserIdentity, projectId: string, threadId: string, noteObjectId: string): Promise<void> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "change");
     await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await db.query(
@@ -574,7 +588,7 @@ export class InquiryThreadService {
 
   async setPersonalFocus(identity: SpaceUserIdentity, projectId: string, threadId: string, inFocus: boolean): Promise<void> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    await this.assertThreadInProject(this.db, identity.spaceId, projectId, threadId);
+    await assertThreadReadable(this.db, identity, projectId, threadId, "read");
     if (inFocus) {
       await this.db.query(
         `INSERT INTO inquiry_thread_personal_focus (id, space_id, project_id, thread_id, user_id, created_at)
@@ -596,6 +610,7 @@ export class InquiryThreadService {
       `SELECT ${threadColumns("t")} FROM ${THREAD_FROM}
          JOIN inquiry_thread_personal_focus f ON f.thread_id = t.object_id
         WHERE t.space_id = $1 AND t.project_id = $2 AND f.user_id = $3
+          AND ${threadReadableSql("so", "$3", "read")}
         ORDER BY f.created_at DESC`,
       [identity.spaceId, projectId, identity.userId],
     );
@@ -634,14 +649,6 @@ export class InquiryThreadService {
       [spaceId, projectId],
     );
     return Number(row.rows[0]?.total ?? "0");
-  }
-
-  async assertThreadInProject(db: Queryable, spaceId: string, projectId: string, threadId: string): Promise<void> {
-    const row = await db.query<{ id: string }>(
-      `SELECT object_id AS id FROM inquiry_threads WHERE object_id = $1 AND space_id = $2 AND project_id = $3`,
-      [threadId, spaceId, projectId],
-    );
-    if (!row.rows[0]) throw new HttpError(422, "Thread not found in this Project");
   }
 
   private async getThreadRow(

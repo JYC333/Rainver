@@ -133,7 +133,7 @@ async function request(
   path: string,
   body?: unknown,
 ): Promise<number> {
-  const url = `${env.apiUrl}/internal/runs/${encodeURIComponent(env.runId)}/${path}`;
+  const url = `${env.apiUrl}/api/v1/runs/${encodeURIComponent(env.runId)}/${path}`;
   let response: Response;
   try {
     response = await fetch(url, {

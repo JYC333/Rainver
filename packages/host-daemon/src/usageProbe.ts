@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { helperProcessEnv } from "./providerBinding.js";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -121,6 +122,9 @@ async function probeClaude(home: string, login: RuntimeLoginSpec | null, timeout
   let response: Response;
   try {
     response = await fetch(CLAUDE_OAUTH_USAGE_URL, {
+      // Not followed: this carries the owner's OAuth access token, and a
+      // redirect is the upstream asking for it to be sent somewhere else.
+      redirect: "error",
       method: "GET",
       signal: abort.signal,
       headers: {
@@ -297,17 +301,18 @@ export function managedCliEntry(manifest: ToolManifest | null): { command: strin
 }
 
 /**
- * The environment Codex's app-server reads its own login from. Ambient
- * `CODEX_*` is dropped so the machine's shell cannot redirect the probe at a
- * different profile than the one the copy runs with, and `OPENAI_API_KEY` is
- * dropped because an API key answers with the key's quota, not the
- * subscription's — a silently wrong number is worse than none.
+ * The environment Codex's app-server reads its own login from. The whole
+ * `CODEX_` prefix is dropped so the machine's shell cannot redirect the probe
+ * at a different profile than the one the copy runs with, and the whole
+ * `OPENAI_` prefix because an API key answers with the key's quota, not the
+ * subscription's — a silently wrong number is worse than none. Both by prefix,
+ * through the daemon's one helper rule; naming `OPENAI_API_KEY` alone left
+ * every other spelling of it in place.
  */
 function codexEnv(home: string, extra: Record<string, string>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !key.startsWith("CODEX_") && key !== "OPENAI_API_KEY") env[key] = value;
-  }
+  // The daemon's one helper rule rather than this probe's own two-line version
+  // of it: `codex_cli` drops `OPENAI_`/`CODEX_`, which is what this listed.
+  const env: Record<string, string> = helperProcessEnv(process.env, "codex_cli");
   Object.assign(env, extra);
   env.HOME = home;
   env.CODEX_HOME = join(home, ".codex");

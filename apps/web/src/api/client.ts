@@ -3834,7 +3834,7 @@ export const financeApi = {
     ),
   validateBook: (bookId: string) =>
     post<{ errors: FinanceValidationError[] }>(`/finance/books/${encodeURIComponent(bookId)}/validate`),
-  importBeancount: (bookId: string, input: { text: string; filename?: string; post_directly?: boolean }) =>
+  importBeancount: (bookId: string, input: { text: string; post_directly?: boolean }) =>
     post<FinanceImportResult>(`/finance/books/${encodeURIComponent(bookId)}/import/beancount`, input),
   exportBeancount: (bookId: string) =>
     post<FinanceExportResult>(`/finance/books/${encodeURIComponent(bookId)}/export/beancount`),

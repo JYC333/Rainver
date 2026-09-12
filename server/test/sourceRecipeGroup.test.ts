@@ -19,6 +19,7 @@ import { listSourceRuns } from "../src/modules/sources/sourceRunReadModel.js";
 import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { fixtureServerGuard } from "./support/outboundGuard.js";
 
 describe("sourceRecipeCreateFlow", () => {
   const SPACE_A = "space-a";
@@ -49,8 +50,8 @@ describe("sourceRecipeCreateFlow", () => {
       databaseUrl: db.connectionUri,
       artifactStorageRoot,
     };
-    createService = new SourceRecipeCreateService(db.pool, config);
-    dryRunService = new SourceRecipeDryRunService(db.pool, config);
+    createService = new SourceRecipeCreateService(db.pool, config, fixtureServerGuard);
+    dryRunService = new SourceRecipeDryRunService(db.pool, config, fixtureServerGuard);
   });
 
   afterEach(async () => {
@@ -144,7 +145,7 @@ describe("sourceRecipeCreateFlow", () => {
       });
       expect(activation.recipe_version.status).toBe("active");
 
-      const repo = new PgSourcesRepository(db.pool, config!);
+      const repo = new PgSourcesRepository(db.pool, config!, fixtureServerGuard);
       const queued = await repo.scanChannel(IDENTITY, created.connection.source_channel_id);
       expect(queued.metadata_json).toMatchObject({
         implementation: "recipe",
@@ -311,7 +312,7 @@ describe("sourceRecipeDryRun", () => {
     );
     await seedCustomSourceWorld(db.pool, IDENTITY);
     config = { ...loadConfig({}), databaseUrl: db.connectionUri };
-    service = new SourceRecipeDryRunService(db.pool, config);
+    service = new SourceRecipeDryRunService(db.pool, config, fixtureServerGuard);
   });
 
   const RSS_FIXTURE = `<?xml version="1.0"?>

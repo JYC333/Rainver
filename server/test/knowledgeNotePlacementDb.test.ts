@@ -35,7 +35,10 @@ afterAll(() => {
 });
 
 beforeAll(async () => {
-  if (!db.available || !app) return;
+  // Not `|| !app`: `app` is what this hook builds, so guarding on it meant the
+  // hook returned before building it and every test in this file took its own
+  // `!app` early return — reporting a pass without running.
+  if (!db.available) return;
   __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
   app = buildModuleServer(loadConfig({
     SERVER_DATABASE_URL: db.connectionUri,

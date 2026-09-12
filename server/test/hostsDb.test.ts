@@ -53,7 +53,7 @@ describe("hosts repository", () => {
     const repo = new PgHostRepository(db.pool);
     const issued = await repo.issuePairingCode(OWNER, "Desktop");
     if ("statusCode" in issued) throw new Error("expected success");
-    expect(issued.pairing_code).toBeTruthy();
+    expect(issued.pairing_code).toMatch(/^[0-9A-HJKMNP-TV-Z]{13}$/);
 
     const registered = await repo.registerViaPairingCode(issued.pairing_code, {
       platform: "linux",

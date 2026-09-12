@@ -93,13 +93,19 @@ export interface ResearchSetupSession {
 // Project — the "edit this Workflow" dialog and the independent "start a new
 // search" dialog can be open/used around the same time and must not stomp on
 // each other's in-progress session.
-function sessionKey(projectId: string, workflowScope: string): string {
-  return `rainver:research-setup-session:${projectId}:${workflowScope}`
+function sessionKey(userId: string, projectId: string, workflowScope: string): string {
+  return `rainver:research-setup-session:${userId}:${projectId}:${workflowScope}`
 }
 
-export function loadResearchSetupSession(projectId: string, workflowScope: string): ResearchSetupSession | null {
+function dropLegacySession(projectId: string, workflowScope: string): void {
+  try { window.localStorage.removeItem(`rainver:research-setup-session:${projectId}:${workflowScope}`) } catch { /* ignore */ }
+}
+
+export function loadResearchSetupSession(userId: string | undefined, projectId: string, workflowScope: string): ResearchSetupSession | null {
+  dropLegacySession(projectId, workflowScope)
+  if (!userId) return null
   try {
-    const raw = window.localStorage.getItem(sessionKey(projectId, workflowScope))
+    const raw = window.localStorage.getItem(sessionKey(userId, projectId, workflowScope))
     if (!raw) return null
     const value = objectValue(JSON.parse(raw))
     const draft = objectValue(value.draft)
@@ -110,17 +116,21 @@ export function loadResearchSetupSession(projectId: string, workflowScope: strin
   }
 }
 
-export function saveResearchSetupSession(projectId: string, workflowScope: string, session: ResearchSetupSession): void {
+export function saveResearchSetupSession(userId: string | undefined, projectId: string, workflowScope: string, session: ResearchSetupSession): void {
+  dropLegacySession(projectId, workflowScope)
+  if (!userId) return
   try {
-    window.localStorage.setItem(sessionKey(projectId, workflowScope), JSON.stringify(session))
+    window.localStorage.setItem(sessionKey(userId, projectId, workflowScope), JSON.stringify(session))
   } catch {
     // Storage may be unavailable (private mode, quota); the dialog still works, it just will not restore.
   }
 }
 
-export function clearResearchSetupSession(projectId: string, workflowScope: string): void {
+export function clearResearchSetupSession(userId: string | undefined, projectId: string, workflowScope: string): void {
+  dropLegacySession(projectId, workflowScope)
+  if (!userId) return
   try {
-    window.localStorage.removeItem(sessionKey(projectId, workflowScope))
+    window.localStorage.removeItem(sessionKey(userId, projectId, workflowScope))
   } catch {
     // Ignore storage failures on cleanup.
   }

@@ -176,12 +176,12 @@ export async function reportOnTask(
     subjectId: task.id,
     actorId: context.actorId,
     correlationId: context.runId,
+      runId: context.runId,
     idempotencyKey: `task.reported:${context.idempotencyKey}`,
     data: {
       summary: input.summary,
       outcome: input.outcome ?? "progress",
       refs: input.refs ?? [],
-      run_id: context.runId,
     },
   });
   return { task_id: task.id, event_id: event.id };
@@ -260,13 +260,13 @@ export async function handoffTask(
     subjectId: task.id,
     actorId: context.actorId,
     correlationId: context.runId,
+      runId: context.runId,
     idempotencyKey: `task.responsibility_changed:${context.idempotencyKey}`,
     data: {
       via: "agent",
       to: input.to,
       note: input.note ?? null,
       released: input.to === null,
-      run_id: context.runId,
     },
   });
   return { task_id: task.id };
@@ -286,8 +286,9 @@ export async function advanceTaskStage(
     actorId: context.actorId,
     reason: input.reason,
     correlationId: context.runId,
+      runId: context.runId,
     idempotencyKey: `task.stage_changed:${context.idempotencyKey}`,
-    data: { via: "agent", run_id: context.runId },
+    data: { via: "agent" },
   });
   return { task_id: task.id, stage: input.to_stage };
 }
@@ -336,6 +337,7 @@ export async function completeTask(
       context.spaceId,
       task.id,
       outputs.rows[0]?.required_outputs_json ?? null,
+      context.instructedByUserId,
     );
     const missingOutputs = completion.missing.filter((reason) => reason.startsWith("required_output:"));
     if (missingOutputs.length > 0) {
@@ -358,6 +360,7 @@ export async function completeTask(
       subjectId: task.id,
       actorId: context.actorId,
       correlationId: context.runId,
+      runId: context.runId,
       idempotencyKey: `task.flow_changed:done:${context.idempotencyKey}`,
       data: { from: task.status, to: "done", via: "agent", summary: input.summary, overridden },
     });
@@ -369,6 +372,7 @@ export async function completeTask(
       subjectId: task.id,
       actorId: context.actorId,
       correlationId: context.runId,
+      runId: context.runId,
       idempotencyKey: `task.reported:done:${context.idempotencyKey}`,
       data: { summary: input.summary, outcome: "done", via: "agent" },
     });
@@ -413,6 +417,7 @@ export async function requestTaskReview(
       subjectId: task.id,
       actorId: context.actorId,
       correlationId: context.runId,
+      runId: context.runId,
       idempotencyKey: `task.flow_changed:${context.idempotencyKey}`,
       data: { from: task.status, to: "waiting_for_review", via: "agent", reason: input.reason },
     });
@@ -424,13 +429,13 @@ export async function requestTaskReview(
       subjectId: task.id,
       actorId: context.actorId,
       correlationId: context.runId,
+      runId: context.runId,
       causationId: event.id,
       idempotencyKey: `task.reported:review:${context.idempotencyKey}`,
       data: {
         summary: input.reason,
         outcome: "stuck",
         options: input.options ?? [],
-        run_id: context.runId,
       },
     });
     return { task_id: task.id, status: "waiting_for_review" };

@@ -35,6 +35,10 @@ installed CLI:
 rainver-host register --server https://rainver.example.com --code <pairing-code>
 ```
 
+`--server` must be `https://`, or `http://` to localhost / `127.0.0.1` only.
+Plain HTTP to a LAN or public address is refused: pairing returns a long-lived
+host token.
+
 Successful registration enables and restarts the systemd user service so an
 already-running daemon immediately reloads the new server URL, Host id, and
 token. There is no need to restart it manually or keep the terminal open; the

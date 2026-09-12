@@ -368,9 +368,9 @@ export default function TodayPage() {
   ]
 
   return (
-    <div className="min-h-full" style={{ maxWidth: 1440, margin: '0 auto', padding: '16px 20px 96px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 300px', gap: 18, alignItems: 'start' }}>
+    <div className="page-dashboard">
       <div className="flex flex-col gap-3.5 min-w-0">
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 14, alignItems: 'stretch' }}>
+        <div className="page-dashboard-hero">
           <div className="flex flex-col gap-1.5">
             <div className="text-[10px] font-bold tracking-[.1em] uppercase" style={{ color: 'color-mix(in oklch, var(--muted-foreground) 70%, transparent)' }}>Space · Today</div>
             <h1 className="text-2xl font-semibold tracking-tight m-0">{activeSpaceName ?? 'This space'}</h1>

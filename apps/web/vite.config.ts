@@ -99,11 +99,13 @@ export default defineConfig({
             urlPattern: ({ request }) => request.method !== 'GET',
             handler: 'NetworkOnly',
           },
-          // GET reads: try network first, fall back to cache after 10 s.
+          // Authenticated GET bodies must never land in Cache Storage: the
+          // cache key is not per-user, and a later visitor (or an offline
+          // reopen after logout) would otherwise read the previous session.
           {
             urlPattern: /^.*\/api\/v1\/.*/i,
-            handler: 'NetworkFirst',
-            options: { cacheName: 'api-cache', networkTimeoutSeconds: 10 },
+            handler: 'NetworkOnly',
+            options: { cacheName: 'api-cache' },
           },
           // Graph rendering is optional and large. Cache its chunks after the
           // first online visit instead of adding them to every PWA install.
@@ -130,18 +132,30 @@ export default defineConfig({
       allow: [repoRoot],
     },
     proxy: {
+      // `xfwd` appends the address this proxy saw to X-Forwarded-For. The
+      // server trusts this container as its one proxy hop
+      // (SERVER_TRUSTED_PROXY_HOST), so without it the client's own header
+      // would reach the server as the client address.
       '/api': {
         target: apiProxyTarget,
         changeOrigin: true,
+        xfwd: true,
       },
       // The trusted-host daemon uses the internal WebSocket endpoint directly
       // from the host machine during dev. Keep it on the same public dev
       // origin as the REST registration flow, and explicitly enable WS
       // upgrade forwarding.
-      '/internal': {
+      //
+      // This one path, not all of `/internal`: production nginx forwards
+      // `/api/` and this endpoint and nothing else, and a dev proxy that
+      // forwarded the whole prefix meant a path only reachable in dev looked
+      // like it worked everywhere. The Run tool surface moved under `/api/v1`
+      // for exactly that reason.
+      '/internal/hosts/ws': {
         target: apiProxyTarget,
         changeOrigin: true,
         ws: true,
+        xfwd: true,
       },
     },
     watch: {

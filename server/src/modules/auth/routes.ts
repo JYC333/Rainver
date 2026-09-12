@@ -33,25 +33,25 @@ function body(request: { body: unknown }): Record<string, unknown> {
   return (request.body ?? {}) as Record<string, unknown>;
 }
 
-function cookieHeader(name: string, value: string, config: ModuleContext["config"], maxAge: number): string {
+function cookieHeader(name: string, value: string, _config: ModuleContext["config"], maxAge: number): string {
   return [
     `${name}=${encodeURIComponent(value)}`,
     `Max-Age=${maxAge}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    ...(config.debug ? [] : ["Secure"]),
+    "Secure",
   ].join("; ");
 }
 
-function deleteCookieHeader(name: string, config: ModuleContext["config"]): string {
+function deleteCookieHeader(name: string, _config: ModuleContext["config"]): string {
   return [
     `${name}=`,
     "Max-Age=0",
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    ...(config.debug ? [] : ["Secure"]),
+    "Secure",
   ].join("; ");
 }
 

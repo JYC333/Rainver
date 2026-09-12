@@ -7,8 +7,9 @@ import { computeNextRunAt, InvalidScheduleError } from "../../automations/schedu
 import type { SourceConnectionRow, SourceItemRow, EvidenceRow } from "../sourceRepositoryRows.js";
 import { ITEM_COLUMNS, evidenceColumnsForAlias } from "../sourceRepositoryRows.js";
 import { inheritContentAccessGrants } from "../../access/contentAccessInheritance.js";
-import { contentAccessLevelSql, contentReadSql } from "../../access/contentAccessSql.js";
+import { artifactReadSql, contentAccessLevelSql, contentReadSql } from "../../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../../access/contentAccessRegistry.js";
+import { bodyWithheld, type WithAccessLevel } from "../../access/contentAccessTypes.js";
 import {
   reindexExtractedEvidenceAndParentForRetrieval,
 } from "../retrievalIndexing.js";
@@ -389,6 +390,11 @@ const DECISION_COLUMNS = `
   r.name AS rule_name, pr.status AS run_status, pr.created_at AS run_created_at
 `;
 
+function decisionColumnsWithAccess(userExpr: string): string {
+  return `${DECISION_COLUMNS},
+  ${contentAccessLevelSql({ definition: POST_PROCESSING_SOURCE_ACCESS, alias: "ii", userExpr })} AS effective_access_level`;
+}
+
 const DECISION_COLUMNS_WITH_USER_STATE = `
   d.id, d.space_id, d.source_channel_id, d.rule_id, d.run_id, d.project_id,
   d.source_item_id, d.research_question_version, d.relevance, d.confidence, d.reason,
@@ -665,6 +671,7 @@ export class PgSourcePostProcessingRepository {
 
   async listDecisions(input: {
     spaceId: string;
+    userId: string;
     connectionId?: string | null;
     projectId?: string | null;
     ruleId?: string | null;
@@ -677,11 +684,14 @@ export class PgSourcePostProcessingRepository {
     const total = await this.db.query<{ total: string }>(
       `SELECT count(*)::text AS total
          FROM source_post_processing_item_decisions d
+         JOIN source_items ii
+           ON ii.space_id = d.space_id
+          AND ii.id = d.source_item_id
         WHERE ${where}`,
       params,
     );
-    const result = await this.db.query<SourcePostProcessingItemDecisionRow>(
-      `SELECT ${DECISION_COLUMNS}
+    const result = await this.db.query<WithAccessLevel<SourcePostProcessingItemDecisionRow>>(
+      `SELECT ${decisionColumnsWithAccess("$2")}
          FROM source_post_processing_item_decisions d
          JOIN source_items ii
            ON ii.space_id = d.space_id
@@ -700,9 +710,9 @@ export class PgSourcePostProcessingRepository {
     return page(result.rows.map(decisionOut), countFromRow(total.rows[0]), input.limit, input.offset);
   }
 
-  async getDecision(spaceId: string, decisionId: string): Promise<SourcePostProcessingItemDecisionOut | null> {
-    const result = await this.db.query<SourcePostProcessingItemDecisionRow>(
-      `SELECT ${DECISION_COLUMNS}
+  async getDecision(spaceId: string, userId: string, decisionId: string): Promise<SourcePostProcessingItemDecisionOut | null> {
+    const result = await this.db.query<WithAccessLevel<SourcePostProcessingItemDecisionRow>>(
+      `SELECT ${decisionColumnsWithAccess("$2")}
          FROM source_post_processing_item_decisions d
          JOIN source_items ii
            ON ii.space_id = d.space_id
@@ -713,9 +723,10 @@ export class PgSourcePostProcessingRepository {
          LEFT JOIN source_post_processing_runs pr
            ON pr.space_id = d.space_id
           AND pr.id = d.run_id
-        WHERE d.space_id = $1 AND d.id = $2
+        WHERE d.space_id = $1 AND d.id = $3
+          AND ${sourceItemReadableClause("ii", "$2", false)}
         LIMIT 1`,
-      [spaceId, decisionId],
+      [spaceId, userId, decisionId],
     );
     return result.rows[0] ? decisionOut(result.rows[0]) : null;
   }
@@ -815,10 +826,15 @@ export class PgSourcePostProcessingRepository {
     const artifactIds = uniqueStrings(runsResult.rows.flatMap((row) => stringArray(row.output_artifact_ids_json)));
     const artifacts = artifactIds.length
       ? await this.db.query<BriefingArtifactRow>(
-          `SELECT id, title, content, metadata_json
-             FROM artifacts
-            WHERE space_id = $1 AND id = ANY($2::text[])`,
-          [input.spaceId, artifactIds],
+          // A briefing run is reached through the reader's own subscription,
+          // but its output artifacts are ordinary content: one may be private
+          // to whoever the run produced it for, and returning the body here
+          // would answer what `GET /artifacts/:id` refuses.
+          `SELECT a.id, a.title, a.content, a.metadata_json
+             FROM artifacts a
+            WHERE a.space_id = $1 AND a.id = ANY($2::text[])
+              AND ${artifactReadSql("$3")}`,
+          [input.spaceId, artifactIds, input.userId],
         )
       : { rows: [] };
 
@@ -850,8 +866,9 @@ export class PgSourcePostProcessingRepository {
     }
 
     const runIds = runsResult.rows.map((row) => row.run_id);
-    const decisionsResult = await this.db.query<SourcePostProcessingItemDecisionRow>(
-      `SELECT ${DECISION_COLUMNS_WITH_USER_STATE}
+    const decisionsResult = await this.db.query<WithAccessLevel<SourcePostProcessingItemDecisionRow>>(
+      `SELECT ${DECISION_COLUMNS_WITH_USER_STATE},
+              ${contentAccessLevelSql({ definition: POST_PROCESSING_SOURCE_ACCESS, alias: "ii", userExpr: "$3" })} AS effective_access_level
          FROM source_post_processing_item_decisions d
          JOIN source_items ii
            ON ii.space_id = d.space_id AND ii.id = d.source_item_id
@@ -1424,12 +1441,14 @@ export class PgSourcePostProcessingRepository {
 
   async updateDecisionReview(input: {
     spaceId: string;
+    /** The reviewer; the response carries their level, not a default. */
+    userId: string;
     decisionId: string;
     reviewStatus: SourcePostProcessingDecisionReviewStatus;
     action: Record<string, unknown>;
   }): Promise<SourcePostProcessingItemDecisionOut> {
     const now = new Date().toISOString();
-    const result = await this.db.query<SourcePostProcessingItemDecisionRow>(
+    const result = await this.db.query<WithAccessLevel<SourcePostProcessingItemDecisionRow>>(
       `WITH updated AS (
          UPDATE source_post_processing_item_decisions
             SET review_status = $3,
@@ -1438,7 +1457,7 @@ export class PgSourcePostProcessingRepository {
           WHERE space_id = $1 AND id = $2
           RETURNING *
        )
-       SELECT ${DECISION_COLUMNS}
+       SELECT ${decisionColumnsWithAccess("$6")}
          FROM updated d
          JOIN source_items ii
            ON ii.space_id = d.space_id
@@ -1455,6 +1474,7 @@ export class PgSourcePostProcessingRepository {
         input.reviewStatus,
         JSON.stringify(input.action),
         now,
+        input.userId,
       ],
     );
     const row = result.rows[0];
@@ -1668,6 +1688,13 @@ export class PgSourcePostProcessingRepository {
     title: string;
     summary: string;
     payload: Record<string, unknown>;
+    /**
+     * The visibility of the material this Proposal quotes. A Proposal that
+     * republishes an item's title and excerpt must not be wider than the item:
+     * a hard-coded `space_shared` turned a review click on a restricted
+     * candidate into a Space-wide copy of it.
+     */
+    visibility: string;
   }): Promise<string> {
     const row = await insertProposalRow(this.db, {
       spaceId: input.spaceId,
@@ -1679,7 +1706,7 @@ export class PgSourcePostProcessingRepository {
       createdByUserId: input.userId,
       createdByAgentId: input.agentId,
       createdByRunId: input.runId,
-      visibility: "space_shared",
+      visibility: input.visibility,
       riskLevel: "low",
       urgency: "normal",
       projectId: input.projectId,
@@ -2134,7 +2161,8 @@ export function runOut(row: SourcePostProcessingRunRow): SourcePostProcessingRun
   };
 }
 
-export function decisionOut(row: SourcePostProcessingItemDecisionRow): SourcePostProcessingItemDecisionOut {
+export function decisionOut(row: WithAccessLevel<SourcePostProcessingItemDecisionRow>): SourcePostProcessingItemDecisionOut {
+  const summaryOnly = bodyWithheld(row.effective_access_level);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -2146,13 +2174,13 @@ export function decisionOut(row: SourcePostProcessingItemDecisionRow): SourcePos
     research_question_version: row.research_question_version,
     relevance: row.relevance,
     confidence: row.confidence,
-    reason: row.reason,
+    reason: summaryOnly ? null : row.reason,
     matched_context_refs: recordArray(row.matched_context_refs_json),
     review_status: row.review_status,
     action_json: recordValue(row.action_json) ?? {},
     item: {
       title: row.item_title ?? null,
-      source_uri: row.item_source_uri ?? null,
+      source_uri: summaryOnly ? null : row.item_source_uri ?? null,
       source_domain: row.item_source_domain ?? null,
       author: row.item_author ?? null,
       library_status: row.item_library_status ?? "new",
@@ -2640,14 +2668,15 @@ function channelItemLinkExistsSql(spaceExpression: string, itemExpression: strin
 
 function decisionListWhere(input: {
   spaceId: string;
+  userId: string;
   connectionId?: string | null;
   projectId?: string | null;
   ruleId?: string | null;
   relevance?: SourcePostProcessingItemRelevance | null;
   reviewStatus?: SourcePostProcessingDecisionReviewStatus | null;
 }): { where: string; params: unknown[] } {
-  const params: unknown[] = [input.spaceId];
-  const clauses = ["d.space_id = $1"];
+  const params: unknown[] = [input.spaceId, input.userId];
+  const clauses = ["d.space_id = $1", sourceItemReadableClause("ii", "$2", false)];
   if (input.connectionId) {
     params.push(input.connectionId);
     clauses.push(`d.source_channel_id = $${params.length}`);

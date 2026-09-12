@@ -28,6 +28,7 @@ import {
 } from './researchSetupDraft'
 import { defaultModelProvider } from '../providers/defaultProvider'
 import { errMsg } from '../../lib/utils'
+import { useAuth } from '../../contexts/AuthContext'
 import { supportsStructuredOutput } from '../providers/providerMetadata'
 
 interface ResearchSetupDialogProps {
@@ -144,6 +145,8 @@ export function ResearchSetupDialog({
   onSave,
   onStart,
 }: ResearchSetupDialogProps) {
+  const { currentUser } = useAuth()
+  const userId = currentUser?.id
   const [draft, setDraft] = useState<ResearchSetupDraft>(() => copyDraft(initialDraft))
   // Only relevant when `workflowId` (the prop) is null: the Workflow this
   // session's own first autosave created, reused by every later autosave and
@@ -184,13 +187,13 @@ export function ResearchSetupDialog({
     // mid-flight, and a fingerprint change while the dialog is open must
     // never wipe the session — the persist effect below adopts the new
     // fingerprint instead.
-    const session = loadResearchSetupSession(projectId, sessionScope)
+    const session = loadResearchSetupSession(userId, projectId, sessionScope)
     if (session && session.base_fingerprint === initialDraftFingerprint) {
       setDraft(copyDraft(session.draft))
       setStep(Number.isInteger(session.step) && session.step! >= 0 && session.step! <= 2 ? session.step! : 0)
       setSessionWorkflowId(session.workflow_id ?? null)
     } else {
-      if (session) clearResearchSetupSession(projectId, sessionScope)
+      if (session) clearResearchSetupSession(userId, projectId, sessionScope)
       setDraft(copyDraft(initialDraft))
       setStep(0)
       setSessionWorkflowId(null)
@@ -201,7 +204,7 @@ export function ResearchSetupDialog({
     setEvaluationProviders(['arxiv', 'openalex'])
     setEngineError(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, projectId, sessionScope])
+  }, [open, projectId, sessionScope, userId])
 
   useEffect(() => {
     if (!open) return
@@ -216,13 +219,13 @@ export function ResearchSetupDialog({
 
   useEffect(() => {
     if (!open) return
-    saveResearchSetupSession(projectId, sessionScope, {
+    saveResearchSetupSession(userId, projectId, sessionScope, {
       base_fingerprint: initialDraftFingerprint,
       draft,
       step,
       workflow_id: sessionWorkflowId,
     })
-  }, [draft, initialDraftFingerprint, open, projectId, sessionScope, sessionWorkflowId, step])
+  }, [draft, initialDraftFingerprint, open, projectId, sessionScope, sessionWorkflowId, step, userId])
 
   useEffect(() => {
     if (!open) return
@@ -247,7 +250,7 @@ export function ResearchSetupDialog({
     if (!ready || !canAct || busyAction !== null) return
     const saved = await onSave(serializeResearchSetupDraft(draft), effectiveWorkflowId)
     if (saved) {
-      clearResearchSetupSession(projectId, sessionScope)
+      clearResearchSetupSession(userId, projectId, sessionScope)
       onOpenChange(false)
     }
   }
@@ -260,7 +263,7 @@ export function ResearchSetupDialog({
     // only a detached toast remained.
     const started = await onStart(serializeResearchSetupDraft(draft), effectiveWorkflowId)
     if (!started) return
-    clearResearchSetupSession(projectId, sessionScope)
+    clearResearchSetupSession(userId, projectId, sessionScope)
     onOpenChange(false)
   }
 

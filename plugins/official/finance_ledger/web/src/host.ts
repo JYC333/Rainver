@@ -140,7 +140,7 @@ export interface FinanceApi {
   getAccountLedger(bookId: string, accountId: string): Promise<{ postings: FinancePosting[] }>
   getBalances(bookId: string, scope?: FinanceBalanceScope): Promise<{ balances: FinanceBalancePosition[] }>
   validateBook(bookId: string): Promise<{ errors: FinanceValidationError[] }>
-  importBeancount(bookId: string, input: { text: string; filename?: string; post_directly?: boolean }): Promise<FinanceImportResult>
+  importBeancount(bookId: string, input: { text: string; post_directly?: boolean }): Promise<FinanceImportResult>
   exportBeancount(bookId: string): Promise<FinanceExportResult>
 }
 

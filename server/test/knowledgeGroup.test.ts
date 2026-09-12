@@ -5,6 +5,7 @@ import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { knowledgeModule } from "../src/modules/knowledge/index.js";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { knowledgeItemOut } from "../src/modules/knowledge/knowledgeRepositoryMappers.js";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
 import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
@@ -91,7 +92,10 @@ describe("knowledgeNoteScopeDb", () => {
   const db = useTestDatabase(`${import.meta.filename}#knowledgeNoteScopeDb`, { max: 2 });
 
   beforeAll(async () => {
-    if (!db.available || !app) return;
+    // Not `|| !app`: `app` is what this hook builds, so guarding on it meant the
+    // hook returned before building it and every test in this describe took its
+    // own `!app` early return — reporting a pass without running.
+    if (!db.available) return;
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
     app = buildModuleServer(loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
@@ -104,7 +108,7 @@ describe("knowledgeNoteScopeDb", () => {
     if (!db.available || !app) return;
     await resetTables(
       db.pool,
-      ["notes", "note_collections", "note_collection_items", "space_objects", "space_memberships", "users", "spaces"],
+      ["notes", "note_collections", "note_collection_items", "content_access_grants", "space_objects", "space_memberships", "users", "spaces"],
       { cascade: true },
     );
     const now = new Date().toISOString();
@@ -194,6 +198,70 @@ describe("knowledgeNoteScopeDb", () => {
 
       expect(response.statusCode).toBe(200);
       expect(ids(response.json())).toEqual([inside.id]);
+    });
+
+    /**
+     * Readable is not writable. A `selected_users` note hands reading to its
+     * grantees; a repository that gated the mutation on that same read
+     * predicate let a grantee rewrite the owner's note. The refusal is the read
+     * gate's own 404, and the same rule decides a Source.
+     */
+    it("lets a grantee read an owner-scoped note but not rewrite it", async () => {
+      if (!db.available || !app) return;
+      const other = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      const now = new Date().toISOString();
+      await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Other','active',$2,$2)`, [other, now]);
+      await db.pool.query(
+        `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`,
+        [randomUUID(), SPACE, other, now],
+      );
+      const repository = new PgKnowledgeRepository(db.pool);
+      const folder = await makeFolder("Private");
+      const note = await repository.createNote(identity, { title: "Owner note", collection_id: folder, visibility: "private" }) as { id: string };
+      // Shared with named people: the one visibility a read grant widens.
+      await db.pool.query(`UPDATE space_objects SET visibility='selected_users' WHERE id=$1`, [note.id]);
+      await db.pool.query(
+        `INSERT INTO content_access_grants (id, space_id, resource_type, resource_id, grantee_user_id, access_level, granted_by_user_id, created_at, updated_at)
+         VALUES ($1,$2,'space_object',$3,$4,'full',$5,$6,$6)`,
+        [randomUUID(), SPACE, note.id, other, USER, now],
+      );
+
+      const granteeIdentity = { spaceId: SPACE, userId: other };
+      await expect(repository.getNote(granteeIdentity, note.id)).resolves.toMatchObject({ id: note.id });
+      await expect(repository.updateNote(granteeIdentity, note.id, { title: "Rewritten" }))
+        .rejects.toMatchObject({ statusCode: 404 });
+      await expect(repository.getNote(identity, note.id)).resolves.toMatchObject({ title: "Owner note" });
+    });
+
+    /**
+     * A list that answers what the detail page refuses. `listSources` filtered
+     * by Space alone, so every Knowledge source in the Space was listable — its
+     * title and URI with it — whatever its owner or visibility.
+     */
+    it("keeps another member's private Knowledge source out of the list", async () => {
+      if (!db.available || !app) return;
+      const other = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      const now = new Date().toISOString();
+      await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Other','active',$2,$2)`, [other, now]);
+      await db.pool.query(
+        `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`,
+        [randomUUID(), SPACE, other, now],
+      );
+      const repository = new PgKnowledgeRepository(db.pool);
+      const mine = await repository.createSource(identity, {
+        source_type: "external_note", title: "My source", visibility: "space_shared",
+      }) as { id: string };
+      const theirs = await repository.createSource(
+        { spaceId: SPACE, userId: other },
+        { source_type: "external_note", title: "Their private source", visibility: "private" },
+      ) as { id: string };
+
+      const listed = await repository.listSources(identity, {
+        sourceType: null, status: null, q: null, limit: 50, offset: 0,
+      }) as { items: Array<{ id: string }> };
+      const listedIds = listed.items.map((item) => item.id);
+      expect(listedIds).toContain(mine.id);
+      expect(listedIds).not.toContain(theirs.id);
     });
 
     it("rejects an oversized scope rather than building an unbounded predicate", async () => {
@@ -337,5 +405,20 @@ describe("knowledgeRetrievalDb", () => {
 
       expect(out.items).toHaveLength(0);
     });
+  });
+});
+
+describe("knowledge item source refs at summary level", () => {
+  it("drops the evidence excerpt a source ref carries of the item's own content", () => {
+    const row = {
+      id: "item-1", space_id: "space-1", project_id: null, project_folder_id: null, knowledge_kind: "concept",
+      slug: null, title: "Item", content: "SECRET BODY", plain_text: "SECRET BODY", excerpt: "Blurb", status: "active",
+      visibility: "space_shared", verification_status: "unverified", reflection_status: "unreviewed", tags_json: [],
+      confidence: null, version: 1, updated_at: "2026-09-11T00:00:00.000Z", effective_access_level: "summary",
+    } as unknown as Parameters<typeof knowledgeItemOut>[0];
+    const refs = [{ source_type: "note", source_id: "note-1", evidence_json: { excerpt: "SECRET BODY" } }];
+    const summary = knowledgeItemOut(row, refs);
+    expect(summary.source_refs).toEqual([{ source_type: "note", source_id: "note-1" }]);
+    expect(knowledgeItemOut({ ...row, effective_access_level: "full" }, refs).source_refs).toEqual(refs);
   });
 });

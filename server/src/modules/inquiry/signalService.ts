@@ -16,6 +16,12 @@ import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutatio
 import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
 import { InquiryIterationService } from "./iterationService.js";
 import { tryQueueAdviceForFocusedThread } from "./adviceJob.js";
+import {
+  assertThreadReadable,
+  readableThreadIds,
+  threadReadableSql,
+  type ThreadAccessPurpose,
+} from "./threadAccess.js";
 
 const SIGNAL_CLASSIFICATIONS = ["supports", "contradicts", "adds_context", "adds_method", "fills_gap", "raises_gap", "unrelated"] as const;
 type SignalClassification = (typeof SIGNAL_CLASSIFICATIONS)[number];
@@ -41,6 +47,9 @@ const CANDIDATE_DECISIONS = ["accept", "merge", "defer", "dismiss", "gap"] as co
 type CandidateDecision = (typeof CANDIDATE_DECISIONS)[number];
 
 const DEFAULT_REVIEW_PACKET_SIZE = 5;
+
+/** The Delta Brief lists whose entries each name a Thread. */
+const BRIEF_THREAD_LISTS = ["reinforced_positions", "challenged_positions", "gap_changes", "source_and_thread_refs"] as const;
 
 interface SignalRow {
   id: string;
@@ -209,12 +218,13 @@ export class InquirySignalService {
 
     const delivery = await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
+      await assertThreadReadable(db, identity, projectId, threadId, "change");
       const thread = await db.query<{ id: string; lifecycle_status: string }>(
         `SELECT object_id AS id, lifecycle_status FROM inquiry_threads
           WHERE object_id = $1 AND space_id = $2 AND project_id = $3`,
         [threadId, identity.spaceId, projectId],
       );
-      if (!thread.rows[0]) throw new HttpError(422, "Thread not found in this Project");
+      if (!thread.rows[0]) throw new HttpError(404, "Thread not found");
       if (thread.rows[0].lifecycle_status !== "active") {
         throw new HttpError(409, "Evidence Signals can only target an active Thread");
       }
@@ -382,17 +392,19 @@ export class InquirySignalService {
   // the Signal/Candidate rows it derives from.
   async listAllSignals(identity: SpaceUserIdentity, projectId: string, threadId?: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
-    const params: unknown[] = [identity.spaceId, projectId];
+    const params: unknown[] = [identity.spaceId, projectId, identity.userId];
     let clause = "";
     if (threadId) {
       params.push(threadId);
-      clause = " AND s.thread_id = $3";
+      clause = " AND s.thread_id = $4";
     }
     const rows = await this.db.query<SignalRow & { candidate_status: string | null }>(
       `SELECT s.*, c.status AS candidate_status
          FROM inquiry_evidence_signals s
+         JOIN space_objects so ON so.id = s.thread_id AND so.space_id = s.space_id
          LEFT JOIN inquiry_signal_candidates c ON c.id = s.candidate_id
-        WHERE s.space_id = $1 AND s.project_id = $2${clause}
+        WHERE s.space_id = $1 AND s.project_id = $2
+          AND ${threadReadableSql("so", "$3", "read")}${clause}
         ORDER BY s.created_at DESC`,
       params,
     );
@@ -421,7 +433,7 @@ export class InquirySignalService {
       `SELECT * FROM inquiry_signal_candidates WHERE space_id = $1 AND project_id = $2${clause} ORDER BY created_at DESC`,
       params,
     );
-    return this.filterReadableCandidates(identity, projectId, rows.rows);
+    return this.filterReadableCandidates(identity, projectId, rows.rows, "read");
   }
 
   async getCandidate(identity: SpaceUserIdentity, projectId: string, candidateId: string): Promise<Record<string, unknown>> {
@@ -431,6 +443,9 @@ export class InquirySignalService {
       [candidateId, identity.spaceId, projectId],
     );
     if (!row.rows[0]) throw new HttpError(404, "Candidate not found");
+    if (!(await readableThreadIds(this.db, identity, [row.rows[0].thread_id], "read")).has(row.rows[0].thread_id)) {
+      throw new HttpError(404, "Candidate not found");
+    }
     const signals = await this.db.query<SignalRow>(
       `SELECT * FROM inquiry_evidence_signals WHERE candidate_id = $1`,
       [candidateId],
@@ -471,7 +486,7 @@ export class InquirySignalService {
       );
       const candidate = row.rows[0];
       if (!candidate) throw new HttpError(404, "Candidate not found");
-      await this.assertCandidateReadable(db, identity, projectId, candidate.id);
+      await this.assertCandidateReadable(db, identity, projectId, candidate);
       if (candidate.status !== "pending") throw new HttpError(409, `Candidate already decided (${candidate.status})`);
 
       let resultingIterationId: string | null = null;
@@ -505,7 +520,7 @@ export class InquirySignalService {
             [targetId, identity.spaceId, projectId, candidate.thread_id, candidate.candidate_kind],
           );
           if (!target.rows[0]) throw new HttpError(422, "Merge target must be pending on the same Thread and of the same kind");
-          await this.assertCandidateReadable(db, identity, projectId, targetId);
+          await this.assertCandidateReadable(db, identity, projectId, target.rows[0]);
           await db.query(`UPDATE inquiry_evidence_signals SET candidate_id=$1 WHERE candidate_id=$2`, [targetId, candidateId]);
           newStatus = "merged";
           break;
@@ -648,7 +663,7 @@ export class InquirySignalService {
           FOR UPDATE SKIP LOCKED`,
         [identity.spaceId, projectId],
       );
-      const visible = await this.filterReadableCandidates(identity, projectId, available.rows, db);
+      const visible = await this.filterReadableCandidates(identity, projectId, available.rows, "change", db);
       const selected = visible.slice(0, packetSize);
       if (selected.length === 0) {
         return { id: null, project_id: projectId, status: "empty", created_at: now, candidates: [] };
@@ -684,7 +699,7 @@ export class InquirySignalService {
       status: packet.rows[0].status,
       created_at: dateIso(packet.rows[0].created_at),
       closed_at: dateIso(packet.rows[0].closed_at),
-      candidates: await this.filterReadableCandidates(identity, projectId, candidates.rows),
+      candidates: await this.filterReadableCandidates(identity, projectId, candidates.rows, "read"),
     };
   }
 
@@ -740,9 +755,28 @@ export class InquirySignalService {
       project_id: projectId,
       coverage_start: brief.coverage_start ? new Date(brief.coverage_start).toISOString() : null,
       coverage_end: new Date(brief.coverage_end).toISOString(),
-      content: brief.content_json,
+      content: await this.briefContentFor(identity, brief.content_json),
       created_at: new Date(brief.created_at).toISOString(),
     };
+  }
+
+  /**
+   * A Brief is stored once for the Project; each reader sees only the Threads
+   * they can read in it.
+   */
+  private async briefContentFor(
+    identity: SpaceUserIdentity,
+    content: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const listed = (key: string) => (Array.isArray(content[key]) ? content[key] as unknown[] : []).filter(isRecord);
+    const threadIds = BRIEF_THREAD_LISTS.flatMap((key) => listed(key).map((entry) => entry.thread_id))
+      .filter((id): id is string => typeof id === "string");
+    const readable = await readableThreadIds(this.db, identity, threadIds, "read");
+    const out: Record<string, unknown> = { ...content };
+    for (const key of BRIEF_THREAD_LISTS) {
+      out[key] = listed(key).filter((entry) => typeof entry.thread_id === "string" && readable.has(entry.thread_id));
+    }
+    return out;
   }
 
   // Read-only cited change summary (plan section 10.3). Never writes Thread
@@ -762,11 +796,16 @@ export class InquirySignalService {
       windowClause = ` AND s.created_at <= $3`;
     }
 
+    // A Brief is stored for the whole Project, so it is built only from Threads
+    // this person reaches on their own — oversight is audit, not a source.
+    params.push(identity.userId);
     const rawSignals = await this.db.query<SignalRow & { thread_statement: string }>(
       `SELECT s.*, t.statement AS thread_statement
          FROM inquiry_evidence_signals s
          JOIN inquiry_threads t ON t.object_id = s.thread_id AND t.space_id = s.space_id
+         JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
         WHERE s.space_id = $1 AND s.project_id = $2${windowClause}
+          AND ${threadReadableSql("so", `$${params.length}`, "publish")}
         ORDER BY s.created_at ASC`,
       params,
     );
@@ -800,7 +839,7 @@ export class InquirySignalService {
       `SELECT * FROM inquiry_signal_candidates WHERE space_id = $1 AND project_id = $2 AND status = 'pending'`,
       [identity.spaceId, projectId],
     );
-    const decisionsRequired = await this.filterReadableCandidates(identity, projectId, pendingCandidates.rows);
+    const decisionsRequired = await this.filterReadableCandidates(identity, projectId, pendingCandidates.rows, "publish");
 
     const content = {
       schema_version: "inquiry_delta_brief.v1",
@@ -842,7 +881,7 @@ export class InquirySignalService {
       if (!candidate.rows[0] || candidate.rows[0].status !== "deferred") {
         throw new HttpError(409, "Only a deferred Candidate can be reopened");
       }
-      await this.assertCandidateReadable(db, identity, projectId, candidateId);
+      await this.assertCandidateReadable(db, identity, projectId, candidate.rows[0]);
       const equivalent = await db.query(
         `SELECT 1 FROM inquiry_signal_candidates
           WHERE thread_id=$1 AND candidate_kind=$2 AND semantic_key=$3
@@ -863,12 +902,19 @@ export class InquirySignalService {
     });
   }
 
+  /**
+   * A Candidate is visible only when its Thread is reachable for this purpose
+   * and every Signal behind it comes from Corpus the person can read.
+   */
   private async filterReadableCandidates(
     identity: SpaceUserIdentity,
     projectId: string,
-    candidates: CandidateRow[],
+    rows: CandidateRow[],
+    purpose: ThreadAccessPurpose,
     db: Queryable = this.db,
   ): Promise<Record<string, unknown>[]> {
+    const readableThreads = await readableThreadIds(db, identity, rows.map((row) => row.thread_id), purpose);
+    const candidates = rows.filter((row) => readableThreads.has(row.thread_id));
     if (candidates.length === 0) return [];
     const signals = await db.query<SignalRow>(
       `SELECT * FROM inquiry_evidence_signals WHERE candidate_id = ANY($1::varchar[])`,
@@ -897,11 +943,14 @@ export class InquirySignalService {
     db: Queryable,
     identity: SpaceUserIdentity,
     projectId: string,
-    candidateId: string,
+    candidate: Pick<CandidateRow, "id" | "thread_id">,
   ): Promise<void> {
+    if (!(await readableThreadIds(db, identity, [candidate.thread_id], "change")).has(candidate.thread_id)) {
+      throw new HttpError(404, "Candidate not found");
+    }
     const signals = await db.query<SignalRow>(
       `SELECT * FROM inquiry_evidence_signals WHERE candidate_id=$1`,
-      [candidateId],
+      [candidate.id],
     );
     const readable = await new ProjectCorpusRepository(db).readableItemIds(
       identity,

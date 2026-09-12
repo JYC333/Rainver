@@ -149,6 +149,11 @@ concrete project memory is readable only by the project owner or an active
 project member; `viewer` can read gated memory but cannot mutate project
 metadata or public summaries.
 
+Project roles are `viewer` < `member` < `owner`. Adding a member or changing a
+role goes through `assertCanGrantRole` (`access/roles.ts`): the Project's owner
+and the Space's owner may hand out any role, a Space admin up to `member`, and
+changing someone's role needs standing to grant the role they hold now.
+
 ### ProjectPublicSummary
 
 | Field | Type | Notes |

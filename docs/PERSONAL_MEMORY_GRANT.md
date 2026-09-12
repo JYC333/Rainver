@@ -27,7 +27,7 @@ No grant → no cross-space personal memory read.
 | `personal_space_id` | UUID FK spaces | Server-assigned from granting user's personal space |
 | `target_space_id` | UUID FK spaces | The shared space where the target run executes |
 | `target_run_id` | UUID FK runs | Required in MVP; run-scoped grants only |
-| `target_agent_id` | UUID FK agents | Always NULL in current MVP; agent-level grants deferred |
+| `target_agent_id` | UUID FK agents | Always NULL; there are no agent-level grants |
 | `grant_scope` | TEXT | `run` only in current MVP |
 | `access_mode` | TEXT | `summary_only` only in current MVP |
 | `memory_filter_json` | JSON | Optional filter specifying namespaces, layers, kinds, max_items |
@@ -218,28 +218,18 @@ These invariants are enforced at code level and covered by tests. They must neve
 
 ## Current Limitations
 
-- **Run-scoped only.** Agent-level and space-level grants are deferred.
-- **One-time lifecycle.** Long-lived grants are deferred.
-- **`summary_only` only.** `retrieval_context` access mode is deferred.
+- **Run-scoped only.** There are no agent-level or space-level grants.
+- **One-time lifecycle.** There are no long-lived grants.
+- **`summary_only` only.** There is no `retrieval_context` access mode.
 - **Server-derived granting fields.** `granting_user_id` and `personal_space_id` are not client-writable.
 - **`schema_version = 1`** required for non-empty `memory_filter_json`.
-- **Egress review is metadata-only.** Approved egress review does not automatically create a shared artifact or memory — a future phase is required for the full shared-content pipeline.
-- **Semantic leakage detection is manual.** The current materialization path does not detect paraphrased or inferred personal-memory meaning in outputs.
+- **Egress review is metadata-only.** Approved egress review does not create a shared artifact or memory.
+- **No semantic leakage detection.** Materialization does not detect paraphrased or inferred personal-memory meaning.
 - **No public publishing or federation.** `visibility=public` and cross-instance federation are not supported.
-- **No multi-user grants.** Only single granting user per grant.
-- **No admin grant-stats endpoint.** Aggregate grant statistics for space admins are deferred.
+- **No multi-user grants.** Only one granting user per grant.
+- **No admin grant-stats endpoint.**
 
----
-
-## Future Roadmap
-
-See `docs/FUTURE_ROADMAP.md` for deferred items including:
-- Full shared-content pipeline from approved egress_review
-- Semantic leakage detection / redaction
-- Long-lived grants
-- Agent-level and space-level grants
-- Multi-user grants
-- Admin grant-stats endpoint
+Unimplemented expansions: [`.agent/plans/unimplemented-from-guides.md`](../.agent/plans/unimplemented-from-guides.md) §13.
 
 ---
 
@@ -248,7 +238,7 @@ See `docs/FUTURE_ROADMAP.md` for deferred items including:
 - `docs/SPACE_MODEL.md` — space types and private memory definition
 - `docs/CONTENT_PUBLICATIONS.md` — independent targeted snapshot transfer
 - `docs/POLICY_AND_PRIVACY_BOUNDARIES.md` — policy enforcement inventory
-- `docs/FUTURE_ROADMAP.md` — future work
+- [`.agent/plans/unimplemented-from-guides.md`](../.agent/plans/unimplemented-from-guides.md) §13 — unimplemented grant expansions
 - `server/src/modules/personalMemoryGrants/` — API implementation
 - `server/src/modules/proposals/` — approval/apply gate
 - `server/src/modules/context/` — grant-aware context assembly

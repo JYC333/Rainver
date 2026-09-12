@@ -35,7 +35,8 @@ durable position on this boundary.
 8. `.agent/decisions/` — accepted architectural decisions
 
 Node-only shared workspace helpers live in their owning package (for example
-`packages/folder-read/src/`); they are not browser-safe protocol contracts.
+`packages/folder-read/src/` and `packages/outbound-guard/src/`); they are not
+browser-safe protocol contracts.
 
 Docs in `.agent/architecture/` describe **current state**, not target-state speculation. Temporary
 reports in `.agent/reports/` are not source of truth and should be deleted after consolidation.
@@ -54,6 +55,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | Local-first compatibility position | [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) |
 | Architectural invariants (load before structural changes) | [BOUNDARIES.md](BOUNDARIES.md) |
 | Layer map and cross-cutting concerns | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Shipped foundations | [ROADMAP.md](ROADMAP.md) |
 | How to run, test, and build | [COMMANDS.md](COMMANDS.md) |
 | Practical gotchas | [WORKING_TIPS.md](WORKING_TIPS.md) |
 | Repository-wide product and domain glossary | [GLOSSARY.md](GLOSSARY.md) |
@@ -71,13 +73,13 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/PROJECTS.md](architecture/PROJECTS.md) | Current Project and Project Folder ownership, Project kernel, modes, lifecycle, and information flow |
 | [architecture/PRODUCT_ACCEPTANCE.md](architecture/PRODUCT_ACCEPTANCE.md) | Deterministic gate, manual Project acceptance procedure, evidence requirements, and opt-in real integration smoke |
 | [architecture/NON_GOALS_AND_DISABLED_SURFACES.md](architecture/NON_GOALS_AND_DISABLED_SURFACES.md) | Disabled surfaces, allowed surfaces, non-goals |
-| [architecture/ROADMAP_AND_FUTURE_RISKS.md](architecture/ROADMAP_AND_FUTURE_RISKS.md) | Capability line roadmap, future risks |
+| [architecture/ROADMAP_AND_FUTURE_RISKS.md](architecture/ROADMAP_AND_FUTURE_RISKS.md) | Current-state source pointers; unimplemented ideas live in plans/unimplemented-from-guides.md |
 | [architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md](architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md) | Capability definitions, packs, workflows, Open Skill import, runtime skill rendering |
 | [architecture/CONTEXT_AND_RETRIEVAL_LAYER.md](architecture/CONTEXT_AND_RETRIEVAL_LAYER.md) | Current-state architecture for knowledge retrieval + the context layer: engine/adapter boundary, recall arms (exact/lexical/multi-hop graph/vector+ANN, max-pool, RRF, intent ranking), gated LLM stages (rerank/rewrite/synthesis), Context Brief + gap analysis, maintenance scans, explicit artifact-backed context attachments, Context Ops read models/page, egress governance, agent tool surface, invariants, Object Schema Registry/object schema implementation, and source-of-truth boundaries |
 | [architecture/PROJECT_WORK.md](architecture/PROJECT_WORK.md) | Current-state Project advancement: the four state axes, the five Loop stages, the append-only work event stream and its single writer, Run settlement, and who a held Task interrupts |
 | [architecture/ONTOLOGY.md](architecture/ONTOLOGY.md) | Current-state ontology layer: Entity registry and Interfaces, which domains join the ontology and why, `space_objects` root contract, link-type endpoints and per-edge governance, the single write path and its guards |
 | [architecture/CLAIM_FACT_ATOM_MODEL.md](architecture/CLAIM_FACT_ATOM_MODEL.md) | Current-state model for `space_objects`, global claims/facts/takes, claim evidence, claim relations, and FK-backed `object_relations` |
-| [architecture/SOURCE_CONNECTOR_CONSENT.md](architecture/SOURCE_CONNECTOR_CONSENT.md) | Source/connector consent and policy model for future ingestion-heavy context work: owner/subject/readers/agents, egress class, retention, trust, proposal-gated derived writes |
+| [architecture/SOURCE_CONNECTOR_CONSENT.md](architecture/SOURCE_CONNECTOR_CONSENT.md) | Source/connector consent and policy: owner/subject/readers/agents, egress class, retention, trust, proposal-gated derived writes |
 | [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) | Data classification, offline write rules, sync schema guidelines |
 
 ### Security and Access Boundaries
@@ -123,7 +125,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 |---|---|
 | [architecture/PROTOCOL_FOUNDATION.md](architecture/PROTOCOL_FOUNDATION.md) | Contracts-only protocol package |
 | [architecture/SERVER_FOUNDATION.md](architecture/SERVER_FOUNDATION.md) | The server service: gateway, route registry, compose wiring |
-| [architecture/SERVER_OWNERSHIP.md](architecture/SERVER_OWNERSHIP.md) | Current server ownership and deferred surfaces |
+| [architecture/SERVER_OWNERSHIP.md](architecture/SERVER_OWNERSHIP.md) | Current server ownership and fail-closed gaps |
 | [architecture/SERVER_MODULE_CONVENTION.md](architecture/SERVER_MODULE_CONVENTION.md) | Server-owned module structure, route registry, error envelope |
 | [architecture/SYSTEM_ACTIONS.md](architecture/SYSTEM_ACTIONS.md) | System action registry, gateway exposure, policy, proposal, grant, idempotency, and audit boundaries |
 | [architecture/OFFICIAL_OPTIONAL_MODULES.md](architecture/OFFICIAL_OPTIONAL_MODULES.md) | Official optional-module packaging, enablement, migrations, and host boundaries |
@@ -135,10 +137,10 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/MEMORY_ACTIVITY_PROVENANCE.md](architecture/MEMORY_ACTIVITY_PROVENANCE.md) | Activity-first capture, provenance chain, trust gate, memory write boundaries |
 | [architecture/MEMORY_CONTEXT_RUNTIME.md](architecture/MEMORY_CONTEXT_RUNTIME.md) | Current Memory-to-context runtime assembly, authorization, snapshots, and injection boundaries |
 | [architecture/MEMORY_MODEL.md](architecture/MEMORY_MODEL.md) | Memory scopes, visibility, access control |
-| [architecture/SHARED_SPACE_MEMORY_ISOLATION.md](architecture/SHARED_SPACE_MEMORY_ISOLATION.md) | Design proposal: shared system assistant + per-user memory isolation in multi-member spaces (personal vs space tier, promotion-gated sharing) |
+| [architecture/SHARED_SPACE_MEMORY_ISOLATION.md](architecture/SHARED_SPACE_MEMORY_ISOLATION.md) | Current Memory layers and the shared SQL predicate for HTTP, retrieval, maintenance, and context injection |
 | [architecture/PROPOSALS.md](architecture/PROPOSALS.md) | Proposal types, lifecycle, apply flow |
-| [architecture/MEMORY_EVOLUTION_PLAN.md](architecture/MEMORY_EVOLUTION_PLAN.md) | Planned Memory-quality work after Knowledge-first retrieval: duplicate signals, ranking, synthesis + gap loop, consolidation cycle |
-| [architecture/EVOLUTION_SIGNAL_SYSTEM.md](architecture/EVOLUTION_SIGNAL_SYSTEM.md) | Current rule-based evolution signal emitters, target resolution, deduplication, A2 verification facts, and deferred A3/C3 hooks |
+| [architecture/MEMORY_EVOLUTION_PLAN.md](architecture/MEMORY_EVOLUTION_PLAN.md) | Pointer: Knowledge retrieval and Memory maintenance are current-state elsewhere; remaining Memory-quality ideas live in plans/unimplemented-from-guides.md |
+| [architecture/EVOLUTION_SIGNAL_SYSTEM.md](architecture/EVOLUTION_SIGNAL_SYSTEM.md) | Current rule-based evolution signal emitters, target resolution, deduplication, and A2 verification facts |
 
 ### Sources / Evidence / Provenance
 
@@ -265,6 +267,7 @@ Planned work has one durable routing entry per purpose:
 | [plans/backlog.md](plans/backlog.md) | Work pulled on demand |
 | [tasks/deferred-register.md](tasks/deferred-register.md) | Deferred work, triggers, and outstanding acceptance gates |
 | [plans/unattended-execution-hardening-plan.md](plans/unattended-execution-hardening-plan.md) | Deferred unattended execution specification |
+| [plans/unimplemented-from-guides.md](plans/unimplemented-from-guides.md) | Designs removed from current-state guides; inventory only, not a pull queue |
 
 Do not create competing task lists or a separate "current focus" document.
 An approved phased implementation may use a temporary execution ledger; retire
@@ -308,7 +311,7 @@ Read cross-cutting policies when triggered even if the selected bundle omits the
 | Memory / activity / proposal change | `memory-activity-proposal` bundle: `MEMORY_ACTIVITY_PROVENANCE.md`, `MEMORY_MODEL.md`, `PROPOSALS.md` |
 | Project Folder / artifact / path change | `project-folder-artifact` bundle: `ARTIFACTS.md`, `EXECUTION_MODEL.md`, `hosts.md`, `project-files.md` |
 | Dogfooding / product slice | `tasks/deferred-register.md` + `PRODUCT_AND_BOUNDARIES.md` + `NON_GOALS_AND_DISABLED_SURFACES.md` |
-| Picking up planned work | `plans/backlog.md` + `tasks/deferred-register.md` |
+| Picking up planned work | `plans/backlog.md` + `tasks/deferred-register.md` + `plans/unimplemented-from-guides.md` |
 | Sync / offline / local-first compatibility | `local-first-compatibility` bundle: `LOCAL_FIRST_COMPATIBILITY.md`, `sync-and-conflicts.md`, `mobile-client.md` |
 
 Development workflow and authorization rules live in the synchronized

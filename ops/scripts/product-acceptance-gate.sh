@@ -37,6 +37,10 @@ run_package packages/folder-read pnpm run typecheck
 run_package packages/folder-read pnpm test
 run_package packages/folder-read pnpm run build
 
+run_package packages/outbound-guard pnpm run typecheck
+run_package packages/outbound-guard pnpm test
+run_package packages/outbound-guard pnpm run build
+
 echo "==> Database schema"
 run_package server pnpm run schema:check
 

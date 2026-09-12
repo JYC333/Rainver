@@ -3,10 +3,13 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { resolveProviderCommandStore } from "../providers/commands/store.js";
+import { PgAgentRepository } from "../agents/repository.js";
 import { completeProviderText } from "../providers/invocation/invocation.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
+import { loadViewerSpaceRole } from "../retrieval/sourcePolicy.js";
+import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import {
   assertValidLocalDate,
   assertValidTimezone,
@@ -94,28 +97,38 @@ interface StructuredDailyReport {
   memory_candidates: MemoryCandidate[];
 }
 
-const DEFAULT_MODEL_CONFIG = { model: "claude-sonnet-4-6" };
-const DEFAULT_MEMORY_POLICY = {
-  readable_scopes: ["user", "project"],
-  writable_scopes: ["user", "project"],
-  readable_types: ["preference", "semantic", "episodic", "procedural", "project"],
-};
-const DEFAULT_RUNTIME_POLICY = {
-  risk_level: "medium",
-  max_run_time_seconds: 300,
-  allowed_adapter_types: [
-    "capability",
-    "model_api",
-    "claude_code",
-    "codex_cli",
-    "opencode",
-    "gemini_cli",
-  ],
-  default_adapter_type: "model_api",
-};
-const DEFAULT_RUNTIME_CONFIG = {};
+export const DAILY_REPORTER_AGENT_KIND = "system_daily_reporter";
 const VALID_MEMORY_TYPES = new Set(["semantic", "episodic", "preference", "procedural", "project"]);
 const SERVICE_VERSION = "1";
+
+/**
+ * A report someone asked for now spends as them. A scheduled one spends on
+ * their daily-report setting, re-read at spend time: switched off, or its
+ * person no longer a member of the Space, it spends nothing.
+ */
+export function dailyReportSpend(
+  db: Queryable,
+  input: {
+    spaceId: string;
+    userId: string;
+    setting: { id: string };
+    triggerOrigin: string;
+  },
+): CredentialSpendBasis {
+  if (input.triggerOrigin === "manual") return { kind: "person", user_id: input.userId };
+  return {
+    kind: "setup",
+    setup: "daily_report",
+    record_id: input.setting.id,
+    user_id: input.userId,
+    still_authorized: async () => {
+      const setting = await new PgDailyReportSettingsRepository(db).getById(input.spaceId, input.setting.id);
+      return setting?.enabled === true
+        && setting.user_id === input.userId
+        && (await loadViewerSpaceRole(db, input.spaceId, input.userId)) !== null;
+    },
+  };
+}
 
 export class DailyCaptureReportService {
   constructor(
@@ -155,7 +168,7 @@ export class DailyCaptureReportService {
 
     const captures = await this.selectCaptures(input);
     const captureIds = captures.map((row) => row.id);
-    const agent = await this.ensureSystemAgent(input.spaceId);
+    const agent = await this.ensureReporterAgent(input.spaceId, input.userId);
     const runId = randomUUID();
     const now = new Date().toISOString();
     await this.db.query(
@@ -229,6 +242,7 @@ export class DailyCaptureReportService {
           source_resource_id: runId,
           run_id: runId,
         },
+        spend: dailyReportSpend(this.db, input),
       });
       rawJson = completion.text;
     } catch (error) {
@@ -485,69 +499,47 @@ export class DailyCaptureReportService {
     return result.rows;
   }
 
-  private async ensureSystemAgent(spaceId: string): Promise<{ agentId: string; versionId: string }> {
-    const existing = await this.db.query<{ id: string; current_version_id: string | null }>(
-      `SELECT id, current_version_id FROM agents WHERE space_id = $1 AND name = 'daily-capture-reporter' LIMIT 1`,
-      [spaceId],
-    );
-    if (existing.rows[0]?.current_version_id) {
-      return { agentId: existing.rows[0].id, versionId: existing.rows[0].current_version_id };
-    }
-    const existingAgentId = existing.rows[0]?.id ?? null;
-    if (existingAgentId) {
-      const version = await this.db.query<{ id: string }>(
-        `SELECT id FROM agent_versions WHERE space_id = $1 AND agent_id = $2 ORDER BY created_at ASC LIMIT 1`,
-        [spaceId, existingAgentId],
-      );
-      if (version.rows[0]) {
-        await this.db.query(
-          `UPDATE agents SET current_version_id = $3, updated_at = $4 WHERE space_id = $1 AND id = $2`,
-          [spaceId, existingAgentId, version.rows[0].id, new Date().toISOString()],
-        );
-        return { agentId: existingAgentId, versionId: version.rows[0].id };
-      }
-    }
-    const agentId = existingAgentId ?? randomUUID();
-    const versionId = randomUUID();
-    const now = new Date().toISOString();
-    if (!existingAgentId) {
-      await this.db.query(
-        `INSERT INTO agents (
-           id, space_id, name, description, status, agent_kind, visibility, created_at, updated_at
-         ) VALUES (
-           $1, $2, 'daily-capture-reporter',
-           'System agent for daily capture report generation.',
-           'active', 'standard', 'private', $3, $3
-         )`,
-        [agentId, spaceId, now],
-      );
-    }
-    await this.db.query(
-      `INSERT INTO agent_versions (
-         id, agent_id, space_id, version_label, model_config_json, runtime_config_json,
-         context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json,
-         runtime_policy_json, created_at
-       ) VALUES (
-         $1, $2, $3, 'v1', $4::jsonb, $5::jsonb,
-         '{}'::jsonb, $6::jsonb, '[]'::jsonb, '{}'::jsonb,
-         $7::jsonb, $8
-       )`,
-      [
-        versionId,
-        agentId,
+  /**
+   * The Space's daily-report Agent: the attribution every report Run is
+   * recorded under. System-managed like the source annotator — shared with the
+   * Space and owned by nobody, so the Space's owner or admin manages it — and
+   * created once per Space. The report spends through the Space's own provider
+   * task chain, so the Agent carries no model of its own.
+   */
+  private async ensureReporterAgent(spaceId: string, userId: string): Promise<{ agentId: string; versionId: string }> {
+    const existing = await this.activeReporterAgent(spaceId);
+    if (existing) return existing;
+    try {
+      const created = await PgAgentRepository.fromConfig(this.config).create({
         spaceId,
-        JSON.stringify(DEFAULT_MODEL_CONFIG),
-        JSON.stringify(DEFAULT_RUNTIME_CONFIG),
-        JSON.stringify(DEFAULT_MEMORY_POLICY),
-        JSON.stringify(DEFAULT_RUNTIME_POLICY),
-        now,
-      ],
+        userId,
+        ownerUserId: null,
+        agentKind: DAILY_REPORTER_AGENT_KIND,
+        name: "Daily capture report",
+        description: "System-managed agent that daily capture reports are recorded under.",
+        visibility: "space_shared",
+        adapterType: "capability",
+      });
+      if (!created.current_version_id) throw new Error("The daily-report Agent was created without a version.");
+      return { agentId: created.id, versionId: created.current_version_id };
+    } catch (error) {
+      // Another report created it first; the per-Space unique index kept it one.
+      const raced = await this.activeReporterAgent(spaceId);
+      if (raced) return raced;
+      throw error;
+    }
+  }
+
+  private async activeReporterAgent(spaceId: string): Promise<{ agentId: string; versionId: string } | null> {
+    const result = await this.db.query<{ id: string; current_version_id: string }>(
+      `SELECT id, current_version_id
+         FROM agents
+        WHERE space_id = $1 AND agent_kind = $2 AND status = 'active' AND current_version_id IS NOT NULL
+        LIMIT 1`,
+      [spaceId, DAILY_REPORTER_AGENT_KIND],
     );
-    await this.db.query(
-      `UPDATE agents SET current_version_id = $2, updated_at = $3 WHERE id = $1`,
-      [agentId, versionId, now],
-    );
-    return { agentId, versionId };
+    const row = result.rows[0];
+    return row ? { agentId: row.id, versionId: row.current_version_id } : null;
   }
 
   private async insertExperienceProposal(

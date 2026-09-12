@@ -62,6 +62,8 @@ describe("provider contracts", () => {
       ModelProviderDTOSchema.safeParse({ ...base, secret_ref: "model_provider_api_key:v1:x" })
         .success,
     ).toBe(false);
+    expect(ModelProviderDTOSchema.safeParse({ ...base, secret: "raw" }).success).toBe(false);
+    expect(ModelProviderDTOSchema.safeParse({ ...base, access_token: "tok" }).success).toBe(false);
   });
 
   it("allows request-only api_key on create/update payloads", () => {

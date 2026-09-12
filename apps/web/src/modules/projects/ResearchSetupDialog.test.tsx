@@ -8,6 +8,9 @@ import { projectResearchApi, researchDiscoveryApi, sourcesApi } from '../../api/
 import type { ProviderVendorOut } from '../../api/client'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }))
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ currentUser: { id: 'user-1' } }),
+}))
 vi.mock('../../core/spaceNav', () => ({
   SpaceLink: ({ to, children, ...props }: { to: string; children: ReactNode }) => (
     <a href={to} {...props}>{children}</a>

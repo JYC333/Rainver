@@ -1,19 +1,19 @@
 # Module: Server Status
 
 ## Status
-**PARTIAL** — `GET /api/v1/status` is implemented for the components the server
-observes from inside its own process (database, scheduler, per-task liveness,
-jobs worker, queue depth). Provider/adapter/capability/sandbox components and
-the `RuntimeStatusBar` UI are not built.
+**API ONLY** — `GET /api/v1/status` reports database, scheduler, per-task
+liveness, jobs worker, and queue depth. There is no `RuntimeStatusBar` in
+the shell and no provider/adapter/capability/sandbox probes.
 
 ## Purpose
-Surface the operational health of the Rainver runtime to the user. Users must be able to see at a glance whether the backend, adapters, capabilities, and external integrations are reachable and functioning. This is not monitoring — it is a user-facing status display integrated into the product shell.
+Operational health of the components the server can observe from its own
+process. This is not an external monitoring dashboard.
 
 ## Owns
-- Runtime status API endpoint (`GET /api/v1/status`)
-- Per-component health checks (db, adapters, capabilities, LLM provider)
-- `RuntimeStatusBar` UI component (always visible in shell)
-- Status detail modal (expandable from status bar)
+- `GET /api/v1/status`
+- The checks listed below
+
+Unimplemented chrome: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §8.
 
 ## Does Not Own
 - Alerting or paging (not in scope)
@@ -91,24 +91,15 @@ probe: 200 with `{"status":"ok","service":"server","checks":{"database":"ok"}}`
 after a successful `SELECT 1`, 503 otherwise. They intentionally stay 200 while
 a scheduled task is stalled — that is why `/api/v1/status` exists.
 
-## UI: RuntimeStatusBar
-
-- Persistent bottom or top bar (see frontend-layout.md — bottom panel)
-- Shows: overall dot (green/yellow/red) + short text ("Connected" / "Degraded" / "Error")
-- Click → opens status detail modal
-- Auto-refreshes every 30 seconds (or on WebSocket event in future)
-
-## UI: Status Detail Modal
-
-- Table of all components with status + detail string
-- "Last checked" timestamp
-- "Refresh" button (triggers manual re-check)
-- Link to logs (if accessible)
-
 ## Degraded vs Error
 
-- **Degraded**: system can still function but with reduced capability (e.g., no Docker → Local executor only; Codex adapter missing → Claude only)
-- **Error**: a critical component is down (db unreachable, no LLM key) and agent runs will fail
+- **Degraded**: a non-critical observed component is unhealthy (scheduler
+  task `failing`, jobs worker absent with an empty queue).
+- **Error**: a critical observed component is down (database unreachable,
+  jobs pending with no worker, a scheduler task `stalled`).
+
+The API does not probe LLM keys, adapters, or Docker. Those absences are
+omitted, not reported as `ok` or `error`.
 
 ## Invariants
 - Status endpoint must respond even when DB is unreachable (check DB as a component, don't depend on it to respond)
@@ -117,7 +108,6 @@ a scheduled task is stalled — that is why `/api/v1/status` exists.
 - A component the server has no evidence about is omitted, never reported `ok`
 - Absence of a background component is a condition of its own: no jobs worker
   is `degraded` when nothing is queued and `error` when work is waiting
-- RuntimeStatusBar is always visible; cannot be hidden by user (collapses to dot icon on mobile)
 
 ## Related Files
 - `server/src/modules/system/routes.ts` — `/health`, `/api/v1/status`, features
@@ -125,8 +115,6 @@ a scheduled task is stalled — that is why `/api/v1/status` exists.
 - `server/src/modules/scheduler/registry.ts` — per-task deadline and liveness
 - `server/src/modules/scheduler/runtimeStatus.ts` — process-local handle the status route reads
 - `server/src/config.ts` — settings and diagnostics
-- `apps/web/src/components/` — TODO: RuntimeStatusBar, StatusDetailModal
 
 ## Related Modules
-- [product-shell.md](product-shell.md) — RuntimeStatusBar lives in the shell
-- [frontend-layout.md](frontend-layout.md) — bottom panel / status area
+- [product-shell.md](product-shell.md) — shell has no status bar today

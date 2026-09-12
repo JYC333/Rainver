@@ -77,6 +77,8 @@ export async function startSynthesisOnlyExecution(
         }),
       },
       triggerType: "manual",
+      // Project Research drives itself; no person fired this.
+      triggerOrigin: "automation",
       inputJson: {
         project_research: { workflow_id: workflow.id, operation_id: operation.id, run_kind: "synthesis_only" },
       },

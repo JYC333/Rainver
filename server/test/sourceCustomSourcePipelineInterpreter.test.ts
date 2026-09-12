@@ -7,6 +7,7 @@ import type {
   } from "@rainver/protocol";
 import { runCustomSourcePipeline } from "../src/modules/sources/customSources/customSourcePipelineInterpreter.js";
 import type { CustomSourceRunnerSettings } from "../src/modules/sources/customSources/customSourceRunner.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
 
 const ORIGIN = "https://sources.example";
 
@@ -70,6 +71,7 @@ describe("runCustomSourcePipeline", () => {
 
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope(),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", LIST_HTML),
       pipeline,
     });
@@ -80,6 +82,36 @@ describe("runCustomSourcePipeline", () => {
     expect(output.items).toHaveLength(2);
     expect(output.items[0].title).toBe("First Title");
     expect(output.items[0].source_uri).toBe("https://sources.example/a1");
+    await cleanup(result);
+  });
+
+  /**
+   * The envelope's origin allowlist is a handler's own declaration, so it can
+   * name a private address; the outbound boundary is what refuses one. A
+   * pipeline step must not be able to reach the instance's own network by
+   * asking for it in its policy envelope.
+   */
+  it("refuses a step pointed at this instance's own network, even when the envelope allows that origin", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const pipeline: CustomSourcePipelineDefinition = {
+      pipeline_version: "custom_source.pipeline.v1",
+      steps: [
+        { type: "fetch_page", url: "http://169.254.169.254/latest/meta-data", bind: "page" },
+        { type: "extract_single", input: "page", bind: "items" },
+      ],
+      output: { items_var: "items" },
+    };
+    const result = await runCustomSourcePipeline(instanceSettings(), {
+      policyEnvelope: policyEnvelope({ allowed_network_origins: ["http://169.254.169.254"] }),
+      guard: publicAddressGuard,
+      handlerInput: handlerInput("scan", TWO_ARTICLE_HTML),
+      pipeline,
+    });
+    expect(result.status).toBe("completed");
+    if (result.status !== "completed") throw new Error("unreachable");
+    expect(result.raw_output_json).toBeNull();
+    expect(result.logs).toContain("Outbound URL is not allowed");
+    expect(fetchMock).not.toHaveBeenCalled();
     await cleanup(result);
   });
 
@@ -94,6 +126,7 @@ describe("runCustomSourcePipeline", () => {
     };
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope(),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", `<html><head><title>My Page</title></head><body>Hello world</body></html>`),
       pipeline,
     });
@@ -125,6 +158,7 @@ describe("runCustomSourcePipeline", () => {
 
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope(),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", LIST_HTML),
       pipeline,
     });
@@ -184,6 +218,7 @@ describe("runCustomSourcePipeline", () => {
 
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope(),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", ASSET_LIST_HTML),
       pipeline,
       credential: { header_name: "Authorization", header_value: "Bearer s3cr3t" },
@@ -211,6 +246,7 @@ describe("runCustomSourcePipeline", () => {
     };
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope({ limits: { ...policyEnvelope().limits, max_files: 1 } }),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", LIST_HTML),
       pipeline,
     });
@@ -239,6 +275,7 @@ describe("runCustomSourcePipeline", () => {
     };
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope(),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", LIST_HTML),
       pipeline,
     });
@@ -283,6 +320,7 @@ describe("runCustomSourcePipeline", () => {
     };
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope(),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", LIST_HTML),
       pipeline,
     });
@@ -318,6 +356,7 @@ describe("runCustomSourcePipeline", () => {
     };
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope(),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("test", LIST_HTML),
       pipeline,
     });
@@ -338,6 +377,7 @@ describe("runCustomSourcePipeline", () => {
     };
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope(),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", LIST_HTML),
       pipeline,
     });
@@ -367,6 +407,7 @@ describe("runCustomSourcePipeline", () => {
     };
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope({ limits: { ...policyEnvelope().limits, timeout_ms: 10 } }),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", LIST_HTML),
       pipeline,
     });
@@ -389,6 +430,7 @@ describe("runCustomSourcePipeline", () => {
     };
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope({ limits: { ...policyEnvelope().limits, max_output_bytes: 10 } }),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", LIST_HTML),
       pipeline,
     });
@@ -407,6 +449,7 @@ describe("runCustomSourcePipeline", () => {
     };
     const result = await runCustomSourcePipeline(instanceSettings(), {
       policyEnvelope: policyEnvelope(),
+      guard: publicAddressGuard,
       handlerInput: handlerInput("scan", LIST_HTML),
       pipeline,
     });

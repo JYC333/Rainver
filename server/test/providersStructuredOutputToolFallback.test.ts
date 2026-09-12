@@ -43,6 +43,9 @@ function makeStore(targets: Record<string, InvocationTarget>): ProviderCommandSt
     deleteProvider: unsupported,
     grantProviderToSpace: unsupported,
     revokeProviderGrant: unsupported,
+    async authorizeCredentialSpend() {
+      return {} as never;
+    },
     async getInvocationTarget(_spaceId, providerId) {
       const t = targets[providerId ?? "default"];
       if (!t) throw new ProviderInvocationError(404, `no provider ${providerId}`);
@@ -124,7 +127,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
       { status: 200, body: { choices: [{ message: { content: '{"answer":"ok"}' } }], model: "test-model", usage: {} } },
     ]);
 
-    const result = await completeProviderChat(store, "space-1", { ...CHAT, output_format: OUTPUT_FORMAT });
+    const result = await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, output_format: OUTPUT_FORMAT });
 
     expect(result.structured_output).toEqual({ answer: "ok" });
     const request = attempts[0]!.body;
@@ -152,7 +155,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
       { status: 200, body: { choices: [{ message: { content: '<think>plan</think>\n```json\n{"answer":"ok"}\n```' } }], model: "MiniMax-M3", usage: {} } },
     ]);
 
-    const result = await completeProviderChat(store, "space-1", { ...CHAT, model: "MiniMax-M3", output_format: OUTPUT_FORMAT });
+    const result = await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, model: "MiniMax-M3", output_format: OUTPUT_FORMAT });
 
     expect(result.structured_output).toEqual({ answer: "ok" });
     const request = attempts[0]!.body;
@@ -179,7 +182,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
       },
     ]);
 
-    const result = await completeProviderChat(store, "space-1", { ...CHAT, output_format: OUTPUT_FORMAT });
+    const result = await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, output_format: OUTPUT_FORMAT });
 
     expect(result.structured_output).toEqual({ answer: "ok" });
   });
@@ -205,7 +208,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
 
     let caught: unknown;
     try {
-      await completeProviderChat(store, "space-1", { ...CHAT, output_format: OUTPUT_FORMAT });
+      await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, output_format: OUTPUT_FORMAT });
     } catch (error) {
       caught = error;
     }
@@ -226,6 +229,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
     ]);
 
     await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       ...CHAT,
       output_format: OUTPUT_FORMAT,
       tools: [{ name: "runtime_tool", description: "a runtime tool", input_schema: { type: "object", properties: {} } }],
@@ -242,7 +246,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
       { status: 200, body: { choices: [{ message: { content: "ok" } }], model: "test-model", usage: {} } },
     ]);
 
-    const result = await completeProviderChat(store, "space-1", { ...CHAT });
+    const result = await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT });
 
     expect(result.content).toBe("ok");
     const request = attempts[0]!.body;
@@ -258,7 +262,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
       { status: 200, body: { choices: [{ message: { content: '{"answer":"ok"}' } }], model: "MiniMax-M3", usage: {} } },
     ]);
 
-    const result = await completeProviderChat(store, "space-1", { ...CHAT, model: "MiniMax-M3", output_format: OUTPUT_FORMAT });
+    const result = await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, model: "MiniMax-M3", output_format: OUTPUT_FORMAT });
 
     expect(result.structured_output).toEqual({ answer: "ok" });
     expect(attempts).toHaveLength(2);
@@ -275,7 +279,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
       { status: 200, body: { choices: [{ message: { content: '{"still_wrong":1}' } }], model: "MiniMax-M3", usage: {} } },
     ]);
 
-    await expect(completeProviderChat(store, "space-1", { ...CHAT, model: "MiniMax-M3", output_format: OUTPUT_FORMAT }))
+    await expect(completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, model: "MiniMax-M3", output_format: OUTPUT_FORMAT }))
       .rejects.toMatchObject({ code: "structured_output_invalid" });
     expect(attempts).toHaveLength(2);
   });
@@ -290,10 +294,10 @@ describe("openai-compatible structured output forced-tool fallback", () => {
     ]);
 
     const { max_tokens: _unused, ...chatWithoutMaxTokens } = CHAT as typeof CHAT & { max_tokens?: number };
-    await completeProviderChat(store, "space-1", { ...chatWithoutMaxTokens, model: "MiniMax-M3" });
-    await completeProviderChat(store, "space-1", { ...CHAT, model: "MiniMax-M3" });
-    await completeProviderChat(store, "space-1", { ...CHAT, max_tokens: 200_000, model: "MiniMax-M3" });
-    await completeProviderChat(store, "space-1", { ...chatWithoutMaxTokens });
+    await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...chatWithoutMaxTokens, model: "MiniMax-M3" });
+    await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, model: "MiniMax-M3" });
+    await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...CHAT, max_tokens: 200_000, model: "MiniMax-M3" });
+    await completeProviderChat(store, "space-1", { spend: { kind: "person", user_id: "user-1" }, ...chatWithoutMaxTokens });
 
     // Known model without an explicit budget gets the recommendation.
     expect(attempts[0]!.body.max_completion_tokens ?? attempts[0]!.body.max_tokens).toBe(131_072);

@@ -109,7 +109,10 @@ function SceneHeader({
   onExpandSidebar: () => void
 }) {
   return (
-    <header className="shrink-0 flex items-center gap-2.5 h-14 px-4 border-b border-border bg-card">
+    <header
+      className="shrink-0 flex items-center gap-2.5 h-14 px-4 border-b border-border bg-card"
+      style={{ paddingTop: 'env(safe-area-inset-top)', height: 'calc(3.5rem + env(safe-area-inset-top, 0px))' }}
+    >
       {hasSidebar && sidebarCollapsed ? (
         <button
           type="button"
@@ -121,7 +124,7 @@ function SceneHeader({
           <Menu className="size-4" /> {title}
         </button>
       ) : (
-        <h1 className="text-[15px] font-semibold tracking-tight text-foreground truncate">{title}</h1>
+        <h1 className="min-w-0 text-[15px] font-semibold tracking-tight text-foreground truncate">{title}</h1>
       )}
 
       {isHome && (

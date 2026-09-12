@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import {
+  artifactReadSql,
   contentReadSql,
   projectReadAccessSql,
+  proposalReadSql,
+  runInheritedReadSql,
+  runReadSql,
 } from "../access/contentAccessSql.js";
 import { canReadProject } from "../projects/access.js";
 
@@ -125,12 +129,47 @@ const MESSAGE_COLUMNS = `
   metadata_json, created_at
 `;
 
+/** The same columns for a query that aliases the table, so the Run predicate can join. */
+const MESSAGE_COLUMNS_ALIASED = `
+  m.id, m.space_id, m.group_id, m.run_id, m.parent_message_id, m.sender_actor_ref_json,
+  m.sender_user_id, m.sender_agent_id, m.message_type, m.content, m.mentions_json,
+  m.metadata_json, m.created_at
+`;
+
 const DELEGATION_COLUMNS = `
   id, space_id, group_id, parent_run_id, child_run_id, request_message_id,
   requesting_agent_id, target_agent_id, requested_by_user_id,
   policy_decision_record_id, status, instruction, reason, budget_json,
   context_policy_json, result_summary, tool_call_id, created_at, updated_at,
   completed_at
+`;
+
+const DELEGATION_COLUMNS_ALIASED = `
+  d.id, d.space_id, d.group_id, d.parent_run_id, d.child_run_id, d.request_message_id,
+  d.requesting_agent_id, d.target_agent_id, d.requested_by_user_id,
+  d.policy_decision_record_id, d.status, d.instruction, d.reason, d.budget_json,
+  d.context_policy_json, d.result_summary, d.tool_call_id, d.created_at, d.updated_at,
+  d.completed_at
+`;
+
+/**
+ * A delegation is readable when both of its Runs are.
+ *
+ * `runReadSql`, not `contentReadSql`: the Run helper carries the Room term as
+ * well as the content predicate, and this read had only the second. Every
+ * sibling read in the same response — the message list, the timeline — carries
+ * both, so a group manager who had been removed from the Room read each
+ * delegation's `instruction`, `reason` and `result_summary` while the messages
+ * beside them rendered empty.
+ */
+function delegationRunReadSql(userExpr: string): string {
+  return `${runReadSql(userExpr, "parent_run")}
+    AND (d.child_run_id IS NULL OR ${runReadSql(userExpr, "child_run")})`;
+}
+
+const DELEGATION_RUN_JOINS = `
+  JOIN runs parent_run ON parent_run.id = d.parent_run_id AND parent_run.space_id = d.space_id
+  LEFT JOIN runs child_run ON child_run.id = d.child_run_id AND child_run.space_id = d.space_id
 `;
 
 export class PgAgentGroupRepository {
@@ -712,19 +751,35 @@ export class PgAgentGroupRepository {
     return requiredRow(result.rows[0], "agent_run_messages insert returned no row");
   }
 
+  /**
+   * The group's timeline, as the viewer may see it.
+   *
+   * Readable group, readable message is not the same question: a group is
+   * reached through its root Run, and a child Run inside it can be private to
+   * whoever owns it or belong to a Room the viewer left. Every message names
+   * the Run that produced it, so the Run predicate is what decides.
+   *
+   * Internal rows are excluded by the same `room_display` key the Room
+   * transcript uses: a continuation is stored as a `user_instruction` so replay
+   * sees it in order, and showing it here would put the system's own prompt in
+   * the timeline under the manager's name.
+   */
   async listMessages(input: {
     space_id: string;
     group_id: string;
+    viewer_user_id: string;
     limit: number;
     offset: number;
   }): Promise<AgentRunMessageRecord[]> {
     const result = await this.db.query<AgentRunMessageRecord>(
-      `SELECT ${MESSAGE_COLUMNS}
-         FROM agent_run_messages
-        WHERE space_id = $1 AND group_id = $2
-        ORDER BY created_at ASC, id ASC
-        LIMIT $3 OFFSET $4`,
-      [input.space_id, input.group_id, input.limit, input.offset],
+      `SELECT ${MESSAGE_COLUMNS_ALIASED}
+         FROM agent_run_messages m
+        WHERE m.space_id = $1 AND m.group_id = $2
+          AND ${runInheritedReadSql("m.run_id", "m.space_id", "$3")}
+          AND COALESCE(m.metadata_json->>'room_display', 'conversation') <> 'internal'
+        ORDER BY m.created_at ASC, m.id ASC
+        LIMIT $4 OFFSET $5`,
+      [input.space_id, input.group_id, input.viewer_user_id, input.limit, input.offset],
     );
     return result.rows;
   }
@@ -985,13 +1040,15 @@ export class PgAgentGroupRepository {
     return { delegation, changed: result.rows.length > 0 };
   }
 
-  async listDelegations(spaceId: string, groupId: string): Promise<RunDelegationRecord[]> {
+  async listDelegations(spaceId: string, groupId: string, userId: string): Promise<RunDelegationRecord[]> {
     const result = await this.db.query<RunDelegationRecord>(
-      `SELECT ${DELEGATION_COLUMNS}
-         FROM run_delegations
-        WHERE space_id = $1 AND group_id = $2
-        ORDER BY created_at ASC, id ASC`,
-      [spaceId, groupId],
+      `SELECT ${DELEGATION_COLUMNS_ALIASED}
+         FROM run_delegations d
+         ${DELEGATION_RUN_JOINS}
+        WHERE d.space_id = $1 AND d.group_id = $2
+          AND ${delegationRunReadSql("$3")}
+        ORDER BY d.created_at ASC, d.id ASC`,
+      [spaceId, groupId, userId],
     );
     return result.rows;
   }
@@ -1067,7 +1124,7 @@ export class PgAgentGroupRepository {
       `SELECT id
          FROM runs r
         WHERE r.space_id = $1 AND r.run_group_id = $2
-          AND ${contentReadSql("run", "r", "$3")}
+          AND ${runReadSql("$3")}
         ORDER BY r.created_at ASC, r.id ASC`,
       [spaceId, groupId, userId],
     );
@@ -1080,7 +1137,7 @@ export class PgAgentGroupRepository {
       `SELECT id
          FROM artifacts a
         WHERE a.space_id = $1 AND a.run_id = ANY($3::varchar[])
-          AND ${contentReadSql("artifact", "a", "$2")}
+          AND ${artifactReadSql("$2")}
         ORDER BY a.created_at ASC, a.id ASC`,
       [spaceId, userId, runIds],
     );
@@ -1093,22 +1150,24 @@ export class PgAgentGroupRepository {
       `SELECT id
          FROM proposals p
         WHERE p.space_id = $1 AND p.created_by_run_id = ANY($3::varchar[])
-          AND ${contentReadSql("proposal", "p", "$2")}
+          AND ${proposalReadSql("$2")}
         ORDER BY p.created_at ASC, p.id ASC`,
       [spaceId, userId, runIds],
     );
     return result.rows.map((row) => row.id);
   }
 
-  async listPolicyDecisionRecordIdsForGroup(spaceId: string, groupId: string): Promise<string[]> {
+  async listPolicyDecisionRecordIdsForGroup(spaceId: string, groupId: string, userId: string): Promise<string[]> {
     const result = await this.db.query<{ id: string }>(
-      `SELECT DISTINCT policy_decision_record_id AS id
-         FROM run_delegations
-        WHERE space_id = $1
-          AND group_id = $2
-          AND policy_decision_record_id IS NOT NULL
+      `SELECT DISTINCT d.policy_decision_record_id AS id
+         FROM run_delegations d
+         ${DELEGATION_RUN_JOINS}
+        WHERE d.space_id = $1
+          AND d.group_id = $2
+          AND d.policy_decision_record_id IS NOT NULL
+          AND ${delegationRunReadSql("$3")}
         ORDER BY id ASC`,
-      [spaceId, groupId],
+      [spaceId, groupId, userId],
     );
     return result.rows.map((row) => row.id);
   }

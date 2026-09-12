@@ -12,6 +12,8 @@ import { Button } from '../../../components/ui/button'
 import { Card, CardTitle } from '../../../components/ui/card'
 import { Input } from '../../../components/ui/input'
 import { errMsg } from '../../../lib/utils'
+import { openSafeHttpUrl } from '../../../lib/safeHttpUrl'
+import { SafeExternalLink } from '../../../components/SafeExternalLink'
 
 const LABELS: Record<ManagedSubscriptionType, string> = {
   anthropic: 'Claude Pro / Max',
@@ -39,7 +41,7 @@ export default function ManagedSubscriptionsPanel({
     try {
       for await (const event of providersApi.subscriptionLoginStream(type)) {
         setEvents(previous => ({ ...previous, [type]: event }))
-        if (event.type === 'auth_url') window.open(event.url, '_blank', 'noopener,noreferrer')
+        if (event.type === 'auth_url') openSafeHttpUrl(event.url)
         if (event.type === 'connected') {
           onChanged(event.provider)
           toast.success(`${LABELS[type]} connected`)
@@ -116,13 +118,13 @@ export default function ManagedSubscriptionsPanel({
                 </p>
               )}
               {event?.type === 'auth_url' && (
-                <a href={event.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-primary underline">
+                <SafeExternalLink href={event.url} className="inline-flex items-center gap-1 text-xs text-primary underline">
                   Open authorization page <ExternalLink className="size-3" />
-                </a>
+                </SafeExternalLink>
               )}
               {event?.type === 'device_code' && (
                 <div className="text-xs">
-                  Open <a href={event.verificationUri} target="_blank" rel="noreferrer" className="text-primary underline">{event.verificationUri}</a>
+                  Open <SafeExternalLink href={event.verificationUri} className="text-primary underline">{event.verificationUri}</SafeExternalLink>
                   {' '}and enter <span className="font-mono font-semibold">{event.userCode}</span>.
                 </div>
               )}

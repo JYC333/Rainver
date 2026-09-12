@@ -3,6 +3,7 @@ import {
   type ProviderMeteringContext,
 } from "../../providers/invocation/invocation.js";
 import type { ProviderCommandStore } from "../../providers/commands/store.js";
+import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import type { RetrievalEgressPolicy } from "../egress/egressPolicy.js";
 import { RETRIEVAL_EMBEDDING_TASK } from "./config.js";
 import type { RetrievalEmbedder } from "./service.js";
@@ -18,6 +19,7 @@ export class ProviderEmbedder implements RetrievalEmbedder {
     private readonly providerId: string | null,
     private readonly egressPolicy: RetrievalEgressPolicy | null,
     private readonly metering: ProviderMeteringContext,
+    private readonly spend: CredentialSpendBasis,
   ) {}
 
   async embed(
@@ -33,6 +35,7 @@ export class ProviderEmbedder implements RetrievalEmbedder {
       inputType: "document",
       egressPolicy: this.egressPolicy,
       metering: this.metering,
+      spend: this.spend,
     });
     return { vectors: result.vectors, model: result.model };
   }

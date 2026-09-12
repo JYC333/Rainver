@@ -64,14 +64,14 @@ describe("note project role (real Postgres)", () => {
 
     await repository.updateNote(identity, note.id, { title: "What we think so far" });
 
-    const resolved = await resolveNotebookNote(db.pool, SPACE, PROJECT, "understanding");
+    const resolved = await resolveNotebookNote(db.pool, SPACE, PROJECT, "understanding", USER);
     expect(resolved.present).toBe(true);
     expect(resolved.present && resolved.note.id).toBe(note.id);
   });
 
   it("reports an absent role instead of resolving to nothing", async () => {
     if (!db.available) return;
-    const resolved = await resolveNotebookNote(db.pool, SPACE, PROJECT, "understanding");
+    const resolved = await resolveNotebookNote(db.pool, SPACE, PROJECT, "understanding", USER);
     expect(resolved).toEqual({ present: false, role: "understanding", reason: "no_note_in_role" });
   });
 
@@ -84,7 +84,7 @@ describe("note project role (real Postgres)", () => {
 
     await repository.updateNote(identity, second.id, { project_role: "ideas" });
 
-    const resolved = await resolveNotebookNote(db.pool, SPACE, PROJECT, "ideas");
+    const resolved = await resolveNotebookNote(db.pool, SPACE, PROJECT, "ideas", USER);
     expect(resolved.present && resolved.note.id).toBe(second.id);
     const holders = await db.pool.query<{ object_id: string }>(
       `SELECT object_id FROM notes WHERE space_id=$1 AND role_project_id=$2 AND project_role='ideas'`,
@@ -105,10 +105,10 @@ describe("note project role (real Postgres)", () => {
 
     await expect(repository.updateNote(identity, note.id, { project_role: "burndown" })).rejects.toThrow(/Unknown note project role/);
     // The rejected assignment left the existing role untouched.
-    expect((await resolveNotebookNote(db.pool, SPACE, PROJECT, "experiments")).present).toBe(true);
+    expect((await resolveNotebookNote(db.pool, SPACE, PROJECT, "experiments", USER)).present).toBe(true);
 
     await repository.updateNote(identity, note.id, { project_role: null });
-    expect((await resolveNotebookNote(db.pool, SPACE, PROJECT, "experiments")).present).toBe(false);
+    expect((await resolveNotebookNote(db.pool, SPACE, PROJECT, "experiments", USER)).present).toBe(false);
   });
 
   it("refuses a role on a note that belongs to no project", async () => {
@@ -127,8 +127,8 @@ describe("note project role (real Postgres)", () => {
 
     await repository.updateNote(identity, note.id, { primary_project_id: OTHER_PROJECT });
 
-    expect((await resolveNotebookNote(db.pool, SPACE, PROJECT, "questions")).present).toBe(false);
-    expect((await resolveNotebookNote(db.pool, SPACE, OTHER_PROJECT, "questions")).present).toBe(false);
+    expect((await resolveNotebookNote(db.pool, SPACE, PROJECT, "questions", USER)).present).toBe(false);
+    expect((await resolveNotebookNote(db.pool, SPACE, OTHER_PROJECT, "questions", USER)).present).toBe(false);
   });
 
   it("scopes the same role independently per project", async () => {
@@ -139,8 +139,8 @@ describe("note project role (real Postgres)", () => {
     await repository.updateNote(identity, mine.id, { project_role: "understanding" });
     await repository.updateNote(identity, theirs.id, { project_role: "understanding" });
 
-    expect((await resolveNotebookNote(db.pool, SPACE, PROJECT, "understanding")).present && true).toBe(true);
-    const other = await resolveNotebookNote(db.pool, SPACE, OTHER_PROJECT, "understanding");
+    expect((await resolveNotebookNote(db.pool, SPACE, PROJECT, "understanding", USER)).present && true).toBe(true);
+    const other = await resolveNotebookNote(db.pool, SPACE, OTHER_PROJECT, "understanding", USER);
     expect(other.present && other.note.id).toBe(theirs.id);
   });
 });

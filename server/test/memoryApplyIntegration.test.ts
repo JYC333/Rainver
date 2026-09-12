@@ -92,6 +92,8 @@ function proposal(over: Partial<ApplyProposal> & { payload_json: Record<string, 
     project_folder_id: over.project_folder_id ?? null,
     project_id: over.project_id ?? null,
     created_by_user_id: over.created_by_user_id ?? USER,
+    visibility: "space_shared",
+    owner_user_id: null,
     created_by_run_id: over.created_by_run_id ?? null,
     payload_json: over.payload_json,
   };
@@ -537,5 +539,45 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     expect(result.scopeType).toBe("project");
     const count = (await db.pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0].c;
     expect(count).toBe(1);
+  });
+});
+
+describe("publication import (real Postgres)", () => {
+  async function importWithTrust(sourceTrust: string | null) {
+    const { id } = await repo!.applyPublicationImport({
+      spaceId: SPACE,
+      ownerUserId: USER,
+      memoryType: "semantic",
+      content: "Imported text",
+      namespace: null,
+      title: "A note",
+      confidence: 0.8,
+      importance: 0.4,
+      tags: null,
+      memoryLayer: "semantic",
+      eventTime: null,
+      eventType: null,
+      sourceTrust,
+    });
+    const memory = await db.pool.query<{ source_trust: string | null }>(
+      "SELECT source_trust FROM memory_entries WHERE id = $1",
+      [id],
+    );
+    const links = await db.pool.query<{ source_type: string; source_trust: string | null }>(
+      "SELECT source_type, source_trust FROM provenance_links WHERE target_id = $1",
+      [id],
+    );
+    return { column: memory.rows[0]?.source_trust ?? null, links: links.rows };
+  }
+
+  it("keeps the publisher's trust on the row and on its provenance", async () => {
+    const imported = await importWithTrust("agent_inferred");
+    expect(imported.column).toBe("agent_inferred");
+    expect(imported.links).toEqual([{ source_type: "user_confirmation", source_trust: "agent_inferred" }]);
+  });
+
+  it("does not default an absent or unknown trust upward", async () => {
+    expect((await importWithTrust(null)).column).toBeNull();
+    expect((await importWithTrust("made_up")).column).toBeNull();
   });
 });

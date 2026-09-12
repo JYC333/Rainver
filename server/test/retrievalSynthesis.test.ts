@@ -171,6 +171,9 @@ describe("retrieval synthesis: ProviderSynthesizer", () => {
         expect(task).toBe(RETRIEVAL_SYNTHESIS_TASK);
         return null;
       },
+      async authorizeCredentialSpend() {
+        return {} as never;
+      },
       async getInvocationTarget(_spaceId: string, providerId?: string | null) {
         requestedProviderId = providerId;
         throw new Error("no provider should be invoked without the task policy");
@@ -178,6 +181,7 @@ describe("retrieval synthesis: ProviderSynthesizer", () => {
     } as unknown as ProviderCommandStore;
 
     const result = await new ProviderSynthesizer(store, {
+      spend: { kind: "person", user_id: "user-1" },
       systemPromptResolver: async () => "registry synthesis system",
     }).synthesize(
       "space-1",
@@ -196,12 +200,16 @@ describe("retrieval synthesis: ProviderSynthesizer", () => {
       async getTaskChain() {
         throw new Error("provider should not be called without a prompt");
       },
+      async authorizeCredentialSpend() {
+        return {} as never;
+      },
       async getInvocationTarget() {
         throw new Error("provider should not be called without a prompt");
       },
     } as unknown as ProviderCommandStore;
 
     const result = await new ProviderSynthesizer(store, {
+      spend: { kind: "person", user_id: "user-1" },
       systemPromptResolver: async () => null,
     }).synthesize("space-1", "user-1", "alpha", [candidate({ objectId: "a" })]);
 

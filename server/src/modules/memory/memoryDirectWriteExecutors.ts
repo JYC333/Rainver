@@ -8,7 +8,7 @@ import { getDbPool } from "../../db/pool.js";
 import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import type { SystemActionExecutor } from "../systemActions/gateway.js";
 import type { RunRecord } from "../runs/repository.js";
-import { effectiveTriggerOrigin } from "../systemActions/effectiveTriggerOrigin.js";
+import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
 import {
   AGENT_SCOPE_MEMORY_TYPES,
   decidePersonaWrite,
@@ -239,18 +239,16 @@ export function registerMemoryDirectWriteExecutors(
           [run.session_id, run.space_id],
         )
       : null;
+    // The **root** Run's trigger, not this one's. A delegated Run carries
+    // `delegation` while the person who set it going is one hop up, and
+    // reading the raw columns would let a turn apply a persona change directly
+    // by asking one Agent to ask another. The policy gate resolves the origin
+    // the same way, so the two cannot disagree about the same Run.
+    const trigger = await effectiveRunTrigger(db, run);
     return {
       ownerUserId: owner.rows[0]?.owner_user_id ?? null,
-      // The **root** Run's origin, not this one's. A delegated Run carries
-      // `delegation` while the person who set it going is one hop up, and
-      // reading the raw column would let a turn apply a persona change
-      // directly by asking one Agent to ask another. The policy gate resolves
-      // the same way, so the two cannot disagree about the same Run.
-      triggerOrigin: await effectiveTriggerOrigin(db, run),
-      // The raw column, and it is the right one: `createDelegatedChildRun`
-      // requires a `user_id` and writes it here, so a delegated child already
-      // carries the person who spoke in the parent turn.
-      instructedByUserId: run.instructed_by_user_id ?? null,
+      triggerOrigin: trigger.origin,
+      instructedByUserId: trigger.instructedByUserId,
       roomId: room?.rows[0]?.room_id ?? null,
       activePersonaExists: await hasActivePersona(db, run),
     };

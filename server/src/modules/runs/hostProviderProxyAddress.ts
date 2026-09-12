@@ -1,69 +1,69 @@
+import type { ServerConfig } from "../../config.js";
+import { hostControlPlaneUrl } from "../hosts/controlPlaneUrl.js";
 import type { Queryable } from "../routeUtils/common.js";
 import {
-  providerProxyExternalLeaseUrl,
+  providerProxyExternalBaseUrl,
+  providerProxyInNetworkBaseUrl,
   providerProxyLeaseUrl,
   type ProviderProxyRoute,
 } from "../providers/proxy/lease.js";
 
-/**
- * The provider-proxy address *this host* should use, in order of authority:
- *
- * 1. an explicit per-host override, for a reverse proxy in front of the API or
- *    a proxy port published somewhere other than the API's host;
- * 2. derived from the address the daemon reports it reaches the control plane
- *    at, with the proxy's own port — the common case, and the reason this
- *    needs no configuration at all;
- * 3. an instance-wide `PROVIDER_PROXY_EXTERNAL_BASE_URL`.
- *
- * The server cannot guess (2) on its own: its in-network hostname is a Compose
- * service name no paired machine can resolve. The daemon already knows it.
- */
+/** The lease URL a dispatched Run on this host is handed; null when no address applies. */
 export async function resolveHostLeaseUrl(input: {
   db: Queryable;
+  config: ServerConfig;
   hostId: string;
   route: ProviderProxyRoute;
   leaseId: string;
-  proxyPort: number;
 }): Promise<string | null> {
-  const row = await input.db.query<{ provider_proxy_base_url: string | null; daemon_server_url: string | null }>(
-    `SELECT provider_proxy_base_url, daemon_server_url FROM hosts WHERE id = $1 LIMIT 1`,
+  const row = await input.db.query<{ provider_proxy_base_url: string | null; kind: string }>(
+    `SELECT provider_proxy_base_url, kind FROM hosts WHERE id = $1 LIMIT 1`,
     [input.hostId],
   );
   const host = row.rows[0];
-  const base = hostProviderProxyBaseUrl(host ?? null, input.proxyPort);
-  if (base) return providerProxyLeaseUrl(base, input.route, input.leaseId);
-  return providerProxyExternalLeaseUrl(input.route, input.leaseId);
+  if (!host) return null;
+  const base = hostProviderProxyBaseUrl(host, input.config);
+  return base ? providerProxyLeaseUrl(base, input.route, input.leaseId) : null;
 }
 
 /**
- * The proxy base URL for one host: its explicit override, else derived from
- * the control-plane address the daemon reports plus the proxy's own port.
- * Null when neither is available — the instance-wide setting is the caller's
- * remaining fallback.
+ * The provider-proxy address for one host, in order of authority:
+ *
+ * 1. its explicit per-host override, for a reverse proxy in front of the API
+ *    or a proxy published somewhere other than the API's host;
+ * 2. for the built-in host, the in-network listener — never an address
+ *    published for machines outside, which would take the lease token off the
+ *    internal network;
+ * 3. for a paired host, the instance-wide `PROVIDER_PROXY_EXTERNAL_BASE_URL`;
+ * 4. for a paired host, its control-plane address (`hostControlPlaneUrl`,
+ *    `FRONTEND_URL`) with the proxy's own port, when that address is `http:`.
+ *
+ * Configuration outranks derivation: the derived address is inferred from
+ * `FRONTEND_URL`, and an operator who published the proxy elsewhere said so.
+ * The listener is plaintext HTTP, so an `https:` control plane is not derived
+ * from — its TLS terminates somewhere this port is not behind, and the
+ * derived URL would fail the handshake or quietly drop TLS. Null when nothing
+ * applies.
  *
  * Exported so the Command Center can show the *same* answer a dispatched run
  * will get. A second derivation in the UI would be free to disagree, and the
  * disagreement would only surface as a run failing on someone's laptop.
  */
 export function hostProviderProxyBaseUrl(
-  host: { provider_proxy_base_url?: string | null; daemon_server_url?: string | null } | null,
-  proxyPort: number,
+  host: { provider_proxy_base_url?: string | null; kind: string },
+  config: ServerConfig,
 ): string | null {
-  const override = stringValue(host?.provider_proxy_base_url);
+  const override = stringValue(host.provider_proxy_base_url);
   if (override) return override.replace(/\/+$/, "");
-
-  const reported = stringValue(host?.daemon_server_url);
-  if (!reported || proxyPort <= 0) return null;
-  try {
-    const url = new URL(reported);
-    url.port = String(proxyPort);
-    url.pathname = "";
-    return url.toString().replace(/\/+$/, "");
-  } catch {
-    // A daemon reporting something unparseable is not a reason to fail here;
-    // the instance-wide setting still applies.
-    return null;
-  }
+  if (host.kind === "server") return providerProxyInNetworkBaseUrl();
+  const external = stringValue(providerProxyExternalBaseUrl());
+  if (external) return external.replace(/\/+$/, "");
+  if (config.providerProxyPort <= 0) return null;
+  const url = new URL(hostControlPlaneUrl(config, host.kind));
+  if (url.protocol !== "http:") return null;
+  url.port = String(config.providerProxyPort);
+  url.pathname = "";
+  return url.toString().replace(/\/+$/, "");
 }
 
 function stringValue(value: unknown): string | null {

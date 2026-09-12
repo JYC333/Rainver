@@ -20,6 +20,7 @@ ActivityRecord:
   source_kind/source_type, source_trust
   title, content
   source_run_id, source_task_id, source_session_id, source_url
+  visibility, access_level, owner_user_id
   subject_user_id, project_id
   aggregate_key
   status (raw|processed|proposals_generated|failed|archived)
@@ -40,6 +41,8 @@ proposal generation becomes `proposals_generated`, and worker errors become
   shortcut; accepted Memory provenance is written to `provenance_links`
 - Activity-derived proposals inherit the source Activity's visibility because
   the proposed content is the Activity's own text.
+- `access_level=summary` withholds `content` and `metadata_json` from
+  non-owners on list/detail. Consolidation requires effective `full`.
 - The Inbox holds pointers, never content (BOUNDARIES B24A) — see
   `modules/activity-inbox.md` for the full rule
 - Pointer/aggregate Activity rows set `aggregate_key` and are not eligible for

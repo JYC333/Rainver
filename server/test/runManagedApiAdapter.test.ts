@@ -111,6 +111,9 @@ function fakeProviderStore(): ProviderCommandStore {
     async getTaskChain() {
       return null;
     },
+    async authorizeCredentialSpend() {
+      return {} as never;
+    },
     async getInvocationTarget() {
       throw new Error("provider invocation should not be needed in this test");
     },
@@ -1851,7 +1854,7 @@ describe("executeManagedApiNoToolAdapter", () => {
     const result = await executeManagedApiNoToolAdapter(
       config(),
       { run: run(), model: "gpt-4o-mini" },
-      { executeRuntimeHost: (runtimeConfig, request) => executeRuntimeHost(runtimeConfig, request) },
+      { executeRuntimeHost: (runtimeConfig, request) => executeRuntimeHost(runtimeConfig, request, { kind: "run", run: run() }) },
     );
 
     expect(result).toMatchObject({
@@ -1867,6 +1870,9 @@ describe("executeManagedApiNoToolAdapter", () => {
 function emptyCredentialStore(calls: string[]): ProviderCommandStore {
   return {
     resolveUsageAttribution: resolveTestUsageAttribution,
+    async authorizeCredentialSpend() {
+      return {} as never;
+    },
     async getInvocationTarget(_spaceId: string, providerId?: string | null) {
       calls.push(`target:${providerId}`);
       return {

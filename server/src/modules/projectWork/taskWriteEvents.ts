@@ -49,7 +49,7 @@ export async function recordTaskCreated(
     subjectId: context.taskId,
     actorId,
     idempotencyKey: `task.created:${context.taskId}`,
-    ...(context.runId ? { correlationId: context.runId } : {}),
+    ...(context.runId ? { correlationId: context.runId, runId: context.runId } : {}),
     // Two of the three fields every direct write records
     // (`projectWork/domainWorkEvents.ts`), written here rather than through
     // that helper because the actor is already resolved by the caller — the
@@ -62,7 +62,6 @@ export async function recordTaskCreated(
     data: {
       ...data,
       origin: context.actorId ? "agent" : "user",
-      ...(context.runId ? { run_id: context.runId } : {}),
     },
   });
 }
@@ -100,6 +99,7 @@ export async function assertCompletionForClose(
     context.spaceId,
     context.taskId,
     requiredOutputsJson,
+    context.userId,
   );
   if (completion.ok) return { overridden: [] };
   const acknowledged = new Set(override?.acknowledged ?? []);

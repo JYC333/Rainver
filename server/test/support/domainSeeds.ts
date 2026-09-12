@@ -131,15 +131,34 @@ export async function seedRoomManager(
 ): Promise<{ memberId: string }> {
   const memberId = input.id ?? randomUUID();
   const now = input.now ?? new Date().toISOString();
-  const result = await pool.query<{ id: string }>(
-    `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,'manager','active',$5,$5)
-     ON CONFLICT (room_id, agent_id) DO UPDATE
-       SET role = 'manager', status = 'active', updated_at = EXCLUDED.updated_at
-     RETURNING id`,
-    [memberId, input.space, input.room, input.agent, now],
-  );
-  return { memberId: result.rows[0]!.id };
+  try {
+    const result = await pool.query<{ id: string }>(
+      `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'manager','active',$5,$5)
+       ON CONFLICT (room_id, agent_id) DO UPDATE
+         SET role = 'manager', status = 'active', updated_at = EXCLUDED.updated_at
+       RETURNING id`,
+      [memberId, input.space, input.room, input.agent, now],
+    );
+    return { memberId: result.rows[0]!.id };
+  } catch (error) {
+    // `uq_room_agent_members_manager` is a *partial* unique index on the room
+    // alone, and `ON CONFLICT (room_id, agent_id)` arbitrates a different one.
+    // Postgres only takes the DO UPDATE path for the arbiter it was given, so
+    // two callers seating the same manager at the same moment — which is what
+    // a `Promise.all` over several fixtures in one Room does — can trip the
+    // partial index instead and raise. The seat is already taken by then,
+    // which is the outcome this function is for.
+    if ((error as { code?: string }).code !== "23505") throw error;
+    const existing = await pool.query<{ id: string }>(
+      `SELECT id FROM room_agent_members
+        WHERE room_id = $1 AND role = 'manager' AND status = 'active'`,
+      [input.room],
+    );
+    const seated = existing.rows[0];
+    if (!seated) throw error;
+    return { memberId: seated.id };
+  }
 }
 
 /** An active agent with one version bound as current, as research tests need. */

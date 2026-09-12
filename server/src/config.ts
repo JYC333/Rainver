@@ -42,6 +42,13 @@ export interface ServerConfig {
   /** This server's own in-network hostname, as the built-in execution host and the provider proxy reach it. */
   sandboxRunnerServerHost: string;
   /**
+   * Address the provider proxy process binds. Default `127.0.0.1` so a
+   * non-container listen is loopback-only. Compose sets `0.0.0.0` so the
+   * built-in execution host on `sandbox-runner` can reach it; host publishing
+   * is still `PROVIDER_PROXY_BIND` (loopback by default).
+   */
+  providerProxyListenHost: string;
+  /**
    * Fixed listen port for the provider proxy. `0` keeps the historical
    * OS-assigned port, which is reachable only inside the deployment network —
    * a paired execution host needs a published, therefore fixed, port.
@@ -74,6 +81,11 @@ export interface ServerConfig {
   googleRedirectUri: string;
   /** Frontend base URL used for post-login redirects. */
   frontendUrl: string;
+  /**
+   * In-network hostname of the frontend proxy — the only peer whose
+   * `X-Forwarded-*` headers are believed. Unset means none are.
+   */
+  trustedProxyHost: string | null;
   /** Email address allowed to perform instance-level administration. */
   instanceAdminEmail: string | null;
   /** Session cookie lifetime in days. */
@@ -154,6 +166,9 @@ const KNOWN_ENV_KEYS = new Set([
   "SERVER_DATABASE_URL",
   "RAINVER_HOME",
   "SANDBOX_RUNNER_SERVER_HOST",
+  "PROVIDER_PROXY_LISTEN_HOST",
+  "PROVIDER_PROXY_PORT",
+  "PROVIDER_PROXY_EXTERNAL_BASE_URL",
   "BUILTIN_HOST_MAX_CONCURRENT_RUNS",
   "WORKSPACE_ROOT",
   "SANDBOX_ROOT",
@@ -164,6 +179,7 @@ const KNOWN_ENV_KEYS = new Set([
   "GOOGLE_CLIENT_SECRET",
   "GOOGLE_REDIRECT_URI",
   "FRONTEND_URL",
+  "SERVER_TRUSTED_PROXY_HOST",
   "INSTANCE_ADMIN_EMAIL",
   "SESSION_EXPIRE_DAYS",
   "SERVER_DEBUG",
@@ -258,6 +274,15 @@ function parseBoundedInt(
     );
   }
   return n;
+}
+
+function parseListenHost(value: string | undefined, name: string, fallback: string): string {
+  const host = (value ?? fallback).trim() || fallback;
+  if (host === "0.0.0.0" || host === "127.0.0.1" || host === "::" || host === "::1") return host;
+  throw new ConfigError(
+    `${name} must be 127.0.0.1, 0.0.0.0, ::1, or ::, got ${JSON.stringify(host)}`,
+    "invalid_listen_host",
+  );
 }
 
 function validateHttpBaseUrl(value: string, name: string): string {
@@ -433,6 +458,11 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   if (!/^[A-Za-z0-9.-]+$/.test(sandboxRunnerServerHost)) {
     throw new ConfigError("SANDBOX_RUNNER_SERVER_HOST must be a hostname", "invalid_sandbox_runner_server_host");
   }
+  const providerProxyListenHost = parseListenHost(
+    env.PROVIDER_PROXY_LISTEN_HOST,
+    "PROVIDER_PROXY_LISTEN_HOST",
+    "127.0.0.1",
+  );
   const providerProxyPort = parseBoundedInt(
     env.PROVIDER_PROXY_PORT,
     0,
@@ -492,6 +522,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     env.FRONTEND_URL?.trim() || "http://localhost:5173",
     "FRONTEND_URL",
   );
+  const trustedProxyHost = env.SERVER_TRUSTED_PROXY_HOST?.trim() || null;
   const instanceAdminEmail = normalizeEmail(env.INSTANCE_ADMIN_EMAIL);
   const sessionExpireDays = parseIntStrict(
     env.SESSION_EXPIRE_DAYS,
@@ -691,6 +722,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     databaseUrl,
     rainverHome,
     sandboxRunnerServerHost,
+    providerProxyListenHost,
     providerProxyPort,
     builtinHostMaxConcurrentRuns,
     providerProxyExternalBaseUrl,
@@ -703,6 +735,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     googleClientSecret,
     googleRedirectUri,
     frontendUrl,
+    trustedProxyHost,
     instanceAdminEmail,
     sessionExpireDays,
     debug,
@@ -770,6 +803,7 @@ export function describeConfig(config: ServerConfig): string {
     `internalTokenConfigured=${config.internalToken !== null}`,
     `googleOAuthConfigured=${Boolean(config.googleClientId && config.googleClientSecret)}`,
     `frontendUrl=${config.frontendUrl}`,
+    `trustedProxyHost=${config.trustedProxyHost ?? ""}`,
     `instanceAdminConfigured=${config.instanceAdminEmail !== null}`,
     `sessionExpireDays=${config.sessionExpireDays}`,
     `debug=${config.debug}`,
@@ -784,7 +818,7 @@ export function describeConfig(config: ServerConfig): string {
 // ---------------------------------------------------------------------------
 
 /** Bumped when the shape of {@link ServerConfig} changes incompatibly. */
-export const CONFIG_SCHEMA_VERSION = 22 as const;
+export const CONFIG_SCHEMA_VERSION = 23 as const;
 
 /**
  * An immutable, hash-identified view of the validated config. Built once at

@@ -1,6 +1,6 @@
 import type { ProjectWorkUpdate, ProjectWorkUpdateUndo, ProjectWorkUpdatesResponse } from "@rainver/protocol";
 import { HttpError, dateIso, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentReadSql, runInheritedReadSql } from "../access/contentAccessSql.js";
 import { assertProjectReadable, canWriteProject } from "../projects/access.js";
 
 /**
@@ -319,6 +319,10 @@ export async function getProjectUpdates(
           LIMIT 1
        ) undone ON true
       WHERE e.space_id = $1 AND e.project_id = $3
+        -- The same Run term the Task work view applies. An update carries the
+        -- Run's own summary text, so a Room-scoped Run's report must not reach
+        -- this feed while the work view hides it.
+        AND ${runInheritedReadSql("e.data_json->>'run_id'", "e.space_id", "$2")}
         AND e.event_kind = ANY ($4::text[])
         AND (e.subject_type <> 'task' OR t.id IS NOT NULL)
         AND (e.subject_type <> 'inquiry_thread' OR tho.id IS NOT NULL)

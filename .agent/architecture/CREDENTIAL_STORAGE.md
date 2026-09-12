@@ -94,7 +94,10 @@ decrypted key is passed to provider invocation **as a parameter** and is never
 written to `process.env` — per [ADR 0008](../decisions/0008-credential-channel-isolation.md)
 it cannot leak into a CLI subprocess environment. The server store draws keys
 from the credential pool with rotation/cooldown state and the same master-key
-file. Exactly one side decides credential release: the server.
+file. Exactly one side decides credential release: the server. Callers that
+need a key (the provider proxy, in-process completion) call the store in the
+same process. Internal HTTP routes must not return decrypted keys: a former
+`/internal/providers-credentials/credentials/runtime/resolve` hatch is gone.
 
 For a managed subscription provider, the same resolver verifies the invoking
 subject is the provider owner, decrypts the OAuth envelope in-process, refreshes
@@ -106,13 +109,16 @@ Claude-compatible CLI provider bindings use the same invariant. The Claude
 subprocess receives only a short-lived provider-proxy lease token through
 `ANTHROPIC_AUTH_TOKEN`; the proxy resolves the real ModelProvider API key
 inside the server process and replaces the lease token before forwarding the
-request upstream. The proxy URL is not loopback — its host comes from
-`SANDBOX_RUNNER_SERVER_HOST` (default `server`, the Compose service name), so
-it is reachable within the deployment's own network. Reaching it from a paired
+request upstream. The proxy URL is not loopback by default inside Compose: the process binds
+`PROVIDER_PROXY_LISTEN_HOST` (`0.0.0.0` in Compose so `sandbox-runner` can
+reach `SANDBOX_RUNNER_SERVER_HOST`; `127.0.0.1` otherwise). Host publishing is
+still `PROVIDER_PROXY_BIND` (loopback by default). Reaching it from a paired
 execution host additionally requires `PROVIDER_PROXY_PORT` (a fixed port, since
-an OS-assigned one moves on restart) and `PROVIDER_PROXY_EXTERNAL_BASE_URL`
-(the address that host should use); without both, a bound remote run fails with
-a stated reason rather than receiving a URL it cannot resolve. A remote run's
+an OS-assigned one moves on restart) and an address that host can use: its
+per-host override, else `PROVIDER_PROXY_EXTERNAL_BASE_URL`, else one derived
+from an `http:` `FRONTEND_URL`. With none, a bound remote run fails with a
+stated reason rather than receiving a URL it cannot resolve. The built-in host
+always uses the in-network listener. A remote run's
 lease carries the Host it was issued for, so revoking that Host revokes the
 lease rather than leaving it live until its TTL;
 [ADR 0008](../decisions/0008-credential-channel-isolation.md)'s 2026-08-24
@@ -132,9 +138,10 @@ request to the configured `openai_compatible_base_url`.
 
 - Plaintext key exists only transiently in memory at decrypt time; never in the DB, `config_json`,
   environment variables, or logs (`server/src/modules/runs/evidenceRedaction.ts` redacts RunStep/artifact content).
-- The API never returns the key. `ModelProviderOut` exposes only
-  `has_api_key: bool`, ownership metadata, and active grant metadata; editing
-  supports *replacing* the key, not reading it.
+- The API never returns the key, including `/internal/*`. `ModelProviderOut`
+  exposes only `has_api_key: bool`, ownership metadata, and active grant
+  metadata; editing supports *replacing* the key, not reading it. Response
+  contracts also reject `secret`, `access_token`, and `refresh_token`.
 - A provider or credential that lacks an enabled active-space grant fails closed
   before secret resolution.
 - Managed OAuth credentials are instance-admin connected, owner-only at use time,
@@ -150,6 +157,6 @@ The master key is a **local-file symmetric key**, not KMS/HSM-managed. Consequen
   keys — keep sensitive recovery archives (`secrets/` plus the reviewed mode `.env` snapshot)
   separate from normal DB/data backups; combining them
   carries decryptable material.
-- This is appropriate for a single self-hosted instance. Stronger setups (multi-tenant, compliance)
-  would move to envelope encryption with a KMS (KMS-wrapped master key, per-space derived subkeys).
-  Not implemented today.
+- This is appropriate for a single self-hosted instance. KMS/HSM envelope
+  encryption is not implemented.
+  ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §13)

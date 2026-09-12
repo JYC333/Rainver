@@ -408,6 +408,8 @@ function capabilityUpdateProposal(versionId: string, id: string): ApplyProposal 
     },
     project_folder_id: null,
     created_by_user_id: USER,
+    visibility: "space_shared",
+    owner_user_id: null,
     project_id: null,
   };
 }
@@ -432,6 +434,8 @@ function capabilityEnableProposal(
     },
     project_folder_id: null,
     created_by_user_id: USER,
+    visibility: "space_shared",
+    owner_user_id: null,
     project_id: null,
   };
 }

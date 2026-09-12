@@ -334,6 +334,7 @@ class SearchFakeDb implements Queryable {
           created_by_user_id: object.created_by_user_id,
           subject_text: object.subject_text ?? null,
           claim_text: object.text,
+          effective_access_level: "full",
         }));
       return result(rows as Row[]);
     }

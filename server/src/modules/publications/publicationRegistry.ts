@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
+import { AGENT_SCOPE_MEMORY_TYPES, PgMemoryApplyRepository } from "../memory/memoryApplyRepository.js";
 
 export interface PublicationImportContext {
   targetSpaceId: string;
@@ -250,7 +251,11 @@ const memoryAdapter: PublicationAdapter = {
     );
     const row = result.rows[0];
     if (!row) throw new HttpError(404, "Content not found");
-    if (row.scope_type !== "user" || row.sensitivity_level !== "normal") {
+    if (
+      row.scope_type !== "user"
+      || row.sensitivity_level !== "normal"
+      || AGENT_SCOPE_MEMORY_TYPES.has(String(row.memory_type))
+    ) {
       throw new HttpError(422, "Only normal-sensitivity user memories can be published");
     }
     return memorySnapshotSchema.parse({
@@ -262,34 +267,23 @@ const memoryAdapter: PublicationAdapter = {
   },
   async importSnapshot(db, context, snapshot) {
     const parsed = memorySnapshotSchema.parse(snapshot);
-    const id = randomUUID();
-    const now = new Date().toISOString();
     const p = parsed.payload;
-    await db.query(
-      `INSERT INTO memory_entries (
-         id, space_id, scope_type, memory_type, content, status, created_at, updated_at,
-         valid_from, valid_to, subject_user_id, owner_user_id, sensitivity_level,
-         last_confirmed_at, agent_id, namespace, title, visibility,
-         access_level, confidence, importance, source_id, created_by, approved_by,
-         deleted_at, version, access_count, last_accessed_at, tags, memory_layer,
-         event_time, event_type, last_retrieved_at, root_memory_id,
-         supersedes_memory_id, source_trust, created_from_proposal_id, project_id
-       ) VALUES (
-         $1, $2, 'user', $3, $4, 'active', $5, $5,
-         NULL, NULL, $6, $6, 'normal',
-         NULL, NULL, $7, $8, 'private',
-         'full', $9, $10, NULL, 'publication_import', $6,
-         NULL, 1, 0, NULL, $11::jsonb, $12,
-         $13::timestamptz, $14, NULL, $1,
-         NULL, $15, NULL, NULL
-       )`,
-      [
-        id, context.targetSpaceId, p.memory_type, p.content, now,
-        context.ownerUserId, p.namespace, p.title, p.confidence, p.importance,
-        json(p.tags), p.memory_layer, p.event_time, p.event_type, p.source_trust,
-      ],
-    );
-    return { resource_type: "memory", resource_id: id };
+    const imported = await new PgMemoryApplyRepository(db).applyPublicationImport({
+      spaceId: context.targetSpaceId,
+      ownerUserId: context.ownerUserId,
+      memoryType: p.memory_type,
+      content: p.content,
+      namespace: p.namespace,
+      title: p.title,
+      confidence: p.confidence,
+      importance: p.importance,
+      tags: p.tags,
+      memoryLayer: p.memory_layer,
+      eventTime: p.event_time,
+      eventType: p.event_type,
+      sourceTrust: p.source_trust,
+    });
+    return { resource_type: "memory", resource_id: imported.id };
   },
 };
 

@@ -13,6 +13,8 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { systemModule } from "../src/modules/system/index.js";
 import { catalogModule } from "../src/modules/catalog/index.js";
 import { loadConfig } from "../src/config.js";
+import { __setAuthIdentityForTests, __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
+import { deniedAuthRepository } from "./support/routeFakes.js";
 
 let fixtureRoot: string;
 let app: FastifyInstance;
@@ -61,6 +63,8 @@ afterAll(async () => {
 });
 
 afterEach(async () => {
+  __setAuthIdentityForTests(null);
+  __setAuthRepositoryForTests(null);
   await app?.close();
 });
 
@@ -79,7 +83,15 @@ describe("catalog feature descriptor", () => {
 });
 
 describe("catalog summary", () => {
+  it("requires authentication", async () => {
+    __setAuthRepositoryForTests(deniedAuthRepository());
+    app = buildApp(fixtureRoot);
+    const res = await app.inject({ method: "GET", url: "/api/v1/server/catalog" });
+    expect(res.statusCode).toBe(401);
+  });
+
   it("reports availability and entry counts", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     app = buildApp(fixtureRoot);
     const res = await app.inject({ method: "GET", url: "/api/v1/server/catalog" });
     expect(res.statusCode).toBe(200);
@@ -91,6 +103,7 @@ describe("catalog summary", () => {
   });
 
   it("degrades to catalog_available=false (HTTP 200) when the root is missing", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     app = buildApp(join(fixtureRoot, "does-not-exist"));
     const res = await app.inject({ method: "GET", url: "/api/v1/server/catalog" });
     expect(res.statusCode).toBe(200);
@@ -111,6 +124,7 @@ describe("catalog summary", () => {
 
 describe("catalog capabilities listing", () => {
   it("lists manifest summaries sorted by directory, flags parse errors, skips noise", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     app = buildApp(fixtureRoot);
     const res = await app.inject({
       method: "GET",
@@ -136,6 +150,7 @@ describe("catalog capabilities listing", () => {
 
 describe("catalog agent templates listing", () => {
   it("lists template summaries with declared visibility passed through verbatim", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     app = buildApp(fixtureRoot);
     const res = await app.inject({
       method: "GET",

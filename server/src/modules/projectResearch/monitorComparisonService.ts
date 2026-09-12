@@ -88,7 +88,7 @@ export class ProjectResearchMonitorComparisonService {
   )): Promise<MonitorComparisonQueueResult> {
     const material = await this.eligibleMaterial(input.spaceId, input.projectId, input.sourceItemIds);
     if (material.length === 0) return { outcome: "no_eligible_material" };
-    const understanding = await resolveNotebookNote(this.db, input.spaceId, input.projectId, "understanding");
+    const understanding = await resolveNotebookNote(this.db, input.spaceId, input.projectId, "understanding", null);
     // A comparison against an absent baseline is not a cheaper comparison, it
     // is a different question. Report it and let the caller surface it.
     if (!understanding.present) return { outcome: "no_baseline", role: understanding.role };

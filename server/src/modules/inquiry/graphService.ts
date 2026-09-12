@@ -2,6 +2,7 @@ import type { GraphProjection, GraphProjectionEdge, GraphProjectionNode } from "
 import type { ServerConfig } from "../../config.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { getDbPool } from "../../db/pool.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 import { assertProjectReadable } from "../projects/access.js";
 import { GraphProjectionBuilder } from "../graph/projectionBuilder.js";
 import { GraphProjectionRepository } from "../graph/projectionRepository.js";
@@ -47,20 +48,25 @@ export class InquiryGraphService {
     options: { limit: number } = { limit: DEFAULT_GRAPH_LIMIT },
   ): Promise<GraphProjection> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
+    const threadReadSql = contentReadSql("space_object", "so", "$3");
     const [threads, total] = await Promise.all([
       this.db.query<ThreadNodeRow>(
       `SELECT t.object_id AS id, t.kind, t.statement, t.lifecycle_status, t.attention_state, so.updated_at
          FROM inquiry_threads t
          JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
         WHERE t.space_id = $1 AND t.project_id = $2 AND t.lifecycle_status <> 'superseded'
+          AND ${threadReadSql}
         ORDER BY so.created_at ASC, t.object_id ASC
-        LIMIT $3`,
-      [identity.spaceId, projectId, options.limit],
+        LIMIT $4`,
+      [identity.spaceId, projectId, identity.userId, options.limit],
       ),
       this.db.query<{ count: number }>(
-        `SELECT count(*)::int AS count FROM inquiry_threads
-          WHERE space_id=$1 AND project_id=$2 AND lifecycle_status <> 'superseded'`,
-        [identity.spaceId, projectId],
+        `SELECT count(*)::int AS count
+           FROM inquiry_threads t
+           JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
+          WHERE t.space_id=$1 AND t.project_id=$2 AND t.lifecycle_status <> 'superseded'
+            AND ${threadReadSql}`,
+        [identity.spaceId, projectId, identity.userId],
       ),
     ]);
     const threadIds = new Set(threads.rows.map((row) => row.id));
@@ -69,10 +75,14 @@ export class InquiryGraphService {
               r.link_type AS relation_kind
          FROM object_relations r
          JOIN inquiry_threads ft ON ft.object_id = r.from_object_id AND ft.space_id = r.space_id
+         JOIN space_objects fso ON fso.id = ft.object_id AND fso.space_id = ft.space_id
          JOIN inquiry_threads tt ON tt.object_id = r.to_object_id AND tt.space_id = r.space_id
+         JOIN space_objects tso ON tso.id = tt.object_id AND tso.space_id = tt.space_id
         WHERE r.space_id = $1 AND r.status = 'active'
-          AND ft.project_id = $2 AND tt.project_id = $2`,
-      [identity.spaceId, projectId],
+          AND ft.project_id = $2 AND tt.project_id = $2
+          AND ${contentReadSql("space_object", "fso", "$3")}
+          AND ${contentReadSql("space_object", "tso", "$3")}`,
+      [identity.spaceId, projectId, identity.userId],
     );
 
     const nodes: GraphProjectionNode[] = threads.rows.map((row) => ({

@@ -24,6 +24,7 @@ on:
       - packages/host-daemon/**
       - packages/agent-cli/**
       - packages/folder-read/**
+      - packages/outbound-guard/**
       - packages/protocol/**
       - package.json
       - pnpm-lock.yaml
@@ -98,6 +99,7 @@ jobs:
           pnpm --filter @rainver/protocol build
           pnpm --filter @rainver/agent-cli build
           pnpm --filter @rainver/folder-read build
+          pnpm --filter @rainver/outbound-guard build
           pnpm --filter @rainver/host-daemon build
 
       - name: Assemble Linux release assets

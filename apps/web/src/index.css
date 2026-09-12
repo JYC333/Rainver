@@ -134,6 +134,38 @@ html, body, #root {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Home / Space Today: one column below the shell's md rail breakpoint so the
+   300px aside cannot crush the main column on a phone. */
+.page-dashboard {
+  min-height: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 16px 16px 96px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.page-dashboard-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+@media (min-width: 768px) {
+  .page-dashboard {
+    padding: 16px 20px 96px;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 18px;
+  }
+
+  .page-dashboard-hero {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

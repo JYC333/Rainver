@@ -279,15 +279,15 @@ fail closed via `unknown_policy_action` DENY if ever passed to `PolicyEngine` or
 | Action | File | Gate |
 |--------|------|------|
 | `runtime.execute` | `server/src/modules/runs/orchestrationService.ts` | Uses `enforce()` before credentials, Runtime Context Delivery, and adapter execution. Decision fields are in `context`; safe duplicates are in `metadata_json`. |
-| `runtime.use_credential` | `server/src/modules/providers/providerCommandStore.ts`, provider invocation, and run orchestration | Uses `enforce()` before ModelProvider API-key secret fetch; `resource_space_id` comes from the credential row. Same-space manual/api/delegation origins allow; automation requires approval. A CLI runtime fetches no secret here — its login is held by its copy on the execution host (ADR 0016), so this gate applies to the provider channel only. **fail_closed**. |
+| `runtime.use_credential` | `server/src/modules/policy/credentialSpend.ts` (`authorizeCredentialSpend`), called by provider invocation, proxy lease minting (`runs/remoteProviderBinding.ts`) and the Run executor (`runs/orchestrationService.ts`) | Uses `enforce()` before any ModelProvider key is resolved or proxy lease minted. The spend names its basis: a person (`manual`); a Run, decided on its root, whose `automation`/`autonomous` root needs the firing Automation's active grant read live through `automation_runs`; or an unattended setup re-read at spend time. Unattended spend with no authorization record is DENY, never approval. A CLI runtime fetches no secret here — its login is held by its copy on the execution host (ADR 0016), so this gate applies to the provider channel only. **fail_closed**. |
 | `context.inject_memory` | execution-control preflight and `server/src/modules/runtimeContext/` | Memory acquisition is bounded by the immutable control snapshot and live same-Space/user authorization. |
 | `context.render_for_runtime` | `server/src/modules/runtimeContext/` and `server/src/modules/runs/` | Accepted Delivery is authorized before adapter execution; cross-space drift fails closed. |
-| `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers | Uses `enforce()` before Project Folder file writes. **fail_closed**. |
+| `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers | Uses `enforce()` before Project Folder file writes, including `code_patch` rollback. **fail_closed**. |
 | `project_folder.read` | `server/src/modules/projectFolders/repository.ts` | Uses `enforce()` before Project Folder tree/file/status/diff reads. Uses actual `ProjectFolder.space_id` as `resource_space_id`. Normal project reads default allow; protected-Folder, external-root, protected/restricted, full diff, and secret-like path reads use `force_record=True`. PathPolicy still blocks traversal and secret-like paths before content is returned. Full diff is bounded and secret-like diff values are redacted; secret-like diff paths are denied. |
 | `artifact.persist` | `server/src/modules/runs/materializationService.ts` | Uses `enforce()` before persistence. Blocked decisions are audited once and write no file or row. **fail_closed**. |
 | `proposal.create` | `server/src/modules/proposals/` and target modules | Uses `enforce()` for user-created proposals. |
 | `proposal.create` | `server/src/modules/projectFolders/codePatch.ts` | Uses `enforce()` with `force_record=True` for system-created code_patch proposals. |
-| `proposal.apply` | `server/src/modules/proposals/applyService.ts` | Uses `enforceProposalApply()`; unsupported types deny first. **fail_closed**. |
+| `proposal.apply` | `server/src/modules/proposals/applyService.ts` | Uses `enforceProposalApply()` on accept and `code_patch` rollback; unsupported types deny first. **fail_closed**. |
 | `agent.config_update` | `server/src/modules/agents/service.ts` | Uses `enforce()` before creating `agent_config_update` proposals. This is the domain-specific proposal creation audit; accepted mutation still goes through `proposal.apply`. Metadata includes changed field names and safe IDs only, not raw system prompt or policy blobs. |
 | `automation.create` | `server/src/modules/automations/service.ts` | **Uses server `enforce()`**. Runtime preflight and policy preflight simulation must pass before the Automation row is written. `membership_role`, `agent_id`, `trigger_type` in `context`. **fail_closed** — persistence failure blocks creation. |
 | `automation.update` | `server/src/modules/automations/service.ts` | **Uses server `enforce()`**. `membership_role`, `agent_id` in `context`. **fail_closed**. |
@@ -302,6 +302,27 @@ These guards are policy-relevant but are not separate action-registry entries.
 Runtime Context live-revalidates every canonical direct/retrieval source before
 Delivery persistence; there is no manual context-artifact attachment guard.
 
+#### Shared authorizers (2026-09-11 security remediation)
+
+One authorizer per kind of decision, so a new route inherits the rule instead of
+restating it. None of these is an action-registry entry; each is the single
+function every caller of its kind goes through, and the point of listing them
+here is that a reviewer can find every enforcement point by finding the
+function's callers.
+
+| Authorizer | Where | What it decides |
+|---|---|---|
+| `bodyWithheld` (`access/contentAccessTypes.ts`) | every body serializer | Whether a row's body is returned or withheld, from a computed `ContentAccessLevel`. Base rows carry no level, so a read path that forgets it cannot compile. |
+| `assertAgentOwner` (`agents/agentAccess.ts`) | every Agent mutation | Who may change an Agent; an unowned system Agent belongs to the Space owner/admin. |
+| `assertThreadReadable` (`inquiry/threadAccess.ts`) | every Thread path | Read, change, or publish on a Thread, with the purpose named at the call site. |
+| `authorizeCredentialSpend` (`policy/credentialSpend.ts`) | every ModelProvider spend | See `runtime.use_credential` above. |
+| `effectiveRunTrigger` (`systemActions/effectiveRunTrigger.ts`) | persona writes | A Run's origin **and** the person responsible for it, from one row. It hops to the root only for a `delegation` origin; `authorizeCredentialSpend` walks the whole `parent_run_id` chain instead, and the two are not yet one resolver — recorded as an accepted defer in the Phase 5 ledger. |
+| `createOutboundGuard` / `fetchGuarded` (`@rainver/outbound-guard`, `sources/outboundUrlSafety.ts`) | every server-side fetch of a member-supplied URL | Which addresses may be dialled, pinned against DNS rebinding, with the redirect, credential and body rules. ModelProvider calls are deliberately outside it (D2). |
+| `contentReadSql` + `runReadSql` / `proposalReadSql` / `artifactReadSql` / `runInheritedReadSql` (`access/contentAccessSql.ts`) | the cross-domain readers: tasks, projectWork, agentGroups, sources, plans, frontendSupport | The read predicate for its data class. Lives in `access/` rather than a product module so those domains can import it without coupling (B33). **Not yet every reader**: the canonical `runs`, `proposals`, `artifacts` and `projects` repositories still compose the same pair by hand beside their own predicates, which `contentAccessSql.ts` records at its own definition. A term added here does not reach them. |
+| `assertWritableSpaceObject` (`knowledge/knowledgeWriteAccess.ts`) | every note and Knowledge-source mutation | Who may change a shared object: anything but `space_shared` belongs to its owner, and a Project-bound object also needs Project write. |
+| `helperProcessEnv` (`packages/host-daemon/src/providerBinding.ts`) | every daemon helper that runs a vendor runtime | What a spawned helper inherits: the machine's environment minus that runtime's vendor credentials. |
+| `csrfOriginAllowed` / `stateChangingReadAllowed` (`gateway/csrfOrigin.ts`) | every cookie-authenticated write, and the six GETs whose effects reach past their response | Whether another site caused this request. The two are deliberately not the same rule: the write check refuses an explicit cross-site `Sec-Fetch-Site` or a foreign `Origin` and otherwise allows, leaving the rest to `SameSite=Lax`; the read check **fails closed**, because a top-level cross-site navigation — the case it exists for — carries no `Origin` at all. |
+
 ### WIRED_VIA_PROPOSAL action inventory
 
 These actions are enforced exclusively via the `proposal.apply` gate (`PolicyGateway.enforceProposalApply()`).
@@ -313,7 +334,7 @@ is the actual fail_closed audit and approval boundary for all of these actions.
 
 | Action | Protected via | Notes |
 |--------|--------------|-------|
-| `memory.write` | `systemActionDispatcher` | An Agent's own bounded write (ADR 0003 §2). In `ORIGIN_GATED_PROJECT_WRITES`: allowed from a person's turn, `require_approval` from an unattended origin — **except** a persona write on an `agent`-scope entry, the single exception ADR 0003 §5 and ADR 0017 §1–§2 name, whose origin test runs the other way round. The exemption is scoped to that one write, never to the action: `memoryPolicyContext` resolves it server-side from the input for a create and from the target row for a revision, and `ruleUnattendedProjectWrite` reads only that flag. Reach changes become proposals in `memoryDirectWriteExecutors.ts`. |
+| `memory.write` | `systemActionDispatcher` | An Agent's own bounded write (ADR 0003 §2). In `ORIGIN_GATED_PROJECT_WRITES`: allowed from a person's turn, `require_approval` from an unattended origin — **except** a persona write on an `agent`-scope entry, the single exception ADR 0003 §5 and ADR 0017 §1–§2 name, whose origin test runs the other way round. The exemption is scoped to that one write, never to the action: `memoryPolicyContext` resolves it server-side from the input for a create and from the target row for a revision, and `ruleUnattendedProjectWrite` reads only that flag. What the exemption grants is passage past the *origin* boundary; `decidePersonaWrite` then applies ADR 0003 §5's table, so an unattended Run whose responsible person is not the Agent's owner leaves a proposal for the owner rather than applying. Reach changes become proposals in `memoryDirectWriteExecutors.ts`. |
 | `memory.create` | `proposal.apply` gate | The proposal route. No direct PolicyGateway call site. |
 | `memory.update` | `proposal.apply` gate | Memory updates require proposal approval. No direct PolicyGateway call site. |
 | `memory.archive` | `proposal.apply` gate | Memory archive requires proposal approval. No direct PolicyGateway call site. |
@@ -401,7 +422,7 @@ instead of silently using `model_provider_mode=none`.
 | `run.user_private_scope` | `server/src/modules/policy/decisionCore.ts` | Structured log |
 | `memory.cross_space_read` | Structural deny only | Structured log on blocked cross-space with allow-looking row |
 | `runtime.execute` | `server/src/modules/runs/orchestrationService.ts` PolicyGateway (decision fields in `context`; audit duplicates in `metadata_json`) | PolicyDecisionRecord |
-| `runtime.use_credential` | provider credential resolver + run orchestration PolicyGateway for ModelProvider API-key runtimes (`trigger_origin` in `context`; credential space from DB) | PolicyDecisionRecord |
+| `runtime.use_credential` | `authorizeCredentialSpend` for every ModelProvider spend (root Run origin, live Automation grant, or re-read setup in `context`) | PolicyDecisionRecord on every decision |
 | `context.inject_memory` | context/runs PolicyGateway (`trigger_origin` in `context`) | PolicyDecisionRecord on DENY |
 | `context.render_for_runtime` | runs PolicyGateway (`has_context_taint` in `context`) | PolicyDecisionRecord on DENY |
 | `project_folder.read` | projectFolders PolicyGateway (`read_kind`, `relative_path`, Folder posture in `context`) | PolicyDecisionRecord on DENY/REQUIRE_APPROVAL and forced audit for protected-Folder/external-root/restricted/full-diff/secret-like reads |
@@ -466,22 +487,5 @@ re-loads the target taint and requires database-backed, unrevoked
 `egress_granting_user` approvals from every contributing owner. Payload flags
 are declarations, never proof of approval.
 
-### Remaining deferred items
-
-See `docs/FUTURE_ROADMAP.md` for the full deferred list. Key items:
-- Semantic leakage detection (paraphrased personal-memory meaning requires manual review).
-- Publication types beyond tainted Artifacts.
-- Long-lived, agent-level, space-level, and multi-user grants.
-- `GET /api/v1/spaces/{space_id}/grant-stats` admin endpoint.
-- Consuming-only sub-limit (separate cap of 3 deferred).
-
----
-
-## Remaining deferred items
-
-1. Semantic leakage detection for grant-derived output.
-2. Publication targets beyond the registered tainted-Artifact egress flow.
-3. Cross-instance publication delivery and redaction policy.
-4. Federation remote fetch (see `docs/FEDERATED_ACCESS_MODEL.md`).
-5. `GET /api/v1/spaces/{space_id}/grant-stats`: space admin aggregate grant statistics endpoint. Deferred. Must return safe aggregate counts only.
-6. Consuming-only sub-limit: Combined active+consuming cap of 10 is enforced. Separate consuming-only cap of 3 is deferred.
+Unimplemented grant/publication expansions:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §13–§14.

@@ -10,7 +10,7 @@ import type {
   DirectiveType,
   FinanceBookRow,
 } from "./domain/directives.js";
-import { financeLedgerService } from "./domain/service.js";
+import { AccountNotFoundError, financeLedgerService } from "./domain/service.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DIRECTIVE_STATUSES: readonly DirectiveStatus[] = ["draft", "proposed", "posted", "voided"];
@@ -26,6 +26,11 @@ class RequestError extends Error {
   constructor(readonly statusCode: number, message: string) {
     super(message);
   }
+}
+
+/** Postgres `unique_violation`. The driver surfaces it as `err.code`. */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: string }).code === "23505";
 }
 
 function requireString(body: Record<string, unknown>, key: string): string {
@@ -212,6 +217,15 @@ export function registerFinanceLedgerRoutes(
         reply.code(201).send({ account });
       } catch (err) {
         if (err instanceof RequestError) throw err;
+        // A unique violation on (book_id, name) says an account by that name
+        // exists — including one hidden from this person, since the constraint
+        // is book-wide and visibility is not part of it. Answered as a plain
+        // conflict rather than by echoing the driver's message, which named the
+        // constraint and confirmed the row. The import path already did this;
+        // the direct create did not.
+        if (isUniqueViolation(err)) {
+          throw new RequestError(409, "an account with that name already exists in this book");
+        }
         throw new RequestError(422, err instanceof Error ? err.message : "invalid account");
       }
     }),
@@ -237,6 +251,9 @@ export function registerFinanceLedgerRoutes(
         );
         reply.send({ account });
       } catch (err) {
+        // One answer for every account this person may not change. A 403 that
+        // said *why* told a stranger the id exists and whether it is personal.
+        if (err instanceof AccountNotFoundError) throw new RequestError(404, "Account not found");
         throw new RequestError(403, err instanceof Error ? err.message : "visibility change rejected");
       }
     }),
@@ -253,7 +270,15 @@ export function registerFinanceLedgerRoutes(
         book.id,
         param(request, "accountId"),
         requireDate(body, "date"),
-      );
+        identity.userId,
+      ).catch((err: unknown) => {
+        // Only the "no such account for you" case becomes 404, and it is matched
+        // by class: swallowing every error here reported a connection failure as
+        // a missing account, and matching on the message meant rewording it
+        // silently turned a deliberate 404 into a 500.
+        if (err instanceof AccountNotFoundError) throw new RequestError(404, "Account not found");
+        throw err;
+      });
       reply.send({ account });
     }),
   );
@@ -296,6 +321,7 @@ export function registerFinanceLedgerRoutes(
         status,
         directiveType,
         importSourceId: query["import_source_id"],
+        viewerUserId: identity.userId,
       });
       reply.send({ directives });
     }),
@@ -309,6 +335,7 @@ export function registerFinanceLedgerRoutes(
         db,
         identity.spaceId,
         book.id,
+        identity.userId,
       );
       reply.send({ transactions });
     }),
@@ -383,7 +410,7 @@ export function registerFinanceLedgerRoutes(
         );
         reply.send({ postings });
       } catch (err) {
-        if (err instanceof Error && err.message === "Account not found") {
+        if (err instanceof AccountNotFoundError) {
           throw new RequestError(404, "account not found");
         }
         throw err;
@@ -409,7 +436,7 @@ export function registerFinanceLedgerRoutes(
     "/api/v1/finance/books/:bookId/validate",
     financeRoute(async (request, reply, identity) => {
       const book = await requireBook(request, identity);
-      const result = await financeLedgerService.validateBook(db, identity.spaceId, book.id);
+      const result = await financeLedgerService.validateBook(db, identity.spaceId, book.id, identity.userId);
       reply.send({ errors: result.errors });
     }),
   );
@@ -427,7 +454,6 @@ export function registerFinanceLedgerRoutes(
           identity.userId,
           {
             text: requireString(body, "text"),
-            filename: optionalString(body, "filename") ?? undefined,
             sourceType: optionalString(body, "source_type") ?? undefined,
             status: body["post_directly"] === true ? "posted" : "proposed",
           },

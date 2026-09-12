@@ -8,10 +8,11 @@ import { SearchExecutionAdapter } from "../../sources/search/searchExecutionAdap
 import { fetchSource, type SourceFetchResult } from "../../sources/sourceFetch.js";
 import { consumeConnectionQuota } from "../../sources/sourceQuotaBucket.js";
 import type { ResearchPreviewBatch, ResearchPreviewCandidate } from "./previewRelevanceAssessor.js";
+import type { SourceFetchOptions } from "../../sources/sourceFetch.js";
 
 type PreviewFetcher = (
   url: string,
-  options: { headers?: Record<string, string>; maxDownloadBytes: number; timeoutMs?: number },
+  options: Pick<SourceFetchOptions, "headers" | "credentialHeaders" | "maxDownloadBytes" | "timeoutMs">,
 ) => Promise<SourceFetchResult>;
 
 const PREVIEW_ATTEMPT_TIMEOUT_MS = 10_000;
@@ -46,15 +47,18 @@ export class ProviderPreviewGateway {
       ? await this.resolveCredential(identity, input.credentialId)
       : null;
     const request = this.executor.buildScanRequest({ compiledQuery: input.compiledQuery });
-    const headers = { ...(request.headers ?? {}), ...(credential ? { [credential.header_name]: credential.header_value } : {}) };
-    let response = await this.attemptFetch(input.compiledQuery.provider_key, request.url, headers);
+    // The credential goes in its own field, never merged into `headers` — see
+    // `sourceQueryPreviewService` for what merging it cost.
+    const headers = { ...(request.headers ?? {}) };
+    const credentialHeaders = credential ? { [credential.header_name]: credential.header_value } : undefined;
+    let response = await this.attemptFetch(input.compiledQuery.provider_key, request.url, headers, credentialHeaders);
     // 429 is rate limiting, not a malformed request — it deserves the same
     // one retry as a timeout or a real upstream 5xx (prepareRequest's
     // per-provider throttle, e.g. arXiv's 3s floor, already runs before this
     // retry too). A genuine 4xx (400/404/...) is not retried: retrying an
     // identically malformed request only burns budget for the same result.
     if (response === "timeout" || response.status >= 500 || response.status === 429) {
-      response = await this.attemptFetch(input.compiledQuery.provider_key, request.url, headers);
+      response = await this.attemptFetch(input.compiledQuery.provider_key, request.url, headers, credentialHeaders);
     }
     if (response === "timeout" || response.status >= 500 || response.status === 429) {
       // The retry itself failed too — surface what actually happened on that
@@ -93,10 +97,11 @@ export class ProviderPreviewGateway {
     providerKey: ResearchCompiledQuery["provider_key"],
     url: string,
     headers: Record<string, string>,
+    credentialHeaders?: Record<string, string>,
   ): Promise<SourceFetchResult | "timeout"> {
     await this.executor.prepareRequest(providerKey);
     try {
-      return await this.fetcher(url, { headers, maxDownloadBytes: 1024 * 1024, timeoutMs: PREVIEW_ATTEMPT_TIMEOUT_MS });
+      return await this.fetcher(url, { headers, credentialHeaders, maxDownloadBytes: 1024 * 1024, timeoutMs: PREVIEW_ATTEMPT_TIMEOUT_MS });
     } catch (error) {
       if (isTimeoutError(error)) return "timeout";
       throw error;

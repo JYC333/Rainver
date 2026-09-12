@@ -118,7 +118,7 @@ export class RunWorkflowService {
   ): Promise<RunWorkflowPreview> {
     const repository = new PgRunRepository(this.db);
     const [children, steps] = await Promise.all([
-      repository.listChildRuns(identity.spaceId, run.id),
+      repository.listChildRuns(identity.spaceId, run.id, identity.userId),
       repository.listRunSteps(identity.spaceId, run.id),
     ]);
     const sourceRunIds = [run.id, ...children.map((child) => child.id)];

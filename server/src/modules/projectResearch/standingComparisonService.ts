@@ -109,7 +109,7 @@ export class ProjectResearchStandingComparisonService {
         await markBatch(db, row, "failed", now, { error: "Standing comparison requires an active Project writer" });
         return { batch_id: row.id, status: "failed" };
       }
-      const baseline = await resolveNotebookNote(db, spaceId, row.project_id, "understanding");
+      const baseline = await resolveNotebookNote(db, spaceId, row.project_id, "understanding", null);
       if (!baseline.present) {
         await markBatch(db, row, "blocked_baseline", now, { missingBaselineRole: baseline.role });
         return { batch_id: row.id, status: "blocked_baseline", missing_baseline_role: baseline.role };

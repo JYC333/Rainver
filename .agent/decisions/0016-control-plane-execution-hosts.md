@@ -95,10 +95,9 @@ property of the host, never of a Run.
   on the host, from paths only the host knows; what the control plane supplies
   is policy — how the workspace is bound and whether the namespace gets a
   network at all. The vendor CLI's own sandbox is *meant* to be relaxed in
-  strict mode so there is exactly one boundary and it is ours, but that half
-  was **not built**: the daemon exports `RAINVER_STRICT_SANDBOX=1` and nothing
-  consumes it. It remains the single acceptance blocker carried out of the
-  unified host work (deferred register).
+  strict mode   so there is exactly one boundary and it is ours. The daemon writes
+  `sandbox_mode = "workspace-write"` into the Codex copy's `config.toml` before
+  spawn; `RAINVER_STRICT_SANDBOX=1` is exported for anything that reads it.
 
   The reason first recorded here — that a nested vendor sandbox *fails* inside
   this namespace because it needs a user-namespace call already spent — was

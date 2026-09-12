@@ -347,6 +347,7 @@ export class SpaceAssistantService {
       this.client,
       identity.spaceId,
       projectId,
+      identity.userId,
     );
     const managedName = await this.managedNameFor(space.rows[0]?.type ?? null, seed.name, projectId);
     if (existing) {
@@ -430,7 +431,7 @@ export class SpaceAssistantService {
       created.id,
       MANAGED_ASSISTANT_PROMPT_KEY,
     );
-    return this.agents.getSystemAssistantInTransaction(this.client, identity.spaceId, projectId)
+    return this.agents.getSystemAssistantInTransaction(this.client, identity.spaceId, projectId, identity.userId)
       .then((assistant) => assistant ?? created);
   }
 

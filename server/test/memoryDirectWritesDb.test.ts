@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { insertMemoryEntry } from "./support/memoryFixtures.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgMemoryReadRepository } from "../src/modules/memory/repository.js";
@@ -586,5 +587,21 @@ describe("a person's own archive and restore (real Postgres)", () => {
     expect((await theirs.dispatch(remember({ content: "Theirs 4" }, "t-4"))).modelResult).toMatchObject({ ok: false });
     expect((await (await dispatcher()).dispatch(remember({ content: "Ours" }, "ours-1"))).modelResult)
       .toMatchObject({ ok: true, outcome: "remembered" });
+  });
+});
+
+describe("memory version history for a Space member (real Postgres)", () => {
+  it("serves a shared, full-access memory's content to a member reading its history", async () => {
+    const memoryId = randomUUID();
+    await insertMemoryEntry(
+      db.pool,
+      SPACE,
+      { id: memoryId, owner_user_id: OWNER, content: "SHARED MEMORY BODY" },
+      { visibility: "space_shared" },
+    );
+    const versions = await new PgMemoryReadRepository(db.pool).versions(SPACE, OTHER, memoryId);
+    expect(versions.items).toEqual([
+      expect.objectContaining({ memory: expect.objectContaining({ content: "SHARED MEMORY BODY" }) }),
+    ]);
   });
 });

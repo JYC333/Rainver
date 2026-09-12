@@ -13,9 +13,8 @@ Deployment Instance
 ```
 
 A space is **not** the only meaningful worldview for a user. A user may belong to several spaces
-simultaneously. Future model concepts (PersonalView, ExecutionContext) will make cross-space
-aggregation explicit without breaking the per-space permission boundary. See
-`docs/TARGET_VIEW_MODEL.md` for the target concepts.
+simultaneously. Cross-space aggregates that exist today are the `/me/*` read models.
+See [TARGET_VIEW_MODEL.md](TARGET_VIEW_MODEL.md) for owner/scope/visibility.
 
 ## Database model
 
@@ -142,6 +141,6 @@ reasoning-context mechanism for a shared-space run. See
 - `docs/PERSONAL_MEMORY_GRANT.md` — explicit personal memory grant mechanism
 - `docs/CONTENT_PUBLICATIONS.md` — targeted cross-space snapshot transfer
 - `docs/POLICY_AND_PRIVACY_BOUNDARIES.md` — policy enforcement inventory
-- `docs/FEDERATED_ACCESS_MODEL.md` — federated access (deferred)
+- `docs/FEDERATED_ACCESS_MODEL.md` — federation is not implemented
 - `server/src/modules/access/contentAccessPolicy.ts` — memory and content read authorization
 - `server/src/modules/memory/memoryApplyRepository.ts` — accepted memory proposal apply path

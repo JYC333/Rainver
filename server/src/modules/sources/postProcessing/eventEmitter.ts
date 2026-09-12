@@ -52,6 +52,10 @@ export async function emitSourcePostProcessingDeepAnalysisEvent(
       const ruleId = stringValue(followup.source_post_processing_rule_id);
       if (!ruleId) continue;
       const sourceRunId = stringValue(followup.source_post_processing_run_id);
+      // Carried from the run that asked for the analysis, so the follow-up is
+      // decided as attended or unattended the way that run was.
+      const triggerType = followupTriggerType(followup.trigger_type);
+      if (!triggerType) continue;
       const key = `${ruleId}:${sourceRunId ?? ""}:${input.sourceItemId}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -59,7 +63,7 @@ export async function emitSourcePostProcessingDeepAnalysisEvent(
         job_type: SOURCE_POST_PROCESSING_EVENT_JOB_TYPE,
         payload: {
           phase: "deep_analysis",
-          trigger_type: "manual",
+          trigger_type: triggerType,
           source_channel_id: sourceChannelId,
           rule_id: ruleId,
           source_item_ids: [input.sourceItemId],
@@ -89,6 +93,10 @@ function sourcePostProcessingFollowups(metadata: Record<string, unknown>): Recor
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is Record<string, unknown> =>
     Boolean(item && typeof item === "object" && !Array.isArray(item) && item.phase === "deep_analysis"));
+}
+
+function followupTriggerType(value: unknown): "items_materialized" | "schedule" | "manual" | null {
+  return value === "items_materialized" || value === "schedule" || value === "manual" ? value : null;
 }
 
 function stringValue(value: unknown): string | null {

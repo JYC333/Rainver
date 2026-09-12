@@ -6,6 +6,8 @@ import { BlockIdAttribute } from './blockIds'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
+import { safeAppPath, safeHttpUrl } from '../../lib/safeHttpUrl'
+import { isSameOriginImage } from '../ai-elements/safeMarkdown'
 import { cn } from '../../lib/utils'
 import type { ReaderAnnotation } from '../../types/api'
 
@@ -56,6 +58,11 @@ interface ReadOnlyTiptapReaderProps {
    *  before_context/after_context offsets align with server-computed text_range. */
   normalizedText: string
   className?: string
+  /**
+   * Whether a cross-origin image may load inline. Off unless the document is
+   * one the person chose to capture — see {@link ReaderImage}.
+   */
+  remoteImages?: boolean
   onTextSelected?: (selection: TextSelection | null) => void
   onBlockFocused?: (index: number | null) => void
   onAnnotationClick?: (annotationId: string) => void
@@ -85,7 +92,7 @@ const ReaderLink = Mark.create({
 
   renderHTML({ HTMLAttributes }) {
     const { href: rawHref, ...rest } = HTMLAttributes
-    const href = typeof rawHref === 'string' && /^https?:\/\//i.test(rawHref) ? rawHref : null
+    const href = safeHttpUrl(typeof rawHref === 'string' ? rawHref : null)
     if (!href) return ['span', rest, 0]
     return [
       'a',
@@ -99,11 +106,30 @@ const ReaderLink = Mark.create({
   },
 })
 
-const ReaderImage = Node.create({
+/**
+ * An image in a reader document.
+ *
+ * Whether a cross-origin one may load depends on where the document came from,
+ * not on the renderer. A captured article's images are part of the article the
+ * person chose to read, and the Reader keeps them by design
+ * (`image_policy: "remote_reference"`). A *model-authored* document — a Library
+ * summary or digest, written by a Run over ingested third-party items — is
+ * downstream of prompt injection, and a cross-origin `<img>` there is fetched
+ * with no click, from the reader's IP, to a URL the model chose.
+ *
+ * So `remoteImages` is off unless a caller says otherwise, and with it off an
+ * external source renders as a link, exactly as chat markdown does (D5). This
+ * used to be one rule for both: `safeHttpUrl` alone, which accepts any host.
+ */
+const ReaderImage = Node.create<{ remoteImages: boolean }>({
   name: 'image',
   group: 'block',
   atom: true,
   selectable: true,
+
+  addOptions() {
+    return { remoteImages: false }
+  },
 
   addAttributes() {
     return {
@@ -119,8 +145,32 @@ const ReaderImage = Node.create({
 
   renderHTML({ HTMLAttributes }) {
     const { src: rawSrc, ...rest } = HTMLAttributes
-    const src = typeof rawSrc === 'string' && /^https?:\/\//i.test(rawSrc) ? rawSrc : null
+    const raw = typeof rawSrc === 'string' ? rawSrc : null
+    const src = safeAppPath(raw) ?? safeHttpUrl(raw)
     if (!src) return ['span', mergeAttributes(rest, { class: 'reader-image-missing' })]
+    if (!this.options.remoteImages && !isSameOriginImage(src)) {
+      // Named, not silently dropped: the person can see that the document had
+      // an image here and where it points, and open it if they choose.
+      let domain = src
+      try {
+        domain = new URL(src).hostname
+      } catch {
+        /* safeHttpUrl already parsed it */
+      }
+      const alt = typeof rest.alt === 'string' && rest.alt.trim() ? `${rest.alt.trim()} — ` : ''
+      return [
+        'a',
+        {
+          href: src,
+          title: src,
+          target: '_blank',
+          rel: 'noopener noreferrer',
+          class: 'reader-image-external',
+          'data-external-image': 'true',
+        },
+        `${alt}${domain}`,
+      ]
+    }
     return [
       'img',
       mergeAttributes(rest, {
@@ -236,6 +286,7 @@ export const ReadOnlyTiptapReader = forwardRef<ReadOnlyTiptapReaderHandle, ReadO
     contentJson,
     normalizedText,
     className,
+    remoteImages = false,
     onTextSelected,
     onBlockFocused,
     onAnnotationClick,
@@ -347,14 +398,14 @@ export const ReadOnlyTiptapReader = forwardRef<ReadOnlyTiptapReaderHandle, ReadO
         // about. Minting ids in a read-only view would be pure churn.
         BlockIdAttribute,
         ReaderLink,
-        ReaderImage,
+        ReaderImage.configure({ remoteImages }),
         ReaderTable,
         ReaderTableRow,
         ReaderTableCell,
         ReaderTableHeader,
         highlightExtension,
       ],
-      [highlightExtension],
+      [highlightExtension, remoteImages],
     )
 
     const editor = useEditor({

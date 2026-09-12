@@ -164,11 +164,8 @@ and oversight is not it.
   memory, and logging every row of a filtered list would bury the reads that
   matter.
 
-## Future work (TODO)
-
-- Validate `subject_user_id` and `owner_user_id` against space membership when a membership service is available.
-- Richer policy for `sensitivity_level` beyond MVP.
-- Deduplicate audit logs if the same memory is injected multiple ways in one request (optional product decision).
+Unimplemented Memory-policy ideas:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ## Non-goals
 

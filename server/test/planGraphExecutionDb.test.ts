@@ -560,6 +560,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
         },
       },
       triggerType: "manual",
+      triggerOrigin: "automation",
       inputJson: {},
       preflightSnapshot: { executable: true },
       budgetSources: [],
@@ -712,7 +713,8 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
           ],
         },
       },
-      triggerType: "manual", inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
+      triggerType: "manual", triggerOrigin: "automation",
+      inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
     });
     const sourceRun = (await db.pool.query<{ run_id: string }>(
       `SELECT link.run_id FROM workflow_execution_node_runs link
@@ -819,7 +821,8 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
           ],
         },
       },
-      triggerType: "manual", inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
+      triggerType: "manual", triggerOrigin: "automation",
+      inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
     });
 
     const sourceRun = (await db.pool.query<{ run_id: string }>(
@@ -967,6 +970,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
         },
       },
       triggerType: "manual",
+      triggerOrigin: "automation",
       inputJson: {},
       preflightSnapshot: { executable: true },
       budgetSources: [],
@@ -1092,7 +1096,8 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
           ],
         },
       },
-      triggerType: "manual", inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
+      triggerType: "manual", triggerOrigin: "automation",
+      inputJson: {}, preflightSnapshot: { executable: true }, budgetSources: [],
     });
     const runs = new PgRunRepository(db.pool);
 

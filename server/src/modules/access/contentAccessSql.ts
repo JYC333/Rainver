@@ -410,3 +410,65 @@ export function assertSqlIdentifier(value: string, label: string): void {
     throw new Error(`Invalid content access SQL ${label}`);
   }
 }
+
+/**
+ * A viewer-scoped read of a Run row, and of the rows that inherit a Run's Room.
+ *
+ * The content predicate is not sufficient on its own: its oversight branch
+ * admits a Space owner or admin who is inside the Project, and a Room is a
+ * visibility boundary that holds against them too (ADR 0018 decision 3). A read
+ * of a Run, or of a row whose only reason to exist is a Run — a Proposal, an
+ * Artifact, a Task's Run list, an evaluation, a work event — must carry both
+ * terms, or the boundary holds on the detail page and leaks on whichever list
+ * forgot.
+ *
+ * The Task, Board, work-view, updates-feed, Home and agent-group surfaces are
+ * on these. Readers outside that sweep still carry the content predicate alone
+ * — several of them return artifact bodies — and are the next place to look;
+ * `projects`, `proposals`, `runs` and `artifacts` write the same pair by hand
+ * beside their own predicates rather than calling these.
+ *
+ * These live here rather than in `runs` because every domain that shows a Run's
+ * output reads them: tasks, projectWork, projects, proposals, plans, Home. A
+ * predicate each of those imports from a product module would be the
+ * cross-domain coupling B33 asks them to avoid; `access` is where the shared
+ * read predicates already are.
+ */
+export function runReadSql(userParam: string, alias = "r"): string {
+  assertSqlIdentifier(alias, "alias");
+  return `${contentReadSql("run", alias, userParam)}
+    AND ${roomRunReadAccessSql(`${alias}.id`, `${alias}.space_id`, userParam)}`;
+}
+
+/** A Proposal inherits the Room of the Run that created it. */
+export function proposalReadSql(userParam: string, alias = "p"): string {
+  assertSqlIdentifier(alias, "alias");
+  return `${contentReadSql("proposal", alias, userParam)}
+    AND ${roomRunReadAccessSql(`${alias}.created_by_run_id`, `${alias}.space_id`, userParam)}`;
+}
+
+/** An Artifact inherits the Room of the Run that produced it. */
+export function artifactReadSql(userParam: string, alias = "a"): string {
+  assertSqlIdentifier(alias, "alias");
+  return `${contentReadSql("artifact", alias, userParam)}
+    AND ${roomRunReadAccessSql(`${alias}.run_id`, `${alias}.space_id`, userParam)}`;
+}
+
+/**
+ * A row that exists only because a Run produced it — an evaluation, a work
+ * event, a continuation — is readable only while that Run is.
+ *
+ * A row whose Run reference is NULL was not produced by a Run (a person's own
+ * evaluation, for instance) and is left to whatever gates its parent. The Run
+ * is named by an expression, not a column, because a work event carries it
+ * inside `data_json` rather than in a column of its own.
+ */
+export function runInheritedReadSql(runExpr: string, spaceExpr: string, userParam: string): string {
+  return `(${runExpr} IS NULL OR EXISTS (
+    SELECT 1
+      FROM runs run_inherited
+     WHERE run_inherited.id = ${runExpr}
+       AND run_inherited.space_id = ${spaceExpr}
+       AND ${runReadSql(userParam, "run_inherited")}
+  ))`;
+}

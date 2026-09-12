@@ -12,8 +12,8 @@ workspace owns its own layout. Notes is a working-knowledge workspace (configura
 collection tree + open-note tabs, create / edit + links/backlinks); Wiki is the KnowledgeItem browser under
 `/knowledge/wiki`; Sources lists evidence; Cards is a clean placeholder. The backend
 already supports source list/create/get/update/archive and item-source link CRUD;
-the current web client exposes Sources as list-only evidence browsing. Automatic
-generation, assessments, card generation, and richer search remain future work.
+the current web client exposes Sources as list-only evidence browsing. There is
+no automatic generation, assessment, or card-generation path.
 
 ### Frontend information architecture
 - **Knowledge** is first-level; **Notes** are working knowledge; **Wiki** is powered by
@@ -83,9 +83,10 @@ into subdomains by *lifecycle*, not just by view:
 - **Wiki** — *canonical knowledge*: stable concepts, definitions, structured pages,
   graph relations and evidence. Review-gated and versioned. Table `knowledge_items`.
 - **Sources** — external references / evidence. Table `sources`.
-- **Cards** — review/learning artifacts derived from Notes/Wiki/Sources.
-  Space-scoped content (`cards`); user-specific scheduling state (`card_review_states`);
-  append-only review history (`card_reviews`). FSRS algorithm implementation deferred.
+- **Cards** — schema only (`cards`, `card_review_states`, `card_reviews`).
+  No server module, no review API, and no FSRS runtime. Knowledge › Cards is
+  an empty-state placeholder. See
+  [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §3.
 
 Notes and Wiki are **related but not the same**: Wiki is not merely a different view
 of Notes. The working/canonical split is the reason they are separate models — folding
@@ -121,9 +122,9 @@ into child claim/object-relation proposals
 | **Claim** | `claims` | proposal → approval | global semantic atom attached to `space_objects` |
 | **ClaimSource** | `claim_sources` | proposal → approval with claim writes | claim ↔ evidence/source-policy path |
 | **ObjectRelation** | `object_relations` | proposal → approval | canonical FK-backed cross-object graph over `space_objects` |
-| **Card** | `cards` | direct CRUD (future) | space-scoped review card derived from knowledge objects |
-| **CardReviewState** | `card_review_states` | scheduler-written (future) | per-user FSRS scheduling state; one row per (card, user) |
-| **CardReview** | `card_reviews` | append-only (future) | per-user review history with rating + state snapshot |
+| **Card** | `cards` | schema only; no runtime writer | declared review-card table |
+| **CardReviewState** | `card_review_states` | schema only | declared per-user scheduling table |
+| **CardReview** | `card_reviews` | schema only | declared review-history table |
 
 Notes on the wiki layers: `source` is **not** a KnowledgeItem type — it is the `sources`
 table. `answer` **is** a canonical KnowledgeItem type (a `question` item and its `answer`
@@ -310,7 +311,10 @@ Knowledge is the first consumer of the shared retrieval engine
 (`server/src/modules/retrieval/`), registering a domain adapter
 (`knowledge/retrievalAdapter.ts`) for `KnowledgeItem`, `Note`, `Source`, and
 `Claim`. The engine is generic and domain-agnostic; the adapter owns all
-Knowledge-specific SQL and the visibility revalidation gate. See
+Knowledge-specific SQL and the visibility revalidation gate. A viewer whose
+effective `access_level` is `summary` receives stored summaries only — detail
+bodies, list `content_preview` slices of the body, and retrieval text are
+withheld. See
 [CONTEXT_AND_RETRIEVAL_LAYER.md](../architecture/CONTEXT_AND_RETRIEVAL_LAYER.md)
 for the engine/adapter boundary and the full retrieval + context-layer
 architecture. The Object Schema Registry foundation is served under the
@@ -417,7 +421,7 @@ provenance is not treated as human ownership authority.
 Knowledge reads are viewer-aware:
 
 - `space_shared` is readable by any authenticated member of the current space.
-- Project Folder-scoped `space_shared` is readable by any authenticated member of the current space for now. Project Folder-role narrowing is future work.
+- Project Folder-scoped `space_shared` is readable by any authenticated member of the current space. There is no Project Folder-role narrowing.
 - `private` has owner base access and never consults grants; private content
   cannot omit its owner.
 - `selected_users` requires an active grant in `content_access_grants` for an
@@ -441,7 +445,8 @@ endpoints remain collaborative within the current scope.
 
 ## Source Monitoring
 
-Knowledge proposal apply currently relies on proposal approval and the `proposal.apply` policy gate. `ProposalApplyService._enforce_source_monitoring()` has an explicit Knowledge branch documenting that full Knowledge source monitoring is future work. External or untrusted Activity/Artifact-derived Knowledge requires a future evaluator and must not be treated as safe merely because the current branch does not block.
+Knowledge proposal apply relies on proposal approval and the `proposal.apply` policy gate. `ProposalApplyService._enforce_source_monitoring()` has an explicit Knowledge branch; a full evaluator for external or untrusted Activity/Artifact-derived Knowledge is not implemented
+([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9).
 
 ## Policy Actions
 
@@ -641,7 +646,10 @@ not replaced by Source.
 - `getNoteRow` and `getSourceRow` apply the content read gate. They are the
   shared lookup behind every single-object read *and* every mutation, so a
   caller cannot update, delete, or roll back a note it cannot read — a rule
-  applied only to the list route is not a rule.
+  applied only to the list route is not a rule. Source create and update read
+  their row back through `getSourceRow` afterwards. Their writes are
+  data-modifying CTEs, whose effects the same statement's SELECT cannot see,
+  and reading back is also what gives the response the caller's access level.
 - **Every note write goes through `knowledge/noteWriter.ts`.** `withNoteWrites`
   owns the transaction and hands out a scope; creating, writing, applying AI
   block ops, rolling back, and assigning a Project role are its methods, and
@@ -665,16 +673,15 @@ not replaced by Source.
   every later statement in it, which is what the savepoint prevents.
 - `object_relations.from_object_id` / `to_object_id` are FK-backed
   `space_objects` endpoints in the same space, and an object cannot link to itself.
-- **Card content** (`cards`) is space-scoped; any member of the space can see cards
-  in that space. **Card review state** (`card_review_states`) and **review history**
-  (`card_reviews`) are user-specific. `cards.source_id` is polymorphic (no FK;
-  covered by `server/test/baselineSchema.test.ts`). The FSRS scheduling fields on
-  `card_review_states` are nullable — a state row can be created before first review.
+- **Cards tables exist in schema only.** `cards.source_id` is polymorphic (no FK;
+  covered by `server/test/baselineSchema.test.ts`). `card_review_states`
+  scheduling columns are nullable. There is no cards module and no runtime
+  visibility or FSRS writer.
 - Durable Knowledge writes go through proposals.
 - Agent-generated Knowledge never directly becomes active.
 - Private Knowledge reads are owner-only; selected-user reads require grants.
 - Knowledge does not automatically enter Memory or an accepted Runtime Context Delivery.
-- Knowledge promotion into Memory is a future explicit proposal flow.
+- There is no Knowledge-to-Memory promotion proposal type.
 - Activity, Run, and Artifact are raw/source inputs, not active Knowledge.
 - Project and Project Folder are associations, not Knowledge content categories.
 - Updates are versioned; active content is not overwritten in place.
@@ -692,7 +699,7 @@ not replaced by Source.
 - `server/src/modules/knowledge/` - API, service, schemas, read models, and proposal appliers
 - `server/src/db/schema/` - Drizzle schema declarations for canonical tables (incl. `notes`, `object_relations`, `cards`, `card_review_states`, `card_reviews`)
 - `server/migrations/` - generated/applied SQL artifacts
-- `server/test/` - live schema and API tests for Knowledge/Cards surfaces
+- `server/test/` - live schema and API tests for Knowledge surfaces
 - `server/src/modules/policy/` - Knowledge policy actions wired via proposal
 - `server/src/gateway/routeRegistry.ts` - active backend module registry entry
 - `apps/web/src/modules/knowledge/` - `KnowledgeModule` (index redirect + routes), `KnowledgeSectionHeader` (breadcrumb switcher), `utils.ts` (last-used section storage + canonical vocabularies), `KnowledgeOverviewPage` (`/knowledge/home`), `NotesPage` workspace + `NoteEditor`, `KnowledgePage`/`KnowledgeDetailPage` (Wiki), `SourcesPage`, `KnowledgeCardsPanel`
@@ -700,22 +707,37 @@ not replaced by Source.
 - `server/test/` - ingestion/review boundary and API contract tests
 
 ## Related Modules
-- [../architecture/SOURCE_EVIDENCE_FOUNDATION.md](../architecture/SOURCE_EVIDENCE_FOUNDATION.md) - the two evidence stacks (source candidate vs curated wiki `Source`/`KnowledgeItemSource`), their hard separation, and the source→wiki promotion rule spec
+- [../architecture/SOURCE_EVIDENCE_FOUNDATION.md](../architecture/SOURCE_EVIDENCE_FOUNDATION.md) - the two evidence stacks (source candidate vs curated wiki `Source`/`KnowledgeItemSource`) and their hard separation
 - [memory.md](memory.md) - Memory is agent context, not the Knowledge browser
 - [activity.md](activity.md) - raw input and source events
-- [spaced-repetition.md](spaced-repetition.md) - future card generation from approved Knowledge
+- [spaced-repetition.md](spaced-repetition.md) - Cards schema exists; no review product
 - [proposals.md](proposals.md) - proposal review and apply boundary
 
-## TODO
-- Notes: richer collection management. (The Tiptap editor, the cross-type link
-  picker, and Note → Wiki promotion all landed; promotion records the source
-  Note in `provenance_links` rather than `object_relations`, because
-  provenance — not a semantic graph edge — is what "this item came from that
-  note" is.)
-- Plain-text/excerpt + search projection regeneration from `content_json`
-- Later Feynman and Reflection assessments
-- Automatic Activity/Artifact to Knowledge proposal generation
-- Source monitoring evaluator for Knowledge proposals
-- **Cards — next slice**: card generation workflow (from Notes/Wiki/Sources → Card rows),
-  direct CRUD API under `/api/v1/knowledge/cards`, FSRS review scheduler, and the
-  frontend review UI. Schema (cards / card_review_states / card_reviews) is in place.
+Unimplemented Knowledge/Cards ideas:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §3 and §9.
+
+## Reading and writing a note or a Knowledge object
+
+One read and one write check, and both are the module's own.
+
+- **Read:** the content predicate on `space_objects` plus the effective access
+  level (`getNoteRow`, `getSourceRow`, `noteColumnsWithAccess`). `listNotes`,
+  `listSources`, `listItems` and `listClaims` all carry it; a list that answers
+  something the detail page refuses is the defect to watch for.
+- **Write:** `assertWritableSpaceObject` (`knowledgeWriteAccess.ts`). Anything
+  but `space_shared` belongs to its owner; a Project-bound object also needs
+  writer authority in that Project; a reader served the object at `summary` may
+  not replace the body they are not shown. A refusal keeps the status that
+  surface already answered: 404 where the caller was never shown the object
+  (update, rollback, delete), 403 where it has just been returned to them
+  (placement add and remove, share revoke, tree reorder, capture relocation) —
+  hiding what they are looking at tells them nothing and loses the reason.
+  Every note mutation goes through it — update, rollback, delete, placement add
+  and remove, share revoke, tree reorder, the notebook-chat edit and the capture
+  relocation. Knowledge *items* and *claims* keep their own owner-only rule
+  (`canMutateKnowledge`), which is stricter, not looser.
+- **Search:** the title is searchable at every access level; a *body* is matched
+  only at `full` (`bodyMatchSql`). A search that matched a withheld body handed
+  it back a character at a time.
+- **Purge:** `purgeDeletedNotes` deletes only notes its caller could have
+  deleted themselves. It used to be Space-wide.

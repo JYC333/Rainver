@@ -34,6 +34,8 @@ import {
   automationBudgetSource,
   automationContract,
   automationScheduleWasHandled,
+  fireResponsibility,
+  type FireResponsibility,
   lockAndCheckAutomationBudget,
 } from "./targetSupport.js";
 
@@ -128,6 +130,7 @@ export class AutomationService {
     rejectExtraKeys(input.body, CREATE_KEYS);
     const name = requiredString(input.body.name, "name", 256);
     const agentId = requiredString(input.body.agent_id, "agent_id");
+    await this.assertAgentReadable(input.spaceId, input.ownerUserId, agentId);
     const projectFolderId = optionalString(input.body.project_folder_id, "project_folder_id");
     const projectId = optionalString(input.body.project_id, "project_id");
     const triggerType = optionalString(input.body.trigger_type, "trigger_type") ?? "manual";
@@ -176,6 +179,9 @@ export class AutomationService {
       projectId,
       automationPreAuthorized: isUnattendedTrigger(triggerType),
       configJson,
+      // No fire to decide: what a configuration-time preflight answers is
+      // whether this automation can run on its own.
+      triggerOrigin: "automation",
     });
     return this.repo.create({
       spaceId: input.spaceId,
@@ -271,6 +277,7 @@ export class AutomationService {
             : null,
         automationPreAuthorized: isUnattendedTrigger(existing.trigger_type),
         configJson: configJson ?? existing.config_json,
+        triggerOrigin: "automation",
       });
     }
     return this.repo.update(input.spaceId, input.automationId, {
@@ -293,9 +300,8 @@ export class AutomationService {
    * `config_json` for a control-plane target with a fixed shape and identity
    * model. This is the one narrow, purpose-built path around that gate: any
    * active Space member may enable their own tick, scoped to their own
-   * identity and whatever Agent they already have Space access to run — the
-   * same reachability rule manual Run creation already applies (no extra
-   * per-Agent ownership check beyond Space membership). It is not an
+   * identity and an Agent they can read — the floor every automation has
+   * (`assertAgentReadable`), with no ownership check beyond it. It is not an
    * admin/owner-only action, unlike other Automation targets.
    */
   async enableAutonomy(input: {
@@ -305,6 +311,7 @@ export class AutomationService {
   }): Promise<AutomationRow> {
     rejectExtraKeys(input.body, AUTONOMY_ENABLE_KEYS);
     const agentId = requiredString(input.body.agent_id, "agent_id");
+    await this.assertAgentReadable(input.spaceId, input.actorUserId, agentId);
     const name = optionalString(input.body.name, "name", 256) ?? "Always-on";
     const configJson = buildAutonomyConfigJson(input.body);
     try {
@@ -330,6 +337,7 @@ export class AutomationService {
       projectId: null,
       automationPreAuthorized: true,
       configJson,
+      triggerOrigin: "automation",
     });
     return this.repo.upsertAutonomyAutomation({
       spaceId: input.spaceId,
@@ -339,6 +347,14 @@ export class AutomationService {
       configJson,
       preflightSnapshot,
     });
+  }
+
+  /**
+   * An automation runs its Agent on its creator's behalf; naming one they
+   * cannot read would reach its prompt and config through the Runs it starts.
+   */
+  private async assertAgentReadable(spaceId: string, userId: string, agentId: string): Promise<void> {
+    if (!(await this.repo.canReadAgent(spaceId, userId, agentId))) throw new HttpError(404, "Agent not found");
   }
 
   /** The caller's own Always-on Automation, or null if never enabled. */
@@ -381,10 +397,14 @@ export class AutomationService {
       hasProjectWriterAuthority = true;
     }
     const preAuthorized = await this.repo.hasActiveGrant(input.spaceId, auto.id);
+    // Decided once, before anything judges this fire: the authorization record,
+    // the preflight's policy checks and every Run this execution creates have
+    // to be about the same Run (ADR 0003 §5).
+    const responsibility = fireResponsibility(auto, input, triggerType);
     await this.enforceAction("automation.fire", input.spaceId, input.actorUserId, {
       agent_id: auto.agent_id,
       trigger_type: triggerType,
-      trigger_origin: "automation",
+      trigger_origin: responsibility.triggerOrigin,
       automation_pre_authorized: preAuthorized,
       target_type: targetType,
       project_id: auto.project_id ?? null,
@@ -400,6 +420,7 @@ export class AutomationService {
       projectId: auto.project_id,
       automationPreAuthorized: preAuthorized,
       configJson: auto.config_json,
+      triggerOrigin: responsibility.triggerOrigin,
     });
 
     const result = await requireAutomationTargetHandler(targetType).execute({
@@ -409,6 +430,7 @@ export class AutomationService {
       automation: auto,
       fireInput: input,
       triggerType,
+      responsibility,
       preflightSnapshot,
       advanceSchedule: false,
     });
@@ -437,10 +459,11 @@ export class AutomationService {
           triggerType: "schedule",
         };
         const preAuthorized = await this.repo.hasActiveGrant(auto.space_id, auto.id);
+        const responsibility = fireResponsibility(auto, fireInput, "schedule");
         await this.enforceAction("automation.fire", auto.space_id, auto.owner_user_id, {
           agent_id: auto.agent_id,
           trigger_type: "schedule",
-          trigger_origin: "automation",
+          trigger_origin: responsibility.triggerOrigin,
           automation_pre_authorized: preAuthorized,
           target_type: targetType,
           project_id: auto.project_id ?? null,
@@ -456,6 +479,7 @@ export class AutomationService {
           projectId: auto.project_id,
           automationPreAuthorized: preAuthorized,
           configJson: auto.config_json,
+          triggerOrigin: responsibility.triggerOrigin,
         });
         await requireAutomationTargetHandler(targetType).execute({
           config: this.config,
@@ -464,6 +488,7 @@ export class AutomationService {
           automation: auto,
           fireInput,
           triggerType: "schedule",
+          responsibility,
           preflightSnapshot,
           advanceSchedule: true,
         });
@@ -505,6 +530,7 @@ export class AutomationService {
         context.automation,
         context.fireInput,
         context.triggerType,
+        context.responsibility,
         context.preflightSnapshot,
       );
       if (context.advanceSchedule) {
@@ -515,7 +541,7 @@ export class AutomationService {
     return {
       run_id: result.runId,
       automation_run_id: result.automationRunId,
-      trigger_origin: "automation",
+      trigger_origin: context.responsibility.triggerOrigin,
       preflight_executable: Boolean(context.preflightSnapshot.executable),
     };
   }
@@ -527,6 +553,7 @@ export class AutomationService {
       context.automation,
       context.fireInput,
       context.triggerType,
+      context.responsibility,
       context.preflightSnapshot,
       { advanceSchedule: context.advanceSchedule },
     );
@@ -543,6 +570,7 @@ export class AutomationService {
       triggerContext?: Record<string, unknown> | null;
     },
     triggerType: string,
+    { triggerOrigin, instructedByUserId }: FireResponsibility,
     preflightSnapshot: Record<string, unknown>,
   ): Promise<{ runId: string; automationRunId: string }> {
     const runs = new PgRunRepository(client);
@@ -556,28 +584,35 @@ export class AutomationService {
 
     const run = await runs.createQueuedRun({
       space_id: input.spaceId,
-      user_id: input.actorUserId,
+      user_id: instructedByUserId,
       agent_id: auto.agent_id,
       project_folder_id: auto.project_folder_id,
       project_id: auto.project_id,
       prompt,
       instruction,
-      trigger_origin: "automation",
+      trigger_origin: triggerOrigin,
       run_type: "agent",
       mode: "live",
-      contract_snapshot: automationContract(auto),
+      contract_snapshot: {
+        ...automationContract(auto),
+        policy_context_json: {
+          automation_id: auto.id,
+        },
+      },
     });
     await queue.enqueue({
       job_type: "agent_run",
       payload: { run_id: run.id },
       space_id: input.spaceId,
-      user_id: input.actorUserId,
+      user_id: instructedByUserId,
       agent_id: auto.agent_id,
       project_folder_id: auto.project_folder_id,
     });
     const automationRunId = await automations.createAutomationRun({
       automationId: auto.id,
       runId: run.id,
+      // Who pressed the button, which is an audit fact and stays one even when
+      // the Run itself is the automation owner's work.
       triggeredByUserId: input.actorUserId,
       triggerType,
       preflightSnapshot,
@@ -596,6 +631,7 @@ export class AutomationService {
       triggerContext?: Record<string, unknown> | null;
     },
     triggerType: string,
+    responsibility: FireResponsibility,
     preflightSnapshot: Record<string, unknown>,
     options: { advanceSchedule?: boolean } = {},
   ): Promise<Record<string, unknown>> {
@@ -611,10 +647,16 @@ export class AutomationService {
     const executionResult = await withTransaction(getDbPool(this.config.databaseUrl), async (client) => {
       const execution = await new WorkflowExecutionService(this.config).start({
         db: client,
-        identity: { spaceId: input.spaceId, userId: input.actorUserId },
+        // Whose work the execution is, not who pressed the button: every Run
+        // it creates — the coordinator root and each node child — names this
+        // person as the one responsible (ADR 0003 §5). `resolveWorkflowTarget`
+        // above stays the firer's, because reaching the version is their
+        // authority to prove.
+        identity: { spaceId: input.spaceId, userId: responsibility.instructedByUserId },
         automation: auto,
         target: resolved,
         triggerType,
+        triggerOrigin: responsibility.triggerOrigin,
         prompt: input.prompt ?? automationConfiguredPrompt(auto.config_json) ?? auto.name,
         instruction: input.instruction ?? `Execute automation workflow '${auto.name}'.`,
         inputJson: target.inputJson,
@@ -646,7 +688,7 @@ export class AutomationService {
       root_run_id: executionResult.execution.rootRunId,
       scheduled_node_ids: executionResult.execution.scheduledNodeIds,
       automation_run_id: executionResult.automationRunId,
-      trigger_origin: "automation",
+      trigger_origin: responsibility.triggerOrigin,
       target_type: AUTOMATION_TARGET_WORKFLOW,
       workflow_version_id: resolved.versionId,
       preflight_executable: Boolean(preflightSnapshot.executable),
@@ -680,6 +722,13 @@ export class AutomationService {
     }
   }
 
+  /**
+   * The policy half of a fire's preflight, decided under the origin the Run
+   * will carry. Asserting `automation` here while `fireResponsibility` stamps
+   * `manual` on the Run would make two authorities answer differently about
+   * one fire — and the stricter one would refuse a Run the person could have
+   * started against the Agent directly.
+   */
   private async runPreflight(
     spaceId: string,
     actorUserId: string,
@@ -687,6 +736,7 @@ export class AutomationService {
     projectFolderId: string | null | undefined,
     projectId: string | null | undefined,
     automationPreAuthorized: boolean,
+    triggerOrigin: "manual" | "automation",
   ): Promise<Record<string, unknown>> {
     if (!this.config.databaseUrl) return { executable: true, skipped: "database_not_configured" };
     const db = getDbPool(this.config.databaseUrl);
@@ -790,7 +840,7 @@ export class AutomationService {
       resource_type: "agent",
       resource_id: agentId,
       context: {
-        trigger_origin: "automation",
+        trigger_origin: triggerOrigin,
         agent_status: row?.status,
         risk_level: riskLevel ?? "medium",
         adapter_type: adapterType,
@@ -809,7 +859,7 @@ export class AutomationService {
         resource_type: "model_provider",
         resource_id: modelProviderId,
         context: {
-          trigger_origin: "automation",
+          trigger_origin: triggerOrigin,
           automation_pre_authorized: automationPreAuthorized,
         },
         force_record: false,
@@ -826,7 +876,7 @@ export class AutomationService {
         resource_space_id: spaceId,
         resource_type: action === "context.inject_memory" ? "memory" : "context",
         context: {
-          trigger_origin: "automation",
+          trigger_origin: triggerOrigin,
           has_context_taint: false,
         },
         metadata_json: {
@@ -885,6 +935,7 @@ export class AutomationService {
       input.projectFolderId,
       input.projectId,
       input.automationPreAuthorized,
+      input.triggerOrigin,
     );
   }
 
@@ -907,6 +958,7 @@ export class AutomationService {
       input.projectFolderId,
       input.projectId,
       input.automationPreAuthorized,
+      input.triggerOrigin,
     );
     return {
       ...agentSnapshot,

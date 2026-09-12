@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import * as protocol from "@rainver/protocol";
 import type {
   CustomSourceHandlerInput,
@@ -7,6 +6,7 @@ import type {
 import type { ServerConfig } from "../../../config.js";
 import { HttpError, type Queryable } from "../../routeUtils/common.js";
 import type { CustomSourceFetchCredential } from "./customSourceEndpointFetch.js";
+import type { OutboundGuard } from "../outboundUrlSafety.js";
 import type { HandlerVersionRow } from "./customSourceHandlerRepository.js";
 import { runCustomSourcePipeline } from "./customSourcePipelineInterpreter.js";
 import {
@@ -14,6 +14,7 @@ import {
   type CustomSourceRunnerResult,
   type CustomSourceRunnerSettings,
 } from "./customSourceRunner.js";
+import { resolveStoredArtifactPath } from "./artifactStoragePath.js";
 
 /**
  * Single dispatch point for "execute this (non-blocked) handler version,"
@@ -38,6 +39,8 @@ export async function executeCustomSourceHandler(
     handlerInput: CustomSourceHandlerInput;
     /** Resolved once by the caller (never here) from `policyEnvelope.credential_ref` — see `customSourceCredentialService.ts`. Only meaningful for `declarative_pipeline_v1`: the `typescript_node` runner's child process never fetches anything itself, so its credential use (if any) is entirely the caller's pre-fetch concern. */
     credential?: CustomSourceFetchCredential | null;
+    /** The outbound boundary the pipeline interpreter's live fetches go through. */
+    guard?: OutboundGuard;
   },
 ): Promise<CustomSourceRunnerResult> {
   if (args.policyEnvelope.language === "declarative_pipeline_v1") {
@@ -49,6 +52,7 @@ export async function executeCustomSourceHandler(
       handlerInput: args.handlerInput,
       pipeline: parsed.data,
       credential: args.credential,
+      ...(args.guard ? { guard: args.guard } : {}),
     });
   }
 
@@ -72,5 +76,7 @@ async function resolveHandlerSourcePath(
   );
   const storagePath = artifact.rows[0]?.storage_path;
   if (!storagePath) throw new HttpError(422, "Handler source artifact is missing its stored file");
-  return resolve(config.artifactStorageRoot, storagePath);
+  const absolute = resolveStoredArtifactPath(config.artifactStorageRoot, storagePath);
+  if (!absolute) throw new HttpError(422, "Handler source artifact path is invalid");
+  return absolute;
 }

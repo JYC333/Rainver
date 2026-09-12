@@ -5,9 +5,9 @@ import { systemModule } from "../src/modules/system/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setNetworkRetryDelayForTests, __setProviderHttpClientForTests as setRawProviderHttpClientForTests, type ProviderHttpClient } from "../src/modules/providers/invocation/invocation.js";
 import { __setProviderCommandStoreForTests, type ProviderCommandStore } from "../src/modules/providers/commands/store.js";
-import { __setRuntimeHostDeliveryAuthorizerForTests } from "../src/modules/runtimeHost/routes.js";
 import { executeRuntimeHost } from "../src/modules/runtimeHost/service.js";
-import { runtimeHostModule } from "../src/modules/runtimeHost/index.js";
+import { RuntimeHostExecuteResponseSchema } from "@rainver/protocol";
+import { CredentialSpendDeniedError } from "../src/modules/policy/credentialSpend.js";
 import type { UsageObservation } from "../src/modules/usage/index.js";
 import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
 import { openAiChatResponse, piAiHttpClient } from "./support/piAiHttp.js";
@@ -23,15 +23,12 @@ let app: FastifyInstance;
 // that exhaust retries don't take multiple real seconds.
 beforeEach(() => {
   __setNetworkRetryDelayForTests(async () => {});
-  __setRuntimeHostDeliveryAuthorizerForTests(async () => {});
 });
 
 afterEach(async () => {
-  __setRuntimeHostDeliveryAuthorizerForTests(null);
   __setProviderCommandStoreForTests(null);
   __setProviderHttpClientForTests(null);
   __setNetworkRetryDelayForTests(null);
-  __setRuntimeHostDeliveryAuthorizerForTests(null);
   await app?.close();
 });
 
@@ -85,6 +82,18 @@ function requestBody(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
+/** The spend the managed-API adapter passes for a turn: the Run's own. */
+const RUN_SPEND = {
+  kind: "run",
+  run: { id: "run-1", space_id: "space-1", parent_run_id: null, trigger_origin: "manual", contract_snapshot_json: null },
+} as const;
+
+async function runHostTurn(payload: Record<string, unknown>) {
+  return RuntimeHostExecuteResponseSchema.parse(
+    await executeRuntimeHost(config(), payload as Parameters<typeof executeRuntimeHost>[1], RUN_SPEND),
+  );
+}
+
 function fakeStore(
   calls: string[],
   providerType = "openai",
@@ -95,6 +104,9 @@ function fakeStore(
   targetSubjects?: Array<string | null | undefined>,
 ): ProviderCommandStore {
   return {
+    async authorizeCredentialSpend() {
+      return {} as never;
+    },
     async getInvocationTarget(
       _spaceId: string,
       providerId?: string | null,
@@ -165,6 +177,9 @@ function fallbackStore(
   usageObservations: UsageObservation[] = [],
 ): ProviderCommandStore {
   return {
+    async authorizeCredentialSpend() {
+      return {} as never;
+    },
     async getInvocationTarget(_spaceId: string, providerId?: string | null) {
       const id = providerId ?? "provider-1";
       calls.push(`target:${id}`);
@@ -207,7 +222,7 @@ function fallbackStore(
   } as unknown as ProviderCommandStore;
 }
 
-describe("runtime host internal route", () => {
+describe("server runtime host turn", () => {
   it("propagates run cancellation to the provider HTTP request", async () => {
     const calls: string[] = [];
     let observedSignal = false;
@@ -229,6 +244,7 @@ describe("runtime host internal route", () => {
     const pending = executeRuntimeHost(
       config(),
       requestBody() as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
       undefined,
       { signal: controller.signal },
     );
@@ -274,6 +290,7 @@ describe("runtime host internal route", () => {
       requestBody({
         cache_strategy: "conversation",
       }) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
       undefined,
       { onTextDelta: (delta) => deltas.push(delta) },
     );
@@ -307,6 +324,7 @@ describe("runtime host internal route", () => {
     const result = await executeRuntimeHost(
       config(),
       requestBody() as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
     );
 
     expect(result.success).toBe(true);
@@ -331,6 +349,7 @@ describe("runtime host internal route", () => {
     const result = await executeRuntimeHost(
       config(),
       requestBody() as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
     );
 
     expect(result).toMatchObject({ success: true, output_text: "" });
@@ -369,6 +388,7 @@ describe("runtime host internal route", () => {
     const result = await executeRuntimeHost(
       config(),
       requestBody({}) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
     );
 
     expect(result.success).toBe(true);
@@ -406,6 +426,7 @@ describe("runtime host internal route", () => {
     const result = await executeRuntimeHost(
       config(),
       requestBody({ model: "primary-model" }) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
     );
 
     expect(result).toMatchObject({ success: false, error_code: expect.any(String) });
@@ -439,6 +460,7 @@ describe("runtime host internal route", () => {
     const result = await executeRuntimeHost(
       config(),
       requestBody({ cache_strategy: "conversation" }) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
       undefined,
       { onTextDelta: (delta) => deltas.push(delta) },
     );
@@ -478,6 +500,7 @@ describe("runtime host internal route", () => {
         model: "claude-test",
         cache_strategy: "conversation",
       }) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
     );
 
     expect(result.success).toBe(true);
@@ -546,6 +569,7 @@ describe("runtime host internal route", () => {
         subject_user_id: "user-1",
         model: "gpt-5.6-sol",
       }) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
     );
 
     expect(result).toMatchObject({ success: true, output_text: "codex reply" });
@@ -556,51 +580,12 @@ describe("runtime host internal route", () => {
     expect(targetSubjects).toEqual(["user-1"]);
   });
 
-  it("requires the internal service token", async () => {
-    const calls: string[] = [];
-    __setProviderCommandStoreForTests(fakeStore(calls));
-    __setProviderHttpClientForTests(fakeHttpClient(calls));
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      payload: requestBody(),
-    });
-
-    expect(res.statusCode).toBe(401);
-    expect(calls).toEqual([]);
-  });
-
-  it("rejects direct Runtime Host execution without Delivery audit refs", async () => {
-    const calls: string[] = [];
-    __setProviderCommandStoreForTests(fakeStore(calls));
-    __setProviderHttpClientForTests(fakeHttpClient(calls));
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({ invocation_audit_refs: undefined }),
-    });
-
-    expect(res.statusCode).toBe(409);
-    expect(calls).toEqual([]);
-  });
-
   it("executes a provider-backed tool-disabled host turn", async () => {
     const calls: string[] = [];
     const usageObservations: UsageObservation[] = [];
     __setProviderCommandStoreForTests(fakeStore(calls, "openai", usageObservations));
     __setProviderHttpClientForTests(fakeHttpClient(calls));
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         max_tokens: 64,
         session_id: "session-1",
         root_run_id: "root-1",
@@ -610,12 +595,10 @@ describe("runtime host internal route", () => {
         project_id: "project-1",
         project_folder_id: "workspace-1",
         trigger_origin: "manual",
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
-    expect(res.payload).not.toContain("sk-test-provider");
-    expect(res.json()).toMatchObject({
+    expect(JSON.stringify(res)).not.toContain("sk-test-provider");
+    expect(res).toMatchObject({
       success: true,
       stdout: "host output",
       output_text: "host output",
@@ -627,7 +610,7 @@ describe("runtime host internal route", () => {
         tool_mode: "disabled",
       },
     });
-    expect(res.json().events.map((event: { type: string }) => event.type)).toEqual([
+    expect(res.events.map((event: { type: string }) => event.type)).toEqual([
       "model.message_start",
       "model.text_delta",
       "model.usage",
@@ -689,28 +672,20 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         output_format: {
           type: "json_schema",
           schema_id: "research.test.v1",
           schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
           strict: true,
         },
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
     expect(bodies[0]).toMatchObject({
       tool_choice: { type: "function", function: { name: "research_test_v1" } },
       tools: [{ type: "function", function: { name: "research_test_v1", strict: true } }],
     });
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: true,
       output_json: { schema: "research.test.v1", value: "ok" },
     });
@@ -732,24 +707,16 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         output_format: {
           type: "json_schema",
           schema_id: "research.test.v1",
           schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
           strict: true,
         },
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: true,
       output_json: { schema: "research.test.v1", value: "ok" },
     });
@@ -766,24 +733,16 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         output_format: {
           type: "json_schema",
           schema_id: "research.test.v1",
           schema: { type: "object" },
           strict: true,
         },
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: false,
       error_code: "structured_output_invalid",
       output_json: {
@@ -797,7 +756,7 @@ describe("runtime host internal route", () => {
         },
       },
     });
-    expect(res.json().error_text).toContain("stage=managed_api schema=research.test.v1 provider=provider-1 model=gpt-4o-mini attempt=1");
+    expect(res.error_text).toContain("stage=managed_api schema=research.test.v1 provider=provider-1 model=gpt-4o-mini attempt=1");
   });
 
   it("does not publish structured-output prose before validation", async () => {
@@ -823,6 +782,7 @@ describe("runtime host internal route", () => {
           strict: true,
         },
       }) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
       undefined,
       { onTextDelta: (delta) => deltas.push(delta) },
     );
@@ -855,6 +815,7 @@ describe("runtime host internal route", () => {
           strict: true,
         },
       }) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
       {
         error(details, message) {
           logs.push({ details, message });
@@ -879,13 +840,7 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         output_format: {
           type: "json_schema",
           schema_id: "research.test.v1",
@@ -898,15 +853,14 @@ describe("runtime host internal route", () => {
           },
           strict: true,
         },
-      }),
-    });
+      }));
 
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: false,
       error_code: "structured_output_invalid",
     });
-    expect(res.json().error_text).toContain("stage=synthesis");
-    expect(res.json().error_text).toContain("at $.value:type:string");
+    expect(res.error_text).toContain("stage=synthesis");
+    expect(res.error_text).toContain("at $.value:type:string");
   });
 
   it("uses a forced Anthropic tool for structured output", async () => {
@@ -924,23 +878,15 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         output_format: {
           type: "json_schema",
           schema_id: "research.test.v1",
           schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
           strict: true,
         },
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
     expect(bodies[0]).toMatchObject({
       // Structured output no longer installs an Anthropic-only cap; it follows
       // the same request -> modelSpecs -> Pi model authority order.
@@ -948,7 +894,7 @@ describe("runtime host internal route", () => {
       tool_choice: { type: "tool", name: "research_test_v1" },
       tools: [{ name: "research_test_v1" }],
     });
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: true,
       output_json: { value: "ok" },
     });
@@ -970,28 +916,20 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         output_format: {
           type: "json_schema",
           schema_id: "research.test.v1",
           schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
           strict: true,
         },
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
     expect(calls).toContain("url:https://api.example.test/v1/messages");
     expect(bodies[0]).toMatchObject({
       tool_choice: { type: "tool", name: "research_test_v1" },
     });
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: true,
       output_json: { value: "ok" },
     });
@@ -1009,24 +947,16 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         output_format: {
           type: "json_schema",
           schema_id: "research.test.v1",
           schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
           strict: true,
         },
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: true,
       output_json: { value: "ok" },
     });
@@ -1044,58 +974,43 @@ describe("runtime host internal route", () => {
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         output_format: {
           type: "json_schema",
           schema_id: "research.test.v1",
           schema: { type: "object" },
           strict: true,
         },
-      }),
-    });
+      }));
 
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: false,
       error_code: "structured_output_invalid",
     });
-    expect(res.json().error_text).toContain("finish_reason=end_turn");
+    expect(res.error_text).toContain("finish_reason=end_turn");
     // No tool_use block was returned, so the Anthropic path falls back to
     // parsing the plain-text answer (same fallback the OpenAI-compatible path
     // already has) instead of failing outright; the diagnostics record where
     // the value came from without echoing the model's actual words.
-    expect(res.json().error_text).toContain("response_kind=message_content");
-    expect(res.json().error_text).toContain("transport=anthropic");
-    expect(res.json().error_text).not.toContain("I cannot provide");
+    expect(res.error_text).toContain("response_kind=message_content");
+    expect(res.error_text).toContain("transport=anthropic");
+    expect(res.error_text).not.toContain("I cannot provide");
   });
 
   it("rejects structured output before network access for unsupported providers", async () => {
     const calls: string[] = [];
     __setProviderCommandStoreForTests(fakeStore(calls, "cohere"));
     __setProviderHttpClientForTests(fakeHttpClient(calls));
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         output_format: {
           type: "json_schema",
           schema_id: "research.test.v1",
           schema: { type: "object" },
           strict: true,
         },
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: false,
       error_code: "structured_output_unsupported",
     });
@@ -1113,23 +1028,15 @@ describe("runtime host internal route", () => {
         throw error;
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
+    const res = await runHostTurn(requestBody());
 
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody(),
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: false,
       error_code: "provider_network_error",
       exit_code: 1,
     });
-    expect(res.json().error_text).toContain("Connection error");
-    expect(res.json().error_text).not.toContain("server runtime host provider invocation failed");
+    expect(res.error_text).toContain("Connection error");
+    expect(res.error_text).not.toContain("server runtime host provider invocation failed");
     expect(calls).toEqual([
       "target:provider-1",
       "fetch:gpt-4o-mini",
@@ -1141,7 +1048,7 @@ describe("runtime host internal route", () => {
     // Report the real attempt count instead of a hardcoded "attempt=1" —
     // this request has no output_format, so it isn't in the message text,
     // but the structured fields must still be accurate.
-    expect(res.json().output_json).toMatchObject({ attempt: 4 });
+    expect(res.output_json).toMatchObject({ attempt: 4 });
   });
 
   it("reports the real retry count in a structured-output failure instead of a hardcoded attempt=1", async () => {
@@ -1155,31 +1062,23 @@ describe("runtime host internal route", () => {
         throw error;
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         output_format: {
           type: "json_schema",
           schema_id: "research.test.v1",
           schema: { type: "object" },
           strict: true,
         },
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
     // Same-key retries for a pure network failure (no response ever
     // received): 1 initial attempt + 3 retries (see MAX_NETWORK_ERROR_RETRIES
     // in invocation.ts) = 4 real requests before the provider fallback layer
     // gives up — a genuine connection reset is unrelated to which key is
     // used and often clears up within a few attempts, unlike a
     // provider-classified transient *response* (e.g. 503).
-    expect(res.json().error_text).toContain("attempt=4");
-    expect(res.json().output_json).toMatchObject({ attempt: 4 });
+    expect(res.error_text).toContain("attempt=4");
+    expect(res.output_json).toMatchObject({ attempt: 4 });
   });
 
   it("forwards native messages to the provider when supplied", async () => {
@@ -1199,13 +1098,7 @@ describe("runtime host internal route", () => {
         );
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         prompt: "fallback prompt",
         messages: [
           { role: "system", content: "Keep prior system context." },
@@ -1213,11 +1106,9 @@ describe("runtime host internal route", () => {
           { role: "assistant", content: "Earlier answer" },
           { role: "user", content: "Continue" },
         ],
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ success: true, output_text: "native output" });
+    expect(res).toMatchObject({ success: true, output_text: "native output" });
     expect(bodies[0]).toMatchObject({
       messages: [
         { role: "system", content: "Be direct.\n\nKeep prior system context." },
@@ -1233,20 +1124,12 @@ describe("runtime host internal route", () => {
     const calls: string[] = [];
     __setProviderCommandStoreForTests(fakeStore(calls));
     __setProviderHttpClientForTests(fakeHttpClient(calls));
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         tool_mode: "disabled",
         tools: [{ name: "retrieval.search", input_schema: { type: "object" } }],
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: false,
       error_code: "runtime_tools_disabled",
       exit_code: 1,
@@ -1289,13 +1172,7 @@ describe("runtime host internal route", () => {
         );
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         tool_mode: "authorized_bindings",
         tools: [
           {
@@ -1304,10 +1181,8 @@ describe("runtime host internal route", () => {
             input_schema: { type: "object", properties: { query: { type: "string" } } },
           },
         ],
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
     expect(bodies[0]).toMatchObject({
       tools: [
         {
@@ -1316,7 +1191,7 @@ describe("runtime host internal route", () => {
         },
       ],
     });
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: true,
       output_json: {
         tool_calls: [
@@ -1332,7 +1207,7 @@ describe("runtime host internal route", () => {
         tool_count: 1,
       },
     });
-    expect(res.json().events.map((event: { type: string }) => event.type)).toEqual([
+    expect(res.events.map((event: { type: string }) => event.type)).toEqual([
       "model.message_start",
       "model.tool_call_delta",
       "model.usage",
@@ -1369,6 +1244,7 @@ describe("runtime host internal route", () => {
         tool_mode: "authorized_bindings",
         tools: [{ name: "retrieval.search", input_schema: { type: "object" } }],
       }) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
     );
 
     expect(result.output_json).toMatchObject({
@@ -1403,13 +1279,7 @@ describe("runtime host internal route", () => {
         );
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         model: "claude-3-5-sonnet-latest",
         tool_mode: "authorized_bindings",
         tools: [
@@ -1419,10 +1289,8 @@ describe("runtime host internal route", () => {
             input_schema: { type: "object", properties: { query: { type: "string" } } },
           },
         ],
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
     expect(bodies[0]).toMatchObject({
       model: "claude-3-5-sonnet-latest",
       tools: [
@@ -1433,7 +1301,7 @@ describe("runtime host internal route", () => {
       ],
       messages: [{ role: "user", content: "Say hello" }],
     });
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: true,
       output_text: "I should search first.",
       output_json: {
@@ -1450,7 +1318,7 @@ describe("runtime host internal route", () => {
         tool_count: 1,
       },
     });
-    expect(res.json().events.map((event: { type: string }) => event.type)).toEqual([
+    expect(res.events.map((event: { type: string }) => event.type)).toEqual([
       "model.message_start",
       "model.text_delta",
       "model.tool_call_delta",
@@ -1478,13 +1346,7 @@ describe("runtime host internal route", () => {
         );
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         model: "claude-3-5-sonnet-latest",
         messages: [
           { role: "user", content: "Find alpha" },
@@ -1514,10 +1376,8 @@ describe("runtime host internal route", () => {
             input_schema: { type: "object", properties: { query: { type: "string" } } },
           },
         ],
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
     expect(bodies[0]).toMatchObject({
       messages: [
         { role: "user", content: "Find alpha" },
@@ -1544,7 +1404,7 @@ describe("runtime host internal route", () => {
         },
       ],
     });
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: true,
       output_text: "final answer",
       output_json: {},
@@ -1559,13 +1419,7 @@ describe("runtime host internal route", () => {
         throw new Error("unsupported provider should not receive tool request");
       },
     });
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
-
-    const res = await app.inject({
-      method: "POST",
-      url: "/internal/runtime-host/execute",
-      headers: { "x-rainver-internal-token": "internal-token" },
-      payload: requestBody({
+    const res = await runHostTurn(requestBody({
         tool_mode: "authorized_bindings",
         tools: [
           {
@@ -1574,17 +1428,15 @@ describe("runtime host internal route", () => {
             input_schema: { type: "object", properties: { query: { type: "string" } } },
           },
         ],
-      }),
-    });
+      }));
 
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({
+    expect(res).toMatchObject({
       success: false,
       // Specific code so the managed-run tool loop can degrade to a no-tool turn.
       error_code: "runtime_tool_provider_unsupported",
       exit_code: 1,
     });
-    expect(res.json().error_text).toContain("does not support runtime-host tools");
+    expect(res.error_text).toContain("does not support runtime-host tools");
     expect(calls).toEqual([
       "target:provider-1",
       "outcome:member-1:failure",
@@ -1608,6 +1460,7 @@ describe("runtime host internal route", () => {
     const result = await executeRuntimeHost(
       config(),
       requestBody({ model: "llama3", max_tokens: 321 }) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
     );
 
     expect(result).toMatchObject({ success: true, output_text: "local reply" });
@@ -1633,18 +1486,33 @@ describe("runtime host internal route", () => {
     const result = await executeRuntimeHost(
       config(),
       requestBody({ model: undefined }) as Parameters<typeof executeRuntimeHost>[1],
+      RUN_SPEND,
     );
 
     expect(result).toMatchObject({ success: true, output_text: "deep reply", model: "deepseek-v4-flash" });
     expect(bodies[0]).toMatchObject({ model: "deepseek-v4-flash" });
   });
 
+  it("fails a turn whose spend is refused with the policy's own code, before any provider call", async () => {
+    const calls: string[] = [];
+    const store = fakeStore(calls);
+    store.authorizeCredentialSpend = async () => {
+      throw new CredentialSpendDeniedError("This Automation has no standing credential grant.");
+    };
+    __setProviderCommandStoreForTests(store);
+    __setProviderHttpClientForTests(fakeHttpClient(calls));
+
+    const res = await runHostTurn(requestBody());
+
+    expect(res).toMatchObject({ success: false, error_code: "policy_denied_runtime_use_credential" });
+    expect(calls).toEqual([]);
+  });
+
   it("advertises the runtime host only with server credential authority", async () => {
-    app = buildModuleServer(config(), [runtimeHostModule, systemModule]);
+    app = buildModuleServer(config(), [systemModule]);
 
     const res = await app.inject({ method: "GET", url: "/api/v1/server/features" });
 
-    expect(res.statusCode).toBe(200);
     expect((res.json() as { features: string[] }).features).toContain(
       "server_agent_runtime_host",
     );

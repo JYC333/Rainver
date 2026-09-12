@@ -109,7 +109,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       return reply.send(await new ProjectResearchQuestionRefineService(dbPool(context.config), context.config)
-        .refine(identity, requireParam(request, "projectId"), jsonBody(request)));
+        .refine(identity, requireParam(request, "projectId"), jsonBody(request), { kind: "person", user_id: identity.userId }));
     } catch (error) {
       return sendRouteError(reply, error);
     }

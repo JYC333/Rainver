@@ -68,11 +68,11 @@ export function SpaceSwitcher() {
       <button
         onClick={() => setOpen(o => !o)}
         disabled={spaces.length === 0}
-        className="flex items-center gap-1.5 h-8 px-2.5 border border-border rounded-md hover:bg-accent transition-colors shrink-0 disabled:opacity-50"
+        className="flex items-center gap-1.5 h-8 max-w-[42vw] px-2.5 border border-border rounded-md hover:bg-accent transition-colors shrink-0 disabled:opacity-50 sm:max-w-none"
         aria-label="Switch space"
       >
         {active && <SpaceIcon type={active.type} size={11} />}
-        <span className="text-[13px] text-foreground font-medium max-w-[140px] truncate">
+        <span className="text-[13px] text-foreground font-medium min-w-0 max-w-[5.5rem] truncate sm:max-w-[140px]">
           {active?.name ?? (spaces.length === 0 ? '…' : 'Select space')}
         </span>
         <ChevronDown size={11} className="text-muted-foreground shrink-0" />

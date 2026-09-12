@@ -1,8 +1,8 @@
 # Context & Retrieval Layer
 
-Status: implemented (current through 2026-07-06). This is a current-state
-architecture doc. Follow-up quality work and risk watch items live in
-[`ROADMAP_AND_FUTURE_RISKS.md`](ROADMAP_AND_FUTURE_RISKS.md).
+Status: implemented. This is a current-state architecture doc.
+Unimplemented retrieval ideas live in
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9 and §23.
 
 Rainver's knowledge retrieval is a deterministic recall **substrate** plus a
 **context layer** layered on top: hybrid recall,
@@ -23,15 +23,15 @@ Per-module current-state lives in `.agent/modules/knowledge-base.md` and
 | Recall: exact/alias/lexical/graph/relational/vector, max-pool, RRF, evidence, create-safety | solid |
 | Access revalidation / memory gating / project-summary gating | strongest area |
 | Eval harness (recall@k + MRR/nDCG/NamedThing/relational/staleness/per-mode/leak-fuzz) | solid eval/report substrate; aggregate-only eval reports can persist as owner-private `retrieval_eval_report` artifacts; manual brief diagnostics can generate aggregate eval reports from saved owner-private Context Brief gap metadata; Artifacts UI can trigger/render diagnostics and record evidence-backed `retrieval_calibration_decision` artifacts for per-mechanic adopt/defer/reject decisions; the `retrieval.space.settings` scoped setting's `ranking_config` can ship gated mechanics only when the referenced `space_shared` calibration artifact passes the configured aggregate eval/evidence gate |
-| Vector + ANN (halfvec HNSW at default dim) + intent ranking | solid; access-neutral ranking calibrated with floor-ratio gating + deterministic post-RRF cosine blend + runtime-gated visible-edge backlink / candidate-owned salience / richer dedup / autocut mechanics + aggregate boost-attribution/score-bucket/drop telemetry; true BM25 / non-default-dim ANN deferred |
+| Vector + ANN (halfvec HNSW at default dim) + intent ranking | solid; access-neutral ranking calibrated with floor-ratio gating + deterministic post-RRF cosine blend + runtime-gated visible-edge backlink / candidate-owned salience / richer dedup / autocut mechanics + aggregate boost-attribution/score-bucket/drop telemetry. There is no true BM25 and no non-default-dimension ANN |
 | Reranker + query rewriter (gated, skippable, audited) | solid; rerank payload bounded by a token (char-proxy) budget |
 | Context Brief: synthesis + citations + two-tier gap analysis | solid; selected Knowledge, Memory, Project, and Sources briefs can persist as owner-private `retrieval_brief` artifacts through separate routes; gap findings are advisory artifact metadata, not a proposal channel |
 | Ask Space (unified entry point) | core product slice; `POST /api/v1/ask-space/think` (`modules/askSpace`) runs the per-domain Context Brief pipeline across Knowledge (default) + opt-in Memory/Project/Sources/Inquiry through `RetrievalSearchService`, reusing each domain's own read gate and Memory access logging; returns per-domain cited answers, optional opt-in cross-domain `combined_answer`, aggregate gap summary, domain-tagged provenance, and proposal-first follow-up descriptors (Claim Candidate Packet / maintenance scan, surfaced only with Context Ops scan authority); combined synthesis reuses `ProviderSynthesizer` and the same external-egress/source-policy gate over the union of included sources, and Memory is excluded from the combined prompt unless `combine_include_memory` is explicitly set; optionally persists per-domain `retrieval_brief` artifacts plus an owner-private `ask_space_session` artifact; creates no Memory proposals and performs no canonical writes; web `Ask Space` page + `ask_space_session` renderer |
 | Personal aggregated retrieval | `POST /api/v1/me/retrieval/search` fans the explicit retrieval object-type list across every active member Space, running and live-revalidating each Space independently. Results persist only as source-Space pointers; `/me/retrieval/pointers/resolve` re-authorizes. Single-source summaries land owner-private in their source Space. Multi-Space conclusions require disclosure followed by explicit Personal-Space storage, full pointer lineage, and pointer-only per-source egress records. |
 | Claim Candidate Packet | solid backend/product slice; `POST /api/v1/knowledge/claims/candidate-packets` plus the web API client and artifact renderer is the explicit bridge from selected retrieval brief / retrieval maintenance / diagnostics / Memory maintenance artifacts into `claim_candidate_packet` artifacts and proposals; brief uncited-claim candidates include deterministic holder/perspective, validity/observation, and governed source-ref hints when available; accepting the packet creates valid child pending claim/claim-relation/object-relation proposals only and records skipped invalid children; `space_ops` packets default to `space_shared` source artifacts and require explicit `promote_private_sources_to_space_ops` opt-in plus `private_source_promotion_confirmed = true` to include the caller's private source artifacts |
 | Maintenance scan (duplicate/orphan/thin/stale/relation, read-only) | solid; manual route plus Context Review Cycle route/Automation target produces report artifacts and optional packet proposals |
-| Egress governance (per-space external-egress switch) | solid; backend + Space Settings UI implemented; external/local/internal destination vocabulary implemented; DB-backed chat candidates use the conservative external-provider egress gate until chat provider routing is passed into the collector |
-| Source / connector consent | implemented across the retrieval read plane; source connections normalize versioned consent/policy JSON and enforce connected retention/proposal-target checks; the reader/agent/admin read gate + source-egress gate are consumed by search, Context Brief, graph/relational traversal, managed-run tools, rerank/synthesis/embedding egress, maintenance scans, relation discovery, Context Ops drill-down, claim evidence rendering, non-creator artifact attachment, and DB-backed chat candidates with explicit source ids; the connector→projection linkage is covered by a real-DB test; connector refresh/purge edge cases and future chat artifact/evidence-pack attachments remain deferred |
+| Egress governance (per-space external-egress switch) | solid; backend + Space Settings UI implemented; external/local/internal destination vocabulary implemented; DB-backed chat candidates use the conservative external-provider egress gate because the collector does not receive the final provider destination |
+| Source / connector consent | implemented across the retrieval read plane; source connections normalize versioned consent/policy JSON and enforce connected retention/proposal-target checks; the reader/agent/admin read gate + source-egress gate are consumed by search, Context Brief, graph/relational traversal, managed-run tools, rerank/synthesis/embedding egress, maintenance scans, relation discovery, Context Ops drill-down, claim evidence rendering, non-creator artifact attachment, and DB-backed chat candidates with explicit source ids; the connector→projection linkage is covered by a real-DB test. There are no chat-turn artifact attachments or Evidence Packs |
 | Agent retrieval tool surface (viewer-scoped, audited) | solid; opt-in managed `model_api` / `ts_agent_host` tool loop for Knowledge `retrieval.search` / `retrieval.brief`; explicit Memory, Project public-summary, and Sources domain tools; manual and preflight modes; runtime-host tool calling supports OpenAI-compatible and Anthropic providers; Agent UI exposes the Memory/Project/Sources opt-in |
 | Runtime Context acquisition | retrieval results remain access-safe candidates; managed/CLI invocations acquire them only through Runtime Context typed acquisition, deterministic planning, live Delivery authorization, and safe Invocation Snapshot audit. There is no manual artifact-attachment bypass or `/context/build` surface |
 | Context Ops read model + Context Health page | operator console; `GET /api/v1/context-ops/summary` and the web `Context Health` page aggregate whole-space index/embedding/source health plus the current operator's private maintenance, diagnostics, explain, brief, feedback, and Memory provenance loop; `GET /api/v1/context-ops/drilldown` turns the index-freshness, embedding-backlog, source-warning, maintenance-report, diagnostics-report, explain-report, and recent-brief aggregates into bounded, access-safe detail lists/summaries (object lists pass the same adapter read gate **and** source read policy as search; source-warning details are owner-scoped unless owner/admin; artifact sections reuse owner-scoped/`space_ops`-gated summary queries); the page also exposes maintenance-scan, diagnostics-report, targeted explain, explain preset/comparison, Context Review Cycle scan triggers, and artifact-level or batched Claim Candidate Packet actions for supported recent briefs/reports (with optional packet creation and a Memory maintenance toggle) gated by `context_ops_scan_mode`; `POST /api/v1/context-ops/review-cycle/run` and Automation target `context_ops_review_cycle` run the broader read-only/proposal-first cycle and return `degraded`/`warnings` when optional packet stages fail after reports are saved; the `retrieval.space.settings` scoped setting's `context_ops_review_mode` can additionally expose shared `space_ops` reports/packets to owners/admins or all members without weakening private packet creator-only review |
@@ -45,7 +45,8 @@ Per-module current-state lives in `.agent/modules/knowledge-base.md` and
    dependency, or system of record.
 2. **Single live read gate.** `revalidate` runs on every candidate *before* any
    reranker, synthesizer, or other LLM stage sees its content. LLM stages only
-   ever score/read the already-visible set.
+   ever score/read the already-visible set. A `summary` effective access level
+   returns stored summary text only, never the body.
 3. **Access-safe signals.** Ranking, graph, salience, and gap signals are computed
    only from data the viewer can read, or from access-neutral metadata. A signal
    derived from objects the viewer cannot read (e.g. backlink counts over private
@@ -507,8 +508,9 @@ surfaces. It does not expose raw queries, snippets, private memory text, hidden
 object ids, dropped candidate ids, or artifact content. Cross-person read
 history is queried per resource through
 `GET /api/v1/content-access/:resourceType/:resourceId/access-logs`; only the
-resource owner may query it by default. Richer finding-row follow-up proposal
-authoring remains future product work.
+resource owner may query it by default. There is no finding-row follow-up
+proposal authoring UI.
+See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9.
 
 ## Governance
 
@@ -552,10 +554,9 @@ authoring remains future product work.
   deleted, malformed, or cross-space source refs fail closed for rows that name a
   source connection. There is no historical-data compatibility path for source
   refs. The connector→provenance→projection linkage is covered by a real-DB test
-  (`retrievalSourcePolicyDb.test.ts`); connector refresh/purge edge cases,
-  activity-record source linkage, and future chat artifact/evidence-pack
-  attachments remain the deferred consumers. See
-  [`SOURCE_CONNECTOR_CONSENT.md`](SOURCE_CONNECTOR_CONSENT.md).
+  (`retrievalSourcePolicyDb.test.ts`). There is no activity-record source
+  linkage consumer and no chat-turn artifact or Evidence Pack attachment.
+  See [`SOURCE_CONNECTOR_CONSENT.md`](SOURCE_CONNECTOR_CONSENT.md).
 - **Product UI first pass.** Sources exposes source consent/policy controls for
   the normalized JSON fields, Source Detail exposes post-processing retrieval
   context controls, Agent create/detail exposes Memory, Project public-summary,
@@ -599,8 +600,8 @@ authoring remains future product work.
   forwarded through the
   pi-ai chat path selected by the server vendor registry. OpenAI, owner-scoped
   OpenAI Codex subscriptions, Anthropic, MiniMax, OpenRouter, DeepSeek, and
-  explicit OpenAI-compatible vendors support runtime tools; Ollama runtime-host
-  tool-calling support is deferred and
+  explicit OpenAI-compatible vendors support runtime tools. Ollama runtime-host
+  tool calling is not implemented;
   requests fail explicitly if tools are enabled against that provider. Brief tool results are also surfaced as
   owner-private `retrieval_brief` run artifacts through the existing materializer;
   Memory, Project, and Sources brief artifacts omit trace just like their human-facing
@@ -704,10 +705,10 @@ Load-bearing boundaries:
 
 ## Cross-references
 
-- Retrieval and context-layer stabilization roadmap:
-  [`ROADMAP_AND_FUTURE_RISKS.md`](ROADMAP_AND_FUTURE_RISKS.md#retrieval-and-context-layer-stabilization).
+- Current-state pointers: [`ROADMAP_AND_FUTURE_RISKS.md`](ROADMAP_AND_FUTURE_RISKS.md).
+- Unimplemented ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9 and §23.
 - Module current-state: `.agent/modules/knowledge-base.md`,
   `.agent/modules/memory.md`.
 - Credential channel for all provider calls: ADR 0008.
 - Cross-module boundary for engine/adapter ownership: `BOUNDARIES.md` B33/B34.
-- Memory-side evolution interplay: `MEMORY_EVOLUTION_PLAN.md`.
+- Memory current-state: `MEMORY_MODEL.md`, `MEMORY_MAINTENANCE.md`.

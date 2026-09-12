@@ -1,3 +1,5 @@
+import type { ServerConfig } from "../../config.js";
+import { hostControlPlaneUrl } from "../hosts/controlPlaneUrl.js";
 import type { Queryable } from "../routeUtils/common.js";
 import {
   WORK_SKILL_RELATIVE_PATH,
@@ -55,32 +57,15 @@ export function workSkillOptionsForRun(run: RunRecord): WorkSkillOptions {
 export const WORK_SURFACE_SKILL_PATH_ENV = "RAINVER_SKILL_PATH";
 
 /**
- * The control-plane address *this host* can reach.
- *
- * The server's own hostname is a Compose service name no paired machine can
- * resolve, so it cannot guess this; the daemon reports the address it
- * registered through and that is the one its child process must use. Without
- * it the surface is not offered at all rather than handed out pointing
- * somewhere unreachable — an agent that cannot call back should be told by an
- * absent command, not by a connection error mid-run.
+ * The control-plane address *this host* can reach — `RAINVER_API_URL` for the
+ * Run's child processes. Configuration only (`hostControlPlaneUrl`): the
+ * built-in host's in-network address, or `FRONTEND_URL` (origin and path, so
+ * a control plane behind a prefix is not truncated) for a paired host.
  */
-export async function resolveHostApiBaseUrl(db: Queryable, hostId: string): Promise<string | null> {
-  const row = await db.query<{ daemon_server_url: string | null }>(
-    `SELECT daemon_server_url FROM hosts WHERE id = $1 LIMIT 1`,
-    [hostId],
-  );
-  const reported = row.rows[0]?.daemon_server_url?.trim();
-  if (!reported) return null;
-  try {
-    // Origin *and* path: a control plane behind a reverse proxy can be
-    // registered at a prefix, and the daemon itself appends its own paths to
-    // the whole reported URL. Dropping the prefix would point the CLI at a URL
-    // that answers with the web app's HTML instead of the tool surface.
-    const url = new URL(reported);
-    return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
-  } catch {
-    return null;
-  }
+export async function resolveHostApiBaseUrl(db: Queryable, config: ServerConfig, hostId: string): Promise<string | null> {
+  const row = await db.query<{ kind: string }>(`SELECT kind FROM hosts WHERE id = $1 LIMIT 1`, [hostId]);
+  const host = row.rows[0];
+  return host ? hostControlPlaneUrl(config, host.kind) : null;
 }
 
 /**
@@ -92,11 +77,12 @@ export async function resolveHostApiBaseUrl(db: Queryable, hostId: string): Prom
  */
 export async function buildRunWorkSurface(input: {
   db: Queryable;
+  config: ServerConfig;
   run: RunRecord;
   hostId: string;
   timeoutSeconds: number;
 }): Promise<RunWorkSurface | null> {
-  const apiBaseUrl = await resolveHostApiBaseUrl(input.db, input.hostId);
+  const apiBaseUrl = await resolveHostApiBaseUrl(input.db, input.config, input.hostId);
   if (!apiBaseUrl) return null;
   const options = workSkillOptionsForRun(input.run);
   const skill = renderWorkSkill(options);

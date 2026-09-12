@@ -22,7 +22,7 @@ import {
   INSTANCE_UPDATE_PENDING,
   instanceUpdatePending,
 } from "../deployment/drainAdmission.js";
-import { effectiveTriggerOrigin } from "../systemActions/effectiveTriggerOrigin.js";
+import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
 
 export function registerAgentRunHandler(
   registry: JobHandlerRegistry,
@@ -159,7 +159,7 @@ async function handleAgentRun(
   // `waiting_for_dependency` while its child runs, so it is not counted by the
   // drain and deferring the child does not stall it.
   if (queuedRun && await instanceUpdatePending(config)) {
-    const origin = await effectiveTriggerOrigin(getDbPool(config.databaseUrl!), queuedRun);
+    const { origin } = await effectiveRunTrigger(getDbPool(config.databaseUrl!), queuedRun);
     if (DRAINED_TRIGGER_ORIGINS.has(origin)) {
       throw new JobDeferredError(INSTANCE_UPDATE_PENDING, 30_000);
     }

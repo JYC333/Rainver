@@ -1,4 +1,5 @@
 import type { Queryable } from "@rainver/protocol";
+import { AccountNotFoundError } from "./errors.js";
 import type {
   AccountVisibility,
   CommodityType,
@@ -299,13 +300,64 @@ export const financeLedgerRepository = {
     return result.rows[0] ?? null;
   },
 
+  /**
+   * One account, as this person may see it.
+   *
+   * The one resolver for every read and every mutation that names an account
+   * id. `findAccount` answers about the whole book and is for the engine's own
+   * internal load; a route reaching it directly is how a member closed another
+   * member's private account and got the row back as confirmation that it
+   * existed.
+   *
+   * `writable` narrows it further: a personal account is its owner's to close
+   * or to unhide. Both refusals are the same "not found" the invisible case
+   * gives, so a non-owner cannot tell an account they may not touch from one
+   * that is not there.
+   */
+  async findAccountForViewer(
+    db: Queryable,
+    spaceId: string,
+    bookId: string,
+    accountId: string,
+    viewerUserId: string,
+    options: { writable?: boolean } = {},
+  ): Promise<FinanceAccountRow | null> {
+    const result = await db.query<FinanceAccountRow>(
+      `SELECT id, book_id, space_id, name, display_name, root_type, parent_account_id,
+              commodity_constraints, opened_at::text, closed_at::text, booking_method,
+              account_role, default_commodity, owner_user_id, visibility, metadata_json, created_at::text, updated_at::text
+         FROM finance_accounts
+        WHERE space_id = $1 AND book_id = $2 AND id = $3
+          AND (visibility = 'space' OR owner_user_id = $4)
+          ${options.writable ? "AND (owner_user_id IS NULL OR owner_user_id = $4)" : ""}`,
+      [spaceId, bookId, accountId, viewerUserId],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /**
+   * Whether the book already has an account by this name, whoever owns it.
+   *
+   * Answers only yes/no, and only to code deciding whether an insert would
+   * collide — never to a reader. `(book_id, name)` is unique, so an importer
+   * whose view omits a personal account still must not try to open it.
+   */
+  async accountNameExists(db: Queryable, spaceId: string, bookId: string, name: string): Promise<boolean> {
+    const result = await db.query<{ exists: boolean }>(
+      `SELECT true AS exists FROM finance_accounts
+        WHERE space_id = $1 AND book_id = $2 AND name = $3 LIMIT 1`,
+      [spaceId, bookId, name],
+    );
+    return result.rows.length > 0;
+  },
+
   async listAccounts(
     db: Queryable,
     spaceId: string,
     bookId: string,
     viewerUserId?: string,
   ): Promise<FinanceAccountRow[]> {
-    // Without a viewer this is the full internal view (engine/export paths).
+    // Without a viewer this is the full internal view (validate/import).
     // With a viewer, other members' private accounts are hidden.
     const visibilityClause = viewerUserId
       ? " AND (visibility = 'space' OR owner_user_id = $3)"
@@ -342,7 +394,7 @@ export const financeLedgerRepository = {
                   account_role, default_commodity, owner_user_id, visibility, metadata_json, created_at::text, updated_at::text`,
       [spaceId, bookId, accountId, visibility],
     );
-    if (!result.rows[0]) throw new Error("Account not found");
+    if (!result.rows[0]) throw new AccountNotFoundError();
     return result.rows[0];
   },
 
@@ -352,18 +404,21 @@ export const financeLedgerRepository = {
     bookId: string,
     accountId: string,
     date: string,
+    viewerUserId: string,
   ): Promise<FinanceAccountRow> {
     const result = await db.query<FinanceAccountRow>(
       `UPDATE finance_accounts
           SET closed_at = $4::date,
               updated_at = now()
         WHERE space_id = $1 AND book_id = $2 AND id = $3
+          AND (visibility = 'space' OR owner_user_id = $5)
+          AND (owner_user_id IS NULL OR owner_user_id = $5)
         RETURNING id, book_id, space_id, name, display_name, root_type, parent_account_id,
                   commodity_constraints, opened_at::text, closed_at::text, booking_method,
                   account_role, default_commodity, owner_user_id, visibility, metadata_json, created_at::text, updated_at::text`,
-      [spaceId, bookId, accountId, date],
+      [spaceId, bookId, accountId, date, viewerUserId],
     );
-    if (!result.rows[0]) throw new Error("Account not found");
+    if (!result.rows[0]) throw new AccountNotFoundError();
     return result.rows[0];
   },
 
@@ -537,7 +592,12 @@ export const financeLedgerRepository = {
     db: Queryable,
     spaceId: string,
     bookId: string,
-    filters?: { status?: DirectiveStatus; directiveType?: DirectiveType; importSourceId?: string },
+    filters?: {
+      status?: DirectiveStatus;
+      directiveType?: DirectiveType;
+      importSourceId?: string;
+      viewerUserId?: string;
+    },
   ): Promise<FinanceDirectiveRow[]> {
     const conditions = ["space_id = $1", "book_id = $2"];
     const params: unknown[] = [spaceId, bookId];
@@ -552,6 +612,19 @@ export const financeLedgerRepository = {
     if (filters?.importSourceId) {
       params.push(filters.importSourceId);
       conditions.push(`import_source_id = $${params.length}`);
+    }
+    if (filters?.viewerUserId) {
+      params.push(filters.viewerUserId);
+      const viewer = `$${params.length}`;
+      // A transaction is hidden when any leg touches a hidden account; every
+      // other directive type names its account by name in a child table, and
+      // returning one of those was returning the private account's *name*.
+      conditions.push(`(
+        CASE WHEN directive_type = 'transaction'
+          THEN NOT ${transactionTouchesHiddenAccountSql("finance_directives.id", "finance_directives.space_id", viewer)}
+          ELSE NOT ${directiveNamesHiddenAccountSql("finance_directives.id", "finance_directives.space_id", viewer)}
+        END
+      )`);
     }
     const result = await db.query<FinanceDirectiveRow>(
       `SELECT id, book_id, space_id, directive_type, date::text, sequence, status,
@@ -590,7 +663,14 @@ export const financeLedgerRepository = {
     db: Queryable,
     spaceId: string,
     bookId: string,
+    viewerUserId?: string,
   ): Promise<Array<FinanceTransactionRow & { directive: FinanceDirectiveRow }>> {
+    const params: string[] = viewerUserId
+      ? [spaceId, bookId, viewerUserId]
+      : [spaceId, bookId];
+    const visibilityClause = viewerUserId
+      ? ` AND NOT ${transactionTouchesHiddenAccountSql("t.directive_id", "t.space_id", "$3")}`
+      : "";
     const result = await db.query<FinanceTransactionRow & FinanceDirectiveRow>(
       `SELECT t.directive_id, t.book_id, t.space_id, t.flag, t.payee, t.narration,
               t.external_id, t.import_hash, t.tags, t.links, t.metadata_json,
@@ -600,9 +680,9 @@ export const financeLedgerRepository = {
               d.created_by_user_id, d.created_at::text, d.updated_at::text
          FROM finance_transactions t
          JOIN finance_directives d ON d.id = t.directive_id
-        WHERE t.space_id = $1 AND t.book_id = $2
+        WHERE t.space_id = $1 AND t.book_id = $2${visibilityClause}
         ORDER BY d.date DESC, d.sequence DESC`,
-      [spaceId, bookId],
+      params,
     );
     return result.rows.map((row) => ({
       directive_id: row.directive_id,
@@ -683,3 +763,53 @@ const POSTING_SELECT = `
          p.price_commodity_symbol, p.price_is_total, p.flag, p.sort_order,
          p.metadata_json
     FROM finance_postings p`;
+
+/**
+ * Whether a non-transaction directive names an account this viewer may not see.
+ *
+ * A balance assertion, a pad, a note and a document each carry an account *by
+ * name* in their own child table, so returning the directive returns the
+ * private account's name even though no posting row exists to catch it.
+ */
+function directiveNamesHiddenAccountSql(
+  directiveIdExpr: string,
+  spaceIdExpr: string,
+  viewerParam: string,
+): string {
+  const hiddenNamed = (table: string, column: string) => `EXISTS (
+    SELECT 1
+      FROM ${table} x
+      JOIN finance_accounts a
+        ON a.name = x.${column}
+       AND a.space_id = x.space_id
+       AND a.book_id = x.book_id
+     WHERE x.directive_id = ${directiveIdExpr}
+       AND x.space_id = ${spaceIdExpr}
+       AND NOT (a.visibility = 'space' OR a.owner_user_id = ${viewerParam})
+  )`;
+  return `(
+    ${hiddenNamed("finance_balance_assertions", "account_name")}
+    OR ${hiddenNamed("finance_pad_directives", "account_name")}
+    OR ${hiddenNamed("finance_pad_directives", "source_account_name")}
+    OR ${hiddenNamed("finance_notes", "account_name")}
+    OR ${hiddenNamed("finance_documents", "account_name")}
+  )`;
+}
+
+function transactionTouchesHiddenAccountSql(
+  directiveIdExpr: string,
+  spaceIdExpr: string,
+  viewerParam: string,
+): string {
+  return `EXISTS (
+    SELECT 1
+      FROM finance_postings p
+      JOIN finance_accounts a
+        ON a.id = p.account_id
+       AND a.space_id = p.space_id
+       AND a.book_id = p.book_id
+     WHERE p.transaction_directive_id = ${directiveIdExpr}
+       AND p.space_id = ${spaceIdExpr}
+       AND NOT (a.visibility = 'space' OR a.owner_user_id = ${viewerParam})
+  )`;
+}

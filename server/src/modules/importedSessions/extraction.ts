@@ -28,6 +28,7 @@ import {
 import type { ServerConfig } from "../../config.js";
 import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { completeProviderText } from "../providers/invocation/invocation.js";
+import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import { resolveProviderCommandStore } from "../providers/commands/store.js";
 import { assertProjectWriter } from "../projects/access.js";
 import { ProjectDefinitionProposalService } from "../projects/projectDefinitionProposalService.js";
@@ -134,6 +135,8 @@ export class ImportedHistoryExtractionService {
   async extract(
     identity: SpaceUserIdentity,
     projectId: string,
+    /** The person pressing extract, or the auto-extract switch a scheduled sync runs on. */
+    spend: CredentialSpendBasis,
     /**
      * Narrows the batch to one folder's history. The batch is otherwise
      * Project-wide and oldest-first, so an import of three sessions into a
@@ -168,7 +171,7 @@ export class ImportedHistoryExtractionService {
 
     let extraction: SemanticCheckpointExtraction;
     try {
-      extraction = await this.runExtractor(identity, projectId, records);
+      extraction = await this.runExtractor(identity, projectId, records, spend);
     } catch (error) {
       // Released, not left claimed: a batch marked read but never proposed is
       // invisible to every future extraction, and on the automatic path
@@ -331,6 +334,7 @@ export class ImportedHistoryExtractionService {
     identity: SpaceUserIdentity,
     projectId: string,
     records: readonly PendingRecord[],
+    spend: CredentialSpendBasis,
   ): Promise<SemanticCheckpointExtraction> {
     const dates = records.map((record) => record.vendor_updated_at).filter((value): value is string => !!value).sort();
     const material = records.map((record) => ({
@@ -364,6 +368,7 @@ export class ImportedHistoryExtractionService {
       // connection's rules, and this is the person's own transcripts, which
       // they imported and marked shared themselves.
       metering: { subject_user_id: identity.userId, project_id: projectId },
+      spend,
     });
     let parsed: unknown;
     try {

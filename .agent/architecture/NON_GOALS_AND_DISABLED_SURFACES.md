@@ -1,88 +1,78 @@
 # Non-Goals and Disabled Surfaces
 
+Current absences and product-scope refusals. Unimplemented designs that
+used to live here are in
+[../plans/unimplemented-from-guides.md](../plans/unimplemented-from-guides.md).
+
 ## Currently Disabled or Not Implemented
 
-| Surface | Status |
+| Surface | Current fact |
 |---|---|
-| Broad autonomous discovery / crawling | Not implemented |
-| External chat / media / file import pipelines | Not implemented |
-| Web crawler | Not implemented |
-| Vector index over external corpus | Not implemented |
-| Automation / Trigger engine | Not implemented (`Run.trigger_origin` reserves enum values only) |
-| Connector marketplace / integration lifecycle | Not implemented |
-| Capability marketplace or install/discovery UX | Not implemented (file-defined registry; local workspace roots; external enable state in `config/settings.yaml`; no remote install) |
-| Automatic system self-evolution | Removed; no privileged Evolver Agent or implicit fallback |
+| Broad autonomous discovery / crawling | No crawler engine |
+| Connector marketplace / integration lifecycle | No marketplace; Sources connections and recipes exist |
+| Capability marketplace or remote install UX | File-defined registry; local workspace roots; no remote install |
+| Automatic system self-evolution | Removed; no privileged Evolver Agent |
 | App-container self-deployment | Blocked by deployer allowlist |
-| Deployment from an Agent, automation, or Proposal | Blocked; only the instance admin creates a deployment job |
-| Arbitrary deployer commands | Blocked; only `rebuild_rainver`, `restart_rainver`, `health_check` |
-| Automatic restore | Not implemented; restore is always manual |
-| Cloud / offsite backup sync | Not implemented |
-| Multi-device conflict resolution | Not implemented |
-| Public sharing | Not implemented |
-| Public SaaS / multi-tenant | Not in scope |
-| API key persistence UI | Feature-gated (501 in production) |
-| Files & Code interactive session execution | Removed — never-implemented runtime-status/session create/detail/run/stop stub; Files & Code stays read-only (tree, file, git status, git diff), including remote Locations for their host owner |
-| Runtime adapter bypassing credential resolver | Blocked by `RunOrchestrationService` design |
-| Runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` contract |
-| File mutation without approved proposal + PathPolicy | Blocked by code patch apply |
-| Automatic memory promotion from source/evidence content | Blocked by proposal/apply boundary |
+| Deployment from an Agent, automation, or Proposal | Blocked; instance admin creates the job |
+| Arbitrary deployer commands | Only `rebuild_rainver`, `restart_rainver`, `health_check` |
+| Automatic restore | Restore is always manual |
+| Cloud / offsite backup sync | Not present |
+| Multi-device conflict resolution | Not present |
+| Public internet sharing | Not present. Instance-local targeted publication exists (`publications`) |
+| Public SaaS / multi-tenant | Out of scope |
+| API key persistence UI | Feature-gated (501 in production); no `api_keys` table |
+| Files & Code interactive session execution | Removed. Files & Code is read-only tree/file/git status/git diff |
+| Runtime adapter bypassing credential resolver | Blocked by `RunOrchestrationService` |
+| Runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` |
+| File mutation without approved proposal + PathPolicy | Blocked by code-patch apply |
+| Automatic memory promotion from source/evidence | Blocked by proposal/apply |
+| Vector index over an **external** corpus | Not present. Space-internal pgvector recall exists |
+| Native `capability` runtime adapter | Declared and disabled |
+| Time UI | `planned: true` stub at `/time` |
+| Cards review UI | Knowledge › Cards placeholder; `/cards` hidden |
+| Learning Project Area | `/projects/:id/learning` redirects to Pulse. `learning` HTTP API exists; web client does not call it |
 
-**UI status of planned-but-not-built surfaces:**
-- `Knowledge` — registry entry with `planned: true`; "soon" badge; non-interactive.
-- `Cards` — registry entry with `planned: true`; "soon" badge; non-interactive.
-- `Time` — registry entry with `planned: true`; "soon" badge; non-interactive.
+Import and capture that **do** exist: Sources, `POST /api/v1/activity`,
+`POST /api/v1/captures`, imported CLI sessions. There is no connector
+marketplace UI.
 
-No connector marketplace, crawler, or automatic system self-evolution controls appear in the frontend.
+Automation that **does** exist: space-scoped manual and scheduled
+Automations, native targets, and versioned Workflows. There is no
+external webhook/cron marketplace.
 
 ## What Is Allowed for Current Use
 
-- Personal spaces (`personal` space type) and household shared spaces (`household` space type).
-- Explicit two-user membership and space switching.
+- Personal spaces (`personal`) and household shared spaces (`household`).
+- Explicit membership and space switching.
 - Auth via session cookies or API keys. No dev-identity fallback.
-- Activity Inbox for non-chat capture (thoughts, notes, snippets, links) via `POST /api/v1/activity`.
-- Sources for source connections, manual URL source capture, candidate items, extraction jobs, and citable evidence via `/api/v1/sources/*`.
-- Explicit chat sessions for conversations with agents (`POST /api/v1/sessions`).
-- Memory proposal creation, review, acceptance, rejection, and archive.
-- Memory consolidation producing proposals from Activity.
-- Runs through the canonical server runtime adapter path (`capability`, `model_api`, and spec-driven local CLI runtimes).
-- RunStep replay and failure diagnosis.
-- Artifacts produced by runs; safe export within owned space.
-- Task boards and task-linked runs/artifacts/proposals.
-- Home summary as read-only command center.
-- Automatic local backups through `BackupService` (requires `BACKUP_ENABLED=true`).
-- Manual backup via API or `ops/scripts/system/backup.sh` (offline full-system).
-- Full-system restore via `ops/scripts/system/restore.sh`; DB-only tools under `ops/scripts/db/`.
-- Manual deployment or allowlisted deployer-only flow.
+- Activity Inbox via `POST /api/v1/activity`.
+- Sources via `/api/v1/sources/*`.
+- Capture destinations via `POST /api/v1/captures`.
+- Chat sessions (`POST /api/v1/sessions`) and Rooms.
+- Memory / Knowledge proposal review and apply.
+- Runs through the server runtime adapter path (`model_api` and
+  spec-driven local CLI runtimes). The native `capability` adapter is
+  disabled.
+- RunStep replay, artifacts, task boards, Home / Today aggregates.
+- Automatic local backups when `BACKUP_ENABLED=true`.
+- Manual backup/restore scripts; allowlisted deployer flow.
 
 ## Non-Goals for Development
 
-These will not be built until their prerequisite foundations are stable:
+These are refused product scope, not a backlog:
 
 - Full enterprise RBAC/ABAC.
 - Generic `DomainObject` registry or schema editor.
 - Full plugin or provider marketplace.
 - Broad connector marketplace / integration lifecycle.
-- Full vector search or external search index.
+- Vector search over an external corpus.
 - Broad autonomous discovery and crawling pipeline.
 - Unconstrained self-evolution.
 - Direct app-container self-deployment.
 - Cloud/multi-device sync.
-- Domain-specific integrations (health, finance, home automation) built into the kernel.
+- Domain-specific integrations (health, finance, home automation) in the
+  kernel. Official plugins (`diary`, `finance_ledger`) are the opt-in path.
 - Publishing connectors or external CMS integrations.
-- Full cards as a complete product surface with first-class backend domain models.
+- Full Cards as a complete product surface.
 - Complex enterprise admin console or billing.
 - Public SaaS/multi-tenant launch.
-
-## What Must Be True Before Building Disabled Surfaces
-
-**Before broad automated source ingestion / crawling:**
-Sources/Evidence trust vocabulary, retention semantics, and candidate-to-Memory proposal path must stay fully tested. No auto-promotion of external evidence to trusted Memory.
-
-**Before Automation / Trigger:**
-Policy engine, ownership model, actor identity, and proposal-safe automation invariants must be documented and tested.
-
-**Before connector marketplace / integrations:**
-All connector data must enter Sources or Activity first. No direct-to-Memory connector writes.
-
-**Before any broad external ingestion:**
-Retention/deletion semantics, Sources/Evidence candidate-only boundary, and trust gate must be enforced and tested.

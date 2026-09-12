@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0f1117" />
     <meta name="description" content="Agent-first memory system" />
 
@@ -17,14 +17,9 @@
   </head>
   <body>
     <div id="root"></div>
-    <!-- Apply saved theme before first paint to prevent flash -->
-    <script>
-      try {
-        if (localStorage.getItem('rainver:theme') === 'light') {
-          document.documentElement.classList.add('theme-light')
-        }
-      } catch (_) {}
-    </script>
+    <!-- Apply saved theme before first paint to prevent flash. A file, not
+         inline: the production CSP is `script-src 'self'`. -->
+    <script src="/theme.js"></script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

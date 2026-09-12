@@ -50,6 +50,29 @@ describe("login sessions", () => {
     expect(() => resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "managed:9", login: null })).toThrow(/not have/);
   });
 
+  it("drops leftover vendor credential variables so login cannot bill an API account", () => {
+    const previousKey = process.env.ANTHROPIC_API_KEY;
+    const previousOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.ANTHROPIC_API_KEY = "sk-machine";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth-machine";
+    try {
+      const own = resolveLoginCommand({
+        session_id: "s",
+        adapter_type: "claude_code",
+        installation: "own",
+        login: { command: ["claude", "auth", "login"], home_subdir: ".claude", credential_file: ".credentials.json" },
+      });
+      expect(own.env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(own.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      expect(own.env.HOME).toBe(process.env.HOME);
+    } finally {
+      if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previousKey;
+      if (previousOauth === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = previousOauth;
+    }
+  });
+
   it("appends terminal-auth arguments and environment to the installed ACP command", async () => {
     const dir = join(toolsDir(), "registry_agent", "2.0.0");
     await mkdir(join(dir, "home"), { recursive: true });

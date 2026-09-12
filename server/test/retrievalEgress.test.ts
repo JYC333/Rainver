@@ -27,6 +27,7 @@ function __setProviderHttpClientForTests(client: ProviderHttpClient | null): voi
 const throwingStore = new Proxy({ resolveUsageAttribution: resolveTestUsageAttribution }, {
   get(target, property) {
     if (property === "resolveUsageAttribution") return target.resolveUsageAttribution;
+    if (property === "authorizeCredentialSpend") return async () => ({});
     return async () => {
       throw new Error("no provider call may happen when egress is disabled");
     };
@@ -136,7 +137,7 @@ describe("retrievalEgressAllowed", () => {
 
 describe("egress-disabled provider stages", () => {
   it("ProviderReranker returns null when external provider egress is denied", async () => {
-    const reranker = new ProviderReranker(throwingStore, { egressPolicy: DENY_EXTERNAL });
+    const reranker = new ProviderReranker(throwingStore, { spend: { kind: "person", user_id: "user-1" }, egressPolicy: DENY_EXTERNAL });
     const result = await reranker.rerank("space-1", "user-1", "alpha", [
       { objectType: "knowledge_item", objectId: "a", title: "A", text: "alpha text" },
     ]);
@@ -144,7 +145,7 @@ describe("egress-disabled provider stages", () => {
   });
 
   it("ProviderSynthesizer returns null when external provider egress is denied", async () => {
-    const synthesizer = new ProviderSynthesizer(throwingStore, { egressPolicy: DENY_EXTERNAL });
+    const synthesizer = new ProviderSynthesizer(throwingStore, { spend: { kind: "person", user_id: "user-1" }, egressPolicy: DENY_EXTERNAL });
     const result = await synthesizer.synthesize("space-1", "user-1", "alpha", [
       { objectType: "knowledge_item", objectId: "a", title: "A", text: "alpha text", updatedAt: null },
     ]);
@@ -179,6 +180,7 @@ describe("egress-disabled provider stages", () => {
 
     await expect(
       completeProviderText(store, "space-1", {
+        spend: { kind: "person", user_id: "user-1" },
         provider_id: "external",
         system: "s",
         user: "u",
@@ -189,6 +191,7 @@ describe("egress-disabled provider stages", () => {
     expect(calls).toEqual([]);
 
     const local = await completeProviderText(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
       provider_id: "local",
       system: "s",
       user: "u",
@@ -206,6 +209,9 @@ function providerStoreFor(
   return {
     async getTaskChain() {
       return null;
+    },
+    async authorizeCredentialSpend() {
+      return {} as never;
     },
     async getInvocationTarget(_spaceId: string, providerId?: string | null) {
       const provider = providers[providerId ?? "external"];

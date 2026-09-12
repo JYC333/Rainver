@@ -13,7 +13,7 @@ import {
 } from "./memoryReadAuth.js";
 import { memorySensitivityReadSql } from "./memorySensitivitySql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
-import { isContentAccessLevel, isContentVisibility } from "../access/contentAccessTypes.js";
+import { isContentAccessLevel, isContentVisibility, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 
 const MEMORY_OBJECT_TYPES = ["memory_entry"] as const;
@@ -144,7 +144,7 @@ async function revalidateMemoryMany(
 ): Promise<Map<string, RevalidatedObject>> {
   const ids = uniqueIds(objectIds);
   if (ids.length === 0) return new Map();
-  const result = await db.query<MemoryVisibilityRow>(
+  const result = await db.query<WithAccessLevel<MemoryVisibilityRow>>(
     `SELECT me.id, me.space_id, me.deleted_at, me.sensitivity_level, me.visibility,
             me.access_level, ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr: "$3" })} AS effective_access_level,
             me.owner_user_id, me.scope_type, me.project_id, me.title, me.content

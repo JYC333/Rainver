@@ -9,6 +9,7 @@ import { Button } from '../../components/ui/button'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Skeleton } from '../../components/ui/skeleton'
 import { SpaceLink as Link } from '../../core/spaceNav'
+import { SafeExternalLink } from '../../components/SafeExternalLink'
 import { errMsg, isNotFoundError } from '../../lib/utils'
 import type { ProjectResearchReport, ReaderAnnotation, ReaderDocumentPayload } from '../../types/api'
 
@@ -91,7 +92,7 @@ export default function ResearchReportPage() {
               <div className="mt-1 flex gap-2">
                 {reference.library_path && <Link to={reference.library_path}>Library</Link>}
                 {reference.academic_path && <Link to={reference.academic_path}>Academic</Link>}
-                {reference.external_url && <a href={reference.external_url} target="_blank" rel="noopener noreferrer">External</a>}
+                {reference.external_url && <SafeExternalLink href={reference.external_url}>External</SafeExternalLink>}
               </div>
             </>}
             {(reference.excerpts?.length ?? 0) > 0 && <div className="mt-1">

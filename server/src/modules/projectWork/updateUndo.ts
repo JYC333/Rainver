@@ -1,4 +1,5 @@
 import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { runInheritedReadSql } from "../access/contentAccessSql.js";
 import { assertProjectReadable } from "../projects/access.js";
 import { InquiryIterationService } from "../inquiry/iterationService.js";
 import { MemoryApplyError, PgMemoryApplyRepository } from "../memory/memoryApplyRepository.js";
@@ -38,11 +39,12 @@ async function undoLocked(
   const row = await db.query<{
     event_kind: string; subject_type: string; subject_id: string; data_json: Record<string, unknown> | null;
   }>(
-    `SELECT event_kind, subject_type, subject_id, data_json
-       FROM project_work_events
-      WHERE id = $1 AND space_id = $2 AND project_id = $3
-      FOR UPDATE`,
-    [eventId, identity.spaceId, projectId],
+    `SELECT e.event_kind, e.subject_type, e.subject_id, e.data_json
+       FROM project_work_events e
+      WHERE e.id = $1 AND e.space_id = $2 AND e.project_id = $3
+        AND ${runInheritedReadSql("e.data_json->>'run_id'", "e.space_id", "$4")}
+      FOR UPDATE OF e`,
+    [eventId, identity.spaceId, projectId, identity.userId],
   );
   const event = row.rows[0];
   if (!event) throw new HttpError(404, "Update not found");

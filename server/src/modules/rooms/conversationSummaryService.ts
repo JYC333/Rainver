@@ -4,7 +4,7 @@ import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { withQueryableTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
-import { visibleMessagePathSql } from "../sessions/messagePath.js";
+import { visibleRoomTranscriptSql } from "../sessions/messagePath.js";
 import {
   resolveProviderCommandStore,
   type ProviderCommandStore,
@@ -124,7 +124,7 @@ export async function requestRoomConversationSummary(
            ON session_row.id=message.session_id AND session_row.space_id=message.space_id
         WHERE message.space_id=$1 AND message.session_id=$2
           AND session_row.room_id=$4
-          AND ${visibleMessagePathSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
+          AND ${visibleRoomTranscriptSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
           AND message.content IS NOT NULL AND btrim(message.content) <> ''
           -- Bounded by position, like the sweep gate and the watermark
           -- advance. The through-message names a point on the path; its
@@ -242,27 +242,12 @@ export class RoomConversationSummaryService {
       await this.markProviderRequired(input, lease.token, "Room owner requires Project write authority");
       return { status: "waiting_provider", reason: "owner_authority_required" };
     }
-    const ownerProviderId = await this.loadOwnerProviderId(input.spaceId, owner);
-    if (!ownerProviderId) {
+    const ownerProvider = await this.loadOwnerProvider(input.spaceId, owner);
+    if (!ownerProvider) {
       await this.markProviderRequired(input, lease.token);
       return { status: "waiting_provider" };
     }
     const providerStore = this.resolveProviderStore(this.config);
-    let target: Awaited<ReturnType<ProviderCommandStore["getInvocationTarget"]>>;
-    try {
-      target = await providerStore.getInvocationTarget(
-        input.spaceId,
-        ownerProviderId,
-        owner,
-      );
-    } catch (error) {
-      if (error instanceof ProviderCommandNotFoundError) {
-        await this.markProviderRequired(input, lease.token);
-        return { status: "waiting_provider" };
-      }
-      await this.failLease(input, lease.token, "Summary provider resolution failed", true);
-      return { status: "failed", reason: "provider_resolution" };
-    }
 
     let completion: Awaited<ReturnType<typeof completeProviderMessages>>;
     try {
@@ -270,8 +255,8 @@ export class RoomConversationSummaryService {
         providerStore,
         input.spaceId,
         {
-          provider_id: target.provider.id,
-          model: target.provider.default_model,
+          provider_id: ownerProvider.id,
+          model: ownerProvider.default_model,
           system: SUMMARY_SYSTEM,
           messages: [{ role: "user", content: JSON.stringify({
             previous_summary: active?.summary_text ?? null,
@@ -292,9 +277,23 @@ export class RoomConversationSummaryService {
             session_id: input.sessionId,
             task: "room_conversation_summary",
           },
+          // Nobody is present: the Room owner authorizes the spend, re-checked
+          // now so an owner who lost the Room or its Project spends nothing.
+          spend: {
+            kind: "setup",
+            setup: "room_summary",
+            record_id: input.roomId,
+            user_id: owner,
+            still_authorized: async () => (await this.loadRoomOwner(input.spaceId, input.roomId)) === owner,
+          },
         },
       );
     } catch (error) {
+      // The provider went away between choosing it and spending on it.
+      if (error instanceof ProviderCommandNotFoundError) {
+        await this.markProviderRequired(input, lease.token);
+        return { status: "waiting_provider" };
+      }
       await this.failLease(input, lease.token, "Summary provider request failed", true);
       return { status: "failed", reason: "provider_completion" };
     }
@@ -304,7 +303,7 @@ export class RoomConversationSummaryService {
       await this.failLease(input, lease.token, "Summary provider returned an invalid response", true);
       return { status: "failed", reason: "empty_summary" };
     }
-    const published = await this.publish(input, lease.token, owner, target.provider.id, completion.model, summaryText, batch, completion.usage);
+    const published = await this.publish(input, lease.token, owner, ownerProvider.id, completion.model, summaryText, batch, completion.usage);
     return published;
   }
 
@@ -530,7 +529,7 @@ export class RoomConversationSummaryService {
            ON session_row.id=message.session_id AND session_row.space_id=message.space_id
           AND session_row.room_id=$5
         WHERE message.space_id=$1 AND message.session_id=$2
-          AND ${visibleMessagePathSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
+          AND ${visibleRoomTranscriptSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
           AND ($3::timestamptz IS NULL OR (message.created_at > $3 OR (message.created_at=$3 AND message.id>$4)))
         -- Ordered by the same key the coverage cursor is stored and compared
         -- on (covered_through_created_at, and isAfterCoverage in
@@ -563,9 +562,13 @@ export class RoomConversationSummaryService {
       : null;
   }
 
-  private async loadOwnerProviderId(spaceId: string, ownerUserId: string): Promise<string | null> {
-    const result = await this.db.query<ProviderEligibilityRow & { id: string }>(
+  private async loadOwnerProvider(
+    spaceId: string,
+    ownerUserId: string,
+  ): Promise<{ id: string; default_model: string | null } | null> {
+    const result = await this.db.query<ProviderEligibilityRow & { id: string; default_model: string | null }>(
       `SELECT provider.id,
+              provider.default_model,
               provider.provider_type,
               provider.enabled AS provider_enabled,
               grant_row.enabled AS provider_grant_enabled,
@@ -581,7 +584,8 @@ export class RoomConversationSummaryService {
         ORDER BY grant_row.is_default DESC, provider.updated_at DESC, provider.id ASC`,
       [spaceId],
     );
-    return result.rows.find((row) => isProviderEligibleForUser(row, ownerUserId))?.id ?? null;
+    const row = result.rows.find((candidate) => isProviderEligibleForUser(candidate, ownerUserId));
+    return row ? { id: row.id, default_model: row.default_model } : null;
   }
 
   private async isWaitingForEligibleOwnerProvider(row: {
@@ -599,7 +603,7 @@ export class RoomConversationSummaryService {
     if (state.rows[0]?.status !== "waiting_provider") return true;
     const owner = await this.loadRoomOwner(row.space_id, row.room_id);
     if (!owner) return false;
-    return Boolean(await this.loadOwnerProviderId(row.space_id, owner));
+    return (await this.loadOwnerProvider(row.space_id, owner)) !== null;
   }
 
   private async finishWithoutPublish(input: { spaceId: string; roomId: string; sessionId: string }, token: string): Promise<void> {
@@ -726,7 +730,7 @@ export class RoomConversationSummaryService {
       const remaining = await client.query(
         `SELECT 1 FROM messages m
           WHERE m.space_id=$1 AND m.session_id=$2
-            AND ${visibleMessagePathSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
+            AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
             AND (m.created_at,m.id) > ($3::timestamptz,$4::varchar)
           LIMIT 1`,
         [input.spaceId,input.sessionId,batch.covered_through_message.created_at,batch.covered_through_message.id],

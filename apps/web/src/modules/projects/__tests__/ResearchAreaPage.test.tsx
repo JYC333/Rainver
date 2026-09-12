@@ -21,6 +21,9 @@ vi.mock('../../../core/spaceNav', async () => {
 vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Space One' }),
 }))
+vi.mock('../../../contexts/AuthContext', () => ({
+  useAuth: () => ({ currentUser: { id: 'user-1' } }),
+}))
 
 // This file covers the Area's own documents. The workbench and standing panel
 // it now hosts are covered against the real components in

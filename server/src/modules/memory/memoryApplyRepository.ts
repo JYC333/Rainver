@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import {
   copyProvenanceToMemory,
   dominantSourceTrust,
+  publicationImportEntry,
   userConfirmationEntry,
   mergeDistinctProvenanceEntries,
   proposalProvenanceEntry,
@@ -146,6 +147,12 @@ export interface AgentWriteContext {
    * apply a persona change directly by asking another Agent to ask.
    */
   triggerOrigin: string | null;
+  /**
+   * The person responsible for this Run, read one hop up with the origin: who
+   * asked in the turn, or who set the unattended work up. §5 compares it with
+   * the Agent's owner, so it has to be the person accountable for the work and
+   * never a bystander who merely set it running.
+   */
   instructedByUserId: string | null;
   roomId: string | null;
   /** Whether this Agent already has an active persona; a second is refused. */
@@ -163,24 +170,28 @@ export const PERSONA_MEMORY_TYPE = "persona";
 
 /**
  * What a persona write needs before it can be applied, decided from the Run's
- * trigger rather than from anything the turn said. `proposal_owner` and
+ * own columns rather than from anything the turn said. `proposal_owner` and
  * `proposal_in_turn` are refusals the executor turns into the right kind of
- * proposal; `apply` is the unattended case ADR 0003 §5 lets through.
+ * proposal; `apply` is the one case ADR 0003 §5 lets through — the Agent
+ * owner's own unattended work.
  */
 export type PersonaDecision = "apply" | "proposal_in_turn" | "proposal_owner";
 
 export function decidePersonaWrite(context: AgentWriteContext): PersonaDecision {
-  // Not `manual` — an Agent concluding something about itself outside anyone's
-  // turn. The notification and the one-step restore are what stand in for a
-  // decision here, and ADR 0017 §1/§2 name this as their one exception.
-  if (context.triggerOrigin !== "manual") return "apply";
-  // A person in a turn asking for a change is exactly the input that must not
-  // carry this reach: a persona is delivered in every Room the Agent sits in.
-  // The owner decides in the turn; anyone else's request waits for the owner,
-  // who is the only person who may accept it.
-  return context.instructedByUserId && context.instructedByUserId === context.ownerUserId
-    ? "proposal_in_turn"
-    : "proposal_owner";
+  // Whoever is responsible for this Run is not the person whose Agent this is,
+  // or nobody is responsible for it at all. Either way the decision is the
+  // owner's, and only the owner may accept it: a persona is delivered in every
+  // Room the Agent sits in, so nobody else carries that reach — not by asking
+  // in a turn, and not through work they scheduled.
+  if (!context.ownerUserId || context.instructedByUserId !== context.ownerUserId) return "proposal_owner";
+  // The owner's own turn. Still a proposal, decided there and then: a person
+  // asking in a conversation is the input §5 trusts least, the owner included.
+  if (context.triggerOrigin === "manual") return "proposal_in_turn";
+  // The owner's own unattended work — an Agent concluding something about
+  // itself outside anyone's turn, under an Automation or a tick the owner set
+  // up. The notification and the one-step restore stand in for a decision
+  // here, and ADR 0017 §1/§2 name this as their one exception.
+  return "apply";
 }
 
 export interface ApplyProposal {
@@ -193,9 +204,9 @@ export interface ApplyProposal {
   title: string | null;
   payload_json: Record<string, unknown> | null;
   project_folder_id: string | null;
-  visibility?: string | null;
+  visibility: string;
   created_by_user_id: string | null;
-  owner_user_id?: string | null;
+  owner_user_id: string | null;
   created_by_agent_id?: string | null;
   created_by_run_id?: string | null;
   project_id: string | null;
@@ -702,7 +713,11 @@ export class PgMemoryApplyRepository {
       title: null,
       payload_json: null,
       project_folder_id: null,
+      // No proposal row exists for a direct write; the shape carries the
+      // narrowest audience, the acting person's.
+      visibility: "private",
       created_by_user_id: input.actingUserId,
+      owner_user_id: input.actingUserId,
       project_id: input.projectId,
     };
     // The version it replaces steps down first. Two versions of one chain must
@@ -817,6 +832,71 @@ export class PgMemoryApplyRepository {
     });
     await reindexMemoryWithinApply(this.db, input.spaceId, [memory.id, old.id]);
     return { memory, supersededMemoryId: old.id };
+  }
+
+  /**
+   * A person importing a published user-memory snapshot into their Space.
+   * The publication adapter is not a writer of `memory_entries`; this method
+   * is. The copy is always private, normal-sensitivity, user-scoped, and
+   * attributed to the importer. Its provenance records the importer's act but
+   * carries the publisher's trust, so importing is not a confirmation of what
+   * the memory says. Reach cannot widen here: agent-scope types are refused.
+   */
+  async applyPublicationImport(input: {
+    spaceId: string;
+    ownerUserId: string;
+    memoryType: string;
+    content: string;
+    namespace: string | null;
+    title: string | null;
+    confidence: number;
+    importance: number;
+    tags: unknown;
+    memoryLayer: string | null;
+    eventTime: string | null;
+    eventType: string | null;
+    /** The publisher's row's trust, carried rather than upgraded by the import. */
+    sourceTrust: string | null;
+  }): Promise<{ id: string }> {
+    if (AGENT_SCOPE_MEMORY_TYPES.has(input.memoryType)) {
+      throw new MemoryApplyError("Only ordinary user memories can be imported from a publication");
+    }
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const entries = [publicationImportEntry(input.ownerUserId, input.sourceTrust)];
+    await this.db.query(
+      `INSERT INTO memory_entries (
+         id, space_id, scope_type, memory_type, content, status, created_at, updated_at,
+         valid_from, valid_to, subject_user_id, owner_user_id, sensitivity_level,
+         last_confirmed_at, agent_id, namespace, title, visibility,
+         access_level, confidence, importance, source_id, created_by, approved_by,
+         deleted_at, version, access_count, last_accessed_at, tags, memory_layer,
+         event_time, event_type, last_retrieved_at, root_memory_id,
+         supersedes_memory_id, source_trust, created_from_proposal_id, project_id
+       ) VALUES (
+         $1, $2, 'user', $3, $4, 'active', $5, $5,
+         NULL, NULL, $6, $6, 'normal',
+         NULL, NULL, $7, $8, 'private',
+         'full', $9, $10, NULL, $6, $6,
+         NULL, 1, 0, NULL, $11::jsonb, $12,
+         $13::timestamptz, $14, NULL, $1,
+         NULL, $15, NULL, NULL
+       )`,
+      [
+        id, input.spaceId, input.memoryType, input.content, now,
+        input.ownerUserId, input.namespace, input.title, input.confidence, input.importance,
+        input.tags == null ? null : JSON.stringify(input.tags),
+        input.memoryLayer, input.eventTime, input.eventType,
+        dominantSourceTrust(entries),
+      ],
+    );
+    await writeProvenanceLinks(this.db, {
+      spaceId: input.spaceId,
+      targetType: TARGET_MEMORY,
+      targetId: id,
+      entries,
+    });
+    return { id };
   }
 
   /**

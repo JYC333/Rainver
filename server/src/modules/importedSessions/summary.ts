@@ -209,6 +209,8 @@ export async function refreshImportedHistorySummary(
     max_tokens: 1_500,
     task: TASK,
     metering: { subject_user_id: session.owner_user_id, project_id: session.project_id },
+    // Made when a person references this session, so it spends as them.
+    spend: { kind: "person", user_id: identity.userId },
   });
 
   const text = fitTextToTokenBudget(completion.text, SUMMARY_TOKEN_BUDGET, "[summary clipped to the reference budget]");

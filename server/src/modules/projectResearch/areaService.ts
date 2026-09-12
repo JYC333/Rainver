@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { HttpError, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 import { assertProjectReadable, assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access.js";
 import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
 import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
@@ -13,6 +14,7 @@ import { PgSessionRepository } from "../sessions/repository.js";
 import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy.js";
 import { markdownToPm, pmBlocksText } from "../knowledge/noteDocument.js";
 import { withNoteWrites, type NoteWriteScope } from "../knowledge/noteWriter.js";
+import { assertWritableSpaceObject } from "../knowledge/knowledgeWriteAccess.js";
 import { ensureProjectNotesFolder } from "../knowledge/noteProjectFolders.js";
 import { NOTEBOOK_SECTION_KEYS, SECTION_LABELS, resolveNotebookNote, resolveNotebookNotes, type NotebookNoteRow, type SectionKey } from "./notebookNotes.js";
 import { isNoteProjectRole, type NoteProjectRole } from "../knowledge/noteProjectRoles.js";
@@ -112,7 +114,7 @@ export class ProjectResearchAreaService {
     const folder = await this.db.query<{ id: string }>(`SELECT id FROM note_collections WHERE space_id=$1 AND project_id=$2`, [identity.spaceId, projectId]);
     if (!folder.rows[0]) throw new HttpError(404, "Research Area not initialized");
     const [notes, checklist, reports] = await Promise.all([
-      this.listProjectNotes(identity.spaceId, projectId),
+      this.listProjectNotes(identity, projectId),
       this.db.query(`SELECT * FROM research_checklist_items WHERE space_id=$1 AND project_id=$2 ORDER BY sort_order,id`, [identity.spaceId, projectId]),
       this.db.query(`SELECT id,research_question,research_question_version,status,run_kind,created_at,updated_at FROM project_research_reports WHERE space_id=$1 AND project_id=$2 ORDER BY created_at DESC`, [identity.spaceId, projectId]),
     ]);
@@ -234,10 +236,10 @@ export class ProjectResearchAreaService {
       new ProjectResearchAreaService(scope.db, this.config).ensureArea(scope, identity.spaceId, projectId));
     let note: NotebookNoteRow | null = null;
     if (role) {
-      const resolution = await resolveNotebookNote(this.db, identity.spaceId, projectId, role);
+      const resolution = await resolveNotebookNote(this.db, identity.spaceId, projectId, role, identity.userId);
       if (resolution.present) note = resolution.note;
     } else {
-      note = await this.resolveProjectNoteByExactTitle(identity.spaceId, projectId, title);
+      note = await this.resolveProjectNoteByExactTitle(identity, projectId, title);
     }
     if (!note) {
       const now = new Date().toISOString();
@@ -333,7 +335,7 @@ export class ProjectResearchAreaService {
     const execution = objectValue(body.execution);
     const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config).resolve(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
 
-    const notes = await this.listProjectNotes(identity.spaceId, projectId);
+    const notes = await this.listProjectNotes(identity, projectId);
     const notebookText = notes.map((note) => {
       const blocks = pmBlocksText(note.content_json ?? { type: "doc", content: [] });
       return `## [${note.id}] ${note.title} (base version ${note.version}, ${blocks.length} blocks)\n${blocks.map((value, index) => `[${index}] ${value || "(empty)"}`).join("\n") || "(empty document)"}`;
@@ -385,6 +387,9 @@ export class ProjectResearchAreaService {
       const requestedNoteId = optionalString(notebookUpdate.note_id);
       const targetNote = requestedNoteId ? notes.find((n) => n.id === requestedNoteId) : undefined;
       if (targetNote) {
+        // The notebook list this chose from is read-gated, and reading a note
+        // is not permission to have the model rewrite it.
+        await assertWritableSpaceObject(this.db, identity, targetNote.id, "Note not found");
         const applied = await withNoteWrites(this.db, (scope) => scope.applyOps({
           spaceId: identity.spaceId, noteId: targetNote.id, baseVersion: targetNote.version, rawOps, source: "ai_adhoc", runId: run.id, refs,
         }));
@@ -610,25 +615,39 @@ export class ProjectResearchAreaService {
    * a role. Not a system binding: the title is the user's own input in that
    * path, so matching it is what they asked for.
    */
-  private async resolveProjectNoteByExactTitle(spaceId: string, projectId: string, title: string): Promise<NotebookNoteRow | null> {
+  private async resolveProjectNoteByExactTitle(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    title: string,
+  ): Promise<NotebookNoteRow | null> {
     const result = await this.db.query<NotebookNoteRow>(
       `SELECT n.object_id AS id, n.version, n.content_json, n.plain_text
          FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
         WHERE so.space_id=$1 AND so.primary_project_id=$2 AND n.status='active'
           AND so.deleted_at IS NULL AND so.title=$3
+          AND ${contentReadSql("space_object", "so", "$4")}
         ORDER BY so.created_at ASC LIMIT 1`,
-      [spaceId, projectId, title],
+      [identity.spaceId, projectId, title, identity.userId],
     );
     return result.rows[0] ?? null;
   }
 
-  private async listProjectNotes(spaceId: string, projectId: string): Promise<Array<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null }>> {
+  /**
+   * The Project's notebook, as this person may read it.
+   *
+   * Project membership is not the gate: a note inside a Project can still be
+   * its author's own, and this feeds both the Area view and the prompts the
+   * notebook chat and ask-AI paths build — so an ungated read put another
+   * member's private note body into a model call.
+   */
+  private async listProjectNotes(identity: SpaceUserIdentity, projectId: string): Promise<Array<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null }>> {
     const rows = await this.db.query<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null }>(
       `SELECT n.object_id AS id, so.title, n.version, n.content_json, n.project_role
          FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
         WHERE so.space_id=$1 AND so.primary_project_id=$2 AND n.status='active' AND so.deleted_at IS NULL
+          AND ${contentReadSql("space_object", "so", "$3")}
         ORDER BY so.created_at ASC`,
-      [spaceId, projectId],
+      [identity.spaceId, projectId, identity.userId],
     );
     return rows.rows;
   }

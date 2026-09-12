@@ -72,8 +72,9 @@ capture / trigger
 ### Sandbox and path policy boundary
 
 - On the server host, all file access from agent execution is mediated by `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`. **Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):** a Project Folder row bound to a remote trusted host never reaches this mediation — the control plane holds no path for it and `PathPolicy` is never invoked; see [SECURITY_AND_ACCESS_BOUNDARIES.md](SECURITY_AND_ACCESS_BOUNDARIES.md) §10.
-- Sandboxed file-access adapters currently run inside a git worktree. One-shot Docker
-  is planned for stricter process isolation and must fail closed until implemented.
+- Server-host file access for managed/code-patch paths still uses worktree
+  helpers. CLI Runs execute on a host daemon (ADR 0016). `one_shot_docker` is
+  not a product CLI path; high/critical-risk work that requires it fails closed.
 - Adapters must not access arbitrary host paths.
 
 ### Proposal-first for durable change
@@ -141,8 +142,8 @@ capture / trigger
 | Sandbox path access | Execution Project Folder boundary, worktree root validation | Active |
 | Deployment / deployer calls | Instance-admin job records + internal-token pull channel; operator-only deployer socket allowlist | Active |
 | Automatic system self-evolution | Removed; Evolution runs require an explicit Agent | Removed |
-| Future automation trigger | No model yet — reserved | Not built |
-| Future connector sync | No model yet | Not built |
+| Automation fire | Manual and scheduled Automations plus native targets; no external webhook marketplace | Active |
+| Connector marketplace | Not present; Sources connections/recipes are the ingestion path | Absent |
 
 ## Architecture Fitness Checks
 

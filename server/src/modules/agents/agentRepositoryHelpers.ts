@@ -2,6 +2,7 @@ import {
   getRuntimeAdapterSpec,
 } from "../runtimeAdapters/specs.js";
 import { recommendedMaxOutputTokens } from "../providers/modelOutputLimits.js";
+import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import type { AgentOut, AgentRecord } from "./repository.js";
 
 export const DEFAULT_MODEL_CONFIG = { model: "claude-sonnet-4-6", max_tokens: 8192 };
@@ -39,7 +40,7 @@ export const DEFAULT_RUNTIME_POLICY = {
 };
 export const DEFAULT_RUNTIME_CONFIG = { risk_level: "medium", max_run_time_seconds: 300 };
 
-export function agentOut(row: AgentRecord): AgentOut {
+export function agentOut(row: WithAccessLevel<AgentRecord>): AgentOut {
   const adapterType = normalizeAdapterType(row.runtime_adapter_type ?? runtimePolicy(row).default_adapter_type);
   const spec = getRuntimeAdapterSpec(adapterType);
   const requiresModelProvider = spec?.model.model_provider_mode === "required";
@@ -71,7 +72,7 @@ export function agentOut(row: AgentRecord): AgentOut {
       : null,
     adapter_type: adapterType,
     requires_model_provider: requiresModelProvider,
-    system_prompt: row.system_prompt ?? null,
+    system_prompt: bodyWithheld(row.effective_access_level) ? null : row.system_prompt ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };

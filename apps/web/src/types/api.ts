@@ -2137,7 +2137,6 @@ export interface TaskRunCreateBody {
   agent_id?: string | null
   mode?: string
   run_type?: string
-  trigger_origin?: string
   session_id?: string | null
   workspace_location_id?: string | null
   project_id?: string | null
@@ -3210,7 +3209,6 @@ export interface AgentUpdateBody {
 export interface RunCreateBody {
   mode?: string
   run_type?: string
-  trigger_origin?: string
   session_id?: string | null
   project_folder_id?: string | null
   project_id?: string | null
@@ -3372,9 +3370,7 @@ export interface Host {
   arch: string | null
   daemon_version: string | null
   default_adapter_type?: string | null
-  /** The control-plane address this daemon reports it reaches. */
-  daemon_server_url?: string | null
-  /** Explicit proxy address for this host; null means it is derived. */
+  /** Explicit proxy address for this host; null means the instance setting or a derived one applies. */
   provider_proxy_base_url?: string | null
   /** What a dispatched run will actually use, resolved server-side. */
   provider_proxy_effective_url?: string | null

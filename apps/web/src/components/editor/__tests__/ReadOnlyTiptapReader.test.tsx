@@ -66,4 +66,31 @@ describe('ReadOnlyTiptapReader', () => {
     expect(screen.getByRole('columnheader', { name: 'No.' })).toBeInTheDocument()
     expect(screen.getByRole('cell', { name: 'Day 1' })).toBeInTheDocument()
   })
+
+  it('does not render javascript: links or data: images', async () => {
+    render(
+      <ReadOnlyTiptapReader
+        contentJson={{
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'evil', marks: [{ type: 'link', attrs: { href: 'javascript:alert(1)' } }] }],
+            },
+            { type: 'image', attrs: { src: 'javascript:alert(1)', alt: 'bad' } },
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'safe', marks: [{ type: 'link', attrs: { href: 'https://example.com/a' } }] }],
+            },
+          ],
+        }}
+        normalizedText="evil safe"
+      />,
+    )
+
+    expect(await screen.findByText('evil')).toBeInTheDocument()
+    expect(document.querySelector('a[href^="javascript:"]')).toBeNull()
+    expect(document.querySelector('img[src^="javascript:"]')).toBeNull()
+    expect(screen.getByRole('link', { name: 'safe' })).toHaveAttribute('href', 'https://example.com/a')
+  })
 })

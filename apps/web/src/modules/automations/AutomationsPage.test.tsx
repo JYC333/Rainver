@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 
 const { automationsApiMock, agentsApiMock, evolutionApiMock, projectsApiMock } = vi.hoisted(() => ({
@@ -56,5 +57,92 @@ describe('AutomationsPage', () => {
       }),
     })))
     expect(automationsApiMock.list).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a workflow root-run link inside the current Space', async () => {
+    automationsApiMock.list.mockResolvedValue([{
+      id: 'automation-1',
+      space_id: 'space-1',
+      owner_user_id: 'user-1',
+      agent_id: 'agent-1',
+      project_folder_id: null,
+      project_id: null,
+      name: 'Workflow automation',
+      description: null,
+      trigger_type: 'manual',
+      status: 'active',
+      preflight_snapshot_json: null,
+      config_json: { target_type: 'workflow', workflow_asset_key: 'workflow.alpha' },
+      next_run_at: null,
+      last_fired_at: null,
+      created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+    }])
+    automationsApiMock.workflowExecutions.mockResolvedValue([{
+      workflow_execution_id: 'exec-1',
+      automation_id: 'automation-1',
+      workflow_version_id: 'version-1',
+      status: 'completed',
+      trigger_type: 'manual',
+      root_run_id: 'run-99',
+      created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+      node_count: 2,
+      completed_node_count: 2,
+      waiting_node_count: 0,
+    }])
+    agentsApiMock.list.mockResolvedValue([{ id: 'agent-1', name: 'Agent One' }])
+    projectsApiMock.list.mockResolvedValue({ items: [] })
+    evolutionApiMock.assets.mockResolvedValue([])
+
+    render(
+      <MemoryRouter>
+        <AutomationsPage />
+      </MemoryRouter>,
+    )
+
+    const link = await screen.findByRole('link', { name: 'root run' })
+    expect(link).toHaveAttribute('href', '/spaces/space-1/runs/run-99')
+  })
+
+  it('runs an automation on its own configured prompt, not one this person supplied', async () => {
+    // ADR 0003 §5 / D1: the server reads the configured prompt itself, and a
+    // fire that carries a prompt is stamped as the firing person asking.
+    // Echoing the owner's configured text back would make every "Run now"
+    // read as this person's request and take the persona write with it.
+    const user = userEvent.setup({ delay: null })
+    const automation = {
+      id: 'automation-1',
+      space_id: 'space-1',
+      owner_user_id: 'user-2',
+      agent_id: 'agent-1',
+      project_folder_id: null,
+      project_id: null,
+      name: 'Standing digest',
+      description: null,
+      trigger_type: 'manual',
+      status: 'active',
+      preflight_snapshot_json: null,
+      config_json: { target_type: 'agent_run', prompt: 'Summarize what arrived' },
+      next_run_at: null,
+      last_fired_at: null,
+      created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+    }
+    automationsApiMock.list.mockResolvedValue([automation])
+    automationsApiMock.get.mockResolvedValue(automation)
+    automationsApiMock.fire.mockResolvedValue({ run_id: 'run-1', automation_run_id: 'fire-1' })
+    agentsApiMock.list.mockResolvedValue([{ id: 'agent-1', name: 'Agent One' }])
+    projectsApiMock.list.mockResolvedValue({ items: [] })
+    evolutionApiMock.assets.mockResolvedValue([])
+
+    render(
+      <MemoryRouter>
+        <AutomationsPage />
+      </MemoryRouter>,
+    )
+
+    await user.click(await screen.findByRole('button', { name: /Run now/ }))
+    await waitFor(() => expect(automationsApiMock.fire).toHaveBeenCalledWith('automation-1'))
   })
 })

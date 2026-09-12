@@ -17,6 +17,9 @@ import { HostConnectionRegistry, type HostFrameSink } from "../src/modules/hosts
 import type { CliProcessRegistry } from "../src/modules/runs/localCliExecution.js";
 import type { ThreadEventDraft } from "../src/modules/hosts/threadEventNormalization.js";
 
+/** The Run executor's policy seam, allowing: these tests cover the launch frame, not the decision. */
+const allowCredentialSpend = async () => ({ status: "allow" as const, policy_decision_record_id: null });
+
 // These tests exercise the remote protocol plumbing, not model backends, so
 // they state outright that they have no binding subsystem. The adapter refuses
 // to guess: a run whose binding it cannot determine fails rather than quietly
@@ -647,10 +650,10 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
   it("carries the binding on the launch frame and revokes its lease at terminal", async () => {
     const leases = new ProviderProxyLeaseRegistry();
     // No instance-wide external URL: this exercises the common path, where the
-    // address is derived from what the daemon reported it connects to.
+    // address is derived from FRONTEND_URL plus the proxy's port.
     setProviderProxyBaseUrlForProcess("http://server:8021", null);
     const hostRow = {
-      query: async () => ({ rows: [{ provider_proxy_base_url: null, daemon_server_url: "http://192.168.1.5:3000" }], rowCount: 1 }),
+      query: async () => ({ rows: [{ provider_proxy_base_url: null, kind: "remote" }], rowCount: 1 }),
     };
     const sink = new FakeSink();
     const connections = new HostConnectionRegistry();
@@ -671,7 +674,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           connectionRegistry: connections,
           // Derivation needs a fixed port: an OS-assigned one moves on
           // restart, so there would be nothing stable to hand a host.
-          config: loadConfig({ PROVIDER_PROXY_PORT: "8021" }),
+          config: loadConfig({ PROVIDER_PROXY_PORT: "8021", FRONTEND_URL: "http://192.168.1.5:3000" }),
           db: hostRow as never,
           bindings: {
             resolve: async () => ({ provider_id: "prov-1", model: "M2", origin: "dispatch" as const }),
@@ -679,6 +682,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
             profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
           leaseRegistry: leases,
+          policyEnforcer: allowCredentialSpend,
         },
       );
       await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
@@ -726,13 +730,14 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           connectionRegistry: connections,
           config: loadConfig({}),
           // The lease URL is resolved per host from the hosts row.
-          db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, daemon_server_url: null }], rowCount: 1 }) } as never,
+          db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, kind: "remote" }], rowCount: 1 }) } as never,
           bindings: {
             resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3", origin: "dispatch" as const }),
             record: async () => {},
             profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
           leaseRegistry: new ProviderProxyLeaseRegistry(),
+          policyEnforcer: allowCredentialSpend,
         },
       );
       await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
@@ -790,13 +795,14 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
         {
           connectionRegistry: connections,
           config: loadConfig({}),
-          db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, daemon_server_url: null }], rowCount: 1 }) } as never,
+          db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, kind: "remote" }], rowCount: 1 }) } as never,
           bindings: {
             resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3", origin: "dispatch" as const }),
             record: async () => {},
             profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
           leaseRegistry: new ProviderProxyLeaseRegistry(),
+          policyEnforcer: allowCredentialSpend,
         },
       );
       await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
@@ -854,13 +860,14 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
         {
           connectionRegistry: connections,
           config: loadConfig({}),
-          db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, daemon_server_url: null }], rowCount: 1 }) } as never,
+          db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, kind: "remote" }], rowCount: 1 }) } as never,
           bindings: {
             resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3", origin: "dispatch" as const }),
             record: async () => {},
             profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
           leaseRegistry: new ProviderProxyLeaseRegistry(),
+          policyEnforcer: allowCredentialSpend,
         },
       );
       await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));

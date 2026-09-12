@@ -72,6 +72,21 @@ export const RISK_RANK: Record<RiskLevel, number> = {
   critical: 3,
 };
 
+/**
+ * The highest risk each role may approve. One table for every approval: a
+ * proposal apply and a paused Run's approval alike.
+ */
+const APPROVER_MAX_RISK: Readonly<Record<string, RiskLevel>> = {
+  owner: "critical",
+  admin: "high",
+  reviewer: "medium",
+};
+
+export function roleMayApproveRisk(role: string | null, risk: RiskLevel): boolean {
+  const ceiling = role ? APPROVER_MAX_RISK[role] : undefined;
+  return ceiling !== undefined && RISK_RANK[risk] <= RISK_RANK[ceiling];
+}
+
 export const VALID_RISK_LEVELS: ReadonlySet<string> = new Set([
   "low",
   "medium",

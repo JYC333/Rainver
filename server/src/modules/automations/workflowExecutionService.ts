@@ -28,6 +28,13 @@ export interface WorkflowExecutionStartInput {
   automation: AutomationRow;
   target: ResolvedWorkflowExecutionTarget;
   triggerType: string;
+  /**
+   * The origin the coordinator Run carries, decided once by the caller —
+   * `fireResponsibility` for an Automation fire — so the preflight that
+   * admitted this execution, the row it creates and the credential authority
+   * that later walks up to it all read one answer (ADR 0003 §5).
+   */
+  triggerOrigin: "manual" | "automation";
   prompt?: string | null;
   instruction?: string | null;
   inputJson: Record<string, unknown>;
@@ -73,7 +80,7 @@ export class WorkflowExecutionService {
       user_id: input.identity.userId,
       mode: "live",
       run_type: "workflow",
-      trigger_origin: "automation",
+      trigger_origin: input.triggerOrigin,
       project_folder_id: input.automation.project_folder_id,
       project_id: input.automation.project_id,
       prompt: input.prompt ?? input.automation.name,
@@ -241,6 +248,9 @@ export class WorkflowExecutionService {
       automation,
       target: { versionId: execution.workflow_version_id, contentJson: execution.definition_json, resolutionTrace: execution.resolution_trace_json ?? [] },
       triggerType: "manual",
+      // Resuming schedules node children only; the coordinator Run this field
+      // stamps already exists and keeps the origin its fire decided.
+      triggerOrigin: "automation",
       inputJson: execution.input_json ?? {},
       preflightSnapshot: {},
       budgetSources: budgetSourcesFromSnapshot(execution.budget_snapshot_json),

@@ -22,7 +22,12 @@ import { assessActivityMemoryDuplicate } from "./memoryDedup.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 import { recordDetailRead } from "../contentAccess/audit.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
-import { isContentVisibility } from "../access/contentAccessTypes.js";
+import {
+  bodyWithheld,
+  isContentVisibility,
+  type ContentAccessLevel,
+  type WithAccessLevel,
+} from "../access/contentAccessTypes.js";
 import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 import { enforceSourceDerivedImportTarget } from "../sources/sourceConsent.js";
 
@@ -113,6 +118,15 @@ const ACTIVITY_COLUMNS = `
   processed_at, discarded_at, visibility, access_level, owner_user_id, aggregate_key
 `;
 
+function activitySelectSql(userExpr: string): string {
+  return `${ACTIVITY_COLUMNS},
+    ${contentAccessLevelSql({ definition: ACTIVITY_SUMMARY_ACTIVITY_ACCESS, alias: "ar", userExpr })} AS effective_access_level`;
+}
+
+function isSummaryOnly(row: { effective_access_level: ContentAccessLevel }): boolean {
+  return bodyWithheld(row.effective_access_level);
+}
+
 const SOURCE_TYPE_ALIASES: Record<string, string> = {
   user_input: "user_capture",
   manual: "user_capture",
@@ -201,7 +215,10 @@ export class PgActivityRepository {
         visibility,
       ],
     );
-    return activityToOut(result.rows[0]!);
+    // Read back through the gate so the response carries the creator's level.
+    const created = await this.get(identity, result.rows[0]!.id);
+    if (!created) throw new HttpError(404, "Activity record not found");
+    return activityToOut(created);
   }
 
   async list(
@@ -212,8 +229,8 @@ export class PgActivityRepository {
       await assertProjectReadable(this.db, identity.spaceId, filters.projectId, identity.userId);
     }
     const built = buildActivityWhere(identity, filters);
-    const result = await this.db.query<ActivityRow>(
-      `SELECT ${ACTIVITY_COLUMNS}
+    const result = await this.db.query<WithAccessLevel<ActivityRow>>(
+      `SELECT ${activitySelectSql("$2")}
          FROM activity_records ar
         ${built.where}
         ORDER BY occurred_at DESC, created_at DESC, id DESC
@@ -223,9 +240,9 @@ export class PgActivityRepository {
     return result.rows.map(activityToOut);
   }
 
-  async get(identity: SpaceUserIdentity, activityId: string): Promise<ActivityRow | null> {
-    const result = await this.db.query<ActivityRow>(
-      `SELECT ${ACTIVITY_COLUMNS}
+  async get(identity: SpaceUserIdentity, activityId: string): Promise<WithAccessLevel<ActivityRow> | null> {
+    const result = await this.db.query<WithAccessLevel<ActivityRow>>(
+      `SELECT ${activitySelectSql("$3")}
          FROM activity_records ar
         WHERE id = $1 AND space_id = $2
           AND ${contentReadSql("activity", "ar", "$3")}`,
@@ -265,12 +282,15 @@ export class PgActivityRepository {
         RETURNING ${ACTIVITY_COLUMNS}`,
       [activityId, identity.spaceId, status, now],
     );
-    return activityToOut(result.rows[0]!);
+    return activityToOut({
+      ...result.rows[0]!,
+      effective_access_level: current.effective_access_level,
+    });
   }
 
   async consolidate(identity: SpaceUserIdentity, activityId: string): Promise<ProposalOut[]> {
     const activity = await this.get(identity, activityId);
-    if (!activity) throw new HttpError(404, "Activity record not found");
+    if (!activity || isSummaryOnly(activity)) throw new HttpError(404, "Activity record not found");
     if (activity.aggregate_key) {
       throw new HttpError(422, "Activity pointer records cannot be consolidated");
     }
@@ -620,7 +640,8 @@ function buildActivityWhere(
   return { where: `WHERE ${clauses.join(" AND ")}`, params };
 }
 
-export function activityToOut(row: ActivityRow): Record<string, unknown> {
+export function activityToOut(row: WithAccessLevel<ActivityRow>): Record<string, unknown> {
+  const summaryOnly = isSummaryOnly(row);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -629,13 +650,13 @@ export function activityToOut(row: ActivityRow): Record<string, unknown> {
     agent_id: row.agent_id,
     source_type: row.activity_type,
     title: row.title,
-    content: row.content ?? "",
+    content: summaryOnly ? "" : row.content ?? "",
     source_run_id: row.source_run_id,
     source_task_id: row.source_task_id,
     source_session_id: row.session_id,
     source_url: row.source_url,
     status: row.status,
-    metadata_json: objectValue(row.payload_json),
+    metadata_json: summaryOnly ? {} : objectValue(row.payload_json),
     aggregate_key: row.aggregate_key,
     visibility: row.visibility,
     access_level: row.access_level,

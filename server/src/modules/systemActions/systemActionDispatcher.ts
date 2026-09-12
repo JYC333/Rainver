@@ -37,7 +37,7 @@ import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
 import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService.js";
 import { registerModuleSystemActionExecutors } from "./executorRegistry.js";
 import { memoryPolicyContext } from "../memory/memoryPolicyContext.js";
-import { effectiveTriggerOrigin } from "./effectiveTriggerOrigin.js";
+import { effectiveRunTrigger } from "./effectiveRunTrigger.js";
 
 export interface SystemActionDispatcherDeps extends ManagedApiRetrievalToolDeps {
   agentDelegationTools?: AgentDelegationToolDeps;
@@ -377,7 +377,7 @@ async function enforcePolicyForAction(
  * and the policy layer decides against that resource rather than against the
  * action alone. The Run's context is flattened into the rule context here, and
  * the origin it carries is the **effective** one — a delegated child is judged
- * by what started the chain (`effectiveTriggerOrigin`).
+ * by what started the chain (`effectiveRunTrigger`).
  */
 export async function enforceDeclaredResourcePolicy(
   databaseUrl: string,
@@ -422,7 +422,7 @@ export async function enforceDeclaredResourcePolicy(
       // person asked for in a conversation from the same call made by an
       // unattended wake-up, and without this key it read every dispatch as
       // `manual` and never fired.
-      trigger_origin: await effectiveTriggerOrigin(getDbPool(databaseUrl), run),
+      trigger_origin: (await effectiveRunTrigger(getDbPool(databaseUrl), run)).origin,
       // What a memory write is, resolved by the module that owns the answer
       // rather than taken from the call: `ruleUnattendedProjectWrite`'s one
       // exception is a persona write, and for a revision that fact lives on

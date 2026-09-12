@@ -131,7 +131,24 @@ function screeningMaterialIdentitySql(alias = "si"): string {
  * `corpus_candidates` preserves all corpus rows long enough to merge full-text
  * and evidence availability before selecting the best row for display.
  */
-function screeningMaterialReviewCtes(): string {
+/**
+ * @param userParam the viewer, or `null` for the batch's own state.
+ *
+ * The screening review shows a Source item's title, URI and author, so the
+ * *list* reads what that person may read: a Project member is not automatically
+ * a reader of every item a scan pulled in, and this surface used to list them
+ * all by Project alone.
+ *
+ * The batch's counts are a different question and take `null`. Scoping them too
+ * made the approval gate answer about the reviewer instead of about the work: a
+ * reviewer with no subscription saw `total = 0` and was told "no material
+ * matched this search window" — untrue — while a partly-subscribed one got
+ * `classified >= total` and the "every item is classified" guard passed over
+ * items that were not. Aggregate counts over material the Project itself
+ * gathered are workflow state, in the same class as the Home summary counts
+ * SECURITY already records.
+ */
+function screeningMaterialReviewCtes(userParam: string | null): string {
   const sourceMaterialKey = screeningMaterialIdentitySql("si");
   return `WITH source_items_scoped AS (
            SELECT si.id AS source_item_id,
@@ -148,6 +165,7 @@ function screeningMaterialReviewCtes(): string {
             WHERE si.space_id=$1
               AND si.deleted_at IS NULL
               AND si.id=ANY($3::text[])
+              ${userParam ? `AND ${sourceItemReadableClause("si", userParam, false)}` : ""}
          ), source_material AS (
            SELECT DISTINCT ON (material_key) *
              FROM source_items_scoped
@@ -494,7 +512,7 @@ export class ProjectResearchRepository {
         ORDER BY created_at DESC, id ASC`,
       [identity.spaceId, projectId, workflowId],
     );
-    return Promise.all(result.rows.map(async (row) => checkpointOut(row, await this.checkpointReview(identity.spaceId, projectId, row))));
+    return Promise.all(result.rows.map(async (row) => checkpointOut(row, await this.checkpointReview(identity, projectId, row))));
   }
 
   async createCheckpoint(
@@ -518,7 +536,7 @@ export class ProjectResearchRepository {
     );
     const row = await this.checkpointRow(identity.spaceId, projectId, id);
     if (!row) throw new HttpError(500, "Failed to create checkpoint");
-    return checkpointOut(row, await this.checkpointReview(identity.spaceId, projectId, row));
+    return checkpointOut(row, await this.checkpointReview(identity, projectId, row));
   }
 
   async decideCheckpoint(
@@ -547,7 +565,7 @@ export class ProjectResearchRepository {
       // operation projection. Once synthesis exists, do not reinterpret that
       // historical approval through today's corpus projection.
       if (priorSynthesis.rows[0]?.started !== true) {
-        const review = await this.checkpointReview(identity.spaceId, projectId, row);
+        const review = await this.checkpointReview(identity, projectId, row);
         const processingStatus = optionalString(objectValue(review?.summary).processing_status);
         if (processingStatus === "incomplete") {
           throw new HttpError(409, "Screening is not complete; wait for every item to receive an AI classification before approving this batch");
@@ -567,7 +585,7 @@ export class ProjectResearchRepository {
     );
     const updated = await this.checkpointRow(identity.spaceId, projectId, checkpointId);
     if (!updated) throw new HttpError(500, "Failed to decide checkpoint");
-    return checkpointOut(updated, await this.checkpointReview(identity.spaceId, projectId, updated));
+    return checkpointOut(updated, await this.checkpointReview(identity, projectId, updated));
   }
 
   /**
@@ -575,7 +593,8 @@ export class ProjectResearchRepository {
    * UI consumes this separate read model so a reviewer sees the decision in
    * research terms rather than internal IDs and JSON flags.
    */
-  private async checkpointReview(spaceId: string, projectId: string, checkpoint: CheckpointRow): Promise<Record<string, unknown> | null> {
+  private async checkpointReview(identity: SpaceUserIdentity, projectId: string, checkpoint: CheckpointRow): Promise<Record<string, unknown> | null> {
+    const spaceId = identity.spaceId;
     if (checkpoint.checkpoint_type !== "screening_gate" && checkpoint.checkpoint_type !== "idea_review") return null;
     const machineResult = objectValue(checkpoint.machine_result_json);
     const operationId = optionalString(machineResult.operation_id);
@@ -603,7 +622,7 @@ export class ProjectResearchRepository {
       const [items, corpusSummary, decisionCoverage, usage] = await Promise.all([
         sourceItemIds.length
           ? this.db.query<ScreeningReviewItemRow>(
-            `${screeningMaterialReviewCtes()}
+            `${screeningMaterialReviewCtes("$4")}
              SELECT source_item_id,
                     title,
                     source_uri,
@@ -632,12 +651,12 @@ export class ProjectResearchRepository {
               title ASC,
               source_item_id ASC
             LIMIT ${SCREENING_REVIEW_ITEM_LIMIT}`,
-            [spaceId, projectId, sourceItemIds],
+            [identity.spaceId, projectId, sourceItemIds, identity.userId],
           )
           : Promise.resolve({ rows: [] as ScreeningReviewItemRow[] }),
         sourceItemIds.length
           ? this.db.query<ScreeningReviewSummaryRow>(
-              `${screeningMaterialReviewCtes()}
+              `${screeningMaterialReviewCtes(null)}
                SELECT count(*)::int AS total,
                       count(*) FILTER (WHERE COALESCE(ai_relevance, relevance, triage_status) IN ('relevant','included'))::int AS relevant,
                       count(*) FILTER (WHERE COALESCE(ai_relevance, relevance, triage_status)='maybe')::int AS maybe,
@@ -646,7 +665,7 @@ export class ProjectResearchRepository {
                       count(*) FILTER (WHERE has_evidence)::int AS evidence_count,
                       count(*) FILTER (WHERE has_failed_item)::int AS failed_items
                  FROM material_rows`,
-              [spaceId, projectId, sourceItemIds],
+              [identity.spaceId, projectId, sourceItemIds],
             )
           : Promise.resolve({ rows: [] as ScreeningReviewSummaryRow[] }),
         sourceItemIds.length

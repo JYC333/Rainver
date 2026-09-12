@@ -197,7 +197,7 @@ describe("CustomSourceRepairService.repairHandler", () => {
     expect(result.deltas).toEqual([]);
 
     const proposalColumns = `id, space_id, proposal_type, title, payload_json, project_folder_id, visibility,
-              created_by_user_id, created_by_run_id, project_id`;
+              created_by_user_id, owner_user_id, created_by_run_id, project_id`;
     const proposalRow = await db.pool.query<{
       id: string;
       space_id: string;
@@ -205,8 +205,9 @@ describe("CustomSourceRepairService.repairHandler", () => {
       title: string | null;
       payload_json: Record<string, unknown>;
       project_folder_id: string | null;
-      visibility: string | null;
+      visibility: string;
       created_by_user_id: string | null;
+      owner_user_id: string | null;
       created_by_run_id: string | null;
       project_id: string | null;
     }>(`SELECT ${proposalColumns} FROM proposals WHERE id = $1`, [result.proposal_id]);

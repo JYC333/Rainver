@@ -1,4 +1,5 @@
 import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common.js";
+import { assertWritableSpaceObject } from "../knowledge/knowledgeWriteAccess.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import { PgKnowledgeRepository } from "../knowledge/repository.js";
@@ -276,6 +277,15 @@ async function removeFromSourceNote(
   blockIds: string[],
   userId: string,
 ): Promise<void> {
+  // The capture gate says this person may move the capture; the note the blocks
+  // are taken out of is a separate object with its own owner.
+  await assertWritableSpaceObject(
+    db,
+    { spaceId: capture.space_id, userId },
+    capture.note_id!,
+    "Capture note is not writable",
+    403,
+  );
   await withNoteWrites(db, async (scope) => {
     const current = await scope.db.query<{ content_json: unknown; version: number }>(
       `SELECT content_json, version FROM notes WHERE object_id = $1 AND space_id = $2`,

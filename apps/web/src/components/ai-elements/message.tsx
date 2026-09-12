@@ -12,7 +12,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { cjk } from "@streamdown/cjk";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
 import {
@@ -25,6 +24,7 @@ import {
   useState,
 } from "react";
 import { Streamdown } from "streamdown";
+import { safeStreamdownProps } from "./safeMarkdown";
 
 /** Who is speaking. Local, so the components do not depend on the AI SDK. */
 export type MessageRole = "system" | "user" | "assistant";
@@ -320,23 +320,6 @@ export const MessageBranchPage = ({
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
-/**
- * What an Agent's prose can contain.
- *
- * `cjk` because the product is bilingual and the default segmenter breaks
- * Chinese emphasis.
- *
- * `code` is absent because it carries its own full shiki bundle — every theme
- * and every grammar, measured at 805 precache entries against a baseline of
- * 193. Fenced blocks in prose therefore render unhighlighted; the highlighted
- * ones are a tool call's input and output, through `CodeBlock`. Mermaid and
- * LaTeX are absent for the same kind of reason: a second of import time each
- * per test file, and a large chunk in a bundle every visitor downloads, to
- * render something nobody has asked a conversation to do. Add one back when a
- * surface needs it — and pin its grammar set if it is `code`.
- */
-const streamdownPlugins = { cjk };
-
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
@@ -344,7 +327,7 @@ export const MessageResponse = memo(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         className
       )}
-      plugins={streamdownPlugins}
+      {...safeStreamdownProps}
       {...props}
     />
   ),

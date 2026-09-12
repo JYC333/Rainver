@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
@@ -229,6 +230,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
   app.get("/api/v1/projects/:projectId/folders/:folderId/tree", async (request, reply) => {
+    // A read whose effects reach past the response: it spawns `git` on the
+    // owner's machine and writes a policy record naming the requested path.
+    if (!stateChangingReadAllowed(request, context.config.frontendUrl)) {
+      return reply.code(403).send({ detail: "Cross-site request refused" });
+    }
     try {
       const id = await identity(context, request, reply);
       if (!id) return reply;
@@ -239,6 +245,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
   app.get("/api/v1/projects/:projectId/folders/:folderId/file", async (request, reply) => {
+    // A read whose effects reach past the response: it spawns `git` on the
+    // owner's machine and writes a policy record naming the requested path.
+    if (!stateChangingReadAllowed(request, context.config.frontendUrl)) {
+      return reply.code(403).send({ detail: "Cross-site request refused" });
+    }
     try {
       const id = await identity(context, request, reply);
       if (!id) return reply;
@@ -256,6 +267,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
   app.get("/api/v1/projects/:projectId/folders/:folderId/git/status", async (request, reply) => {
+    // A read whose effects reach past the response: it spawns `git` on the
+    // owner's machine and writes a policy record naming the requested path.
+    if (!stateChangingReadAllowed(request, context.config.frontendUrl)) {
+      return reply.code(403).send({ detail: "Cross-site request refused" });
+    }
     try {
       const id = await identity(context, request, reply);
       if (!id) return reply;
@@ -266,6 +282,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
   app.get("/api/v1/projects/:projectId/folders/:folderId/git/diff", async (request, reply) => {
+    // A read whose effects reach past the response: it spawns `git` on the
+    // owner's machine and writes a policy record naming the requested path.
+    if (!stateChangingReadAllowed(request, context.config.frontendUrl)) {
+      return reply.code(403).send({ detail: "Cross-site request refused" });
+    }
     try {
       const id = await identity(context, request, reply);
       if (!id) return reply;

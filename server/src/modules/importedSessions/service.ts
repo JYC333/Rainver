@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { HttpError, dbPool, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";
+import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import { readImportedSessionForViewer } from "./read.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
@@ -83,6 +84,37 @@ interface DispatchTarget {
   host_online: boolean;
 }
 
+/** The Location's import policy as stored; an unreadable one consents to nothing. */
+async function readAmbientImportPolicy(db: Queryable, locationId: string): Promise<AmbientImportPolicy> {
+  const result = await db.query<{ ambient_import_policy_json: unknown }>(
+    `SELECT ambient_import_policy_json FROM workspace_locations WHERE id = $1`,
+    [locationId],
+  );
+  const parsed = AmbientImportPolicySchema.safeParse(result.rows[0]?.ambient_import_policy_json ?? {});
+  return parsed.success ? parsed.data : { entries: [], offered_at: null };
+}
+
+/**
+ * What a scheduled sync's extraction spends on: the Location's auto-extract
+ * switch for that runtime, re-read at spend time, so turning it off stops an
+ * extraction that was about to run.
+ */
+export function scheduledExtractionSpend(
+  db: Queryable,
+  input: { userId: string; locationId: string; adapterType: string; installation: string },
+): CredentialSpendBasis {
+  return {
+    kind: "setup",
+    setup: "imported_session_extraction",
+    record_id: input.locationId,
+    user_id: input.userId,
+    still_authorized: async () => (await readAmbientImportPolicy(db, input.locationId)).entries.some((entry) =>
+      entry.adapter_type === input.adapterType
+      && entry.installation === input.installation
+      && entry.auto_extract === true),
+  };
+}
+
 export class ImportedSessionService {
   private readonly sessions: PgImportedSessionRepository;
   private readonly locations: PgWorkspaceLocationRepository;
@@ -126,12 +158,7 @@ export class ImportedSessionService {
   }
 
   private async readPolicy(locationId: string): Promise<AmbientImportPolicy> {
-    const result = await this.db.query<{ ambient_import_policy_json: unknown }>(
-      `SELECT ambient_import_policy_json FROM workspace_locations WHERE id = $1`,
-      [locationId],
-    );
-    const parsed = AmbientImportPolicySchema.safeParse(result.rows[0]?.ambient_import_policy_json ?? {});
-    return parsed.success ? parsed.data : { entries: [], offered_at: null };
+    return readAmbientImportPolicy(this.db, locationId);
   }
 
   private async writePolicy(locationId: string, policy: AmbientImportPolicy): Promise<void> {
@@ -440,10 +467,21 @@ export class ImportedSessionService {
     // attended spending (ADR 0010).
     const attendedFirstImport = context.firstImport && context.initiator === "user";
     if (!attendedFirstImport && entry?.auto_extract !== true) return;
+    // The person's own first import spends as them. A scheduled sync spends on
+    // their auto-extract switch, re-read at spend time, so turning it off stops
+    // an extraction that was about to run.
+    const spend: CredentialSpendBasis = attendedFirstImport || !entry
+      ? { kind: "person", user_id: identity.userId }
+      : scheduledExtractionSpend(this.db, {
+          userId: identity.userId,
+          locationId: target.location_id,
+          adapterType: entry.adapter_type,
+          installation: entry.installation,
+        });
     try {
       const { ImportedHistoryExtractionService } = await import("./extraction.js");
       await new ImportedHistoryExtractionService(this.db, this.config)
-        .extract(identity, target.project_id, target.location_id);
+        .extract(identity, target.project_id, spend, target.location_id);
     } catch {
       // The import stands; the button remains.
     }

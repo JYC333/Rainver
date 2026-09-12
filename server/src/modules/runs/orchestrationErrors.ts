@@ -1,3 +1,5 @@
+import type { RiskLevel } from "../policy/decisions.js";
+
 export class RunPreparationError extends Error {
   constructor(
     readonly code: string,
@@ -15,7 +17,8 @@ export class RunPreparationError extends Error {
  * the same check on re-execution.
  */
 export class RunApprovalRequiredError extends Error {
-  constructor(readonly code: string, message: string) {
+  /** `riskLevel` is the gate's risk, which decides who may grant the approval. */
+  constructor(readonly code: string, message: string, readonly riskLevel: RiskLevel) {
     super(message);
     this.name = "RunApprovalRequiredError";
   }

@@ -32,6 +32,11 @@ import { resolveNetworkProfileRepository } from "../../networkProfiles/index.js"
 import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
 import { SpaceAssistantService } from "../../agents/spaceAssistantService.js";
 import {
+  authorizeCredentialSpend,
+  type CredentialSpendAuthorization,
+  type CredentialSpendBasis,
+} from "../../policy/credentialSpend.js";
+import {
   recordAttributedUsageObservation,
   resolveUsageObservationAttribution,
   type UsageAttribution,
@@ -829,6 +834,18 @@ class PgProviderCommandStore implements ProviderCommandStore {
       fallback_provider_ids: fallbackProviderIdsFromRow(row),
       candidates,
     };
+  }
+
+  async authorizeCredentialSpend(
+    spaceId: string,
+    providerId: string | null,
+    basis: CredentialSpendBasis,
+  ): Promise<CredentialSpendAuthorization> {
+    return authorizeCredentialSpend(
+      this.config,
+      { space_id: spaceId, provider_id: providerId, basis },
+      { db: this.pool },
+    );
   }
 
   async recordPoolOutcome(memberId: string, outcome: PoolOutcome): Promise<void> {

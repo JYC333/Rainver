@@ -36,10 +36,9 @@ export const hosts = pgTable("hosts", {
 	// preference ordering.
 	defaultAdapterType: varchar("default_adapter_type", { length: 64 }),
 	/**
-	 * The control-plane address this daemon actually reaches, as it reports it.
-	 * The server cannot guess it — its own in-network hostname is a Compose
-	 * service name no paired machine can resolve — and it is what lets a
-	 * provider-proxy address be derived instead of configured.
+	 * No longer read or written: a host's control-plane address is
+	 * configuration (`hostControlPlaneUrl`). Kept until every deployed release
+	 * stops reading it; the drop is in the deferred register.
 	 */
 	daemonServerUrl: varchar("daemon_server_url", { length: 512 }),
 	/**

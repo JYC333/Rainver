@@ -1,3 +1,4 @@
+import type { ContentAccessLevel } from "../access/contentAccessTypes.js";
 import type { UsageRunSummaryRecord } from "../usage/repository.js";
 
 export interface QueryResult<Row> {
@@ -68,6 +69,13 @@ export interface RunRecord {
   has_context_taint?: boolean;
   context_taint_json?: unknown;
 }
+
+/**
+ * A Run as one viewer may read it. Only visible reads produce one, and the
+ * read model takes nothing else, so a path that forgot to compute the level
+ * does not compile rather than serving the body to whoever asked.
+ */
+export type VisibleRunRecord = RunRecord & { effective_access_level: ContentAccessLevel };
 
 export type RuntimeProfileSelectionSource = "explicit" | "default";
 

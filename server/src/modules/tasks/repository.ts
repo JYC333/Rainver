@@ -15,14 +15,23 @@ import {
   type SpaceUserIdentity,
   type Queryable, dateIso } from "../routeUtils/common.js";
 import { PgRunRepository } from "../runs/repository.js";
+import { PERSON_STARTED_TRIGGER_ORIGIN, assertPersonStartedRunRequest } from "../runs/runRepositoryHelpers.js";
 import { dispatchesToHostDaemon } from "../runs/runRemoteness.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
 import { contractRouteHints, budgetSourcesFromPolicy, type RunBudgetSource } from "../runs/contractSnapshot.js";
-import { runToOut } from "../runs/runReadModel.js";
+import { runToOut, runViewFor } from "../runs/runReadModel.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { resolveRunRemoteness } from "../runs/runRemoteness.js";
 import { PgUsageRepository } from "../usage/repository.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import {
+  artifactReadSql,
+  contentAccessLevelSql,
+  contentReadSql,
+  proposalReadSql,
+  runInheritedReadSql,
+  runReadSql,
+} from "../access/contentAccessSql.js";
 import { recordDetailRead } from "../contentAccess/audit.js";
 import { isContentVisibility } from "../access/contentAccessTypes.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
@@ -121,6 +130,31 @@ async function threadRunBinding(
     model: typeof override.model === "string" ? override.model : null,
     reasoning_effort: typeof override.reasoning_effort === "string" ? override.reasoning_effort : null,
   };
+}
+
+/**
+ * A Task Run may not be attached to a Room conversation's session.
+ *
+ * A Room is a visibility boundary, and `task_runs` is read through the Task.
+ * Letting a dispatch name a Room's `session_id` would put a Room-scoped Run on
+ * a Task that anyone with Task access can list — and would write the Run's
+ * turn into a conversation the dispatcher may not even be in. Nothing writes
+ * such a row today, which is what made the Task lists' missing Room term
+ * latent rather than live; this is what keeps it that way.
+ */
+async function assertNotRoomConversationSession(
+  db: Queryable,
+  spaceId: string,
+  sessionId: string | null,
+): Promise<void> {
+  if (!sessionId) return;
+  const row = await db.query<{ room_id: string | null }>(
+    `SELECT room_id FROM sessions WHERE space_id = $1 AND id = $2 LIMIT 1`,
+    [spaceId, sessionId],
+  );
+  if (row.rows[0]?.room_id) {
+    throw new HttpError(422, "session_id must not name a Room conversation");
+  }
 }
 
 export class PgTaskRepository {
@@ -647,6 +681,7 @@ export class PgTaskRepository {
     body: Record<string, unknown>,
     transactionClient?: Queryable,
   ) {
+    assertPersonStartedRunRequest(body);
     const execute = async (client: Queryable) => {
       const task = await getVisibleTaskRow(client, identity, taskId);
       if (!task) throw new HttpError(404, "Task not found");
@@ -669,6 +704,7 @@ export class PgTaskRepository {
       if (TASK_DISPATCH_REFUSED_STATUSES.has(currentTask.status)) {
         throw new HttpError(409, `Task is ${currentTask.status} and cannot be dispatched`);
       }
+      await assertNotRoomConversationSession(client, identity.spaceId, optionalString(body.session_id));
       const maxRuns = currentTask.max_runs;
       const taskPolicy = objectValue(task.policy_json);
       const budgetSources: RunBudgetSource[] = [
@@ -736,7 +772,7 @@ export class PgTaskRepository {
         user_id: identity.userId,
         mode: optionalString(body.mode) ?? "live",
         run_type: optionalString(body.run_type) ?? "agent",
-        trigger_origin: optionalString(body.trigger_origin) ?? "manual",
+        trigger_origin: PERSON_STARTED_TRIGGER_ORIGIN,
         session_id: optionalString(body.session_id),
         project_folder_id: task.project_folder_id,
         workspace_location_id: target?.location_id ?? null,
@@ -783,7 +819,7 @@ export class PgTaskRepository {
       }
       return {
         kind: "server" as const,
-        run: runToOut(run, null, {
+        run: runToOut(runViewFor(run, identity.userId), null, {
           executes_remotely: (await resolveRunRemoteness(client, [run])).has(run.id),
         }),
       };
@@ -1083,7 +1119,7 @@ export class PgTaskRepository {
     }
     return {
       kind: "remote" as const,
-      run: runToOut(run, null, { executes_remotely: true }),
+      run: runToOut(runViewFor(run, identity.userId), null, { executes_remotely: true }),
     };
   }
 
@@ -1167,7 +1203,7 @@ export class PgTaskRepository {
         project_folder_id: task.project_folder_id,
         payload: { run_id: run.id, task_id: task.id, planning: true },
       });
-      return runToOut(run, null, {
+      return runToOut(runViewFor(run, identity.userId), null, {
         executes_remotely: (await resolveRunRemoteness(this.pool, [run])).has(run.id),
       });
     });
@@ -1180,7 +1216,7 @@ export class PgTaskRepository {
          FROM task_runs tr
          JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
         WHERE tr.space_id = $1 AND tr.task_id = $2
-          AND ${contentReadSql("run", "r", "$3")}`,
+          AND ${runReadSql("$3")}`,
       [identity.spaceId, taskId, identity.userId],
     );
     const rows = await this.pool.query<TaskRunListRow>(
@@ -1193,11 +1229,12 @@ export class PgTaskRepository {
               r.contract_snapshot_json, r.workflow_version_id, r.trigger_origin,
               r.instructed_by_user_id, r.error_message, r.error_json, r.output_json,
               r.started_at, r.ended_at, r.created_at, r.updated_at,
-              r.owner_user_id, r.visibility, r.access_level
+              r.owner_user_id, r.visibility, r.access_level,
+              ${contentAccessLevelSql({ definition: contentResourceDefinition("run")!, alias: "r", userExpr: "$3" })} AS effective_access_level
         FROM task_runs tr
          JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
         WHERE tr.space_id = $1 AND tr.task_id = $2
-          AND ${contentReadSql("run", "r", "$3")}
+          AND ${runReadSql("$3")}
         ORDER BY tr.created_at DESC, tr.id DESC
         LIMIT $4 OFFSET $5`,
       [identity.spaceId, taskId, identity.userId, limit, offset],
@@ -1232,7 +1269,7 @@ export class PgTaskRepository {
          JOIN tasks t ON t.id = ta.task_id AND t.space_id = ta.space_id
          JOIN artifacts a ON a.id = ta.artifact_id AND a.space_id = ta.space_id
         WHERE ta.space_id = $1 AND ta.task_id = $2
-          AND ${contentReadSql("artifact", "a", "$3")}`,
+          AND ${artifactReadSql("$3")}`,
       [identity.spaceId, taskId, identity.userId],
     );
     const rows = await this.pool.query<TaskArtifactRow>(
@@ -1244,7 +1281,7 @@ export class PgTaskRepository {
          JOIN tasks t ON t.id = ta.task_id AND t.space_id = ta.space_id
          JOIN artifacts a ON a.id = ta.artifact_id AND a.space_id = ta.space_id
        WHERE ta.space_id = $1 AND ta.task_id = $2
-          AND ${contentReadSql("artifact", "a", "$3")}
+          AND ${artifactReadSql("$3")}
         ORDER BY ta.created_at DESC, ta.id DESC
         LIMIT $4 OFFSET $5`,
       [identity.spaceId, taskId, identity.userId, limit, offset],
@@ -1260,7 +1297,7 @@ export class PgTaskRepository {
          JOIN proposals p ON p.id = tp.proposal_id AND p.space_id = tp.space_id
          LEFT JOIN runs r ON r.id = p.created_by_run_id AND r.space_id = p.space_id
         WHERE tp.space_id = $1 AND tp.task_id = $2
-          AND ${contentReadSql("proposal", "p", "$3")}`,
+          AND ${proposalReadSql("$3")}`,
       [identity.spaceId, taskId, identity.userId],
     );
     const rows = await this.pool.query<TaskProposalRow>(
@@ -1272,7 +1309,7 @@ export class PgTaskRepository {
          JOIN proposals p ON p.id = tp.proposal_id AND p.space_id = tp.space_id
          LEFT JOIN runs r ON r.id = p.created_by_run_id AND r.space_id = p.space_id
         WHERE tp.space_id = $1 AND tp.task_id = $2
-          AND ${contentReadSql("proposal", "p", "$3")}
+          AND ${proposalReadSql("$3")}
         ORDER BY tp.created_at DESC, tp.id DESC
         LIMIT $4 OFFSET $5`,
       [identity.spaceId, taskId, identity.userId, limit, offset],
@@ -1283,19 +1320,21 @@ export class PgTaskRepository {
   async listTaskEvaluations(identity: SpaceUserIdentity, taskId: string, limit: number, offset: number) {
     if (!(await getVisibleTaskRow(this.pool, identity, taskId))) throw new HttpError(404, "Task not found");
     const total = await this.pool.query<{ total: string }>(
-      `SELECT count(*)::text AS total FROM task_evaluations WHERE space_id = $1 AND task_id = $2`,
-      [identity.spaceId, taskId],
+      `SELECT count(*)::text AS total
+         FROM task_evaluations te
+        WHERE te.space_id = $1 AND te.task_id = $2 AND ${runInheritedReadSql("te.run_id", "te.space_id", "$3")}`,
+      [identity.spaceId, taskId, identity.userId],
     );
     const rows = await this.pool.query<TaskEvaluationRow>(
-      `SELECT id, space_id, task_id, run_id, run_evaluation_id, evaluator_type,
-              evaluator_user_id, evaluator_agent_id, score, confidence, summary,
-              checklist_json, known_issues_json, evidence_artifact_ids,
-              recommendation, created_at
-         FROM task_evaluations
-        WHERE space_id = $1 AND task_id = $2
-        ORDER BY created_at DESC, id DESC
-        LIMIT $3 OFFSET $4`,
-      [identity.spaceId, taskId, limit, offset],
+      `SELECT te.id, te.space_id, te.task_id, te.run_id, te.run_evaluation_id, te.evaluator_type,
+              te.evaluator_user_id, te.evaluator_agent_id, te.score, te.confidence, te.summary,
+              te.checklist_json, te.known_issues_json, te.evidence_artifact_ids,
+              te.recommendation, te.created_at
+         FROM task_evaluations te
+        WHERE te.space_id = $1 AND te.task_id = $2 AND ${runInheritedReadSql("te.run_id", "te.space_id", "$3")}
+        ORDER BY te.created_at DESC, te.id DESC
+        LIMIT $4 OFFSET $5`,
+      [identity.spaceId, taskId, identity.userId, limit, offset],
     );
     return page(rows.rows.map(taskEvaluationOut), countFromRow(total.rows[0]), limit, offset);
   }
@@ -1306,9 +1345,17 @@ export class PgTaskRepository {
     const confidence = bounded01(body.confidence, "confidence");
     const runId = optionalString(body.run_id);
     if (runId) {
+      // The Run must be one this person can read, not merely one that exists:
+      // 422-versus-201 is otherwise an existence oracle for Runs they cannot
+      // see, and the evaluation they attach to it then decides the close gate
+      // for everyone while `listTaskEvaluations` hides it from them.
       const link = await this.pool.query<{ id: string }>(
-        `SELECT id FROM task_runs WHERE space_id = $1 AND task_id = $2 AND run_id = $3`,
-        [identity.spaceId, taskId, runId],
+        `SELECT tr.id
+           FROM task_runs tr
+           JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
+          WHERE tr.space_id = $1 AND tr.task_id = $2 AND tr.run_id = $3
+            AND ${runReadSql("$4")}`,
+        [identity.spaceId, taskId, runId, identity.userId],
       );
       if (!link.rows[0]) throw new HttpError(422, "run_id must be linked to the task through TaskRun");
     }
@@ -1322,8 +1369,9 @@ export class PgTaskRepository {
            FROM task_artifacts ta
            JOIN artifacts a ON a.id = ta.artifact_id AND a.space_id = ta.space_id
           WHERE ta.space_id = $1 AND ta.task_id = $2 AND ta.artifact_id::text = ANY($3::text[])
-            AND ($4::varchar IS NULL OR ta.run_id = $4)`,
-        [identity.spaceId, taskId, distinct, runId],
+            AND ($4::varchar IS NULL OR ta.run_id = $4)
+            AND ${artifactReadSql("$5")}`,
+        [identity.spaceId, taskId, distinct, runId, identity.userId],
       );
       if (countFromRow(linked.rows[0]) !== distinct.length) {
         throw new HttpError(422, "evidence_artifact_ids must be linked to the task through TaskArtifact");

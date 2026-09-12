@@ -166,12 +166,19 @@ export default function ProjectAreaLayout() {
           <div className="mt-5 border-t pt-4">
             <p className="mb-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Needs attention</p>
             <div className="space-y-1">
-              {overview?.attention.map(item => (
-                <Link key={item.id} to={spacePath(spaceId, inProjectHref(projectId, item.href))} className="block rounded-md px-2 py-1.5 text-xs hover:bg-muted">
-                  <span className="block font-medium">{item.title}</span>
-                  <span className="block text-[11px] text-muted-foreground">{item.reason ?? item.summary}</span>
-                </Link>
-              ))}
+              {overview?.attention.map(item => {
+                const href = inProjectHref(projectId, item.href)
+                const className = 'block rounded-md px-2 py-1.5 text-xs hover:bg-muted'
+                const body = (
+                  <>
+                    <span className="block font-medium">{item.title}</span>
+                    <span className="block text-[11px] text-muted-foreground">{item.reason ?? item.summary}</span>
+                  </>
+                )
+                return href
+                  ? <Link key={item.id} to={spacePath(spaceId, href)} className={className}>{body}</Link>
+                  : <div key={item.id} className={className}>{body}</div>
+              })}
             </div>
           </div>
         )}

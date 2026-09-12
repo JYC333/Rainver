@@ -20,7 +20,6 @@ export interface GraphEdgeRow {
   to_object_id: string;
   link_type: string;
   confidence: number | null;
-  evidence_summary: string | null;
   updated_at: Date | string;
 }
 
@@ -246,7 +245,7 @@ export class GraphProjectionRepository {
     const edgeKindClause = pushArrayClause(params, "r.link_type", options.edgeKinds);
     const rows = await this.db.query<GraphEdgeRow>(
       `SELECT r.id, r.from_object_id, r.to_object_id, r.link_type,
-              r.confidence, r.evidence_summary, r.updated_at
+              r.confidence, r.updated_at
          FROM object_relations r
          JOIN space_objects from_so
            ON from_so.id = r.from_object_id

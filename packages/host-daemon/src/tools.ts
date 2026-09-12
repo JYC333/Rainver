@@ -1,4 +1,5 @@
 import type { HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec, RuntimeAccount } from "@rainver/protocol";
+import { helperProcessEnv } from "./providerBinding.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -323,7 +324,16 @@ export function platformKey(): string {
 async function download(url: string, to: string, sha256: string | null, log: (line: string) => void): Promise<void> {
   if (!url.startsWith("https://")) throw new Error(`Refusing to download over ${url.split(":")[0]}: ${url}`);
   log(`downloading ${url}`);
+  // Redirects are followed here, unlike every other fetch this daemon makes:
+  // an adapter archive comes from a third-party publisher through the ACP
+  // registry, and a GitHub release asset always 302s to
+  // `objects.githubusercontent.com`. Refusing would break the ordinary case.
+  // Nothing of ours travels with it — no token, no cookie — and the check that
+  // matters is re-applied to where it actually landed.
   const response = await fetch(url);
+  if (!response.url.startsWith("https://")) {
+    throw new Error(`Refusing a download redirected off https: ${response.url}`);
+  }
   if (!response.ok) throw new Error(`Download failed: ${response.status} ${url}`);
   const bytes = Buffer.from(await response.arrayBuffer());
   if (sha256) {
@@ -350,7 +360,7 @@ async function extract(archive: string, url: string, dir: string, log: (line: st
 function run(command: string, args: string[], cwd: string, log: (line: string) => void, env: Record<string, string> = {}): Promise<void> {
   return new Promise((resolvePromise, reject) => {
     log(`${command} ${args.join(" ")}`);
-    const child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { cwd, env: { ...helperProcessEnv(process.env), ...env }, stdio: ["ignore", "pipe", "pipe"] });
     let tail = "";
     const collect = (chunk: Buffer) => {
       tail = (tail + chunk.toString("utf8")).slice(-2000);

@@ -40,10 +40,9 @@ describe("policy enforce service result mapping", () => {
     const res = await enforce(
       config,
       registry,
-      req("runtime.use_credential", {
+      req("project_folder.write_patch", {
         space_id: "s1",
         resource_space_id: "s1",
-        context: { trigger_origin: "automation" },
       }),
     );
     expect(res.status).toBe("blocked");
@@ -64,7 +63,7 @@ describe("policy enforce service result mapping", () => {
     expect(res.error_code).toBe("policy_audit_persist_failed");
   });
 
-  it("same-space delegated credential use is allowed before fail-closed audit handling", async () => {
+  it("raw delegation credential use is denied rather than spending as attended", async () => {
     const res = await enforce(
       config,
       registry,
@@ -74,8 +73,8 @@ describe("policy enforce service result mapping", () => {
         context: { trigger_origin: "delegation" },
       }),
     );
-    expect(res.status).toBe("error");
-    expect(res.error_code).toBe("policy_audit_persist_failed");
+    expect(res.status).toBe("blocked");
+    expect(res.error_code).toBe("policy_denied");
   });
 
   it("allow that is not audit-required returns allow without touching the DB", async () => {

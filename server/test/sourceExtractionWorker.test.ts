@@ -3,6 +3,7 @@ import { extractPdfReaderContent } from "../src/modules/sources/pdfExtract.js";
 import { simplePdfBytes } from "./fixtures/simplePdf.js";
 import { loadConfig } from "../src/config.js";
 import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
 import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { handleSourceRetrievalTestSql } from "./support/sourceRetrievalTestSql.js";
 
@@ -143,7 +144,7 @@ describe("SourceExtractionWorker source retention policy", () => {
   it("blocks extract_text jobs before fetching when source policy disallows full text", async () => {
     const db = new FakeDb("extract_text");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("failed");
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -156,7 +157,7 @@ describe("SourceExtractionWorker source retention policy", () => {
   it("blocks snapshot jobs before fetching when source policy disallows snapshots", async () => {
     const db = new FakeDb("snapshot");
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("failed");
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -172,7 +173,7 @@ describe("SourceExtractionWorker source retention policy", () => {
       { status: 200 },
     ));
 
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("succeeded");
     const artifactInsert = db.calls.find((call) => call.sql.includes("INSERT INTO artifacts"));
@@ -192,7 +193,7 @@ describe("SourceExtractionWorker source retention policy", () => {
       { status: 200, headers: { "content-type": "text/plain" } },
     ));
 
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("succeeded");
     const artifactInserts = db.calls.filter((call) => call.sql.includes("INSERT INTO artifacts"));
@@ -217,7 +218,7 @@ describe("SourceExtractionWorker source retention policy", () => {
       { status: 200, headers: { "content-type": "application/pdf" } },
     ));
 
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("failed");
     const finish = db.calls.find((call) => call.sql.includes("SET status = $3"));
@@ -232,7 +233,7 @@ describe("SourceExtractionWorker source retention policy", () => {
       { status: 200, headers: { "content-type": "application/pdf" } },
     ));
 
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("succeeded");
     const artifactInserts = db.calls.filter((call) => call.sql.includes("INSERT INTO artifacts"));
@@ -250,7 +251,7 @@ describe("SourceExtractionWorker source retention policy", () => {
       { status: 200, headers: { "content-type": "application/octet-stream" } },
     ));
 
-    const result = await new SourceExtractionWorker(db, config()).runPendingJob("job-1", "space-1");
+    const result = await new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1");
 
     expect(result.status).toBe("succeeded");
     const artifactInserts = db.calls.filter((call) => call.sql.includes("INSERT INTO artifacts"));

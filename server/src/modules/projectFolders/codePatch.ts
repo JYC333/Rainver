@@ -21,6 +21,7 @@ import { gitOutput, runGit, validatePath } from "@rainver/folder-read";
 import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "./workspaceLocations.js";
 import { PgProjectFolderRepository } from "./repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
+import { proposalActivityAudience } from "../proposals/decisionActivity.js";
 
 const MAX_PATCH_FILE_BYTES = 2 * 1024 * 1024;
 
@@ -376,6 +377,7 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
       applied_files: applied,
       applied_at: now,
     };
+    const audience = proposalActivityAudience(proposal, context.userId);
     await context.db.query(
       `INSERT INTO activity_records (
          id, space_id, source_run_id, user_id, project_folder_id, activity_type,
@@ -384,7 +386,7 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
        ) VALUES (
          $1, $2, $3, $4, $5, 'proposal.code_patch.applied',
          $6, $7, $8::jsonb, $9, $9, 'processed', $9,
-         'project_folder_event', 'internal_system', 'space_shared', $4
+         'project_folder_event', 'internal_system', $10, $11
        )`,
       [
         randomUUID(),
@@ -400,6 +402,8 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
           file_count: applied.length,
         }),
         now,
+        audience.visibility,
+        audience.ownerUserId,
       ],
     );
     // Persist pre-apply snapshot so the user can roll back after accept

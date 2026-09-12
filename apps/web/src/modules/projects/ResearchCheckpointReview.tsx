@@ -3,6 +3,7 @@ import { ExternalLink, FileCheck2, Lightbulb, RefreshCw, ShieldCheck } from 'luc
 import type { ProjectResearchCheckpoint, ProjectResearchCheckpointReview } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
+import { SafeExternalLink } from '../../components/SafeExternalLink'
 
 interface ResearchCheckpointReviewProps {
   checkpoint: ProjectResearchCheckpoint
@@ -215,9 +216,9 @@ function ScreeningReview({ review, onRefresh, refreshing }: { review: ProjectRes
                     <span>Full text: {item.full_text_status === 'available' ? 'available' : 'not available'}</span>
                     <span>Evidence: {item.evidence_available ? 'available' : 'not extracted'}</span>
                     {item.source_uri && (
-                      <a className="inline-flex items-center gap-1 text-primary hover:underline" href={item.source_uri} target="_blank" rel="noreferrer">
+                      <SafeExternalLink className="inline-flex items-center gap-1 text-primary hover:underline" href={item.source_uri}>
                         Open source <ExternalLink className="size-3" />
-                      </a>
+                      </SafeExternalLink>
                     )}
                   </div>
                   {item.reason && <p className="mt-2 text-xs text-muted-foreground">Why: {item.reason}</p>}

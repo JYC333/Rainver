@@ -9,6 +9,7 @@ import {
 } from "../routeUtils/common.js";
 import { assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
+import { threadReadableSql } from "../inquiry/threadAccess.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { runOutputResult } from "../runs/orchestrationResults.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
@@ -103,7 +104,10 @@ export class KnowledgeExtractionService {
       const sourceKind = requiredString(workflowInput.source_kind, "source_kind");
       const sourceId = requiredString(workflowInput.source_id, "source_id");
       const sourceRef = objectValue(workflowInput.source_ref);
-      const visibility = workflowInput.source_visibility === "private" ? "private" : "space_shared";
+      // Only an explicitly shared source yields shared candidates; anything
+      // else (private, or shared with selected people whose grants do not
+      // travel) stays with the source's owner.
+      const visibility = workflowInput.source_visibility === "space_shared" ? "space_shared" : "private";
       const ownerUserId = optionalString(workflowInput.source_owner_user_id)
         ?? run.instructed_by_user_id
         ?? run.owner_user_id;
@@ -165,13 +169,19 @@ export class KnowledgeExtractionService {
         revision_id: string; version: number; content_hash: string; statement: string;
         kind: string; answer_state: string | null; evaluation_state: string | null;
         confidence: number | null; state_snapshot_json: unknown;
+        visibility: string; owner_user_id: string | null;
       }>(
+        // Only a Thread the person reaches on their own is a source (oversight
+        // is audit), and what is extracted keeps the Thread's own visibility.
         `SELECT r.id AS revision_id,r.version,r.content_hash,r.statement,r.kind,
-                r.answer_state,r.evaluation_state,r.confidence,r.state_snapshot_json
+                r.answer_state,r.evaluation_state,r.confidence,r.state_snapshot_json,
+                so.visibility,so.owner_user_id
            FROM inquiry_thread_revisions r JOIN inquiry_threads t ON t.object_id=r.thread_id AND t.space_id=r.space_id
+           JOIN space_objects so ON so.id=t.object_id AND so.space_id=t.space_id
           WHERE r.thread_id=$1 AND r.space_id=$2 AND t.project_id=$3
+            AND ${threadReadableSql("so", "$4", "change")}
           ORDER BY r.version DESC LIMIT 1`,
-        [sourceId, identity.spaceId, projectId],
+        [sourceId, identity.spaceId, projectId, identity.userId],
       );
       const value = row.rows[0];
       if (!value) throw new HttpError(404, "Inquiry Thread not found");
@@ -185,8 +195,8 @@ export class KnowledgeExtractionService {
           confidence: value.confidence,
           state: value.state_snapshot_json,
         }),
-        visibility: "space_shared",
-        ownerUserId: null,
+        visibility: value.visibility,
+        ownerUserId: value.owner_user_id,
       };
     }
     if (sourceKind === "experiment_interpretation") {

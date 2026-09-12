@@ -83,6 +83,8 @@ describe("retrieval diagnostics packets", () => {
         },
         project_folder_id: null,
         created_by_user_id: "user-1",
+        visibility: "space_shared",
+        owner_user_id: null,
         created_by_run_id: null,
         project_id: null,
       },

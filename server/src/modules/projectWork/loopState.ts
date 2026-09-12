@@ -48,6 +48,8 @@ export interface StageChangeInput {
   reason: string;
   causationId?: string | null;
   correlationId?: string | null;
+  /** The Run that caused the transition, when one did. See `WorkEventInput`. */
+  runId?: string | null;
   idempotencyKey?: string | null;
   data?: Record<string, unknown>;
 }
@@ -81,6 +83,7 @@ export async function recordStageChange(
     actorId: input.actorId,
     occurredAt: now,
     correlationId: input.correlationId ?? null,
+    runId: input.runId ?? null,
     causationId: input.causationId ?? null,
     idempotencyKey: input.idempotencyKey ?? null,
     data: {

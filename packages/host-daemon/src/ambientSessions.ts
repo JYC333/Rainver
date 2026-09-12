@@ -27,6 +27,7 @@ import type {
 import { spawn } from "node:child_process";
 import { buildAmbientRecords } from "./ambientRecords.js";
 import { redactAmbientText, sanitizeFailure } from "./ambientRedaction.js";
+import { helperProcessEnv } from "./providerBinding.js";
 
 // Re-exported so a caller asks this module for "reading ambient sessions"
 // rather than having to know which file inside it holds what.
@@ -89,11 +90,23 @@ class AcpProcess {
   private closed: Error | null = null;
   private updates: Record<string, unknown>[] = [];
 
-  constructor(command: string, args: string[], env: Record<string, string>, cwd: string) {
+  constructor(command: string, args: string[], env: Record<string, string>, cwd: string, adapterType: string) {
     this.child = spawn(command, args, {
       cwd,
       stdio: ["pipe", "pipe", "ignore"],
-      env: { ...process.env, ...env },
+      // Keeps the state roots: this reads the machine's own CLI history, and
+      // the vendor keeps that under a variable sharing its credential prefix.
+      // Clearing them by prefix made the feature report the machine as having
+      // no history at all.
+      //
+      // Worth knowing, and deliberate: `CODEX_HOME` also *selects* which
+      // account's history this is. An owner who starts the daemon from a shell
+      // exporting a non-default one imports from that account, while dispatch
+      // uses the profile's own root — so what was imported can be history
+      // Rainver will not itself continue. That is the honest answer for a
+      // feature whose subject is "this machine's own history"; the alternative
+      // is to import nothing.
+      env: { ...helperProcessEnv(process.env, adapterType, { keepStateRoots: true }), ...env },
     });
     this.child.stdout?.on("data", (chunk: Buffer) => this.consume(chunk.toString("utf8")));
     this.child.on("error", (error) => this.fail(error instanceof Error ? error : new Error(String(error))));
@@ -219,7 +232,7 @@ async function openRuntime(
   const [rawCommand, ...rest] = target.argv;
   if (!rawCommand) return null;
   const launch = resolveLaunch(rawCommand, rest, target.installation, target.adapter_type);
-  const runtime = new AcpProcess(launch.command, launch.args, launch.env, cwd);
+  const runtime = new AcpProcess(launch.command, launch.args, launch.env, cwd, target.adapter_type);
   try {
     const result = await runtime.request("initialize", {
       protocolVersion: 1,

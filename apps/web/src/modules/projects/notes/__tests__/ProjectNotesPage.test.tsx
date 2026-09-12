@@ -4,6 +4,10 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
+vi.mock('../../../../contexts/AuthContext', () => ({
+  useAuth: () => ({ currentUser: { id: 'user-1' } }),
+}))
+
 vi.mock('../../../../contexts/SpaceContext', () => ({
   useSpace: () => ({
     spaces: [],

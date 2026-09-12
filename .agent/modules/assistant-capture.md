@@ -1,24 +1,22 @@
 # Module: Assistant Capture
 
 ## Status
-**PARTIAL** — the capture entry and its four destinations are implemented
+**IMPLEMENTED** — capture entry and four destinations
 (`server/src/modules/capture/`, `apps/web/src/components/FloatingQuickCapture.tsx`).
-The assistant chat, voice, and browser-extension surfaces below are still
-intended design.
+Voice, file/image, and browser-extension capture are not implemented.
 
 ## Purpose
-Personal assistant and quick-capture module. Records thoughts, ideas, life events, and reflections as they happen. Raw input becomes an ActivityRecord first — not active memory.
+Records thoughts and clips as they happen. Raw input becomes an
+ActivityRecord first — not active memory.
 
 ## Owns
-- Quick capture UI (text, voice note, image)
-- Browser extension / clipboard capture (planned)
+- Quick capture UI (text, URL, paste)
 - ActivityRecord creation for capture events
-- Personal assistant chat interface (planned)
+- Relocation and filing
 
 ## Does Not Own
 - Long-term memory storage (memory module)
 - Activity-to-proposal pipeline (activity module)
-- Card generation (spaced-repetition module)
 
 ## Capture Types
 
@@ -66,15 +64,10 @@ marginalia?  ── yes ─→ projected into the caller's private note in the
     no
     ↓
 Record stays `raw`, awaiting processing
-    ↓
-Memory Curator agent analyzes (async, in background)  [planned]
-    ↓
-Agent proposes: memory update, knowledge item, card, or task
-    ↓
-User reviews and approves proposals
-    ↓
-Proposals activate into memory / knowledge / cards
 ```
+
+Consolidation and proposal creation are owned by the activity / memory
+modules, not by this capture entry.
 
 ## Invariants
 - Capture always creates an ActivityRecord first — never writes directly to
@@ -87,9 +80,7 @@ Proposals activate into memory / knowledge / cards
   another member's capture, and it carries no `project_role` — a role is one
   note per Project by construction, which is the opposite of what marginalia
   needs.
-- Voice notes must be transcribed before being stored as raw_content
-- Browser extension must not store captured data locally — always POST to server
-- Captured chat transcripts are treated as ActivityRecord(type=chat_capture), not as memories
+- Captured chat transcripts enter as activity records, not as memories
 
 ## Related Files
 - `server/src/modules/capture/` — the capture entry and its destinations
@@ -129,7 +120,5 @@ name: a Project destination takes its Space from the caller's `project_id`, so
 The preview offers rather than decides: the anchored block is preselected and
 the blocks after it, up to the next capture or heading, are listed unchecked.
 
-## TODO
-- Browser extension (long-term)
-- Voice transcription integration
-- File and image capture (the composer shows both as coming-soon)
+Unimplemented capture extensions:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §6.

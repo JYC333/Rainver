@@ -27,7 +27,7 @@ export function buildModuleServer(
   options: ServerAppOptions = { logger: false },
 ): FastifyInstance {
   const app = createServerApp(config, options);
-  registerGatewayConventions(app);
+  registerGatewayConventions(app, config);
   const context: ModuleContext = { config, snapshot: createConfigSnapshot(config) };
   for (const module of modules) module.registerRoutes(app, context);
   registerUnknownApiRoute(app);

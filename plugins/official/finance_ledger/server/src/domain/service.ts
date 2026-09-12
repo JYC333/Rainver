@@ -1,4 +1,5 @@
 import type { Queryable } from "@rainver/protocol";
+import { AccountNotFoundError } from "./errors.js";
 import type { LedgerLoadResult } from "../beancount/entries.js";
 import { financeLedgerEngine, postingEntryFromRow } from "../beancount/engine.js";
 import { transactionBalanceErrors } from "../beancount/validation.js";
@@ -205,6 +206,14 @@ export class FinanceLedgerService {
   }
 
   /** Only the owner of a personal account may change its visibility. */
+  /**
+   * One answer for every account this person may not change: not found.
+   *
+   * It used to give three — "Account not found", "Shared accounts are always
+   * visible to the space", "Only the account owner can change its visibility" —
+   * all as 403, which told a stranger that a given id exists and whether it is
+   * someone's personal account.
+   */
   async setAccountVisibility(
     db: Queryable,
     spaceId: string,
@@ -213,14 +222,10 @@ export class FinanceLedgerService {
     userId: string,
     visibility: AccountVisibility,
   ): Promise<FinanceAccountRow> {
-    const account = await this.repository.findAccount(db, spaceId, bookId, accountId);
-    if (!account) throw new Error("Account not found");
-    if (!account.owner_user_id) {
-      throw new Error("Shared accounts are always visible to the space");
-    }
-    if (account.owner_user_id !== userId) {
-      throw new Error("Only the account owner can change its visibility");
-    }
+    const account = await this.repository.findAccountForViewer(
+      db, spaceId, bookId, accountId, userId, { writable: true },
+    );
+    if (!account?.owner_user_id) throw new AccountNotFoundError();
     return this.repository.updateAccountVisibility(db, spaceId, bookId, accountId, visibility);
   }
 
@@ -230,8 +235,9 @@ export class FinanceLedgerService {
     bookId: string,
     accountId: string,
     date: string,
+    viewerUserId: string,
   ): Promise<FinanceAccountRow> {
-    return this.repository.closeAccount(db, spaceId, bookId, accountId, date);
+    return this.repository.closeAccount(db, spaceId, bookId, accountId, date, viewerUserId);
   }
 
   async createDirectiveDraft(
@@ -308,6 +314,7 @@ export class FinanceLedgerService {
         bookId,
         posting.accountId,
         input.date,
+        userId,
       );
       const record = await this.buildPostingRecord(
         db,
@@ -392,7 +399,12 @@ export class FinanceLedgerService {
     db: Queryable,
     spaceId: string,
     bookId: string,
-    filters?: { status?: DirectiveStatus; directiveType?: DirectiveType; importSourceId?: string },
+    filters?: {
+      status?: DirectiveStatus;
+      directiveType?: DirectiveType;
+      importSourceId?: string;
+      viewerUserId?: string;
+    },
   ): Promise<FinanceDirectiveRow[]> {
     return this.repository.listDirectives(db, spaceId, bookId, filters);
   }
@@ -401,8 +413,9 @@ export class FinanceLedgerService {
     db: Queryable,
     spaceId: string,
     bookId: string,
+    viewerUserId?: string,
   ): ReturnType<typeof financeLedgerRepository.listTransactions> {
-    return this.repository.listTransactions(db, spaceId, bookId);
+    return this.repository.listTransactions(db, spaceId, bookId, viewerUserId);
   }
 
   /** With a viewer, another member's private account behaves as not found. */
@@ -411,14 +424,11 @@ export class FinanceLedgerService {
     spaceId: string,
     bookId: string,
     accountId: string,
-    viewerUserId?: string,
+    /** Required: an optional viewer meant a caller that omitted it read any account. */
+    viewerUserId: string,
   ): Promise<FinancePostingRow[]> {
-    if (viewerUserId) {
-      const account = await this.repository.findAccount(db, spaceId, bookId, accountId);
-      if (!account || !accountVisibleTo(account, viewerUserId)) {
-        throw new Error("Account not found");
-      }
-    }
+    const account = await this.repository.findAccountForViewer(db, spaceId, bookId, accountId, viewerUserId);
+    if (!account) throw new AccountNotFoundError();
     return this.repository.getAccountLedger(db, spaceId, bookId, accountId);
   }
 
@@ -426,16 +436,15 @@ export class FinanceLedgerService {
     db: Queryable,
     spaceId: string,
     bookId: string,
-    options: { viewerUserId?: string; scope?: BalanceScope } = {},
+    options: { viewerUserId: string; scope?: BalanceScope },
   ): Promise<FinanceBalancePosition[]> {
     const scope = options.scope ?? "all";
-    const accounts = await this.repository.listAccounts(db, spaceId, bookId);
+    // Visibility is the repository's, not a second copy of it here; `scope` is
+    // a display filter the person chose, which is a different question.
+    const accounts = await this.repository.listAccounts(db, spaceId, bookId, options.viewerUserId);
     const included = new Set(
       accounts
         .filter((account) => {
-          if (options.viewerUserId && !accountVisibleTo(account, options.viewerUserId)) {
-            return false;
-          }
           if (scope === "shared") return account.owner_user_id === null;
           if (scope === "personal") {
             return options.viewerUserId
@@ -470,13 +479,24 @@ export class FinanceLedgerService {
     }));
   }
 
+  /**
+   * The book's validation report, for one person.
+   *
+   * Scoped to what they can see: a balance error names the account it is about
+   * ("Posting for Assets:Alice:Secret …"), so validating every transaction in
+   * the book and handing the list back reported other members' private account
+   * names to whoever pressed the button. This is a report, not the posting
+   * gate — `postImportBatch` validates the directives it is about to post, and
+   * that one must see all of them.
+   */
   async validateBook(
     db: Queryable,
     spaceId: string,
     bookId: string,
+    viewerUserId: string,
   ): Promise<ValidateBookResult> {
     const errors: FinanceValidationError[] = [];
-    const transactions = await this.repository.listTransactions(db, spaceId, bookId);
+    const transactions = await this.repository.listTransactions(db, spaceId, bookId, viewerUserId);
     for (const transaction of transactions) {
       if (transaction.directive.status !== "posted") continue;
       errors.push(
@@ -551,8 +571,11 @@ export class FinanceLedgerService {
     bookId: string,
     accountId: string,
     date: string,
+    viewerUserId: string,
   ): Promise<FinanceAccountRow> {
-    const account = await this.repository.findAccount(db, spaceId, bookId, accountId);
+    // Resolved as this person sees the book: posting to an account they cannot
+    // read would both write into it and confirm it exists.
+    const account = await this.repository.findAccountForViewer(db, spaceId, bookId, accountId, viewerUserId);
     if (!account) throw new Error(`Unknown account: ${accountId}`);
     if (account.opened_at > date) {
       throw new Error(`Account is not open yet: ${account.name}`);
@@ -644,10 +667,6 @@ export class FinanceLedgerService {
 
 export const financeLedgerService = new FinanceLedgerService();
 
-export function accountVisibleTo(account: FinanceAccountRow, viewerUserId: string): boolean {
-  return account.visibility === "space" || account.owner_user_id === viewerUserId;
-}
-
 function isSequenceConflict(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const pgError = err as { code?: string; constraint?: string };
@@ -658,3 +677,5 @@ function isSequenceConflict(err: unknown): boolean {
 }
 
 export { rootTypeForAccountName };
+
+export { AccountNotFoundError } from "./errors.js";

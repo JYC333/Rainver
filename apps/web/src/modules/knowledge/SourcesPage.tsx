@@ -9,6 +9,7 @@ import { Badge } from '../../components/ui/badge'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import KnowledgeSectionHeader from './KnowledgeSectionHeader'
+import { SafeExternalLink } from '../../components/SafeExternalLink'
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
@@ -74,14 +75,12 @@ export default function SourcesPage() {
                       <Badge variant="outline">{source.status}</Badge>
                     </div>
                     {source.uri && (
-                      <a
+                      <SafeExternalLink
                         href={source.uri}
-                        target="_blank"
-                        rel="noreferrer"
                         className="text-sm text-muted-foreground underline-offset-2 hover:underline break-all"
                       >
                         {source.uri}
-                      </a>
+                      </SafeExternalLink>
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground shrink-0">{fmt(source.created_at)}</p>

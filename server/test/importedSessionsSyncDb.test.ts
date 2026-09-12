@@ -8,6 +8,8 @@ import { ImportedSessionService } from "../src/modules/importedSessions/service.
 import { PgImportedSessionRepository } from "../src/modules/importedSessions/repository.js";
 import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
 import type { AmbientSessionImport } from "@rainver/protocol";
+import { authorizeCredentialSpend, CredentialSpendDeniedError } from "../src/modules/policy/credentialSpend.js";
+import { scheduledExtractionSpend } from "../src/modules/importedSessions/service.js";
 
 /**
  * The sync path, with the daemon round trip stubbed at the connection
@@ -128,6 +130,23 @@ describe("ambient session sync", () => {
   function service() {
     return new ImportedSessionService(db.pool, serverConfig());
   }
+
+  it("spends a scheduled extraction only while the Location's auto-extract switch is on", async () => {
+    if (!db.available) return;
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const policy = await service().setPolicy(identity, LOCATION, { adapter_type: "claude_code", sync: true, auto_extract: true });
+    const entry = policy.entries.find((candidate) => candidate.adapter_type === "claude_code")!;
+    const spend = () => authorizeCredentialSpend(serverConfig(), {
+      space_id: SPACE,
+      provider_id: null,
+      basis: scheduledExtractionSpend(db.pool, {
+        userId: OWNER, locationId: LOCATION, adapterType: entry.adapter_type, installation: entry.installation,
+      }),
+    });
+    await expect(spend()).resolves.toMatchObject({ trigger_origin: "job" });
+    await service().setPolicy(identity, LOCATION, { adapter_type: "claude_code", sync: true, auto_extract: false });
+    await expect(spend()).rejects.toBeInstanceOf(CredentialSpendDeniedError);
+  });
 
   it("marks a session gone when the host stops listing it, even though the server still holds it", async () => {
     const identity = { spaceId: SPACE, userId: OWNER };

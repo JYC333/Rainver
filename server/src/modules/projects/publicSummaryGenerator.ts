@@ -10,6 +10,7 @@ import {
   ProviderInvocationError,
   completeProviderText,
 } from "../providers/invocation/invocation.js";
+import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import type { MemoryAuthFields } from "../memory/memoryReadAuth.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
@@ -30,6 +31,7 @@ export {
   PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION,
   PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION,
 } from "./publicSummaryPrompt.js";
+import type { ContentAccessLevel } from "../access/contentAccessTypes.js";
 
 interface ProjectContextRow {
   id: string;
@@ -48,6 +50,7 @@ interface GeneratorMemoryRow extends MemoryAuthFields {
   importance: number | string;
   updated_at: unknown;
   source_trust: string | null;
+  effective_access_level: ContentAccessLevel;
 }
 const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
 
@@ -111,6 +114,7 @@ type CompleteText = (
     user: string;
     maxTokens?: number | null;
     subjectUserId: string;
+    spend: CredentialSpendBasis;
   },
 ) => Promise<{ text: string; model: string; usage: Record<string, unknown> }>;
 
@@ -161,6 +165,7 @@ export class ProjectPublicSummaryGenerator {
         user: prompt.user,
         maxTokens: input.maxTokens,
         subjectUserId: identity.userId,
+        spend: { kind: "person", user_id: identity.userId },
       });
     } catch (error) {
       if (error instanceof ProviderInvocationError) {
@@ -403,5 +408,6 @@ function providerCompleteText(store: ProviderCommandStore): CompleteText {
     max_tokens: input.maxTokens ?? undefined,
     task: PROJECT_PUBLIC_SUMMARY_TASK,
     metering: { subject_user_id: input.subjectUserId },
+    spend: input.spend,
   });
 }

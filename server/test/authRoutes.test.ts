@@ -352,6 +352,7 @@ describe("native server auth routes", () => {
     expect(res.statusCode).toBe(307);
     expect(res.headers.location).toBe("http://localhost:5173/invitations/tok123?auto=1");
     expect(String(res.headers["set-cookie"])).toContain("session_id=raw-session");
+    expect(String(res.headers["set-cookie"])).toContain("Secure");
     expect(String(res.headers["set-cookie"])).toContain("oauth_state=;");
     expect(createdProfile).toMatchObject({
       googleSub: "google-sub-1",

@@ -1,6 +1,7 @@
 import { extname } from "node:path";
-import { TextDecoder } from "node:util";
+import { decodeTruncatedUtf8 } from "@rainver/outbound-guard";
 import { HttpError } from "../routeUtils/common.js";
+import { fetchGuarded, type OutboundGuard } from "./outboundUrlSafety.js";
 
 export interface SourceFetchResult {
   status: number;
@@ -14,31 +15,47 @@ export interface SourceFetchResult {
   bytes: Uint8Array | null;
 }
 
-export async function fetchSource(
-  url: string,
-  options: {
-    headers?: Record<string, string>;
-    maxDownloadBytes: number;
-    /** Abort the request after this many ms; the fetch rejects with a TimeoutError. */
-    timeoutMs?: number;
-  },
-): Promise<SourceFetchResult> {
-  const init: Parameters<typeof fetch>[1] = { redirect: "follow" };
-  if (options.timeoutMs) init.signal = AbortSignal.timeout(options.timeoutMs);
-  const headers = new Headers(options.headers);
-  // Source bodies are consumed by the server. Keep the representation
-  // uncompressed so an intermediary cannot return a body whose encoding
-  // metadata no longer matches what the server reads.
-  headers.set("accept-encoding", "identity");
-  init.headers = headers;
-  const response = await fetch(url, init);
-  const contentType = normalizeContentType(response.headers.get("content-type"));
-  if (response.status === 304 || !response.ok) {
+export interface SourceFetchOptions {
+  /** Sent on every hop, including after a redirect to another origin. */
+  headers?: Record<string, string>;
+  /**
+   * Dropped as soon as a redirect leaves the first origin: a provider API key,
+   * a bearer. Separate from `headers` so a credential cannot reach a redirect
+   * target because a caller forgot to name it.
+   */
+  credentialHeaders?: Record<string, string>;
+  maxDownloadBytes: number;
+  /** Budget for the whole chain — resolution, every hop, and the body. */
+  timeoutMs?: number;
+  /**
+   * The outbound boundary. Production leaves it out and gets the instance's
+   * guard; a test supplies one pinned at its own fixture server.
+   */
+  guard?: OutboundGuard;
+}
+
+export async function fetchSource(url: string, options: SourceFetchOptions): Promise<SourceFetchResult> {
+  const result = await fetchGuarded({
+    url,
+    headers: {
+      ...options.headers,
+      // Source bodies are consumed by the server. Keep the representation
+      // uncompressed so an intermediary cannot return a body whose encoding
+      // metadata no longer matches what the server reads.
+      "accept-encoding": "identity",
+    },
+    ...(options.credentialHeaders ? { credentialHeaders: options.credentialHeaders } : {}),
+    maxDownloadBytes: options.maxDownloadBytes,
+    ...(options.timeoutMs ? { deadlineMs: options.timeoutMs } : {}),
+  }, options.guard);
+
+  const contentType = normalizeContentType(result.headers.get("content-type"));
+  if (result.status === 304 || !result.ok) {
     return {
-      status: response.status,
-      ok: response.ok,
-      notModified: response.status === 304,
-      headers: response.headers,
+      status: result.status,
+      ok: result.ok,
+      notModified: result.status === 304,
+      headers: result.headers,
       contentType,
       isText: false,
       isPdf: false,
@@ -46,19 +63,20 @@ export async function fetchSource(
       bytes: null,
     };
   }
+  if (result.truncated) throw maxSizeError(options.maxDownloadBytes);
 
-  const bytes = await readResponseBytes(response, options.maxDownloadBytes);
-  const isPdf = isPdfContent(contentType, url, bytes);
-  const isText = !isPdf && isTextContent(contentType, url);
+  const bytes = result.bytes;
+  const isPdf = isPdfContent(contentType, result.url, bytes);
+  const isText = !isPdf && isTextContent(contentType, result.url);
   return {
-    status: response.status,
-    ok: response.ok,
+    status: result.status,
+    ok: result.ok,
     notModified: false,
-    headers: response.headers,
+    headers: result.headers,
     contentType,
     isText,
     isPdf,
-    text: isText ? decodeUtf8(bytes) : null,
+    text: isText ? decodeTruncatedUtf8(bytes) : null,
     bytes: isText ? null : bytes,
   };
 }
@@ -126,47 +144,4 @@ function formatBytes(bytes: number): string {
 
 function maxSizeError(maxDownloadBytes: number): HttpError {
   return new HttpError(413, `Downloaded source exceeds max size (${formatBytes(maxDownloadBytes)})`);
-}
-
-async function readResponseBytes(response: Response, maxDownloadBytes: number): Promise<Uint8Array> {
-  const declaredLength = response.headers.get("content-length");
-  if (declaredLength) {
-    const parsed = Number(declaredLength);
-    if (Number.isFinite(parsed) && parsed > maxDownloadBytes) {
-      throw maxSizeError(maxDownloadBytes);
-    }
-  }
-  if (!response.body) {
-    const buffer = new Uint8Array(await response.arrayBuffer());
-    if (buffer.length > maxDownloadBytes) {
-      throw maxSizeError(maxDownloadBytes);
-    }
-    return buffer;
-  }
-
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.length;
-    if (total > maxDownloadBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw maxSizeError(maxDownloadBytes);
-    }
-    chunks.push(value);
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return out;
-}
-
-function decodeUtf8(bytes: Uint8Array): string {
-  return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 }

@@ -1,4 +1,5 @@
 import type { RunSettlementReason, WorkLoopStageKey } from "@rainver/protocol";
+import { artifactReadSql } from "../access/contentAccessSql.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { resolveServiceActorId } from "../../db/actorResolver.js";
 import { appendProjectWorkEvent } from "./eventWriter.js";
@@ -116,14 +117,45 @@ export async function missingRequiredOutputs(
   spaceId: string,
   taskId: string,
   declared: readonly string[],
+  /** Whose view decides whether an output is present. See `taskCompletionState`. */
+  viewerUserId: string,
+): Promise<string[]> {
+  return presentOutputs(db, spaceId, taskId, declared, viewerUserId);
+}
+
+/**
+ * The same question with no viewer, for the settlement worker only.
+ *
+ * Settlement decides what actually happened to the Task, on behalf of nobody,
+ * so it has to see every output — including one private to the person who
+ * produced it. Named rather than reached by omitting an argument, because the
+ * unscoped read is a decision and a forgotten argument is a leak.
+ */
+export async function missingRequiredOutputsForSettlement(
+  db: Queryable,
+  spaceId: string,
+  taskId: string,
+  declared: readonly string[],
+): Promise<string[]> {
+  return presentOutputs(db, spaceId, taskId, declared, null);
+}
+
+async function presentOutputs(
+  db: Queryable,
+  spaceId: string,
+  taskId: string,
+  declared: readonly string[],
+  viewerUserId: string | null,
 ): Promise<string[]> {
   if (declared.length === 0) return [];
+  const readSql = viewerUserId ? `AND ${artifactReadSql("$3")}` : "";
   const present = await db.query<{ artifact_type: string }>(
     `SELECT DISTINCT lower(a.artifact_type) AS artifact_type
        FROM task_artifacts ta
        JOIN artifacts a ON a.id = ta.artifact_id AND a.space_id = ta.space_id
-      WHERE ta.space_id = $1 AND ta.task_id = $2 AND ta.role = 'output'`,
-    [spaceId, taskId],
+      WHERE ta.space_id = $1 AND ta.task_id = $2 AND ta.role = 'output'
+        ${readSql}`,
+    viewerUserId ? [spaceId, taskId, viewerUserId] : [spaceId, taskId],
   );
   const have = new Set(present.rows.map((row) => row.artifact_type));
   return declared.filter((token) => !have.has(token));
@@ -281,7 +313,7 @@ export async function settleTasksForRun(
 
   for (const row of candidates.rows) {
     const declared = declaredRequiredOutputs(row.required_outputs_json);
-    const missing = await missingRequiredOutputs(db, spaceId, row.task_id, declared);
+    const missing = await missingRequiredOutputsForSettlement(db, spaceId, row.task_id, declared);
     const outcome = outcomeForRun(
       row.run_status,
       row.recommendation,
@@ -298,13 +330,13 @@ export async function settleTasksForRun(
           subjectId: row.task_id,
           actorId,
           correlationId: row.run_id,
+          runId: row.run_id,
           // The same Run can settle the same Task more than once with different
           // facts — held for a missing output, then closed once it is attached.
           // A key without the outcome would swallow the second settlement and
           // leave the status changed with no event saying so.
           idempotencyKey: `task.run_settled:${row.task_id}:${row.run_id}:${outcome.reason}`,
           data: {
-            run_id: row.run_id,
             run_status: row.run_status,
             from_flow: row.task_status,
             to_flow: outcome.flow,
@@ -343,13 +375,13 @@ export async function settleTasksForRun(
         subjectId: row.task_id,
         actorId,
         correlationId: row.run_id,
+          runId: row.run_id,
         causationId: settlementEvent?.id ?? null,
         idempotencyKey: `task.accepted:${row.task_id}:${row.run_id}`,
         data: {
           decided_by: "automatic",
           basis: "evaluation_accepted_and_required_outputs_present",
           task_evaluation_id: row.evaluation_id,
-          run_id: row.run_id,
           required_outputs: declared,
         },
       });
@@ -364,9 +396,9 @@ export async function settleTasksForRun(
         actorId,
         reason: outcome.reason,
         correlationId: row.run_id,
+          runId: row.run_id,
         causationId: settlementEvent?.id ?? null,
         idempotencyKey: `task.stage_changed:${row.task_id}:${row.run_id}:${outcome.stage}`,
-        data: { run_id: row.run_id },
       });
     }
   }

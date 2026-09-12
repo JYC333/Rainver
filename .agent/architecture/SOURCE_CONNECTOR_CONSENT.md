@@ -98,8 +98,8 @@ Retention is tied to capture policy: `reference_only` may keep
 rerank, synthesis, and embedding backfill. The source gate composes with the
 space-level `retrieval.space.settings` `external_egress_enabled` switch and
 provider destination classification. RSS/Atom/web page connector scheduling and
-worker ingest consume capture/retention policy; full context assembly remains
-deferred.
+worker ingest consume capture/retention policy. There is no additional
+full-context-assembly consumer beyond the gates listed in this document.
 
 `derived_write_policy` is intentionally limited to `proposal_required` or
 `disabled`. Source-derived Knowledge and Memory writes must not bypass the
@@ -230,21 +230,17 @@ Implemented for provider content egress:
   source-connected candidates additionally apply source egress. The chat
   collector does not receive the final provider destination yet, so it uses the
   conservative `external_provider` destination.
-- Current query rewrite is query-string-only; if a future mode includes
-  source-derived content, it must use the same payload source gate.
-
-Still deferred:
-
-- Chat-turn artifact attachments or future Evidence Packs are not supported yet;
-  if added, they must reuse the same read and egress gates before prompt
-  assembly.
+- Current query rewrite is query-string-only and does not send source-derived
+  content. A content-bearing rewrite must use the same payload source gate.
+- There are no chat-turn artifact attachments or Evidence Packs.
 - Connector schedulers and workers consume capture/retention and derived-write
-  target policy for RSS/Atom/web page ingest; a future end-to-end audit can
-  extend the source gate to refresh/purge edge cases. The connector→projection→search
-  linkage is now covered by a real-DB test (`retrievalSourcePolicyDb.test.ts`).
+  target policy for RSS/Atom/web page ingest. The connector→projection→search
+  linkage is covered by a real-DB test (`retrievalSourcePolicyDb.test.ts`).
 - Diagnostics reports aggregate only the operator's own private artifact
-  metadata, so they carry no source-derived titles/snippets; if a future
-  diagnostic reads source-connected content directly it must add the gate.
+  metadata and carry no source-derived titles/snippets.
+
+Unimplemented source-gate extensions:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §23.
 
 ### Read Gate Shape
 
@@ -282,7 +278,7 @@ egress setting and the source policy permit the destination:
   `consent.allow_external_model_egress`.
 
 Source policy denial must happen before candidate content is sent to embedding,
-rerank, synthesis, or any future content-bearing rewrite stage. Audit remains
+rerank, synthesis, or a content-bearing rewrite stage. Audit remains
 pointer-only: destination class, source-policy class/counts, action, model/task
 surface, run id when present, and no query/content/snippets.
 
@@ -300,8 +296,8 @@ reloads current source policy for enforcement:
   or `source_connection_ids`.
 - Project public summaries use explicit `source_refs_json` entries with
   `source_type = "source_connection"` or `source_connection_id`.
-- Source policy version/hash is deferred to artifact/context-pack audit
-  metadata; enforcement reloads current source connection policy.
+- Enforcement reloads current source connection policy. There is no
+  source-policy version/hash on artifact or context-pack audit metadata.
 - Artifact metadata should snapshot source policy classes/counts and egress
   destination, not raw source policy JSON or source content.
 
@@ -322,23 +318,13 @@ Implementation should add leak tests for:
   allowed internal processing.
 - Audit metadata remaining pointer-only.
 
-## Deferred Work
+Implemented consumers of this model: source-connection create/update
+validation, Sources UI normalized fields, connected retention escalation,
+RSS/Atom/web page scan scheduling, worker-side full-text/snapshot writes,
+connected summary proposal creation, source-aware retrieval reads, context
+artifact attachment, DB-backed chat candidates with explicit source ids,
+maintenance/Context Ops reads, claim evidence rendering, and retrieval
+provider content egress.
 
-This pass defines and validates the model at source-connection create / update
-time, exposes the normalized fields in the Sources UI, enforces the policy on
-connected source retention escalation, RSS/Atom/web page scan scheduling,
-worker-side full-text/snapshot writes, connected summary proposal creation,
-source-aware retrieval reads, context artifact attachment, DB-backed chat
-candidates with explicit source ids, maintenance/Context Ops reads, claim
-evidence rendering, and retrieval provider content egress. Future work is
-mostly connector refresh/purge edge cases and product surfaces that do not
-exist yet. A dedicated source table should be considered only if multiple
-connectors need to share one consent grant or if source subjects/readers become
-independently mutable objects.
-
-Deferred product surfaces:
-
-- Connector refresh/purge edge cases beyond the current scheduler and worker
-  ingest policy gates.
-- Chat-turn artifact attachments or future Evidence Packs.
-- Space-wide source governance docs and API affordances.
+Unimplemented extensions:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §23.

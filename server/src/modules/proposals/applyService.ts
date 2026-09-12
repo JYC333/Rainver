@@ -1,7 +1,7 @@
 import { isProjectOwnerLevel } from "../projects/access.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
-import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { PoolClient } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
@@ -9,9 +9,11 @@ import { getDbPool } from "../../db/pool.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import {
+  enforce,
   enforceProposalApply,
   type EnforceResult,
 } from "../policy/service.js";
+import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { ProposalRiskLevelError } from "../policy/gateway.js";
 import {
   createDefaultProposalApplierRegistry,
@@ -21,6 +23,7 @@ import {
 import {
   PgProposalRepository,
 } from "./repository.js";
+import { proposalActivityAudience } from "./decisionActivity.js";
 import { PgSnapshotStore } from "../projectFolders/snapshotStore.js";
 import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
@@ -80,6 +83,54 @@ async function roomRunReadableForUser(
   return result.rows[0]?.allowed === true;
 }
 
+type ProposalDecisionKind = "accept" | "reject" | "rollback" | "egress_approval";
+
+/** The state each decision acts on. */
+const DECISION_STATUS: Record<ProposalDecisionKind, string> = {
+  accept: "pending",
+  reject: "pending",
+  egress_approval: "pending",
+  rollback: "accepted",
+};
+
+/**
+ * The one reach rule for deciding a proposal: it is in this Space, in the
+ * state the decision acts on, readable to the person, and — for a Run's
+ * proposal — inside a Room the person can read. What each decision needs on
+ * top (apply authority, reject authority, taint ownership, the patch's own
+ * checks) stays with the decision.
+ */
+async function authorizeProposalDecision(
+  client: PoolClient,
+  proposal: ApplyProposalRow | null,
+  identity: { spaceId: string; userId: string },
+  kind: ProposalDecisionKind,
+): Promise<ApplyProposalRow | null> {
+  if (!proposal || proposal.space_id !== identity.spaceId || proposal.status !== DECISION_STATUS[kind]) return null;
+  if ((await contentDecisionFromDb(client, identity, "proposal", proposal.id)) === "deny") return null;
+  if (!(await roomRunReadableForUser(client, proposal, identity.userId))) return null;
+  return proposal;
+}
+
+/**
+ * The files an accepted code patch wrote, with the hash of what it wrote,
+ * recorded at apply. A patch without that record cannot show its files are
+ * untouched, so it is not rolled back.
+ */
+function appliedCodePatchFiles(payload: Record<string, unknown> | null): Array<{ path: string; sha256: string }> {
+  const files = Array.isArray(payload?.applied_files) ? payload.applied_files as unknown[] : [];
+  const parsed = files.flatMap((file) => {
+    const row = file as { path?: unknown; sha256?: unknown } | null;
+    return typeof row?.path === "string" && typeof row.sha256 === "string"
+      ? [{ path: row.path, sha256: row.sha256 }]
+      : [];
+  });
+  if (parsed.length === 0 || parsed.length !== files.length) {
+    throw new ProposalApplyHttpError(409, "This code patch has no record of what it wrote, so it cannot be rolled back safely");
+  }
+  return parsed;
+}
+
 export interface ProposalAcceptOptions {
   confirmIncompletePatch?: boolean;
   /** Only the bundle coordinator may apply a proposal while it owns the member row. */
@@ -105,7 +156,7 @@ interface ApplyProposalRow {
   preview: boolean;
   payload_json: Record<string, unknown> | null;
   project_folder_id: string | null;
-  visibility: string | null;
+  visibility: string;
   created_by_user_id: string | null;
   owner_user_id: string | null;
   created_by_agent_id: string | null;
@@ -190,15 +241,10 @@ export class PgProposalApplyService {
   ): Promise<ProposalTransactionResult<ProposalAcceptOut> | null> {
     let rollbackOnFailure: (() => Promise<void>) | null = null;
     try {
-      const proposal = await this.getProposalForUpdate(client, proposalId);
-      if (
-        !proposal ||
-        proposal.status !== "pending" ||
-        proposal.preview ||
-        proposal.space_id !== identity.spaceId ||
-        (await contentDecisionFromDb(client, identity, "proposal", proposal.id)) === "deny"
-      ) return null;
-      if (!await roomRunReadableForUser(client, proposal, identity.userId)) return null;
+      const proposal = await authorizeProposalDecision(
+        client, await this.getProposalForUpdate(client, proposalId), identity, "accept",
+      );
+      if (!proposal || proposal.preview) return null;
 
       await this.assertBundleMemberMayBeDecided(client, proposal.id, options.allowBundleMemberDecision === true);
       assertIncompleteCodePatchConfirmation(
@@ -355,15 +401,10 @@ export class PgProposalApplyService {
     afterReject?: ProposalTransactionCallback,
     allowBundleMemberDecision = false,
   ): Promise<ProposalTransactionResult<ProposalOut> | null> {
-    const proposal = await this.getProposalForUpdate(client, proposalId);
-    if (
-      !proposal ||
-      proposal.space_id !== identity.spaceId ||
-      proposal.status !== "pending" ||
-      (await contentDecisionFromDb(client, identity, "proposal", proposal.id)) === "deny" ||
-      !(await roomRunReadableForUser(client, proposal, identity.userId)) ||
-      !(await canRejectProposal(client, proposal, identity.userId))
-    ) return null;
+    const proposal = await authorizeProposalDecision(
+      client, await this.getProposalForUpdate(client, proposalId), identity, "reject",
+    );
+    if (!proposal || !(await canRejectProposal(client, proposal, identity.userId))) return null;
     await this.assertBundleMemberMayBeDecided(client, proposal.id, allowBundleMemberDecision);
     const updated = await client.query(
       `UPDATE proposals
@@ -399,16 +440,10 @@ export class PgProposalApplyService {
     const client = await this.connect();
     try {
       await client.query("BEGIN");
-      const proposal = await this.getProposalForUpdate(client, proposalId);
-      if (
-        !proposal
-        || proposal.status !== "pending"
-        || proposal.space_id !== identity.spaceId
-        || (await contentDecisionFromDb(client, identity, "proposal", proposal.id)) === "deny"
-        || !(await roomRunReadableForUser(client, proposal, identity.userId))
-      ) {
-        throw new ProposalApplyHttpError(404, "Proposal not found");
-      }
+      const proposal = await authorizeProposalDecision(
+        client, await this.getProposalForUpdate(client, proposalId), identity, "egress_approval",
+      );
+      if (!proposal) throw new ProposalApplyHttpError(404, "Proposal not found");
       const taintOwnerApprovers = requiredTaintOwnerApprovers(proposal.payload_json);
       if (taintOwnerApprovers.length > 0) {
         if (!taintOwnerApprovers.includes(identity.userId)) {
@@ -502,23 +537,14 @@ export class PgProposalApplyService {
     try {
       await client.query("BEGIN");
 
-      const proposal = await client.query<ApplyProposalRow>(
-      `SELECT id, space_id, proposal_type, status, risk_level, preview,
-                payload_json, project_folder_id, created_by_user_id, created_by_run_id,
-                visibility, project_id, title
-           FROM proposals
-          WHERE id = $1 AND space_id = $2 AND proposal_type = 'code_patch' AND status = 'accepted'
-          FOR UPDATE`,
-        [proposalId, identity.spaceId],
+      const p = await authorizeProposalDecision(
+        client, await this.getProposalForUpdate(client, proposalId), identity, "rollback",
       );
-      const p = proposal.rows[0];
-      if (
-        !p
-        || (await contentDecisionFromDb(client, identity, "proposal", p.id)) === "deny"
-      ) {
+      if (!p || p.proposal_type !== "code_patch") {
         await client.query("ROLLBACK");
         return null;
       }
+      await this.enforceApplyPolicy(client, p, identity.userId);
       if (!p.project_folder_id) {
         await client.query("ROLLBACK");
         throw new ProposalApplyHttpError(422, "code_patch proposal has no project_folder_id");
@@ -536,6 +562,7 @@ export class PgProposalApplyService {
         await client.query("ROLLBACK");
         throw new ProposalApplyHttpError(404, "Project Folder not found");
       }
+      await this.enforceCodePatchWrite(p, identity.userId);
       let location;
       try {
         location = await resolveActiveServerHostLocation(client, identity.spaceId, p.project_folder_id);
@@ -544,17 +571,30 @@ export class PgProposalApplyService {
         throw error instanceof HttpError ? new ProposalApplyHttpError(error.statusCode, error.message) : error;
       }
       const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
+      const target = (path: string) => validatePath({
+        path: resolve(root, path),
+        allowedRoot: root,
+        mode: "write",
+        protectedFolder: folder.protected,
+        forTrustedCodePatchApply: true,
+      });
+      // Writing pre-apply content over a file someone has changed since would
+      // silently discard that work, so every applied file must still hold
+      // exactly what the patch wrote.
+      for (const file of appliedCodePatchFiles(p.payload_json)) {
+        const current = await readFile(target(file.path)).catch((err: NodeJS.ErrnoException) => {
+          if (err.code === "ENOENT") return null;
+          throw err;
+        });
+        if (!current || createHash("sha256").update(current).digest("hex") !== file.sha256) {
+          throw new ProposalApplyHttpError(409, `${file.path} changed after the patch was applied; resolve it before rolling back`);
+        }
+      }
 
       // Restore files to pre-apply state
       const restoredPaths: string[] = [];
       for (const file of snapshot.files) {
-        const absPath = validatePath({
-          path: resolve(root, file.path),
-          allowedRoot: root,
-          mode: "write",
-          protectedFolder: folder.protected,
-          forTrustedCodePatchApply: true,
-        });
+        const absPath = target(file.path);
         if (file.existed && file.content !== null) {
           await mkdir(dirname(absPath), { recursive: true });
           await writeFile(absPath, file.content, "utf8");
@@ -569,6 +609,14 @@ export class PgProposalApplyService {
       await new PgSnapshotStore(client).markRolledBack(snapshot.id, identity.userId);
 
       const now = new Date().toISOString();
+      // The proposal's own status says it was undone, so whoever reads it is
+      // not told the patch is still in place.
+      await client.query(
+        `UPDATE proposals SET status = 'rolled_back', updated_at = $3
+          WHERE id = $1 AND space_id = $2 AND status = 'accepted'`,
+        [proposalId, identity.spaceId, now],
+      );
+      const audience = proposalActivityAudience(p, identity.userId);
       await client.query(
         `INSERT INTO activity_records (
            id, space_id, source_run_id, user_id, project_folder_id, activity_type,
@@ -577,7 +625,7 @@ export class PgProposalApplyService {
          ) VALUES (
            $1, $2, NULL, $3, $4, 'proposal.code_patch.rolled_back',
            $5, $6, $7::jsonb, $8, $8, 'processed', $8,
-           'project_folder_event', 'internal_system', 'space_shared', $3
+           'project_folder_event', 'internal_system', $9, $10
          )`,
         [
           randomUUID(),
@@ -588,6 +636,8 @@ export class PgProposalApplyService {
           `Rolled back code patch proposal ${proposalId}.`,
           JSON.stringify({ proposal_id: proposalId, restored_paths: restoredPaths, file_count: restoredPaths.length }),
           now,
+          audience.visibility,
+          audience.ownerUserId,
         ],
       );
 
@@ -714,6 +764,43 @@ export class PgProposalApplyService {
     );
     if (result.status !== "allow") {
       throw policyResultToHttpError(result);
+    }
+  }
+
+  private async enforceCodePatchWrite(
+    proposal: ApplyProposalRow,
+    userId: string,
+  ): Promise<void> {
+    if (!proposal.project_folder_id) return;
+    const policy = await enforce(this.config, await loadActionRegistry(), {
+      action: "project_folder.write_patch",
+      actor_type: "user",
+      actor_id: userId,
+      space_id: proposal.space_id,
+      resource_type: "project_folder",
+      resource_id: proposal.project_folder_id,
+      resource_space_id: proposal.space_id,
+      proposal_id: proposal.id,
+      context: {
+        proposal_type: "code_patch",
+        proposal_apply_allowed: true,
+        project_folder_id: proposal.project_folder_id,
+        file_count: typeof proposal.payload_json?.file_count === "number"
+          ? proposal.payload_json.file_count
+          : 0,
+      },
+      metadata_json: {
+        proposal_type: "code_patch",
+        proposal_id: proposal.id,
+        project_folder_id: proposal.project_folder_id,
+      },
+      force_record: true,
+    });
+    if (policy.status !== "allow") {
+      throw new HttpError(
+        policy.status === "error" ? 500 : 403,
+        policy.message ?? "project_folder.write_patch denied by policy",
+      );
     }
   }
 

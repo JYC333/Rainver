@@ -1,9 +1,21 @@
 import { afterEach, describe, expect, it } from "vitest";
+import type { CredentialSpendAuthorization } from "../src/modules/policy/credentialSpend.js";
 import { loadConfig } from "../src/config.js";
 import { ProviderProxyLeaseRegistry } from "../src/modules/providers/proxy/lease.js";
 import { startProviderProxyServer, type ProviderProxyServerHandle } from "../src/modules/providers/proxy/server.js";
 import type { UsageAttribution, UsageObservation } from "../src/modules/usage/index.js";
 import { startMockUpstream, type MockUpstream } from "./support/mockUpstream.js";
+
+/** A decided spend, as `authorizeCredentialSpend` returns one. */
+function authorizedFor(spaceId: string, runId: string, providerId: string): CredentialSpendAuthorization {
+  return {
+    space_id: spaceId,
+    run_id: runId,
+    provider_id: providerId,
+    trigger_origin: "manual",
+    policy_decision_record_id: null,
+  } as unknown as CredentialSpendAuthorization;
+}
 
 const handles: ProviderProxyServerHandle[] = [];
 const upstreams: MockUpstream[] = [];
@@ -37,6 +49,23 @@ async function testUsageAttribution(input: UsageObservation): Promise<UsageAttri
 }
 
 describe("provider proxy server", () => {
+  it("mints no lease from a spend decided for another Run or provider", () => {
+    const leases = new ProviderProxyLeaseRegistry();
+    const input = {
+      run_id: "run-1",
+      space_id: "space-1",
+      provider_id: "provider-1",
+      upstream_base_url: "https://upstream.example.test/anthropic",
+      ttl_ms: 60_000,
+    };
+    expect(() => leases.create(authorizedFor("space-1", "run-2", "provider-1"), input)).toThrow();
+    expect(() => leases.create(authorizedFor("space-1", "run-1", "provider-2"), input)).toThrow();
+    expect(() => leases.create(authorizedFor("space-2", "run-1", "provider-1"), input)).toThrow();
+    expect(leases.size()).toBe(0);
+    leases.create(authorizedFor("space-1", "run-1", "provider-1"), input);
+    expect(leases.size()).toBe(1);
+  });
+
   it("forwards a Claude-compatible request with provider credentials instead of the lease token", async () => {
     const upstream = await startMockUpstream();
     upstreams.push(upstream);
@@ -54,7 +83,7 @@ describe("provider proxy server", () => {
       async recordUsageObservation() {},
     });
     handles.push(proxy);
-    const lease = leases.create({
+    const lease = leases.create(authorizedFor("space-1", "run-1", "provider-1"), {
       run_id: "run-1",
       space_id: "space-1",
       provider_id: "provider-1",
@@ -112,7 +141,7 @@ describe("provider proxy server", () => {
       }),
     });
     handles.push(proxy);
-    const lease = leases.create({
+    const lease = leases.create(authorizedFor("space-1", "run-encoding", "provider-encoding"), {
       run_id: "run-encoding",
       space_id: "space-1",
       provider_id: "provider-encoding",
@@ -151,7 +180,7 @@ describe("provider proxy server", () => {
       async recordUsageObservation() {},
     });
     handles.push(proxy);
-    const lease = leases.create({
+    const lease = leases.create(authorizedFor("space-1", "run-1", "provider-1"), {
       run_id: "run-1",
       space_id: "space-1",
       provider_id: "provider-1",
@@ -191,7 +220,7 @@ describe("provider proxy server", () => {
       },
     });
     handles.push(proxy);
-    const lease = leases.create({
+    const lease = leases.create(authorizedFor("space-1", "missing-run", "provider-1"), {
       run_id: "missing-run",
       space_id: "space-1",
       provider_id: "provider-1",
@@ -229,7 +258,7 @@ describe("provider proxy server", () => {
       async recordUsageObservation() {},
     });
     handles.push(proxy);
-    const lease = leases.create({
+    const lease = leases.create(authorizedFor("space-1", "run-1", "provider-openai"), {
       run_id: "run-1",
       space_id: "space-1",
       provider_id: "provider-openai",
@@ -303,7 +332,7 @@ describe("provider proxy server", () => {
       },
     });
     handles.push(proxy);
-    const lease = leases.create({
+    const lease = leases.create(authorizedFor("space-1", "run-1", "provider-1"), {
       run_id: "run-1",
       space_id: "space-1",
       provider_id: "provider-1",
@@ -449,7 +478,7 @@ describe("provider proxy server", () => {
       },
     });
     handles.push(proxy);
-    const lease = leases.create({
+    const lease = leases.create(authorizedFor("space-1", "run-openai", "provider-openai"), {
       run_id: "run-openai",
       space_id: "space-1",
       provider_id: "provider-openai",

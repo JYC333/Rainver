@@ -38,8 +38,8 @@ route registry.
 - Server owns native session-cookie identity resolution, Google OAuth
   login/callback/config, the canonical feature-gated API-key endpoints, spaces,
   runs, artifacts, frontend-support read models, streaming, and product
-  routes. DB-persisted API-key storage remains deferred because the canonical
-  schema has no `api_keys` table.
+  routes. The schema has no `api_keys` table; API-key routes return the
+  feature-gated response.
 - Server migrations own schema migration through explicit ops commands.
 - In bundled compose modes, server uses the Postgres owner/app role from
   `POSTGRES_*`; there is no separate per-table app-role provisioning path.

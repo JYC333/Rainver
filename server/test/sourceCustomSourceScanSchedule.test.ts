@@ -14,6 +14,7 @@ import {
   reclaimStuckCustomSourceHandlerRuns,
 } from "../src/modules/sources/customSources/customSourceScanSchedule.js";
 import { runPendingCustomSourceHandlerRuns } from "../src/modules/sources/customSources/customSourceScanWorker.js";
+import { fixtureServerGuard } from "./support/outboundGuard.js";
 import { generateCustomSourceHandlerSource } from "../src/modules/sources/customSources/customSourceHandlerTemplate.js";
 import { sha256 } from "../src/modules/sources/sourceRepositoryMappers.js";
 import { PgSourcesRepository } from "../src/modules/sources/repository.js";
@@ -336,7 +337,7 @@ describe("enqueueDueCustomSourceHandlerRuns", () => {
     const connId = randomUUID();
     await insertConnection({ id: connId, handlerKind: "generated_custom" });
     const versionId = await insertActiveHandlerVersion(connId);
-    const repo = new PgSourcesRepository(db.pool, config);
+    const repo = new PgSourcesRepository(db.pool, config, fixtureServerGuard);
 
     const job = await repo.scanChannel(
       { spaceId: SPACE_A, userId: "user-1" },
@@ -374,7 +375,7 @@ describe("runPendingCustomSourceHandlerRuns", () => {
     await insertActiveHandlerVersion(connId);
     await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
 
-    const processed = await runPendingCustomSourceHandlerRuns(db.pool, config!, 10);
+    const processed = await runPendingCustomSourceHandlerRuns(db.pool, config!, 10, fixtureServerGuard);
     expect(processed).toBe(1);
 
     const run = await db.pool.query<{ status: string }>(
@@ -417,7 +418,7 @@ describe("runPendingCustomSourceHandlerRuns", () => {
     await insertActiveHandlerVersion(connId);
     await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
 
-    const processed = await runPendingCustomSourceHandlerRuns(db.pool, config!, 10);
+    const processed = await runPendingCustomSourceHandlerRuns(db.pool, config!, 10, fixtureServerGuard);
     expect(processed).toBe(1);
 
     const run = await db.pool.query<{ status: string }>(
@@ -452,7 +453,7 @@ describe("runPendingCustomSourceHandlerRuns", () => {
     });
     await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
 
-    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10)).toBe(1);
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10, fixtureServerGuard)).toBe(1);
 
     const run = await db.pool.query<{ id: string; status: string; failure_class: string | null }>(
       `SELECT id, status, failure_class FROM source_handler_runs WHERE source_connection_id = $1`,
@@ -488,7 +489,7 @@ describe("runPendingCustomSourceHandlerRuns", () => {
     await insertActiveHandlerVersion(connId);
     await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
 
-    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10)).toBe(1);
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10, fixtureServerGuard)).toBe(1);
 
     const run = await db.pool.query<{ status: string; failure_class: string | null }>(
       `SELECT status, failure_class FROM source_handler_runs WHERE source_connection_id = $1`,
@@ -511,7 +512,7 @@ describe("runPendingCustomSourceHandlerRuns", () => {
     });
     await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
 
-    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10)).toBe(1);
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10, fixtureServerGuard)).toBe(1);
 
     const run = await db.pool.query<{ status: string; failure_class: string | null }>(
       `SELECT status, failure_class FROM source_handler_runs WHERE source_connection_id = $1`,
@@ -535,7 +536,7 @@ describe("runPendingCustomSourceHandlerRuns", () => {
     });
     await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
 
-    expect(await runPendingCustomSourceHandlerRuns(db.pool, config, 10)).toBe(1);
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config, 10, fixtureServerGuard)).toBe(1);
 
     const run = await db.pool.query<{ status: string; failure_class: string | null }>(
       `SELECT status, failure_class FROM source_handler_runs WHERE source_connection_id = $1`,
@@ -572,7 +573,7 @@ describe("automatic Custom Source repair status transitions", () => {
 
     for (let attempt = 0; attempt < 3; attempt++) {
       await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
-      expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10)).toBe(1);
+      expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10, fixtureServerGuard)).toBe(1);
       if (attempt < 2) await resetForNextRun(connId);
     }
 
@@ -589,7 +590,7 @@ describe("automatic Custom Source repair status transitions", () => {
     ]);
     await resetForNextRun(connId);
     await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
-    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10)).toBe(1);
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10, fixtureServerGuard)).toBe(1);
 
     const afterSuccess = await db.pool.query<{ repair_status: string }>(
       `SELECT repair_status FROM source_connections WHERE id = $1`,
@@ -611,7 +612,7 @@ describe("automatic Custom Source repair status transitions", () => {
     await insertActiveHandlerVersion(connId);
 
     await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
-    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10)).toBe(1);
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10, fixtureServerGuard)).toBe(1);
 
     const after = await db.pool.query<{ repair_status: string }>(
       `SELECT repair_status FROM source_connections WHERE id = $1`,

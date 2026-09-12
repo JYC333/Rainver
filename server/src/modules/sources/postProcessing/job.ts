@@ -94,6 +94,7 @@ async function handleSourcePostProcessingJob(
       itemIds,
       actorUserId: job.user_id,
       sourceRunId: stringValue(job.payload.source_post_processing_run_id),
+      triggerType: deepAnalysisTriggerType(job.payload.trigger_type),
     });
     return {
       source_post_processing_run_id: run?.id ?? null,
@@ -153,4 +154,14 @@ function arrayValue(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
     : [];
+}
+
+/**
+ * The trigger of the run that queued a deep-analysis follow-up. Refused
+ * rather than defaulted: guessing `manual` would let unattended work spend as
+ * if a person had asked.
+ */
+function deepAnalysisTriggerType(value: unknown): "items_materialized" | "schedule" | "manual" {
+  if (value === "items_materialized" || value === "schedule" || value === "manual") return value;
+  throw new Error("deep_analysis follow-up has no trigger_type from the run that queued it");
 }

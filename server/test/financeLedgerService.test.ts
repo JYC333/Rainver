@@ -88,7 +88,7 @@ describe("finance ledger service", () => {
     );
 
     await financeLedgerService.postDirective(db.pool, SPACE_A, book.id, directive.id);
-    const balances = await financeLedgerService.computeBalances(db.pool, SPACE_A, book.id);
+    const balances = await financeLedgerService.computeBalances(db.pool, SPACE_A, book.id, { viewerUserId: USER_1 });
     const exported = await financeLedgerService.exportBeancount(db.pool, SPACE_A, book.id, USER_1);
 
     expect(balances).toEqual(
@@ -132,7 +132,7 @@ describe("finance ledger service", () => {
 
   it("rejects postings to closed accounts", async () => {
     const { book, checking, groceries } = await createBasicLedger();
-    await financeLedgerService.closeAccount(db.pool, SPACE_A, book.id, checking.id, "2026-07-01");
+    await financeLedgerService.closeAccount(db.pool, SPACE_A, book.id, checking.id, "2026-07-01", USER_1);
 
     await expect(
       financeLedgerService.createTransactionDraft(db.pool, SPACE_A, book.id, USER_1, {

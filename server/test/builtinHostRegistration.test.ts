@@ -6,6 +6,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { PgHostRepository } from "../src/modules/hosts/repository.js";
+import { hostControlPlaneUrl } from "../src/modules/hosts/controlPlaneUrl.js";
 import {
   builtinHostCredentialPath,
   publishBuiltinHostCredential,
@@ -54,6 +55,8 @@ describe("publishing the built-in host credential", () => {
     const repo = new PgHostRepository(db.pool);
     const row = await repo.authenticate(credential.token);
     expect(row).toMatchObject({ id: result.host_id, kind: "server", owner_user_id: null });
+    // Children on the built-in host call back on the same address it registered at.
+    expect(hostControlPlaneUrl(config(), "server")).toBe(credential.server_url);
   });
 
   it("leaves a valid credential alone across a restart", async (ctx) => {

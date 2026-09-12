@@ -37,6 +37,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         execution: input.execution ? {
           modelProviderId: input.execution.model_provider_id,
           modelName: input.execution.model_name,
+          spend: { kind: "person", user_id: identity.userId },
         } : undefined,
       });
       return reply.send(protocol.EvaluateResearchQueryStrategyResponseSchema.parse({ strategy }));
@@ -57,6 +58,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         execution: input.execution ? {
           modelProviderId: input.execution.model_provider_id,
           modelName: input.execution.model_name,
+          spend: { kind: "person", user_id: identity.userId },
         } : undefined,
       });
       return reply.send(protocol.RetryResearchQueryProviderResponseSchema.parse({ strategy }));

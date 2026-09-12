@@ -175,10 +175,10 @@ Implemented fields:
   `claim`, `inquiry_thread`, `decision_case`, and `experiment`. The CHECK and
   the entity registry are asserted to agree by `test/ontologyRegistry.test.ts`
   — `relationship` was dropped when that test was added, because it had no
-  extension table, no entity, and no writer. Domains discussed elsewhere in
-  this document as future work (`project`, `asset`, `event`, `task`,
-  `document`) are **not** in the enum; `project` and `project_folder` are
-  registered *entities* without being `space_objects` rows (B12G).
+  extension table, no entity, and no writer. `project` and `project_folder` are
+  registered *entities* without being `space_objects` rows (B12G). Types not in
+  the enum are listed in
+  [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §19.
 - `title` (a projection of the domain's own label, truncated by the writer)
 - `summary` or `excerpt`
 - `visibility`, `access_level`
@@ -527,8 +527,8 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
 - Implemented: object relation read/apply results expose `retrieval_projected`
   so callers can distinguish canonical wide graph rows from relations currently
   projected into the Knowledge retrieval graph.
-- Future domain extensions such as people, assets, events, and tasks should be
-  added on top of `space_objects`, not under Knowledge.
+- A new domain root belongs on `space_objects`, not under Knowledge.
+  `asset` / `event` / `task` / `document` are not in the enum.
 
 ## Decision Record
 
@@ -538,25 +538,20 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
 | B. Add `space_objects` + keep `knowledge_items` as extension + global `claims` | Clean long-term root, avoids Knowledge owning every domain, supports cross-domain facts/takes, aligns with source/policy/retrieval boundaries. | Requires coordinated schema, repository, protocol, retrieval, proposal, and frontend updates. | Implemented as the backend foundation. |
 | C. Keep current model and add `knowledge_claims` | Smallest immediate implementation. | Hard-codes claims as Knowledge-owned and conflicts with cross-domain claims. | Reject except as a throwaway prototype, which is not needed because no production data compatibility is required. |
 
-## Deferred Follow-Up Work
+## Current absences
 
 - Full dynamic schema packs remain rejected as the runtime model.
-- Object Schema Registry foundations for per-space `object_profile` definitions and
-  field schemas are implemented in the `ontology`-owned object profile registry
-  (served under the Knowledge paths) and
-  summarized in [`CONTEXT_AND_RETRIEVAL_LAYER.md`](CONTEXT_AND_RETRIEVAL_LAYER.md).
-  Claim subtype validation can build on those registry facts, but canonical
-  claim writes still stay proposal-gated.
-- People/assets/events/tasks product modules.
-- Full source monitoring / source-drift evaluator for claim evidence. Runtime
-  read/egress revalidation exists, but source-policy change detection and
-  scheduled claim-source review remain Context-layer follow-up work.
-- Frontend claim workspace and richer Context Brief claim-review UX. Structured
-  proposal packets exist; productized review/transformation workflows remain
-  deferred.
-- Automatic Memory claim extraction. Memory-derived claims need a separate
-  privacy, selected-user, summary-only, and access-log design.
-- Broad artifact/proposal/retrieval UI redesign beyond the references required
-  by the root-object and claim migrations.
-- Automated legacy-data migration. The current assumption is clean break/no
-  production data; write tests and seed updates instead of compatibility code.
+- Object Schema Registry foundations for per-space `object_profile` definitions
+  are implemented (see
+  [`CONTEXT_AND_RETRIEVAL_LAYER.md`](CONTEXT_AND_RETRIEVAL_LAYER.md)).
+  Canonical claim writes stay proposal-gated.
+- Runtime read/egress revalidation exists for claim evidence. There is no
+  source-policy change detector or scheduled claim-source review.
+- Structured proposal packets exist. There is no separate claim workspace or
+  productized Context Brief claim-review workflow.
+- There is no automatic Memory claim extraction.
+- There is no legacy-data compatibility path; tests and seeds assume a clean
+  break.
+
+Unimplemented claim follow-ups:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §19 and §24.

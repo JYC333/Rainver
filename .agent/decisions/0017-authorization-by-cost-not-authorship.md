@@ -44,18 +44,19 @@ provenance, archive and restore, so it belongs to the *second* row of this
 table — long-term belief, governed by
 [ADR 0003](0003-memory-proposal-flow.md) — and not to the first. That row
 defers to ADR 0003 for when the gate applies, and ADR 0003 §5 is where the
-answer is: a persona write is gated per instance in a `manual`-origin Run and
-is not gated in an unattended one. It is the only entry in this table for
-which the "and only when" above is read through the governing rule rather than
-applied to every write of that kind.
+answer is: a persona write is gated per instance in a `manual`-origin Run, and
+ungated only in unattended work the Agent's **own owner** set going. Unattended
+work somebody else set up is gated like a turn. It is the only entry in this
+table for which the "and only when" above is read through the governing rule
+rather than applied to every write of that kind.
 
 The self-modification row keeps its meaning: capabilities, policies, and
 authored prompt artifacts, through the B20 / ADR 0009 capability lifecycle. A
 persona entry is none of those — it has no manifest, no code, no tests, and
 nothing about it enters that lifecycle. What makes the difference defensible is
-that ADR 0003 §5 gates it *harder* than authorship would in the case that
+that ADR 0003 §5 gates it *harder* than authorship would in every case that
 matters here: a person in a turn cannot rewrite it directly, not even the
-owner.
+owner, and nobody but the owner can reach it by scheduling work either.
 
 Explicit checkpoints placed by a plan or workflow author also remain binding:
 `plan_checkpoint` and `workflow_execution_checkpoint` are requested stops, not
@@ -77,19 +78,25 @@ proposal. Two mechanisms replace it:
 
   **The persona exception, and its reasoning.** An Agent's persona entry
   ([ADR 0003](0003-memory-proposal-flow.md) §5) is the one write whose origin
-  test runs the other way round: a `manual` turn proposes it, an unattended
-  origin applies it. The rule above assumes a person in a conversation is the
-  authorization — which holds for a Project-internal write, whose reach is the
-  Project the person is already in. A persona is delivered in every Room and
-  every conversation this Agent has, so "a person asked in a turn" is exactly
-  the input that must not carry that reach: any member of any Room the Agent
-  sits in could otherwise rewrite what every other member's turns will see.
-  The unattended case is not a person's request at all — it is the Agent
-  concluding something about itself — and it is bounded by everything
-  ADR 0003 §4 and §5 require: one revision per Run, one active persona per
-  Agent, a record for the Agent's owner carrying what it replaced as well as
-  what it now says, and a one-step reversal that puts the previous version
-  back.
+  test runs the other way round: a `manual` turn proposes it, and the Agent
+  owner's own unattended work applies it. The rule above assumes a person in a
+  conversation is the authorization — which holds for a Project-internal write,
+  whose reach is the Project the person is already in. A persona is delivered
+  in every Room and every conversation this Agent has, so "a person asked in a
+  turn" is exactly the input that must not carry that reach: any member of any
+  Room the Agent sits in could otherwise rewrite what every other member's
+  turns will see. The case that applies is not a person's request at all — it
+  is the Agent concluding something about itself while doing work its owner set
+  up — and it is bounded by everything ADR 0003 §4 and §5 require: one revision
+  per Run, one active persona per Agent, a record for the Agent's owner
+  carrying what it replaced as well as what it now says, and a one-step
+  reversal that puts the previous version back.
+
+  Unattended is not unowned, so the inversion stops at the owner. Work somebody
+  else scheduled against this Agent — another member's Automation, their
+  autonomy tick, a job serving their plan — reaches every Room the Agent sits
+  in exactly as their turn would, and ADR 0003 §5's fourth row gives it exactly
+  what their turn would get: a proposal pending for the owner.
 
   So the exemption is narrow by construction: it applies to `memory_type =
   'persona'` on an `agent`-scope entry and to nothing else, and the policy
@@ -190,3 +197,8 @@ undo, bounds, and origin checks exist. This condition applies to each write path
   §2's origin gate: an Agent's persona entry, governed by ADR 0003 §5, with
   the reasoning for the inversion and the requirement that the policy layer
   scope the exemption to persona rather than to `memory.write`.
+- **2026-09-11** — narrowed that exception to its reason: the origin test runs
+  the other way round only for unattended work the Agent's **own owner** set
+  going. Work anybody else scheduled is gated like their turn, per ADR 0003 §5's
+  fourth row. Read as "any unattended origin applies", the exception had handed
+  the reach it exists to protect to whoever could schedule the Agent.

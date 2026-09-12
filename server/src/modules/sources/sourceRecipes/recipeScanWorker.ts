@@ -8,6 +8,7 @@ import { CustomSourceMaterializationService } from "../customSources/customSourc
 import { emitSourcePostProcessingEvent } from "../postProcessing/eventEmitter.js";
 import { enqueueItemsForAnnotation } from "../../sourceAnnotation/index.js";
 import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch.js";
+import type { OutboundGuard } from "../outboundUrlSafety.js";
 import { cleanupSandbox } from "../customSources/customSourceRunner.js";
 import { computeNextCheckAt } from "../sourceScanCadence.js";
 import {
@@ -97,6 +98,12 @@ export async function runPendingSourceRecipeScans(
   db: Queryable,
   config: ServerConfig,
   batchLimit = 10,
+  /**
+   * The outbound boundary live fetches go through. Production leaves it out and
+   * gets the instance's guard; a test supplies one pinned at its own fixture
+   * server, because the guard refuses loopback by design.
+   */
+  guard?: OutboundGuard,
 ): Promise<number> {
   const pending = await db.query<PendingRecipeJobRow>(
     `SELECT id, space_id, connection_id, metadata_json, metadata_json->>'source_channel_id' AS source_channel_id
@@ -112,7 +119,7 @@ export async function runPendingSourceRecipeScans(
   let processed = 0;
   for (const job of pending.rows) {
     try {
-      if (await runOne(db, config, job)) processed += 1;
+      if (await runOne(db, config, job, guard)) processed += 1;
     } catch (error) {
       await failJob(db, job, error instanceof Error ? error.message : String(error));
       processed += 1;
@@ -126,6 +133,7 @@ export async function runSourceRecipeScanJob(
   config: ServerConfig,
   jobId: string,
   spaceId: string,
+  guard?: OutboundGuard,
 ): Promise<boolean> {
   const result = await db.query<PendingRecipeJobRow>(
     `SELECT id, space_id, connection_id, metadata_json, metadata_json->>'source_channel_id' AS source_channel_id
@@ -140,10 +148,10 @@ export async function runSourceRecipeScanJob(
   );
   const job = result.rows[0];
   if (!job) return false;
-  return runOne(db, config, job);
+  return runOne(db, config, job, guard);
 }
 
-async function runOne(db: Queryable, config: ServerConfig, job: PendingRecipeJobRow): Promise<boolean> {
+async function runOne(db: Queryable, config: ServerConfig, job: PendingRecipeJobRow, guard?: OutboundGuard): Promise<boolean> {
   const now = new Date().toISOString();
   const claimed = await db.query(
     `UPDATE extraction_jobs SET status = 'running', started_at = $2 WHERE id = $1 AND status = 'pending'`,
@@ -198,6 +206,7 @@ async function runOne(db: Queryable, config: ServerConfig, job: PendingRecipeJob
       settings,
       envelope,
       credential,
+      guard,
     );
 
     const runResult = await runSourceRecipe(settings, {
@@ -208,6 +217,7 @@ async function runOne(db: Queryable, config: ServerConfig, job: PendingRecipeJob
       sourceName: connection.name,
       primaryEndpointContent,
       credential,
+      ...(guard ? { guard } : {}),
     });
 
     try {

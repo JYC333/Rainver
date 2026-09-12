@@ -143,7 +143,7 @@ proposals get created cannot silently reopen this.
 User-session authenticated (`getCurrentUser`/`sessionTokenFromRequest`,
 matching `spaces` routes — hosts are user-scoped, not Space-scoped):
 
-- `POST /api/v1/hosts/pairing-codes` — `{ name }` → `{ host_id, pairing_code, expires_at }` (10 min TTL).
+- `POST /api/v1/hosts/pairing-codes` — `{ name }` → `{ host_id, pairing_code, expires_at }` (13-character Crockford base32, 10 min TTL).
 - `GET /api/v1/hosts` — the server host plus every remote host the caller owns.
 - `GET /api/v1/hosts/execution-targets?project_id=` — the caller's online
   remote hosts and ACP installations. Without `project_id`, hosts have no
@@ -160,7 +160,7 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
 
 Unauthenticated (the pairing code itself is the one-time credential):
 
-- `POST /api/v1/hosts/register` — `{ pairing_code, platform?, arch?, daemon_version?, capabilities_json? }` → `{ host_id, token, name }`.
+- `POST /api/v1/hosts/register` — `{ pairing_code, platform?, arch?, daemon_version?, capabilities_json? }` → `{ host_id, token, name }`. Failed and successful attempts from one *source* are rate-limited (10 / 10 minutes), persisted under the instance cache so a restart does not hand a caller who has just spent their quota a fresh one. The snapshot is written when a bucket fills and otherwise at most every 30s, so a restart can lose the most recent attempts of a bucket that is not yet full — the window is a floor, not an exact replay. The source is the caller's address for IPv4 and its **/64** for IPv6 (`rateLimitKey`), because a /64 is the smallest block an ISP hands out and counting whole v6 addresses gave one caller the full quota once per address; an IPv4-mapped `::ffff:` spelling, which is how a proxy writes a v4 caller into `X-Forwarded-For`, is keyed as the v4 address it is rather than sharing one bucket with every other mapped caller. The window map is bounded (10 000 sources, least-recently-touched evicted) so an unauthenticated caller cannot grow it without limit, and the snapshot is written asynchronously — a synchronous write per attempt was itself a way to stall the event loop from this unauthenticated path.
 
 Host-bearer-token authenticated (`Authorization: Bearer <token>`, never a
 user session — the daemon has no session to present):
@@ -321,17 +321,24 @@ at its own TTL, and revoking a Host revokes its live leases immediately
 (`ProviderProxyLeaseRegistry.revokeHost`), since a lease is plain HTTP and a
 cut socket does not stop it.
 
-The address a host uses to reach the proxy is **derived, not configured**: the
-daemon reports the control-plane address it connects to
-(`hosts.daemon_server_url`, refreshed on every heartbeat), and the proxy's
-address follows from it plus `PROVIDER_PROXY_PORT`. The server cannot work this
-out alone — its own in-network hostname is a Compose service name no paired
-machine can resolve — which is why it is the daemon that answers.
+The address a host uses to reach the proxy comes from **configuration only**.
+The host's control-plane address is `hostControlPlaneUrl`: `FRONTEND_URL` for
+a paired host, and the in-network `http://server:<port>` for the built-in one.
+The proxy's address follows from it plus `PROVIDER_PROXY_PORT`. Nothing a
+daemon reports, and nothing a request's Host or `X-Forwarded-*` carries,
+enters either address.
 
 `hostProviderProxyBaseUrl` is the one place that resolves it: an explicit
 per-host override (`hosts.provider_proxy_base_url`, editable in the Command
-Center, for a reverse proxy in front of the API or a proxy published elsewhere)
-→ the derived address → the instance-wide `PROVIDER_PROXY_EXTERNAL_BASE_URL`.
+Center, for a reverse proxy in front of the API or a proxy published elsewhere).
+After that, the two kinds of host differ:
+- **Built-in host:** always the in-network listener. An address published for
+  machines outside would take its lease token off the internal network.
+- **Paired host:** the instance-wide `PROVIDER_PROXY_EXTERNAL_BASE_URL`, then
+  an address derived from `FRONTEND_URL` plus `PROVIDER_PROXY_PORT`.
+  Derivation happens only when `FRONTEND_URL` is `http:` and the port is
+  fixed, because the listener is plaintext. Configuration outranks
+  derivation, since the derived address is inferred.
 `GET /api/v1/hosts` returns the resolved answer as
 `provider_proxy_effective_url` so the UI shows what a dispatched run will
 actually get rather than deriving a second, possibly different one. With
@@ -453,6 +460,29 @@ rules applies, and they are deliberately different:
   the owner's *subscription*, linked into its profile, and a runtime that
   prefers an ambient `ANTHROPIC_API_KEY` bills an API account instead — B67's
   own second named failure.
+
+The daemon's own short-lived **helper** spawns take the same rule through one
+builder, `helperProcessEnv(ambient, adapterType, { keepStateRoots? })`: the
+machine's environment minus that runtime's vendor credentials. These are the
+version probe, the installer, the `login --help` capability check, the Codex
+usage probe and the ambient `session/list`. Each of them used to spread
+`process.env` whole or delete two named keys beside it — a denylist of length
+two, so a new vendor key was picked up by every one of them. `keepStateRoots`
+is the one deliberate exception: a helper that reads the machine's *own*
+history must be pointed at where that history is, and `CLAUDE_CONFIG_DIR` /
+`CODEX_HOME` / `OPENCODE_CONFIG` / `GEMINI_CONFIG_DIR` share a prefix with the
+credentials, so clearing by prefix sent `session/list` to the default location
+and reported the machine as having no history at all. Those four are named
+rather than prefix-matched, because that is exactly the distinction.
+
+The daemon's credential-carrying HTTP calls use `redirect: "error"`: the
+control-plane calls in `api.ts`, which carry this host's long-lived bearer
+token, and the Claude usage probe in `usageProbe.ts`, which carries the
+*owner's OAuth access token* — a different credential, and the reason that one
+matters as much. A followed redirect would hand either to whatever host the
+response named, and these endpoints have no legitimate redirect. The adapter
+download is the deliberate exception: it follows redirects, because a release
+asset always 302s, and re-applies the https requirement to where it landed.
 
 The state root is therefore **not** `HOME` for an unbound run. Each runtime
 names its own, and each is the variable that runtime's binding already uses:
@@ -790,8 +820,9 @@ the installed Agent's normal command and runs it to completion before the
 capability is probed again. The daemon advertises ACP Terminal Auth only when
 the host can actually provide the required PTY. Terminal commands use a PTY
 from `script(1)` (no native addon to build on the host; Windows unsupported for now), with `HOME`
-set to that copy's home and any ambient `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`
-removed. Output comes back as
+set to that copy's home and the same per-runtime vendor credential filter a
+Run uses (`clearVendorCredentialEnv`), so leftover `ANTHROPIC_*` / `CLAUDE_*`
+/ `CODEX_*` keys cannot divert the login onto an API account. Output comes back as
 `login_output` frames (`{ type: "output" }` on the stream, rendered as-is by
 the browser's terminal emulator, escape codes included; http(s) URLs in it
 are clickable through the web-links addon); typed text goes
@@ -1005,7 +1036,7 @@ path the server never had rather than an unexpanded `$RAINVER_SKILL_PATH`.
 No hand-written mapping is left anywhere on this wire: the Runner that held the
 last one is deleted, and every host speaks this contract.
 
-`hello` (authenticates the bearer token, marks `online`, records
+`hello` (the upgrade already authenticated the host bearer; hello records
 capabilities, applies the daemon's complete workspace Location reports, and
 answers `hello_ack { host_id, runtime_probes }`)
 and `heartbeat` (refreshes `last_heartbeat_at`, reported capabilities, and
@@ -1023,12 +1054,13 @@ to the server service, so a daemon registered against the browser's dev origin
 The production nginx image (`apps/web/nginx.conf`) exposes exactly
 `/internal/hosts/ws` the same way and nothing else under `/internal/` — the
 other routes there are service-to-service and stay behind the internal token,
-unreachable from the public entrypoint. `server/test/frontendProxy.test.ts`
-pins both halves.
+unreachable from the public entrypoint. The upgrade itself requires
+`Authorization: Bearer` (a pairing code is not a bearer); hello still has to
+run before other frames. `server/test/frontendProxy.test.ts` pins both halves.
 The Command Center's `HostsPanel` refreshes only its own host list every three
 seconds while mounted; it does not reload the page or trigger unrelated module
-queries. This is a component-scoped read refresh, not the planned general
-browser real-time event layer.
+queries. This is a component-scoped read refresh, not a general browser
+real-time event layer (none exists).
 
 Job dispatch/execution frames (`RemoteHostExecutionAdapter` in
 `server/src/modules/runs/remoteHostCliAdapter.ts`): `launch` (server → daemon,
@@ -1240,12 +1272,19 @@ Run later can name the exact text it saw. The token is not a provider
 credential and selects no model backend, so ADR 0008 and B67 — both about
 upstream credentials — are untouched by it.
 
-`RAINVER_API_URL` is the address *this host* reaches the control plane at,
-derived from `hosts.daemon_server_url` (its origin and path, so a control
-plane behind a path prefix is not truncated). The server cannot guess it: its
-own hostname is a Compose service name no paired machine resolves. A host that
-reported none is offered no surface at all rather than one pointing somewhere
-unreachable.
+`RAINVER_API_URL` is the address *this host* reaches the control plane at:
+`hostControlPlaneUrl`, which is `FRONTEND_URL` for a paired host (origin and
+path, so a control plane behind a path prefix is not truncated) and the
+in-network address for the built-in host. It is configuration: neither the
+daemon's report nor the request that carried it can move where a Run's bearer
+token is sent. `hosts.daemon_server_url` is no longer read or written; the
+column drop waits in the deferred register. Production nginx forwards `/api/`
+and `/internal/hosts/ws` and nothing else, which is why the tool surface a
+paired host's children call lives at `/api/v1/runs/:runId/tools…`: it is gated
+by the Run's own bearer token, not by the instance token `/internal` carries,
+and a Run reaches the instance through `FRONTEND_URL` like any other client.
+The dev Vite proxy forwards that one WebSocket path rather than all of
+`/internal`, so dev exposes exactly what production does.
 
 A remote Run is also the only path where `artifact.submit` is granted. The
 daemon uploads whatever the Run left in `$RAINVER_OUTPUT_DIR`, and
@@ -1287,12 +1326,13 @@ continuity; **no sandbox-level escalation**, because the daemon builds the
 namespace from the dispatch's `isolation` policy; and **no Run Exchange**,
 because that is a directory pair the server stages and reads back. A Run that
 executes in-process keeps all four, since nothing else can supply them.
-`hostKind` is left meaning only *which machine*, which is still what decides
-whether a server-brokered credential is in play: the `runtime.use_credential`
-gate for a Run's **ModelProvider** is keyed on it, so the built-in host's Runs
-keep it. The second `runtime.use_credential` check, the one for a `cli_profile`
-credential, is gone with the server-host CLI branch that raised it — a daemon
-Run spends the copy's own login, which no server-side profile grants.
+`hostKind` is left meaning only *which machine*. It decides where a Run's
+**ModelProvider** spend is checked, not whether: the Run executor checks a
+server-host Run's recorded provider before it starts, and a daemon Run on
+either kind of host is checked when its proxy lease is minted — no lease exists
+without a decided spend. The `cli_profile` credential check is gone with the
+server-host CLI branch that raised it — a daemon Run spends the copy's own
+login, which no server-side profile grants.
 
 `resolveExecutionPort` returns a `HostDaemonExecutionAdapter` for a CLI Run on
 either kind of host, and for a CLI Run with nothing bound only when its runtime
@@ -1469,38 +1509,50 @@ and no network at all. A trusted host ignores the field entirely: it is its
 owner's machine, its Runs use the machine's own network, and it runs no proxy.
 
 `RAINVER_STRICT_SANDBOX=1` is exported into every strict namespace, marking it
-for anything that needs to know it is inside one. Relaxing the vendor CLI's own
-sandbox is the intent — one boundary, and it should be ours — but **it is not
-implemented**: nothing reads that variable, and the runtime-specific half (the
-per-adapter setting) has never been written. This is the one acceptance blocker
-carried out of the unified-host work; see `.agent/tasks/deferred-register.md`.
+for anything that needs to know it is inside one. Codex does not read it; the
+daemon consumes the same fact (`trust === "strict"`) by writing
+`sandbox_mode = "workspace-write"` into that copy's `config.toml` before spawn
+(`packages/host-daemon/src/codexStrictSandbox.ts`). That is the switch measured
+on 2026-09-08 to stop Codex's default read-only sandbox stacking on this
+namespace. Claude Code has no vendor sandbox to relax.
 
-What that actually costs was measured on 2026-09-08, inside this container,
-with a real `codex` 0.147.0 binary under the argv `buildStrictNamespaceCommand`
-produces — because the symptom previously written here was assumed rather than
-observed, and was wrong:
+It sets the **top-level** key and only that one. TOML scopes a key to the table
+above it, so rewriting `sandbox_mode` wherever it appeared changed the first one
+found — in a config with named profiles, `[profiles.x]`'s — which left the
+top-level default untouched (the Run still could not write) and silently altered
+a profile the owner configured for something else.
 
-- The vendor sandbox does **not** fail to start. User namespaces nest (the
-  kernel allows 32 levels; this container reports `max_user_namespaces` in the
-  six figures) and `codex sandbox` exits 0 inside the strict namespace.
-- It stacks its own policy. Its default is `read-only`, so the Run's working
-  directory and HOME — which this namespace binds read-write — answer
-  "Read-only file system" through it. A Run therefore *runs* and silently
-  cannot write, which is harder to diagnose than a refusal: nothing in its
-  output names the second sandbox.
-- The switch works and was verified in the same place:
-  `sandbox_mode = "workspace-write"` (or `"danger-full-access"`) in the copy's
-  `config.toml` restores writes. That file is already a channel the daemon
-  materializes for a bound Run (`binding.files`).
-- Claude Code 2.1.263 has no vendor sandbox to relax at all and launches here
-  unchanged, so this is a Codex-shaped problem, not a general one.
-
-Still unverified: we spawn our own pinned `codex-acp`, not the vendor CLI, so
-whether that adapter applies or forwards the setting needs the package
-installed on a host.
+Finding where the top-level table ends took three conjuncts, each added after
+the previous one proved insufficient. A table header is a bracketed name
+**alone on its line** — a bare leading `[` also matched a multi-line array's
+continuation (`notify = [` … `  ["a"],`), which stopped the scan early and
+produced two top-level `sandbox_mode` keys, a duplicate-key error that stops
+Codex from starting. It must be at **bracket depth zero** — a final array
+element carries no trailing comma, so `  ["a"]` reads exactly like a header.
+And the depth is counted over the line with **strings and comments removed** —
+one unbalanced `[` inside either pinned the depth above zero for the rest of
+the file, so no header was ever found and the scan fell back to rewriting the
+first named profile's key, which is the original bug reinstated by its own fix.
+The scan for an *existing* key carries the same string-awareness: without it a
+`sandbox_mode` line inside a multi-line string was rewritten instead of the
+real one, which leaves Codex starting cleanly and the Run silently unable to
+write — a failure with no error anywhere.
 
 - `rainver-host register --server <url> --code <pairing-code>` — exchanges
-  the pairing code for a bearer token.
+  the pairing code for a bearer token. `--server` must be `https://` or
+  loopback `http://` (plain HTTP to a LAN or public address is refused).
+  Loopback means the two named forms or a loopback *address*:
+  `startsWith("127.")` was also true of `127.evil.com`, a hostname somebody
+  else controls and can point anywhere. The same rule is re-applied by
+  `loadConfig` on every read, because the config file is an ordinary file on
+  the owner's machine and one edited afterwards would otherwise send this
+  host's bearer token to a plain-HTTP address off-box. The built-in host is
+  exempt — it adopts a credential the instance published to it over the Compose
+  network, where the control plane is `http://server:8010` and there is no
+  pairing — and that exemption is decided by `builtinCredentialPath()`, an
+  environment variable set only inside the `sandbox-runner` container, **not**
+  by the config's own `trust` field, which lives in the file the check
+  distrusts.
 - `rainver-host unregister` — revokes this Host on the control plane, stops
   its systemd service, and removes the local bearer credential and workspace
   path map. `--local-only` skips remote revocation with an explicit warning.
@@ -1605,29 +1657,27 @@ found on PATH is the machine's own copy and is never installed or upgraded by
 the daemon; installing and version-managing is only ever done to a *managed*
 copy, on either host kind, through `install_tool` (above).
 
-## Known P1 gaps (not defects — explicitly deferred)
+## Known current gaps
 
-- No scored multi-location routing or lease/scheduler: Conversation dispatch
-  uses its pinned active Location, while any remaining Task selection is an
-  explicit control-center choice; richer routing remains P2.
-- No automated daemon-process-to-live-server integration test — the wire
-  contract is verified from the server side (`server/test/hostsRoutes.test.ts`
-  drives the real REST + WebSocket surface with the exact frame shapes the
-  daemon sends); the daemon's own `fetch`/`WebSocket` client code is
-  exercised only by unit tests plus the plan's manual exit demo.
-- `workspace list`'s "local_path" merge trusts this machine's own config file
-  against the server's registered set; the two can diverge if a workspace is
-  removed server-side directly — shown, not reconciled.
-- **Host name squatting**: `uq_hosts_owner_name` has no status filter, so an
-  abandoned `pending_pairing` row (expired, never exchanged) or a `revoked`
-  host permanently occupies its name — there is no automatic cleanup, and a
-  later pairing currently needs a different display name. A cleanup policy
-  for expired pending rows and retained revoked audit rows is a reasonable
-  P2+ addition, not required for P1.
-- Remote proposal/apply governance, content synchronization, divergence
-  detection, quota probing, and real Windows-native/WSL hardware verification
-  remain deferred. Location `execution_ready` is persisted and heartbeat-
-  driven now; it is deliberately not inferred from Host liveness.
+- Conversation dispatch uses its pinned active Location. Remaining Task
+  host selection is an explicit control-center choice. There is no scored
+  multi-location router or lease scheduler.
+- There is no automated daemon-process-to-live-server integration test.
+  The wire contract is verified from the server side
+  (`server/test/hostsRoutes.test.ts`); the daemon's `fetch`/`WebSocket`
+  client is covered by unit tests.
+- `workspace list`'s `local_path` merge trusts this machine's config
+  against the server's registered set; the two can diverge if a workspace
+  is removed server-side — shown, not reconciled.
+- **Host name occupancy:** `uq_hosts_owner_name` has no status filter, so
+  an expired `pending_pairing` or `revoked` host keeps its name. A later
+  pairing needs a different display name. There is no automatic cleanup.
+- Remote propose→apply, content sync, divergence detection, quota
+  probing, and Windows-native/WSL hardware verification are not
+  implemented (ADR 0016). Location `execution_ready` is persisted and
+  heartbeat-driven; it is not inferred from Host liveness.
+
+Unimplemented host ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §25.
 
 ### Conformance probes: retired
 

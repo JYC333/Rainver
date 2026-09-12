@@ -1,4 +1,5 @@
 import { contentReadSql } from "../access/contentAccessSql.js";
+import { threadReadableSql } from "../inquiry/threadAccess.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -86,7 +87,7 @@ export class ExperimentDefinitionService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
-      if (threadId) await this.assertThreadInProject(db, identity.spaceId, projectId, threadId);
+      if (threadId) await this.assertThreadInProject(db, identity, projectId, threadId);
       const id = randomUUID();
       const object = buildSpaceObjectInsert({
         id,
@@ -125,7 +126,7 @@ export class ExperimentDefinitionService {
       const status = body.status === undefined ? current.status : (enumValue(body.status, DEFINITION_STATUSES) ?? current.status);
       const threadId = body.primary_hypothesis_thread_id === undefined ? current.primary_hypothesis_thread_id : optionalString(body.primary_hypothesis_thread_id);
       if (threadId && threadId !== current.primary_hypothesis_thread_id) {
-        await this.assertThreadInProject(db, identity.spaceId, projectId, threadId);
+        await this.assertThreadInProject(db, identity, projectId, threadId);
       }
       if (threadId !== current.primary_hypothesis_thread_id) {
         const run = await db.query<{ id: string }>(
@@ -298,11 +299,17 @@ export class ExperimentDefinitionService {
     return row;
   }
 
-  private async assertThreadInProject(db: Queryable, spaceId: string, projectId: string, threadId: string): Promise<void> {
+  /**
+   * The Hypothesis an Experiment tests must be one this person reaches on
+   * their own: the Definition exposes and runs against it.
+   */
+  private async assertThreadInProject(db: Queryable, identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<void> {
     const thread = await db.query(
-      `SELECT 1 FROM inquiry_threads
-        WHERE object_id=$1 AND space_id=$2 AND project_id=$3 AND kind='hypothesis'`,
-      [threadId, spaceId, projectId],
+      `SELECT 1 FROM inquiry_threads t
+         JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
+        WHERE t.object_id=$1 AND t.space_id=$2 AND t.project_id=$3 AND t.kind='hypothesis'
+          AND ${threadReadableSql("so", "$4", "change")}`,
+      [threadId, identity.spaceId, projectId, identity.userId],
     );
     if (!thread.rows[0]) {
       throw new HttpError(422, "primary_hypothesis_thread_id must reference a Hypothesis Thread in this Project");

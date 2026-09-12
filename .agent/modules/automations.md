@@ -50,8 +50,7 @@ Automation, and it cannot reach another member's tick.
 
 Automations are the user-facing objects that fire runs on demand (manual) or on
 a cron schedule. Every automation-origin run goes through the same
-enforce/preflight/policy path as a manual run — this is the roadmap red line for
-Capability 6.
+enforce/preflight/policy path as a manual run.
 
 Scheduled fire failures emit a deduplicated, owner-private `operational_alert` Activity
 record so unattended failures appear in Activity Inbox. Alert persistence is best-effort
@@ -71,7 +70,9 @@ continue to require their own explicit pre-authorization.
 - `automation_runs` fire audit rows (`trigger_type`, preflight snapshot,
   `trigger_context_json` when a target needs structured audit context).
 - `automation_credential_grants` pre-authorization for unattended schedule
-  fires; archiving revokes.
+  fires; archiving revokes. Credential spend reads the grant live, through the
+  `automation_runs` row that links the fire to its Run, every time a key is
+  spent — so revoking a grant stops a Run queued before the revocation.
 - Cron due state in `scheduler_tasks` for `task_type='automation'`.
 
 ## Trigger model
@@ -83,7 +84,30 @@ continue to require their own explicit pre-authorization.
   (`task_type='automation'`, `next_run_at`/`last_run_at`); the
   `automation_scheduler` heartbeat sweeps `listDue` and fires. There is no
   per-automation registration into the scheduler — it is a poll/sweep model.
-External/webhook triggers remain deferred (roadmap Capability 6).
+There is no external or webhook trigger kind.
+
+`trigger_type` is not the Run's `trigger_origin`. `fireResponsibility`
+(`targetSupport.ts`) decides the origin and the instructing person from what
+the fire carried, because ADR 0003 §5 reads both off the Run:
+
+- a **manual** fire carrying a `prompt` or `instruction` is that person asking,
+  so the Run is `manual`, instructed by them — the same Run they could have
+  started against the Agent directly;
+- a **manual** fire with nothing supplied runs the automation's configured
+  prompt, which is the owner's work whoever pressed the button (an admin or a
+  Project writer may fire another member's automation), so the Run is
+  `automation`, instructed by `automations.owner_user_id`, exactly as the
+  schedule stamps it. Who pressed it is the audit fact, kept in
+  `automation_runs.triggered_by_user_id`;
+- a **schedule** fire is always `automation`, instructed by the owner.
+
+The `agent_run` and `workflow` targets stamp their Runs from that decision.
+The retrieval-maintenance, context-ops and information-digest targets do not:
+they stamp the firing person and a literal `automation`. Those Runs complete in
+process, queue no agent turn and write no memory, and the person they name owns
+the owner-private output — an attribution leftover, not a gate.
+
+Unimplemented trigger kinds: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §16.
 
 ## Native target authority
 

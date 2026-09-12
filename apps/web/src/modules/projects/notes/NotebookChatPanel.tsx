@@ -7,6 +7,8 @@ import { Button } from '../../../components/ui/button'
 import { Select } from '../../../components/ui/select'
 import { errMsg } from '../../../lib/utils'
 import { defaultModelProvider } from '../../providers/defaultProvider'
+import { useAuth } from '../../../contexts/AuthContext'
+import { dropStorageKey, scopedUserStorageKey } from '../../../lib/sessionResidue'
 
 interface NotebookEdit { note_id: string; version: number; conflict: boolean }
 interface ChatMessage {
@@ -17,7 +19,21 @@ interface ChatMessage {
   notebookEdit?: NotebookEdit | null
 }
 
-const sessionStorageKey = (projectId: string) => `project-notebook-chat-session:${projectId}`
+function notebookSessionKey(userId: string, projectId: string) {
+  return scopedUserStorageKey('notebook-chat-session', userId, projectId)
+}
+
+function readNotebookSessionId(userId: string | undefined, projectId: string): string | undefined {
+  dropStorageKey(window.localStorage, `project-notebook-chat-session:${projectId}`)
+  if (!userId) return undefined
+  try { return window.localStorage.getItem(notebookSessionKey(userId, projectId)) ?? undefined } catch { return undefined }
+}
+
+function writeNotebookSessionId(userId: string | undefined, projectId: string, sessionId: string): void {
+  dropStorageKey(window.localStorage, `project-notebook-chat-session:${projectId}`)
+  if (!userId) return
+  try { window.localStorage.setItem(notebookSessionKey(userId, projectId), sessionId) } catch { /* ignore */ }
+}
 
 /**
  * Multi-turn conversation grounded in the Project's notes and selected evidence,
@@ -40,9 +56,9 @@ export function NotebookChatPanel({
   onNotebookChanged: () => void
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [sessionId, setSessionId] = useState<string | undefined>(() => {
-    try { return window.localStorage.getItem(sessionStorageKey(projectId)) ?? undefined } catch { return undefined }
-  })
+  const { currentUser } = useAuth()
+  const userId = currentUser?.id
+  const [sessionId, setSessionId] = useState<string | undefined>(() => readNotebookSessionId(userId, projectId))
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(Boolean(sessionId))
@@ -88,7 +104,7 @@ export function NotebookChatPanel({
         message, session_id: sessionId, execution: { model_provider_id: provider },
       })
       setSessionId(result.session_id)
-      try { window.localStorage.setItem(sessionStorageKey(projectId), result.session_id) } catch { /* ignore */ }
+      writeNotebookSessionId(userId, projectId, result.session_id)
       if (result.ok) {
         setMessages(m => [...m, { role: 'assistant', content: result.reply ?? '', notebookEdit: result.notebook_edit ?? null }])
         if (result.notebook_edit) onNotebookChanged()

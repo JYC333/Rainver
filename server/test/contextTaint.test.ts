@@ -4,6 +4,7 @@ import {
   outputVisibilityForTaint,
   parseRunContextTaint,
 } from "../src/modules/runs/contextTaint.js";
+import { retrievalContextSourceAttribution } from "../src/modules/runtimeContext/productionAcquisition.js";
 
 describe("run context taint", () => {
   it("records the narrowest visibility and distinct non-instructing owners", () => {
@@ -41,5 +42,16 @@ describe("run context taint", () => {
 
   it("rejects malformed persisted summaries", () => {
     expect(parseRunContextTaint({ schema_version: 2, narrowest_visibility: "private" })).toBeNull();
+  });
+
+  it("attributes retrieval taint from the canonical source, not the instructing user", () => {
+    expect(retrievalContextSourceAttribution({
+      ownerUserId: "user-b",
+      visibility: "private",
+    })).toEqual({ ownerUserId: "user-b", visibility: "private" });
+    expect(retrievalContextSourceAttribution({
+      ownerUserId: "user-b",
+      visibility: "not-a-visibility",
+    })).toEqual({ ownerUserId: "user-b", visibility: "private" });
   });
 });

@@ -377,16 +377,11 @@ describe("Runtime Context invocation entrypoint inventory", () => {
         classification: "bounded_provider_task",
         targetBoundary: "provider_task",
       }),
-      expect.objectContaining({
-        entrypoint: "providers/commands/routes.ts#completeProviderText:1",
-        classification: "provider_facade",
-        targetBoundary: "provider_task",
-      }),
     ]));
     const source = readFileSync(join(modulesRoot, "providers", "commands", "routes.ts"), "utf8");
     expect(source).toContain('app.post("/api/v1/providers/:configId/test"');
     expect(source).not.toContain('app.post("/api/v1/providers/chat"');
-    expect(source).toContain('app.post("/internal/providers-credentials/providers/complete-text"');
+    expect(source).not.toContain("/internal/providers-credentials/providers/complete-text");
   });
 
   it("registers every concrete Provider transport", () => {
@@ -428,7 +423,6 @@ describe("Runtime Context invocation entrypoint inventory", () => {
       "runs/managedApiAdapter.ts#executeRuntimeHost:1",
       "runs/orchestrationService.ts#executeManagedApiNoToolAdapter:1",
       "runs/orchestrationService.ts#executeRemoteHostCliAdapter:1",
-      "runtimeHost/routes.ts#executeRuntimeHost:1",
     ]);
   });
 

@@ -40,10 +40,14 @@ Proposals are the product review and application boundary for durable mutations.
   require fresh explicit review.
 - `POST /api/v1/proposals/:proposalId/rollback` restores Project Folder files to their
   pre-apply state from a `code_patch_snapshots` record captured at accept time.
-  Rollback is only available while the snapshot is within its retention window and
-  has not already been used. The rollback route is space-scoped (requires the same
-  `spaceId` as the proposal) and writes a `proposal.code_patch.rolled_back`
-  activity record.
+  Rollback is only available while the snapshot is within its retention window,
+  has not already been used, and every applied file still holds what the patch
+  wrote (409 otherwise). It sets the proposal's status to `rolled_back` and writes a
+  `proposal.code_patch.rolled_back` activity at the proposal's own visibility.
+- Accept, reject, rollback and egress approval share one reach rule,
+  `authorizeProposalDecision`: same Space, the state the decision acts on,
+  content-readable, and — for a Run's proposal — inside a Room the caller can
+  read. Each decision then adds its own authority.
 
 ## Application Rules
 
@@ -157,8 +161,9 @@ Proposals are the product review and application boundary for durable mutations.
   not auto-enter Memory or an accepted Runtime Context Delivery.
 - Knowledge proposal apply is implemented through the server
   `ProposalApplierRegistry`. Source monitoring has an explicit code boundary
-  for Knowledge, but the full evaluator for external or untrusted
-  Activity/Artifact-derived Knowledge remains future work.
+  for Knowledge. A full evaluator for external or untrusted
+  Activity/Artifact-derived Knowledge is not implemented
+  ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9).
 - Accepted proposals keep enough result detail for callers to identify the applied product effect.
 - Automatic grant acceptance records `approval_source=action_grant:<id>` and
   increments the bounded grant use count in the same transaction as apply.

@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 import { closeDbPool } from "../../src/db/pool.js";
-import { afterAll, beforeAll } from "vitest";
+import { afterAll, beforeAll, beforeEach } from "vitest";
 import {
   getTestPostgres,
   isTestPostgresUnavailableError,
@@ -8,7 +8,11 @@ import {
 } from "./sharedPostgres.js";
 
 export interface TestDatabase {
-  /** False when the shared container could not be reached; tests then return early. */
+  /**
+   * False when the shared container could not be reached. Every test in the
+   * file is then reported skipped; a hook that touches the pool still guards
+   * on this, because a hook cannot be skipped.
+   */
   readonly available: boolean;
   /** The file's pool. Throws if the database is unavailable — check `available` first. */
   readonly pool: Pool;
@@ -49,6 +53,13 @@ export function useTestDatabase(
       console.warn(`[${name}] skipped — Docker/Postgres unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, 180_000);
+
+  // An unreachable container reports each test as skipped, rather than
+  // letting a body that returns early report a pass. CI sets
+  // REQUIRE_TEST_POSTGRES, which fails the run in global setup instead.
+  beforeEach((context) => {
+    if (!available) context.skip();
+  });
 
   afterAll(async () => {
     await pool?.end();

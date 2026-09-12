@@ -211,16 +211,16 @@
       }
     },
     "decision": {
-      "decision": "require_approval",
+      "decision": "deny",
       "risk_level": "high",
-      "reason_code": "credential_automation_origin",
-      "required_approver_role": "owner",
-      "policy_rule_id": "credential_automation_require_approval",
+      "reason_code": "credential_automation_grant_missing",
+      "required_approver_role": null,
+      "policy_rule_id": "credential_automation_grant_missing_deny",
       "policy_source": "builtin",
       "approval_capability": null,
-      "audit_code": "credential_automation_origin",
+      "audit_code": "credential_automation_grant_missing",
       "resource_type": "credential",
-      "message": "Automation-authorized credential use requires explicit approval.",
+      "message": "This Automation has no standing credential grant, and nobody is present to approve the spend.",
       "action": null
     }
   },

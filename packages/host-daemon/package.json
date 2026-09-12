@@ -25,6 +25,7 @@
   "dependencies": {
     "@rainver/agent-cli": "workspace:*",
     "@rainver/folder-read": "workspace:*",
+    "@rainver/outbound-guard": "workspace:*",
     "@rainver/protocol": "workspace:*"
   },
   "devDependencies": {

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { safeHttpUrl } from '../lib/safeHttpUrl'
 import { cn } from '../lib/utils'
 
 function initialsFrom(name: string | null | undefined, email: string | null | undefined) {
@@ -32,11 +33,7 @@ export function UserAvatar({
   imgClassName,
 }: UserAvatarProps) {
   const [failed, setFailed] = useState(false)
-  const raw = typeof avatarUrl === 'string' ? avatarUrl.trim() : ''
-  const url =
-    raw.length > 0 && (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('data:'))
-      ? raw
-      : null
+  const url = safeHttpUrl(avatarUrl)
 
   useEffect(() => {
     setFailed(false)

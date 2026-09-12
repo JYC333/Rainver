@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import websocketPlugin from "@fastify/websocket";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
@@ -11,6 +12,7 @@ import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { HttpError, dbPool } from "../routeUtils/common.js";
 import { requireInstanceAdmin } from "../routeUtils/access.js";
+import { hostRegisterRateLimited } from "./pairingRateLimit.js";
 import type { Pool } from "../../db/pool.js";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry.js";
 import { parseFolderReadResultFrame } from "./folderReadFrames.js";
@@ -29,6 +31,7 @@ import { hasSubscriptionQuota, listHostRuntimeChanges, readHostUsage, recordHost
 import { getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 import { acpRuntimeProbe, acpRuntimeProbes } from "./runtimeProbes.js";
 import { hostInstallationAuthMethods, hostInstallationCliLoginAvailable, hostInstallationIds, normalizeHostCapabilities } from "./capabilities.js";
+import { sseResponseHeaders } from "../../gateway/sse.js";
 
 function isFailure(value: unknown): value is AuthFailure | HostFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);
@@ -178,6 +181,8 @@ function cutOffRevokedHost(hostId: string): void {
   providerProxyLeases.revokeHost(hostId);
 }
 
+const wsUpgradeHosts = new WeakMap<FastifyRequest, string>();
+
 /**
  * What a daemon's hello/heartbeat frame contributes to its host row.
  *
@@ -240,6 +245,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.post("/api/v1/hosts/register", async (request, reply) => {
     const requestId = resolveRequestId(request);
     reply.header(REQUEST_ID_HEADER, requestId);
+    if (hostRegisterRateLimited(request.ip, Date.now(), context.config.rainverHome)) {
+      return sendErrorEnvelope(
+        reply,
+        429,
+        errorEnvelope("host_register_rate_limited", "Too many host registration attempts", requestId),
+      );
+    }
     const hosts = hostRepositoryFromConfig(context.config);
     if (!hosts) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
@@ -273,7 +285,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       items: items.map((host) => ({
         ...host,
         provider_proxy_effective_url: host.kind === "remote"
-          ? hostProviderProxyBaseUrl(host, context.config.providerProxyPort)
+          ? hostProviderProxyBaseUrl(host, context.config)
           : null,
         // How many Runs the built-in host executes at once. bubblewrap has no
         // cgroups, so this and the container's own `cpus`/`mem_limit` are the
@@ -571,6 +583,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   // the person reads it here and types through the input route. Host owner
   // only — it is their machine and their account.
   app.get("/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream", async (request, reply) => {
+    // A GET, because it is a long-lived stream the client reads through a
+    // `ReadableStream`; a state change, because `login_action` starts a login
+    // or a logout on the machine. `SameSite=Lax` sends the cookie on a
+    // top-level cross-site GET, so this needs the check a POST gets. The web
+    // client's own `fetch` also sets `X-Rainver-Space-Id`, which a cross-site
+    // page cannot add without a preflight this server does not answer.
+    if (!stateChangingReadAllowed(request, context.config.frontendUrl)) {
+      return reply.code(403).send({ detail: "Cross-site request refused" });
+    }
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
     const { adapterType, installation } = params(request);
@@ -616,11 +637,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         detail: selectionDetail,
       });
     }
-    reply.raw.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      "x-accel-buffering": "no",
-    });
+    reply.raw.writeHead(200, sseResponseHeaders());
     const emit = (event: unknown) => {
       if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
     };
@@ -740,10 +757,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.code(204).send();
   });
 
-  // The address this host should use to reach the provider proxy. Normally
-  // derived from what the daemon reports, so this is only for a deployment the
-  // derivation cannot see: a reverse proxy in front of the API, or the proxy
-  // published somewhere other than the API's host.
+  // The address this paired host should use to reach the provider proxy.
+  // Normally the instance-wide setting or an address derived from
+  // FRONTEND_URL, so this is only for a deployment neither covers: a reverse
+  // proxy in front of the API, or the proxy published somewhere else.
   app.put("/api/v1/hosts/:hostId/provider-proxy-url", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply);
     if (!resolved) return reply;
@@ -938,14 +955,31 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   // `sharedHostConnectionRegistry` — vendor stdout parsing, argv rendering,
   // and diff/artifact handling all live outside this file.
   app.register(async (scoped) => {
-    scoped.get("/internal/hosts/ws", { websocket: true }, (socket, request) => {
-      let authenticatedHostId: string | null = null;
+    scoped.get("/internal/hosts/ws", {
+      websocket: true,
+      preValidation: async (request, reply) => {
+        const token = bearerToken(request);
+        if (!token) return reply.code(401).send({ detail: "Unauthorized" });
+        const hosts = hostRepositoryFromConfig(context.config);
+        if (!hosts) return reply.code(503).send({ detail: "database_unavailable" });
+        const host = await hosts.authenticate(token);
+        if (!host) return reply.code(401).send({ detail: "Unauthorized" });
+        wsUpgradeHosts.set(request, host.id);
+      },
+    }, (socket, request) => {
+      const upgradeHostId = wsUpgradeHosts.get(request) ?? null;
+      let helloCompleted = false;
       let helloInProgress = false;
       const hosts = hostRepositoryFromConfig(context.config);
       const frameSink: HostFrameSink = {
         send: (frame) => socket.send(JSON.stringify(frame)),
         close: (code, reason) => socket.close(code, reason),
       };
+      if (!upgradeHostId) {
+        socket.close(1008, "unauthorized");
+        return;
+      }
+      const hostId = upgradeHostId;
 
       socket.on("message", (raw: Buffer) => {
         // Every frame from every paired host lands here, and each one awaits
@@ -981,7 +1015,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           }
           const frame = parsed.data;
           if (frame.type === "hello") {
-            if (authenticatedHostId || helloInProgress) {
+            if (helloCompleted || helloInProgress) {
               frameSink.send({ type: "error", detail: "hello_already_processed" });
               socket.close(1008, "hello_already_processed");
               return;
@@ -990,12 +1024,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             const token = frame.token || (bearerToken(request) ?? "");
             try {
               const host = await hosts.authenticate(token);
-              if (!host) {
+              if (!host || host.id !== upgradeHostId) {
                 frameSink.send({ type: "error", detail: "invalid_token" });
                 socket.close(1008, "invalid_token");
                 return;
               }
-              authenticatedHostId = host.id;
+              helloCompleted = true;
               await hosts.recordHeartbeat(host.id, daemonHelloInfo(frame));
               sharedHostConnectionRegistry.registerConnection(host.id, frameSink);
               frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes() });
@@ -1006,38 +1040,38 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             }
             return;
           }
-          if (!authenticatedHostId) {
+          if (!helloCompleted) {
             frameSink.send({ type: "error", detail: "not_authenticated" });
             socket.close(1008, "not_authenticated");
             return;
           }
           switch (frame.type) {
             case "heartbeat": {
-              await hosts.recordHeartbeat(authenticatedHostId, daemonHelloInfo(frame));
+              await hosts.recordHeartbeat(upgradeHostId, daemonHelloInfo(frame));
               frameSink.send({ type: "heartbeat_ack", runtime_probes: acpRuntimeProbes() });
-              void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), authenticatedHostId)
+              void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), hostId)
                 .catch(() => undefined);
               // Standing consent on a Location is what makes a new terminal
               // conversation arrive without anyone pressing a button, and a
               // heartbeat is when this host is known reachable. Deliberately not
               // awaited: an import replays sessions and takes minutes, while an
               // acknowledged heartbeat must not wait for anything.
-              scheduleAmbientSyncs(dbPool(context.config), context.config, authenticatedHostId);
+              scheduleAmbientSyncs(dbPool(context.config), context.config, hostId);
               return;
             }
             case "launched":
-              sharedHostConnectionRegistry.receiveLaunched(authenticatedHostId, frame.run_id, frame.launch_id);
+              sharedHostConnectionRegistry.receiveLaunched(hostId, frame.run_id, frame.launch_id);
               return;
             case "output":
-              sharedHostConnectionRegistry.receiveOutput(authenticatedHostId, frame.run_id, frame.chunk, frame.launch_id);
+              sharedHostConnectionRegistry.receiveOutput(hostId, frame.run_id, frame.chunk, frame.launch_id);
               return;
             // C5: the full stderr stream, not just the failure-tail the
             // `complete` frame already carries — diagnostic events for the UI.
             case "stderr":
-              sharedHostConnectionRegistry.receiveStderr(authenticatedHostId, frame.run_id, frame.chunk, frame.launch_id);
+              sharedHostConnectionRegistry.receiveStderr(hostId, frame.run_id, frame.chunk, frame.launch_id);
               return;
             case "complete":
-              sharedHostConnectionRegistry.receiveComplete(authenticatedHostId, frame.run_id, {
+              sharedHostConnectionRegistry.receiveComplete(hostId, frame.run_id, {
                 exit_code: frame.exit_code,
                 timed_out: frame.timed_out,
                 error: frame.error,
@@ -1045,16 +1079,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               }, frame.launch_id);
               return;
             case "login_output":
-              sharedHostConnectionRegistry.receiveLoginEvent(authenticatedHostId, frame.session_id, { type: "output", data: frame.data });
+              sharedHostConnectionRegistry.receiveLoginEvent(hostId, frame.session_id, { type: "output", data: frame.data });
               return;
             case "login_exit":
-              sharedHostConnectionRegistry.receiveLoginEvent(authenticatedHostId, frame.session_id, { type: "exit", exit_code: frame.exit_code, logged_in: frame.logged_in });
+              sharedHostConnectionRegistry.receiveLoginEvent(hostId, frame.session_id, { type: "exit", exit_code: frame.exit_code, logged_in: frame.logged_in });
               return;
             case "ambient_import_session":
-              sharedHostConnectionRegistry.receiveAmbientImportSession(authenticatedHostId, frame.request_id, frame.session);
+              sharedHostConnectionRegistry.receiveAmbientImportSession(hostId, frame.request_id, frame.session);
               return;
             case "ambient_import_result":
-              sharedHostConnectionRegistry.receiveAmbientImportResult(authenticatedHostId, frame.request_id, {
+              sharedHostConnectionRegistry.receiveAmbientImportResult(hostId, frame.request_id, {
                 ok: frame.ok,
                 error: frame.error,
                 session_count: frame.session_count,
@@ -1069,14 +1103,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               // a timeout, hiding the real cause.
               const result = parseFolderReadResultFrame(frame)
                 ?? { ok: false as const, error: "read_failed" as const, message: "The host returned a malformed folder_read_result frame." };
-              sharedHostConnectionRegistry.receiveFolderReadResult(authenticatedHostId, frame.request_id, result);
+              sharedHostConnectionRegistry.receiveFolderReadResult(hostId, frame.request_id, result);
               return;
             }
             case "usage_probe_result":
-              sharedHostConnectionRegistry.receiveUsageProbeResult(authenticatedHostId, frame.request_id, frame.quota);
+              sharedHostConnectionRegistry.receiveUsageProbeResult(hostId, frame.request_id, frame.quota);
               return;
             case "command_result": {
-              sharedHostConnectionRegistry.receiveCommandResult(authenticatedHostId, frame.request_id, {
+              sharedHostConnectionRegistry.receiveCommandResult(hostId, frame.request_id, {
                 exit_code: frame.exit_code,
                 stdout: frame.stdout,
                 stderr: frame.stderr,
@@ -1094,18 +1128,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             case "workspace_register_result":
             case "workspace_forget_result": {
               const { type: _type, request_id, ...result } = frame;
-              sharedHostConnectionRegistry.receiveHostActionResult(authenticatedHostId, request_id, result);
+              sharedHostConnectionRegistry.receiveHostActionResult(hostId, request_id, result);
               return;
             }
             case "managed_workspace_result":
-              sharedHostConnectionRegistry.receiveManagedWorkspaceResult(authenticatedHostId, frame.request_id, {
+              sharedHostConnectionRegistry.receiveManagedWorkspaceResult(hostId, frame.request_id, {
                 ok: frame.ok,
                 changed: frame.changed,
                 error: frame.error,
               });
               return;
             case "tool_result":
-              sharedHostConnectionRegistry.receiveToolResult(authenticatedHostId, frame.request_id, {
+              sharedHostConnectionRegistry.receiveToolResult(hostId, frame.request_id, {
                 ok: frame.ok,
                 error: frame.error,
                 installation: frame.installation,
@@ -1118,15 +1152,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       });
 
       socket.on("close", () => {
-        if (!authenticatedHostId) return;
-        sharedHostConnectionRegistry.unregisterConnection(authenticatedHostId, frameSink);
+        if (!helloCompleted) return;
+        sharedHostConnectionRegistry.unregisterConnection(hostId, frameSink);
         const hostsOnClose = hostRepositoryFromConfig(context.config);
         // Caught, not just fired: this is the last write of a connection that
         // is already gone, and an unhandled rejection terminates the process
         // under Node's default. A database that cannot take the write leaves
         // the Host looking online until the next heartbeat sweep, which is
         // what that sweep is for.
-        void hostsOnClose?.markOffline(authenticatedHostId).catch(() => undefined);
+        void hostsOnClose?.markOffline(hostId).catch(() => undefined);
       });
     });
   });

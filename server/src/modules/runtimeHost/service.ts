@@ -6,6 +6,7 @@ import type {
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { resolveProviderCommandStore } from "../providers/commands/store.js";
+import { CredentialSpendDeniedError, type CredentialSpendBasis } from "../policy/credentialSpend.js";
 import {
   completeProviderMessages,
   ProviderInvocationError,
@@ -159,6 +160,8 @@ function failureResponse(
 export async function executeRuntimeHost(
   config: ServerConfig,
   input: RuntimeHostExecuteRequest,
+  /** The Run this turn spends for; decided before the provider key is resolved. */
+  spend: CredentialSpendBasis,
   logger?: RuntimeHostLogger,
   hooks: RuntimeHostExecutionHooks = {},
 ): Promise<RuntimeHostExecuteResponse> {
@@ -207,6 +210,7 @@ export async function executeRuntimeHost(
         on_text_delta: hooks.onTextDelta,
         abort_signal: hooks.signal,
         allow_provider_fallback: !input.invocation_audit_refs,
+        spend,
         task: "runtime_host",
         tools: toolMode === "authorized_bindings" ? tools : undefined,
         metering: {
@@ -321,6 +325,11 @@ export async function executeRuntimeHost(
         error.diagnostics,
         error.attempts ?? 1,
       );
+    }
+    // A grant revoked while the Run was underway is refused at the next turn's
+    // spend; report it with the policy's own code, as the lease path does.
+    if (error instanceof CredentialSpendDeniedError) {
+      return failureResponse(input, startedAt, error.code, error.message);
     }
     // Anything that reaches here is not a ProviderInvocationError, so none of
     // the branches above logged it — without this, the only trace of the

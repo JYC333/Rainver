@@ -17,6 +17,8 @@ import { __setProviderHttpClientForTests } from "../src/modules/providers/invoca
 import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import { resolveTestUsageAttribution } from "./support/usageAttribution.js";
 
+const TEST_SPEND = { kind: "person", user_id: "user-1" } as const;
+
 class FakeEmbeddingDb implements Queryable {
   readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];
 
@@ -74,7 +76,7 @@ describe("retrieval embedding backfill", () => {
       },
       {
         spaceId: "space-1",
-        userId: null,
+        userId: "user-1",
         trigger: "unit",
         proposalId: "proposal-1",
       },
@@ -85,7 +87,7 @@ describe("retrieval embedding backfill", () => {
       expect.objectContaining({
         job_type: RETRIEVAL_EMBEDDING_JOB,
         space_id: "space-1",
-        user_id: null,
+        user_id: "user-1",
         priority: -10,
         max_attempts: 3,
         payload: {
@@ -115,7 +117,7 @@ describe("retrieval embedding backfill", () => {
           return [{ id: "queued-job" }] as never;
         },
       },
-      { spaceId: "space-1" },
+      { spaceId: "space-1", userId: "user-1" },
     );
 
     expect(result).toEqual({ jobId: "queued-job", deduped: true });
@@ -224,6 +226,9 @@ describe("ProviderQueryEmbedder caching", () => {
       async getTaskChain() {
         return null;
       },
+      async authorizeCredentialSpend() {
+        return {} as never;
+      },
       async getInvocationTarget() {
         return {
           provider: {
@@ -251,12 +256,15 @@ describe("ProviderQueryEmbedder caching", () => {
       async getTaskChain() {
         throw new Error("provider must not be called on a cache hit");
       },
+      async authorizeCredentialSpend() {
+        return {} as never;
+      },
       async getInvocationTarget() {
         throw new Error("provider must not be called on a cache hit");
       },
     } as unknown as ProviderCommandStore;
 
-    const embedder = new ProviderQueryEmbedder(throwingStore, null, cache);
+    const embedder = new ProviderQueryEmbedder(throwingStore, TEST_SPEND, null, cache);
     expect(await embedder.embedQuery("space-1", "hello")).toEqual(vec(0));
   });
 
@@ -271,7 +279,7 @@ describe("ProviderQueryEmbedder caching", () => {
         });
       },
     });
-    const embedder = new ProviderQueryEmbedder(fakeProviderStore(), "p1", new QueryEmbeddingCache());
+    const embedder = new ProviderQueryEmbedder(fakeProviderStore(), TEST_SPEND, "p1", new QueryEmbeddingCache());
 
     expect(await embedder.embedQuery("space-1", "alpha query", { subjectUserId: "user-1" })).toEqual(vec(1));
     expect(await embedder.embedQuery("space-1", "alpha query", { subjectUserId: "user-1" })).toEqual(vec(1));
@@ -290,7 +298,7 @@ describe("ProviderQueryEmbedder caching", () => {
         });
       },
     });
-    const embedder = new ProviderQueryEmbedder(fakeProviderStore(), "p1", new QueryEmbeddingCache());
+    const embedder = new ProviderQueryEmbedder(fakeProviderStore(), TEST_SPEND, "p1", new QueryEmbeddingCache());
 
     expect(await embedder.embedQuery("space-1", "q", { subjectUserId: "user-1" })).toBeNull();
     expect(await embedder.embedQuery("space-1", "q", { subjectUserId: "user-1" })).toBeNull();
@@ -310,7 +318,7 @@ describe("ProviderQueryEmbedder caching", () => {
         });
       },
     });
-    const embedder = new ProviderQueryEmbedder(fakeProviderStore(), "p1", cache);
+    const embedder = new ProviderQueryEmbedder(fakeProviderStore(), TEST_SPEND, "p1", cache);
 
     // cache:false ignores the stale cached vec(0) and forces a fresh embed → vec(1).
     expect(await embedder.embedQuery("space-1", "alpha query", {

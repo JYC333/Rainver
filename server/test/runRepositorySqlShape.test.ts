@@ -15,6 +15,14 @@ class RunCreateSqlShapeDb implements Queryable {
     params: readonly unknown[] = [],
   ): Promise<QueryResult<Row>> {
     this.calls.push({ sql, params });
+    // A parent Run must be visible to the creator: the Room probe and the
+    // Run's content decision. Both read `runs`, so they answer first.
+    if (sql.includes("AS allowed")) {
+      return { rows: [{ allowed: true }] as Row[], rowCount: 1 };
+    }
+    if (sql.includes("FROM runs content_resource")) {
+      return { rows: [{ effective_access_level: "full" }] as Row[], rowCount: 1 };
+    }
     if (sql.includes("FROM agents")) {
       return {
         rows: [{

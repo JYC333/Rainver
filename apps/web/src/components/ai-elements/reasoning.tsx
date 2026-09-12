@@ -7,7 +7,6 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { cjk } from "@streamdown/cjk";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import {
@@ -21,6 +20,7 @@ import {
   useState,
 } from "react";
 import { Streamdown } from "streamdown";
+import { safeStreamdownProps } from "./safeMarkdown";
 
 import { Shimmer } from "./shimmer";
 
@@ -201,23 +201,6 @@ export type ReasoningContentProps = ComponentProps<
   children: string;
 };
 
-/**
- * What an Agent's prose can contain.
- *
- * `cjk` because the product is bilingual and the default segmenter breaks
- * Chinese emphasis.
- *
- * `code` is absent because it carries its own full shiki bundle — every theme
- * and every grammar, measured at 805 precache entries against a baseline of
- * 193. Fenced blocks in prose therefore render unhighlighted; the highlighted
- * ones are a tool call's input and output, through `CodeBlock`. Mermaid and
- * LaTeX are absent for the same kind of reason: a second of import time each
- * per test file, and a large chunk in a bundle every visitor downloads, to
- * render something nobody has asked a conversation to do. Add one back when a
- * surface needs it — and pin its grammar set if it is `code`.
- */
-const streamdownPlugins = { cjk };
-
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => (
     <CollapsibleContent
@@ -228,7 +211,7 @@ export const ReasoningContent = memo(
       )}
       {...props}
     >
-      <Streamdown plugins={streamdownPlugins}>{children}</Streamdown>
+      <Streamdown {...safeStreamdownProps}>{children}</Streamdown>
     </CollapsibleContent>
   )
 );

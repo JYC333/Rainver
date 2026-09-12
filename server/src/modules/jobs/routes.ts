@@ -86,7 +86,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const job = await queue().getJob(params(request).jobId ?? "");
-      if (!job || jobNotFoundForSpace(job, identity.spaceId)) {
+      if (!job || jobNotFoundForSpace(job, identity.spaceId, identity.userId)) {
         return reply.code(404).send({ detail: "Job not found" });
       }
       return reply.send(jobToOut(job));
@@ -100,7 +100,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const job = await queue().getJob(params(request).jobId ?? "");
-      if (!job || jobNotFoundForSpace(job, identity.spaceId)) {
+      if (!job || jobNotFoundForSpace(job, identity.spaceId, identity.userId)) {
         return reply.code(404).send({ detail: "Job not found" });
       }
       const events = await queue().getEvents(job.id);
@@ -116,7 +116,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const jobId = params(request).jobId ?? "";
       const job = await queue().getJob(jobId);
-      if (!job || jobNotFoundForSpace(job, identity.spaceId)) {
+      if (!job || jobNotFoundForSpace(job, identity.spaceId, identity.userId)) {
         return reply.code(404).send({ detail: "Job not found" });
       }
       if (!["pending", "claimed"].includes(job.status)) {
@@ -137,10 +137,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 }
 
 export function jobNotFoundForSpace(
-  job: Pick<JobRecord, "space_id">,
+  job: Pick<JobRecord, "space_id" | "user_id">,
   spaceId: string,
+  userId: string,
 ): boolean {
-  return job.space_id !== spaceId;
+  return job.space_id !== spaceId || job.user_id !== userId;
 }
 
 export function jobToOut(job: JobRecord): JobOut {

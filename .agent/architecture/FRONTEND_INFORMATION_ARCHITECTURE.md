@@ -9,6 +9,41 @@ status, structured Plan execution, Automation scheduling, and the Evolution revi
 The frontend must respect backend security and access boundaries at all times. Every data
 call is made inside `RequireAuth`; the backend enforces space-scoped visibility, and the
 frontend must not expose information about objects the user cannot access.
+Admin-only modules (`requiresSpaceAdmin` / `requiresInstanceAdmin`) are wrapped at the
+route so a direct URL does not mount the page. External hrefs, markdown links, and
+avatar `src` values are restricted to `http(s)`. Server-authored in-app hrefs and
+`SpaceLink` only accept a same-origin path, resolved through `URL` rather than
+judged as text — `/..//evil.example` passes every textual rule and the browser
+then collapses it to `//evil.example`.
+
+Chat markdown never loads an external image. One `safeStreamdownProps` config
+is spread by every renderer: its `img` component renders a cross-origin source
+as an ordinary link — domain visible, full URL on hover, new tab — rather than
+an `<img>` the browser fetches with no click (D5); its `urlTransform` blanks a
+`src` that is neither same-origin nor `http(s)`; and its sanitize schema drops
+`<source>`, because a `<picture>`'s external `srcset` fetches without passing
+through either of the other two. Raw `<img>` HTML arrives at the same component,
+since Streamdown's pipeline parses HTML into real elements before rendering;
+`skipHtml` does nothing there, so it was removed. An image the instance serves
+itself still renders inline, and an in-app markdown link is a working
+destination rather than a confirmation dialog.
+
+The Tiptap reading core takes the same decision through an explicit
+`remoteImages` flag, off unless the caller opts in — passed from the page, not
+decided at `ReaderWorkspace`, which renders both captured articles and
+model-authored research reports. A Library summary, a digest and a research
+report do not opt in; the captured-article page does, because its images are
+part of the article the person chose to read. That is also why the production
+CSP's `img-src` allows `https:` — it cannot be the layer that decides while one
+surface legitimately needs third-party images, so the renderer is.
+
+Logout clears authenticated browser leftovers against a list of what to **keep**
+— appearance and layout — rather than a list of what to delete, so a new
+content key is cleared by default instead of retained until somebody remembers
+it. It also deletes the API cache and tells this browser's other tabs, which
+would otherwise keep a rendered page full of the previous person's content. The
+API cache is deleted at boot as well, because one written by an older build
+outlives the code that stopped writing it. API keys are not persisted.
 
 Detail and review panels distinguish an unavailable read from an empty result. In particular,
 Run Detail attempts, evaluations, verifications, finalizations, and route decisions show an
@@ -136,8 +171,8 @@ Two stable tiers plus per-scene context (`src/core/navigation.tsx`, `src/compone
 
 - **Global Rail** (`RAIL_ITEMS`) — narrow, icon-only desktop rail of major destinations, Home
   first and stable: Home · Inbox · Library · Sources · Review · Knowledge · Shared · Tasks ·
-  Projects · Agents · Settings. Collapsible/expandable. On mobile this becomes the bottom tab bar
-  (`MOBILE_TAB_ITEMS`).
+  Projects · Agents · Settings. Collapsible/expandable. On mobile this becomes the five-item
+  bottom tab bar (`MOBILE_TAB_ITEMS`: Home · Inbox · Library · Review · Tasks).
 - **Scene Sidebar** (`SCENES`) — second-level navigation for the current scene, changes by
   scene (Inbox / Library / Review / Agents / Artifacts). Collapsible; when collapsed the expand
   handle is shown in the main header next to the scene title (e.g. "☰ Agents"). Home needs no
@@ -153,8 +188,7 @@ Two stable tiers plus per-scene context (`src/core/navigation.tsx`, `src/compone
   and is never a global nav tier; PARA is only the default initialization template.
   `Domains` (`/knowledge/domains`, focus areas) is one of these sections. It sits here
   because the app's groupings are functional — capture, knowledge, agents, dev — while a
-  focus area is a life-area grouping with no fitting home yet. Resolving that is deferred
-  until a second such destination exists; the placement is not a claim that a focus area
+  focus area is a life-area grouping. The placement is not a claim that a focus area
   is knowledge, and it is the reason Domains is not in `KNOWLEDGE_WORKSPACE_SECTIONS`
   (it is a parked destination, not one `/knowledge` should reopen by default).
 - **Right Inspector** — scene/object-specific and owned by individual pages, never an
@@ -265,19 +299,17 @@ Managed host workspaces are surfaced consistently across the Agents and Rooms ro
 | **Inquiry Area** | Enabled | Project-owned Question/Hypothesis domain at `/projects/:projectId/inquiry`, presented as four sibling views over one route: **Focus** (default), **Map**, **Review** (two tabs: Inquiry candidates and Knowledge candidates), and **Experiments**. Focus has a navigator grouped by attention state, a Thread header, one unified stage workspace, and secondary Evidence/Relations/Notes/History tabs. The workspace is the sole owner of the derived Clarify → Acquire → Digest → Conclude → Land round: its top row is the only stage selector, and selecting a stage changes the adjacent panel without mutating backend work. Actual current, manually inspected, completed, and running stages remain visually distinct; a manual selection stays pinned through polling, while a successful action follows the newly derived current stage. Each panel explains the stage purpose and completion condition and contains only that stage's actions. One `Suggested next` surface remains visible above it: valid open non-stale model Advice occupies it, otherwise a deterministic state-grounded fallback does, without asking users to distinguish “AI” from “system” advice. Ignoring model Advice dismisses it and reveals the fallback; stale Advice and manual re-analysis controls are absent. Starting a suggestion or alternative writes the Step through the existing work command and navigates to the owning Area; Acquire and Land retain their legitimate in-stage alternatives. A blocked workspace stays readable with actions disabled and an explicit Unblock that clears no Step. Normal round close-out appears in Land; pause, block, early close-out, lifecycle, priority, owner, and personal-Focus commands live in the Thread menu. Running background work is named without replacing guidance. While work is live the page polls Inquiry, Research Workflow, and Advice reads every five seconds, refreshes after local mutations and on visibility return, and installs no interval for idle Threads; model generation remains server-side and event-driven. Refresh demand is coalesced per Project/Thread and responses are identity-fenced, so an older read cannot overwrite a newly selected Thread; transient Research read failures preserve the last successful live-work snapshot, and polling does not discard an in-progress wording edit. Every Area that owns a Step's work renders a thin origin bar naming the Thread that sent the user there. Map shows the primary-parent structure and relation graph; Review owns Delta Brief and bounded Candidate review. Research-question assessment remains the dedicated `/projects/:projectId/inquiry/:threadId/assess` two-pane conversation/framework route: volatile edits require explicit confirmation, confirmed snapshots and wording revisions remain immutable history, and the model never becomes write authority. |
 | **Experiments** (Inquiry view) | Enabled | `/projects/:projectId/inquiry?view=experiments` (`/experiments` redirects); manages Definitions, immutable protocol Versions, manual and managed comparison Runs, Observations, reviewed Interpretations, and explicit conversion to Inquiry Signals. Managed setup selects an execution-enabled Folder and active Agent by name; the Agent carries the governed runtime profile. Terminal reconciliation returns status and parsed metrics to the Experiment Run. |
 | **Decisions Area** | Enabled | `/projects/:projectId/decisions`; creates standalone or explicitly Inquiry-linked Decision Cases, shows named Thread references, manages Options, Criteria, trade-off scores, Commitments, and explicit Delivery Tasks. |
-| **Learning Area** | Retired | `/projects/:projectId/learning` redirects to Pulse. Learning reviews Space-level Knowledge and belongs to the Space (the planned `cards` module); the Project-level page was its only surface. Project learning objectives and items remain in the data model for that move. |
+| **Learning Area** | Retired | `/projects/:projectId/learning` redirects to Pulse. `learning` HTTP routes and tables remain; the web client does not call `learningApi`. There is no Space-level Cards UI. |
 | **Knowledge candidates** (Inquiry Review tab) | Enabled | `/projects/:projectId/inquiry?view=review&tab=candidates` (`/knowledge-review` redirects); summarizes new source information, selects eligible Notes/Threads/Interpretations and Agents by name for extraction, opens bounded Candidate checkpoints, supports view-all, edit-and-promote, defer/reopen, and dismiss. Canonical Knowledge writes remain proposal-gated. |
 | **Board** | Enabled | `/projects/:projectId/board`; the Project's Task surface, over an ACL-filtered server read model (`GET /projects/:id/board`). Lanes are flow statuses from `board_columns` or the defaults; `cancelled` is archived and `blocked` is an overlay drawn in the lane the work sits in rather than a lane of its own. A card carries its Loop stage, who holds it through the responsibility chain, active-run and blocked signals — and nothing else, so it stays scannable. Dragging to Done is refused with `completion_requirements_unmet` when the Task has not met what it declared; the refusal names the reasons and closing anyway records exactly which were skipped. Filters (all / mine / Agent working / needs me) are relative to the viewer the server names. A writer creates a Task from the Board itself (`New Task`, pre-bound to the Project); a viewer sees no such control and no drag handle. WIP limits are shown, never enforced. `/projects/:projectId/delivery` redirects here; the flatter Delivery Area is gone. |
 | **Operations Area** | Retired | `/projects/:projectId/operations` redirects to `/research?tab=runs`. Automations and Runs are Space-level objects and were shown here only filtered to the Project; alerts were already in the attention list and are read in the Space Inbox filtered to the Project. The one thing on it that belonged to the Project — research operation rows with their Checkpoint controls — is the Research Area's **Runs** tab. |
 | **Review** (Proposals + Memory) | Enabled | Governance area (rail label "Review"; routes `/proposals` and `/memory`). The scene sidebar links real surfaces; proposal-type filters live inside `/proposals`. `/memory` is also where an Agent's own writes are read after the fact ([ADR 0003](../decisions/0003-memory-proposal-flow.md)): filters for written-by-Agent / by-a-person / archived, and `?session=` / `?run=` (the link a paused session's — or a paused single turn's — attention item carries), an `Agent` marker on those rows, and Archive / Restore acting directly on the owner's own entry — one request, no proposal. The detail page's **History** lists every version with the rationale, run and session behind it, which is what makes a write nobody approved beforehand answerable afterwards. |
 | **Knowledge** | Enabled | First-level unified module (rail label "Knowledge"; route `/knowledge`). `/knowledge` redirects to the last-used section (default `/knowledge/notes`); `/knowledge/home` is an optional overview hub, never the forced landing. Sub-areas switch via an in-header breadcrumb (no scene sidebar): **Notes** (working-knowledge Area — configurable collection tree + open-note tabs), **Wiki** (canonical, KnowledgeItem-backed, `/knowledge/wiki`), **Sources** (backend source CRUD exists; current frontend is list-only evidence browsing), **Cards**. The note editor's link picker offers every object type that is both linkable and searchable — Note, Wiki, Source, Claim, Question — built from `NOTE_LINK_TARGET_TYPE_VALUES` rather than a hand-maintained array, and guarded by `server/test/noteLinkTargetsGuard.test.ts`. Candidates for the search-backed kinds come from `POST /api/v1/knowledge/search`. `note_links` stays navigational and carries no graph authority (N4). The reverse direction is a "jot a note" action on Research Area reading-list cards: `POST /api/v1/knowledge/notes/jot` creates (or appends to) a note and records the link in one call, and `GET /api/v1/knowledge/objects/:objectId/note-links` answers what notes cite a given object. Jotting is offered only on rows with an `object_id` — a corpus row's `source_item_id` / `evidence_id` targets have no `space_objects` row and cannot be a link endpoint. |
 | **Graph** | Enabled | Space-scoped relationship projection at `/graph`; renders the shared `GraphProjection` contract through `apps/web/src/components/graph/`, reads core `/api/v1/graph/*`, persists per-user view state under `scope_key='core:graph'`, `core:graph:<lens_id>`, `project:graph:<project_id>`, or `project:graph:<project_id>:<lens_id>`, and remains read-only over visible `space_objects` / `object_relations`. `?project_id=` narrows the graph to active object-backed Project corpus rows; `?lens_id=academic_citation_v1` applies the academic citation/authorship lens. |
-| **Cards** | `enabled: false, visible: false` | Standalone module hidden; surfaced as the Knowledge › Cards placeholder until the spaced-repetition model exists |
-| Time | `planned: true` | Shows "soon" badge |
+| **Cards** | `enabled: false, visible: false` | Standalone `/cards` hidden. Knowledge › Cards is an empty-state placeholder. Schema exists; no review API. |
+| Time | `planned: true` | Stub page only; no backend |
 
-Future modules (Editor, Calendar, Automation, and domain-specific graph surfaces beyond the
-core Graph page) should only be enabled when backend support exists. Do not add them to the
-registry as clickable modules before that.
+Do not register a gallery entry as interactive unless its backend surface exists.
 
 ---
 
@@ -356,26 +388,22 @@ The frontend is ready for personal dogfooding. The core product loop is usable:
   bodies.
   Artifacts render structured Research outputs when possible.
 
-**Non-blocking follow-ups (discovered during use):**
+**Current Home / capture facts:**
 
-- ✅ **Done:** Space-scoped routes are now URL-scoped (`/spaces/:spaceId/*`) and deep-linkable;
-  the active Space is read from the route, and all in-app navigation is URL-based (no
-  `location.state` handoffs). Accessing a Space the user can't see falls back to the preferred
-  Space. (Backend access control is the source of truth — a shared-Space URL is only viewable by
-  its members; non-members get the standard authz error, not silent space-switching.)
-- Cross-space Home aggregates are limited to what `/me/*` exposes (proposals, tasks, runs,
-  participation, timeline). "Captures waiting" / "review packets ready" / "cards due" per Space
-  need backend aggregate endpoints before they can appear on Home; the frontend should not fan
-  out across raw domain APIs to reconstruct those counts.
-- Capture supports text and links; file/image drag-drop and voice are shown as
-  coming-soon (no upload endpoint yet).
+- Space-scoped routes are URL-scoped (`/spaces/:spaceId/*`) and deep-linkable;
+  the active Space is read from the route; in-app navigation is URL-based (no
+  `location.state` handoffs). A Space the user cannot see falls back to the
+  preferred Space. Backend access control is the source of truth.
+- Cross-space Home aggregates are limited to what `/me/*` exposes (proposals,
+  tasks, runs, participation, timeline). There are no per-Space "captures
+  waiting" / "review packets ready" / "cards due" aggregate endpoints.
+- Capture supports text and links. There is no file/image upload endpoint;
+  voice and drag-drop affordances are disabled UI.
 - Home has no Assistant chat entry; project-bound conversation lives only in
   the Rooms surface.
-- Activity / Run / Artifact cross-linking can be improved (e.g., post-consolidate navigation
-  to generated proposals; post-accept link to created memory record).
-- Board visibility notice can be added before heavier shared-space use.
 
-These are improvements to collect from real use, not pre-conditions for dogfooding.
+Unimplemented Home/capture ideas:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §6 and §26.
 
 ---
 
@@ -432,13 +460,14 @@ The clickable dogfooding path is intentionally structured rather than canvas-bas
 These surfaces use structured forms plus Advanced JSON for extensibility. The client
 does not apply proposals or infer approval; all mutations go through the server authority.
 
-## 9. Future Modules — Prerequisites Before Enabling
+## 9. Stub or absent frontend modules
 
-| Module | Backend prerequisite |
+| Module | Current fact |
 |---|---|
-| Cards | Spaced-repetition card model + review API |
-| Time | Time entry model + activity linkage |
-| Editor | File editor backend + save API |
-| Calendar | Calendar/scheduling model |
-| External Automation triggers | Trigger registry, webhook/cron ownership, policy, budget, and credential model |
-| Knowledge Graph | Graph query API |
+| Graph | Implemented at `/graph` over `GraphProjection` |
+| Cards | Schema only; `/cards` hidden; Knowledge › Cards is a placeholder |
+| Time | `planned: true` stub; no backend |
+| Editor / Calendar | No module |
+| Automation triggers | `manual` and `schedule` only |
+
+Unimplemented stubs: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §2, §3, §16, §26.

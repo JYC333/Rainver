@@ -101,7 +101,7 @@ registry `default_decision`. Not full RBAC/ABAC — they express intent and defa
 | Action | Resource | Risk | Default Decision | Enforcement |
 |---|---|---|---|---|
 | `runtime.execute` | run | medium | allow | `server/src/modules/runs/orchestrationService.ts` |
-| `runtime.use_credential` | credential | high | require_approval | provider credential store + run orchestration |
+| `runtime.use_credential` | credential | high | require_approval (never reached: the rule decides every origin) | `policy/credentialSpend.ts` (`authorizeCredentialSpend`) |
 | `context.inject_memory` | memory | low | allow | context/runs modules |
 | `context.render_for_runtime` | context | low | allow | runs module |
 | `project_folder.write_patch` | project_folder | high | require_approval | projectFolders/proposal appliers |
@@ -308,7 +308,7 @@ preflight.
 | Action | File | When |
 |---|---|---|
 | `runtime.execute` | `server/src/modules/runs/orchestrationService.ts` | Before credentials, Runtime Context Delivery, and adapter execution |
-| `runtime.use_credential` | `server/src/modules/providers/providerCommandStore.ts` + run orchestration | Uses real credential/provider space from DB; before secret resolution |
+| `runtime.use_credential` | `server/src/modules/policy/credentialSpend.ts` | Before any ModelProvider key is resolved or proxy lease minted |
 | `context.inject_memory` | execution-control preflight + Runtime Context acquisition | Before Memory candidates may enter an accepted Delivery |
 | `context.render_for_runtime` | execution-control preflight + Runtime Context gateway | Before accepted Delivery reaches an adapter |
 | `artifact.persist` | `server/src/modules/runs/materializationService.ts` via `enforce()` | Before filesystem/row persistence; fail-closed audit |
@@ -337,15 +337,42 @@ non-user-origin runs (automation, job, system), the actor is the run itself:
 `{run_id, trigger_origin}` for traceability. `run_id` and `resource_id` always
 refer to the run regardless of actor type.
 
-**runtime.use_credential**: narrowed twice by ADR 0016. It covers ModelProvider
-credentials only — the CLI credential profiles it was also written for are retired,
-and a CLI's login is never resolved by the control plane at all — and it is reached
-only when `hostKind === "server" && run.model_provider_id`
-(`runs/orchestrationService.ts`), so a ModelProvider-bound Run on a paired host never
-enters it. Both surviving callers pass their own Space as `resource_space_id`
-(`orchestrationService.ts`, `automations/service.ts`), so `decisionCore`'s cross-space
-deny compares a value to itself from here; it still bites for callers that name a
-different resource Space.
+**runtime.use_credential**: covers ModelProvider credentials only — a CLI's login
+is never resolved by the control plane (ADR 0016). One authorizer,
+`authorizeCredentialSpend` (`policy/credentialSpend.ts`), decides every spend
+before a key is resolved or a proxy lease minted:
+
+- the provider invocation layer, for every chat, embedding and rerank call
+  (`ProviderCommandStore.authorizeCredentialSpend`; every entry point requires
+  a spend basis, so a caller that names none does not compile);
+- proxy lease minting (`runs/remoteProviderBinding.ts`), since
+  `ProviderProxyLeaseRegistry.create` takes the authorization it returns;
+- the Run executor, before a server-host Run starts.
+
+Each spend names its basis:
+
+| Basis | Origin fed to the rule | Authorization record |
+|---|---|---|
+| `person` | `manual` | The person in the request being served |
+| `run` | The root Run's origin | The root Run: a delegated, Plan or Workflow child is decided on it. An `automation` or `autonomous` root reads the firing Automation's active grant (`automation_runs` → `automation_credential_grants`) at spend time; a managed root reads its contract's setup authorization |
+| `setup` | `job` | A setup record, re-read at spend time (below) |
+
+| Setup | Re-read at spend time |
+|---|---|
+| `daily_report` | The person's daily-report setting is on, and they are still a member |
+| `imported_session_extraction` | The Location's auto-extract switch for that runtime is on |
+| `inquiry_advice` | The person whose action queued it can still write the Project and change the Thread |
+| `room_summary` | The Room owner is still its active owner with Project write |
+| `conversation_title` | The message's author is still an active member of the active Room |
+| `context_checkpoint` | The work context's latest setup still names the person, who is a member and can read its Project |
+| `retrieval_embedding` | The person whose action queued the backfill is still a member; source ingestion queues it as the source's owner |
+| `research_pipeline` | The person who queued the pipeline can still write the Project |
+| `source_post_processing` | A helper call: the rule is still active and its creator a member. A post-processing Run carries the setup in its contract |
+
+The rule allows a setup kind only from the one origin it is registered with
+(`managedExecutionPolicy.ts`), so a kind claimed from another origin
+authorizes nothing. Unattended spend with no authorization record is DENY, not
+REQUIRE_APPROVAL: nobody is present to approve it.
 
 **proposal.create coverage**: `proposal.create` gates user-created memory proposals
 and system-created code_patch proposals. The latter uses `force_record=True`;
@@ -364,7 +391,7 @@ return DENY with `audit_code="unknown_policy_action"`. `BUILTIN_RULES` evaluated
 1. `rule_space_boundary` — deny cross-space access
 2. `rule_agent_status` — deny `runtime.execute` and `memory.*` for non-active agents
 3. `rule_memory_scope` — `require_approval` for `memory.create/update/archive` to protected scopes
-4. `rule_use_credential` — same-space manual/api/delegation ALLOW; cross-space DENY (CRITICAL); automation REQUIRE_APPROVAL
+4. `rule_use_credential` — cross-space DENY (CRITICAL); a setup authorization from its registered origin ALLOW; automation/autonomous ALLOW only with a standing grant, else DENY; `manual` ALLOW; every other or missing origin DENY
 5. `rule_tool_permission` — deny `runtime.execute` if tool/adapter not in agent allowlist
 6. `rule_project_folder_write_patch` — `require_approval` without proposal_id; `allow` with valid proposal
 7. `rule_automation` — allow automation.create/update/fire for admin/owner; deny lower roles
@@ -374,17 +401,10 @@ return DENY with `audit_code="unknown_policy_action"`. `BUILTIN_RULES` evaluated
 
 Falls through to registry default only for **known** registered actions when no rule matches.
 
-## Future Work
+## Current wiring notes
 
-- **Wiring placeholder actions**: Each placeholder action in the registry needs a
-  preferred `PolicyGateway.enforce()` call site before it becomes enforceable. Until
-  wired, unknown-action fail-closed still applies if they are called without a registry
-  entry, but having them registered means callers can at least look up metadata.
-- `context.use_personal_grant` — add PolicyGateway call site in `personal_memory_grants/`
-  when grant resolution merits its own policy audit trail.
 - `memory.create/update/archive` are WIRED_VIA_PROPOSAL — enforced only through `proposal.apply`.
-- Extend approval resolver with per-user/per-project approval capabilities when needed.
-- Space-level policy row overrides (currently domain-specific only).
-- Extend multi-agent child-run lifecycle projection so `RunDelegation.status`
-  follows child run terminal states directly, rather than only through read-time
-  active-run joins.
+- Policy rows are domain-specific; there are no space-level row overrides.
+- Reserved / placeholder actions are registered and denied until a call site exists.
+
+Unimplemented wiring: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §22.

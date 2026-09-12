@@ -160,7 +160,7 @@ consult one predicate (`instanceUpdatePending`):
 - The `agent_run` job handler defers a queued Run whose *effective* trigger origin
   is `automation`, `autonomous`, `job`, or `system`. Effective, because a delegated
   child carries `delegation` and inherits the question from its root
-  (`effectiveTriggerOrigin`) — reading the raw column would make one hop of
+  (`effectiveRunTrigger`) — reading the raw column would make one hop of
   `agent.delegate` a way past the drain. The parent is parked in
   `waiting_for_dependency` while its child runs, so it is not counted by the drain
   and deferring the child does not stall it.

@@ -2,6 +2,7 @@ import type { QueryRewriter } from "../index.js";
 import { getDbPool } from "../../../db/pool.js";
 import { completeProviderText } from "../../providers/invocation/invocation.js";
 import type { ProviderCommandStore } from "../../providers/commands/store.js";
+import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import { writePolicyAudit } from "../../policy/auditWriter.js";
 import type { RetrievalEgressPolicy } from "../egress/egressPolicy.js";
 import { resolveRetrievalQueryRewritePrompt, type ResolvedQueryRewritePrompt } from "../promptRegistry.js";
@@ -25,6 +26,8 @@ export interface ProviderQueryRewriterOptions {
   promptResolver?: QueryRewritePromptResolver | null;
   /** Space/provider egress policy. External providers are blocked when disabled. */
   egressPolicy?: RetrievalEgressPolicy | null;
+  /** Who the searches this helper serves spend for. */
+  spend: CredentialSpendBasis;
 }
 
 /**
@@ -44,11 +47,13 @@ export class ProviderQueryRewriter implements QueryRewriter {
   private readonly surface: string | null;
   private readonly promptResolver: QueryRewritePromptResolver | null;
   private readonly egressPolicy: RetrievalEgressPolicy | null;
+  private readonly spend: CredentialSpendBasis;
 
   constructor(
     private readonly store: ProviderCommandStore,
-    options: ProviderQueryRewriterOptions = {},
+    options: ProviderQueryRewriterOptions,
   ) {
+    this.spend = options.spend;
     this.providerId = options.providerId ?? null;
     this.databaseUrl = options.databaseUrl ?? null;
     this.surface = options.surface ?? null;
@@ -70,6 +75,7 @@ export class ProviderQueryRewriter implements QueryRewriter {
         task: RETRIEVAL_QUERY_REWRITE_TASK,
         egressPolicy: this.egressPolicy,
         metering: { subject_user_id: viewerUserId },
+        spend: this.spend,
       });
     } catch {
       return null;

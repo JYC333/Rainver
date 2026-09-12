@@ -110,6 +110,7 @@ export async function executeManagedApiNoToolAdapter(
       return executeRuntimeHost(
         runtimeConfig,
         runtimeRequest,
+        { kind: "run", run: input.run },
         deps.runtimeHostLogger,
         { onTextDelta: input.text_delta_sink, signal: options?.signal },
       );

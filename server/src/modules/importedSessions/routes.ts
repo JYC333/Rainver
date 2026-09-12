@@ -149,7 +149,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const projectId = params(request).projectId;
       if (typeof projectId !== "string" || !projectId) throw new HttpError(422, "projectId is required");
-      return reply.send(await extraction().extract(identity, projectId));
+      return reply.send(await extraction().extract(identity, projectId, { kind: "person", user_id: identity.userId }));
     } catch (error) {
       return sendRouteError(reply, error);
     }

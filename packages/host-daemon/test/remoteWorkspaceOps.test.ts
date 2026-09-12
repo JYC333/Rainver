@@ -36,7 +36,9 @@ describe("remote workspace ops", () => {
     const configDir = await mkdtemp(join(tmpdir(), "rainver-host-config-"));
     process.env.RAINVER_HOST_CONFIG_DIR = configDir;
     await writeFile(join(configDir, "config.json"), JSON.stringify({
-      server_url: "http://unused", host_id: "host-1", token: "t", workspaces: { "loc-1": root },
+      // A paired host's config: plain HTTP only on loopback, which `loadConfig`
+      // now re-checks on read rather than only at pairing time.
+      server_url: "http://127.0.0.1:8010", host_id: "host-1", token: "t", workspaces: { "loc-1": root },
     }));
     await expect(forgetWorkspace("loc-1")).resolves.toMatchObject({ ok: true, changed: true });
     await expect(forgetWorkspace("loc-1")).resolves.toMatchObject({ ok: true, changed: false });

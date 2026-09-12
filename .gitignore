@@ -48,6 +48,7 @@ packages/protocol/dist/
 packages/host-daemon/dist/
 packages/agent-cli/dist/
 packages/folder-read/dist/
+packages/outbound-guard/dist/
 
 # Rust / Tauri
 apps/web/src-tauri/target/

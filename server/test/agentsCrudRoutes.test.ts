@@ -473,6 +473,12 @@ describe("agents CRUD routes", () => {
         if (normalized.startsWith("SELECT id FROM agents")) {
           return { rows: [{ id: "agent-1" }], rowCount: 1 };
         }
+        if (normalized.startsWith("SELECT owner_user_id, agent_kind FROM agents")) {
+          return { rows: [{ owner_user_id: "user-1", agent_kind: "standard" }], rowCount: 1 };
+        }
+        if (normalized.includes("FROM agents content_resource")) {
+          return { rows: [{ one: 1 }], rowCount: 1 };
+        }
         if (normalized.includes("SELECT project_id, owner_user_id FROM agents")) {
           return { rows: [{ project_id: "project-1", owner_user_id: "user-1" }], rowCount: 1 };
         }
@@ -590,6 +596,7 @@ describe("agents CRUD routes", () => {
       source_template_version_id: null,
       current_version_id: newVersionId || "agent-version-1",
       visibility: "private",
+      effective_access_level: "full",
       created_at: "2026-06-17T00:00:00.000Z",
       updated_at: "2026-06-17T00:00:00.000Z",
       model_provider_id: null,
@@ -667,6 +674,12 @@ describe("agents CRUD routes", () => {
         if (norm.startsWith("SELECT id FROM agents WHERE space_id = $1 AND id = $2")) {
           return { rows: [{ id: "agent-1" }], rowCount: 1 };
         }
+        if (norm.startsWith("SELECT owner_user_id, agent_kind FROM agents")) {
+          return { rows: [{ owner_user_id: "user-1", agent_kind: "standard" }], rowCount: 1 };
+        }
+        if (norm.includes("FROM agents content_resource")) {
+          return { rows: [{ one: 1 }], rowCount: 1 };
+        }
         if (norm.includes("FROM agents a") && norm.includes("JOIN agent_versions av")) {
           return { rows: [currentVersion], rowCount: 1 };
         }
@@ -692,5 +705,64 @@ describe("agents CRUD routes", () => {
     // Agent config reaches a Run through its immutable AgentVersion, so no
     // retired derived-context refresh side effect is expected.
     expect(jobs).toEqual([]);
+  });
+
+  it("refuses a person-started agent run that names its own origin or a system run type", async () => {
+    const { PgAgentRepository } = await import("../src/modules/agents/repository.js");
+    const { PgRunRepository } = await import("../src/modules/runs/repository.js");
+    vi.mocked(getDbPool).mockReturnValue({
+      query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
+    } as never);
+    const visible = vi.spyOn(PgAgentRepository.prototype, "getVisible").mockResolvedValue({
+      id: "agent-1",
+    } as never);
+    const created = vi.spyOn(PgRunRepository.prototype, "createQueuedRunWithBudgetAdmission").mockResolvedValue({
+      id: "run-1",
+      space_id: "space-1",
+      agent_id: "agent-1",
+      agent_version_id: "agent-version-1",
+      status: "queued",
+      mode: "live",
+      prompt: "hi",
+      instruction: null,
+      project_folder_id: null,
+      session_id: null,
+      project_id: null,
+      adapter_type: null,
+      model_provider_id: null,
+      required_sandbox_level: "none",
+      trigger_origin: "manual",
+      started_at: null,
+      ended_at: null,
+    } as never);
+    app = buildModuleServer(config(), [agentsModule, agentTemplatesModule]);
+
+    try {
+      const labelled = await app.inject({
+        method: "POST",
+        url: "/api/v1/agents/agent-1/runs",
+        payload: { prompt: "hi", trigger_origin: "automation" },
+      });
+      expect(labelled.statusCode).toBe(422);
+      const system = await app.inject({
+        method: "POST",
+        url: "/api/v1/agents/agent-1/runs",
+        payload: { prompt: "hi", run_type: "system" },
+      });
+      expect(system.statusCode).toBe(422);
+      expect(created).not.toHaveBeenCalled();
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/agents/agent-1/runs",
+        payload: { prompt: "hi" },
+      });
+      expect(res.statusCode).toBe(201);
+      expect(created.mock.calls[0]?.[0]).toMatchObject({ trigger_origin: "manual" });
+      expect(res.json().trigger_origin).toBe("manual");
+    } finally {
+      visible.mockRestore();
+      created.mockRestore();
+    }
   });
 });

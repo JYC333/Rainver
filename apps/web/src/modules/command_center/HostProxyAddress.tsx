@@ -50,12 +50,12 @@ export default function HostProxyAddress({
           <>
             <code className="font-mono">{effective}</code>
             <span className="text-muted-foreground">
-              {host.provider_proxy_base_url ? '(set for this host)' : '(derived)'}
+              {host.provider_proxy_base_url ? '(set for this host)' : '(instance setting or derived)'}
             </span>
           </>
         ) : (
           <span className="text-destructive">
-            none — a bound run on this host will fail until the daemon reconnects or you set one
+            none — a bound run on this host will fail until you set one here or for the instance
           </span>
         )}
         <Button size="sm" variant="ghost" onClick={() => { setValue(host.provider_proxy_base_url ?? ''); setEditing(true) }}>

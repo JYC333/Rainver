@@ -1,4 +1,5 @@
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostLaunchIsolation, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
+import type { CredentialSpendDeps } from "../policy/credentialSpend.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { RunRecord } from "./repository.js";
 import { buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
@@ -194,6 +195,11 @@ export interface RemoteHostCliAdapterDeps {
   leaseRegistry?: ProviderProxyLeaseRegistry;
   /** Overridden in tests; production derives it from `config`. */
   db?: Queryable;
+  /**
+   * The Run executor's policy seam, which decides the lease's credential
+   * spend. Production leaves it unset and the policy service decides.
+   */
+  policyEnforcer?: CredentialSpendDeps["enforcer"];
   /**
    * Which model backend this run uses, and where that fact is recorded. One
    * port rather than two switches, because they are the same subsystem: a
@@ -427,11 +433,12 @@ async function runRemoteHostCliAdapter(
             // request in flight at the timeout boundary is not cut off.
             ttlSeconds: timeoutSeconds + 300,
             leaseRegistry: deps.leaseRegistry,
-            // Reads this host's reported control-plane address to derive a
-            // proxy URL it can actually reach. `config.databaseUrl` is proven
+            // Reads this host's kind and proxy override to resolve a proxy URL
+            // it can actually reach. `config.databaseUrl` is proven
             // by `databaseBindingPort` having resolved the binding at all;
             // a test-supplied port must say which database it means.
             db: deps.db ?? getDbPool(config.databaseUrl!),
+            enforcer: deps.policyEnforcer,
           });
           leases.push(providerBinding.revoke);
         } catch (error) {
@@ -509,6 +516,7 @@ async function runRemoteHostCliAdapter(
     try {
       workSurface = await buildRunWorkSurface({
         db: deps.db ?? getDbPool(config.databaseUrl),
+        config,
         run: input.run,
         hostId,
         timeoutSeconds,
@@ -534,11 +542,11 @@ async function runRemoteHostCliAdapter(
     // Granted tools with no way to reach them. It is not worth failing the Run
     // — the work may still be worth doing — but it must not be silent: the
     // agent will finish without reporting anything and the Task will park with
-    // no visible cause. The usual reason is a Host that never reported the
-    // address its daemon reaches the control plane at.
+    // no visible cause. The address is configuration, so this means the host
+    // row or the server's database connection could not be resolved.
     void input.thread_event_sink?.([{
       event_type: "diagnostic",
-      text: "This run was granted Rainver actions but could not be given a way to call them, so nothing it does will be reported back. The Host has no reachable control-plane address recorded.",
+      text: "This run was granted Rainver actions but could not be given a way to call them, so nothing it does will be reported back. The Host could not be resolved to a control-plane address.",
     }]);
   }
 

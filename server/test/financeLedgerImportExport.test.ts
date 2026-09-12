@@ -82,7 +82,7 @@ describe("finance ledger Beancount import", () => {
       SPACE_A,
       book.id,
       USER_1,
-      { text: FULL_FIXTURE, filename: "household.beancount" },
+      { text: FULL_FIXTURE },
     );
 
     expect(result.deduplicated).toBe(false);

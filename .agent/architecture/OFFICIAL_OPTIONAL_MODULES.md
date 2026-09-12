@@ -83,8 +83,11 @@ In the current implementation there is no remote package download. Built-in offi
 
 This is a **Level 2** boundary: plugin source lives in the monorepo under `plugins/official/*`, but the package format (`plugin.json` manifest, compiled artifacts, installer-managed migrations) matches the shape required for downloaded official plugins. Install state and plugin schema are managed independently of the core baseline migration. The remaining Level 2 gap is remote package download and verification — the startup-load activation contract (`RainverPlugin.activate(ctx)`) is already in place.
 
-### Dynamic package download/loading is the remaining Level 2 gap
-Remote download, manifest verification, and compatibility checking for official plugin packages are the next planned milestone. The startup-load contract and installer are already implemented; plugging in a remote source is the remaining step. This is distinct from third-party plugins, which require stricter sandboxing and are further out.
+### Remote package download is not implemented
+There is no remote download, manifest verification, or compatibility check for
+official plugin packages. The startup-load contract and installer are
+implemented for in-repo artifacts. Third-party plugins are out of scope.
+See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §18.
 
 ---
 
@@ -135,15 +138,18 @@ Diary entries are editor-owned user documents, similar to Notes. Direct diary ed
 Finance ledger rows are space-owned business data. Direct ledger editing writes
 the finance plugin tables and does not create an `ActivityRecord`. Beancount text
 is an import/export compatibility format, not the source of truth; PostgreSQL
-rows are authoritative at runtime. Finance import writes are proposal-gated
-through `finance_ledger.post_import_batch`, and direct directive proposal
-application uses `finance_ledger.post_directive`.
+rows are authoritative at runtime. A personal account with `visibility =
+private` is readable and exportable only by its owner; other Space members do
+not receive that account, its postings, or transactions that touch it.
+Finance import writes are proposal-gated through
+`finance_ledger.post_import_batch`, and direct directive proposal application
+uses `finance_ledger.post_directive`.
 
 ### Disable is not uninstall
 Disabling a module preserves all its data. `disabled_at` and `disabled_by_user_id` are recorded in the enablement row. Uninstall/data deletion is out of scope.
 
 ### Settings persistence
-`settings_json` is stored in the enablement row. MVP settings are opaque JSON. Settings can be patched even when a module is disabled (to allow pre-configuration). Full settings engine is deferred.
+`settings_json` is stored in the enablement row. Settings are opaque JSON and can be patched even when a module is disabled (pre-configuration). There is no settings engine.
 
 ---
 
@@ -154,7 +160,9 @@ Disabling a module preserves all its data. `disabled_at` and `disabled_by_user_i
 - Raw capture inputs must enter via `ActivityRecord` first where applicable (`B24`); editor-owned documents such as diary entries are not raw input records
 - Context contribution must be `opt_in` for private/personal or sensitive product data modules (e.g. diary and finance ledger default to `can_contribute_context: "opt_in"` and `include_in_context: false` in settings)
 - Plugin settings must not leak across spaces or users — the guard and repository enforce the descriptor's `space` or `user` scope
-- Future third-party modules require a much stricter sandbox and SDK model not covered here
+- Third-party modules are not supported.
+
+Unimplemented plugin expansions: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ---
 
@@ -182,21 +190,20 @@ Future contribution types must preserve the same fail-closed enablement rule.
 | Plugin | Scope | Frontend | Routes | Runtime contributions | Data ownership |
 |---|---|---|---|---|---|
 | `diary` | `user` | `/diary` | `/api/v1/diary*` | Routes, scheduler, reflection job | Plugin-owned diary entries/reflections; editor-owned personal documents; memory/context extraction remains opt-in and proposal/sources-gated. |
-| `finance_ledger` | `space` | `/finance` | `/api/v1/finance*` | Routes and proposal appliers | Plugin-owned finance books/accounts/directives/postings/prices/import-export records; PostgreSQL is the runtime source of truth; Beancount text is import/export compatibility. |
+| `finance_ledger` | `space` | `/finance` | `/api/v1/finance*` | Routes and proposal appliers | Plugin-owned finance books/accounts/directives/postings/prices/import-export records; PostgreSQL is the runtime source of truth; Beancount text is import/export compatibility. Personal `private` accounts stay off other members' reads and export. |
 
 ---
 
 ## 8. Non-Goals for This Implementation
 
-The following are out of scope for the current implementation. Some are planned
-as Level 2 or further out.
+The following are out of scope for the current implementation:
 
 - **No marketplace**: no browse/discover/install UI for third-party plugins
-- **No external downloads**: no fetching plugin packages from a remote URL (Level 2 target for official plugins only)
-- **No dynamic code loading at runtime**: no hot-load/unload of plugin code (Level 4, distant)
+- **No external downloads**: no fetching plugin packages from a remote URL
+- **No dynamic code loading at runtime**: no hot-load/unload of plugin code
 - **No startup DDL from PluginHost**: plugin migrations run only through the installer, never during `activate()`
-- **No remote frontend bundle loading**: `React.lazy()` always points to bundled code (Level 2 Phase 2)
-- **No app store for third-party plugins**: this is a first-party control plane (third-party is Level 2+ with sandbox)
+- **No remote frontend bundle loading**: `React.lazy()` always points to bundled code
+- **No app store for third-party plugins**: this is a first-party control plane
 - **No uninstall data deletion**: disabling or uninstalling a plugin never deletes plugin domain data
 
 ---

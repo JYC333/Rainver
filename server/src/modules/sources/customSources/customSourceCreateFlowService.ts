@@ -7,6 +7,7 @@ import type {
   CustomSourcePolicyEnvelope,
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
+import type { OutboundGuard } from "../outboundUrlSafety.js";
 import {
   HttpError,
   objectValue,
@@ -62,6 +63,12 @@ export class CustomSourceCreateFlowService {
   constructor(
     private readonly pool: Pool,
     private readonly config: ServerConfig,
+    /**
+     * The outbound boundary live fetches go through. Production leaves it out
+     * and gets the instance's guard; a test supplies one pinned at its own
+     * fixture server, because the guard refuses loopback by design.
+     */
+    private readonly guard?: OutboundGuard,
   ) {}
 
   async createDraft(identity: SpaceUserIdentity, body: Record<string, unknown>) {
@@ -237,7 +244,7 @@ export class CustomSourceCreateFlowService {
     const fixtureHtml = optionalString(body.fixture_html);
     const fetchedHtml =
       fixtureHtml ??
-      (blockReason ? "" : await fetchCustomSourceEndpointHtml(connection.endpoint_url, settings.runner, policyEnvelope, credential));
+      (blockReason ? "" : await fetchCustomSourceEndpointHtml(connection.endpoint_url, settings.runner, policyEnvelope, credential, this.guard));
 
     const runId = randomUUID();
     const now = new Date().toISOString();
@@ -257,6 +264,7 @@ export class CustomSourceCreateFlowService {
           version,
           policyEnvelope,
           credential,
+          ...(this.guard ? { guard: this.guard } : {}),
           handlerInput: buildHandlerInput({
             mode: "test",
             jobId: runId,

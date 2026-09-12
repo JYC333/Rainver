@@ -34,6 +34,33 @@ describe("taskArtifactsRepository", () => {
     }
   }
 
+  /**
+   * `task_runs` and everything hanging off it is Run-derived: a Task is a
+   * shared object, a Run inside a Room is not. These lists carried the content
+   * predicate but no Room term, which SECURITY recorded as latent because no
+   * path wrote a Room-scoped Run into `task_runs`. Dispatch now refuses to
+   * create one, and these carry the term regardless.
+   */
+  describe("task run-derived lists carry the Room boundary", () => {
+    it("applies the Room term to runs, evaluations, proposals and artifacts", async () => {
+      const db = new FakePool();
+      const repository = new PgTaskRepository(db as never);
+      const identity = { spaceId: "space-1", userId: "user-1" };
+      await repository.listTaskRuns(identity, "task-1", 10, 0);
+      await repository.listTaskEvaluations(identity, "task-1", 10, 0);
+      await repository.listTaskProposals(identity, "task-1", 10, 0);
+      await repository.listTaskArtifacts(identity, "task-1", 10, 0);
+
+      for (const table of ["FROM task_runs", "FROM task_evaluations", "FROM task_proposals", "FROM task_artifacts"]) {
+        const queries = db.queries.filter((query) => query.sql.includes(table));
+        expect(queries.length, table).toBeGreaterThan(0);
+        for (const query of queries) {
+          expect(query.sql, table).toContain("room_user_members room_member");
+        }
+      }
+    });
+  });
+
   describe("task artifact repository visibility", () => {
     it("applies canonical workspace scope to task artifacts", async () => {
       const db = new FakePool();

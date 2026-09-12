@@ -61,10 +61,11 @@ CLI overrides.
 
 Runtime adapters never read provider keys from ambient environment variables.
 Managed API runtimes resolve credentials through `server/src/modules/providers/`
-after the `runtime.use_credential` policy gate passes. CLI runtimes resolve none
+after `authorizeCredentialSpend` decides the spend. CLI runtimes resolve none
 here: their login is held by the copy on the execution host that runs them
 (ADR 0016). A CLI Run bound to a ModelProvider still reaches it through the
-expiring proxy lease, never through a key in its environment.
+expiring proxy lease, which is only minted from a decided spend, never through
+a key in its environment.
 
 `model_providers.provider_type` records vendor identity (`openai`,
 `openai_codex`, `anthropic`, `minimax`, `openrouter`, `deepseek`, `ollama`,
@@ -150,7 +151,7 @@ path. Both normalize into mutually exclusive token buckets. Prompts,
 completions, request/response bodies, credentials, and raw CLI transcripts are
 excluded. See `docs/TOKEN_USAGE_METERING.md`.
 
-## Per-Space Model Config (Lightweight Future-Proofing)
+## Per-agent model config
 
 Agent records carry `model_config_json` — the model used for a specific agent can differ from the system default:
 
@@ -172,10 +173,13 @@ This is the only per-agent provider customization implemented now. It covers the
 - Provider health dashboard
 - Dedicated on-prem fleet administration beyond configurable provider base URLs
 
-These are deferred until commercial need. The current provider store and usage
+These are not implemented. The current provider store and usage
 ledger cover the implemented personal/family operational model: keys are
 encrypted, user-owned, Space-granted, policy-gated, and never injected as broad
 process environment.
+
+Unimplemented commercial provider surfaces:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §18.
 
 ## Provider Risks to Document
 

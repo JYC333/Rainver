@@ -115,6 +115,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         // local providers remain usable when external egress is disabled.
         queryEmbedder: new ProviderQueryEmbedder(
           store,
+          { kind: "person", user_id: identity.userId },
           null,
           undefined,
           retrievalSettings.embeddingDimensions,
@@ -124,6 +125,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         // Reranker is off unless this space enables it; degrades to the fused order otherwise.
         reranker: retrievalSettings.rerankEnabled
           ? new ProviderReranker(store, {
+              spend: { kind: "person", user_id: identity.userId },
               databaseUrl: context.config.databaseUrl,
               surface: "knowledge_search",
               egressPolicy,
@@ -132,6 +134,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         // Query rewriter is off unless this space enables it; degrades to the original query.
         queryRewriter: retrievalSettings.queryRewriteEnabled
           ? new ProviderQueryRewriter(store, {
+              spend: { kind: "person", user_id: identity.userId },
               databaseUrl: context.config.databaseUrl,
               surface: "knowledge_search",
               egressPolicy,
@@ -175,18 +178,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         // remain usable when external egress is disabled.
         queryEmbedder: new ProviderQueryEmbedder(
           store,
+          { kind: "person", user_id: identity.userId },
           null,
           undefined,
           retrievalSettings.embeddingDimensions,
           egressPolicy,
         ),
         reranker: retrievalSettings.rerankEnabled
-          ? new ProviderReranker(store, { databaseUrl: context.config.databaseUrl, surface: "knowledge_brief", egressPolicy })
+          ? new ProviderReranker(store, { spend: { kind: "person", user_id: identity.userId }, databaseUrl: context.config.databaseUrl, surface: "knowledge_brief", egressPolicy })
           : undefined,
         // Synthesis self-gates on a configured retrieval_synthesis task policy:
         // with none, the provider call fails and the brief degrades to the
         // deterministic gap analysis (no LLM answer).
         synthesizer: new ProviderSynthesizer(store, {
+          spend: { kind: "person", user_id: identity.userId },
           databaseUrl: context.config.databaseUrl,
           surface: "knowledge_brief",
           egressPolicy,
@@ -794,16 +799,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         egressPolicy,
         queryEmbedder: new ProviderQueryEmbedder(
           store,
+          { kind: "person", user_id: identity.userId },
           null,
           undefined,
           retrievalSettings.embeddingDimensions,
           egressPolicy,
         ),
         reranker: retrievalSettings.rerankEnabled
-          ? new ProviderReranker(store, { databaseUrl: context.config.databaseUrl, surface: "knowledge_explain", egressPolicy })
+          ? new ProviderReranker(store, { spend: { kind: "person", user_id: identity.userId }, databaseUrl: context.config.databaseUrl, surface: "knowledge_explain", egressPolicy })
           : undefined,
         queryRewriter: retrievalSettings.queryRewriteEnabled
           ? new ProviderQueryRewriter(store, {
+              spend: { kind: "person", user_id: identity.userId },
               databaseUrl: context.config.databaseUrl,
               surface: "knowledge_explain",
               egressPolicy,

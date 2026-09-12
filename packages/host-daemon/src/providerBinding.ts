@@ -144,6 +144,58 @@ export function clearVendorCredentialEnv(ambient: NodeJS.ProcessEnv, adapterType
   return kept;
 }
 
+/**
+ * The environment for a daemon-side helper process — an adapter installer, a
+ * version or capability probe, an ACP `session/list`.
+ *
+ * The machine's environment minus the vendor credentials, which is the same
+ * rule a host-login Run takes: these run on the owner's machine and need its
+ * PATH, its git and ssh configuration and its toolchain, but none of them has
+ * any business picking up an `ANTHROPIC_API_KEY` that happens to be exported —
+ * a probe that did would bill an account nobody asked it to, and an ACP
+ * `session/list` that did would read sessions under a different identity than
+ * the one the daemon is logged in as.
+ *
+ * Each of these used to spread `process.env` whole, or delete two named keys
+ * beside it. One builder rather than a hand-written subset per call site.
+ *
+ * @param adapterType the runtime this helper serves, or `""` for one that
+ * serves none (an installer), which drops every vendor prefix.
+ */
+export function helperProcessEnv(
+  ambient: NodeJS.ProcessEnv,
+  adapterType = "",
+  options: { keepStateRoots?: boolean } = {},
+): Record<string, string> {
+  const cleared = clearVendorCredentialEnv(ambient, adapterType);
+  if (!options.keepStateRoots) return cleared;
+  // A helper that reads the machine's *own* history needs to be pointed at
+  // where that history is. The prefixes above are credential prefixes, but a
+  // vendor puts its state root under the same one — `CLAUDE_CONFIG_DIR`,
+  // `CODEX_HOME` — so clearing by prefix sends an ambient `session/list` to the
+  // default location and it reports the machine as having no history at all,
+  // which is the opposite of what that feature is for.
+  for (const key of VENDOR_STATE_ROOT_KEYS) {
+    const value = ambient[key];
+    if (value !== undefined) cleared[key] = value;
+  }
+  return cleared;
+}
+
+/**
+ * Vendor variables that name *where state lives*, not a credential.
+ *
+ * Listed by name rather than matched by prefix, because that is the whole
+ * distinction: `CLAUDE_CONFIG_DIR` and `CLAUDE_API_KEY` share a prefix and are
+ * opposite kinds of thing.
+ */
+const VENDOR_STATE_ROOT_KEYS = [
+  "CLAUDE_CONFIG_DIR",
+  "CODEX_HOME",
+  "OPENCODE_CONFIG",
+  "GEMINI_CONFIG_DIR",
+] as const;
+
 export function filterAmbientEnv(ambient: NodeJS.ProcessEnv): Record<string, string> {
   const safe: Record<string, string> = {};
   for (const [key, value] of Object.entries(ambient)) {

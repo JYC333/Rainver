@@ -55,6 +55,17 @@ jobs:
       - name: Test folder-read
         run: pnpm --filter @rainver/folder-read test
 
+      # The one outbound boundary: the server and the daemon both judge by its
+      # block list, so it builds before either of them typechecks.
+      - name: Build outbound-guard
+        run: pnpm --filter @rainver/outbound-guard build
+
+      - name: Typecheck outbound-guard
+        run: pnpm --filter @rainver/outbound-guard typecheck
+
+      - name: Test outbound-guard
+        run: pnpm --filter @rainver/outbound-guard test
+
       - name: Test deployer boundary
         run: python3 -m unittest discover -s deployer -p 'test_*.py'
 

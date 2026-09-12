@@ -114,24 +114,7 @@ export class RoomConversationTitleService {
     provisionalTitle: string;
     jobId?: string | null;
   }): Promise<Record<string, unknown>> {
-    const source = await this.db.query<{ content: string }>(
-      `SELECT message.content
-         FROM messages message
-         JOIN sessions session_row
-           ON session_row.id=message.session_id AND session_row.space_id=message.space_id
-         JOIN rooms room
-           ON room.id=session_row.room_id AND room.space_id=session_row.space_id
-         JOIN room_user_members member
-           ON member.room_id=room.id AND member.space_id=room.space_id
-          AND member.user_id=$5 AND member.status='active'
-        WHERE message.space_id=$1 AND session_row.room_id=$2
-          AND session_row.id=$3 AND message.id=$4
-          AND message.user_id=$5 AND message.role='user'
-          AND session_row.status='active' AND room.status='active'
-        LIMIT 1`,
-      [input.spaceId, input.roomId, input.sessionId, input.sourceMessageId, input.sourceUserId],
-    );
-    const content = source.rows[0]?.content;
+    const content = await this.sourceContent(input);
     if (!content) return { status: "skipped", reason: "source_unavailable" };
 
     const store = this.resolveProviderStore(this.config);
@@ -164,6 +147,13 @@ export class RoomConversationTitleService {
           task: ROOM_CONVERSATION_TITLE_TASK,
           metadata: input.jobId ? { job_id: input.jobId } : {},
         },
+        spend: {
+          kind: "setup",
+          setup: "conversation_title",
+          record_id: input.sourceMessageId,
+          user_id: input.sourceUserId,
+          still_authorized: async () => (await this.sourceContent(input)) !== null,
+        },
       });
       generated = cleanGeneratedTitle(completion.text) ?? input.provisionalTitle;
     } catch {
@@ -181,6 +171,38 @@ export class RoomConversationTitleService {
     return updated.rows[0]
       ? { status: "renamed", title: updated.rows[0].title }
       : { status: "skipped", reason: "title_changed" };
+  }
+
+  /**
+   * The message the title is made from, while its author can still see it —
+   * an active member of an active Room. Also the spend's authorization: the
+   * author's own message is what asked for the title.
+   */
+  private async sourceContent(input: {
+    spaceId: string;
+    roomId: string;
+    sessionId: string;
+    sourceMessageId: string;
+    sourceUserId: string;
+  }): Promise<string | null> {
+    const source = await this.db.query<{ content: string }>(
+      `SELECT message.content
+         FROM messages message
+         JOIN sessions session_row
+           ON session_row.id=message.session_id AND session_row.space_id=message.space_id
+         JOIN rooms room
+           ON room.id=session_row.room_id AND room.space_id=session_row.space_id
+         JOIN room_user_members member
+           ON member.room_id=room.id AND member.space_id=room.space_id
+          AND member.user_id=$5 AND member.status='active'
+        WHERE message.space_id=$1 AND session_row.room_id=$2
+          AND session_row.id=$3 AND message.id=$4
+          AND message.user_id=$5 AND message.role='user'
+          AND session_row.status='active' AND room.status='active'
+        LIMIT 1`,
+      [input.spaceId, input.roomId, input.sessionId, input.sourceMessageId, input.sourceUserId],
+    );
+    return source.rows[0]?.content ?? null;
   }
 
   /** Backfill old placeholder conversations without requiring another message. */

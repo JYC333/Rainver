@@ -108,16 +108,15 @@ swallowed inside a savepoint. Supervisor decisions and their
 `PoolClient`, so a signal cannot commit independently before a decision that
 later rolls back.
 
-## Deferred boundaries
+## Current boundaries
 
 D1 does not claim that a successful run passed acceptance criteria. Verification
 facts are now owned by the A2 engine; finalized failed verification results
 produce a `verification_failed` signal through the same bounded target and
 deduplication path. Supervisor facts remain owned by A3 and emit through the
 same bounded target/deduplication path. The runtime-conformance emitter is
-gone with the C3 suite (2026-09-09). The D1 triage/dismiss surface is now present;
-proposal `request_changes` remains a future status because the current proposal
-lifecycle has no such state.
+gone with the C3 suite (2026-09-09). The D1 triage/dismiss surface is now present.
+The proposal lifecycle has no `request_changes` status.
 
 The D1.1 inventory is complete for current durable event classes. The manual
 `review_requested` signal is an explicit user intent record, and the direct

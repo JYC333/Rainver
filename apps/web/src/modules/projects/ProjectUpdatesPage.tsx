@@ -207,7 +207,7 @@ type UpdateRow = NonNullable<ProjectWorkUpdate['members']>[number]
  * thing the update names — Tasks were the only kind until an Agent started
  * advancing Threads directly.
  */
-function subjectHref(projectId: string, subject: NonNullable<UpdateRow['subject']>): string {
+function subjectHref(projectId: string, subject: NonNullable<UpdateRow['subject']>): string | null {
   switch (subject.type) {
     case 'task': return inProjectHref(projectId, `/tasks/${subject.id}`)
     // Memory is the Space's, not the Project's — the entry itself is where
@@ -225,6 +225,7 @@ function subjectHref(projectId: string, subject: NonNullable<UpdateRow['subject'
 }
 
 function UpdateMeta({ projectId, update }: { projectId: string; update: UpdateRow }) {
+  const subjectTo = update.subject ? subjectHref(projectId, update.subject) : null
   return (
     <p className="text-xs text-muted-foreground">
       {update.actor.display_name ?? 'System'}
@@ -233,9 +234,9 @@ function UpdateMeta({ projectId, update }: { projectId: string; update: UpdateRo
           {' · '}
           {/* One link per subject type. Anything not named here would land
               on the wrong Area with an id that Area has never heard of. */}
-          <Link to={subjectHref(projectId, update.subject)} className="hover:underline">
-            {update.subject.title}
-          </Link>
+          {subjectTo
+            ? <Link to={subjectTo} className="hover:underline">{update.subject.title}</Link>
+            : update.subject.title}
         </>
       )}
       {' · '}

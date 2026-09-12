@@ -19,6 +19,27 @@ export function sourceItemReadableClause(
   )`;
 }
 
+/**
+ * The one read for a Source item whose *content* is about to be used —
+ * republished into a Proposal or Evidence, put in a prompt, or shown in a
+ * briefing.
+ *
+ * Readable is not enough: a `summary`-level reader is served the item without
+ * its body, so a path that read the row and then copied `excerpt` back out at
+ * `space_shared` visibility undid that withholding. Full access or nothing.
+ *
+ * The ordinary item gate, connection consent included, plus the level — not a
+ * second shape of it. Oversight is excluded: a Space owner or admin may read a
+ * member's item to supervise, and that does not extend to republishing it as
+ * Evidence or as a Proposal (Decision Matrix #4).
+ */
+export function sourceItemFullContentReadClause(itemAlias: string, userParam: string): string {
+  return `(
+    ${sourceItemReadableClause(itemAlias, userParam, false, { includeOversight: false })}
+    AND ${contentAccessLevelSql({ definition: SOURCE_ITEM_ACCESS, alias: itemAlias, userExpr: userParam })} = 'full'
+  )`;
+}
+
 export function sourceItemConnectionGateClause(itemAlias: string, userParam: string, libraryOnly: boolean): string {
   return `(
     ${itemAlias}.connection_id IS NULL

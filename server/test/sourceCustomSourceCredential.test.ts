@@ -11,6 +11,7 @@ import { loadConfig, type ServerConfig } from "../src/config.js";
 import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService.js";
 import { CustomSourceCredentialService } from "../src/modules/sources/customSources/customSourceCredentialService.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
 
 // Real-Postgres integration tests for Phase 10 (Custom Source credentials).
 // Skips gracefully when Docker is unavailable.
@@ -41,7 +42,7 @@ beforeEach(async () => {
     customSourceAllowedLanguages: ["typescript_node", "declarative_pipeline_v1"],
     rainverHome: artifactStorageRoot,
   };
-  createFlow = new CustomSourceCreateFlowService(db.pool, config);
+  createFlow = new CustomSourceCreateFlowService(db.pool, config, publicAddressGuard);
   credentialService = new CustomSourceCredentialService(db.pool, config);
 });
 
@@ -143,7 +144,10 @@ describe("Custom Source credentialed handler flow", () => {
     expect(outcome.run.status).toBe("succeeded");
     expect(fetchMock).toHaveBeenCalled();
     const requestInit = fetchMock.mock.calls[0]?.[1] as { headers?: Record<string, string> } | undefined;
-    expect(requestInit?.headers).toMatchObject({ Authorization: "Bearer s3cr3t-value" });
+    // Lower-cased: the outbound guard normalizes header names so a credential
+    // cannot be sent twice under two spellings, one of which a cross-origin hop
+    // would fail to strip.
+    expect(requestInit?.headers).toMatchObject({ authorization: "Bearer s3cr3t-value" });
   });
 
   it("first activation with a credential auto-activates when Space policy allows credentialed sources", async () => {

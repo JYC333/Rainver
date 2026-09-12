@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  MEMORY_COLUMNS,
+  memoryColumnsWithAccess,
   serializeMemoryRow,
   type MemoryRow,
 } from "../memory/repository.js";
@@ -38,6 +38,7 @@ import { PgJobQueueRepository } from "../jobs/repository.js";
 import { enqueueRetrievalEmbeddingBackfillWithQueue } from "../retrieval/embedding/job.js";
 import type { ProposalAcceptResultType } from "@rainver/protocol";
 import { validateProposalPayload } from "./payloadSchemas.js";
+import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 export { ProposalPayloadValidationError } from "./payloadSchemas.js";
 
 export interface ProposalApplyContext {
@@ -145,9 +146,9 @@ async function applyMemoryProposal(context: ProposalApplyContext): Promise<Propo
     await enqueueMemoryRetrievalEmbeddingBackfill(context);
   }
 
-  const row = await context.db.query<MemoryRow>(
-    `SELECT ${MEMORY_COLUMNS} FROM memory_entries WHERE id = $1`,
-    [applied.memoryId],
+  const row = await context.db.query<WithAccessLevel<MemoryRow>>(
+    `SELECT ${memoryColumnsWithAccess("$2")} FROM memory_entries me WHERE me.id = $1`,
+    [applied.memoryId, context.userId],
   );
   const memory = row.rows[0];
   if (!memory) throw new Error("applied memory row not found after applyOnly");

@@ -1,3 +1,6 @@
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { contentAccessLevelSql } from "../access/contentAccessSql.js";
+
 export interface KnowledgeItemRow {
   id: string;
   space_id: string;
@@ -131,6 +134,7 @@ export interface SourceRow {
 export interface NoteRow {
   id: string;
   space_id: string;
+  owner_user_id?: string | null;
   title: string;
   content_json: unknown;
   content_format: string;
@@ -254,6 +258,49 @@ export const NOTE_COLUMNS = `
   n.project_role, n.role_project_id,
   note_placements.items AS placements
 `;
+
+function spaceObjectAccessLevelSql(userExpr: string): string {
+  const definition = contentResourceDefinition("space_object");
+  if (!definition) throw new Error("space_object content resource is not registered");
+  return contentAccessLevelSql({ definition, alias: "so", userExpr });
+}
+
+/**
+ * A free-text search term matched against a body, for a reader who may read it.
+ *
+ * Phase 2 stopped serving bodies to a `summary`-level reader, but a search that
+ * still *matched* on the body handed the same content back a character at a
+ * time: ask for "password: a", "password: b", and the hit list answers. The
+ * title stays searchable at every level; the body is searchable only at `full`.
+ */
+export function bodyMatchSql(bodyExpr: string, slot: string, userExpr: string): string {
+  return `(${spaceObjectAccessLevelSql(userExpr)}) = 'full' AND ${bodyExpr} ILIKE ${slot}`;
+}
+
+/** Viewer-facing item SELECT: includes the effective access level for summary redaction. */
+export function knowledgeItemColumnsWithAccess(userExpr: string): string {
+  return `${KNOWLEDGE_ITEM_COLUMNS},
+  ${spaceObjectAccessLevelSql(userExpr)} AS effective_access_level`;
+}
+
+/** Viewer-facing claim SELECT: includes the effective access level for summary redaction. */
+export function claimColumnsWithAccess(userExpr: string): string {
+  return `${CLAIM_COLUMNS},
+  ${spaceObjectAccessLevelSql(userExpr)} AS effective_access_level`;
+}
+
+/** Viewer-facing source SELECT: includes the effective access level for summary redaction. */
+export function sourceColumnsWithAccess(userExpr: string): string {
+  return `${SOURCE_COLUMNS},
+  ${spaceObjectAccessLevelSql(userExpr)} AS effective_access_level`;
+}
+
+/** Viewer-facing note SELECT: includes owner and effective access level for summary redaction. */
+export function noteColumnsWithAccess(userExpr: string): string {
+  return `${NOTE_COLUMNS},
+  so.owner_user_id,
+  ${spaceObjectAccessLevelSql(userExpr)} AS effective_access_level`;
+}
 
 export const NOTE_FROM = `
   notes n

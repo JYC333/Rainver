@@ -1,4 +1,6 @@
 import type { ServerConfig } from "../../../config.js";
+import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
+import { loadViewerSpaceRole } from "../../retrieval/sourcePolicy.js";
 import { getDbPool, type Pool } from "../../../db/pool.js";
 import type {
   RetrievalObjectType,
@@ -35,8 +37,10 @@ import { ProviderQueryEmbedder } from "../../retrieval/embedding/queryEmbedder.j
 import { ProviderReranker } from "../../retrieval/rerankProvider/providerReranker.js";
 import { readSpaceRetrievalSettings } from "../../retrieval/settings.js";
 import { resolveProviderCommandStore } from "../../providers/commands/store.js";
+import { contentDecisionFromDb } from "../../access/contentAccessQuery.js";
 import { assertSourcePromptEgressAllowed } from "../sourcePromptEgress.js";
-import { ITEM_COLUMNS, type EvidenceRow, type SourceItemRow, type SourceConnectionRow } from "../sourceRepositoryRows.js";
+import { sourceItemFullContentReadClause } from "../sourceItemAccess.js";
+import { itemColumnsForAlias, type EvidenceRow, type SourceItemRow, type SourceConnectionRow } from "../sourceRepositoryRows.js";
 import { sourceRetrievalRegistry } from "../retrievalAdapter.js";
 import { contentReadSql } from "../../access/contentAccessSql.js";
 import {
@@ -228,6 +232,12 @@ export class SourcePostProcessingService {
     itemIds: string[];
     actorUserId: string | null;
     sourceRunId: string | null;
+    /**
+     * The trigger of the run that asked for this analysis: `manual` when a
+     * person asked, otherwise the rule's own trigger, so an automatic
+     * follow-up is decided as the unattended work it is.
+     */
+    triggerType: SourcePostProcessingTriggerType;
   }): Promise<SourcePostProcessingRunOut | null> {
     if (input.itemIds.length === 0) return null;
     const repo = new PgSourcePostProcessingRepository(this.db);
@@ -262,11 +272,11 @@ export class SourcePostProcessingService {
       connection,
       agentId: rule.agent_id,
       projectId: rule.project_id,
-      triggerType: "manual",
+      triggerType: input.triggerType,
       actorUserId: input.actorUserId ?? rule.created_by_user_id,
       actions: deepActions,
       inputConfig: deepInputConfig,
-      triggerConfig: normalizeTriggerConfig(rule.trigger_config_json, "manual"),
+      triggerConfig: normalizeTriggerConfig(rule.trigger_config_json, input.triggerType),
       batch,
       summaryGoal: deepInputConfig.summary_goal ?? baseInputConfig.summary_goal ?? null,
     });
@@ -406,6 +416,7 @@ export class SourcePostProcessingService {
     if (filters.projectId) await this.assertProjectInSpace(identity.spaceId, filters.projectId);
     return new PgSourcePostProcessingRepository(this.db).listDecisions({
       spaceId: identity.spaceId,
+      userId: identity.userId,
       connectionId: filters.connectionId,
       projectId: filters.projectId,
       ruleId: filters.ruleId,
@@ -468,16 +479,22 @@ export class SourcePostProcessingService {
     run?: SourcePostProcessingRunOut;
   }> {
     const repo = new PgSourcePostProcessingRepository(this.db);
-    const decision = await repo.getDecision(identity.spaceId, decisionId);
+    const decision = await repo.getDecision(identity.spaceId, identity.userId, decisionId);
     if (!decision) throw new HttpError(404, "Post-processing decision not found");
     const connection = await this.requireConnection(identity.spaceId, decision.source_channel_id);
     const action = requiredString(body.action, "action");
+    if (action === "queue_content" || action === "extract_evidence") {
+      if ((await contentDecisionFromDb(this.db, identity, "source_item", decision.source_item_id)) !== "full") {
+        throw new HttpError(404, "Post-processing decision not found");
+      }
+    }
     if (action === "select" || action === "triage" || action === "ignore") {
       const status = action === "select" ? "selected" : action === "ignore" ? "ignored" : "triaged";
       await repo.setItemStatus(identity.spaceId, identity.userId, decision.source_item_id, status);
       return {
         decision: await repo.updateDecisionReview({
           spaceId: identity.spaceId,
+          userId: identity.userId,
           decisionId,
           reviewStatus: action === "ignore" ? "ignored" : "accepted",
           action: { [action]: { at: new Date().toISOString(), by_user_id: identity.userId } },
@@ -497,6 +514,7 @@ export class SourcePostProcessingService {
       return {
         decision: await repo.updateDecisionReview({
           spaceId: identity.spaceId,
+          userId: identity.userId,
           decisionId,
           reviewStatus: "queued",
           action: { queue_content: { at: new Date().toISOString(), by_user_id: identity.userId, job_ids: jobIds } },
@@ -505,7 +523,7 @@ export class SourcePostProcessingService {
       };
     }
     if (action === "extract_evidence") {
-      const item = await this.loadDecisionItem(identity.spaceId, decision.source_item_id);
+      const item = await this.loadDecisionItem(identity, decision.source_item_id);
       if (!item) throw new HttpError(404, "Source item not found");
       const evidenceId = await repo.insertEvidence({
         spaceId: identity.spaceId,
@@ -536,6 +554,7 @@ export class SourcePostProcessingService {
       return {
         decision: await repo.updateDecisionReview({
           spaceId: identity.spaceId,
+          userId: identity.userId,
           decisionId,
           reviewStatus: "accepted",
           action: { extract_evidence: { at: new Date().toISOString(), by_user_id: identity.userId, evidence_id: evidenceId } },
@@ -543,7 +562,7 @@ export class SourcePostProcessingService {
       };
     }
     if (action === "create_proposal") {
-      const item = await this.loadDecisionItem(identity.spaceId, decision.source_item_id);
+      const item = await this.loadDecisionItem(identity, decision.source_item_id);
       if (!item) throw new HttpError(404, "Source item not found");
       const proposalMarkdown = [
         `# ${item.title}`,
@@ -560,6 +579,11 @@ export class SourcePostProcessingService {
         projectId: decision.project_id,
         title: `Review source candidate: ${item.title}`,
         summary: proposalMarkdown,
+        // The same rule the batch path uses, not the item's own visibility: a
+        // `space_shared` item served at `summary` has its excerpt withheld from
+        // most readers, and a Space-wide Proposal carrying that excerpt is the
+        // withholding undone. One item is still a list of one.
+        visibility: narrowestItemVisibility([item]),
         payload: {
           operation: "create",
           proposed_content: proposalMarkdown,
@@ -575,6 +599,7 @@ export class SourcePostProcessingService {
       return {
         decision: await repo.updateDecisionReview({
           spaceId: identity.spaceId,
+          userId: identity.userId,
           decisionId,
           reviewStatus: "proposed",
           action: { create_proposal: { at: new Date().toISOString(), by_user_id: identity.userId, proposal_id: proposalId } },
@@ -611,6 +636,7 @@ export class SourcePostProcessingService {
       return {
         decision: await repo.updateDecisionReview({
           spaceId: identity.spaceId,
+          userId: identity.userId,
           decisionId,
           reviewStatus: "rerun",
           action: { rerun_item: { at: new Date().toISOString(), by_user_id: identity.userId, run_id: run.id } },
@@ -626,11 +652,13 @@ export class SourcePostProcessingService {
         itemIds: [decision.source_item_id],
         actorUserId: identity.userId,
         sourceRunId: decision.run_id,
+        triggerType: "manual",
       });
       if (!run) throw new HttpError(422, "Deep analysis is not enabled for this rule or item.");
       return {
         decision: await repo.updateDecisionReview({
           spaceId: identity.spaceId,
+          userId: identity.userId,
           decisionId,
           reviewStatus: "rerun",
           action: { deep_analysis: { at: new Date().toISOString(), by_user_id: identity.userId, run_id: run.id } },
@@ -642,6 +670,7 @@ export class SourcePostProcessingService {
       return {
         decision: await repo.updateDecisionReview({
           spaceId: identity.spaceId,
+          userId: identity.userId,
           decisionId,
           reviewStatus: "dismissed",
           action: { dismiss: { at: new Date().toISOString(), by_user_id: identity.userId } },
@@ -986,6 +1015,7 @@ export class SourcePostProcessingService {
         inputConfig: input.inputConfig,
         batch,
         summaryGoal: input.summaryGoal,
+        spend: this.retrievalContextSpend(input),
       });
       const extractedTextSnippets = input.inputConfig.content_source === "excerpt_only"
         ? new Map<string, string>()
@@ -1065,6 +1095,7 @@ export class SourcePostProcessingService {
       );
       result.item_decisions = mergeSyntheticItemDecisions(result.item_decisions, prefilter.syntheticDecisions);
       const materialized = await this.materializeOutputs({
+        triggerType: input.triggerType,
         sourceChannelId: input.sourceChannelId,
         connection: input.connection,
         rule: input.rule,
@@ -1357,13 +1388,14 @@ export class SourcePostProcessingService {
     itemIds: string[];
     sourceRunId: string;
     userId: string | null;
+    triggerType: SourcePostProcessingTriggerType;
   }): Promise<{ id: string }> {
     if (input.itemIds.length === 0) throw new HttpError(422, "Deep analysis follow-up requires source items");
     const job = await new PgJobQueueRepository(this.db).enqueue({
       job_type: SOURCE_POST_PROCESSING_EVENT_JOB_TYPE,
       payload: {
         phase: "deep_analysis",
-        trigger_type: "manual",
+        trigger_type: input.triggerType,
         source_channel_id: input.sourceChannelId,
         rule_id: input.ruleId,
         source_item_ids: input.itemIds,
@@ -1375,6 +1407,32 @@ export class SourcePostProcessingService {
     return { id: job.id };
   }
 
+  /**
+   * A person running post-processing by hand spends as them. A rule firing on
+   * its schedule or on new items spends on that rule, re-read at spend time:
+   * paused, archived, or its creator no longer a member, it spends nothing.
+   */
+  private retrievalContextSpend(input: {
+    rule: SourcePostProcessingRuleRow | null;
+    triggerType: SourcePostProcessingTriggerType;
+    actorUserId: string;
+  }): CredentialSpendBasis {
+    if (input.triggerType === "manual") return { kind: "person", user_id: input.actorUserId };
+    const rule = input.rule;
+    if (!rule) throw new Error("An unattended post-processing batch must come from a rule.");
+    return {
+      kind: "setup",
+      setup: "source_post_processing",
+      record_id: rule.id,
+      user_id: input.actorUserId,
+      still_authorized: async () => {
+        const current = await new PgSourcePostProcessingRepository(this.db).getRule(rule.space_id, rule.id);
+        return current?.status === "active"
+          && (await loadViewerSpaceRole(this.db, rule.space_id, input.actorUserId)) !== null;
+      },
+    };
+  }
+
   private async buildRetrievalContext(input: {
     connection: SourceConnectionRow;
     projectId: string | null;
@@ -1382,6 +1440,7 @@ export class SourcePostProcessingService {
     inputConfig: SourcePostProcessingInputConfig;
     batch: SourcePostProcessingInputBatch;
     summaryGoal: string | null;
+    spend: CredentialSpendBasis;
   }): Promise<SourcePostProcessingRetrievalContextSnapshot> {
     const config = input.inputConfig.retrieval_context;
     if (!config.enabled) return disabledRetrievalContext(config.domains);
@@ -1429,6 +1488,7 @@ export class SourcePostProcessingService {
           egressPolicy,
           queryEmbedder: new ProviderQueryEmbedder(
             store,
+            input.spend,
             null,
             undefined,
             settings.embeddingDimensions,
@@ -1436,6 +1496,7 @@ export class SourcePostProcessingService {
           ),
           reranker: settings.rerankEnabled && config.mode === "hybrid_rerank"
             ? new ProviderReranker(store, {
+                spend: input.spend,
                 databaseUrl: this.config.databaseUrl,
                 surface: domainConfig.surface,
                 egressPolicy,
@@ -1531,6 +1592,7 @@ export class SourcePostProcessingService {
     postProcessingRunId: string;
     agentRun: RunRecord;
     actorUserId: string;
+    triggerType: SourcePostProcessingTriggerType;
     items: SourceItemRow[];
     evidence: EvidenceRow[];
     actions: SourcePostProcessingActions;
@@ -1667,6 +1729,7 @@ export class SourcePostProcessingService {
             itemIds: readyItemIds,
             sourceRunId: input.postProcessingRunId,
             userId: input.actorUserId,
+            triggerType: input.triggerType,
           });
           jobIds.push(followUp.id);
         }
@@ -1681,6 +1744,7 @@ export class SourcePostProcessingService {
               source_post_processing_run_id: input.postProcessingRunId,
               source_post_processing_rule_id: input.rule.id,
               triggered_by_user_id: input.actorUserId,
+              trigger_type: input.triggerType,
               content_source: deepConfig.content_source,
             }],
           },
@@ -1699,6 +1763,7 @@ export class SourcePostProcessingService {
         projectId,
         title: `${input.connection.name} post-processing proposal`,
         summary: proposalMarkdown,
+        visibility: narrowestItemVisibility(input.items),
         payload: {
           operation: "create",
           proposed_content: proposalMarkdown,
@@ -1752,13 +1817,22 @@ export class SourcePostProcessingService {
     return connection;
   }
 
-  private async loadDecisionItem(spaceId: string, itemId: string): Promise<SourceItemRow | null> {
+  /**
+   * The item a decision is about, for a review action that republishes its
+   * content — `extract_evidence` writes it into Evidence, `create_proposal`
+   * writes it into a Proposal body. Both hand the text to readers the item's
+   * own gate never admitted, so the read is the viewer's and it demands full
+   * access: a person who may only see this item's summary may not turn its
+   * excerpt into a shared Proposal.
+   */
+  private async loadDecisionItem(identity: SpaceUserIdentity, itemId: string): Promise<SourceItemRow | null> {
     const result = await this.db.query<SourceItemRow>(
-      `SELECT ${ITEM_COLUMNS}
-         FROM source_items
-        WHERE space_id = $1 AND id = $2 AND deleted_at IS NULL
+      `SELECT ${itemColumnsForAlias("si")}
+         FROM source_items si
+        WHERE si.space_id = $1 AND si.id = $2 AND si.deleted_at IS NULL
+          AND ${sourceItemFullContentReadClause("si", "$3")}
         LIMIT 1`,
-      [spaceId, itemId],
+      [identity.spaceId, itemId, identity.userId],
     );
     return result.rows[0] ?? null;
   }
@@ -2369,6 +2443,30 @@ function contextRefKey(
   objectId: string,
 ): string {
   return `${domain}:${objectType}:${objectId}`;
+}
+
+/**
+ * How widely a Proposal that quotes several Source items may be published.
+ *
+ * The narrowest of what it quotes. A run that summarised one restricted
+ * candidate alongside ten shared ones used to publish the lot at
+ * `space_shared`, which is the copy-across-a-boundary the item's own gate
+ * exists to prevent.
+ */
+function narrowestItemVisibility(items: readonly { visibility: string; access_level?: string | null }[]): string {
+  const order = ["private", "selected_users", "space_shared"];
+  let narrowest = order.length - 1;
+  for (const item of items) {
+    const index = order.indexOf(item.visibility);
+    // An unrecognised value is treated as the narrowest there is, not as a
+    // value narrower than all of them: `indexOf` returns -1, which used to win
+    // the comparison and then be rejected by `ck_proposals_visibility`.
+    narrowest = Math.min(narrowest, index === -1 ? 0 : index);
+    // A `space_shared` item served at `summary` is withheld from most readers;
+    // republishing its excerpt Space-wide is that withholding undone.
+    if (item.access_level && item.access_level !== "full") narrowest = 0;
+  }
+  return order[narrowest]!;
 }
 
 function errorMessage(error: unknown): string {

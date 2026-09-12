@@ -99,12 +99,12 @@ export async function declareRunArtifact(
     subjectId: task.id,
     actorId: context.actorId,
     correlationId: context.runId,
+      runId: context.runId,
     idempotencyKey: `artifact.declared:${context.idempotencyKey}`,
     data: {
       summary: `Declared ${path} as ${role} (${declaration.artifact_type})${input.note ? `: ${input.note}` : ""}`,
       outcome: "progress",
       refs: [],
-      run_id: context.runId,
       artifact_path: path,
       artifact_type: declaration.artifact_type,
       artifact_role: role,
@@ -231,6 +231,7 @@ async function reportMissingDeclarations(
       subjectId: taskId,
       actorId,
       correlationId: run.id,
+      runId: run.id,
       idempotencyKey: `artifact.declared_missing:${run.id}:${taskId}`,
       data: {
         summary: `Declared but not delivered: ${paths.join(", ")}. Nothing was collected at ${
@@ -238,7 +239,6 @@ async function reportMissingDeclarations(
         }.`,
         outcome: "stuck",
         refs: [],
-        run_id: run.id,
       },
     });
   }

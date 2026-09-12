@@ -12,6 +12,14 @@ const DANGEROUS_KEYS: readonly string[] = [
   "password",
   "token",
   "api_key",
+  // Substring-matched, so this one entry covers `x-goog-api-key` and any other
+  // hyphenated spelling a vendor header uses. Deliberately *not* the bare
+  // `authorization`: this list is substring-matched, and inside the policy
+  // module — which is about authorization — it would redact
+  // `authorization_request_id` and every other field that links an audit row
+  // to its decision.
+  "api-key",
+  "cookie",
   "secret",
   "credential",
   "personal_context_block",

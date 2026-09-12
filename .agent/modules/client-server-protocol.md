@@ -1,24 +1,18 @@
 # Module: Client-Server Protocol
 
 ## Status
-**CURRENT REST + PARTIAL STREAMING** — REST API exists. Agent turn SSE exists
-at `GET /api/v1/runs/{runId}/turn/stream`. General WebSocket / real-time layer
-is not yet built.
+**REST + turn SSE.** Agent-turn SSE:
+`GET /api/v1/runs/{runId}/turn/stream`. Host pairing uses WebSocket on
+the hosts module. There is no general product event bus.
 
 ## Purpose
-Define how frontend and mobile clients communicate with the client-facing API
-entrypoint. The default path is `apps/web` -> `server` -> server-owned routes.
-Unknown `/api/v1/*` routes return `{ "detail": "Route not found" }` from the
-local catch-all. This module records REST conventions already in place, the run
-event SSE surface, and the planned real-time event layer. It is the contract
-between clients, server routing, and owning backend modules — changes here
-affect both sides.
+How the web client talks to `/api/v1`. Unknown paths return the local
+404 catch-all.
 
 ## Owns
 - REST API conventions (request/response shape, error format, pagination)
-- WebSocket event protocol (planned)
-- Server-Sent Events for streaming agent output (planned)
-- API versioning strategy
+- Agent-turn SSE
+- API versioning (`v1`)
 
 ## Does Not Own
 - Auth token generation (auth module)
@@ -31,8 +25,12 @@ affect both sides.
 
 **Auth:** Session-cookie identity is current for the web app. Google OAuth is
 available when configured. Persisted API keys are feature-gated and disabled
-until the schema adds `api_keys`. Internal service routes use the server
-internal token, not browser credentials.
+until the schema adds `api_keys`. The browser must not keep a leftover key in
+`localStorage` or send it after logout. Internal service routes use the server
+internal token, not browser credentials. The production PWA service worker
+uses NetworkOnly for `/api/v1/*` so authenticated GET bodies are not reused
+across accounts. In-app `href` values from the server must be same-origin
+paths (`/` and not `//`); the browser drops anything else.
 
 **Request body:** JSON with snake_case fields.
 
@@ -108,52 +106,6 @@ Assistant Chat is a two-step use of this transport:
 
 There is no Chat-specific streaming endpoint and no polling execution path.
 
-## Planned: Real-time Event Layer
-
-**Transport:** WebSocket at `ws://host/api/v1/ws?space_id=...`
-
-**Event envelope:**
-```json
-{
-  "event": "event_type",
-  "space_id": "personal",
-  "payload": { ... }
-}
-```
-
-**Event types:**
-
-| Event | Payload | When |
-|---|---|---|
-| `agent_run.started` | `{run_id, agent_id}` | Run begins |
-| `agent_run.output` | `{run_id, chunk}` | Streaming output chunk |
-| `agent_run.completed` | `{run_id, status, exit_code}` | Run finishes |
-| `proposal.created` | `{proposal_id, type}` | New proposal pending |
-| `proposal.resolved` | `{proposal_id, status}` | Proposal accepted/rejected |
-| `memory.updated` | `{memory_id}` | Memory record changed |
-| `status.changed` | `{component, status}` | Runtime status change |
-| `sync.conflict` | `{record_type, record_id}` | Sync conflict detected |
-
-**Client → server messages:**
-```json
-{ "action": "subscribe", "channels": ["agent_runs", "proposals"] }
-{ "action": "ping" }
-```
-
-## Planned: Generic SSE for Agent Output
-
-The generic `GET /api/v1/runs/{id}/stream` route is not the current product
-surface. Use the run-event SSE endpoint above until a separate output stream is
-implemented.
-
-```
-GET /api/v1/runs/{id}/stream
-Accept: text/event-stream
-
-data: {"chunk": "...", "run_id": "..."}
-data: {"done": true, "exit_code": 0}
-```
-
 ## API Versioning
 
 - Current: `v1` prefix on all routes
@@ -170,8 +122,6 @@ data: {"done": true, "exit_code": 0}
 - Unknown `/api/v1/*` routes fail closed through the local 404 catch-all.
 - Internal `/internal/*` routes are service-authenticated and are not browser
   product APIs.
-- WebSocket connection is planned per space. Until then, run-event streaming
-  uses SSE.
 - Error responses must be client-safe and never expose stack traces.
 
 ## Related Files
@@ -182,7 +132,9 @@ data: {"done": true, "exit_code": 0}
 - `apps/web/src/types/api.ts` — web-local API/view types during protocol alignment
 
 ## Related Modules
-- [product-shell.md](product-shell.md) — shell connects to WebSocket for live proposal badges
-- [server-status.md](server-status.md) — status events pushed over WebSocket
-- [agents.md](agents.md) — agent run output streamed via SSE
-- [sync-and-conflicts.md](sync-and-conflicts.md) — sync conflict events over WebSocket
+- [product-shell.md](product-shell.md)
+- [server-status.md](server-status.md)
+- [agents.md](agents.md)
+
+Unimplemented generic WS / chunk SSE:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §7.

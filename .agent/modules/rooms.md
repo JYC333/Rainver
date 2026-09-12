@@ -568,7 +568,9 @@ applier's own `assertProjectOwnerLevel` asks.
 `GET /projects/:projectId/conversations` (`listProjectConversations`) is the
 Project's one list of everything said: every active conversation in every
 active Room the viewer is a member of, mainline first, then by last activity,
-each with its Room, its last message and its message count. Reading it enrols
+each with its Room, its last visible message and its visible-message count.
+Internal execution instructions (`room_display = internal`) are excluded from
+that preview and count, as they are from the transcript. Reading it enrols
 the viewer in the mainline exactly as opening the Project does. It backs the
 Conversations destination in the Project shell; the Rooms page stays the full
 per-Room surface.
@@ -832,3 +834,24 @@ the order it was assembled.
   message is its own collaboration task.
 - The vendor CLI runtime session, when resumed, is permitted runtime state and
   never a source of truth — Rainver retains full replay capability (ADR 0004).
+
+## What a person reads of a conversation
+
+Every reader of `messages` that answers a person uses
+`visibleRoomTranscriptSql` — the page, the pick-by-id surface, the recent
+context window — and it is applied unconditionally rather than behind a flag:
+`room_display = 'internal'` is written only by `addRoomInternalInstruction`, so
+it is vacuous for an ordinary session, and a flag deciding whether to apply the
+rule was a second copy of it. Agent replay and continuation lookups still read
+the internal rows through `visibleMessagePathSql`, which is why they are stored
+in order at all.
+
+A domain-event continuation is the system talking to the Room's own Agents. It
+is stored as a `user_instruction` so replay sees it in order, and carries
+`room_display = internal` on its agent-group row as well, so the group timeline
+does not show machine prose under the manager's name. The group such a
+continuation opens is named after the event, not after the instruction text.
+
+The group timeline is gated per message by the Run that produced it: a group is
+reached through its root Run, and a child Run inside it can be private or belong
+to a Room the viewer left.

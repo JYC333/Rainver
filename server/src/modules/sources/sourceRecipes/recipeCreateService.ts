@@ -5,6 +5,7 @@ import type {
 } from "@rainver/protocol";
 import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
+import type { OutboundGuard } from "../outboundUrlSafety.js";
 import {
   HttpError,
   objectValue,
@@ -25,7 +26,7 @@ import {
   type SourceRetentionPolicy,
 } from "../capturePolicy.js";
 import { evaluateCustomSourceActivation } from "../customSources/customSourceCreateFlowService.js";
-import { fetchAllowedOriginResponse, truncateToByteLimit } from "../customSources/customSourceEndpointFetch.js";
+import { fetchAllowedOriginResponse, guardedResponseText } from "../customSources/customSourceEndpointFetch.js";
 import { cleanupSandbox } from "../customSources/customSourceRunner.js";
 import { analyzeSourceRecipe } from "./primitiveRegistry.js";
 import { buildRecipeForSourceType, detectPlannedSourceType, type PlannedSourceType } from "./recipePlanner.js";
@@ -57,6 +58,12 @@ export class SourceRecipeCreateService {
   constructor(
     private readonly pool: Pool,
     private readonly config: ServerConfig,
+    /**
+     * The outbound boundary live fetches go through. Production leaves it out
+     * and gets the instance's guard; a test supplies one pinned at its own
+     * fixture server, because the guard refuses loopback by design.
+     */
+    private readonly guard?: OutboundGuard,
   ) {}
 
   async planSource(identity: SpaceUserIdentity, body: Record<string, unknown>) {
@@ -72,9 +79,11 @@ export class SourceRecipeCreateService {
       try {
         const response = await fetchAllowedOriginResponse(endpointUrl, [endpointOrigin], {
           signal: AbortSignal.timeout(Math.min(15_000, settings.runner.timeout_ms_max)),
+          maxDownloadBytes: settings.runner.download_bytes_max,
+          ...(this.guard ? { guard: this.guard } : {}),
         });
         if (response.ok) {
-          contentSample = truncateToByteLimit(await response.text(), settings.runner.download_bytes_max);
+          contentSample = guardedResponseText(response);
         } else {
           fetchWarning = `endpoint returned HTTP ${response.status} during planning`;
         }

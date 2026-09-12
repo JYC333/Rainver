@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { helperProcessEnv } from "./providerBinding.js";
 import { heldAccounts, installedTools, loggedIn, managedInstallationId, OWN_INSTALLATION, rollbackTargetFor, type ToolLoginSpec, type ToolManifest } from "./tools.js";
 import type { RuntimeOptions, RuntimeAccount } from "@rainver/protocol";
 import { homedir } from "node:os";
@@ -58,7 +59,13 @@ export interface DaemonCapabilities {
 function probeVersion(bin: string, timeoutMs = 4000): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
-    const child = spawn(bin, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
+    // The version probe gets the same helper environment every other probe
+    // does. It passed nothing, so it was the one spawn still handed the
+    // machine's whole environment, vendor keys included.
+    const child = spawn(bin, ["--version"], {
+      env: helperProcessEnv(process.env),
+      stdio: ["ignore", "pipe", "ignore"],
+    });
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -132,9 +139,13 @@ function supportsManagedCliLogin(manifest: ToolManifest, entryArgs: string[]): P
   if (cached) return cached;
   const result = new Promise<boolean>((resolve) => {
     let settled = false;
-    const env = { ...process.env, ...manifest.env, HOME: manifest.home } as Record<string, string | undefined>;
-    delete env.ANTHROPIC_API_KEY;
-    delete env.OPENAI_API_KEY;
+    // Two named deletions were a denylist of length two; this is the one the
+    // rest of the daemon uses, so a new vendor key is dropped here too.
+    const env: Record<string, string | undefined> = {
+      ...helperProcessEnv(process.env, manifest.adapter_type ?? ""),
+      ...manifest.env,
+      HOME: manifest.home,
+    };
     const child = spawn(manifest.command, [...entryArgs, "login", "--help"], {
       cwd: manifest.home,
       env,

@@ -11,12 +11,15 @@ a vendor CLI's own auto-memory.
 
 - `server/src/modules/memory/` owns Memory read/proposal/apply behavior and its
   Retrieval domain adapter.
-- The Memory applier is the only writer of active `memory_entries`, by either
-  of two routes ([ADR 0003](../decisions/0003-memory-proposal-flow.md)): a
-  proposal a person approved, or an Agent's own bounded write
+- The Memory applier is the only writer of active `memory_entries`, by three
+  routes ([ADR 0003](../decisions/0003-memory-proposal-flow.md)): a
+  proposal a person approved, an Agent's own bounded write
   (`applyDirect`) that stays private and normal-sensitivity and within its
   scope's bounds — about the person in the turn for a user-scope entry, about
-  the Agent itself for an agent-scope one. No adapter, job or route inserts
+  the Agent itself for an agent-scope one. A person importing a published
+  user-memory snapshot also goes through the same repository
+  (`applyPublicationImport`): private, normal-sensitivity, attributed to the
+  importer, with user-confirmation provenance. No adapter, job or route inserts
   around it.
 - User Memory is human-owned and Project-free. Project Memory is Project-owned
   and shared only through the Project access boundary. Agent Memory
@@ -104,14 +107,16 @@ Agent's owner — the direct-chat case, and the only one the applier accepts a
 Room-less note from. A **persona** is the one
 entry type whose gate is the Run's trigger rather than its reach
 ([ADR 0003](../decisions/0003-memory-proposal-flow.md) §5): read from
-the **root** Run's `trigger_origin` and `instructed_by_user_id`
-(`systemActions/effectiveTriggerOrigin.ts`, so one hop of delegation changes
+the **root** Run's `trigger_origin` and `instructed_by_user_id` together
+(`systemActions/effectiveRunTrigger.ts`, so one hop of delegation changes
 nothing), never from the prompt.
 The owner's own `manual` turn produces a proposal decided in that turn; anyone
 else's `manual` turn produces a proposal only the owner can accept. Its preview
 is projected from the proposal authority for that owner and is never stored in
-the shared Room message, so the instructing member receives nothing; an
-unattended origin applies directly. A **revision** made that way is
+the shared Room message, so the instructing member receives nothing. An
+unattended origin applies directly when the person responsible for that work is
+the Agent's owner, and otherwise leaves the owner the same proposal — unattended
+is not unowned, and a persona reaches every Room whoever scheduled the Run. A **revision** made that way is
 recorded where the write happened — `agent.persona_revised` in the Project's
 updates when the Run had a Project, carrying what it replaced and a one-step
 `restore_memory`; outside a Project, a private content-free Activity Inbox

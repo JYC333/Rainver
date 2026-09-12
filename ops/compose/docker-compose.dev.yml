@@ -33,6 +33,7 @@ services:
       - ../../server/tsconfig.json:/app/server/tsconfig.json:ro
       - ../../packages/protocol/src:/app/packages/protocol/src:ro
       - ../../packages/folder-read/src:/app/packages/folder-read/src:ro
+      - ../../packages/outbound-guard/src:/app/packages/outbound-guard/src:ro
       - ../../plugins:/app/plugins:ro
       # Prompt/catalog edits must reach the boot-time builtin sync without an
       # image rebuild; a server restart is enough with the mount in place.
@@ -45,14 +46,17 @@ services:
       - RAINVER_ENV=dev
       - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-rainver}:${POSTGRES_PASSWORD:-rainver_dev_password}@postgres:5432/${POSTGRES_DB:-rainver}}
       - SANDBOX_RUNNER_SERVER_HOST=server
+      # The only peer whose X-Forwarded-* the server believes (the Vite proxy).
+      - SERVER_TRUSTED_PROXY_HOST=frontend
       # Binding a paired execution host to a ModelProvider needs the provider
       # proxy reachable from that machine. Fixed here so the published mapping
       # below is stable; PROVIDER_PROXY_EXTERNAL_BASE_URL is deliberately not
       # declared, because an `environment:` entry would override `.server.env`
       # — set it in the instance `.env`, which `.server.env` is generated from
-      # (e.g. http://<this-machine>:8021), to enable remote
-      # binding. Unset, dispatch says so rather than handing out a URL the
-      # host cannot resolve.
+      # (e.g. http://<this-machine>:8021), when paired hosts should reach the
+      # proxy somewhere other than FRONTEND_URL's host. Unset, a paired host
+      # gets one derived from an http: FRONTEND_URL plus this port.
+      - PROVIDER_PROXY_LISTEN_HOST=0.0.0.0
       - PROVIDER_PROXY_PORT=${PROVIDER_PROXY_PORT:-8021}
     ports:
       # Loopback by default, like prod. A daemon on another machine needs

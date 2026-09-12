@@ -56,9 +56,28 @@ export function buildGoogleAuthUrl(config: ServerConfig, state: string): string 
   return `${GOOGLE_AUTH_URL}?${params.toString()}`;
 }
 
+/**
+ * Where to send the person after login: an in-app path, or nowhere.
+ *
+ * This value is appended to `FRONTEND_URL` and handed to the browser as a
+ * redirect, so anything that resolves off-site is an open redirect out of the
+ * OAuth callback. Judged by resolving it the way the browser will, not as
+ * text: `/..//evil.example` has one leading slash, no backslash, and collapses
+ * to `//evil.example`. A backslash is refused outright because browsers have
+ * historically read it as a slash.
+ */
 export function safeNextUrl(raw: string | undefined): string {
   if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return "";
-  return raw;
+  if (raw.includes("\\") || /[\u0000-\u001F\u007F]/.test(raw)) return "";
+  try {
+    const base = "https://app.invalid";
+    const url = new URL(raw, base);
+    if (url.origin !== base) return "";
+    const resolved = `${url.pathname}${url.search}${url.hash}`;
+    return resolved.startsWith("//") ? "" : resolved;
+  } catch {
+    return "";
+  }
 }
 
 export function loginErrorUrl(config: ServerConfig, reason: string): string {

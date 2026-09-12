@@ -71,4 +71,14 @@ describe('HomePage (user-scoped Today Command Center)', () => {
     expect((await screen.findAllByText('A team proposal')).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('Acme Team')).length).toBeGreaterThan(0)
   })
+
+  it('keeps the aside sections in the page so a stacked narrow layout still has them', async () => {
+    const { container } = render(<MemoryRouter future={routerFuture}><HomePage /></MemoryRouter>)
+    await waitForHomeData()
+
+    expect(container.querySelector('.page-dashboard')).toBeTruthy()
+    expect(screen.getByText('Needs attention')).toBeInTheDocument()
+    expect(screen.getByText('Pending review')).toBeInTheDocument()
+    expect(screen.getByText('Your tasks')).toBeInTheDocument()
+  })
 })

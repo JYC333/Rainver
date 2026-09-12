@@ -5,7 +5,8 @@ import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import type { Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { reconcileProjectResearch } from "../src/modules/scheduler/backgroundServices.js";
 import { isRetryableSourcePostProcessingFailure, sourcePostProcessingFailureCode, SourcePostProcessingRecoveryService } from "../src/modules/sources/postProcessing/recoveryService.js";
-import { normalizeActions, normalizeInputConfig, type SourcePostProcessingRunOut } from "../src/modules/sources/postProcessing/repository.js";
+import { emitSourcePostProcessingDeepAnalysisEvent } from "../src/modules/sources/postProcessing/eventEmitter.js";
+import { normalizeActions, normalizeInputConfig, SOURCE_POST_PROCESSING_EVENT_JOB_TYPE, type SourcePostProcessingRunOut } from "../src/modules/sources/postProcessing/repository.js";
 import { defaultModelProviderForSpace, promptBudgetCharsFor, sourcePostProcessingExecutionRequest, validateSourcePostProcessingInputContextBinding } from "../src/modules/sources/postProcessing/service.js";
 import { seedAgentWithVersion, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { seedArxivSourceChain } from "./support/researchSeeds.js";
@@ -378,5 +379,61 @@ describe("sourcePostProcessingService", () => {
       });
     });
 
+  });
+});
+
+describe("sourcePostProcessingFollowUpDb", () => {
+  const SPACE = "d6d6d6d6-0000-4000-8000-000000000001";
+  const CHANNEL = "d6d6d6d6-0000-4000-8000-000000000002";
+  const RULE = "d6d6d6d6-0000-4000-8000-000000000003";
+  const ITEM = "d6d6d6d6-0000-4000-8000-000000000004";
+  const db = useTestDatabase(`${import.meta.filename}#sourcePostProcessingFollowUpDb`);
+
+  beforeEach(async () => {
+    if (!db.available) return;
+    await resetTables(db.pool, ["jobs", "spaces"], { cascade: true });
+    // A queued job belongs to a Space; without the row the emitter's
+    // best-effort enqueue fails and is swallowed, hiding what these tests check.
+    await db.pool.query(
+      `INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Main', 'personal', now(), now())`,
+      [SPACE],
+    );
+  });
+
+  function followUp(extra: Record<string, unknown>) {
+    return emitSourcePostProcessingDeepAnalysisEvent(db.pool, {
+      spaceId: SPACE,
+      sourceChannelId: CHANNEL,
+      sourceItemId: ITEM,
+      metadata: {
+        source_post_processing_followups: [{
+          phase: "deep_analysis",
+          source_post_processing_rule_id: RULE,
+          source_post_processing_run_id: null,
+          triggered_by_user_id: null,
+          ...extra,
+        }],
+      },
+    });
+  }
+
+  async function queuedTriggerTypes(): Promise<unknown[]> {
+    const jobs = await db.pool.query<{ payload_json: { trigger_type?: unknown } }>(
+      `SELECT payload_json FROM jobs WHERE job_type = $1`,
+      [SOURCE_POST_PROCESSING_EVENT_JOB_TYPE],
+    );
+    return jobs.rows.map((row) => row.payload_json.trigger_type);
+  }
+
+  it("carries the trigger of the run that asked for a deep-analysis follow-up, so a scheduled rule's stays unattended", async () => {
+    if (!db.available) return;
+    await followUp({ trigger_type: "schedule" });
+    expect(await queuedTriggerTypes()).toEqual(["schedule"]);
+  });
+
+  it("queues nothing for a follow-up that does not say what triggered it", async () => {
+    if (!db.available) return;
+    await followUp({});
+    expect(await queuedTriggerTypes()).toEqual([]);
   });
 });

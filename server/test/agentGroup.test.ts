@@ -66,7 +66,7 @@ describe("agentAssistantSettingsRepository", () => {
       }
       if (norm.includes("FROM agents a")) {
         // Honour the scope predicate rather than answering every agents read.
-        // `getDefaultAssistant` names the *Space's* Assistant; a fake that
+        // `defaultAssistantId` names the *Space's* Assistant; a fake that
         // returns one for any query would keep passing if that pin were
         // dropped and the pointer started naming a Project's instance.
         return /project_id IS NULL/i.test(norm)

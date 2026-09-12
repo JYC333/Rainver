@@ -59,3 +59,17 @@ describe('Shell scene sidebar collapse', () => {
     expect(within(sidebar).getByRole('link', { name: 'Digests' })).toHaveAttribute('href', '/spaces/personal-1/library/digests')
   })
 })
+
+describe('Shell mobile tab bar', () => {
+  it('lists the five daily destinations and keeps Command Center off the bar', () => {
+    render(<MemoryRouter initialEntries={['/home']} future={routerFuture}><Shell /></MemoryRouter>)
+
+    const tabs = screen.getByRole('navigation', { name: 'Primary' })
+    expect(within(tabs).getByRole('link', { name: 'Home' })).toBeInTheDocument()
+    expect(within(tabs).getByRole('link', { name: 'Inbox' })).toBeInTheDocument()
+    expect(within(tabs).getByRole('link', { name: 'Library' })).toBeInTheDocument()
+    expect(within(tabs).getByRole('link', { name: 'Review' })).toBeInTheDocument()
+    expect(within(tabs).getByRole('link', { name: 'Tasks' })).toBeInTheDocument()
+    expect(within(tabs).queryByRole('link', { name: 'Command Center' })).toBeNull()
+  })
+})

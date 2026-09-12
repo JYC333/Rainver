@@ -19,7 +19,9 @@ Room turns, and local CLI adapters all enter through
 
 Canonical bodies remain in their owning domains. Runtime Context persists refs,
 delivery evidence, safe projections, and continuity state; it is not a second
-Memory, Message, Project, Policy, or Retrieval store.
+Memory, Message, Project, Policy, or Retrieval store. Retrieval authorization
+stamps each item's `owner_user_id` and visibility from the canonical source so
+`context_taint_json` can require contributing-owner egress review.
 
 ## Invocation contract
 

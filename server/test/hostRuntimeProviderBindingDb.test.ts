@@ -547,7 +547,7 @@ describe("binding carried onto the Run", () => {
     const full = await db.pool.query<RunRecord>(
       `SELECT * FROM runs WHERE host_task_thread_id = $1`, [THREAD],
     );
-    const view = runToOut(full.rows[0]!).resolved_model as Record<string, unknown>;
+    const view = runToOut({ ...full.rows[0]!, effective_access_level: "full" }).resolved_model as Record<string, unknown>;
     expect(view.provider_id).toBe(CLAUDE_PROVIDER);
     expect(view.model).toBe("MiniMax-M2");
     expect(view.source).toBe("request");
@@ -815,7 +815,7 @@ describe("binding carried onto the Run", () => {
     // and the read model are tested together.
     const remote = await resolveRunRemoteness(db.pool, [row.rows[0]!]);
     expect(remote.has(runId)).toBe(true);
-    const view = runToOut(row.rows[0]!, null, { executes_remotely: remote.has(runId) }).resolved_model as Record<string, unknown>;
+    const view = runToOut({ ...row.rows[0]!, effective_access_level: "full" }, null, { executes_remotely: remote.has(runId) }).resolved_model as Record<string, unknown>;
     expect(view.used_by_adapter).toBe(false);
     expect(view.disclosure_note).toContain("remote execution host");
   });
@@ -1025,6 +1025,51 @@ describe("carrying the binding to the executing host", () => {
       ttlSeconds: 60, leaseRegistry: registry, db: db.pool,
     })).rejects.toMatchObject({ code: "claude_compatible_base_url_required" });
     expect(registry.size()).toBe(0);
+  });
+
+  it("leases an Automation Run a key only while its Automation holds a credential grant", async () => {
+    if (!db.available) return;
+    setProviderProxyBaseUrlForProcess("http://server:8021", EXTERNAL);
+    const registry = new ProviderProxyLeaseRegistry();
+    const dispatched = await boundRun();
+    // The same bound Run, fired by an Automation: nobody is present, so the
+    // lease rests on the Automation's standing grant and nothing else.
+    const automation = randomUUID();
+    await db.pool.query(
+      `INSERT INTO automations (id, space_id, owner_user_id, agent_id, name, trigger_type, status, config_json, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'Nightly','schedule','active','{}'::jsonb,now(),now())`,
+      [automation, SPACE, OWNER, dispatched.agent_id],
+    );
+    await db.pool.query(
+      `INSERT INTO automation_runs (id, automation_id, run_id, triggered_by_user_id, trigger_type, created_at)
+       VALUES ($1,$2,$3,$4,'schedule',now())`,
+      [randomUUID(), automation, dispatched.id, OWNER],
+    );
+    await db.pool.query(`UPDATE runs SET trigger_origin = 'automation' WHERE id = $1`, [dispatched.id]);
+    const run = { ...dispatched, trigger_origin: "automation" };
+    const scope = await resolveRuntimeProfileScope(db.pool, run, LOCATION);
+    const lease = () => buildRemoteProviderBinding({
+      config: config(), run, hostId: HOST, adapterType: "claude_code",
+      binding: { provider_id: CLAUDE_PROVIDER, model: null, origin: "dispatch" },
+      scope, ttlSeconds: 60, leaseRegistry: registry, db: db.pool,
+    });
+
+    await expect(lease()).rejects.toMatchObject({ code: "policy_denied_runtime_use_credential" });
+    expect(registry.size()).toBe(0);
+
+    const grant = randomUUID();
+    await db.pool.query(
+      `INSERT INTO automation_credential_grants (id, space_id, automation_id, granted_by_user_id, status, created_at)
+       VALUES ($1,$2,$3,$4,'active',now())`,
+      [grant, SPACE, automation, OWNER],
+    );
+    await lease();
+    expect(registry.size()).toBe(1);
+
+    // Revoked while the Run is still queued: its next lease is refused.
+    await db.pool.query(`UPDATE automation_credential_grants SET status = 'revoked' WHERE id = $1`, [grant]);
+    await expect(lease()).rejects.toMatchObject({ code: "policy_denied_runtime_use_credential" });
+    expect(registry.size()).toBe(1);
   });
 });
 
@@ -1286,34 +1331,38 @@ describe("what counts as executing remotely", () => {
 });
 
 describe("where a host reaches the provider proxy", () => {
-  it("derives the address from what the daemon reports, so nothing has to be configured", () => {
-    // The server cannot guess this: its own in-network hostname is a Compose
-    // service name no paired machine can resolve. The daemon already knows the
-    // address it connects to, so the proxy's address follows from it.
-    expect(hostProviderProxyBaseUrl(
-      { daemon_server_url: "http://192.168.1.5:3000" }, 8021,
-    )).toBe("http://192.168.1.5:8021");
-    // A path on the reported URL is not part of the proxy's address.
-    expect(hostProviderProxyBaseUrl(
-      { daemon_server_url: "https://space.example.com/api/" }, 8021,
-    )).toBe("https://space.example.com:8021");
+  const paired = { provider_proxy_base_url: null, kind: "remote" };
+  const builtin = { provider_proxy_base_url: null, kind: "server" };
+  const config = (env: Record<string, string> = {}) =>
+    loadConfig({ FRONTEND_URL: "http://space.example.com/app/", PROVIDER_PROXY_PORT: "8021", ...env });
+
+  it("derives a paired host's address from FRONTEND_URL, never from what a daemon reports", () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", null);
+    // A path on the control-plane address is not part of the proxy's address.
+    expect(hostProviderProxyBaseUrl(paired, config())).toBe("http://space.example.com:8021");
   });
 
-  it("prefers an explicit per-host override", () => {
-    expect(hostProviderProxyBaseUrl(
-      { daemon_server_url: "http://192.168.1.5:3000", provider_proxy_base_url: "https://proxy.example.com" },
-      8021,
-    )).toBe("https://proxy.example.com");
+  it("does not derive a plaintext proxy address from an https control plane", () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", null);
+    expect(hostProviderProxyBaseUrl(paired, config({ FRONTEND_URL: "https://space.example.com" }))).toBeNull();
   });
 
-  it("declines to guess when it has nothing to derive from", () => {
-    // A daemon that has not reconnected since this field existed, an
-    // OS-assigned proxy port, or an unparseable report: the caller falls back
-    // to the instance-wide setting rather than inventing an address.
-    expect(hostProviderProxyBaseUrl({ daemon_server_url: null }, 8021)).toBeNull();
-    expect(hostProviderProxyBaseUrl({ daemon_server_url: "http://192.168.1.5:3000" }, 0)).toBeNull();
-    expect(hostProviderProxyBaseUrl({ daemon_server_url: "not a url" }, 8021)).toBeNull();
-    expect(hostProviderProxyBaseUrl(null, 8021)).toBeNull();
+  it("keeps the built-in host on the in-network listener even when an external address is published", () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", "http://192.168.1.5:8021");
+    expect(hostProviderProxyBaseUrl(builtin, config())).toBe("http://server:8021");
+  });
+
+  it("prefers an explicit per-host override, then the instance-wide setting", () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", "https://proxy.instance.example/");
+    expect(hostProviderProxyBaseUrl({ ...paired, provider_proxy_base_url: "https://proxy.example.com/" }, config()))
+      .toBe("https://proxy.example.com");
+    expect(hostProviderProxyBaseUrl(paired, config())).toBe("https://proxy.instance.example");
+  });
+
+  it("declines to guess with an OS-assigned proxy port and nothing configured", () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", null);
+    // PROVIDER_PROXY_PORT unset is the OS-assigned case (port 0).
+    expect(hostProviderProxyBaseUrl(paired, loadConfig({ FRONTEND_URL: "https://space.example.com" }))).toBeNull();
   });
 });
 

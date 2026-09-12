@@ -1,5 +1,6 @@
 import { completeProviderEmbedding } from "../../providers/invocation/invocation.js";
 import type { ProviderCommandStore } from "../../providers/commands/store.js";
+import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import type { QueryEmbedder } from "../index.js";
 import type { RetrievalEgressPolicy } from "../egress/egressPolicy.js";
 import { DEFAULT_EMBED_DIMENSIONS, RETRIEVAL_EMBEDDING_TASK } from "./config.js";
@@ -18,6 +19,8 @@ import { sharedQueryEmbeddingCache, type QueryEmbeddingCache } from "./queryEmbe
 export class ProviderQueryEmbedder implements QueryEmbedder {
   constructor(
     private readonly store: ProviderCommandStore,
+    /** Who the searches this embedder serves spend for. */
+    private readonly spend: CredentialSpendBasis,
     private readonly providerId: string | null = null,
     private readonly cache: QueryEmbeddingCache = sharedQueryEmbeddingCache,
     private readonly expectedDimensions: number = DEFAULT_EMBED_DIMENSIONS,
@@ -45,6 +48,7 @@ export class ProviderQueryEmbedder implements QueryEmbedder {
         inputType: "query",
         egressPolicy: this.egressPolicy,
         metering: { subject_user_id: opts.subjectUserId },
+        spend: this.spend,
       });
       const vector = result.vectors[0];
       if (!Array.isArray(vector) || vector.length !== this.expectedDimensions) return null;

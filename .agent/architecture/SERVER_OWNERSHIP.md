@@ -19,7 +19,7 @@ Rules:
 | Context / surface | Server owns today | Deferred / fail-closed |
 |---|---|---|
 | Auth / spaces / identity | Session-cookie identity resolution, Google OAuth login/callback/config, `GET /auth/introspect`, `GET /me`, `GET /me/spaces`, `POST /auth/logout`, feature-gated API-key routes, `POST /spaces`, `GET /spaces/{id}`, `GET /spaces/{id}/members`, `POST /spaces/{id}/invitations`, `POST /invitations/{token}/accept`, and deterministic space-created default seeds | DB-persisted API-key storage until the canonical schema adds an `api_keys` table |
-| Providers/credentials | Provider reads, commands, invocation, API-key credential pools, CLI credential login/broker/audit, internal provider/credential ports | — |
+| Providers/credentials | Provider reads, commands, invocation, API-key credential pools, internal provider/credential ports. No CLI credential is brokered (ADR 0016) | — |
 | Usage metering | Append-only normalized token ledger, source/owner attribution snapshots, copied selected-user grants, pricing enrichment, permission-filtered dashboard aggregation, private CLI-history import, and de-identified instance operations totals. Provider/model invocations must enter through the required metering context on `completeProvider*` or the provider proxy. | Billing and payment enforcement |
 | Runtime adapters | `RuntimeAdapterSpec` catalog, adapter-type semantics, runtime-tool binding reads, server runtime-host/tool integration, and the local/Docker CLI executors | managed API tool execution |
 | Agents | Agent CRUD (`/agents*`), current-version/version list/read/restore, config updates as immutable `agent_versions`, default Assistant ensure/read, Assistant settings, agent-scoped run list/read subresources, catalog-backed agent template list/version reads, and create-from-template | Template catalog persistence remains catalog-file-backed; DB-backed template authoring is not implemented |
@@ -31,7 +31,7 @@ Rules:
 | Settings | Generic scoped `settings` persistence for low-frequency instance, space, user, and space-user settings via `ScopedSettingsStore`; owning product modules define typed descriptors, authorization, validation, and DTOs | Feature-specific settings tables are not allowed for new low-frequency settings |
 | Automations | `/spaces/{id}/automations*`, schedule/manual fire with policy preflight, automation run records, automation schedule rows in scheduler-owned `scheduler_tasks`, immutable WorkflowExecution DAGs with bounded node attempts, Action handlers, terminal outcome dispatch, and the Operations Project adapter | Conditional node branching/skipping, generic conditional Checkpoint migration, and evidence-triggered retry backoff |
 | Daily capture report | `/daily-capture-report/*` user settings via scoped settings, manual run, report listing, daily report task rows in scheduler-owned `scheduler_tasks`, scheduler enqueue of `daily_capture_report` jobs | — |
-| Backups | `/system/backups` list/manual trigger, scheduled backup ticks, prod backup policy guard, and backup lock/stale-lock handling | — |
+| Backups | `/system/backups` list/manual trigger (instance admin), scheduled backup ticks, prod backup policy guard, and backup lock/stale-lock handling | — |
 | Policy | Sensitive-action enforcement, proposal-apply policy gate, durable policy audit | — |
 | Proposals | External proposal review/read routes, accept/reject/egress-approval/rollback commands, proposal-apply orchestration, and the server applier registry for registered memory, knowledge, task follow-up, and code-patch types | Target-module appliers that are not registered; unregistered proposal types fail closed |
 | Sessions | Public list/get/create session commands, list/add canonical messages, conversation backend bindings, and session reflection proposal creation | Continuity derivation belongs to Runtime Context |
@@ -56,10 +56,12 @@ Rules:
 
 Current ownership aliases to avoid migration-drift mistakes:
 
-- `catalog` owns catalog-backed `/capabilities*` and `/server/catalog*` surfaces;
-  there is no standalone `capabilities` route module.
-- `providers` owns provider credentials and managed-subscription OAuth; no CLI credential is brokered (ADR 0016)
-  surfaces; there is no standalone `credentials` route module.
+- `catalog` owns catalog-backed `/capabilities*` and `/server/catalog*` surfaces.
+  `capabilities` is a separate ServerModule for capability-definitions, packs,
+  and skill packages.
+- `providers` owns provider credentials and managed-subscription OAuth; no CLI
+  credential is brokered (ADR 0016). There is no standalone `credentials` route
+  module.
 - `frontendSupport` owns `/home/summary` and `/me/{summary,timeline,pending}`;
   there are no standalone `home` or `me` route modules.
 - `projectFolders` owns the current Files \& Code read/status routes; there
@@ -72,21 +74,22 @@ module inventory and route ownership.
 `runtimeAdapters` is a first-class code-only domain consumed by `runs`,
 `runtimeHost`, and `hosts`.
 
-## Deferred Boundaries
+## Current fail-closed gaps
 
-These are intentional deferred/fail-closed gaps today, not evidence that the
+These are intentional fail-closed gaps, not evidence that the
 TypeScript backend cutover failed:
 
 - DB-persisted API-key storage; the API-key routes return the canonical
   feature-gated response while the schema has no `api_keys` table;
-- memory digest refresh, memory-health solidification, source-monitoring producers, and quality loops;
-- non-memory/non-knowledge/non-task/non-code-patch proposal target appliers;
-- deployer host/sidecar process internals and deferred deployment job persistence.
+- Unregistered proposal types fail closed; `egress_review` has no registered
+  applier (approval rows are supported).
+- Deployer host/sidecar process internals stay outside the server. Deployment
+  job persistence is implemented (`deployment_jobs`, ADR 0020).
 
 ## Guards
 
 Fail-closed behavior lives in server route/service boundaries and explicit 501
-responses for deferred surfaces.
+responses for unimplemented feature-gated surfaces.
 
 ## Operational Notes
 

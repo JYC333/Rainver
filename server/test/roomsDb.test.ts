@@ -55,6 +55,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
+import type { CredentialSpendBasis } from "../src/modules/policy/credentialSpend.js";
 
 let service: RoomService | undefined;
 let groupService: AgentGroupRunService | undefined;
@@ -455,6 +456,13 @@ describe("Room workflow (real Postgres)", () => {
         expect.objectContaining({ id: visible!.id, content: "Define the Project." }),
       ]),
     });
+    const listed = await service.listProjectConversations(owner, "project-1", { limit: 50, offset: 0 });
+    const row = listed.items.find((item) => item.id === conversation.id);
+    expect(row).toMatchObject({
+      last_message_role: "user",
+      last_message_preview: "Define the Project.",
+    });
+    expect(row?.last_message_preview).not.toContain("Continue after the accepted definition.");
     const replay = await loadRoomConversationReplayThroughMessage(db.pool, {
       spaceId: owner.spaceId,
       sessionId: conversation.id,
@@ -2971,29 +2979,27 @@ describe("Room workflow (real Postgres)", () => {
     });
 
     let response = JSON.stringify({ summary: "Initial durable Room summary." });
-    const invocationTarget = {
-      provider: {
-        id: "provider-1", space_id: "space-1", owner_user_id: "user-1", name: "Test API",
-        provider_type: "openai", base_url: null, network_profile_id: null,
-        default_model: "test-model", available_models: ["test-model"], enabled: true, is_default: true,
-      },
-      network_profile: null,
-      rotation_strategy: "fill_first" as const,
-      fallback_provider_ids: [],
-      candidates: [],
-    };
     const providerStore = {
-      getInvocationTarget: async () => invocationTarget,
+      authorizeCredentialSpend: async () => ({}) as never,
+      // The summary chooses its provider from the database and resolves no
+      // key before the spend is decided inside the completion.
+      getInvocationTarget: async () => {
+        throw new Error("the Room summary resolved a key before its spend was decided");
+      },
     } as unknown as ProviderCommandStore;
+    const summarySpends: CredentialSpendBasis[] = [];
     const dependencies: RoomConversationSummaryDependencies = {
       resolveProviderStore: () => providerStore,
-      completeProviderMessages: async () => ({
-        text: response,
-        provider: "openai",
-        provider_id: "provider-1",
-        model: "test-model",
-        usage: { input_tokens: 10, output_tokens: 8 },
-      }),
+      completeProviderMessages: async (_store, _spaceId, input) => {
+        summarySpends.push(input.spend);
+        return {
+          text: response,
+          provider: "openai",
+          provider_id: "provider-1",
+          model: "test-model",
+          usage: { input_tokens: 10, output_tokens: 8 },
+        };
+      },
     };
     const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! });
     const summaries = new RoomConversationSummaryService(config, testPool, dependencies);
@@ -3007,6 +3013,15 @@ describe("Room workflow (real Postgres)", () => {
     )).resolves.toMatchObject({ rows: [{ status: "queued" }] });
     await expect(summaries.process({ spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id }))
       .resolves.toMatchObject({ status: "published", version: 1 });
+    // Nobody was present: the spend rested on the Room owner, re-read when it
+    // is decided, so a Room its owner no longer holds spends nothing.
+    const [ownerSetup] = summarySpends;
+    if (ownerSetup?.kind !== "setup") throw new Error("the summary spent without naming its setup");
+    expect(ownerSetup).toMatchObject({ setup: "room_summary", user_id: "user-1" });
+    await expect(ownerSetup.still_authorized()).resolves.toBe(true);
+    await testPool.query(`UPDATE rooms SET status = 'archived' WHERE id = $1`, [created.room.id]);
+    await expect(ownerSetup.still_authorized()).resolves.toBe(false);
+    await testPool.query(`UPDATE rooms SET status = 'active' WHERE id = $1`, [created.room.id]);
     const published = await testPool.query<{
       summary_text: string;
       project_id: string;

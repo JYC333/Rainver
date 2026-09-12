@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { helperProcessEnv } from "./providerBinding.js";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -38,7 +39,12 @@ export async function ensurePackagedAdapter(command: string, env: NodeJS.Process
 
   const installer = join(env.RAINVER_HOST_INSTALL_ROOT, "install-host.sh");
   installing = new Promise<boolean>((resolve) => {
-    const child = spawn("/bin/bash", [installer, "--ensure-adapters"], { env, stdio: "ignore" });
+    // An installer has no vendor login to inherit and no reason to hold a
+    // vendor key; the one helper rule decides what it gets.
+    const child = spawn("/bin/bash", [installer, "--ensure-adapters"], {
+      env: helperProcessEnv(env),
+      stdio: "ignore",
+    });
     child.once("error", () => resolve(false));
     child.once("close", code => resolve(code === 0 && resolvePackagedAdapter(command, env) !== null));
   }).then((installed) => {

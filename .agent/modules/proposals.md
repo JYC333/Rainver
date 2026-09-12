@@ -55,7 +55,7 @@ CodePatchSnapshot:
    - Writes `ProvenanceLink` rows for accepted memory/policy changes
    - Dispatches through `ProposalApplierRegistry` to the target module's registered applier
 4. `proposal.status = "accepted"`, `decided_at` set, commit — durable write completes. No separate approval-event row is created for normal accept/reject. `ProposalApproval` rows are distinct egress approval metadata (written via `/proposals/{id}/approvals/egress-granting-user`). The registered `egress_review` applier requires every owner named by the target's current context taint to have an active approval before it publishes the target.
-5. For `code_patch` proposals, a `CodePatchSnapshot` (pre-apply file content) is persisted inside the apply transaction. The user can later call `POST /api/v1/proposals/{id}/rollback` to restore files to their pre-apply state while the snapshot is within its retention window and status is `available`.
+5. For `code_patch` proposals, a `CodePatchSnapshot` (pre-apply file content) is persisted inside the apply transaction. The user can later call `POST /api/v1/proposals/{id}/rollback` to restore files to their pre-apply state while the snapshot is within its retention window and status is `available`. Rollback has the reach every proposal decision has (`authorizeProposalDecision`: same Space, the state the decision acts on, readable, and inside a readable Room for a Run's proposal) plus the same `proposal.apply` role gate and `project_folder.write_patch` check as accept; a caller who can only read the accepted proposal cannot write the snapshot back. It refuses (409) when an applied file no longer hashes to what the patch wrote (`applied_files`), sets the proposal's status to `rolled_back`, and its activity — like the apply activity — takes the proposal's own visibility.
 
 ## Server Apply Boundary
 
@@ -126,7 +126,7 @@ proposal mutations fail-closed instead of silently no-oping.
   Thread and recording its conclusion are no longer among them: they are
   origin-gated, bounded direct writes, reviewed afterwards from the Project's
   updates.
-- `code_patch` rollback requires a non-expired `available` snapshot; once used, status becomes `rolled_back` and cannot be reused
+- `code_patch` rollback requires a non-expired `available` snapshot and every applied file unchanged since apply; once used, status becomes `rolled_back` and cannot be reused. It also requires the same apply / `write_patch` authority as accept.
 - Snapshot retention (days + max count) is configurable per-Project-Folder and per-space; builtin defaults are 7 days / 20 snapshots
 
 ## Related Files

@@ -5,6 +5,7 @@ import type {
 } from "@rainver/protocol";
 import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
+import type { OutboundGuard } from "../outboundUrlSafety.js";
 import {
   HttpError,
   optionalString,
@@ -46,6 +47,12 @@ export class SourceRecipeDryRunService {
   constructor(
     private readonly pool: Pool,
     private readonly config: ServerConfig,
+    /**
+     * The outbound boundary live fetches go through. Production leaves it out
+     * and gets the instance's guard; a test supplies one pinned at its own
+     * fixture server, because the guard refuses loopback by design.
+     */
+    private readonly guard?: OutboundGuard,
   ) {}
 
   async dryRunRecipeVersion(identity: SpaceUserIdentity, connectionId: string, body: Record<string, unknown>) {
@@ -76,7 +83,7 @@ export class SourceRecipeDryRunService {
     const fixtureContent = optionalString(body.fixture_content);
     const primaryEndpointContent =
       fixtureContent ??
-      (await fetchCustomSourceEndpointHtml(connection.endpoint_url, settings.runner, envelope, credential));
+      (await fetchCustomSourceEndpointHtml(connection.endpoint_url, settings.runner, envelope, credential, this.guard));
 
     const runResult = await runSourceRecipe(settings.runner, {
       policyEnvelope: envelope,
@@ -86,6 +93,7 @@ export class SourceRecipeDryRunService {
       sourceName: connection.name,
       primaryEndpointContent,
       credential,
+      ...(this.guard ? { guard: this.guard } : {}),
     });
 
     let status: SourceRecipeDryRunResult["status"];

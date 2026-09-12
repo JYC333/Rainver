@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { isAcpAuthRequiredError, type RuntimeAuthMethod, type RuntimeOptionChoice, type RuntimeOptions, type RuntimeSessionConfigOption } from "@rainver/protocol";
 import { terminalAuthAvailable } from "./terminalAuth.js";
+import { helperProcessEnv } from "./providerBinding.js";
 
 /**
  * What a runtime says it can be set to, asked over ACP rather than guessed.
@@ -143,6 +144,7 @@ export function probeAcpOptions(
    * button and no explanation anywhere; the reason goes to the daemon log.
    */
   onFailure?: (reason: string) => void,
+  adapterType?: string,
 ): Promise<RuntimeOptions | null> {
   return new Promise((resolve) => {
     let authMethods: RuntimeAuthMethod[] = [];
@@ -178,7 +180,7 @@ export function probeAcpOptions(
       child = spawn(command, args, {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, ...env },
+        env: { ...helperProcessEnv(process.env, adapterType ?? ""), ...env },
       });
     } catch (error) {
       clearTimeout(timer);

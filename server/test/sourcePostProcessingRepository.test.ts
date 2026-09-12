@@ -624,6 +624,7 @@ describe("source post-processing repository (real Postgres)", () => {
 
     const listed = await repo().listDecisions({
       spaceId: SPACE,
+      userId: OWNER,
       connectionId: CONNECTION,
       reviewStatus: "pending",
       limit: 10,
@@ -641,12 +642,97 @@ describe("source post-processing repository (real Postgres)", () => {
 
     const updated = await repo().updateDecisionReview({
       spaceId: SPACE,
+      userId: OWNER,
       decisionId: listed.items[0]!.id,
       reviewStatus: "queued",
       action: { queue_content: { job_ids: ["job-1"] } },
     });
     expect(updated.review_status).toBe("queued");
     expect(updated.action_json).toMatchObject({ queue_content: { job_ids: ["job-1"] } });
+  });
+
+  it("hides another member's private item decisions from list and get", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,'Other','active',$2,$2)`,
+      [OTHER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1,$2,$3,'member','active',$4,$4)`,
+      [randomUUID(), SPACE, OTHER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO source_channel_user_subscriptions (
+         id, space_id, source_channel_id, user_id, status,
+         library_enabled, digest_enabled, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)`,
+      [randomUUID(), SPACE, CONNECTION, OTHER, now],
+    );
+    const itemId = await seedItem("Private paper", "2026-07-01T00:00:00.000Z");
+    await db.pool.query(`UPDATE source_items SET visibility='private' WHERE id=$1`, [itemId]);
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: PROJECT,
+      name: "Screening",
+      triggerType: "manual",
+      triggerConfig: normalizeTriggerConfig(null, "manual"),
+      inputConfig: normalizeInputConfig({
+        relevance_profile: { enabled: true, objective: "Find relevant papers" },
+      }),
+      actions: normalizeActions({ batch_digest: true, mark_items: true }),
+      createdByUserId: OWNER,
+    });
+    const run = await repo().createRun({
+      spaceId: SPACE,
+      ruleId: rule.id,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: PROJECT,
+      triggeredByUserId: OWNER,
+      triggerType: "manual",
+      inputItemIds: [itemId],
+      inputEvidenceIds: [],
+      cursorBefore: null,
+      cursorAfter: { id: itemId, created_at: "2026-07-01T00:00:00.000Z" },
+    });
+    await repo().persistItemDecisions({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      ruleId: rule.id,
+      runId: run.id,
+      projectId: PROJECT,
+      decisions: [{
+        source_item_id: itemId,
+        relevance: "relevant",
+        confidence: 0.9,
+        reason: "Contains a private locator.",
+        matched_context_refs: [],
+      }],
+    });
+
+    const asOwner = await repo().listDecisions({
+      spaceId: SPACE, userId: OWNER, connectionId: CONNECTION, limit: 10, offset: 0,
+    });
+    expect(asOwner.items).toHaveLength(1);
+    expect(asOwner.items[0]).toMatchObject({
+      reason: "Contains a private locator.",
+      item: { title: "Private paper" },
+    });
+    expect(asOwner.items[0]?.item.source_uri).toContain("example.org/paper/");
+
+    const asOther = await repo().listDecisions({
+      spaceId: SPACE, userId: OTHER, connectionId: CONNECTION, limit: 10, offset: 0,
+    });
+    expect(asOther.items).toHaveLength(0);
+    expect(asOther.total).toBe(0);
+    expect(await repo().getDecision(SPACE, OTHER, asOwner.items[0]!.id)).toBeNull();
+    expect(await repo().getDecision(SPACE, OWNER, asOwner.items[0]!.id)).toMatchObject({
+      source_item_id: itemId,
+    });
   });
 
   it("aggregates the briefing stream by the rule's local day, not UTC", async () => {
@@ -749,6 +835,7 @@ describe("source post-processing repository (real Postgres)", () => {
       item_summaries: [{ source_item_id: itemA, artifact_id: summaryArtifactId }],
     });
     expect(detail!.item_decisions.map((d) => d.source_item_id).sort()).toEqual([itemA, itemB].sort());
+    expect(detail!.item_decisions.find((d) => d.source_item_id === itemA)?.reason).toBe("Strong match.");
 
     expect(await repo().getBriefing({ spaceId: SPACE, userId: OWNER, connectionId: CONNECTION, date: "2099-01-01" })).toBeNull();
   });
@@ -1016,5 +1103,68 @@ describe("source post-processing repository (real Postgres)", () => {
     await repo().updateRule(SPACE, rule.id, { status: "paused" });
     const pausedDue = await repo().listDueRules("2026-07-01T09:00:02.000Z", 10);
     expect(pausedDue).toHaveLength(0);
+  });
+});
+
+describe("post-processing decision responses carry the reader's level", () => {
+  it("returns a decision's reason to the owner who reviews it", async () => {
+    const itemId = await seedItem("Owned paper", "2026-07-01T00:00:00.000Z");
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: PROJECT,
+      name: "Owner review",
+      triggerType: "manual",
+      triggerConfig: normalizeTriggerConfig(null, "manual"),
+      inputConfig: normalizeInputConfig({
+        relevance_profile: { enabled: true, objective: "Find relevant papers" },
+      }),
+      actions: normalizeActions({ batch_digest: true, mark_items: true }),
+      createdByUserId: OWNER,
+    });
+    const run = await repo().createRun({
+      spaceId: SPACE,
+      ruleId: rule.id,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: PROJECT,
+      triggeredByUserId: OWNER,
+      triggerType: "manual",
+      inputItemIds: [itemId],
+      inputEvidenceIds: [],
+      cursorBefore: null,
+      cursorAfter: { id: itemId, created_at: "2026-07-01T00:00:00.000Z" },
+    });
+    await repo().persistItemDecisions({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      ruleId: rule.id,
+      runId: run.id,
+      projectId: PROJECT,
+      decisions: [{
+        source_item_id: itemId,
+        relevance: "relevant",
+        confidence: 0.9,
+        reason: "OWNER VISIBLE REASON",
+        matched_context_refs: [],
+      }],
+    });
+    const listed = await repo().listDecisions({
+      spaceId: SPACE,
+      userId: OWNER,
+      connectionId: CONNECTION,
+      reviewStatus: "pending",
+      limit: 10,
+      offset: 0,
+    });
+    const reviewed = await repo().updateDecisionReview({
+      spaceId: SPACE,
+      userId: OWNER,
+      decisionId: String(listed.items[0]!.id),
+      reviewStatus: "accepted",
+      action: {},
+    });
+    expect(reviewed).toMatchObject({ reason: "OWNER VISIBLE REASON" });
   });
 });

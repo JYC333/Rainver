@@ -148,12 +148,6 @@ export const HostHelloInfoSchema = z.object({
   managed_workspaces: z.array(ManagedWorkspaceHeartbeatSchema),
   /** Counts only, never content: whether an import is worth offering. */
   ambient_sessions: z.array(AmbientSessionCountSchema),
-  /**
-   * The address this daemon actually reaches the control plane at. The server
-   * cannot guess it — its own hostname is a Compose service name no paired
-   * machine resolves — and every URL it hands this host derives from it.
-   */
-  server_url: z.string().optional(),
 });
 export type HostHelloInfo = z.infer<typeof HostHelloInfoSchema>;
 

@@ -59,7 +59,7 @@ async function makeRun(runId: string, status = "running"): Promise<void> {
 function get(runId: string, path: string, token: string | null) {
   return app!.inject({
     method: "GET",
-    url: `/internal/runs/${runId}/${path}`,
+    url: `/api/v1/runs/${runId}/${path}`,
     headers: token ? { authorization: `Bearer ${token}` } : {},
   });
 }
@@ -157,6 +157,42 @@ describe("the Run tool surface", () => {
     expect(shape(granted.json(), "memory.remember")).toEqual(shape(invented.json(), "not.an.action"));
   });
 
+  /**
+   * The surface moved from `/internal` to `/api/v1` because a paired host's
+   * children reach the instance through its public URL, and production nginx
+   * forwards `/api/` and the host WebSocket and nothing else. What has to hold
+   * after the move is that the `/api/` conventions — the CSRF origin hook and
+   * identity resolution — do not refuse a caller that has no cookie and no
+   * `Origin`, only the Run's own bearer.
+   */
+  it("serves a cookie-less caller that carries only the Run bearer", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const run = randomUUID();
+    await makeRun(run);
+    const token = await new PgRunToolIdentityRepository(db.pool!)
+      .issue({ id: run, space_id: SPACE }, 60_000, "hash");
+    const listed = await app!.inject({
+      method: "GET",
+      url: `/api/v1/runs/${run}/tools`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(listed.statusCode).toBe(200);
+    const called = await app!.inject({
+      method: "POST",
+      url: `/api/v1/runs/${run}/tools/task.report`,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      payload: {},
+    });
+    // Whatever the action itself answers, the request is not refused by the
+    // `/api/` conventions: no 403 "cross-origin request blocked", no 401 from a
+    // missing session. `not.toBe` alone would also pass on a 404 — which is
+    // what a route that had not moved would answer — so the reached route is
+    // named too.
+    expect(called.statusCode).not.toBe(404);
+    expect([403, 401]).not.toContain(called.statusCode);
+    expect(called.json()).not.toMatchObject({ detail: expect.stringMatching(/cross-origin|cross-site|Not Found/i) });
+  });
+
   it("refuses a request with no token, a wrong token, or another Run's token", async (ctx) => {
     if (!db.available) return ctx.skip();
     const run = randomUUID();
@@ -205,7 +241,7 @@ describe("the Run tool surface", () => {
 
     const response = await app!.inject({
       method: "POST",
-      url: `/internal/runs/${run}/tools/memory.remember`,
+      url: `/api/v1/runs/${run}/tools/memory.remember`,
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       payload: { content: "remember this", rationale: "because" },
     });
@@ -223,7 +259,7 @@ describe("the Run tool surface", () => {
 
     const response = await app!.inject({
       method: "POST",
-      url: `/internal/runs/${run}/tools/task.list`,
+      url: `/api/v1/runs/${run}/tools/task.list`,
       headers: { "content-type": "application/json" },
       payload: {},
     });

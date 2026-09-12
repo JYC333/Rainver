@@ -11,10 +11,23 @@
 import type { FastifyServerOptions } from "fastify";
 import type { ServerConfig } from "../config.js";
 
-/** Header paths that must never appear in logs. */
+/**
+ * Header paths that must never appear in logs.
+ *
+ * pino matches a path exactly — there is no substring rule here — so every
+ * spelling a vendor uses has to be listed. `proxy-authorization` is a separate
+ * header from `authorization`, and Google sends its key as `x-goog-api-key`;
+ * both went to the log in full.
+ */
 export const LOG_REDACT_PATHS = [
   "req.headers.authorization",
+  "req.headers['proxy-authorization']",
   "req.headers.cookie",
+  "req.headers['x-api-key']",
+  "req.headers['api-key']",
+  "req.headers['x-goog-api-key']",
+  "req.headers['anthropic-auth-token']",
+  "req.headers['x-rainver-internal-token']",
   "res.headers['set-cookie']",
 ] as const;
 

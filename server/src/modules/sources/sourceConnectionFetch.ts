@@ -1,6 +1,7 @@
 import { HttpError } from "../routeUtils/common.js";
 import type { SourceConnectorHandler } from "./catalog/sourceConnectorRegistry.js";
 import { fetchSource, type SourceFetchResult } from "./sourceFetch.js";
+import { OutboundRefusedError, type OutboundGuard } from "./outboundUrlSafety.js";
 
 export interface SourceProviderIdentity {
   providerKey: string;
@@ -86,11 +87,15 @@ export async function fetchSourceConnection(input: {
   handler: SourceConnectorHandler;
   url: string;
   headers: Record<string, string>;
+  /** The connection's credential, dropped if a redirect leaves the first origin. */
+  credentialHeaders?: Record<string, string>;
   maxDownloadBytes: number;
   backfill: boolean;
   provider: SourceProviderIdentity;
-  /** Overrides the computed backfill deadline; scan requests stay unbounded. */
+  /** Overrides the computed backfill deadline; scan requests take the guard's default. */
   timeoutMs?: number;
+  /** The outbound boundary; a test supplies one pinned at its fixture server. */
+  guard?: OutboundGuard;
 }): Promise<SourceFetchResult> {
   const maxAttempts = input.backfill ? BACKFILL_FETCH_ATTEMPTS : 1;
   const timeoutMs = input.backfill ? input.timeoutMs ?? backfillFetchTimeoutMs(1) : undefined;
@@ -100,8 +105,10 @@ export async function fetchSourceConnection(input: {
     try {
       const response = await fetchSource(input.url, {
         headers: input.headers,
+        ...(input.credentialHeaders ? { credentialHeaders: input.credentialHeaders } : {}),
         maxDownloadBytes: input.maxDownloadBytes,
         ...(timeoutMs ? { timeoutMs } : {}),
+        ...(input.guard ? { guard: input.guard } : {}),
       });
       if (response.ok || response.notModified) return response;
       const retryable = isTransientUpstreamStatus(response.status);
@@ -114,6 +121,18 @@ export async function fetchSourceConnection(input: {
         timeoutMs: timeoutMs ?? null,
       });
     } catch (error) {
+      // A refusal by the outbound boundary is reported exactly like any other
+      // failure to reach the provider: `network`, no error code. A host inside
+      // this instance's network and a host that resolves nowhere must look the
+      // same here too, or the persisted diagnostics become the name oracle the
+      // uniform message exists to remove.
+      if (error instanceof OutboundRefusedError) {
+        if (attempt < maxAttempts) continue;
+        throw transportFailure(input.provider, error, attempt, input.backfill, {
+          elapsedMs: Date.now() - startedAt,
+          timeoutMs: timeoutMs ?? null,
+        });
+      }
       if (error instanceof SourceFetchFailure || error instanceof HttpError) throw error;
       if (attempt < maxAttempts) continue;
       throw transportFailure(input.provider, error, attempt, input.backfill, {

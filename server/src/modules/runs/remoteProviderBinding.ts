@@ -10,6 +10,12 @@ import { resolveHostLeaseUrl } from "./hostProviderProxyAddress.js";
 import { codexModelCatalog, renderCodexProviderToml } from "./codexProviderConfig.js";
 import { applyOpenCodeProviderConfig, openCodeModelId } from "./opencodeProviderConfig.js";
 import { PgHostRuntimeProviderBindingRepository } from "../hosts/runtimeProviderBindingRepository.js";
+import {
+  authorizeCredentialSpend,
+  CredentialSpendDeniedError,
+  type CredentialSpendAuthorization,
+  type CredentialSpendDeps,
+} from "../policy/credentialSpend.js";
 import type { HostLaunchProviderBinding } from "@rainver/protocol";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { RunRecord } from "./repository.js";
@@ -403,6 +409,8 @@ export async function buildRemoteProviderBinding(input: {
   ttlSeconds: number;
   leaseRegistry?: ProviderProxyLeaseRegistry;
   db: Queryable;
+  /** The Run executor's policy seam; unset in production, where the policy service decides. */
+  enforcer?: CredentialSpendDeps["enforcer"];
 }): Promise<RemoteProviderBinding> {
   const requirement = adapterProviderRequirement(input.adapterType);
   if (!requirement) {
@@ -451,8 +459,26 @@ export async function buildRemoteProviderBinding(input: {
     );
   }
 
+  // Decided before the lease exists: a lease is what lets the proxy spend the
+  // server-held key, so a Run the policy would not let spend must never hold
+  // one. Decided on the Run's root and the live Automation grant, so a grant
+  // revoked while the Run was queued stops it here.
+  let authorization: CredentialSpendAuthorization;
+  try {
+    authorization = await authorizeCredentialSpend(
+      input.config,
+      { space_id: input.run.space_id, provider_id: input.binding.provider_id, basis: { kind: "run", run: input.run } },
+      { db: input.db, enforcer: input.enforcer },
+    );
+  } catch (error) {
+    if (error instanceof CredentialSpendDeniedError) {
+      throw new RemoteProviderBindingError(error.code, error.message);
+    }
+    throw error;
+  }
+
   const registry = input.leaseRegistry ?? providerProxyLeases;
-  const lease = registry.create({
+  const lease = registry.create(authorization, {
     run_id: input.run.id,
     space_id: input.run.space_id,
     provider_id: input.binding.provider_id,
@@ -477,18 +503,19 @@ export async function buildRemoteProviderBinding(input: {
 
   const leaseUrl = await resolveHostLeaseUrl({
     db: input.db,
+    config: input.config,
     hostId: input.hostId,
     route: requirement.route,
     leaseId: lease.id,
-    proxyPort: input.config.providerProxyPort,
   });
   if (!leaseUrl) {
     registry.revoke(lease.id);
     throw new RemoteProviderBindingError(
       "provider_proxy_not_reachable",
-      "No provider proxy address this host can reach. The daemon has not reported the address it "
-        + "connects to, so one cannot be derived — set this host's proxy address in the Command "
-        + "Center, or PROVIDER_PROXY_EXTERNAL_BASE_URL for the whole instance.",
+      "No provider proxy address this host can reach. The built-in host needs the proxy listener "
+        + "running. A paired host needs its proxy address set in the Command Center, "
+        + "PROVIDER_PROXY_EXTERNAL_BASE_URL for the whole instance, or an http: FRONTEND_URL with a "
+        + "fixed PROVIDER_PROXY_PORT to derive one from.",
     );
   }
 

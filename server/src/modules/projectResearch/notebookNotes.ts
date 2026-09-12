@@ -1,4 +1,5 @@
 import type { Queryable } from "../routeUtils/common.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 import {
   NOTE_PROJECT_ROLE_DEFAULT_TITLES,
   type NoteProjectRole,
@@ -56,20 +57,45 @@ export async function resolveNotebookNote(
   // Any registered role, not only a research section: resolution keys on
   // `notes.project_role`, and the Project's `inbox` note is found the same way.
   role: NoteProjectRole,
+  /**
+   * Whose view resolves the note, or `null` for a system read.
+   *
+   * Required, because this returns the note's *body* and the ask-AI path puts
+   * it straight into a model prompt: a Project member is not automatically a
+   * reader of every note filed under that Project.
+   *
+   * `null` is the standing and monitor comparison jobs, which read the
+   * Project's baseline to build the Project's own report. Accepted leftover:
+   * that report's Run is created for a Project writer, so a member who gave
+   * their own `private` note the `understanding` role has its body reach that
+   * person's Run. Unchanged here — these paths had no viewer at all before —
+   * and recorded rather than tightened, because the baseline role is a Project
+   * fixture and narrowing it would silently empty the comparison instead.
+   */
+  viewerUserId: string | null,
 ): Promise<NotebookNoteResolution> {
   const result = await db.query<NotebookNoteRow>(
     `SELECT n.object_id AS id, n.version, n.content_json, n.plain_text
        FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
       WHERE n.space_id=$1 AND n.role_project_id=$2 AND n.project_role=$3
         AND n.status='active' AND so.deleted_at IS NULL
+        ${viewerUserId ? `AND ${contentReadSql("space_object", "so", "$4")}` : ""}
       LIMIT 1`,
-    [spaceId, projectId, role],
+    viewerUserId ? [spaceId, projectId, role, viewerUserId] : [spaceId, projectId, role],
   );
   const note = result.rows[0];
   return note ? { present: true, note } : { present: false, role, reason: "no_note_in_role" };
 }
 
 /** Every role-carrying note of a project, keyed by role. */
+/**
+ * Every role-bound note of a Project, as the system sees them.
+ *
+ * Unscoped on purpose: its callers seed starter notes, adopt them by title and
+ * materialize a report into them, all of which must see a role that is filled
+ * whoever filled it. Nothing here reaches a person's prompt —
+ * `resolveNotebookNote` is the read that does, and it takes a viewer.
+ */
 export async function resolveNotebookNotes(
   db: Queryable,
   spaceId: string,

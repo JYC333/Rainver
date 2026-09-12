@@ -138,7 +138,8 @@ export default function PublicationsPage() {
                     <Import className="size-3.5" />{busyId === publication.id ? 'Importing...' : 'Import'}
                   </Button>
                 )}
-                {view === 'received' && imported && (
+                {/* Only the person who imported it is told which row their copy is. */}
+                {view === 'received' && imported?.imported_resource_id && (
                   <Button size="sm" variant="outline" asChild>
                     <Link to={resourceHref(imported.imported_resource_type, imported.imported_resource_id)}>Open copy</Link>
                   </Button>

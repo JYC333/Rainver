@@ -2,9 +2,10 @@ import { decideContentAccess, isContentOwner } from "../access/contentAccessPoli
 import type {
   ContentAccessDecision,
   ContentAccessGrant,
+  ContentAccessLevel,
   OversightMode,
 } from "../access/contentAccessTypes.js";
-import { isContentAccessLevel, isContentVisibility } from "../access/contentAccessTypes.js";
+import { bodyWithheld, isContentAccessLevel, isContentVisibility } from "../access/contentAccessTypes.js";
 
 /** Memory-specific adapter around the canonical content-access decision. */
 export interface MemoryAuthFields {
@@ -100,13 +101,9 @@ export function canReadMemory(memory: MemoryAuthFields, context: MemoryReadConte
 }
 
 export function shouldRedactMemoryContent(
-  memory: Pick<MemoryAuthFields, "owner_user_id"> & {
-    effective_access_level?: string | null;
-    access_level?: string | null;
-  },
+  memory: Pick<MemoryAuthFields, "owner_user_id"> & { effective_access_level: ContentAccessLevel },
   viewerUserId: string,
 ): boolean {
   if (isContentOwner(memory, viewerUserId)) return false;
-  if (memory.effective_access_level) return memory.effective_access_level === "summary";
-  return memory.access_level === "summary";
+  return bodyWithheld(memory.effective_access_level);
 }

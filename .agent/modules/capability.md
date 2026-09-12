@@ -80,10 +80,9 @@ Manifests are source definitions only — they are not the local trust/enable st
 
 ## Execution Model
 
-Capability execution is not active today. `adapter_type="capability"` remains a
-planned runtime adapter type in `server/src/modules/runtimeAdapters` and
-is disabled by default. Until a server-native capability executor exists,
-capability manifests are used for catalog/UI metadata only.
+Capability execution is not active. `adapter_type="capability"` is a
+declared, disabled runtime adapter type in `server/src/modules/runtimeAdapters`.
+Capability manifests are catalog/UI metadata only.
 
 Returned artifacts are materialized as `Artifact` rows linked to the Run and project. Returned activities are materialized as `ActivityRecord` rows with `source_kind="run_event"` unless the capability supplies a valid source kind.
 

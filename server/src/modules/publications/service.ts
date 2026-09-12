@@ -55,7 +55,12 @@ interface PublicationListRow extends PublicationRow {
 interface PublicationImportSummary {
   id: string;
   imported_resource_type: string;
-  imported_resource_id: string;
+  /**
+   * The row the importer made in their own Space. Null for anyone but them: a
+   * colleague learning the id of someone's private copy can ask for it by id
+   * on every surface that takes one.
+   */
+  imported_resource_id: string | null;
   imported_by_user_id: string;
   created_at: string;
 }
@@ -135,7 +140,7 @@ export class PublicationService {
           [randomUUID(), id, targetSpaceId, now],
         );
       }
-      return publicationOut(result.rows[0]!, targetSpaceIds, null);
+      return publicationOut(result.rows[0]!, targetSpaceIds, null, identity);
     });
   }
 
@@ -161,7 +166,7 @@ export class PublicationService {
         ORDER BY cp.created_at DESC, cp.id DESC`,
       [identity.spaceId, identity.userId],
     );
-    return { items: rows.rows.map(publicationListOut) };
+    return { items: rows.rows.map((row) => publicationListOut(row, identity)) };
   }
 
   async listPublished(identity: SpaceUserIdentity) {
@@ -184,7 +189,7 @@ export class PublicationService {
         ORDER BY cp.created_at DESC, cp.id DESC`,
       [identity.spaceId, identity.userId],
     );
-    return { items: rows.rows.map(publicationListOut) };
+    return { items: rows.rows.map((row) => publicationListOut(row, identity)) };
   }
 
   async get(identity: SpaceUserIdentity, publicationId: string) {
@@ -231,7 +236,7 @@ export class PublicationService {
     );
     const row = result.rows[0];
     if (!row) throw new HttpError(404, "Publication not found");
-    return publicationListOut(row);
+    return publicationListOut(row, identity);
   }
 
   async import(identity: SpaceUserIdentity, publicationId: string) {
@@ -303,7 +308,7 @@ export class PublicationService {
       const row = result.rows[0];
       if (!row) throw new HttpError(404, "Active publication not found");
       const targets = await loadTargets(db, publicationId);
-      return publicationOut(row, targets, null);
+      return publicationOut(row, targets, null, identity);
     });
   }
 }
@@ -363,23 +368,48 @@ async function loadImport(
   return result.rows[0] ?? null;
 }
 
-function publicationListOut(row: PublicationListRow) {
+function publicationListOut(row: PublicationListRow, viewer: SpaceUserIdentity) {
   const imported = row.import_id ? {
     id: row.import_id,
     imported_resource_type: row.imported_resource_type!,
-    imported_resource_id: row.imported_resource_id!,
+    imported_resource_id: row.imported_by_user_id === viewer.userId ? row.imported_resource_id! : null,
     imported_by_user_id: row.imported_by_user_id!,
     created_at: dateIso(row.imported_at),
   } : null;
-  return publicationOut(row, row.target_space_ids, imported);
+  return publicationOut(row, row.target_space_ids, imported, viewer);
 }
 
 function publicationOut(
   row: PublicationRow,
   targetSpaceIds: readonly string[],
   imported: PublicationImportSummary | null,
+  viewer: SpaceUserIdentity,
 ) {
-  const snapshot = row.snapshot_json as { title?: unknown };
+  const snapshot = row.snapshot_json as {
+    schema_version?: unknown;
+    resource_type?: unknown;
+    title?: unknown;
+    payload?: unknown;
+  };
+  const title = typeof snapshot?.title === "string" ? snapshot.title : "Untitled publication";
+  const isPublisher = row.source_space_id === viewer.spaceId
+    && row.published_by_user_id === viewer.userId;
+  // Revocation closes the snapshot to the target Space. An import is a private
+  // copy; it must not keep GET/list returning the published body to every
+  // colleague in that Space.
+  const snapshotVisible = row.status === "active" || isPublisher;
+  const snapshotOut = snapshotVisible
+    ? row.snapshot_json
+    : {
+        schema_version: typeof snapshot?.schema_version === "number"
+          ? snapshot.schema_version
+          : row.snapshot_schema_version,
+        resource_type: typeof snapshot?.resource_type === "string"
+          ? snapshot.resource_type
+          : row.source_resource_type,
+        title,
+        payload: {},
+      };
   return {
     id: row.id,
     source_space_id: row.source_space_id,
@@ -387,9 +417,11 @@ function publicationOut(
     source_resource_id: row.source_resource_id,
     version: row.version,
     snapshot_schema_version: row.snapshot_schema_version,
-    snapshot_hash: row.snapshot_hash,
-    title: typeof snapshot?.title === "string" ? snapshot.title : "Untitled publication",
-    snapshot: row.snapshot_json,
+    // Withheld with the body it hashes. A hash of content somebody may not read
+    // still answers "is this the text?" for every guess they can make.
+    snapshot_hash: snapshotVisible ? row.snapshot_hash : null,
+    title,
+    snapshot: snapshotOut,
     published_by_user_id: row.published_by_user_id,
     target_space_ids: [...targetSpaceIds],
     status: row.status,

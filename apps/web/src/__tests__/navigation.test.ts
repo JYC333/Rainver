@@ -59,6 +59,12 @@ describe('navigation model', () => {
     expect(MOBILE_TAB_ITEMS[0].id).toBe('home')
   })
 
+  it('keeps the mobile tab bar to five short daily destinations', () => {
+    expect(MOBILE_TAB_ITEMS.map(i => i.id)).toEqual([
+      'home', 'inbox', 'library', 'review', 'tasks',
+    ])
+  })
+
   it('selects a scene per route, ignoring the /spaces/:id prefix', () => {
     expect(sceneForPath('/spaces/x/activity')?.id).toBe('inbox')
     expect(sceneForPath('/spaces/x/sources')).toBeNull()

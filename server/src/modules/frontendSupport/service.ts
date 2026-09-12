@@ -1,17 +1,15 @@
 import type { ServerConfig } from "../../config.js";
 import { dbPool, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { artifactReadSql, proposalReadSql, runReadSql } from "../access/contentAccessSql.js";
 import {
   ACTIVE_RUN_STATUSES,
   DONE_TASK_STATUSES,
   REVIEW_TASK_STATUSES,
-  artifactReadSql,
   boundedQueryInt,
   iso,
   isoOrNull,
   numeric,
   proposalVisibleSelect,
-  proposalReadSql,
-  runReadSql,
   suggestedActions,
   taskReadSql,
 } from "./frontendSupportReadModel.js";

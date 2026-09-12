@@ -5,6 +5,7 @@ import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { AgentGroupRunService, type AgentGroupMessageRecipientSegment } from "../agentGroups/service.js";
 import { HttpError, withDbTransaction, dateIso } from "../routeUtils/common.js";
 import { PgSessionRepository } from "../sessions/repository.js";
+import { visibleRoomTranscriptSql } from "../sessions/messagePath.js";
 import {
   assertProjectWriter,
   assertProjectReadableLocked,
@@ -383,12 +384,14 @@ export class RoomService {
            SELECT m.created_at, m.role, m.content
              FROM messages m
             WHERE m.space_id = s.space_id AND m.session_id = s.id
-            ORDER BY m.created_at DESC, m.id DESC
+              AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "s.space_id", sessionParam: "s.id" })}
+            ORDER BY m.path_depth DESC, m.id DESC
             LIMIT 1
          ) last ON true
          LEFT JOIN LATERAL (
            SELECT count(*) AS total FROM messages m
             WHERE m.space_id = s.space_id AND m.session_id = s.id
+              AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "s.space_id", sessionParam: "s.id" })}
          ) counted ON true
          LEFT JOIN LATERAL (${ROOM_AUDIENCE_SQL}) roster ON true
          ${visible}
@@ -991,7 +994,7 @@ export class RoomService {
       const groups = new AgentGroupRunService(this.config, this.pool);
       const created = await groups.createGroupInTransaction(client, identity, {
         space_id: identity.spaceId,
-        title: firstLine(content),
+        title: input.kind === "user" ? firstLine(content) : continuationGroupTitle(input),
         goal: "",
         manager_agent_id: manager.agent_id,
         member_agent_ids: agentMembers.map((member) => member.agent_id),
@@ -1019,6 +1022,12 @@ export class RoomService {
           room_id: roomId,
           session_id: sessionId,
           room_message_id: roomMessage.id,
+          // A continuation is the system talking to the Room's own Agents. It
+          // is stored as a `user_instruction` row so replay sees it in order,
+          // and marked with the key the Room transcript already hides by, so
+          // the timeline a person reads does not show machine prose attributed
+          // to them.
+          ...(input.kind === "user" ? {} : { room_display: "internal" }),
           // What the route said the person was looking at, recorded because it
           // was written into the prompt. Without this the only trace of an
           // injected Task is free text inside `runs.prompt`, which cannot be
@@ -1212,6 +1221,21 @@ function requiredText(value: string, field: string): string {
   const text = value.trim();
   if (!text) throw new HttpError(422, `${field} is required`);
   return text;
+}
+
+/**
+ * What to call the group a continuation opened.
+ *
+ * Not the instruction's first line: that text is the system's own prompt to the
+ * Room's Agents ("a delegate finished, reply with this result"), and a group
+ * list that shows it reads as if a person had typed it.
+ */
+function continuationGroupTitle(
+  input: { kind: "proposal_continuation" } | { kind: "domain_event_continuation"; event: { kind: string; key: string } },
+): string {
+  return input.kind === "domain_event_continuation"
+    ? `Continuation: ${input.event.kind}`
+    : "Continuation: proposal decision";
 }
 
 function firstLine(value: string): string {

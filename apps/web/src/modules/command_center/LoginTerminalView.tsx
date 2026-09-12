@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import { LOGIN_TERMINAL_COLS, LOGIN_TERMINAL_ROWS } from '@rainver/protocol'
 import { errMsg } from '../../lib/utils'
+import { openSafeHttpUrl } from '../../lib/safeHttpUrl'
 
 /**
  * A real terminal for one login session: the daemon's PTY byte stream is
@@ -69,7 +70,7 @@ export default function LoginTerminalView({
         })
         terminal.loadAddon(new WebLinksAddon((event, uri) => {
           event.preventDefault()
-          window.open(uri, '_blank', 'noopener,noreferrer')
+          openSafeHttpUrl(uri)
         }))
         terminal.open(host.current)
         terminalRef.current = terminal

@@ -11,7 +11,16 @@ import type { RunRecord } from "../src/modules/runs/repository.js";
 import { isRetryableRunErrorCode } from "../src/modules/runs/retryPolicy.js";
 import { type RunExchangeHandle, RunExchangeManager } from "../src/modules/runs/runExchange.js";
 import { assembleRunInputEnvelope, logicalRunInput } from "../src/modules/runs/runInputEnvelope.js";
-import { runToOut } from "../src/modules/runs/runReadModel.js";
+import {
+  runAttemptToOut,
+  runEvaluationToOut,
+  runEventToOut,
+  runFinalizationToOut,
+  runStepToOut,
+  runSupervisorDecisionToOut,
+  runToOut,
+  verificationResultToOut,
+} from "../src/modules/runs/runReadModel.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
@@ -134,9 +143,9 @@ describe("runContractSnapshot", () => {
         ended_at: null,
       };
 
-      expect(runToOut(run).contract_snapshot_json).toEqual(run.contract_snapshot_json);
-      expect(runToOut(run).workflow_version_id).toBe("workflow-version-1");
-      expect(runToOut(run)).toMatchObject({ prompt: null, instruction: null });
+      expect(runToOut({ ...run, effective_access_level: "full" }).contract_snapshot_json).toEqual(run.contract_snapshot_json);
+      expect(runToOut({ ...run, effective_access_level: "full" }).workflow_version_id).toBe("workflow-version-1");
+      expect(runToOut({ ...run, effective_access_level: "full" })).toMatchObject({ prompt: null, instruction: null });
       expect(contractRecord(run.contract_snapshot_json).source).toEqual({
         kind: "automation",
         id: "automation-1",
@@ -168,7 +177,7 @@ describe("runDelegationIdempotencyDb", () => {
     const now = new Date().toISOString();
     await resetTables(
       db.pool,
-      ["run_delegations", "agent_run_groups", "runs", "agent_versions", "agents", "space_memberships", "spaces", "users"],
+      ["run_delegations", "agent_run_groups", "runs", "agent_versions", "agents", "policy_decision_records", "space_memberships", "spaces", "users"],
       { cascade: true },
     );
     await db.pool.query(
@@ -274,6 +283,56 @@ describe("runDelegationIdempotencyDb", () => {
         tool_call_id: null,
       });
       expect(first.id).not.toBe(second.id);
+    });
+  });
+
+  describe("delegation visibility", () => {
+    it("hides a private parent Run's policy decision record from another member", async (ctx) => {
+      if (!db.available || !db.pool) return ctx.skip();
+      const other = "user-2";
+      const now = new Date().toISOString();
+      await db.pool.query(
+        `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Other', 'active', $2, $2)`,
+        [other, now],
+      );
+      await db.pool.query(
+        `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+         VALUES ($1,$2,$3,'member','active',$4,$4)`,
+        [randomUUID(), SPACE, other, now],
+      );
+      await db.pool.query(
+        `UPDATE runs SET visibility = 'private', owner_user_id = $2 WHERE id = $1`,
+        [parentRunId, USER],
+      );
+      const decisionId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO policy_decision_records (
+           id, space_id, actor_type, actor_id, action, resource_type, resource_id,
+           decision, risk_level, policy_source, metadata_json, created_at
+         ) VALUES ($1,$2,'user',$3,'agent.delegate','run',$4,'allow','low','test','{}',$5)`,
+        [decisionId, SPACE, USER, parentRunId, now],
+      );
+      const repo = new PgAgentGroupRepository(db.pool);
+      const delegation = await repo.createDelegation({
+        space_id: SPACE,
+        group_id: GROUP,
+        parent_run_id: parentRunId,
+        requesting_agent_id: MANAGER_AGENT,
+        target_agent_id: TARGET_AGENT,
+        instruction: "Secret handoff",
+        tool_call_id: null,
+      });
+      await repo.updateDelegationAfterPolicy({
+        space_id: SPACE,
+        delegation_id: delegation.id,
+        status: "queued",
+        policy_decision_record_id: decisionId,
+      });
+
+      expect(await repo.listPolicyDecisionRecordIdsForGroup(SPACE, GROUP, USER)).toEqual([decisionId]);
+      expect(await repo.listPolicyDecisionRecordIdsForGroup(SPACE, GROUP, other)).toEqual([]);
+      expect((await repo.listDelegations(SPACE, GROUP, USER)).map((row) => row.id)).toEqual([delegation.id]);
+      expect(await repo.listDelegations(SPACE, GROUP, other)).toEqual([]);
     });
   });
 });
@@ -631,5 +690,46 @@ describe("every Run event the server writes is one the table allows", () => {
   it("leaves no written event type outside the constraint", () => {
     const missing = writtenEventTypes().filter((type) => !constraint.includes(`'${type}'`));
     expect(missing).toEqual([]);
+  });
+});
+
+describe("run detail withholding", () => {
+  const step = {
+    id: "step-1", space_id: "space-1", run_id: "run-1", attempt_number: 1, parent_step_id: null,
+    actor_id: null, step_index: 0, step_type: "model_call", status: "succeeded", title: "Call model",
+    project_folder_id: null, session_id: null, task_id: null, artifact_id: null, proposal_id: null,
+    started_at: null, ended_at: null, input_summary: "SECRET INPUT", output_summary: "SECRET OUTPUT",
+    error_type: null, error_message: "SECRET ERROR", metadata_json: { secret: true },
+    created_at: "2026-09-11T00:00:00.000Z", updated_at: "2026-09-11T00:00:00.000Z",
+  } as unknown as Parameters<typeof runStepToOut>[0];
+  const event = {
+    id: "event-1", space_id: "space-1", run_id: "run-1", attempt_number: 1, step_id: null, actor_id: null,
+    event_index: 0, event_type: "model_output", status: "succeeded", summary: "SECRET SUMMARY",
+    error_code: null, error_message: "SECRET ERROR", project_folder_id: null, artifact_id: null,
+    proposal_id: null, data_exposure_level: null, trust_level: null, metadata_json: { secret: true },
+    created_at: "2026-09-11T00:00:00.000Z",
+  } as unknown as Parameters<typeof runEventToOut>[0];
+
+  it("keeps timelines and outcomes but withholds output-derived text from a summary viewer", () => {
+    expect(runStepToOut(step, "summary")).toMatchObject({
+      status: "succeeded", title: "Call model", input_summary: null, output_summary: null,
+      error_message: null, metadata_json: {},
+    });
+    expect(runEventToOut(event, "summary")).toMatchObject({
+      event_type: "model_output", summary: null, error_message: null, metadata_json: null,
+    });
+    expect(runAttemptToOut({ error_json: { secret: true } } as never, "summary")).toMatchObject({ error_json: null });
+    expect(runSupervisorDecisionToOut({ metadata_json: { secret: true } }, "summary")).toMatchObject({ metadata_json: null });
+    expect(runEvaluationToOut({ outcome_status: "ok", notes: "SECRET", evidence_json: {}, rule_trace_json: {} } as never, "summary"))
+      .toMatchObject({ outcome_status: "ok", notes: null, evidence_json: null, rule_trace_json: null });
+    expect(runFinalizationToOut({ status: "done", error_json: {}, metadata_json: {}, skipped_reasons_json: {} } as never, "summary"))
+      .toMatchObject({ status: "done", error_json: null, metadata_json: null, skipped_reasons_json: null });
+    expect(verificationResultToOut({ status: "passed", summary: "SECRET", details_json: {}, evidence_refs_json: [] } as never, "summary"))
+      .toMatchObject({ status: "passed", summary: null, details_json: null, evidence_refs_json: null });
+  });
+
+  it("serves the same records whole at full", () => {
+    expect(runStepToOut(step, "full")).toMatchObject({ output_summary: "SECRET OUTPUT", metadata_json: { secret: true } });
+    expect(runEventToOut(event, "full")).toMatchObject({ summary: "SECRET SUMMARY" });
   });
 });

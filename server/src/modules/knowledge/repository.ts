@@ -11,7 +11,6 @@ import {
   accessibleProjectIds,
   assertProjectReadable,
   assertProjectWriter,
-  canWriteProject,
 } from "../projects/access.js";
 import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -30,7 +29,9 @@ import {
   type Queryable,
   confidence,
 } from "../routeUtils/common.js";
+import { assertWritableSpaceObject } from "./knowledgeWriteAccess.js";
 import { contentReadSql, contentVisibilityParamFilterSql } from "../access/contentAccessSql.js";
+import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import { recordDetailRead } from "../contentAccess/audit.js";
 import { proposalToOut } from "../proposals/repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
@@ -52,7 +53,6 @@ import {
   sourceSummaryOut,
 } from "./knowledgeRepositoryMappers.js";
 import {
-  CLAIM_COLUMNS,
   CLAIM_CONFIDENCE_METHODS,
   CLAIM_EVIDENCE_ROLES,
   CLAIM_FROM,
@@ -64,19 +64,22 @@ import {
   CLAIM_STATUSES,
   CONTENT_FORMATS,
   KNOWLEDGE_ITEM_FROM,
-  KNOWLEDGE_ITEM_COLUMNS,
   KNOWLEDGE_KINDS,
   KNOWLEDGE_VISIBILITIES,
-  NOTE_FROM,
   NOTE_COLLECTION_COLUMNS,
-  NOTE_COLUMNS,
+  NOTE_FROM,
   NOTE_PLACEMENTS_JOIN,
   NOTE_STATUSES,
   OBJECT_RELATION_COLUMNS,
-  SOURCE_FROM,
   SOURCE_COLUMNS,
+  SOURCE_FROM,
   SOURCE_STATUSES,
   SOURCE_TYPES,
+  bodyMatchSql,
+  claimColumnsWithAccess,
+  knowledgeItemColumnsWithAccess,
+  noteColumnsWithAccess,
+  sourceColumnsWithAccess,
   type ClaimRow,
   type ClaimSourceRow,
   type KnowledgeItemRow,
@@ -151,6 +154,8 @@ interface NoteLinkRow {
 
 const OBJECT_PROFILE_KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 
+/** One route call purges at most this many notes; the next call takes the rest. */
+const NOTE_PURGE_BATCH = 500;
 const NOTE_PURGE_RETENTION_DAYS = 30;
 
 export class PgKnowledgeRepository {
@@ -239,8 +244,8 @@ export class PgKnowledgeRepository {
       `SELECT count(*)::text AS total FROM ${KNOWLEDGE_ITEM_FROM} ${built.where}`,
       built.params,
     );
-    const rows = await this.db.query<KnowledgeItemRow>(
-      `SELECT ${KNOWLEDGE_ITEM_COLUMNS}
+    const rows = await this.db.query<WithAccessLevel<KnowledgeItemRow>>(
+      `SELECT ${knowledgeItemColumnsWithAccess("$2")}
          FROM ${KNOWLEDGE_ITEM_FROM}
         ${built.where}
         ORDER BY so.updated_at DESC, ki.object_id DESC
@@ -347,8 +352,8 @@ export class PgKnowledgeRepository {
       `SELECT count(*)::text AS total FROM ${CLAIM_FROM} ${built.where}`,
       built.params,
     );
-    const rows = await this.db.query<ClaimRow>(
-      `SELECT ${CLAIM_COLUMNS}
+    const rows = await this.db.query<WithAccessLevel<ClaimRow>>(
+      `SELECT ${claimColumnsWithAccess("$2")}
          FROM ${CLAIM_FROM}
         ${built.where}
         ORDER BY so.updated_at DESC, c.object_id DESC
@@ -361,13 +366,13 @@ export class PgKnowledgeRepository {
   async getClaim(identity: SpaceUserIdentity, claimId: string): Promise<Record<string, unknown> | null> {
     const row = await this.getVisibleClaimRow(identity, claimId);
     if (!row) return null;
-    return claimOut(row, await this.listClaimSourceRows(identity, claimId));
+    return claimOut(row, await this.listClaimSourceRows(identity, claimId, bodyWithheld(row.effective_access_level)));
   }
 
   async claimSources(identity: SpaceUserIdentity, claimId: string): Promise<Record<string, unknown>[]> {
     const claim = await this.getVisibleClaimRow(identity, claimId);
     if (!claim) throw new HttpError(404, "Claim not found");
-    return this.listClaimSourceRows(identity, claimId);
+    return this.listClaimSourceRows(identity, claimId, bodyWithheld(claim.effective_access_level));
   }
 
   async claimRelations(identity: SpaceUserIdentity, claimId: string): Promise<Record<string, unknown>[]> {
@@ -738,8 +743,8 @@ export class PgKnowledgeRepository {
    */
   async knowledgeItemsPromotedFromNote(identity: SpaceUserIdentity, noteId: string): Promise<Record<string, unknown>[]> {
     if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");
-    const rows = await this.db.query<KnowledgeItemRow>(
-      `SELECT ${KNOWLEDGE_ITEM_COLUMNS}
+    const rows = await this.db.query<WithAccessLevel<KnowledgeItemRow>>(
+      `SELECT ${knowledgeItemColumnsWithAccess("$2")}
          FROM ${KNOWLEDGE_ITEM_FROM}
          JOIN provenance_links pl
            ON pl.space_id = ki.space_id AND pl.target_type = 'knowledge' AND pl.target_id = ki.object_id
@@ -811,8 +816,8 @@ export class PgKnowledgeRepository {
     limit: number;
     offset: number;
   }): Promise<Record<string, unknown>> {
-    const params: unknown[] = [identity.spaceId];
-    const clauses = ["s.space_id = $1"];
+    const params: unknown[] = [identity.spaceId, identity.userId];
+    const clauses = ["s.space_id = $1", contentReadSql("space_object", "so", "$2")];
     const add = (value: unknown): string => {
       params.push(value);
       return `$${params.length}`;
@@ -862,7 +867,7 @@ export class PgKnowledgeRepository {
       createdAt: now,
     });
     const n = object.params.length;
-    const result = await this.db.query<SourceRow>(
+    await this.db.query(
       `WITH obj AS (
          ${object.sql}
        ), src AS (
@@ -874,9 +879,7 @@ export class PgKnowledgeRepository {
            $${n + 9}::jsonb, $${n + 10}
          )
        )
-       SELECT ${SOURCE_COLUMNS}
-         FROM ${SOURCE_FROM}
-        WHERE s.object_id = $${n + 1} AND s.space_id = $${n + 2}`,
+       SELECT 1`,
       [
         ...object.params,
         objectId,
@@ -891,14 +894,19 @@ export class PgKnowledgeRepository {
         optionalString(body.source_activity_id),
       ],
     );
-    const row = result.rows[0]!;
-    await this.safeReindex((p) => p.reindex(identity.spaceId, "source", row.id));
-    return sourceOut(row);
+    await this.safeReindex((p) => p.reindex(identity.spaceId, "source", objectId));
+    // The INSERTs above are data-modifying CTEs, and a statement's own SELECT
+    // cannot see what its CTEs wrote — so the row is read back afterwards,
+    // through the gate, which also gives it the creator's access level.
+    const created = await this.getSourceRow(identity, objectId);
+    if (!created) throw new HttpError(404, "Source not found");
+    return sourceOut(created);
   }
 
   async updateSource(identity: SpaceUserIdentity, sourceId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const existing = await this.getSourceRow(identity, sourceId);
     if (!existing) throw new HttpError(404, "Source not found");
+    await assertWritableSpaceObject(this.db, identity, sourceId, "Source not found");
     const now = new Date().toISOString();
     const status = optionalString(body.status);
     if (status && !SOURCE_STATUSES.has(status)) throw new HttpError(422, "invalid source status");
@@ -944,7 +952,11 @@ export class PgKnowledgeRepository {
     );
     const row = result.rows[0]!;
     await this.safeReindex((p) => p.reindex(identity.spaceId, "source", row.id));
-    return sourceOut(row);
+    // Re-read through the gate so the response carries this viewer's level:
+    // being able to update a source is not the same as reading its body.
+    const updated = await this.getSourceRow(identity, row.id);
+    if (!updated) throw new HttpError(404, "Source not found");
+    return sourceOut(updated);
   }
 
   async archiveSource(identity: SpaceUserIdentity, sourceId: string): Promise<Record<string, unknown>> {
@@ -955,13 +967,13 @@ export class PgKnowledgeRepository {
   async listItemSources(identity: SpaceUserIdentity, itemId: string): Promise<Record<string, unknown>[]> {
     const item = await this.getVisibleItemRow(identity, itemId);
     if (!item) throw new HttpError(404, "Knowledge item not found");
-    return this.listKnowledgeItemSourceLinks("knowledge_item_id", itemId, identity.spaceId);
+    return this.listKnowledgeItemSourceLinks("knowledge_item_id", itemId, identity.spaceId, bodyWithheld(item.effective_access_level));
   }
 
   async listSourceItems(identity: SpaceUserIdentity, sourceId: string): Promise<Record<string, unknown>[]> {
     const source = await this.getSourceRow(identity, sourceId);
     if (!source) throw new HttpError(404, "Source not found");
-    return this.listKnowledgeItemSourceLinks("source_id", sourceId, identity.spaceId);
+    return this.listKnowledgeItemSourceLinks("source_id", sourceId, identity.spaceId, bodyWithheld(source.effective_access_level));
   }
 
   async createItemSource(identity: SpaceUserIdentity, itemId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1042,8 +1054,8 @@ export class PgKnowledgeRepository {
         ${built.where}`,
       built.params,
     );
-    const rows = await this.db.query<NoteRow>(
-      `SELECT ${NOTE_COLUMNS}
+    const rows = await this.db.query<WithAccessLevel<NoteRow>>(
+      `SELECT ${noteColumnsWithAccess("$2")}
          FROM ${NOTE_FROM}
          ${NOTE_PLACEMENTS_JOIN}
          ${membershipJoin}
@@ -1423,6 +1435,10 @@ export class PgKnowledgeRepository {
     shareWithProject = false,
   ): Promise<Record<string, unknown>> {
     if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");
+    // Placing a note is a write to it — `bindNoteToPlacementProject` can rewrite
+    // its `primary_project_id` — so it takes the same check as any other. 403,
+    // not 404: this path has just returned the note to them.
+    await assertWritableSpaceObject(this.db, identity, noteId, "Note is not writable", 403);
     await withQueryableTransaction(this.db, (tx) =>
       addNotePlacement(tx, identity.spaceId, noteId, collectionId, { userId: identity.userId }, shareWithProject));
     return (await this.getNote(identity, noteId))!;
@@ -1543,6 +1559,7 @@ export class PgKnowledgeRepository {
   ): Promise<Record<string, unknown>> {
     const note = await this.getNoteRow(identity, noteId);
     if (!note) throw new HttpError(404, "Note not found");
+    await assertWritableSpaceObject(this.db, identity, noteId, "Note is not writable", 403);
     await withQueryableTransaction(this.db, (tx) => revokeSpaceObjectProjectShare(tx, {
       spaceId: identity.spaceId,
       objectId: noteId,
@@ -1560,6 +1577,7 @@ export class PgKnowledgeRepository {
     collectionId: string,
   ): Promise<Record<string, unknown>> {
     if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");
+    await assertWritableSpaceObject(this.db, identity, noteId, "Note is not writable", 403);
     // In a transaction: the last-placement refusal reads the placement rows
     // `FOR UPDATE` and then deletes one, and the two have to see the same set.
     await withQueryableTransaction(this.db, (tx) =>
@@ -1568,7 +1586,10 @@ export class PgKnowledgeRepository {
   }
 
   async listNoteRevisions(identity: SpaceUserIdentity, noteId: string, limit?: number): Promise<Array<Record<string, unknown>>> {
-    if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");
+    const note = await this.getNoteRow(identity, noteId);
+    // Every revision is a whole body, so a summary-level reader gets the
+    // note's summary and not its history.
+    if (!note || bodyWithheld(note.effective_access_level)) throw new HttpError(404, "Note not found");
     return listNoteRevisionRows(this.db, { spaceId: identity.spaceId, noteId, limit });
   }
 
@@ -1702,13 +1723,48 @@ export class PgKnowledgeRepository {
   // The purge is a hard DELETE, so it honors the retention window it reports:
   // a note deleted a minute ago is still recoverable by un-deleting it, and
   // only notes past the window are actually destroyed.
+  //
+  // Scoped to notes this person could have deleted themselves. Space-wide it
+  // was an unauthenticated-by-object destruction: any member could empty every
+  // other member's private wastebasket, irreversibly, through one route with no
+  // object named in the request.
   async purgeDeletedNotes(identity: SpaceUserIdentity): Promise<Record<string, unknown>> {
-    const result = await this.db.query<{ deleted: string }>(
-      `DELETE FROM space_objects
+    const candidates = await this.db.query<{ id: string }>(
+      `SELECT id
+         FROM space_objects
         WHERE space_id = $1 AND object_type = 'note' AND deleted_at IS NOT NULL
           AND deleted_at < now() - ($2 || ' days')::interval
+          -- A candidate filter, not the rule: the write check below still
+          -- decides each survivor. It is here so a Space with a large
+          -- wastebasket does not make this route cost one round trip per note
+          -- another member deleted, until it can no longer finish at all.
+          AND (visibility = 'space_shared' OR owner_user_id = $3)
+        LIMIT ${NOTE_PURGE_BATCH}`,
+      [identity.spaceId, String(NOTE_PURGE_RETENTION_DAYS), identity.userId],
+    );
+    // Each candidate is judged by the one note write rule rather than by a SQL
+    // paraphrase of half of it.
+    const purgeable: string[] = [];
+    for (const row of candidates.rows) {
+      try {
+        await assertWritableSpaceObject(this.db, identity, row.id, "Note not found");
+        purgeable.push(row.id);
+      } catch (error) {
+        // Only a refusal skips a note. A pool or query failure reported as
+        // `{ deleted: 0 }` would read as "nothing to purge".
+        if (!(error instanceof HttpError)) throw error;
+      }
+    }
+    if (purgeable.length === 0) return { deleted: 0, retention_days: NOTE_PURGE_RETENTION_DAYS };
+    // The retention predicate stays in the DELETE: a note pulled back out of
+    // the wastebasket between the two statements must not be destroyed anyway.
+    const result = await this.db.query<{ id: string }>(
+      `DELETE FROM space_objects
+        WHERE space_id = $1 AND id = ANY($2::varchar[])
+          AND deleted_at IS NOT NULL
+          AND deleted_at < now() - ($3 || ' days')::interval
         RETURNING id`,
-      [identity.spaceId, String(NOTE_PURGE_RETENTION_DAYS)],
+      [identity.spaceId, purgeable, String(NOTE_PURGE_RETENTION_DAYS)],
     );
     return {
       deleted: result.rowCount ?? result.rows.length,
@@ -1778,6 +1834,18 @@ export class PgKnowledgeRepository {
     return rows.rows.map(noteLinkAsEntityLinkOut);
   }
 
+  /**
+   * A link's source object, checked for write rather than read.
+   *
+   * `assertWritableSpaceObject` decides; this only re-reads the row afterwards
+   * so the caller can compare `object_type`, and answers the same "not found"
+   * a read refusal would, so the check leaks nothing a reader did not have.
+   */
+  private async requireWritableLinkSource(identity: SpaceUserIdentity, objectId: string): Promise<SpaceObjectRow> {
+    await assertWritableSpaceObject(this.db, identity, objectId, "Note link source not found");
+    return this.requireVisibleSpaceObject(identity, objectId, "Note link source not found");
+  }
+
   async createNoteLink(identity: SpaceUserIdentity, noteId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     await this.requireWritableNote(identity, noteId);
     const direction = optionalString(body.direction) ?? "outgoing";
@@ -1787,7 +1855,15 @@ export class PgKnowledgeRepository {
     const sourceId = direction === "incoming" ? targetId : noteId;
     const finalTargetType = direction === "incoming" ? "note" : targetType;
     const finalTargetId = direction === "incoming" ? noteId : targetId;
-    const sourceObject = await this.requireVisibleSpaceObject(identity, sourceId, "Note link source not found");
+    // The link is written *on* its source object, so that one has to be
+    // writable — not merely visible. With `direction: "incoming"` the source is
+    // the caller-supplied `target_id`, which was checked for visibility alone,
+    // so a reader holding a grant on someone else's note could attach an
+    // outgoing link to it. The target stays a read check: being linked *to* is
+    // not a change to the thing linked to.
+    const sourceObject = sourceId === noteId
+      ? await this.requireVisibleSpaceObject(identity, sourceId, "Note link source not found")
+      : await this.requireWritableLinkSource(identity, sourceId);
     const targetObject = await this.requireVisibleSpaceObject(identity, finalTargetId, "Note link target not found");
     if (sourceObject.object_type !== sourceType || targetObject.object_type !== finalTargetType) {
       throw new HttpError(404, "Note link endpoint not found");
@@ -1918,7 +1994,10 @@ export class PgKnowledgeRepository {
     }
     if (filters.projectId) clauses.push(`so.primary_project_id = ${add(filters.projectId)}`);
     if (filters.projectFolderId) clauses.push(`so.project_folder_id = ${add(filters.projectFolderId)}`);
-    if (filters.q) clauses.push(`(so.title ILIKE ${add(`%${filters.q}%`)} OR ki.content ILIKE $${params.length})`);
+    if (filters.q) {
+      const slot = add(`%${filters.q}%`);
+      clauses.push(`(so.title ILIKE ${slot} OR ${bodyMatchSql("ki.content", slot, "$2")})`);
+    }
     return { where: `WHERE ${clauses.join(" AND ")}`, params };
   }
 
@@ -1945,7 +2024,11 @@ export class PgKnowledgeRepository {
     if (filters.subjectObjectId) clauses.push(`c.subject_object_id = ${add(filters.subjectObjectId)}`);
     if (filters.q) {
       const slot = add(`%${filters.q}%`);
-      clauses.push(`(so.title ILIKE ${slot} OR c.claim_text ILIKE ${slot} OR c.subject_text ILIKE ${slot})`);
+      clauses.push(
+        `(so.title ILIKE ${slot}`
+        + ` OR ${bodyMatchSql("c.claim_text", slot, "$2")}`
+        + ` OR ${bodyMatchSql("c.subject_text", slot, "$2")})`,
+      );
     }
     return { where: `WHERE ${clauses.join(" AND ")}`, params };
   }
@@ -1954,9 +2037,9 @@ export class PgKnowledgeRepository {
     return contentReadSql("space_object", alias, userParam);
   }
 
-  private async getVisibleItemRow(identity: SpaceUserIdentity, itemId: string): Promise<KnowledgeItemRow | null> {
-    const result = await this.db.query<KnowledgeItemRow>(
-      `SELECT ${KNOWLEDGE_ITEM_COLUMNS}
+  private async getVisibleItemRow(identity: SpaceUserIdentity, itemId: string): Promise<WithAccessLevel<KnowledgeItemRow> | null> {
+    const result = await this.db.query<WithAccessLevel<KnowledgeItemRow>>(
+      `SELECT ${knowledgeItemColumnsWithAccess("$3")}
          FROM ${KNOWLEDGE_ITEM_FROM}
         WHERE ki.object_id = $1 AND ki.space_id = $2
           AND ${contentReadSql("space_object", "so", "$3")}`,
@@ -2019,9 +2102,9 @@ export class PgKnowledgeRepository {
 
 
 
-  private async getVisibleClaimRow(identity: SpaceUserIdentity, claimId: string): Promise<ClaimRow | null> {
-    const result = await this.db.query<ClaimRow>(
-      `SELECT ${CLAIM_COLUMNS}
+  private async getVisibleClaimRow(identity: SpaceUserIdentity, claimId: string): Promise<WithAccessLevel<ClaimRow> | null> {
+    const result = await this.db.query<WithAccessLevel<ClaimRow>>(
+      `SELECT ${claimColumnsWithAccess("$3")}
          FROM ${CLAIM_FROM}
         WHERE c.object_id = $1 AND c.space_id = $2
           AND ${contentReadSql("space_object", "so", "$3")}`,
@@ -2099,7 +2182,11 @@ export class PgKnowledgeRepository {
 
 
 
-  private async listClaimSourceRows(identity: SpaceUserIdentity, claimId: string): Promise<Record<string, unknown>[]> {
+  private async listClaimSourceRows(
+    identity: SpaceUserIdentity,
+    claimId: string,
+    withheld: boolean,
+  ): Promise<Record<string, unknown>[]> {
     const rows = await this.db.query<ClaimSourceRow>(
       `SELECT ${CLAIM_SOURCE_COLUMNS}
          FROM claim_sources
@@ -2113,7 +2200,7 @@ export class PgKnowledgeRepository {
     // quote/locator — must not render. Fail-closed: a named connection without a
     // readable snapshot drops the row. Mirrors retrieval's `enforceSourceReadPolicy`.
     const allowed = await this.filterClaimSourceRowsByPolicy(identity, rows.rows);
-    return allowed.map(claimSourceOut);
+    return allowed.map((row) => claimSourceOut(row, withheld));
   }
 
   private async filterClaimSourceRowsByPolicy(
@@ -2138,9 +2225,9 @@ export class PgKnowledgeRepository {
   }
 
   /** Gated for the same reason as {@link getNoteRow}: it backs reads and writes. */
-  private async getSourceRow(identity: SpaceUserIdentity, sourceId: string): Promise<SourceRow | null> {
-    const result = await this.db.query<SourceRow>(
-      `SELECT ${SOURCE_COLUMNS}
+  private async getSourceRow(identity: SpaceUserIdentity, sourceId: string): Promise<WithAccessLevel<SourceRow> | null> {
+    const result = await this.db.query<WithAccessLevel<SourceRow>>(
+      `SELECT ${sourceColumnsWithAccess("$3")}
          FROM ${SOURCE_FROM}
         WHERE s.object_id = $1 AND s.space_id = $2
           AND ${contentReadSql("space_object", "so", "$3")}`,
@@ -2246,10 +2333,16 @@ export class PgKnowledgeRepository {
     }));
   }
 
+  /**
+   * An item↔source link restates the source's text as `quote` / `note`, so a
+   * reader at summary level of the object the listing hangs off is withheld
+   * them.
+   */
   private async listKnowledgeItemSourceLinks(
     column: "knowledge_item_id" | "source_id",
     value: string,
     spaceId: string,
+    withheld: boolean,
   ): Promise<Record<string, unknown>[]> {
     const rows = await this.db.query<Record<string, unknown>>(
       `SELECT id, space_id, knowledge_item_id, source_id, relation_type,
@@ -2259,7 +2352,7 @@ export class PgKnowledgeRepository {
         ORDER BY created_at DESC, id DESC`,
       [value, spaceId],
     );
-    return rows.rows.map(normalizeDates);
+    return rows.rows.map((row) => normalizeDates(withheld ? { ...row, locator: null, quote: null, note: null } : row));
   }
 
   /**
@@ -2273,9 +2366,9 @@ export class PgKnowledgeRepository {
    * `definitionRow`; gating here means a caller cannot mutate what it cannot
    * see.
    */
-  private async getNoteRow(identity: SpaceUserIdentity, noteId: string): Promise<NoteRow | null> {
-    const result = await this.db.query<NoteRow>(
-      `SELECT ${NOTE_COLUMNS}
+  private async getNoteRow(identity: SpaceUserIdentity, noteId: string): Promise<WithAccessLevel<NoteRow> | null> {
+    const result = await this.db.query<WithAccessLevel<NoteRow>>(
+      `SELECT ${noteColumnsWithAccess("$3")}
          FROM ${NOTE_FROM}
          ${NOTE_PLACEMENTS_JOIN}
         WHERE n.object_id = $1 AND n.space_id = $2
@@ -2294,14 +2387,7 @@ export class PgKnowledgeRepository {
   private async requireWritableNote(identity: SpaceUserIdentity, noteId: string): Promise<NoteRow> {
     const note = await this.getNoteRow(identity, noteId);
     if (!note) throw new HttpError(404, "Note not found");
-    if (note.primary_project_id && !(await canWriteProject(
-      this.db,
-      identity.spaceId,
-      note.primary_project_id,
-      identity.userId,
-    ))) {
-      throw new HttpError(404, "Note not found");
-    }
+    await assertWritableSpaceObject(this.db, identity, noteId, "Note not found");
     return note;
   }
 
@@ -2445,7 +2531,10 @@ function buildNoteWhere(
                   AND nci_scope.collection_id = ANY(${add(filters.collectionIds)}::varchar[]))`,
     );
   }
-  if (filters.q) clauses.push(`(so.title ILIKE ${add(`%${filters.q}%`)} OR n.plain_text ILIKE $${params.length})`);
+  if (filters.q) {
+    const slot = add(`%${filters.q}%`);
+    clauses.push(`(so.title ILIKE ${slot} OR ${bodyMatchSql("n.plain_text", slot, "$2")})`);
+  }
   return { where: `WHERE ${clauses.join(" AND ")}`, params };
 }
 

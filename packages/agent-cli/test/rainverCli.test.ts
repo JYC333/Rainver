@@ -105,7 +105,7 @@ describe("rainver list / describe", () => {
     expect(JSON.parse(result.stdout)).toEqual({ tools: [{ name: "task.list" }] });
     expect(received[0]).toMatchObject({
       method: "GET",
-      url: "/internal/runs/run-1/tools",
+      url: "/api/v1/runs/run-1/tools",
       authorization: "Bearer token-1",
     });
   });
@@ -115,7 +115,7 @@ describe("rainver list / describe", () => {
 
     await runCli(["describe", "task.report"]);
 
-    expect(received[0]!.url).toBe("/internal/runs/run-1/tools/task.report");
+    expect(received[0]!.url).toBe("/api/v1/runs/run-1/tools/task.report");
   });
 
   it("refuses to run without the run's environment", async () => {
@@ -133,7 +133,7 @@ describe("rainver call", () => {
     const result = await runCli(["call", "task.report", '{"task_id":"task-1","summary":"done"}']);
 
     expect(result.code).toBe(0);
-    expect(received[0]).toMatchObject({ method: "POST", url: "/internal/runs/run-1/tools/task.report" });
+    expect(received[0]).toMatchObject({ method: "POST", url: "/api/v1/runs/run-1/tools/task.report" });
     expect(JSON.parse(received[0]!.body)).toEqual({ task_id: "task-1", summary: "done" });
     // A retried call must advance the work once, which is what the key is for.
     expect(received[0]!.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);

@@ -41,6 +41,9 @@ services:
       - RAINVER_ENV=test
       - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-rainver}:${POSTGRES_PASSWORD:-rainver_dev_password}@postgres:5432/${POSTGRES_DB:-rainver}}
       - SANDBOX_RUNNER_SERVER_HOST=server
+      # The only peer whose X-Forwarded-* the server believes (the Vite proxy).
+      - SERVER_TRUSTED_PROXY_HOST=frontend
+      - PROVIDER_PROXY_LISTEN_HOST=0.0.0.0
     depends_on:
       postgres:
         condition: service_healthy

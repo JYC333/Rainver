@@ -10,8 +10,11 @@ import {
   sanitizeEvidenceJson,
 } from "./evidenceRedaction.js";
 import { assertProjectInSpace } from "../projects/access.js";
-import { contentReadSql, projectReadAccessSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
+
+const RUN_ACCESS = contentResourceDefinition("run")!;
 import {
   addOptionalFilter,
   extractErrorMessage,
@@ -37,6 +40,7 @@ import {
   type RunListFilters,
   type RunRecord,
   type RunAttemptRecord,
+  type VisibleRunRecord,
   type RuntimeProfileSelectionSource,
   type RunStepDetailRecord,
   type RunStepInput,
@@ -82,6 +86,7 @@ export {
   type RunListFilters,
   type RunRecord,
   type RunAttemptRecord,
+  type VisibleRunRecord,
   type RunStepDetailRecord,
   type RunStepInput,
   type RunStepRecord,
@@ -121,7 +126,7 @@ export class PgRunRepository {
     };
   }
 
-  private async withRunsUsage(runs: RunRecord[]): Promise<RunRecord[]> {
+  private async withRunsUsage<T extends RunRecord>(runs: T[]): Promise<T[]> {
     const summaries = await this.usageRepository.summarizeRunUsageByRunIds(
       runs[0]?.space_id ?? "",
       runs.map((run) => run.id),
@@ -141,33 +146,38 @@ export class PgRunRepository {
       now.getTime() - Math.max(1, staleAfterSeconds) * 1000,
     ).toISOString();
     const completedAt = now.toISOString();
-    const errorMessage = "Run became orphaned after the server lost its execution registry";
-    const errorJson = sanitizeErrorJson({
+    const orphanedMessage = "Run became orphaned after the server lost its execution registry";
+    const orphanedJson = sanitizeErrorJson({
       error_code: "orphaned",
       error_text: "Run was still running after the server lost its execution registry",
     });
+    const cancelledMessage = "Run cancellation did not finish before the server lost its execution registry";
+    const cancelledJson = sanitizeErrorJson({
+      error_code: "cancelled",
+      error_text: "Cancel did not complete before the execution registry was lost",
+    });
     return withQueryableTransaction(this.db, async (db) => {
     const result = await db.query<{ id: string; space_id: string }>(
-      `WITH orphaned_runs AS (
+      `WITH recovered_runs AS (
          UPDATE runs
-            SET status = 'orphaned',
-              error_message = $3,
-              error_json = $4::jsonb,
+            SET status = CASE WHEN status = 'cancelling' THEN 'cancelled' ELSE 'orphaned' END,
+              error_message = CASE WHEN status = 'cancelling' THEN $5 ELSE $3 END,
+              error_json = CASE WHEN status = 'cancelling' THEN $6::jsonb ELSE $4::jsonb END,
               ended_at = $2,
               updated_at = $2
           WHERE status IN ('running', 'cancelling')
           AND started_at IS NOT NULL
           AND started_at < $1
-          RETURNING id, space_id
+          RETURNING id, space_id, status, error_json
        ), updated_attempts AS (
          UPDATE run_attempts a
-            SET status = 'orphaned',
-                error_code = 'orphaned',
-                error_json = $4::jsonb,
+            SET status = r.status,
+                error_code = r.error_json->>'error_code',
+                error_json = r.error_json,
                 ended_at = $2,
                 last_activity_at = $2,
                 updated_at = $2
-           FROM orphaned_runs r
+           FROM recovered_runs r
           WHERE a.space_id = r.space_id
             AND a.run_id = r.id
             AND a.attempt_number = (
@@ -179,21 +189,23 @@ export class PgRunRepository {
          UPDATE proposals proposal
             SET status = 'rejected',
                 updated_at = $2
-           FROM orphaned_runs run
+           FROM recovered_runs run
           WHERE proposal.space_id = run.space_id
             AND proposal.created_by_run_id = run.id
             AND proposal.status IN ('staged', 'pending')
        ), released_execution_locks AS (
          DELETE FROM run_execution_locks execution_lock
-          USING orphaned_runs run
+          USING recovered_runs run
           WHERE execution_lock.run_id = run.id
        )
-       SELECT id FROM orphaned_runs`,
+       SELECT id, space_id FROM recovered_runs`,
       [
         cutoff,
         completedAt,
-        redactEvidenceText(errorMessage),
-        JSON.stringify(errorJson),
+        redactEvidenceText(orphanedMessage),
+        JSON.stringify(orphanedJson),
+        redactEvidenceText(cancelledMessage),
+        JSON.stringify(cancelledJson),
       ],
     );
     for (const row of result.rows) {
@@ -485,7 +497,9 @@ export class PgRunRepository {
     await this.assertOptionalSpaceRef("sessions", input.session_id, input.space_id, "Session");
     await this.assertOptionalSpaceRef("projects", input.project_id, input.space_id, "Project");
     if (input.parent_run_id) {
-      const parent = await this.getRun(input.space_id, input.parent_run_id);
+      // A child reads its parent's context, so the parent must be a Run the
+      // creator can read — naming an id is not enough.
+      const parent = await this.getVisibleRun(input.space_id, input.user_id, input.parent_run_id);
       if (!parent) {
         throw new RunCreateValidationError(
           `Parent run '${input.parent_run_id}' not found`,
@@ -955,7 +969,7 @@ export class PgRunRepository {
    * all — so the list showed Runs this path then denied. One definition is
    * what stops that recurring.
    */
-  async getVisibleRun(spaceId: string, userId: string, runId: string): Promise<RunRecord | null> {
+  async getVisibleRun(spaceId: string, userId: string, runId: string): Promise<VisibleRunRecord | null> {
     const roomReadable = await this.db.query<{ allowed: boolean }>(
       `SELECT ${roomRunReadAccessSql("$2", "$1", "$3")} AS allowed`,
       [spaceId, runId, userId],
@@ -967,10 +981,12 @@ export class PgRunRepository {
       "run",
       runId,
     );
-    return decision === "deny" ? null : this.getRun(spaceId, runId);
+    if (decision === "deny") return null;
+    const run = await this.getRun(spaceId, runId);
+    return run ? { ...run, effective_access_level: decision } : null;
   }
 
-  async listRuns(filters: RunListFilters): Promise<RunRecord[]> {
+  async listRuns(filters: RunListFilters): Promise<VisibleRunRecord[]> {
     await assertProjectInSpace(this.db, filters.space_id, filters.project_id);
     const clauses = [
       "space_id = $1",
@@ -1004,7 +1020,7 @@ export class PgRunRepository {
     params.push(filters.limit, filters.offset);
     const limitIndex = params.length - 1;
     const offsetIndex = params.length;
-    const result = await this.db.query<RunRecord>(
+    const result = await this.db.query<VisibleRunRecord>(
       `SELECT id, space_id, agent_id, agent_version_id, run_role,
               requested_runtime_profile_id, runtime_profile_id, runtime_profile_selection_source,
               run_type, status, mode, prompt, instruction, project_folder_id, workspace_location_id, trust_mode, host_task_thread_id,
@@ -1015,7 +1031,8 @@ export class PgRunRepository {
               required_sandbox_level, contract_snapshot_json, workflow_version_id, route_decision_id, trigger_origin, instructed_by_user_id,
               instructed_by_agent_id,
               error_message, error_json, output_json, started_at,
-              ended_at, created_at, updated_at, owner_user_id, visibility, access_level
+              ended_at, created_at, updated_at, owner_user_id, visibility, access_level,
+              ${contentAccessLevelSql({ definition: RUN_ACCESS, alias: "runs", userExpr: "$2" })} AS effective_access_level
          FROM runs
         WHERE ${clauses.join(" AND ")}
         ORDER BY created_at DESC, id DESC
@@ -1173,19 +1190,22 @@ export class PgRunRepository {
     return result.rows;
   }
 
-  async listChildRuns(spaceId: string, runId: string): Promise<RunRecord[]> {
+  /** The children of a Run that this viewer can read; the rest are not listed. */
+  async listChildRuns(spaceId: string, runId: string, viewerUserId: string): Promise<RunRecord[]> {
     const result = await this.db.query<RunRecord>(
-      `SELECT id, space_id, agent_id, agent_version_id, parent_run_id,
-              root_run_id, run_group_id, delegation_id, status,
-              run_type, trigger_origin, mode, created_at, started_at, ended_at,
-              prompt, instruction, project_folder_id, session_id, project_id,
-              runtime_profile_id, runtime_profile_selection_source,
-              adapter_type, model_provider_id, required_sandbox_level, contract_snapshot_json, workflow_version_id,
-              instructed_by_user_id, instructed_by_agent_id, error_message, visibility
-         FROM runs
-        WHERE space_id = $1 AND parent_run_id = $2
-        ORDER BY created_at ASC, id ASC`,
-      [spaceId, runId],
+      `SELECT r.id, r.space_id, r.agent_id, r.agent_version_id, r.parent_run_id,
+              r.root_run_id, r.run_group_id, r.delegation_id, r.status,
+              r.run_type, r.trigger_origin, r.mode, r.created_at, r.started_at, r.ended_at,
+              r.prompt, r.instruction, r.project_folder_id, r.session_id, r.project_id,
+              r.runtime_profile_id, r.runtime_profile_selection_source,
+              r.adapter_type, r.model_provider_id, r.required_sandbox_level, r.contract_snapshot_json, r.workflow_version_id,
+              r.instructed_by_user_id, r.instructed_by_agent_id, r.error_message, r.visibility
+         FROM runs r
+        WHERE r.space_id = $1 AND r.parent_run_id = $2
+          AND ${contentReadSql("run", "r", "$3")}
+          AND ${roomRunReadAccessSql("r.id", "r.space_id", "$3")}
+        ORDER BY r.created_at ASC, r.id ASC`,
+      [spaceId, runId, viewerUserId],
     );
     return result.rows;
   }
@@ -2190,11 +2210,14 @@ export class PgRunRepository {
     space_id: string;
     approval_code: string;
     message: string;
+    /** The gate's risk; it decides who may grant the approval on resume. */
+    risk_level: string;
     paused_at: string;
   }): Promise<RunRecord | null> {
     const errorJson = sanitizeErrorJson({
       error_code: input.approval_code,
       error_text: input.message,
+      risk_level: input.risk_level,
     });
     const result = await this.db.query<RunRecord>(
       `WITH updated AS (

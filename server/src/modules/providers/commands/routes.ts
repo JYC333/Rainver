@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { stateChangingReadAllowed } from "../../../gateway/csrfOrigin.js";
 import * as protocol from "@rainver/protocol";
 import type { ProviderFromPresetCreateRequest } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../../gateway/errorEnvelope.js";
-import { checkInternalToken } from "../../../gateway/internalAuth.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../../gateway/requestContext.js";
 import { introspectIdentity } from "../../auth/identity.js";
 import { resolveProviderCommandStore } from "./store.js";
@@ -16,11 +16,12 @@ import type {
   RotationStrategy,
 } from "./store.js";
 import { ProviderCommandForbiddenError } from "./store.js";
+import { ProviderCommandNotFoundError } from "./types.js";
+import { resolveProvidersDbPort } from "../dbReader.js";
 import {
   completeProviderChat,
   completeProviderEmbedding,
   completeProviderRerank,
-  completeProviderText,
   listProviderModels,
 } from "../invocation/invocation.js";
 import {
@@ -39,6 +40,7 @@ import {
   type ManagedSubscriptionLoginSession,
 } from "../subscriptionOAuth.js";
 import { requireProviderVendor } from "../vendors.js";
+import { sseResponseHeaders } from "../../../gateway/sse.js";
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
@@ -135,6 +137,27 @@ function sendDomainError(reply: FastifyReply, error: unknown): FastifyReply {
   return reply.code(Number.isInteger(statusCode) ? statusCode : 400).send({ detail: message });
 }
 
+/** The provider a connection test targets, read without resolving its key. */
+async function testedProvider(
+  config: ServerConfig,
+  identity: { spaceId: string; userId: string },
+  providerId: string,
+): Promise<{ id: string; provider_type: string; default_model: string | null; available_models: string[] }> {
+  const provider = await resolveProvidersDbPort(config)?.getProvider(identity.spaceId, identity.userId, providerId);
+  if (!provider || typeof provider !== "object") {
+    throw new ProviderCommandNotFoundError(`ModelProvider '${providerId}' not found`);
+  }
+  const row = provider as Record<string, unknown>;
+  return {
+    id: String(row.id),
+    provider_type: String(row.provider_type),
+    default_model: typeof row.default_model === "string" ? row.default_model : null,
+    available_models: Array.isArray(row.available_models)
+      ? row.available_models.filter((model): model is string => typeof model === "string")
+      : [],
+  };
+}
+
 async function requireInstanceAdmin(config: ServerConfig, userId: string): Promise<void> {
   if (!config.instanceAdminEmail || !config.databaseUrl) {
     throw new ProviderCommandForbiddenError("INSTANCE_ADMIN_EMAIL is not configured");
@@ -169,6 +192,12 @@ export function registerProviderCommandRoutes(
   // recurring job.
 
   app.get("/api/v1/providers/subscriptions/login/stream", async (request, reply) => {
+    // A GET because it is a long-lived stream, but it starts a vendor login —
+    // see the host login stream for why that needs the cross-site check a POST
+    // would get for free.
+    if (!stateChangingReadAllowed(request, config.frontendUrl)) {
+      return reply.code(403).send({ detail: "Cross-site request refused" });
+    }
     const identity = await resolveIdentity(config, request, reply);
     if (!identity) return reply;
     try {
@@ -178,11 +207,7 @@ export function registerProviderCommandRoutes(
       if (subscriptionLoginSessions.has(sessionKey)) {
         return reply.code(409).send({ detail: `A ${type} subscription login is already active` });
       }
-      reply.raw.writeHead(200, {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        "x-accel-buffering": "no",
-      });
+      reply.raw.writeHead(200, sseResponseHeaders());
       const emit = (event: unknown) => {
         if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
       };
@@ -383,6 +408,7 @@ export function registerProviderCommandRoutes(
         identity.spaceId,
         params(request).configId ?? "",
         identity.userId,
+        { kind: "person", user_id: identity.userId },
       );
       return reply.send(value);
     } catch (error) {
@@ -395,28 +421,28 @@ export function registerProviderCommandRoutes(
     if (!identity) return reply;
     try {
       const store = resolveProviderCommandStore(config);
-      const target = await store.getInvocationTarget(
-        identity.spaceId,
-        params(request).configId ?? "",
-        identity.userId,
-      );
-      const vendor = requireProviderVendor(target.provider.provider_type);
+      // Read without resolving a key: each completion below decides its spend
+      // before it resolves one.
+      const provider = await testedProvider(config, identity, params(request).configId ?? "");
+      const vendor = requireProviderVendor(provider.provider_type);
       if (!vendor.supportsChat && (vendor.supportsEmbedding || vendor.supportsRerank)) {
-        const scope = retrievalProviderTestScope(target.provider);
+        const scope = retrievalProviderTestScope(provider);
         const embedding = scope === "rerank" ? null : await completeProviderEmbedding(store, identity.spaceId, {
-          provider_id: target.provider.id,
-          model: firstModelMatching(target.provider, looksLikeEmbeddingModel),
+          provider_id: provider.id,
+          model: firstModelMatching(provider, looksLikeEmbeddingModel),
           inputs: ["rainver retrieval provider connection test"],
           inputType: "document",
           metering: { subject_user_id: identity.userId },
+          spend: { kind: "person", user_id: identity.userId },
         });
         const rerank = scope === "embedding" ? null : await completeProviderRerank(store, identity.spaceId, {
-          provider_id: target.provider.id,
+          provider_id: provider.id,
           query: "retrieval provider test",
           documents: ["retrieval provider test document", "unrelated document"],
           topN: 1,
-          model: firstModelMatching(target.provider, looksLikeRerankModel) ?? defaultRerankModelForProvider(target.provider.provider_type),
+          model: firstModelMatching(provider, looksLikeRerankModel) ?? defaultRerankModelForProvider(provider.provider_type),
           metering: { subject_user_id: identity.userId },
+          spend: { kind: "person", user_id: identity.userId },
         });
         const success = (embedding ? embedding.vectors.length > 0 : true) && (rerank ? rerank.scores.length > 0 : true);
         const message = scope === "embedding"
@@ -431,15 +457,16 @@ export function registerProviderCommandRoutes(
           model,
         });
       }
-      const models = await store.listConfiguredModels(identity.spaceId, target.provider.id);
-      const model = target.provider.default_model || models[0];
+      const models = await store.listConfiguredModels(identity.spaceId, provider.id);
+      const model = provider.default_model || models[0];
       if (!model) return reply.send({ success: false, message: "No models configured" });
       const result = await completeProviderChat(store, identity.spaceId, {
-        provider_id: target.provider.id,
+        provider_id: provider.id,
         model,
         messages: [{ role: "user", content: "Hi" }],
         max_tokens: 5,
         metering: { subject_user_id: identity.userId },
+        spend: { kind: "person", user_id: identity.userId },
       });
       return reply.send({
         success: true,
@@ -590,76 +617,4 @@ export function registerProviderCommandRoutes(
       return sendDomainError(reply, error);
     }
   });
-
-  app.post("/internal/providers-credentials/providers/complete-text", async (request, reply) => {
-    if (!checkInternalToken(config, request)) return reply.code(401).send({ detail: "Unauthorized" });
-    try {
-      const body = await parseWith<{
-        space_id: string;
-        provider_id: string;
-        model?: string | null;
-        system: string;
-        user: string;
-        max_tokens?: number;
-        task?: string | null;
-        subject_user_id?: string | null;
-        source_resource_type?: string | null;
-        source_resource_id?: string | null;
-        space_system_task?: boolean;
-        meter_subject_type?: string | null;
-        meter_subject_id?: string | null;
-      }>("ProviderCompletionInternalRequestSchema", jsonBody(request));
-      return reply.send(
-        await completeProviderText(resolveProviderCommandStore(config), body.space_id, {
-          provider_id: body.provider_id,
-          model: body.model,
-          system: body.system,
-          user: body.user,
-          max_tokens: body.max_tokens,
-          task: body.task,
-          metering: {
-            subject_user_id: body.subject_user_id,
-            source_resource_type: body.source_resource_type,
-            source_resource_id: body.source_resource_id,
-            space_system_task: body.space_system_task,
-            meter_subject_type: body.meter_subject_type,
-            meter_subject_id: body.meter_subject_id,
-          },
-        }),
-      );
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
-  app.post("/internal/providers-credentials/credentials/runtime/resolve", async (request, reply) => {
-    if (!checkInternalToken(config, request)) return reply.code(401).send({ detail: "Unauthorized" });
-    try {
-      const body = await parseWith<
-        | { kind: "model_provider_api_key"; space_id: string; provider_id: string }
-        | { kind: "credential_api_key"; space_id: string; credential_id: string }
-      >("RuntimeCredentialResolveRequestSchema", jsonBody(request));
-      if (body.kind === "model_provider_api_key") {
-        return reply.send({
-          kind: "model_provider_api_key",
-          provider_id: body.provider_id,
-          api_key: await resolveProviderCommandStore(config).resolveProviderApiKey(
-            body.space_id,
-            body.provider_id,
-          ),
-        });
-      }
-      return reply.send({
-        kind: "credential_api_key",
-        credential_id: body.credential_id,
-        api_key: await resolveProviderCommandStore(config).resolveCredentialApiKey(
-          body.space_id,
-          body.credential_id,
-        ),
-      });
-    } catch (error) {
-      return sendDomainError(reply, error);
-    }
-  });
-
 }

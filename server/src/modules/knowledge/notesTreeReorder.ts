@@ -4,6 +4,7 @@ import {
   type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
+import { assertWritableSpaceObject } from "./knowledgeWriteAccess.js";
 import {
   assertNoteCollectionProjectWriter,
   bindNoteToPlacementProject,
@@ -187,6 +188,12 @@ async function reorderNoteItems(
   );
   if (placements.rows.length !== updates.length) {
     throw new HttpError(404, "One or more note placements were not found");
+  }
+  // Moving a note between folders rewrites its placements and can re-bind its
+  // Project, so every note in the batch takes the note write check — the read
+  // predicate above only says the mover may *see* them.
+  for (const noteId of new Set(updates.map((update) => update.noteId))) {
+    await assertWritableSpaceObject(db, identity, noteId, "One or more notes are not writable", 403);
   }
 
   // Taking a placement *out of* a Project's subtree changes that Project's

@@ -5,8 +5,12 @@ import type { ReadStream } from "node:fs";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { Queryable } from "../proposals/repository.js";
-import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import { recordDetailRead } from "../contentAccess/audit.js";
+
+const ARTIFACT_ACCESS = contentResourceDefinition("artifact")!;
 
 export interface ArtifactOut {
   id: string;
@@ -121,8 +125,8 @@ export class PgArtifactRepository {
     );
     const limitParam = built.params.length + 1;
     const offsetParam = built.params.length + 2;
-    const rows = await this.db.query<ArtifactRow>(
-      `${artifactSelectSql()} ${built.whereSql}
+    const rows = await this.db.query<WithAccessLevel<ArtifactRow>>(
+      `${artifactSelectSql("$2")} ${built.whereSql}
         ORDER BY a.created_at DESC
         LIMIT $${limitParam} OFFSET $${offsetParam}`,
       [...built.params, filters.limit, filters.offset],
@@ -142,16 +146,7 @@ export class PgArtifactRepository {
     includeContent = false,
     _projectFolderId?: string | null,
   ): Promise<ArtifactOut | null> {
-    const params: unknown[] = [artifactId, spaceId, userId];
-    const result = await this.db.query<ArtifactRow>(
-      `${artifactSelectSql()}
-        WHERE a.id = $1
-          AND a.space_id = $2
-          AND ${contentReadSql("artifact", "a", "$3")}
-          AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}`,
-      params,
-    );
-    const row = result.rows[0];
+    const row = await this.loadVisibleRow(spaceId, userId, artifactId);
     if (!row) return null;
     await recordDetailRead(this.db, {
       spaceId,
@@ -168,8 +163,15 @@ export class PgArtifactRepository {
     artifactId: string,
     projectFolderId?: string | null,
   ): Promise<ArtifactExport | null> {
-    const artifact = await this.getVisible(spaceId, userId, artifactId, true, projectFolderId);
-    if (!artifact) return null;
+    const row = await this.loadVisibleRow(spaceId, userId, artifactId);
+    if (!row || bodyWithheld(row.effective_access_level)) return null;
+    await recordDetailRead(this.db, {
+      spaceId,
+      viewerUserId: userId,
+      resourceType: "artifact",
+      resourceId: artifactId,
+    });
+    const artifact = artifactToOut(row, true);
     const filename = exportFilename(artifact.title);
     const mediaType = artifact.mime_type ?? "application/octet-stream";
     if (artifact.content) {
@@ -201,6 +203,22 @@ export class PgArtifactRepository {
     const info = await stat(candidate).catch(() => null);
     if (!info?.isFile()) return null;
     return candidate;
+  }
+
+  private async loadVisibleRow(
+    spaceId: string,
+    userId: string,
+    artifactId: string,
+  ): Promise<WithAccessLevel<ArtifactRow> | null> {
+    const result = await this.db.query<WithAccessLevel<ArtifactRow>>(
+      `${artifactSelectSql("$3")}
+        WHERE a.id = $1
+          AND a.space_id = $2
+          AND ${contentReadSql("artifact", "a", "$3")}
+          AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}`,
+      [artifactId, spaceId, userId],
+    );
+    return result.rows[0] ?? null;
   }
 }
 
@@ -236,15 +254,16 @@ function buildWhere(
   return { whereSql: `WHERE ${clauses.join(" AND ")}`, params };
 }
 
-function artifactSelectSql(): string {
+function artifactSelectSql(userExpr: string): string {
   return `SELECT a.id, a.space_id, a.run_id, a.proposal_id, a.artifact_type, a.surface_role,
                  a.title, a.content, a.storage_ref, a.storage_path, a.mime_type,
                  a.exportable, a.preview, a.metadata_json, a.visibility, a.access_level,
-                 a.owner_user_id, a.created_at, a.updated_at, a.project_id, a.project_folder_id
+                 a.owner_user_id, a.created_at, a.updated_at, a.project_id, a.project_folder_id,
+                 ${contentAccessLevelSql({ definition: ARTIFACT_ACCESS, alias: "a", userExpr })} AS effective_access_level
             FROM artifacts a`;
 }
 
-function artifactToOut(row: ArtifactRow, includeContent: boolean): ArtifactOut {
+function artifactToOut(row: WithAccessLevel<ArtifactRow>, includeContent: boolean): ArtifactOut {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -263,7 +282,7 @@ function artifactToOut(row: ArtifactRow, includeContent: boolean): ArtifactOut {
     visibility: row.visibility,
     access_level: row.access_level,
     owner_user_id: row.owner_user_id,
-    content: includeContent ? row.content : null,
+    content: includeContent && !bodyWithheld(row.effective_access_level) ? row.content : null,
     created_at: dateValue(row.created_at) ?? new Date(0).toISOString(),
     updated_at: dateValue(row.updated_at) ?? new Date(0).toISOString(),
     project_id: row.project_id,

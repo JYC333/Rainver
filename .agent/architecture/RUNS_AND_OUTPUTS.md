@@ -42,7 +42,7 @@ vendor payloads are not persisted as RunEvent rows.
 Local CLI runtimes receive an opaque, short-lived, Run-scoped bearer identity
 (`run_tool_identities`) and only the intersection of the Run's declared grants
 and the System Action Registry. The Run-scoped REST tool surface
-(`/internal/runs/:runId/tools`) re-loads the Run and space boundary for every
+(`/api/v1/runs/:runId/tools`) re-loads the Run and space boundary for every
 call; the caller's `Idempotency-Key` header is the action idempotency key, and
 a caller that sends none gets a fresh one per request. See
 [`SYSTEM_ACTIONS.md`](SYSTEM_ACTIONS.md) for the surface and how it is
@@ -89,7 +89,9 @@ and `agent_run` job in one database transaction, then returns
 HTTP 202 with `chat_turn_accepted.v1`; it never
 executes an adapter on the request path. The client then follows the Run's
 turn (`/runs/{runId}/turn/stream`), which projects whichever event log this Run
-wrote to into one ordered list of parts. The accepted `run_id` is also attached
+wrote to into one ordered list of parts. A `summary` viewer may see Run
+metadata with `output_json` withheld; the turn, turn-stream, and `/io` bodies
+require effective `full`. The accepted `run_id` is also attached
 to the durable user message, so a reload retains a direct recovery link even if
 the live stream disconnects. The worker persists one assistant message keyed by
 `run_id` before appending the sole terminal `chat_completed` event, and that
@@ -302,10 +304,9 @@ proposal-envelope fields.
 
 - Runtime/provider execution is outside the core product boundary and should be represented through adapter results.
 - Managed artifacts and proposals are durable product records.
-- Native capability execution is planned, not active. System bookkeeping runs may
+- Native capability execution is not active. System bookkeeping runs may
   carry `capability_id` / `capabilities_json` provenance, but they do not execute
-  `adapter_type="capability"`; that adapter spec remains disabled until a native
-  executor exists.
+  `adapter_type="capability"`; that adapter spec is disabled.
 - External capabilities default **disabled**; enable state persists in `$RAINVER_HOME/config/settings.yaml` (`capabilities.enabled_external_capabilities`) and survives registry reload.
 - Disabled external capabilities fail at adapter resolution with `capability_disabled` before execution.
 - `one_shot_docker` is the critical local-CLI executor mode. It provides a
@@ -381,14 +382,18 @@ Runs in `waiting_for_review` have explicit human controls: `POST /resume`
 requeues after approval (`same_attempt` for an in-flight policy pause,
 `new_attempt` for a Supervisor terminal hold) and `POST /abandon` records a
 cancelled terminal outcome after review. There is no implicit automatic resume.
+Who may issue these and the other Run commands is one rule, stated with the
+API in [EXECUTION_MODEL.md](EXECUTION_MODEL.md).
 
 CLI cancellation is two-phase: the Run enters `cancelling`, the control plane
 asks the host daemon to terminate the process group, and the Run is marked
 `cancelled` only after the daemon confirms exit; otherwise it stays
 `cancelling` with a `cancel_confirmation_timeout` result. Since ADR 0016 the
 signals are the daemon's — no CLI process runs in the server. On worker
-startup, stale running/cancelling runs whose in-flight state was lost become
-`orphaned`, are finalized, and pass through the same supervisor policy. A
+startup, a stale `running` run whose in-flight state was lost becomes
+`orphaned`, is finalized, and passes through the same supervisor policy. A
+stale `cancelling` run settles as `cancelled` so an explicit cancel is not
+undone by an automatic orphan retry. A
 daemon attempt also has a no-output/no-activity watchdog, which reports
 `runtime_stall_timeout`.
 

@@ -520,6 +520,9 @@ export class PgReaderRepository {
   // primary_project_id); this resolver serves the "research_notebook"
   // Reader document type against that table.
   private async resolveResearchNotebookSection(identity: SpaceUserIdentity, noteId: string): Promise<ReaderDocumentOut | null> {
+    // Same gate as `getNoteRow`: project membership is not a note-read grant.
+    // Reader returns the body, so summary-level access is not enough.
+    if ((await contentDecisionFromDb(this.db, identity, "space_object", noteId)) !== "full") return null;
     const result = await this.db.query<{ project_id: string | null; title: string; content_json: ReaderPmDoc; plain_text: string | null; content_hash: string | null }>(
       `SELECT so.primary_project_id AS project_id, so.title, n.content_json, n.plain_text, n.content_hash
          FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
@@ -781,6 +784,9 @@ async function assertDocumentReadable(
     return { projectId: r.rows[0].project_id, visibility: "space_shared", accessLevel: "full" };
   }
   if (documentType === "research_notebook") {
+    if ((await contentDecisionFromDb(db, identity, "space_object", documentId)) !== "full") {
+      throw new HttpError(404, "Document not found");
+    }
     const r = await db.query<{ project_id: string | null; visibility: string; access_level: string }>(
       `SELECT so.primary_project_id AS project_id, so.visibility, so.access_level FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id WHERE n.space_id=$1 AND n.object_id=$2`,
       [identity.spaceId, documentId],
@@ -837,6 +843,7 @@ async function tryVerifyAnchorRange(
       );
       inlineText = r.rows[0]?.normalized_text ?? null;
     } else if (documentType === "research_notebook") {
+      if ((await contentDecisionFromDb(db, identity, "space_object", documentId)) !== "full") return "unverified";
       const r = await db.query<{ plain_text: string | null }>(`SELECT plain_text FROM notes WHERE space_id=$1 AND object_id=$2`, [identity.spaceId, documentId]);
       inlineText = r.rows[0]?.plain_text ?? null;
     }

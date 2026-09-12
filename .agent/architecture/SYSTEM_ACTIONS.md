@@ -75,9 +75,9 @@ HTTP routes continue to call their owning application services and
 `SystemActionDispatcher`. Server jobs may use internal/system-job actions.
 
 Local CLI Runs reach `SystemActionDispatcher` through a Run-scoped REST
-surface: `GET /internal/runs/:runId/tools`, `GET
-/internal/runs/:runId/tools/:actionId` and `POST
-/internal/runs/:runId/tools/:actionId` (`runs/routes.ts`), in front of
+surface: `GET /api/v1/runs/:runId/tools`, `GET
+/api/v1/runs/:runId/tools/:actionId` and `POST
+/api/v1/runs/:runId/tools/:actionId` (`runs/routes.ts`), in front of
 `runs/cliToolTransport.ts`'s `CliAgentToolTransport`. The agent calls them
 with the `rainver` command (`packages/agent-cli`), which the executing side
 puts in front of it — the host daemon on a paired machine, the server for a
@@ -240,8 +240,8 @@ see "Where an Agent gets an id".
 
 Part of the allowance is proposal-gated (`project.propose_definition`,
 `inquiry.promote_knowledge`); `inquiry.create_thread`,
-`inquiry.record_conclusion`, `agent.delegate`, `research.start_acquisition`
-(room-advancement-reliability-plan Phase 4), `research.cancel_acquisition`,
+`inquiry.record_conclusion`, `agent.delegate`, `research.start_acquisition`,
+`research.cancel_acquisition`,
 and `proposal.decide` (a person's decision on one of this conversation's own
 proposals, carried by the Agent on the person's word in the person's own turn
 — origin-gated, same-conversation only; see `modules/rooms.md`)
@@ -631,7 +631,7 @@ Action failures persist their reason: the dispatcher's `onFailed` writes
 `error_code`), and `loadProjectChatActionPreviews` shows the message on the
 failed card in preference to the code.
 
-## `research.start_acquisition` (room-advancement-reliability-plan Phase 4)
+## `research.start_acquisition`
 
 The Room's other research-execution tool alongside `agent.delegate`: given an
 accepted Inquiry Thread, it enqueues a background job
@@ -642,8 +642,8 @@ materialization plus strategy activation in one call) →
 `ProjectResearchOrchestrator.startInitialIntake`. Providers, candidate budget,
 and execution model are server-derived defaults, not caller-supplied — the
 action's only input is `thread_id` (plus an optional `intent_note`);
-auto-selecting these per invocation is a recorded follow-up
-(`.agent/plans/backlog.md` R1.2), not this phase. The Manager Agent chooses
+auto-selecting these per invocation is not implemented
+([backlog.md](../plans/backlog.md) R1.2). The Manager Agent chooses
 between `agent.delegate` (an ad hoc specialist investigation) and this action
 (a tracked, monitored acquisition Workflow) from context; the two are not
 mutually exclusive and no server code intercepts a phrasing to force one.

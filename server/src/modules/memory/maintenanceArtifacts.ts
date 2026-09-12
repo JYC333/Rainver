@@ -134,7 +134,7 @@ function childDraftsForFinding(
       summary: `Review archival for duplicate Memory finding (${kind}).`,
       rationale: "Generated from accepted Memory maintenance packet; accepting this child proposal archives the target memory.",
       // Preserve the packet's own visibility for child memory_archive proposals.
-      visibility: context.proposal.visibility ?? "private",
+      visibility: context.proposal.visibility,
       projectFolderId: context.proposal.project_folder_id ?? null,
       projectId: null,
       payload: {
@@ -158,7 +158,7 @@ function childDraftsForFinding(
       rationale: requiresOperatorEdit
         ? "Generated from accepted Memory maintenance packet; edit this child proposal before accepting if canonical Memory should change."
         : "Generated from accepted Memory maintenance packet; accepting this child proposal applies the reviewed Memory update.",
-      visibility: context.proposal.visibility ?? "private",
+      visibility: context.proposal.visibility,
       projectFolderId: context.proposal.project_folder_id ?? null,
       projectId: projectId ?? context.proposal.project_id ?? null,
       payload: {

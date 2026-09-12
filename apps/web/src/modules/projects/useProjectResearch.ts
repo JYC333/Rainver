@@ -5,7 +5,9 @@ import { useSpaceNavigate } from '../../core/spaceNav'
 import {
   inquiryApi, projectResearchApi, projectsApi, providersApi, sourcesApi,
 } from '../../api/client'
+import { useAuth } from '../../contexts/AuthContext'
 import { useSpace } from '../../contexts/SpaceContext'
+import { dropStorageKey, scopedUserStorageKey } from '../../lib/sessionResidue'
 import { errMsg } from '../../lib/utils'
 import type {
   InquiryThread, Project, ProjectOperation, ProjectResearchCheckpoint,
@@ -102,8 +104,26 @@ export interface ProjectResearchController {
  * that the Research Area already owned a route for. Research is an Area; the
  * Overview is an aggregation layer over Areas and does not host one.
  */
+function legacyResearchWorkflowKey(projectId: string): string {
+  return `project:${projectId}:research-workflow`
+}
+
+function readStoredResearchWorkflowId(userId: string | undefined, projectId: string): string | null {
+  dropStorageKey(window.localStorage, legacyResearchWorkflowKey(projectId))
+  if (!userId) return null
+  try { return window.localStorage.getItem(scopedUserStorageKey('research-workflow', userId, projectId)) } catch { return null }
+}
+
+function writeStoredResearchWorkflowId(userId: string | undefined, projectId: string, workflowId: string): void {
+  dropStorageKey(window.localStorage, legacyResearchWorkflowKey(projectId))
+  if (!userId) return
+  try { window.localStorage.setItem(scopedUserStorageKey('research-workflow', userId, projectId), workflowId) } catch { /* private mode */ }
+}
+
 export function useProjectResearch(projectId: string | undefined): ProjectResearchController {
   const navigate = useSpaceNavigate()
+  const { currentUser } = useAuth()
+  const userId = currentUser?.id
   const { activeSpaceId } = useSpace()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -162,7 +182,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
         providersApi.vendors().catch(() => []).then(setProviderVendors),
         inquiryApi.listThreads(projectId).then(setInquiryThreads),
       ])
-      const storedWorkflowId = window.localStorage.getItem(`project:${projectId}:research-workflow`)
+      const storedWorkflowId = readStoredResearchWorkflowId(userId, projectId)
       const activeWorkflow = researchWorkflowForDisplayFrom(workflows, storedWorkflowId)
       setSelectedWorkflowId(activeWorkflow?.id ?? null)
       setResearchCheckpoints(
@@ -173,7 +193,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
     } finally {
       setLoading(false)
     }
-  }, [projectId, activeSpaceId])
+  }, [projectId, activeSpaceId, userId])
 
   const load = useCallback(async () => {
     const key = `${projectId ?? ''}:${activeSpaceId ?? ''}`
@@ -326,7 +346,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
 
   useEffect(() => {
     if (searchParams.get('research') !== 'new') return
-    if (loading) return
+    if (loading || !projectId) return
     const threadId = searchParams.get('thread')
     // The setup dialog always configures a search for an already-defined
     // Thread — without one to target, send the user to Inquiry to pick or
@@ -343,7 +363,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
     const existingWorkflow = researchWorkflowForThread(researchWorkflows, threadId)
     if (existingWorkflow && !['not_started', 'paused'].includes(existingWorkflow.status)) {
       setSelectedWorkflowId(existingWorkflow.id)
-      window.localStorage.setItem(`project:${projectId}:research-workflow`, existingWorkflow.id)
+      writeStoredResearchWorkflowId(userId, projectId, existingWorkflow.id)
       toast.info('Research has already started for this Inquiry. Opening its operation instead.')
       navigate(`/projects/${projectId}/research?tab=runs`, { replace: true })
       return
@@ -356,16 +376,16 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
       next.delete('thread')
       return next
     }, { replace: true })
-  }, [inquiryThreads, loading, navigate, projectId, researchWorkflows, searchParams, setSearchParams])
+  }, [inquiryThreads, loading, navigate, projectId, researchWorkflows, searchParams, setSearchParams, userId])
 
   const selectWorkflow = useCallback((workflowId: string) => {
     if (!projectId) return
     setSelectedWorkflowId(workflowId)
-    window.localStorage.setItem(`project:${projectId}:research-workflow`, workflowId)
+    writeStoredResearchWorkflowId(userId, projectId, workflowId)
     projectResearchApi.checkpoints(projectId, workflowId)
       .then(setResearchCheckpoints)
       .catch(error => toast.error(errMsg(error)))
-  }, [projectId])
+  }, [projectId, userId])
 
   // `workflowIdOverride` lets a caller force which workflow (if any) this
   // targets instead of the one currently selected — the independent "start
@@ -387,7 +407,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
       toast.success('Evidence search started')
       if (response.workflow) {
         setSelectedWorkflowId(response.workflow.id)
-        window.localStorage.setItem(`project:${project.id}:research-workflow`, response.workflow.id)
+        writeStoredResearchWorkflowId(userId, project.id, response.workflow.id)
       }
       return true
     } catch (e) {

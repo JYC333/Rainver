@@ -7,6 +7,7 @@ import { accessibleProjectIds } from "./projectAccess.js";
 import { MEMORY_COLUMNS, type MemoryRow, type Queryable } from "./repository.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 import { resolveOversightLevel } from "../access/oversightResolver.js";
 import { memorySensitivityReadSql } from "./memorySensitivitySql.js";
 
@@ -35,7 +36,7 @@ export interface MemoryMaintenanceScanResult {
 }
 
 interface VisibleMemory {
-  row: MemoryRow;
+  row: WithAccessLevel<MemoryRow>;
   fullContentReadable: boolean;
 }
 
@@ -104,8 +105,8 @@ export class MemoryMaintenanceService {
     limit: number,
     projectId: string | null,
     cursor: MemoryMaintenanceCursor | null,
-  ): Promise<MemoryRow[]> {
-    const result = await this.db.query<MemoryRow>(
+  ): Promise<WithAccessLevel<MemoryRow>[]> {
+    const result = await this.db.query<WithAccessLevel<MemoryRow>>(
       `SELECT ${MEMORY_COLUMNS},
               ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr: "$7" })} AS effective_access_level
          FROM memory_entries me
@@ -152,7 +153,7 @@ export class MemoryMaintenanceService {
 
   private async visibleCandidates(
     input: MemoryMaintenanceScanInput,
-    candidates: readonly MemoryRow[],
+    candidates: readonly WithAccessLevel<MemoryRow>[],
     oversightLevel: Parameters<typeof canReadMemory>[1]["oversightLevel"],
   ): Promise<VisibleMemory[]> {
     const readable = candidates.filter((row) => {

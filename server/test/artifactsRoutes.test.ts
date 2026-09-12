@@ -205,6 +205,7 @@ describe("artifact routes", () => {
       preview: false,
       metadata_json: null,
       visibility: "space_shared",
+      effective_access_level: "full",
       owner_user_id: null,
       created_at: new Date("2026-06-16"),
       updated_at: new Date("2026-06-16"),

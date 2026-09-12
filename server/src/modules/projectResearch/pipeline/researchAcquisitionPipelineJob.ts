@@ -13,6 +13,7 @@ import { RoomService } from "../../rooms/service.js";
 import { isConversationTurnInProgressError } from "../../sessions/conversationRuntimeSessionRepository.js";
 import { ProjectResearchQuestionAssessmentRepository } from "../questionAssessmentRepository.js";
 import { ProjectResearchQuestionRefineService } from "../questionRefineService.js";
+import { canWriteProject } from "../../projects/access.js";
 import { AdaptiveQueryOrchestrator } from "../../research/queryPlanning/adaptiveQueryOrchestrator.js";
 import { ResearchMonitorMaterializer } from "../../research/discovery/monitorMaterializer.js";
 import { ProjectResearchOrchestrator } from "../orchestrator.js";
@@ -245,6 +246,14 @@ export class ResearchAcquisitionPipelineRunner {
       thread_id: payload.threadId,
       message: SYNTHETIC_ASSESSMENT_MESSAGE,
       research_question: statement,
+    }, {
+      // The person's request queued this pipeline, so it spends as theirs
+      // while they can still write the Project.
+      kind: "setup",
+      setup: "research_pipeline",
+      record_id: payload.jobId,
+      user_id: identity.userId,
+      still_authorized: () => canWriteProject(this.pool, identity.spaceId, payload.projectId, identity.userId),
     });
     return result.research_context_version_id;
   }

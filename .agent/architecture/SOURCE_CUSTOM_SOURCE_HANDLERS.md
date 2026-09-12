@@ -13,12 +13,11 @@ exposes Custom Source draft creation, a recipe-first `/sources` Create Source
 card, and `/sources/connections/:connectionId` Source Detail product tabs
 (Overview, Plan, Preview, Items, Evidence, Runs) with handler internals under
 Advanced.
-Repair/rollback (Phase 9) and credentialed source support (Phase 10) are now
-implemented backend-side (see "Repair" and "Credentialed Sources" below);
-browser/Python expansion (Phase 11) remains future work. Phase 9 and Phase
-10's frontend surfaces (Source Detail's "Repair" tab, a credential-management
-UI, proposal review copy) have not been built yet — only the backend
-services and routes.
+Repair/rollback and credentialed source support are implemented backend-side
+(see "Repair" and "Credentialed Sources" below). Browser/Python handlers are
+not implemented. Source Detail has no Repair tab and no credential-management
+UI — those routes exist as API/service only
+([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11).
 
 `typescript_node` remains the generated-code Level 3 fallback. Existing
 `declarative_pipeline_v1` handler versions remain readable/executable for
@@ -40,11 +39,10 @@ Level 3 advanced fallback:
 - Handler generation is not the main Custom Source customization path.
   User-facing creation copy presents it as advanced; the Level 2 recipe path
   (conversation-first Source creation) is the main path.
-- Any broader generated-code execution is future-only and requires all of:
-  a real isolated runner/container boundary, explicit instance-admin
-  enablement, proposal review for permission deltas, strict resource limits,
-  server-side output validation with Sources-only materialization, and durable
-  audit records.
+- Broader generated-code execution is not supported.
+
+Unimplemented runner expansions:
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11.
 
 ## Boundary
 
@@ -208,9 +206,8 @@ before the contract validator ever sees it. Fail-closed checks run before
 any process is spawned: instance
 runner disabled, handler language not in the instance allowlist, or the
 policy envelope requesting browser automation, shell, or dependency
-installation (unconditionally refused in this phase, regardless of
-instance availability flags — those flags are for a later phase's
-proposal-gated enablement).
+installation (unconditionally refused, regardless of instance availability
+flags).
 
 Before loading the untrusted handler module, a generated per-run bootstrap
 script monkey-patches `node:net`/`node:tls`/`node:http`/`node:https`/
@@ -220,8 +217,8 @@ inside the declared handler contract (`input.json`, `output.json`, the
 handler entrypoint, and sandbox `files/`). **This is defense-in-depth, not
 OS-level network, process, or filesystem isolation** — a native addon, a
 raw syscall, process internals, or an unpatched file API could still reach
-outside the sandbox at the OS permission level. Phase 5 wires this runner to
-fixture tests and live scan jobs, but it does not grant network access to the
+outside the sandbox at the OS permission level. The same runner is used by
+fixture tests and live scan jobs and does not grant network access to the
 handler process. Trusted server code fetches `source_connections.endpoint_url`,
 enforces the handler policy envelope's allowed origins before each
 request/redirect, and passes the fetched HTML through
@@ -520,8 +517,9 @@ above. Repair (Phase 9) is unaffected — a repaired version keeps whatever
 changes the connection's credential, at which point the same
 `evaluateCustomSourceActivation` delta logic decides proposal-vs-auto-apply.
 
-Not implemented: credential rotation/deletion, and any UI for creating or
-selecting a Custom Source credential (API/service layer only).
+Credential rotation/deletion and a UI for creating or selecting a Custom
+Source credential are not implemented (API/service layer only).
+See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11.
 
 ## Phase 1 Schema Design (implemented in Phase 2)
 
@@ -688,8 +686,7 @@ active handler version and latest run:
 - `repair_status` — `ok`, `repair_required` (3+ consecutive non-succeeded
   runs, or a failed repair attempt — see "Repair" above), `repair_pending`
   (a repair or activation is awaiting either a live run or proposal review),
-  or `disabled` (reserved for future manual admin action; nothing sets this
-  automatically today).
+  or `disabled` (nothing sets this automatically).
 - `recent_run_status_counts` — a breakdown of the last 20
   `source_handler_runs` by status (`succeeded`/`failed`/`validation_failed`/
   `blocked`), for spotting an intermittent-vs-total failure pattern without

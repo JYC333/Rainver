@@ -1,5 +1,7 @@
 import type { Queryable } from "../routeUtils/common.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { bodyWithheld, type ContentAccessLevel } from "../access/contentAccessTypes.js";
 import { objectStatusJoinSql, objectStatusSql } from "../../db/objectStatusSql.js";
 import {
   RetrievalRegistry,
@@ -13,6 +15,25 @@ import {
   sourceConnectionIdsFromMetadata,
 } from "../retrieval/index.js";
 import { KNOWLEDGE_RETRIEVAL_OBJECT_TYPES } from "./retrievalObjectTypes.js";
+
+const SPACE_OBJECT_ACCESS = () => {
+  const definition = contentResourceDefinition("space_object");
+  if (!definition) throw new Error("space_object content resource is not registered");
+  return definition;
+};
+
+function spaceObjectAccessLevelSql(userExpr: string): string {
+  return contentAccessLevelSql({ definition: SPACE_OBJECT_ACCESS(), alias: "so", userExpr });
+}
+
+function summaryOnlyText(
+  row: { effective_access_level: ContentAccessLevel; title: string },
+  fullText: string | null | undefined,
+  summaryText: string | null | undefined,
+): string {
+  if (bodyWithheld(row.effective_access_level)) return summaryText || row.title;
+  return fullText || summaryText || row.title;
+}
 
 interface KnowledgeProjectionRow {
   id: string;
@@ -32,6 +53,7 @@ interface KnowledgeProjectionRow {
 }
 
 interface NoteProjectionRow {
+  owner_user_id: string | null;
   id: string;
   title: string;
   plain_text: string | null;
@@ -43,6 +65,7 @@ interface NoteProjectionRow {
 }
 
 interface SourceProjectionRow {
+  owner_user_id: string | null;
   id: string;
   source_type: string;
   title: string;
@@ -80,6 +103,7 @@ interface KnowledgeVisibilityRow {
   excerpt: string | null;
   plain_text: string | null;
   content: string | null;
+  effective_access_level: ContentAccessLevel;
 }
 
 interface NoteVisibilityRow {
@@ -90,6 +114,7 @@ interface NoteVisibilityRow {
   created_by_user_id: string | null;
   excerpt: string | null;
   plain_text: string | null;
+  effective_access_level: ContentAccessLevel;
 }
 
 interface SourceVisibilityRow {
@@ -101,6 +126,7 @@ interface SourceVisibilityRow {
   uri: string | null;
   raw_text: string | null;
   summary: string | null;
+  effective_access_level: ContentAccessLevel;
 }
 
 interface ClaimVisibilityRow {
@@ -111,6 +137,8 @@ interface ClaimVisibilityRow {
   created_by_user_id: string | null;
   subject_text: string | null;
   claim_text: string | null;
+  excerpt: string | null;
+  effective_access_level: ContentAccessLevel;
 }
 
 interface ClaimSourceProjectionRow {
@@ -251,7 +279,8 @@ async function revalidateKnowledgeMany(
     const result = await db.query<KnowledgeVisibilityRow>(
       `SELECT ki.object_id AS id, so.title, so.visibility, so.owner_user_id,
               so.created_by_user_id, so.summary AS excerpt, ki.plain_text,
-              ki.content
+              ki.content,
+              ${spaceObjectAccessLevelSql("$3")} AS effective_access_level
          FROM knowledge_items ki
          JOIN space_objects so ON so.id = ki.object_id AND so.space_id = ki.space_id
         WHERE ki.space_id = $1
@@ -263,7 +292,10 @@ async function revalidateKnowledgeMany(
     );
     const rows = new Map<string, RevalidatedObject>();
     for (const row of result.rows) {
-      rows.set(row.id, { title: row.title, text: row.excerpt ?? row.plain_text ?? row.content });
+      rows.set(row.id, {
+        title: row.title,
+        text: summaryOnlyText(row, row.plain_text ?? row.content, row.excerpt),
+      });
     }
     return rows;
   }
@@ -271,7 +303,8 @@ async function revalidateKnowledgeMany(
   if (objectType === "note") {
     const result = await db.query<NoteVisibilityRow>(
       `SELECT n.object_id AS id, so.title, so.visibility, so.owner_user_id,
-              so.created_by_user_id, so.summary AS excerpt, n.plain_text
+              so.created_by_user_id, so.summary AS excerpt, n.plain_text,
+              ${spaceObjectAccessLevelSql("$3")} AS effective_access_level
          FROM notes n
          JOIN space_objects so ON so.id = n.object_id AND so.space_id = n.space_id
         WHERE n.space_id = $1
@@ -283,7 +316,10 @@ async function revalidateKnowledgeMany(
     );
     const rows = new Map<string, RevalidatedObject>();
     for (const row of result.rows) {
-      rows.set(row.id, { title: row.title, text: row.excerpt ?? row.plain_text });
+      rows.set(row.id, {
+        title: row.title,
+        text: summaryOnlyText(row, row.plain_text, row.excerpt),
+      });
     }
     return rows;
   }
@@ -291,7 +327,8 @@ async function revalidateKnowledgeMany(
   if (objectType === "claim") {
     const result = await db.query<ClaimVisibilityRow>(
       `SELECT c.object_id AS id, so.title, so.visibility, so.owner_user_id,
-              so.created_by_user_id, c.subject_text, c.claim_text
+              so.created_by_user_id, c.subject_text, c.claim_text, so.summary AS excerpt,
+              ${spaceObjectAccessLevelSql("$3")} AS effective_access_level
          FROM claims c
          JOIN space_objects so ON so.id = c.object_id AND so.space_id = c.space_id
         WHERE c.space_id = $1
@@ -303,14 +340,18 @@ async function revalidateKnowledgeMany(
     );
     const rows = new Map<string, RevalidatedObject>();
     for (const row of result.rows) {
-      rows.set(row.id, { title: row.title, text: joinText([row.claim_text]) });
+      rows.set(row.id, {
+        title: row.title,
+        text: summaryOnlyText(row, joinText([row.claim_text]), row.excerpt),
+      });
     }
     return rows;
   }
 
   const result = await db.query<SourceVisibilityRow>(
     `SELECT s.object_id AS id, so.title, so.visibility, so.owner_user_id,
-            so.created_by_user_id, s.uri, s.raw_text, s.summary
+            so.created_by_user_id, s.uri, s.raw_text, s.summary,
+            ${spaceObjectAccessLevelSql("$3")} AS effective_access_level
        FROM sources s
        JOIN space_objects so ON so.id = s.object_id AND so.space_id = s.space_id
       WHERE s.space_id = $1
@@ -322,7 +363,10 @@ async function revalidateKnowledgeMany(
   );
   const rows = new Map<string, RevalidatedObject>();
   for (const row of result.rows) {
-    rows.set(row.id, { title: row.title, text: row.summary ?? row.raw_text ?? row.uri });
+    rows.set(row.id, {
+      title: row.title,
+      text: summaryOnlyText(row, row.raw_text ?? row.uri, row.summary),
+    });
   }
   return rows;
 }
@@ -364,7 +408,7 @@ async function loadKnowledgeItem(db: Queryable, spaceId: string, objectId: strin
 async function loadNote(db: Queryable, spaceId: string, objectId: string): Promise<CanonicalObject | null> {
   const result = await db.query<NoteProjectionRow>(
     `SELECT n.object_id AS id, so.title, n.plain_text, so.summary AS excerpt,
-            n.status, so.visibility, so.created_by_user_id, so.updated_at
+            n.status, so.visibility, so.owner_user_id, so.created_by_user_id, so.updated_at
        FROM notes n
        JOIN space_objects so ON so.id = n.object_id AND so.space_id = n.space_id
       WHERE n.space_id = $1
@@ -381,7 +425,11 @@ async function loadNote(db: Queryable, spaceId: string, objectId: string): Promi
     title: row.title,
     slug: null,
     projectFolderId: null,
-    ownerUserId: row.created_by_user_id,
+    // The owner, not the creator. A note created by one person and owned by
+    // another — a capture filed for its subject, a promoted draft — was
+    // projected under the creator, so the retrieval ACL answered about the
+    // wrong person. `loadClaim` has always read `owner_user_id`.
+    ownerUserId: row.owner_user_id ?? row.created_by_user_id,
     visibility: row.visibility ?? "space_shared",
     status: row.status,
     objectProfile: "note",
@@ -396,7 +444,7 @@ async function loadSource(db: Queryable, spaceId: string, objectId: string): Pro
   const result = await db.query<SourceProjectionRow>(
     `SELECT s.object_id AS id, s.source_type, so.title, s.uri, s.raw_text,
             s.summary, s.metadata_json, s.status, so.visibility,
-            so.created_by_user_id, so.updated_at
+            so.owner_user_id, so.created_by_user_id, so.updated_at
        FROM sources s
        JOIN space_objects so ON so.id = s.object_id AND so.space_id = s.space_id
       WHERE s.space_id = $1
@@ -412,7 +460,7 @@ async function loadSource(db: Queryable, spaceId: string, objectId: string): Pro
     title: row.title,
     slug: row.uri,
     projectFolderId: null,
-    ownerUserId: row.created_by_user_id,
+    ownerUserId: row.owner_user_id ?? row.created_by_user_id,
     visibility: row.visibility ?? "space_shared",
     status: row.status,
     objectProfile: row.source_type,

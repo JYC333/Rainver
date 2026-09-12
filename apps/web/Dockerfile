@@ -71,6 +71,11 @@ RUN pnpm run build
 FROM nginx:1.27-alpine AS prod
 
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+# The one copy of the browser security headers, included by every location in
+# default.conf. Deliberately *not* under conf.d/: the base image globs
+# `conf.d/*.conf` into the http block, which would load this file a second time
+# at http level as well as at each include site.
+COPY apps/web/security-headers.conf /etc/nginx/security-headers.conf
 COPY --from=build /repo/apps/web/dist /usr/share/nginx/html
 
 EXPOSE 80

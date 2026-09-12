@@ -3,6 +3,7 @@ import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
 import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../scheduler/taskStore.js";
 import { assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access.js";
+import { canReadAgent } from "../agents/agentAccess.js";
 import { computeNextRunAt } from "./schedule.js";
 
 export interface AutomationRow {
@@ -34,6 +35,7 @@ export interface AutomationRepositoryPort {
     version_id: string | null;
   } | null>;
   assertProjectWriter(spaceId: string, projectId: string, userId: string): Promise<void>;
+  canReadAgent(spaceId: string, userId: string, agentId: string): Promise<boolean>;
   canWriteProject(spaceId: string, projectId: string, userId: string): Promise<boolean>;
   projectInSpace(spaceId: string, projectId: string): Promise<boolean>;
   create(input: {
@@ -158,6 +160,10 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
 
   async assertProjectWriter(spaceId: string, projectId: string, userId: string): Promise<void> {
     await assertProjectWriter(this.db, spaceId, projectId, userId);
+  }
+
+  async canReadAgent(spaceId: string, userId: string, agentId: string): Promise<boolean> {
+    return canReadAgent(this.db, { spaceId, userId }, agentId);
   }
 
   async canWriteProject(spaceId: string, projectId: string, userId: string): Promise<boolean> {

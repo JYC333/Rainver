@@ -1,7 +1,7 @@
 import { unlink } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { ServerConfig } from "../../../config.js";
 import { withDbTransaction, type Pool } from "../../routeUtils/common.js";
+import { resolveStoredArtifactPath } from "./artifactStoragePath.js";
 
 /**
  * Phase 12 hardening: bounds unbounded growth of stored `typescript_node`
@@ -69,10 +69,12 @@ export async function pruneSupersededCustomSourceHandlerArtifacts(
       ]);
       await client.query(`DELETE FROM artifacts WHERE id = $1`, [candidate.artifact_id]);
     });
-    const absolutePath = resolve(config.artifactStorageRoot, candidate.storage_path);
-    await unlink(absolutePath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error;
-    });
+    const absolutePath = resolveStoredArtifactPath(config.artifactStorageRoot, candidate.storage_path);
+    if (absolutePath) {
+      await unlink(absolutePath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    }
     pruned += 1;
   }
   return pruned;

@@ -47,9 +47,17 @@ Core graph reads live in `server/src/modules/graph/`.
 
 The projection builder applies the shared object visibility predicate and
 returns only nodes and edges the caller can see. A missing or inaccessible
-`root_id` is reported as not found, not as a cross-space leak. The server's
+`root_id` is reported as not found, not as a cross-space leak. Edge metadata
+carries confidence and `updatedAt` only; `evidence_summary` stays on the
+knowledge-relation APIs, which already gate the objects, rather than riding
+along on the graph projection. The server's
 `global` mode is intentionally aggregated: it returns cluster nodes plus capped
 hub/recent objects rather than an unbounded raw graph.
+
+The Inquiry graph producer (`inquiry/graphService.ts` `getInquiryGraph`) applies
+the same `space_object` content predicate to Thread nodes, the visible-node
+count, and working edges. Project membership alone is not enough to read a
+private Thread's statement as a node label.
 
 When `project_id` is supplied, the route first validates the project in the
 current Space, then every visible-object query adds an active
