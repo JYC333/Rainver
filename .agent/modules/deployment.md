@@ -231,6 +231,12 @@ block every later update.
 
 ## Security
 
+- Dev Compose forwards `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` from the instance
+  `$RAINVER_ROOT/dev/.env` to Vite. Set one exact private-proxy hostname (no
+  scheme or port) when accessing dev through Tailscale Serve, then recreate the
+  frontend container. Vite 6 accepts one additional host through this variable;
+  leave it unset for the default host checks. Machine-specific domains stay out
+  of the source configuration.
 - The deployer socket is private to the privileged sidecar and is never exposed on TCP.
 - The sidecar's repository mount is `ops/` read-only; it holds no writable checkout.
   Compose volume sources are resolved by the host daemon, so the mode root is mounted at
