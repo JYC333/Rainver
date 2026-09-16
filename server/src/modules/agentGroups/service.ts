@@ -11,7 +11,10 @@ import {
   PgConversationBackendRepository,
   type ResolvedConversationBackend,
 } from "../sessions/conversationBackendRepository.js";
-import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
+import {
+  PgConversationExecutionContextRepository,
+  type ExecutionContextRow,
+} from "../sessions/executionContextRepository.js";
 import {
   PgConversationRuntimeSessionRepository,
   type ConversationRuntimeSession,
@@ -23,6 +26,7 @@ import { locationIsOnline } from "../sessions/executionContextService.js";
 import { PgHostThreadRepository, type HostThread } from "../hosts/threadRepository.js";
 import { renderAgentIdentityPrompt } from "./agentIdentityPrompt.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
+import type { RunGitSnapshot } from "../runs/contractSnapshot.js";
 import {
   loadRoomConversationReplayThroughMessage,
 } from "../runtimeContext/conversationContinuity.js";
@@ -53,7 +57,7 @@ import {
   PgAgentGroupRepository,
 } from "./repository.js";
 
-import type { LaunchWorkspace, PolicyCheckRequest, RuntimeSessionConfigSelection } from "@rainver/protocol";
+import type { ConversationInputPart, LaunchWorkspace, PolicyCheckRequest, RuntimeSessionConfigSelection } from "@rainver/protocol";
 
 export interface AgentGroupIdentity {
   spaceId: string;
@@ -86,6 +90,10 @@ export interface SendAgentGroupMessageInput {
   space_id: string;
   group_id: string;
   content: string;
+  /** Allows a Room turn to carry only persisted structured input. */
+  input_parts?: ConversationInputPart[];
+  /** Marks a Room retry so remote prompt hydration can use immutable inputs. */
+  retry_of_run_id?: string | null;
   parent_message_id?: string | null;
   routing_mode?: "direct" | "agent_coordination" | null;
   recipient_segments?: AgentGroupMessageRecipientSegment[] | null;
@@ -350,7 +358,10 @@ export class AgentGroupRunService {
       if (!group.manager_agent_id) {
         throw new HttpError(409, "Agent group has no manager agent");
       }
-      const content = requiredTrimmed(input.content, "content");
+      const content = input.content.trim();
+      if (!content && !(input.input_parts?.length)) {
+        throw new HttpError(422, "content or an input part is required");
+      }
       const routingMode = input.routing_mode ?? "direct";
       const routingSegments = messageRecipientSegmentsForInput(input, group.manager_agent_id, content);
       const recipientAgentIds = routingSegments.flatMap((segment) => segment.recipient_agent_ids);
@@ -465,6 +476,7 @@ export class AgentGroupRunService {
                 currentRecipientAgentId: recipientAgentId,
                 plannedRecipientRunCount,
                 recipientSnapshots,
+                retryOfRunId: input.retry_of_run_id,
               }),
               ...conversationToolGrantInput,
               allow_system_assistant: Boolean(group.room_id),
@@ -520,6 +532,7 @@ export class AgentGroupRunService {
             currentRecipientAgentId: firstRecipientAgentId,
             plannedRecipientRunCount,
             recipientSnapshots,
+            retryOfRunId: input.retry_of_run_id,
           }),
           visibility: roomRunVisibility,
           grantee_user_ids: roomRunGranteeUserIds,
@@ -579,6 +592,7 @@ export class AgentGroupRunService {
                 currentRecipientAgentId: recipientAgentId,
                 plannedRecipientRunCount,
                 recipientSnapshots,
+                retryOfRunId: input.retry_of_run_id,
               }),
               ...conversationToolGrantInput,
               allow_system_assistant: Boolean(group.room_id),
@@ -1360,7 +1374,9 @@ function messageRecipientSegmentsForInput(
   const segments = rawSegments.map((segment, index) => ({
     recipient_agent_ids: uniqueIds(segment.recipient_agent_ids)
       .map((id) => requiredTrimmed(id, `recipient_segments[${index}].recipient_agent_ids`)),
-    content: requiredTrimmed(segment.content, `recipient_segments[${index}].content`),
+    content: input.input_parts?.length
+      ? segment.content.trim()
+      : requiredTrimmed(segment.content, `recipient_segments[${index}].content`),
   })).filter((segment) => segment.recipient_agent_ids.length > 0);
   if (segments.length === 0) throw new HttpError(422, "recipient_segments is required");
   return segments;
@@ -1388,6 +1404,7 @@ interface PreparedRoomConversationBackend extends ResolvedConversationBackend {
   host_resume_attempted: boolean;
   host_dispatch_lock_id: string | null;
   workspace_access: Array<{ workspace_location_id: string; access_mode: "read" | "write" }>;
+  git_snapshot: RunGitSnapshot;
 }
 
 interface PreparedRoomHostDispatch {
@@ -1398,6 +1415,7 @@ interface PreparedRoomHostDispatch {
   host_prompt_fresh: boolean;
   host_resume_attempted: boolean;
   dispatch_lock_id: string;
+  git_snapshot: RunGitSnapshot;
 }
 
 async function recordHostDispatch(
@@ -1558,6 +1576,12 @@ export async function prepareHostConversationDispatch(input: {
   }
   const hostPromptFresh = hostThread.status === "session_reset"
     || hostThread.last_session_id !== input.sessionId;
+  const gitSnapshot = await readRunGitSnapshot(
+    input.db,
+    input.spaceId,
+    input.backend.workspace_mode === "location" ? input.backend.workspace_location_id : null,
+    input.backend.workspace_mode === "managed",
+  );
   return {
     project_folder_id: "project_folder_id" in target ? target.project_folder_id : null,
     host_is_remote: hostKind === "remote",
@@ -1570,6 +1594,7 @@ export async function prepareHostConversationDispatch(input: {
     host_prompt_fresh: hostPromptFresh,
     host_resume_attempted: Boolean(hostThread.vendor_session_id) && !hostPromptFresh,
     dispatch_lock_id: dispatchLockId,
+    git_snapshot: gitSnapshot,
   };
 }
 
@@ -1614,9 +1639,37 @@ async function prepareRoomConversationBackends(input: {
   );
   const runtimeSessions = new PgConversationRuntimeSessionRepository(input.db);
   const executionContexts = new PgConversationExecutionContextRepository(input.db);
-  const executionContext = await executionContexts.getContext(input.identity.spaceId, input.sessionId);
+  const session = await executionContexts.getVisibleSession(
+    { spaceId: input.identity.spaceId, userId: input.identity.userId },
+    input.sessionId,
+    { forUpdate: true },
+  );
+  if (!session) throw new HttpError(404, "Room conversation not found");
+  const executionContext = await executionContexts.lockDraft(session);
   if (!executionContext || executionContext.state !== "initialized" || !executionContext.execution_host_id || !executionContext.primary_workspace_mode) {
     throw new HttpError(409, "Initialize the Conversation execution context before sending a Room message");
+  }
+  const currentGit = executionContext.primary_workspace_mode === "location"
+    ? await readRunGitSnapshot(
+      input.db,
+      input.identity.spaceId,
+      executionContext.primary_workspace_location_id,
+      false,
+    )
+    : await readRunGitSnapshot(input.db, input.identity.spaceId, null, true);
+  assertConversationGitBaseline(executionContext, currentGit);
+  if (!executionContext.git_observed_at) {
+    await executionContexts.refreshGitBaseline({
+      spaceId: input.identity.spaceId,
+      sessionId: input.sessionId,
+      git: {
+        branch: currentGit.branch,
+        commitSha: currentGit.commit_sha,
+        dirty: currentGit.dirty,
+        executionReady: currentGit.execution_ready,
+        observedAt: currentGit.observed_at,
+      },
+    });
   }
   const executionHost = await input.db.query<{ kind: "server" | "remote" }>(
     "SELECT kind FROM hosts WHERE id = $1 LIMIT 1",
@@ -1686,6 +1739,7 @@ async function prepareRoomConversationBackends(input: {
     let hostPromptFresh = false;
     let hostResumeAttempted = false;
     let hostDispatchLockId: string | null = null;
+    let gitSnapshot = unavailableGitSnapshot();
     if (hostBound) {
       const hostDispatch = await prepareHostConversationDispatch({
         db: input.db,
@@ -1704,6 +1758,7 @@ async function prepareRoomConversationBackends(input: {
       hostDispatchLockId = hostDispatch.dispatch_lock_id;
       hostPromptFresh = hostDispatch.host_prompt_fresh;
       hostResumeAttempted = hostDispatch.host_resume_attempted;
+      gitSnapshot = hostDispatch.git_snapshot;
       const hostMessages = hostPromptFresh
         ? replayContext.recent_messages
         : await listRoomMessagesSinceAgentTurn(
@@ -1792,6 +1847,7 @@ async function prepareRoomConversationBackends(input: {
       host_resume_attempted: hostResumeAttempted,
       host_dispatch_lock_id: hostDispatchLockId,
       workspace_access: workspaceAccess,
+      git_snapshot: gitSnapshot,
     });
   }
   return resolved;
@@ -1818,6 +1874,7 @@ function roomRunModelOverride(
       adapter_type: backend.adapter_type,
       model_name: backend.model_name,
       model_provider_id: backend.model_provider_id,
+      prompt_capabilities: backend.prompt_capabilities ?? null,
     },
     chat_turn: {
       schema_version: "chat_turn.v1",
@@ -1833,6 +1890,7 @@ function roomRunModelOverride(
       agent_id: turn.currentRecipientAgentId,
       agent_version_id: backend.agent_version_id,
       project_id: backend.project_id,
+      ...(turn.retryOfRunId ? { retry_of_run_id: turn.retryOfRunId } : {}),
     },
     ...(backend.host_thread
       ? {
@@ -2232,6 +2290,7 @@ function roomRunContract(
   return {
     source: { kind: "direct" as const, id: group.id },
     project_id: group.project_id,
+    git_snapshot: backend?.git_snapshot ?? unavailableGitSnapshot(),
     definition_of_done:
       "Reply to the Room and capture any durable knowledge or memory candidates as proposal packets.",
     required_outputs_json: [{
@@ -2267,6 +2326,76 @@ function roomRunContract(
   };
 }
 
+function unavailableGitSnapshot(): RunGitSnapshot {
+  return {
+    source: "unavailable",
+    workspace_location_id: null,
+    branch: null,
+    commit_sha: null,
+    dirty: null,
+    execution_ready: false,
+    observed_at: new Date().toISOString(),
+  };
+}
+
+export function assertConversationGitBaseline(
+  context: Pick<ExecutionContextRow, "primary_workspace_mode" | "git_observed_at" | "git_branch" | "git_head" | "git_execution_ready">,
+  current: RunGitSnapshot,
+): void {
+  if (!context.git_observed_at) return;
+  if ((context.git_branch ?? null) !== current.branch
+    || (context.git_head ?? null) !== current.commit_sha
+    || (context.git_execution_ready !== null && context.git_execution_ready !== current.execution_ready)) {
+    throw new HttpError(
+      409,
+      "Git branch or commit changed after this Conversation was initialized; refresh the execution context before sending",
+    );
+  }
+}
+
+async function readRunGitSnapshot(
+  db: Pool | PoolClient,
+  spaceId: string,
+  workspaceLocationId: string | null,
+  managed: boolean,
+): Promise<RunGitSnapshot> {
+  if (managed) {
+    return {
+      source: "managed_workspace",
+      workspace_location_id: null,
+      branch: null,
+      commit_sha: null,
+      dirty: null,
+      execution_ready: true,
+      observed_at: new Date().toISOString(),
+    };
+  }
+  if (!workspaceLocationId) return unavailableGitSnapshot();
+  const result = await db.query<{
+    branch: string | null;
+    git_head: string | null;
+    dirty: boolean | null;
+    execution_ready: boolean;
+  }>(
+    `SELECT branch, git_head, dirty, execution_ready
+       FROM workspace_locations
+      WHERE space_id = $1 AND id = $2
+      LIMIT 1`,
+    [spaceId, workspaceLocationId],
+  );
+  const location = result.rows[0];
+  if (!location) return unavailableGitSnapshot();
+  return {
+    source: "workspace_location",
+    workspace_location_id: workspaceLocationId,
+    branch: location.branch,
+    commit_sha: location.git_head,
+    dirty: location.dirty,
+    execution_ready: location.execution_ready,
+    observed_at: new Date().toISOString(),
+  };
+}
+
 function roomTurnModelOverride(input: {
   content: string;
   routingMode: "direct" | "agent_coordination" | null;
@@ -2275,6 +2404,7 @@ function roomTurnModelOverride(input: {
   currentRecipientAgentId: string;
   plannedRecipientRunCount: number;
   recipientSnapshots: ReadonlyMap<string, AgentCapabilitySnapshotRecord>;
+  retryOfRunId?: string | null;
 }): Record<string, unknown> | null {
   if (input.plannedRecipientRunCount <= 1) return null;
   return {

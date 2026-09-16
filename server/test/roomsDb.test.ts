@@ -2445,6 +2445,48 @@ describe("Room workflow (real Postgres)", () => {
     expect(recovered.user_members.filter((member) => member.role === "owner")).toHaveLength(1);
   });
 
+  it("rejects a Room send after the Primary Git baseline changes before creating a message or Run", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    await db.pool.query(
+      `UPDATE agent_runtime_profiles
+          SET workspace_mode = 'location', workspace_location_id = 'location-1'
+        WHERE id = 'runtime-cli'`,
+    );
+    await db.pool.query(
+      `UPDATE workspace_locations
+          SET branch = 'main', git_head = 'baseline', execution_ready = true
+        WHERE id = 'location-1'`,
+    );
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Git guard" });
+    const conversation = await seedConversation(owner, created.room.id, "Git guard", {
+      hostId: "host-1",
+      primary: { kind: "location", workspace_location_id: "location-1" },
+    });
+    const before = await db.pool.query<{ messages: string; runs: string }>(
+      `SELECT
+         (SELECT count(*) FROM messages WHERE session_id = $1) AS messages,
+         (SELECT count(*) FROM runs WHERE session_id = $1) AS runs`,
+      [conversation.id],
+    );
+    await db.pool.query(
+      `UPDATE workspace_locations SET git_head = 'changed', updated_at = now() WHERE id = 'location-1'`,
+    );
+
+    await expect(service.sendMessage(owner, created.room.id, conversation.id, {
+      content: "This must not dispatch on the changed workspace.",
+      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
+    })).rejects.toMatchObject({ statusCode: 409 });
+
+    const after = await db.pool.query<{ messages: string; runs: string }>(
+      `SELECT
+         (SELECT count(*) FROM messages WHERE session_id = $1) AS messages,
+         (SELECT count(*) FROM runs WHERE session_id = $1) AS runs`,
+      [conversation.id],
+    );
+    expect(after.rows[0]).toEqual(before.rows[0]);
+  });
+
   it("notifies the Room when a delegated child run completes with nobody waiting on it (room-advancement-reliability-plan Phase 3)", async (ctx) => {
     if (!db.available || !service || !groupService || !testRoot) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };

@@ -31,6 +31,11 @@ export interface ExecutionContextRow {
   initialized_by_user_id: string | null;
   dispatch_lock_id: string | null;
   queue_paused_at: string | null;
+  git_branch: string | null;
+  git_head: string | null;
+  git_dirty: boolean | null;
+  git_execution_ready: boolean | null;
+  git_observed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -69,6 +74,9 @@ export interface ExecutionLocationRow {
   folder_name: string;
   execution_host_id: string;
   display_path: string | null;
+  branch: string | null;
+  git_head: string | null;
+  dirty: boolean | null;
   execution_ready: boolean;
   status: "active" | "stale" | "archived";
   host_name: string;
@@ -104,6 +112,7 @@ export interface ConversationRuntimeThreadRow {
 const CONTEXT_COLUMNS = `id, space_id, session_id, execution_host_id,
   primary_workspace_mode, primary_project_folder_id, primary_workspace_location_id,
   state, initialized_at, initialized_by_user_id, dispatch_lock_id, queue_paused_at,
+  git_branch, git_head, git_dirty, git_execution_ready, git_observed_at,
   created_at, updated_at`;
 
 const ATTACHMENT_COLUMNS = `grant_row.id, grant_row.space_id, grant_row.session_id,
@@ -195,6 +204,13 @@ export class PgConversationExecutionContextRepository {
     projectFolderId: string | null;
     locationId: string | null;
     userId: string;
+    git: {
+      branch: string | null;
+      commitSha: string | null;
+      dirty: boolean | null;
+      executionReady: boolean;
+      observedAt: string;
+    };
   }): Promise<ExecutionContextRow> {
     const result = await this.db.query<ExecutionContextRow>(
       `UPDATE conversation_execution_contexts
@@ -205,10 +221,15 @@ export class PgConversationExecutionContextRepository {
               state = 'initialized',
               initialized_at = now(),
               initialized_by_user_id = $7,
+              git_branch = $8,
+              git_head = $9,
+              git_dirty = $10,
+              git_execution_ready = $11,
+              git_observed_at = $12,
               updated_at = now()
         WHERE space_id = $1 AND session_id = $2 AND state = 'draft'
         RETURNING ${CONTEXT_COLUMNS}`,
-      [input.spaceId, input.sessionId, input.hostId, input.primaryMode, input.projectFolderId, input.locationId, input.userId],
+      [input.spaceId, input.sessionId, input.hostId, input.primaryMode, input.projectFolderId, input.locationId, input.userId, input.git.branch, input.git.commitSha, input.git.dirty, input.git.executionReady, input.git.observedAt],
     );
     const context = result.rows[0];
     if (!context) {
@@ -217,6 +238,32 @@ export class PgConversationExecutionContextRepository {
       return existing;
     }
     return context;
+  }
+
+  async refreshGitBaseline(input: {
+    spaceId: string;
+    sessionId: string;
+    git: {
+      branch: string | null;
+      commitSha: string | null;
+      dirty: boolean | null;
+      executionReady: boolean;
+      observedAt: string;
+    };
+  }): Promise<ExecutionContextRow | null> {
+    const result = await this.db.query<ExecutionContextRow>(
+      `UPDATE conversation_execution_contexts
+          SET git_branch = $3,
+              git_head = $4,
+              git_dirty = $5,
+              git_execution_ready = $6,
+              git_observed_at = $7,
+              updated_at = now()
+        WHERE space_id = $1 AND session_id = $2 AND state = 'initialized'
+        RETURNING ${CONTEXT_COLUMNS}`,
+      [input.spaceId, input.sessionId, input.git.branch, input.git.commitSha, input.git.dirty, input.git.executionReady, input.git.observedAt],
+    );
+    return result.rows[0] ?? null;
   }
 
   async listHosts(userId: string): Promise<ExecutionHostRow[]> {
@@ -234,7 +281,8 @@ export class PgConversationExecutionContextRepository {
     if (!projectId) return [];
     const result = await this.db.query<ExecutionLocationRow>(
       `SELECT location.id, location.project_folder_id, folder.name AS folder_name,
-              location.execution_host_id, location.display_path, location.execution_ready, location.status,
+              location.execution_host_id, location.display_path, location.branch, location.git_head, location.dirty,
+              location.execution_ready, location.status,
               host.name AS host_name, host.kind AS host_kind, host.status AS host_status,
               host.owner_user_id AS host_owner_user_id, host.last_heartbeat_at
          FROM workspace_locations location
@@ -255,7 +303,8 @@ export class PgConversationExecutionContextRepository {
   async getLocation(spaceId: string, projectFolderId: string, locationId: string): Promise<ExecutionLocationRow | null> {
     const result = await this.db.query<ExecutionLocationRow>(
       `SELECT location.id, location.project_folder_id, folder.name AS folder_name,
-              location.execution_host_id, location.display_path, location.execution_ready, location.status,
+              location.execution_host_id, location.display_path, location.branch, location.git_head, location.dirty,
+              location.execution_ready, location.status,
               host.name AS host_name, host.kind AS host_kind, host.status AS host_status,
               host.owner_user_id AS host_owner_user_id, host.last_heartbeat_at
          FROM workspace_locations location

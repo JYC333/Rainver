@@ -86,6 +86,27 @@ describe("running a server-defined command on this host", () => {
     expect(result.error).toMatch(/does not have opencode/);
   });
 
+  it("keeps a verification command's argv intact when it names a managed runtime only for namespace binding", async () => {
+    const tree = join(configDir, "tools", "codex_cli", "1.11.0");
+    const home = join(configDir, "managed-state", "codex_cli", "home");
+    await mkdir(tree, { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(join(tree, "manifest.json"), JSON.stringify({
+      adapter_type: "codex_cli", version: "1.11.0", command: "/bin/false", args: [], env: {}, home,
+      login_command: null, login: null, installed_at: "",
+    }));
+    const result = await runHostCommand({
+      request_id: "req-runtime-binding",
+      scratch_workspace: true,
+      runtime_adapter_type: "codex_cli",
+      runtime_installation: "managed:1.11.0",
+      command: ["/bin/sh", "-c", "printf verification-command"],
+      timeout_seconds: 30,
+    });
+    expect(result).toMatchObject({ exit_code: 0, error: null });
+    expect(result.stdout).toBe("verification-command");
+  });
+
   it("gives the command its own HOME rather than the workspace it runs in", async () => {
     const result = await runHostCommand({
       request_id: "req-6",

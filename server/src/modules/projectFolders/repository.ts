@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
@@ -6,16 +6,21 @@ import {
   folderGitDiff,
   folderGitStatus,
   FolderReadError,
+  FolderWriteError,
+  MAX_WRITE_FILE_BYTES,
+  ensureGitRepository,
   isWireRelativePath,
   looksSecretLikePath,
   readFolderFile,
+  restoreFolderFile,
   resolveRelativePath,
   runGit,
+  writeFolderFile,
   type FileContent,
   type FileNode,
   type GitStatus,
 } from "@rainver/folder-read";
-import { sharedHostConnectionRegistry, type FolderReadFailure, type FolderReadKind, type FolderReadPayload } from "../hosts/connectionRegistry.js";
+import { sharedHostConnectionRegistry, type FolderReadFailure, type FolderReadKind, type FolderReadPayload, type FolderWriteFailureCode } from "../hosts/connectionRegistry.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
@@ -29,9 +34,11 @@ import {
   PgWorkspaceLocationRepository,
   locationAbsoluteRoot,
   resolveActiveLocationWithHost,
+  resolveLocationWithHost,
   type ActiveLocationWithHost,
   type WorkspaceLocationOut,
 } from "./workspaceLocations.js";
+import { PgProjectFileRevisionStore, type ProjectFileRevisionOut } from "./fileRevisionStore.js";
 
 const FOLDER_KINDS = new Set(["code", "data", "docs"]);
 
@@ -106,6 +113,17 @@ export interface ProjectFolderPage {
 export interface ScanCandidate {
   name: string;
   path: string;
+}
+
+export interface ProjectFileEditOut {
+  file: FileContent;
+  revision: ProjectFileRevisionOut;
+}
+
+export interface ProjectFileRollbackOut {
+  file: FileContent | null;
+  revision_id: string;
+  rolled_back: true;
 }
 
 export class PgProjectFolderRepository {
@@ -196,7 +214,7 @@ export class PgProjectFolderRepository {
       rootPath = await this.cloneRepository(identity.spaceId, name, repoUrl);
       registeredFrom = "clone";
     } else {
-      rootPath = await this.createManagedDir(identity.spaceId, name);
+      rootPath = await this.createManagedDir(identity.spaceId, name, { initializeGit: true });
       registeredFrom = "managed";
     }
 
@@ -562,17 +580,25 @@ export class PgProjectFolderRepository {
     });
   }
 
-  async getTree(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<FileNode> {
+  async getTree(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    options: { workspaceLocationId?: string; signal?: AbortSignal } = {},
+  ): Promise<FileNode> {
     const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
-    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
+    const location = options.workspaceLocationId
+      ? await resolveLocationWithHost(this.db, identity.spaceId, folderId, options.workspaceLocationId)
+      : await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
     if (location.execution_host_kind === "remote") {
-      return this.readRemote(folder, identity.userId, location, "tree");
+      return this.readRemote(folder, identity.userId, location, "tree", undefined, options.signal);
     }
     const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
     await this.enforceFolderRead(folder, identity.userId, "tree");
     try {
-      return await buildTree(root);
+      return await buildTree(root, options.signal);
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       throw mapFolderReadError(error);
     }
   }
@@ -592,6 +618,135 @@ export class PgProjectFolderRepository {
     } catch (error) {
       throw mapFolderReadError(error);
     }
+  }
+
+  /** Apply a direct File-page edit after policy, ACL, path, and stale checks. */
+  async editFile(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    body: Record<string, unknown>,
+  ): Promise<ProjectFileEditOut> {
+    const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
+    const input = parseFileEditInput(body);
+    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
+    await this.enforceFolderWrite(folder, identity.userId, input.path, "write");
+
+    let physical: { beforeExists: boolean; beforeContent: string | null; afterSha256: string } | null = null;
+    try {
+      let file: FileContent;
+      if (location.execution_host_kind === "remote") {
+        assertRemoteWriteAccess(location, identity.userId);
+        const before = await this.readRemoteFileForWrite(folder, identity.userId, location, input.path);
+        const result = await sharedHostConnectionRegistry.requestFolderWrite(location.execution_host_id, {
+          workspace_location_id: location.id,
+          path: input.path,
+          content: input.content,
+          expected_exists: input.expectedExists,
+          expected_sha256: input.expectedSha256,
+          protected: Boolean(folder.protected),
+        });
+        if (!result.ok) throw mapRemoteFolderWriteError(result, location.host_name);
+        const expectedAfterSha = hashText(input.content);
+        physical = { beforeExists: Boolean(before), beforeContent: before?.content ?? null, afterSha256: expectedAfterSha };
+        if (!result.exists || result.sha256 !== expectedAfterSha) {
+          throw new HttpError(502, `The host acknowledged an unexpected version of ${input.path}`);
+        }
+        file = fileContent(input.path, input.content, expectedAfterSha);
+      } else {
+        const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
+        const result = await writeFolderFile(root, input.path, input.content, {
+          protectedFolder: Boolean(folder.protected),
+          expectedExists: input.expectedExists,
+          expectedSha256: input.expectedSha256,
+        });
+        physical = {
+          beforeExists: result.before.exists,
+          beforeContent: result.before.content,
+          afterSha256: result.sha256!,
+        };
+        file = {
+          path: result.path,
+          content: input.content,
+          size: result.size,
+          line_count: result.line_count,
+          sha256: result.sha256 ?? undefined,
+        };
+      }
+
+      const revision = await new PgProjectFileRevisionStore(this.db).create({
+        spaceId: folder.space_id,
+        projectId,
+        projectFolderId: folder.id,
+        workspaceLocationId: location.id,
+        path: input.path,
+        beforeExists: physical.beforeExists,
+        beforeContent: physical.beforeContent,
+        afterExists: true,
+        afterSha256: physical.afterSha256,
+        userId: identity.userId,
+        retentionDays: folder.snapshot_retention_days,
+        maxCount: folder.snapshot_max_count,
+      });
+      return { file, revision };
+    } catch (error) {
+      if (physical) {
+        try {
+          await this.restorePhysicalFile(folder, identity.userId, location, input.path, physical.beforeContent, true, physical.afterSha256);
+        } catch (rollbackError) {
+          throw new HttpError(502, `The file write failed and automatic rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : "unknown rollback error"}`);
+        }
+      }
+      throw mapFolderWriteError(error);
+    }
+  }
+
+  async listFileRevisions(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    requestedPath: string,
+  ): Promise<ProjectFileRevisionOut[]> {
+    await this.requireWritableActiveFolder(identity, projectId, folderId);
+    const path = parseEditablePath(requestedPath);
+    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
+    return new PgProjectFileRevisionStore(this.db).listForFile(identity.spaceId, projectId, folderId, location.id, path);
+  }
+
+  async rollbackFile(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    body: Record<string, unknown>,
+  ): Promise<ProjectFileRollbackOut> {
+    const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
+    const revisionId = typeof body.revision_id === "string" ? body.revision_id.trim() : "";
+    if (!revisionId) throw new HttpError(422, "revision_id is required");
+    const store = new PgProjectFileRevisionStore(this.db);
+    const revision = await store.getAvailable(identity.spaceId, projectId, folderId, revisionId);
+    if (!revision) throw new HttpError(404, "File revision not found or expired");
+    const location = await resolveLocationWithHost(this.db, identity.spaceId, folderId, revision.workspace_location_id);
+    await this.enforceFolderWrite(folder, identity.userId, revision.path, "rollback");
+    try {
+      await this.restorePhysicalFile(
+        folder,
+        identity.userId,
+        location,
+        revision.path,
+        revision.before_exists ? revision.before_content ?? "" : null,
+        revision.after_exists,
+        revision.after_sha256,
+      );
+    } catch (error) {
+      throw mapFolderWriteError(error);
+    }
+    if (!await store.markRolledBack(revision.id, identity.userId)) {
+      throw new HttpError(409, "This file revision was already rolled back");
+    }
+    const file = revision.before_exists
+      ? fileContent(revision.path, revision.before_content ?? "", hashText(revision.before_content ?? ""))
+      : null;
+    return { file, revision_id: revision.id, rolled_back: true };
   }
 
   async getGitStatus(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<GitStatus> {
@@ -671,6 +826,17 @@ export class PgProjectFolderRepository {
     return folder;
   }
 
+  private async requireWritableActiveFolder(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+  ): Promise<ProjectFolderRow> {
+    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+    const folder = await this.getRow(identity.spaceId, projectId, folderId, true);
+    if (!folder) throw new HttpError(404, "Project Folder not found");
+    return folder;
+  }
+
   // Folder access inherits the Project ACL completely — the Project
   // writer/active check is the only authority gate for Folder mutation.
   private async assertProjectActive(
@@ -681,7 +847,11 @@ export class PgProjectFolderRepository {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId, options);
   }
 
-  private async createManagedDir(spaceId: string, name: string): Promise<string> {
+  private async createManagedDir(
+    spaceId: string,
+    name: string,
+    options: { initializeGit?: boolean } = {},
+  ): Promise<string> {
     const spaceRoot = resolve(this.config.workspaceRoot, spaceId);
     await mkdir(spaceRoot, { recursive: true });
     const base = folderDirName(name);
@@ -690,6 +860,11 @@ export class PgProjectFolderRepository {
       candidate = resolve(spaceRoot, `${base}-${i}`);
     }
     await mkdir(candidate, { recursive: true });
+    if (options.initializeGit) {
+      if (!await ensureGitRepository(candidate)) {
+        throw new HttpError(422, "Failed to initialize Git repository");
+      }
+    }
     return candidate;
   }
 
@@ -764,12 +939,90 @@ export class PgProjectFolderRepository {
     throw new HttpError(403, result.message ?? "Project Folder read denied by policy");
   }
 
+  private async enforceFolderWrite(
+    folder: ProjectFolderRow,
+    userId: string,
+    relativePath: string,
+    operation: "write" | "rollback",
+  ): Promise<void> {
+    const result = await enforce(this.config, await loadActionRegistry(), {
+      action: "project_folder.apply_patch",
+      actor_type: "user",
+      actor_id: userId,
+      space_id: folder.space_id,
+      resource_type: "project_folder",
+      resource_id: folder.id,
+      resource_space_id: folder.space_id,
+      context: {
+        direct_user_write: true,
+        file_operation: operation,
+        project_folder_id: folder.id,
+        relative_path: relativePath,
+      },
+      metadata_json: {
+        direct_user_write: true,
+        file_operation: operation,
+        project_folder_id: folder.id,
+        relative_path: relativePath,
+      },
+      force_record: true,
+    });
+    if (result.status === "allow") return;
+    if (result.status === "error") throw new HttpError(500, result.message ?? "Project Folder write policy audit failed");
+    throw new HttpError(403, result.message ?? "Project Folder write denied by policy");
+  }
+
+  private async readRemoteFileForWrite(
+    folder: ProjectFolderRow,
+    userId: string,
+    location: ActiveLocationWithHost,
+    path: string,
+  ): Promise<FileContent | null> {
+    try {
+      return await this.readRemote(folder, userId, location, "file", path);
+    } catch (error) {
+      if (error instanceof HttpError && error.statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  private async restorePhysicalFile(
+    folder: ProjectFolderRow,
+    userId: string,
+    location: ActiveLocationWithHost,
+    path: string,
+    content: string | null,
+    expectedExists: boolean,
+    expectedSha256: string | null,
+  ): Promise<void> {
+    if (location.execution_host_kind === "remote") {
+      assertRemoteWriteAccess(location, userId);
+      const result = await sharedHostConnectionRegistry.requestFolderWrite(location.execution_host_id, {
+        workspace_location_id: location.id,
+        path,
+        content,
+        expected_exists: expectedExists,
+        expected_sha256: expectedSha256,
+        protected: Boolean(folder.protected),
+      });
+      if (!result.ok) throw mapRemoteFolderWriteError(result, location.host_name);
+      return;
+    }
+    const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
+    await restoreFolderFile(root, path, content, {
+      protectedFolder: Boolean(folder.protected),
+      expectedExists,
+      expectedSha256,
+    });
+  }
+
   private async readRemote<K extends FolderReadKind>(
     folder: ProjectFolderRow,
     userId: string,
     location: ActiveLocationWithHost,
     kind: K,
     requestedPath?: string,
+    signal?: AbortSignal,
   ): Promise<FolderReadPayload[K]> {
     if (requestedPath !== undefined && !isWireRelativePath(requestedPath)) {
       const detail = "folder_read paths must be relative";
@@ -797,7 +1050,7 @@ export class PgProjectFolderRepository {
       kind,
       ...(requestedPath === undefined ? {} : { path: requestedPath }),
       protected: Boolean(folder.protected),
-    });
+    }, signal);
     if (result.ok) return result.result;
     throw mapRemoteFolderReadError(result, location.host_name);
   }
@@ -869,6 +1122,29 @@ function mapFolderReadError(error: unknown): never {
     case "path_forbidden":
       throw new HttpError(403, error.message);
   }
+  throw new HttpError(500, "Unknown Folder read failure");
+}
+
+function mapFolderWriteError(error: unknown): never {
+  if (error instanceof HttpError) throw error;
+  if (!(error instanceof FolderWriteError)) throw error;
+  switch (error.code) {
+    case "not_found":
+      throw new HttpError(404, error.message);
+    case "is_directory":
+      throw new HttpError(400, error.message);
+    case "too_large":
+      throw new HttpError(413, error.message);
+    case "path_forbidden":
+      throw new HttpError(403, error.message);
+    case "not_text":
+      throw new HttpError(415, error.message);
+    case "stale":
+      throw new HttpError(409, error.message, { detail: error.message, code: "stale_file" });
+    case "write_failed":
+      throw new HttpError(500, error.message);
+  }
+  throw new HttpError(500, "Unknown Folder write failure");
 }
 
 function mapRemoteFolderReadError(result: FolderReadFailure, hostName: string): HttpError {
@@ -895,6 +1171,120 @@ function mapRemoteFolderReadError(result: FolderReadFailure, hostName: string): 
     case "read_failed":
       return new HttpError(502, message, { detail: message, code: "read_failed", host_name: hostName });
   }
+  return new HttpError(502, message, { detail: message, code: "read_failed", host_name: hostName });
+}
+
+function mapRemoteFolderWriteError(
+  result: { ok: false; error: FolderWriteFailureCode; message?: string },
+  hostName: string,
+): HttpError {
+  const message = result.message ?? `Remote Folder write failed on ${hostName}`;
+  switch (result.error) {
+    case "path_forbidden":
+      return new HttpError(403, message, { detail: message, code: "path_forbidden" });
+    case "not_found":
+      return new HttpError(404, message, { detail: message, code: "not_found" });
+    case "is_directory":
+      return new HttpError(400, message, { detail: message, code: "is_directory" });
+    case "too_large":
+      return new HttpError(413, message, { detail: message, code: "too_large" });
+    case "not_text":
+      return new HttpError(415, message, { detail: message, code: "not_text", host_name: hostName });
+    case "stale":
+      return new HttpError(409, message, { detail: message, code: "stale_file" });
+    case "location_unknown":
+      return new HttpError(409, `The daemon on ${hostName} no longer knows this directory. Run 'rainver-host workspace add' there.`, {
+        detail: `The daemon on ${hostName} no longer knows this directory. Run 'rainver-host workspace add' there.`,
+        code: "location_unknown_on_host",
+        host_name: hostName,
+      });
+    case "host_timeout":
+      return new HttpError(409, `The host ${hostName} did not respond in time.`, { detail: `The host ${hostName} did not respond in time.`, code: "host_timeout", host_name: hostName });
+    case "host_offline":
+      return new HttpError(409, `The host ${hostName} is offline.`, { detail: `The host ${hostName} is offline.`, code: "host_offline", host_name: hostName });
+    case "write_failed":
+      return new HttpError(502, message, { detail: message, code: "write_failed", host_name: hostName });
+  }
+  return new HttpError(502, message, { detail: message, code: "write_failed", host_name: hostName });
+}
+
+function parseFileEditInput(body: Record<string, unknown>): {
+  path: string;
+  content: string;
+  expectedPath: string | null;
+  expectedExists: boolean;
+  expectedSha256: string | null;
+} {
+  const path = parseEditablePath(body.path);
+  if (typeof body.content !== "string") throw new HttpError(422, "content is required");
+  if (Buffer.byteLength(body.content, "utf8") > MAX_WRITE_FILE_BYTES) {
+    throw new HttpError(413, `File is too large to write (max ${MAX_WRITE_FILE_BYTES} bytes)`);
+  }
+  if (typeof body.expected_exists !== "boolean") throw new HttpError(422, "expected_exists is required");
+  const expectedPath = body.expected_path === null || typeof body.expected_path === "string"
+    ? body.expected_path === null ? null : parseEditablePath(body.expected_path)
+    : undefined;
+  if (expectedPath === undefined) throw new HttpError(422, "expected_path is required");
+  const expectedSha256 = body.expected_sha256 === null || typeof body.expected_sha256 === "string"
+    ? body.expected_sha256 ?? null
+    : undefined;
+  if (expectedSha256 === undefined) throw new HttpError(422, "expected_sha256 must be a SHA-256 hash or null");
+  if (body.expected_exists && expectedPath !== path) {
+    throw new HttpError(409, "The file path changed after it was opened");
+  }
+  if (!body.expected_exists && expectedPath !== null) {
+    throw new HttpError(422, "expected_path must be null for a new file");
+  }
+  if (body.expected_exists && (expectedSha256 === null || !/^[a-f0-9]{64}$/.test(expectedSha256))) {
+    throw new HttpError(422, "expected_sha256 is required for an existing file");
+  }
+  if (!body.expected_exists && expectedSha256 !== null) {
+    throw new HttpError(422, "expected_sha256 must be null for a new file");
+  }
+  return { path, content: body.content, expectedPath, expectedExists: body.expected_exists, expectedSha256 };
+}
+
+function parseEditablePath(value: unknown): string {
+  if (typeof value !== "string" || !value.trim() || !isWireRelativePath(value) || value === ".") {
+    throw new HttpError(422, "path must be a relative file path");
+  }
+  const path = value.trim();
+  if (path.split("/").some((part) => part.length === 0 || part === "." || part === "..")) {
+    throw new HttpError(422, "path must not contain traversal segments");
+  }
+  return path;
+}
+
+function assertRemoteWriteAccess(location: ActiveLocationWithHost, userId: string): void {
+  if (location.host_owner_user_id !== userId) {
+    throw new HttpError(403, `This Folder is on ${location.host_name}'s machine; only its owner can edit it here.`, {
+      detail: `This Folder is on ${location.host_name}'s machine; only its owner can edit it here.`,
+      code: "host_not_owned",
+      host_name: location.host_name,
+    });
+  }
+  if (!location.host_online) {
+    throw new HttpError(409, `This Folder is on ${location.host_name}, which is offline.`, {
+      detail: `This Folder is on ${location.host_name}, which is offline.`,
+      code: "host_offline",
+      host_name: location.host_name,
+      last_heartbeat_at: location.last_heartbeat_at,
+    });
+  }
+}
+
+function fileContent(path: string, content: string, sha256: string): FileContent {
+  return {
+    path,
+    content,
+    size: Buffer.byteLength(content, "utf8"),
+    line_count: content.split(/\n/).length,
+    sha256,
+  };
+}
+
+function hashText(content: string): string {
+  return createHash("sha256").update(Buffer.from(content, "utf8")).digest("hex");
 }
 
 function folderReadAuditReasons(

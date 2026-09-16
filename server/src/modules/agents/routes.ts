@@ -54,12 +54,18 @@ import {
   optionalArrayBody,
   optionalBooleanBody,
   optionalRecordBody,
+  recordValue,
   params,
   requiredBodyString,
   sendDomainError,
   stringValue,
 } from "./agentRouteInputs.js";
 import { conversationToolGrantInput } from "../systemActions/scenarioToolAllowance.js";
+import { ConversationInputError, ConversationInputService } from "../sessions/conversationInputService.js";
+import { ConversationInputCapabilityError, assertConversationInputCapabilities } from "../sessions/conversationInputCapabilities.js";
+import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
+import type { RunGitSnapshot } from "../runs/contractSnapshot.js";
+import { conversationRetryFingerprint, requireConversationIdempotencyKey, withConversationRetryIdempotency } from "../sessions/conversationRetry.js";
 
 const MAX_MESSAGE_CHARS = 8000;
 class ChatContextError extends Error {
@@ -77,7 +83,7 @@ interface AgentChatUnitOfWork {
     | "createSession"
     | "addMessage"
     | "attachRunToUserMessage"
-  > & Partial<Pick<PgSessionRepository, "listMessages">>;
+  > & Partial<Pick<PgSessionRepository, "listMessages" | "appendRetryRunToUserMessage" | "messageById">>;
   backends: Pick<
     PgConversationBackendRepository,
     "resolveBinding"
@@ -86,7 +92,7 @@ interface AgentChatUnitOfWork {
     PgConversationRuntimeSessionRepository,
     "claimTurn" | "prepare"
   >;
-  runs: Pick<PgRunRepository, "createQueuedRun">;
+  runs: Pick<PgRunRepository, "createQueuedRun"> & Partial<Pick<PgRunRepository, "getVisibleRun">>;
   hostThreads?: Pick<PgHostThreadRepository, "recordDirectDispatch">;
   jobs: {
     enqueue: (input: {
@@ -866,11 +872,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const agentId = params(request).agentId ?? "";
     const body = jsonBody(request);
     const rawMessage = typeof body.message === "string" ? body.message.trim() : "";
-    if (!rawMessage) return reply.code(422).send({ detail: "message must not be empty" });
     if (rawMessage.length > MAX_MESSAGE_CHARS) {
       return reply.code(422).send({
         detail: `message exceeds ${MAX_MESSAGE_CHARS} characters`,
       });
+    }
+    if (!rawMessage && (!Array.isArray(body.input_parts) || body.input_parts.length === 0)) {
+      return reply.code(422).send({ detail: "message must not be empty" });
     }
 
     try {
@@ -935,6 +943,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           req.session_config ?? [],
           backend.session_config_options ?? [],
         );
+        try {
+          assertConversationInputCapabilities(req.input_parts, backend.prompt_capabilities);
+        } catch (error) {
+          if (error instanceof ConversationInputCapabilityError) {
+            throw new ChatContextError(`Agent '${agent.name}' cannot accept this conversation input: ${error.message}`, error.statusCode);
+          }
+          throw error;
+        }
         const hostDispatch = backend.execution_host_id
           ? await (transaction.db
             ? prepareHostConversationDispatch({
@@ -948,7 +964,23 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               userId: identity.userId,
             })
             : Promise.reject(new ChatContextError("Host-bound chat is temporarily unavailable", 503)))
-          : null;
+            : null;
+        if (hostDispatch) {
+          await ensureDirectHostGitContext({
+            db: transaction.db!,
+            spaceId: creation.spaceId,
+            userId: identity.userId,
+            session: {
+              id: session.id,
+              space_id: session.space_id,
+              project_id: session.project_id ?? null,
+              room_id: session.room_id ?? null,
+              project_folder_id: session.project_folder_id ?? null,
+            },
+            backend,
+            hostDispatch,
+          });
+        }
         // Not gated on a managed workspace: a direct chat pinned to a
         // registered Location has no Rainver-managed cwd, but the Agent's
         // runtime profile was archived when the session was deleted and is
@@ -985,14 +1017,33 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           user_id: identity.userId,
         });
 
+        let preparedInputParts;
+        if (req.input_parts.length > 0) {
+          if (!transaction.db) throw new ChatContextError("Conversation input validation is temporarily unavailable", 503);
+          preparedInputParts = await new ConversationInputService(transaction.db, context.config).prepareMessageParts({
+            spaceId: creation.spaceId,
+            userId: identity.userId,
+            sessionId: session.id,
+            parts: req.input_parts,
+          });
+        }
         const userMessage = await transaction.sessions.addMessage(
           creation.spaceId,
           identity.userId,
           session.id,
-          { role: "user", content: rawMessage },
+          { role: "user", content: req.message },
         );
         if (!userMessage) {
           throw new ChatContextError("session not found in this space", 404);
+        }
+        if (preparedInputParts && transaction.db) {
+          await new ConversationInputService(transaction.db, context.config).attachMessageParts({
+            spaceId: creation.spaceId,
+            userId: identity.userId,
+            sessionId: session.id,
+            messageId: userMessage.id,
+            parts: preparedInputParts,
+          });
         }
 
         const history = hostDispatch && transaction.sessions.listMessages
@@ -1011,7 +1062,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           spaceId: creation.spaceId,
           userId: identity.userId,
           sessionId: session.id,
-          message: rawMessage,
+          message: req.message,
           currentMessage: userMessage,
           projectId: req.project_id,
           visibility: creation.visibility,
@@ -1064,7 +1115,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             user_id: identity.userId,
             agent_id: agent.id,
           });
-        } catch {
+        } catch (error) {
           throw new ChatContextError(
             "The chat turn could not be queued",
             503,
@@ -1112,6 +1163,193 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (error instanceof RunCreateValidationError) {
         return reply.code(error.statusCode).send({ detail: error.message });
       }
+      if (error instanceof ConversationInputError) {
+        return reply.code(error.statusCode).send({ detail: error.message });
+      }
+      return sendDomainError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/agents/:agentId/chat/retry", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const agentId = params(request).agentId ?? "";
+    try {
+      const req = protocol.ConversationRetryRequestSchema.parse(jsonBody(request));
+      const idempotencyKey = requireConversationIdempotencyKey(request.headers["idempotency-key"]);
+      const services = agentChatServices(context);
+      const agent = await services.agents.getAgentForChat(identity.spaceId, identity.userId, agentId);
+      if (!agent) return reply.code(404).send({ detail: `Agent '${agentId}' not found in this space` });
+
+      const outcome = await services.inTransaction(async (transaction) => {
+        if (!transaction.db) throw new ChatContextError("Conversation retry is temporarily unavailable", 503);
+        if (!transaction.runs.getVisibleRun || !transaction.sessions.messageById || !transaction.sessions.appendRetryRunToUserMessage) {
+          throw new ChatContextError("Conversation retry is temporarily unavailable", 503);
+        }
+        const appendRetryRunToUserMessage = transaction.sessions.appendRetryRunToUserMessage;
+        const original = await transaction.runs.getVisibleRun(identity.spaceId, identity.userId, req.run_id);
+        if (!original || original.agent_id !== agent.id || !original.session_id || original.run_group_id) {
+          throw new ChatContextError("The failed Run is not available in this direct conversation", 404);
+        }
+        if (original.status !== "failed" && original.status !== "degraded") {
+          throw new ChatContextError("Only a failed conversation turn can be retried", 409);
+        }
+        const originalModel = recordValue(original.model_override_json);
+        const originalChatTurn = recordValue(originalModel?.chat_turn);
+        const messageId = stringValue(originalChatTurn?.user_message_id);
+        if (!messageId) throw new ChatContextError("The failed Run has no persisted user message to retry", 409);
+        const originalMessage = await transaction.sessions.messageById(
+          identity.spaceId,
+          identity.userId,
+          original.session_id,
+          messageId,
+        );
+        if (!originalMessage || originalMessage.role !== "user") {
+          throw new ChatContextError("The persisted input for this Run is no longer available", 409);
+        }
+        const fingerprint = conversationRetryFingerprint({ kind: "direct", runId: original.id, sessionId: original.session_id });
+        return withConversationRetryIdempotency(
+          transaction.db,
+          {
+            spaceId: identity.spaceId,
+            userId: identity.userId,
+            key: idempotencyKey,
+            fingerprint,
+            sessionId: original.session_id,
+            messageId,
+            runId: original.id,
+          },
+          async () => {
+            const session = await transaction.sessions.getSession(identity.spaceId, identity.userId, original.session_id!);
+            if (!session || (session.project_id ?? null) !== (original.project_id ?? null)) {
+              throw new ChatContextError("Retry context needs review before this turn can run again", 409);
+            }
+            const originalBackend = recordValue(originalModel?.conversation_backend);
+            const runtimeProfileId = stringValue(originalBackend?.runtime_profile_id);
+            if (!runtimeProfileId) throw new ChatContextError("Retry context needs review: the original backend is missing", 409);
+            let backend: ResolvedConversationBackend;
+            try {
+              backend = await transaction.backends.resolveBinding({
+                space_id: identity.spaceId,
+                user_id: identity.userId,
+                session_id: session.id,
+                agent_id: agent.id,
+                requested: { runtime_profile_id: runtimeProfileId },
+              });
+            } catch (error) {
+              if (error instanceof ConversationBackendError) {
+                throw new ChatContextError(`Retry context needs review: ${error.message}`, 409);
+              }
+              throw error;
+            }
+            const requestedConfig = protocol.RuntimeSessionConfigSelectionSchema.array().safeParse(originalModel?.acp_session_config);
+            const sessionConfig = validateConversationSessionConfig(
+              requestedConfig.success ? requestedConfig.data : [],
+              backend.session_config_options ?? [],
+            );
+            try {
+              assertConversationInputCapabilities(originalMessage.input_parts ?? [], backend.prompt_capabilities);
+            } catch (error) {
+              if (error instanceof ConversationInputCapabilityError) {
+                throw new ChatContextError(`Retry context needs review: ${error.message}`, error.statusCode);
+              }
+              throw error;
+            }
+            const hostDispatch = backend.execution_host_id
+              ? await prepareHostConversationDispatch({
+                db: transaction.db!,
+                backend,
+                container: { kind: "direct", user_id: identity.userId },
+                sessionId: session.id,
+                spaceId: identity.spaceId,
+                projectId: session.project_id ?? null,
+                agentId: agent.id,
+                userId: identity.userId,
+              })
+              : null;
+            if ((original.workspace_location_id ?? null) !== (hostDispatch?.host_thread.workspace_location_id ?? null)
+              || (original.host_task_thread_id ?? null) !== (hostDispatch?.host_thread.id ?? null)
+              || (original.project_folder_id ?? null) !== (hostDispatch?.project_folder_id ?? null)) {
+              throw new ChatContextError("Retry context needs review: the original Host workspace is no longer pinned", 409);
+            }
+            const originalGit = recordValue(recordValue(original.contract_snapshot_json)?.git_snapshot);
+            if (originalGit && typeof originalGit.observed_at === "string" && gitSnapshotChanged(originalGit, hostDispatch?.git_snapshot ?? unavailableGitSnapshot())) {
+              throw new ChatContextError("Retry context needs review: the original Git workspace has changed", 409);
+            }
+            const history = transaction.sessions.listMessages
+              ? (await transaction.sessions.listMessages(identity.spaceId, identity.userId, session.id, 40, 0)) ?? []
+              : [];
+            await transaction.runtimeSessions.claimTurn({
+              space_id: identity.spaceId,
+              session_id: session.id,
+              user_id: identity.userId,
+            });
+            const prepared = await prepareChatRun(transaction, {
+              agentId: agent.id,
+              agentVersionId: original.agent_version_id,
+              spaceId: identity.spaceId,
+              userId: identity.userId,
+              sessionId: session.id,
+              message: originalMessage.content,
+              currentMessage: originalMessage,
+              projectId: session.project_id,
+              visibility: "private",
+              backend,
+              sessionConfig,
+              hostDispatch,
+              retryOfRunId: original.id,
+              hostPromptContext: hostDispatch
+                ? [
+                  await renderAgentIdentityPrompt(transaction.db!, {
+                    spaceId: identity.spaceId,
+                    agentId: agent.id,
+                    roomId: null,
+                    directUserId: identity.userId,
+                  }),
+                  renderDirectHostPrompt(history, originalMessage.id),
+                ].filter(Boolean).join("\n\n") || null
+                : null,
+            });
+            if (!await appendRetryRunToUserMessage({
+              space_id: identity.spaceId,
+              user_id: identity.userId,
+              session_id: session.id,
+              message_id: originalMessage.id,
+              run_id: prepared.run_id,
+            })) {
+              throw new ChatContextError("The retry could not retain its linked user message", 500);
+            }
+            if (hostDispatch && transaction.hostThreads) {
+              await transaction.hostThreads.recordDirectDispatch(hostDispatch.host_thread.id, {
+                lastRunId: prepared.run_id,
+                sessionId: session.id,
+                dispatchLockId: hostDispatch.dispatch_lock_id,
+              });
+            }
+            await transaction.jobs.enqueue({
+              run_id: prepared.run_id,
+              space_id: identity.spaceId,
+              user_id: identity.userId,
+              agent_id: agent.id,
+            });
+            return {
+              schema_version: "conversation_retry.v1" as const,
+              session_id: session.id,
+              run_id: prepared.run_id,
+              run_ids: [prepared.run_id],
+              retry_of_run_id: original.id,
+              user_message_id: originalMessage.id,
+              status: "queued" as const,
+              event_stream_url: `/api/v1/runs/${encodeURIComponent(prepared.run_id)}/turn/stream`,
+            };
+          },
+        );
+      });
+      return reply.code(202).send(protocol.ConversationRetryResponseSchema.parse({ ...outcome.value, reused: outcome.reused }));
+    } catch (error) {
+      if (error instanceof ChatContextError) return reply.code(error.statusCode).send({ detail: error.body });
+      if (error instanceof ConversationBackendError) return reply.code(error.statusCode).send({ detail: error.message });
+      if (error instanceof ConversationTurnInProgressError) return reply.code(error.statusCode).send({ detail: error.message });
       return sendDomainError(reply, error);
     }
   });
@@ -1163,6 +1401,7 @@ async function prepareChatRun(
     sessionConfig: NonNullable<protocol.ChatTurnRequest["session_config"]>;
     hostDispatch?: PreparedHostConversationDispatch | null;
     hostPromptContext?: string | null;
+    retryOfRunId?: string | null;
   },
 ): Promise<PreparedChatRun> {
   const lightweightCliConversation =
@@ -1183,6 +1422,11 @@ async function prepareChatRun(
     host_task_thread_id: input.hostDispatch?.host_thread.id ?? null,
     project_id: input.projectId ?? null,
     visibility: input.visibility,
+    contract_snapshot: {
+      source: { kind: "direct", id: input.sessionId },
+      project_id: input.projectId ?? null,
+      git_snapshot: input.hostDispatch?.git_snapshot ?? unavailableGitSnapshot(),
+    },
     // The same allowance a Room message or a delegation gets in this Project;
     // this used to be a private three-action list from before scenario
     // allowances existed, so a direct chat could not do what a Room could.
@@ -1211,6 +1455,7 @@ async function prepareChatRun(
         agent_id: input.agentId,
         agent_version_id: input.agentVersionId,
         project_id: input.projectId ?? null,
+        ...(input.retryOfRunId ? { retry_of_run_id: input.retryOfRunId } : {}),
       },
       ...(input.hostDispatch
         ? {
@@ -1237,6 +1482,100 @@ async function prepareChatRun(
     ),
     ...(input.hostDispatch ? { host_thread_id: input.hostDispatch.host_thread.id } : {}),
   };
+}
+
+function unavailableGitSnapshot(): RunGitSnapshot {
+  return {
+    source: "unavailable",
+    workspace_location_id: null,
+    branch: null,
+    commit_sha: null,
+    dirty: null,
+    execution_ready: false,
+    observed_at: new Date().toISOString(),
+  };
+}
+
+async function ensureDirectHostGitContext(input: {
+  db: Pool | PoolClient;
+  spaceId: string;
+  userId: string;
+  session: {
+    id: string;
+    space_id: string;
+    project_id: string | null;
+    room_id: string | null;
+    project_folder_id: string | null;
+  };
+  backend: ResolvedConversationBackend;
+  hostDispatch: NonNullable<Awaited<ReturnType<typeof prepareHostConversationDispatch>>>;
+}): Promise<void> {
+  const repository = new PgConversationExecutionContextRepository(input.db);
+  const context = await repository.lockDraft({
+    id: input.session.id,
+    space_id: input.session.space_id,
+    project_id: input.session.project_id,
+    room_id: input.session.room_id,
+    project_folder_id: input.session.project_folder_id,
+  });
+  const primaryMode = input.backend.workspace_mode === "location" ? "location" : "managed";
+  const locationId = input.hostDispatch.host_thread.workspace_location_id;
+  const projectFolderId = input.hostDispatch.project_folder_id;
+  if (context.state === "initialized") {
+    if (context.execution_host_id !== input.hostDispatch.host_thread.execution_host_id
+      || context.primary_workspace_mode !== primaryMode
+      || context.primary_project_folder_id !== projectFolderId
+      || context.primary_workspace_location_id !== locationId) {
+      throw new ChatContextError("The direct conversation execution context is pinned to a different Host workspace", 409);
+    }
+    if (context.git_observed_at && gitSnapshotChanged({
+      source: primaryMode === "managed" ? "managed_workspace" : "workspace_location",
+      workspace_location_id: context.primary_workspace_location_id,
+      branch: context.git_branch,
+      commit_sha: context.git_head,
+      execution_ready: context.git_execution_ready,
+    }, input.hostDispatch.git_snapshot)) {
+      throw new ChatContextError("Git branch or commit changed after this Conversation was initialized; refresh the execution context before sending", 409);
+    }
+    if (!context.git_observed_at) {
+      await repository.refreshGitBaseline({
+        spaceId: input.spaceId,
+        sessionId: input.session.id,
+        git: {
+          branch: input.hostDispatch.git_snapshot.branch,
+          commitSha: input.hostDispatch.git_snapshot.commit_sha,
+          dirty: input.hostDispatch.git_snapshot.dirty,
+          executionReady: input.hostDispatch.git_snapshot.execution_ready,
+          observedAt: input.hostDispatch.git_snapshot.observed_at,
+        },
+      });
+    }
+    return;
+  }
+  await repository.initialize({
+    spaceId: input.spaceId,
+    sessionId: input.session.id,
+    hostId: input.hostDispatch.host_thread.execution_host_id!,
+    primaryMode,
+    projectFolderId,
+    locationId,
+    userId: input.userId,
+    git: {
+      branch: input.hostDispatch.git_snapshot.branch,
+      commitSha: input.hostDispatch.git_snapshot.commit_sha,
+      dirty: input.hostDispatch.git_snapshot.dirty,
+      executionReady: input.hostDispatch.git_snapshot.execution_ready,
+      observedAt: input.hostDispatch.git_snapshot.observed_at,
+    },
+  });
+}
+
+function gitSnapshotChanged(expected: Record<string, unknown>, current: RunGitSnapshot): boolean {
+  return (expected.source !== undefined && expected.source !== current.source)
+    || (expected.workspace_location_id !== undefined && (expected.workspace_location_id ?? null) !== current.workspace_location_id)
+    || (expected.branch !== undefined && (expected.branch ?? null) !== current.branch)
+    || (expected.commit_sha !== undefined && (expected.commit_sha ?? null) !== current.commit_sha)
+    || (expected.execution_ready !== undefined && expected.execution_ready !== current.execution_ready);
 }
 
 function validateConversationSessionConfig(

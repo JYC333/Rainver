@@ -11,6 +11,7 @@ import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import { dbPool, sendRouteError } from "../routeUtils/common.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { ConversationExecutionContextService } from "./executionContextService.js";
+import { ConversationInputError, ConversationInputService } from "./conversationInputService.js";
 
 interface SessionServices {
   repository: Pick<
@@ -27,7 +28,7 @@ interface SessionServices {
 type SessionServicesFactory = (context: ModuleContext) => SessionServices;
 type ExecutionContextService = Pick<
   ConversationExecutionContextService,
-  "preflight" | "initialize" | "mutateAttachment"
+  "preflight" | "initialize" | "refreshGit" | "mutateAttachment"
 >;
 type ExecutionContextServiceFactory = (context: ModuleContext) => ExecutionContextService;
 type SessionIdentity = { spaceId: string; userId: string };
@@ -68,6 +69,64 @@ function executionContextService(context: ModuleContext): ExecutionContextServic
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  app.post("/api/v1/conversation-inputs/media", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const file = await request.file();
+      if (!file) return reply.code(422).send({ detail: "an image file is required" });
+      const media = await new ConversationInputService(dbPool(context.config), context.config).uploadImage({
+        spaceId: identity.spaceId,
+        userId: identity.userId,
+        filename: file.filename,
+        mediaType: file.mimetype,
+        stream: file.file,
+      });
+      return reply.code(201).send(media);
+    } catch (error) {
+      if (error instanceof ConversationInputError) return reply.code(error.statusCode).send({ detail: error.message });
+      // @fastify/multipart marks a stream when its configured byte limit fires.
+      if (error instanceof Error && /Request file too large|part exceeds the file size limit/i.test(error.message)) {
+        return reply.code(413).send({ detail: "image exceeds the upload limit" });
+      }
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/conversation-inputs/media/:mediaId", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const mediaId = params(request).mediaId ?? "";
+    try {
+      const service = new ConversationInputService(dbPool(context.config), context.config);
+      const media = await service.getVisibleMedia(identity.spaceId, identity.userId, mediaId);
+      if (!media) return reply.code(404).send({ detail: "conversation media not found" });
+      const body = await service.readMedia(media);
+      reply.header("content-type", media.media_type);
+      reply.header("content-length", String(body.byteLength));
+      reply.header("content-disposition", `inline; filename*=UTF-8''${encodeURIComponent(media.filename)}`);
+      reply.header("x-content-type-options", "nosniff");
+      return reply.send(body);
+    } catch (error) {
+      if (error instanceof ConversationInputError) return reply.code(error.statusCode).send({ detail: error.message });
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.delete("/api/v1/conversation-inputs/media/:mediaId", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const mediaId = params(request).mediaId ?? "";
+    try {
+      const deleted = await new ConversationInputService(dbPool(context.config), context.config)
+        .deletePendingMedia(identity.spaceId, identity.userId, mediaId);
+      if (!deleted) return reply.code(404).send({ detail: "pending conversation media not found" });
+      return reply.code(204).send();
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.get("/api/v1/sessions", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -115,6 +174,36 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send(messages);
   });
 
+  app.get("/api/v1/sessions/:sessionId/input-files", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const q = query(request);
+    const limit = intQuery(q.limit, 20);
+    if (limit === null || limit < 1 || limit > 20) return reply.code(422).send({ detail: "limit must be between 1 and 20" });
+    const search = q.q ?? "";
+    if (search.length > 200) return reply.code(422).send({ detail: "q must be at most 200 characters" });
+    const abortController = new AbortController();
+    const onClose = () => abortController.abort();
+    request.raw.once("close", onClose);
+    try {
+      const result = await new ConversationInputService(dbPool(context.config), context.config).searchFiles({
+        spaceId: identity.spaceId,
+        userId: identity.userId,
+        sessionId: params(request).sessionId ?? "",
+        query: search,
+        limit,
+        signal: abortController.signal,
+      });
+      return reply.send(result);
+    } catch (error) {
+      if (abortController.signal.aborted) return;
+      if (error instanceof ConversationInputError) return reply.code(error.statusCode).send({ detail: error.message });
+      return sendRouteError(reply, error);
+    } finally {
+      request.raw.off("close", onClose);
+    }
+  });
+
   app.get("/api/v1/sessions/:sessionId/execution-context", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -159,6 +248,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         parsed.data,
       );
       return reply.send(result);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/sessions/:sessionId/execution-context/refresh-git", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await executionContextService(context).refreshGit(
+        identity,
+        params(request).sessionId ?? "",
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -302,17 +404,49 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const body = jsonBody(request);
     const parsed = protocol.MessageCreateRequestSchema.safeParse(body);
     if (!parsed.success) {
-      return reply.code(422).send({ detail: "content is required and no other fields are accepted" });
+      return reply.code(422).send({ detail: "a non-empty content or at least one supported input part is required" });
     }
     const services = sessionServices(context);
-    const message = await services.repository.addMessage(
-      identity.spaceId,
-      identity.userId,
-      sessionId,
-      { role: "user", content: parsed.data.content },
-    );
-    if (message === null) return reply.code(404).send({ detail: "Session not found" });
-    return reply.code(201).send(message);
+    try {
+      let message;
+      if (parsed.data.input_parts.length > 0) {
+        message = await withTransaction(dbPool(context.config), async (client) => {
+          const inputService = new ConversationInputService(client, context.config);
+          const prepared = await inputService.prepareMessageParts({
+            spaceId: identity.spaceId,
+            userId: identity.userId,
+            sessionId,
+            parts: parsed.data.input_parts,
+          });
+          const txRepository = new PgSessionRepository(client);
+          const created = await txRepository.addMessage(identity.spaceId, identity.userId, sessionId, {
+            role: "user",
+            content: parsed.data.content,
+          });
+          if (!created) return null;
+          await inputService.attachMessageParts({
+            spaceId: identity.spaceId,
+            userId: identity.userId,
+            sessionId,
+            messageId: created.id,
+            parts: prepared,
+          });
+          return { ...created, input_parts: parsed.data.input_parts };
+        });
+      } else {
+        message = await services.repository.addMessage(
+          identity.spaceId,
+          identity.userId,
+          sessionId,
+          { role: "user", content: parsed.data.content },
+        );
+      }
+      if (message === null) return reply.code(404).send({ detail: "Session not found" });
+      return reply.code(201).send(message);
+    } catch (error) {
+      if (error instanceof ConversationInputError) return reply.code(error.statusCode).send({ detail: error.message });
+      return sendRouteError(reply, error);
+    }
   });
 
   app.post("/api/v1/sessions/:sessionId/reflect", async (request, reply) => {

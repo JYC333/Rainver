@@ -26,7 +26,7 @@ export const conversationFolderAccessGrants = pgTable("conversation_folder_acces
 	sessionId: varchar("session_id", { length: 36 }).notNull(),
 	projectFolderId: varchar("project_folder_id", { length: 36 }).notNull(),
 	workspaceLocationId: varchar("workspace_location_id", { length: 36 }).notNull(),
-	accessMode: varchar("access_mode", { length: 16 }).notNull().default("read"),
+	accessMode: varchar("access_mode", { length: 16 }).notNull().default("write"),
 	status: varchar({ length: 16 }).notNull().default("active"),
 	grantedByUserId: varchar("granted_by_user_id", { length: 36 }).notNull(),
 	grantedAt: timestamp("granted_at", { withTimezone: true, mode: "string" }).notNull(),

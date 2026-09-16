@@ -19,6 +19,32 @@ export const codePatchSnapshots = pgTable("code_patch_snapshots", {
 	check("ck_code_patch_snapshots_status", sql`(status)::text = ANY (ARRAY[('available'::character varying)::text, ('rolled_back'::character varying)::text, ('pruned'::character varying)::text])`),
 ]);
 
+/** Durable undo records for direct, user-authored Files & Code edits. */
+export const projectFileRevisions = pgTable("project_file_revisions", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	projectFolderId: varchar("project_folder_id", { length: 36 }).notNull(),
+	workspaceLocationId: varchar("workspace_location_id", { length: 36 }).notNull(),
+	path: varchar({ length: 2048 }).notNull(),
+	beforeExists: boolean("before_exists").notNull(),
+	beforeContent: text("before_content"),
+	afterExists: boolean("after_exists").notNull(),
+	afterSha256: varchar("after_sha256", { length: 64 }),
+	createdByUserId: varchar("created_by_user_id", { length: 36 }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+	expiresAt: timestamp("expires_at", { withTimezone: true, mode: 'string' }).notNull(),
+	status: varchar({ length: 32 }).default('available').notNull(),
+	rolledBackByUserId: varchar("rolled_back_by_user_id", { length: 36 }),
+	rolledBackAt: timestamp("rolled_back_at", { withTimezone: true, mode: 'string' }),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_project_file_revisions_folder_path").using("btree", table.projectFolderId.asc().nullsLast(), table.path.asc().nullsLast()),
+	index("ix_project_file_revisions_expires_at").using("btree", table.expiresAt.asc().nullsLast()),
+	check("ck_project_file_revisions_status", sql`(status)::text = ANY (ARRAY[('available'::character varying)::text, ('rolled_back'::character varying)::text, ('pruned'::character varying)::text])`),
+	check("ck_project_file_revisions_before_content", sql`before_exists OR before_content IS NULL`),
+	check("ck_project_file_revisions_after_hash", sql`after_exists OR after_sha256 IS NULL`),
+]);
+
 export const officialPluginEnablements = pgTable("official_plugin_enablements", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }),

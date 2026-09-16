@@ -712,11 +712,12 @@ export const POLICY_ACTION_REGISTRY = [
     audit_required: true,
     approval_capability: "approve_code_patch",
     default_required_approver_role: "owner",
-    current_enforcement_point: "not_implemented",
+    current_enforcement_point:
+      "server/src/modules/projectFolders/repository.ts",
     description:
-      "Apply a patch to Project Folder files via a mechanism other than project_folder.write_patch (e.g. a direct apply path bypassing the proposal).",
-    lifecycle_status: "reserved",
-    record_failure_mode: "best_effort",
+      "Apply a direct user-authored file change to a Project Folder, with optimistic concurrency and rollback support.",
+    lifecycle_status: "wired_direct",
+    record_failure_mode: "fail_closed",
   },
   {
     action: "artifact.export",

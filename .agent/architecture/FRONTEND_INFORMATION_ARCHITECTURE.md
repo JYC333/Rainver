@@ -270,7 +270,7 @@ not be navigable.
 | Shared Content | Enabled | Space-scoped targeted publication inbox/outbox at `/publications`; import creates an independent private copy. |
 | Memory | Enabled | Functional |
 | Job Queue | Enabled | Infrastructure debug tool |
-| Files & Code | Enabled | Project-scoped Project Folder browser at `/projects/:projectId/files` (Folder selector, tree, file, Git status/diff). Preferred remote Locations have a server/daemon live-read channel; offline, unknown-location, and not-owned states are explicit with retry/instructions rather than the successful empty-tree message. Its zero-Folder action opens the Project-owned managed/clone/allowed-connect flow (including connecting a directory on a paired host, browsed lazily via the daemon); Folder execution/configuration and unregister live in Folder Settings, while code writes, validation evidence, apply, and rollback remain governed through Runs and code-patch Proposals rather than direct file editing. |
+| Files & Code | Enabled | Project-scoped Project Folder browser/editor at `/projects/:projectId/files` (Folder selector, tree, file, create/edit, Git status/diff, and rollback of the user's saved revision). Preferred remote Locations have server/daemon live read/write channels; offline, unknown-location, and not-owned states are explicit. Its zero-Folder action opens the Project-owned managed/clone/allowed-connect flow; Folder execution/configuration and unregister live in Folder Settings. Agent code changes still use code-patch Proposals, while explicit File-page user edits are direct, audited, optimistic, and reversible. |
 | Project Folder Settings | Enabled | Per-Project-Folder settings page at `/projects/:projectId/folders/:folderId`, including a Snapshot settings section that overrides `snapshot_retention_days` / `snapshot_max_count` for that Folder |
 | Snapshot Rollback Defaults | Enabled | Space-admin-only section on Space Settings (`/space-settings`) configuring the space-wide `snapshot_retention_days_default` / `snapshot_max_count_default` that Project Folders inherit absent a per-Folder override |
 | Retrieval Settings | Enabled | Space-scoped UI for the `retrieval.space.settings` scoped setting and retrieval `provider_task_policies` (`/retrieval-settings`); members can view retrieval models, while owner/admin users can edit default search mode, retrieval embedding dimensions/models, native rerank model, rerank/rewrite availability, rewrite/cache/trace defaults, and default result budget. Query rewrite, rerank, and synthesis prompt editing links to Prompt Library rather than duplicating prompt controls here. |
@@ -397,8 +397,10 @@ The frontend is ready for personal dogfooding. The core product loop is usable:
 - Cross-space Home aggregates are limited to what `/me/*` exposes (proposals,
   tasks, runs, participation, timeline). There are no per-Space "captures
   waiting" / "review packets ready" / "cards due" aggregate endpoints.
-- Capture supports text and links. There is no file/image upload endpoint;
-  voice and drag-drop affordances are disabled UI.
+- Capture supports text and links. Conversation composers separately support
+  authenticated PNG/JPEG/WebP input and authorized Project Folder file
+  references; Capture itself does not accept files or images, and voice remains
+  disabled UI.
 - Home has no Assistant chat entry; project-bound conversation lives only in
   the Rooms surface.
 

@@ -520,6 +520,38 @@ export async function resolveActiveLocationWithHost(
   };
 }
 
+/** Resolve the exact active Location pinned by an execution context. Callers
+ * must never fall back to the Folder's current active Location after a
+ * conversation has been initialized. */
+export async function resolveLocationWithHost(
+  db: Queryable,
+  spaceId: string,
+  projectFolderId: string,
+  locationId: string,
+): Promise<ActiveLocationWithHost> {
+  const result = await db.query<WorkspaceLocationRow & {
+    host_name: string;
+    host_owner_user_id: string | null;
+    host_status: string;
+    last_heartbeat_at: string | null;
+  }>(
+    `SELECT wl.*, h.name AS host_name, h.owner_user_id AS host_owner_user_id,
+            h.status AS host_status, h.last_heartbeat_at
+       FROM workspace_locations wl
+       JOIN hosts h ON h.id = wl.execution_host_id
+      WHERE wl.id = $1 AND wl.project_folder_id = $2 AND wl.space_id = $3
+        AND wl.status = 'active'
+      LIMIT 1`,
+    [locationId, projectFolderId, spaceId],
+  );
+  const row = result.rows[0];
+  if (!row) throw new HttpError(409, "The pinned Workspace Location is no longer active");
+  return {
+    ...row,
+    host_online: row.host_status === "online" && !isStale(row.last_heartbeat_at),
+  };
+}
+
 /** Resolve the physical server checkout selected by a Run. A Run may target
  * a non-primary Location, so provisioning must honor its immutable binding
  * rather than falling back to the Folder's active Location. */

@@ -10,6 +10,8 @@ import {
   type MessageOut,
   type SessionOut,
   type SessionPage,
+  type ConversationInputPart,
+  ConversationInputPartsSchema,
 } from "@rainver/protocol";
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
 import { ROOT_BRANCH_PATH, visibleRoomTranscriptSql } from "./messagePath.js";
@@ -28,6 +30,8 @@ export interface CreateSessionInput {
 export interface AddMessageInput {
   role: string;
   content: string;
+  /** Normalized by ConversationInputService in the same transaction. */
+  input_parts?: ConversationInputPart[];
   metadata?: MessageMetadata | null;
   /**
    * Overrides the wall clock. Every ordering in the system is
@@ -79,6 +83,7 @@ interface MessageRow {
   parent_message_id: string | null;
   run_id: string | null;
   created_at: unknown;
+  input_parts?: unknown;
 }
 
 
@@ -218,6 +223,17 @@ export class PgSessionRepository {
     return this.loadMessagePage(spaceId, sessionId, limit, offset);
   }
 
+  async messageById(
+    spaceId: string,
+    userId: string,
+    sessionId: string,
+    messageId: string,
+  ): Promise<MessageOut | null> {
+    const session = await this.getSession(spaceId, userId, sessionId);
+    if (!session) return null;
+    return (await this.loadMessagePage(spaceId, sessionId, 1, 0, messageId))[0] ?? null;
+  }
+
   /**
    * One page of a conversation, as a person may read it.
    *
@@ -255,6 +271,19 @@ export class PgSessionRepository {
                   m.metadata_json,
                   m.parent_message_id,
                   m.run_id,
+                  COALESCE((
+                    SELECT jsonb_agg(
+                      CASE WHEN part.kind = 'image' THEN jsonb_build_object(
+                        'kind', 'image', 'media_id', part.media_id, 'filename', part.display_name,
+                        'media_type', part.media_type, 'byte_size', part.byte_size, 'sha256', part.sha256
+                      ) ELSE jsonb_build_object(
+                        'kind', 'file_reference', 'project_folder_id', part.project_folder_id,
+                        'workspace_location_id', part.workspace_location_id, 'relative_path', part.relative_path,
+                        'display_name', part.display_name, 'media_type', part.media_type,
+                        'byte_size', part.byte_size, 'sha256', part.sha256
+                      ) END ORDER BY part.position
+                    ) FROM message_input_parts part WHERE part.space_id = m.space_id AND part.message_id = m.id
+                  ), '[]'::jsonb) AS input_parts,
                   m.path_depth,
                   m.created_at
              FROM messages m
@@ -333,6 +362,28 @@ export class PgSessionRepository {
     return (await this.projectRoomActionPreviews(spaceId, userId, page))[0] ?? null;
   }
 
+  async roomMessageByRunId(
+    spaceId: string,
+    userId: string,
+    roomId: string,
+    sessionId: string,
+    runId: string,
+  ): Promise<MessageOut | null> {
+    const result = await this.db.query<{ id: string }>(
+      `SELECT m.id
+         FROM messages m
+        WHERE m.space_id = $1
+          AND m.session_id = $2
+          AND m.role = 'user'
+          AND (m.metadata_json->'run_ids' ? $5::text OR m.metadata_json->'retry_run_ids' ? $5::text)
+          AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
+        LIMIT 1`,
+      [spaceId, sessionId, roomId, userId, runId],
+    );
+    const id = result.rows[0]?.id;
+    return id ? this.roomMessageById(spaceId, userId, roomId, sessionId, id) : null;
+  }
+
   /**
    * Named messages of one conversation, in transcript order.
    *
@@ -380,6 +431,19 @@ export class PgSessionRepository {
                   m.metadata_json,
                   m.parent_message_id,
                   m.run_id,
+                  COALESCE((
+                    SELECT jsonb_agg(
+                      CASE WHEN part.kind = 'image' THEN jsonb_build_object(
+                        'kind', 'image', 'media_id', part.media_id, 'filename', part.display_name,
+                        'media_type', part.media_type, 'byte_size', part.byte_size, 'sha256', part.sha256
+                      ) ELSE jsonb_build_object(
+                        'kind', 'file_reference', 'project_folder_id', part.project_folder_id,
+                        'workspace_location_id', part.workspace_location_id, 'relative_path', part.relative_path,
+                        'display_name', part.display_name, 'media_type', part.media_type,
+                        'byte_size', part.byte_size, 'sha256', part.sha256
+                      ) END ORDER BY part.position
+                    ) FROM message_input_parts part WHERE part.space_id = m.space_id AND part.message_id = m.id
+                  ), '[]'::jsonb) AS input_parts,
                   m.path_depth,
                   m.created_at
              FROM messages m
@@ -514,6 +578,32 @@ export class PgSessionRepository {
         input.message_id,
         input.run_id,
       ],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async appendRetryRunToUserMessage(input: {
+    space_id: string;
+    user_id: string;
+    session_id: string;
+    message_id: string;
+    run_id: string;
+  }): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE messages
+          SET metadata_json = jsonb_set(
+            COALESCE(metadata_json, '{}'::jsonb),
+            '{retry_run_ids}',
+            COALESCE(metadata_json->'retry_run_ids', '[]'::jsonb) || jsonb_build_array($5::text),
+            true
+          )
+        WHERE id = $4
+          AND space_id = $1
+          AND session_id = $3
+          AND user_id = $2
+          AND role = 'user'
+          AND NOT (COALESCE(metadata_json->'retry_run_ids', '[]'::jsonb) ? $5::text)`,
+      [input.space_id, input.user_id, input.session_id, input.message_id, input.run_id],
     );
     return (result.rowCount ?? 0) > 0;
   }
@@ -1223,6 +1313,9 @@ function messageToOut(row: MessageRow): MessageOut {
     metadata_json: recordOrNull(row.metadata_json),
     parent_message_id: row.parent_message_id,
     run_id: row.run_id,
+    input_parts: ConversationInputPartsSchema.safeParse(row.input_parts ?? []).success
+      ? ConversationInputPartsSchema.parse(row.input_parts ?? [])
+      : [],
     created_at: dateValue(row.created_at) ?? new Date(0).toISOString(),
   };
 }

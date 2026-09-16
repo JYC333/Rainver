@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { folderGitStatus, isGitRepo, parsePorcelain, runGit } from "../src/index.js";
+import { ensureGitRepository, folderGitStatus, isGitRepo, parsePorcelain, runGit } from "../src/index.js";
 
 const roots: string[] = [];
 
@@ -27,5 +27,18 @@ describe("folder-read git operations", () => {
     await writeFile(join(root, "new.txt"), "new\n", "utf8");
     expect(await isGitRepo(root)).toBe(true);
     await expect(folderGitStatus(root)).resolves.toMatchObject({ is_repo: true, files: [{ path: "new.txt", status: "untracked" }] });
+  });
+
+  it("initializes a managed directory without changing an existing repository", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-folder-read-ensure-git-"));
+    roots.push(root);
+
+    await expect(ensureGitRepository(root)).resolves.toBe(true);
+    await writeFile(join(root, "new.txt"), "new\n", "utf8");
+    await expect(ensureGitRepository(root)).resolves.toBe(true);
+    await expect(folderGitStatus(root)).resolves.toMatchObject({
+      is_repo: true,
+      files: [{ path: "new.txt", status: "untracked" }],
+    });
   });
 });

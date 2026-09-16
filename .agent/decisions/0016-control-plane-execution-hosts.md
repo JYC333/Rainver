@@ -382,15 +382,18 @@ stopping the server that requested it, and is not built.
 
 ### 11. Deferred by decision
 
-Remote in-place execution lands changes on disk before review — the reverse
-of propose-then-apply. Code-patch proposal apply/rollback is not extended to
-trusted hosts; a remote diff is a read-only review artifact and undo is git.
-This is an open question for deliberate design ("pit 3" in the deferred
-register), not settled by default. Capability-based routing, distributed
-scheduling, host leasing, and cross-host sync/divergence detection are
-likewise out of scope. A second shared strict host is not built here, and
-nothing here stands in its way: it would be another strict daemon registered
-from another machine.
+Remote Agent execution still lands changes on disk before review — the reverse
+of propose-then-apply — and its code-patch proposal apply/rollback path is
+unchanged. Separately, the explicit human File page has a bounded direct-write
+path: the server authorizes a Project writer, pins the active Location, sends
+only a relative path and optimistic preimage hash over `folder_write`, and
+stores a short-lived preimage for rollback. A remote Location is writable only
+by its owning online Host user; a stale current hash stops rollback rather than
+overwriting a later edit. This direct user path does not authorize an Agent or
+create a Proposal. Capability-based routing, distributed scheduling, host
+leasing, and cross-host sync/divergence detection are likewise out of scope. A
+second shared strict host is not built here, and nothing here stands in its
+way: it would be another strict daemon registered from another machine.
 
 ## Consequences
 

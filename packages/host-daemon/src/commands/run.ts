@@ -36,6 +36,7 @@ import { loginSession, openLoginSession } from "../login.js";
 import { refreshAmbientSessionCounts } from "../ambientCounts.js";
 import { importAmbientSessions, sanitizeFailure, type AmbientImportRequest } from "../ambientSessions.js";
 import { FolderReadFrameError, performFolderRead, resolveFolderReadRequest } from "../folderRead.js";
+import { FolderWriteFrameError, performFolderWrite, resolveFolderWriteRequest } from "../folderWrite.js";
 import { forgetWorkspace, listDirectories, registerWorkspace } from "../remoteWorkspaceOps.js";
 import { archiveAgentProfiles, archiveLegacyProfileTree, archiveManagedWorkspace, restoreManagedWorkspace, sweepManagedWorkspaceArchives, type ManagedWorkspaceContainer } from "../managedWorkspaces.js";
 import { clearFailedRuntimeOptionsCache, clearRuntimeOptionsCache } from "../capabilities.js";
@@ -265,6 +266,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     let helloAcked = false;
     let updateRestartTimer: ReturnType<typeof setInterval> | null = null;
     let restartForUpdate = false;
+    const folderReadControllers = new Map<string, AbortController>();
     const updateRequestPath = join(configDir(), "update-restart-requested");
     // Bound into `sink` only once hello succeeds (below), matching when the
     // server actually registers this connection in
@@ -466,6 +468,8 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
                 ...(frame.scratch_workspace ? { scratch_workspace: true } : {}),
                 ...(frame.adapter_type ? { adapter_type: frame.adapter_type } : {}),
                 ...(frame.installation ? { installation: frame.installation } : {}),
+                ...(frame.runtime_adapter_type ? { runtime_adapter_type: frame.runtime_adapter_type } : {}),
+                ...(frame.runtime_installation ? { runtime_installation: frame.runtime_installation } : {}),
                 ...(frame.stdin !== undefined ? { stdin: frame.stdin } : {}),
                 command: frame.command,
                 timeout_seconds: frame.timeout_seconds,
@@ -640,14 +644,41 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           return;
         }
         case "folder_read": {
+          const controller = new AbortController();
+          folderReadControllers.set(frame.request_id, controller);
           void (async () => {
             try {
               const request = resolveFolderReadRequest(frame, await currentWorkspaces());
-              sink.send(await performFolderRead(request));
+              const result = await performFolderRead(request, controller.signal);
+              if (!controller.signal.aborted) sink.send(result);
             } catch (error) {
+              if (controller.signal.aborted) return;
               const code = error instanceof FolderReadFrameError ? error.code : "read_failed";
               sink.send({
                 type: "folder_read_result",
+                request_id: frame.request_id,
+                ok: false,
+                error: code,
+                message: sanitizeFailure(error),
+              });
+            } finally {
+              if (folderReadControllers.get(frame.request_id) === controller) folderReadControllers.delete(frame.request_id);
+            }
+          })();
+          return;
+        }
+        case "folder_read_cancel":
+          folderReadControllers.get(frame.request_id)?.abort();
+          return;
+        case "folder_write": {
+          void (async () => {
+            try {
+              const request = resolveFolderWriteRequest(frame, await currentWorkspaces());
+              sink.send(await performFolderWrite(request));
+            } catch (error) {
+              const code = error instanceof FolderWriteFrameError ? error.code : "write_failed";
+              sink.send({
+                type: "folder_write_result",
                 request_id: frame.request_id,
                 ok: false,
                 error: code,
@@ -663,6 +694,8 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     socket.addEventListener("close", (event) => {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       if (updateRestartTimer) clearInterval(updateRestartTimer);
+      for (const controller of folderReadControllers.values()) controller.abort();
+      folderReadControllers.clear();
       sink.unbindIfCurrent(sendOnThisConnection);
       if (isRevocationClose(event.code, event.reason)) {
         resolve("revoked");

@@ -65,6 +65,17 @@ describe("HostConnectionRegistry folder reads", () => {
       .resolves.toEqual({ ok: false, error: "host_offline" });
   });
 
+  it("cancels a pending daemon read when the caller aborts", async () => {
+    const registry = new HostConnectionRegistry();
+    const frames: Record<string, unknown>[] = [];
+    registry.registerConnection("host-1", sink(frames));
+    const controller = new AbortController();
+    const pending = registry.requestFolderRead("host-1", { workspace_location_id: "loc-1", kind: "tree", protected: false }, controller.signal);
+    controller.abort();
+    expect(frames.at(-1)).toMatchObject({ type: "folder_read_cancel", request_id: frames[0]!.request_id });
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("ignores a reply whose kind does not match the pending request", async () => {
     const registry = new HostConnectionRegistry();
     const frames: Record<string, unknown>[] = [];
@@ -96,5 +107,31 @@ describe("HostConnectionRegistry folder reads", () => {
     const pending = registry.requestFolderRead("host-1", { workspace_location_id: "loc-1", kind: "tree", protected: false });
     await vi.advanceTimersByTimeAsync(15_000);
     await expect(pending).resolves.toEqual({ ok: false, error: "host_timeout" });
+  });
+});
+
+describe("HostConnectionRegistry folder writes", () => {
+  it("correlates concurrent writes and rejects a mismatched acknowledgement", async () => {
+    const registry = new HostConnectionRegistry();
+    const frames: Record<string, unknown>[] = [];
+    registry.registerConnection("host-1", sink(frames));
+    const first = registry.requestFolderWrite("host-1", { workspace_location_id: "loc-1", path: "one.txt", content: "one", expected_exists: false, expected_sha256: null, protected: false });
+    const second = registry.requestFolderWrite("host-1", { workspace_location_id: "loc-1", path: "two.txt", content: "two", expected_exists: false, expected_sha256: null, protected: false });
+    const firstId = String(frames[0]!.request_id);
+    const secondId = String(frames[1]!.request_id);
+    registry.receiveFolderWriteResult("host-1", secondId, { ok: true, path: "two.txt", exists: true, sha256: "b".repeat(64), size: 3, line_count: 1 });
+    registry.receiveFolderWriteResult("host-1", firstId, { ok: true, path: "wrong.txt", exists: true, sha256: "a".repeat(64), size: 3, line_count: 1 });
+    await expect(second).resolves.toMatchObject({ ok: true, path: "two.txt" });
+    await expect(first).resolves.toMatchObject({ ok: false, error: "write_failed" });
+  });
+
+  it("fails a pending write when the host disconnects", async () => {
+    const registry = new HostConnectionRegistry();
+    const frames: Record<string, unknown>[] = [];
+    const connection = sink(frames);
+    registry.registerConnection("host-1", connection);
+    const pending = registry.requestFolderWrite("host-1", { workspace_location_id: "loc-1", path: "one.txt", content: "one", expected_exists: false, expected_sha256: null, protected: false });
+    registry.unregisterConnection("host-1", connection);
+    await expect(pending).resolves.toEqual({ ok: false, error: "host_offline" });
   });
 });

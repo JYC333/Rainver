@@ -219,9 +219,9 @@ simulations: they perform no action, mutate no state, and create no
 permission manifest that routes risk and enables unknown-action fail-closed behaviour.
 
 **Registry structure**: The registry has three lifecycle states, distinguished by `lifecycle_status`:
-- **WIRED_DIRECT** (28): `lifecycle_status=WIRED_DIRECT` — have a preferred `PolicyGateway.enforce()` or `enforceProposalApply()` call site.
+- **WIRED_DIRECT** (29): `lifecycle_status=WIRED_DIRECT` — have a preferred `PolicyGateway.enforce()` or `enforceProposalApply()` call site.
   Actions: `runtime.execute`, `runtime.use_credential`, `context.inject_memory`, `context.render_for_runtime`,
-  `project_folder.write_patch`, `artifact.persist`, `proposal.create`, `proposal.apply`,
+  `project_folder.write_patch`, `project_folder.apply_patch`, `artifact.persist`, `proposal.create`, `proposal.apply`,
   `agent.config_update`, `project_folder.read`, `runtime_skill.render`,
   `automation.create`, `automation.update`, `automation.fire`,
   `source.connection.manage`, `source.item_create`, `source.item_update`,
@@ -241,17 +241,17 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `retrieval_diagnostics_packet`, `skill.import`, `skill.convert`,
   `capability.enable`, `capability.disable`, `capability.update`,
   `runtime_skill.binding_update`.
-- **RESERVED** (11): `lifecycle_status=RESERVED` — registered for vocabulary completeness and fail-closed
+- **RESERVED** (10): `lifecycle_status=RESERVED` — registered for vocabulary completeness and fail-closed
   defence-in-depth, but not wired to business code yet. `PolicyGateway` always denies reserved actions.
   `current_enforcement_point="not_implemented"` is a human-readable marker.
-  Actions: `context.use_personal_grant`, `project_folder.apply_patch`, `artifact.export`,
+  Actions: `context.use_personal_grant`, `artifact.export`,
   `proposal.approve`, `memory.read_private`, `memory.promote_shared`, `runtime_skill.execute`,
   `tool_binding.enable`, `evidence.export`, `deployment.propose`, `deployment.execute`.
 
 **record_failure_mode** (`RecordFailureMode` in `packages/protocol/src/policy.ts`): Each action definition carries a typed `record_failure_mode` field:
 - `BEST_EFFORT` (default) — if `PolicyDecisionRecord` persistence fails, log a warning and continue.
 - `FAIL_CLOSED` — preferred enforcement raises `PolicyAuditPersistError` if durable persistence fails; the sensitive action must not proceed.
-  Actions with `FAIL_CLOSED`: `runtime.use_credential`, `project_folder.write_patch`, `artifact.persist`, `proposal.apply`,
+  Actions with `FAIL_CLOSED`: `runtime.use_credential`, `project_folder.write_patch`, `project_folder.apply_patch`, `artifact.persist`, `proposal.apply`,
   `policy.change`, `skill.import`, `skill.convert`, `capability.enable`, `capability.disable`,
   `capability.update`, `runtime_skill.binding_update`, `automation.create`, `automation.fire`,
   `automation.update`, `retrieval.search`, `retrieval.brief`, `memory.retrieval.search`, `memory.retrieval.brief`,
@@ -283,6 +283,7 @@ fail closed via `unknown_policy_action` DENY if ever passed to `PolicyEngine` or
 | `context.inject_memory` | execution-control preflight and `server/src/modules/runtimeContext/` | Memory acquisition is bounded by the immutable control snapshot and live same-Space/user authorization. |
 | `context.render_for_runtime` | `server/src/modules/runtimeContext/` and `server/src/modules/runs/` | Accepted Delivery is authorized before adapter execution; cross-space drift fails closed. |
 | `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers | Uses `enforce()` before Project Folder file writes, including `code_patch` rollback. **fail_closed**. |
+| `project_folder.apply_patch` | `server/src/modules/projectFolders/repository.ts` | Uses `enforce()` for explicit user File-page create/edit and rollback. Requires `actor_type=user`, `direct_user_write=true`, and `file_operation=write|rollback`; it never creates or applies a Proposal. **fail_closed**. |
 | `project_folder.read` | `server/src/modules/projectFolders/repository.ts` | Uses `enforce()` before Project Folder tree/file/status/diff reads. Uses actual `ProjectFolder.space_id` as `resource_space_id`. Normal project reads default allow; protected-Folder, external-root, protected/restricted, full diff, and secret-like path reads use `force_record=True`. PathPolicy still blocks traversal and secret-like paths before content is returned. Full diff is bounded and secret-like diff values are redacted; secret-like diff paths are denied. |
 | `artifact.persist` | `server/src/modules/runs/materializationService.ts` | Uses `enforce()` before persistence. Blocked decisions are audited once and write no file or row. **fail_closed**. |
 | `proposal.create` | `server/src/modules/proposals/` and target modules | Uses `enforce()` for user-created proposals. |

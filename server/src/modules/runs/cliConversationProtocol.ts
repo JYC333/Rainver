@@ -10,7 +10,8 @@ import {
 // its tested start()-independent, phase-named anomaly handling — but its
 // wire shapes are checked against the SDK's own authoritative schema types
 // here, rather than trusted by convention alone.
-import type { PermissionOption } from "@agentclientprotocol/sdk";
+import type { PermissionOption, ContentBlock } from "@agentclientprotocol/sdk";
+export type { ContentBlock } from "@agentclientprotocol/sdk";
 import { usageFromAcp } from "./cliRuntimeMeasurement.js";
 import { decidePermission, type PermissionDecisionRecord } from "./runPermissionPolicy.js";
 import { getRuntimeAdapterSpec, isAcpRuntimeAdapter, type VendorCliAdapterType } from "../runtimeAdapters/specs.js";
@@ -73,6 +74,7 @@ export function createCliConversationController(input: {
   adapter_type: ConversationProtocolAdapter;
   prompt?: string;
   prompts?: string[];
+  prompt_blocks?: ContentBlock[][];
   cwd: string;
   session_config?: AcpSessionConfigSelection[];
   runtime_session_id?: string | null;
@@ -108,8 +110,9 @@ export function createCliConversationController(input: {
 }): CliStdioController | undefined {
   const prompts = input.prompts?.filter((prompt) => prompt.trim())
     ?? (input.prompt?.trim() ? [input.prompt] : []);
-  if (prompts.length === 0) return undefined;
-  const normalized = { ...input, prompts };
+  const promptBlocks = input.prompt_blocks?.filter((blocks) => blocks.length > 0);
+  if (prompts.length === 0 && (!promptBlocks || promptBlocks.length === 0)) return undefined;
+  const normalized = { ...input, prompts, prompt_blocks: promptBlocks };
   if (isAcpRuntimeAdapter(input.adapter_type)) return new AcpController(normalized);
   return undefined;
 }
@@ -166,6 +169,7 @@ export class AcpController implements CliStdioController {
   constructor(private readonly input: {
     adapter_type: ConversationProtocolAdapter;
     prompts: string[];
+    prompt_blocks?: ContentBlock[][];
     cwd: string;
     session_config?: AcpSessionConfigSelection[];
     runtime_session_id?: string | null;
@@ -342,7 +346,7 @@ export class AcpController implements CliStdioController {
       if (this.input.adapter_type === "claude_code" && this.selectedModel && usage) {
         this.modelUsage = addModelUsage(this.modelUsage, this.selectedModel, usage);
       }
-      if (this.promptIndex + 1 < this.input.prompts.length) {
+      if (this.promptIndex + 1 < this.promptCount()) {
         this.phase = "phase_acknowledge";
         const acknowledge = this.input.before_next_prompt?.(this.sessionId!);
         Promise.resolve(acknowledge).then(() => {
@@ -388,7 +392,7 @@ export class AcpController implements CliStdioController {
           );
           return;
         }
-        if (this.promptIndex === this.input.prompts.length - 1) {
+        if (this.promptIndex === this.promptCount() - 1) {
           // Reasoning is deliberately kept out of `this.text`: that is the
           // turn's answer, and it feeds output_text and the measurement
           // fallback.
@@ -407,7 +411,7 @@ export class AcpController implements CliStdioController {
         this.fail(`${this.label()} ACP returned an out-of-order session update`, closeStdin);
         return;
       }
-      if (this.promptIndex === this.input.prompts.length - 1) {
+      if (this.promptIndex === this.promptCount() - 1) {
         this.input.on_protocol_event?.(message);
       }
       return;
@@ -537,9 +541,14 @@ export class AcpController implements CliStdioController {
       method: "session/prompt",
       params: {
         sessionId: this.sessionId,
-        prompt: [{ type: "text", text: this.input.prompts[this.promptIndex]! }],
+        prompt: this.input.prompt_blocks?.[this.promptIndex]
+          ?? [{ type: "text", text: this.input.prompts[this.promptIndex]! }],
       },
     });
+  }
+
+  private promptCount(): number {
+    return Math.max(this.input.prompts.length, this.input.prompt_blocks?.length ?? 0);
   }
 
   private fail(message: string, closeStdin: () => void): void {

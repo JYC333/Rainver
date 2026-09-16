@@ -20,15 +20,19 @@ import { Button } from '../../components/ui/button'
 import { Card } from '../../components/ui/card'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
+import { ConversationGitContext } from './ConversationGitContext'
 
 export interface ConversationExecutionPreflightProps {
   projectId: string
   roomId: string
   sessionId: string | null
+  /** Current Files & Code selection used only as the draft's initial Primary. */
+  preferredProjectFolderId?: string | null
   detail?: RoomDetail | null
   onConversationCreated?: (conversation: RoomConversationRecord) => void
   onNewConversation?: () => void
   onReadyChange?: (ready: boolean) => void
+  onSummaryChange?: (summary: ConversationExecutionSummary | null) => void
 }
 
 /**
@@ -41,10 +45,12 @@ export function ConversationExecutionPreflight({
   projectId,
   roomId,
   sessionId,
+  preferredProjectFolderId = null,
   detail: suppliedDetail,
   onConversationCreated,
   onNewConversation,
   onReadyChange,
+  onSummaryChange,
 }: ConversationExecutionPreflightProps) {
   const [detail, setDetail] = useState<RoomDetail | null>(suppliedDetail ?? null)
   const [preflight, setPreflight] = useState<ConversationExecutionPreflightResponse | null>(null)
@@ -54,12 +60,14 @@ export function ConversationExecutionPreflight({
   const [runtimeProfileId, setRuntimeProfileId] = useState('')
   const [participantRuntimeProfileIds, setParticipantRuntimeProfileIds] = useState<Record<string, string>>({})
   const [attachLocationId, setAttachLocationId] = useState('')
-  const [attachMode, setAttachMode] = useState<ConversationAttachmentAccessMode>('read')
+  const [attachMode, setAttachMode] = useState<ConversationAttachmentAccessMode>('write')
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [executionDetailsOpen, setExecutionDetailsOpen] = useState(false)
   const requestSequence = useRef(0)
+  const hostSelectionTouched = useRef(false)
+  const primarySelectionTouched = useRef(false)
 
   useEffect(() => {
     requestSequence.current += 1
@@ -72,8 +80,11 @@ export function ConversationExecutionPreflight({
     setAttachLocationId('')
     setError(null)
     setExecutionDetailsOpen(false)
+    hostSelectionTouched.current = false
+    primarySelectionTouched.current = false
     onReadyChange?.(false)
-  }, [onReadyChange, sessionId])
+    onSummaryChange?.(null)
+  }, [onReadyChange, onSummaryChange, sessionId])
 
   useEffect(() => {
     if (suppliedDetail !== undefined) setDetail(suppliedDetail)
@@ -103,15 +114,17 @@ export function ConversationExecutionPreflight({
       if (sequence !== requestSequence.current) return
       setPreflight(next)
       setProfiles(next.available_runtime_profiles ?? [])
+      onSummaryChange?.(next.summary)
     } catch (cause) {
       if (sequence !== requestSequence.current) return
       const message = errMsg(cause)
       setError(message)
       onReadyChange?.(false)
+      onSummaryChange?.(null)
     } finally {
       setLoading(false)
     }
-  }, [onReadyChange, sessionId])
+  }, [onReadyChange, onSummaryChange, sessionId])
 
   useEffect(() => { void reload() }, [reload])
 
@@ -199,21 +212,36 @@ export function ConversationExecutionPreflight({
 
   useEffect(() => {
     if (!preflight || initialized) return
-    const serverHost = summary?.host?.host_id
+    const preferredLocation = preferredProjectFolderId
+      ? executableLocations.find(location => location.project_folder_id === preferredProjectFolderId) ?? null
+      : null
+    const serverHost = preferredLocation?.execution_host_id
+      ?? summary?.host?.host_id
       ?? (preflight.available_hosts.filter(host => host.online).length === 1
         ? preflight.available_hosts.find(host => host.online)?.host_id
         : executableLocations.length === 1 ? executableLocations[0]!.execution_host_id : '')
-    const serverPrimary = summary?.primary
-      ? summary.primary.kind === 'managed' ? 'managed' : `location:${summary.primary.workspace_location_id}`
-      : executableLocations.length === 1 ? `location:${executableLocations[0]!.workspace_location_id}`
-        : executableLocations.length === 0 ? 'managed' : ''
-    setHostId(current => current || serverHost || '')
-    setPrimaryKey(current => current || serverPrimary)
+    const serverPrimary = preferredLocation
+      ? `location:${preferredLocation.workspace_location_id}`
+      : preferredProjectFolderId
+        ? 'managed'
+        : summary?.primary
+          ? summary.primary.kind === 'managed' ? 'managed' : `location:${summary.primary.workspace_location_id}`
+          : executableLocations.length === 1 ? `location:${executableLocations[0]!.workspace_location_id}`
+            : executableLocations.length === 0 ? 'managed' : ''
+    setHostId(current => hostSelectionTouched.current ? current : serverHost || current || '')
+    setPrimaryKey(current => {
+      if (primarySelectionTouched.current) return current
+      // Files & Code may finish loading after this preflight request. Once its
+      // current Folder is known, it should still win over an earlier managed
+      // fallback while the draft remains untouched.
+      if (preferredProjectFolderId) return serverPrimary
+      return current || serverPrimary
+    })
     if (summary?.runtime?.runtime_profile_id) {
       const pinned = profiles.find(profile => profile.runtime_profile_id === summary.runtime!.runtime_profile_id)
       if (pinned) setRuntimeProfileId(current => current || runtimeCandidateKey(pinned))
     }
-  }, [executableLocations, initialized, onReadyChange, preflight, ready, summary])
+  }, [executableLocations, initialized, onReadyChange, preflight, preferredProjectFolderId, ready, summary])
 
   useEffect(() => {
     if (initialized || !hostId || !selectedPrimary) return
@@ -291,6 +319,24 @@ export function ConversationExecutionPreflight({
         : { selection, runtime })
       await reload()
       toast.success('Conversation execution context initialized')
+    } catch (cause) {
+      const message = errMsg(cause)
+      setError(message)
+      toast.error(message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function refreshGitContext(): Promise<void> {
+    if (!sessionId) return
+    setBusy(true)
+    setError(null)
+    try {
+      const nextSummary = await sessionsApi.refreshGitContext(sessionId)
+      setPreflight(current => current ? { ...current, summary: nextSummary } : current)
+      onSummaryChange?.(nextSummary)
+      toast.success('Git context refreshed')
     } catch (cause) {
       const message = errMsg(cause)
       setError(message)
@@ -378,7 +424,7 @@ export function ConversationExecutionPreflight({
         </div>
         <div className="flex items-center gap-1">
           {initialized && <Button size="sm" variant="ghost" aria-label="Collapse execution context" aria-expanded="true" onClick={() => setExecutionDetailsOpen(false)}><ChevronDown className="size-3.5" /></Button>}
-          <Button size="sm" variant="ghost" aria-label="Refresh execution context" onClick={() => void reload()} disabled={loading || busy}><RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} /></Button>
+          <Button size="sm" variant="ghost" aria-label={summary?.blocked_reason?.startsWith('Git branch') ? 'Refresh Git context' : 'Refresh execution context'} onClick={() => void (summary?.blocked_reason?.startsWith('Git branch') ? refreshGitContext() : reload())} disabled={loading || busy}><RefreshCw className={`size-3.5 ${loading || busy ? 'animate-spin' : ''}`} /></Button>
         </div>
       </div>
 
@@ -403,11 +449,12 @@ export function ConversationExecutionPreflight({
               )}
             </div>
           </div>
-          <SelectionField label="Execution Host" value={hostId} onChange={setHostId} options={preflight.available_hosts.map(host => ({ value: host.host_id, label: hostLabel(host) }))} placeholder="Choose a Host" />
-          <SelectionField label="Primary workspace (cwd)" value={primaryKey} onChange={setPrimaryKey} options={[
+          <SelectionField label="Execution Host" value={hostId} onChange={value => { hostSelectionTouched.current = true; setHostId(value) }} options={preflight.available_hosts.map(host => ({ value: host.host_id, label: hostLabel(host) }))} placeholder="Choose a Host" />
+          <SelectionField label="Primary workspace (cwd)" value={primaryKey} onChange={value => { primarySelectionTouched.current = true; setPrimaryKey(value) }} options={[
             { value: 'managed', label: 'Managed workspace' },
             ...locations.map(location => ({ value: `location:${location.workspace_location_id}`, label: `${location.folder_name}${location.display_path ? ` · ${location.display_path}` : ''}${location.execution_ready ? '' : ' · not ready'}` })),
           ]} placeholder="Choose managed or a Folder" />
+          <ConversationGitContext snapshot={selectedPrimary?.kind === 'location' ? selectedLocation?.git ?? null : selectedPrimary?.kind === 'managed' ? managedGitSnapshot() : null} />
           {/* The fallback said out loud: with no Folder the Agent works in a
               managed workspace on the Host, not in this Project's code, and
               the only place to change that is Files & Code. */}
@@ -495,10 +542,23 @@ function InitializedSummary({ summary, profiles, participants }: {
     </div>
     <SummaryRow label="Host" value={host ? `${host.host_name}${host.online ? ' · daemon online' : ' · daemon offline'}` : 'Unavailable'} tone={host?.online === false ? 'danger' : undefined} />
     <SummaryRow label="Primary cwd" value={primary?.display_path ?? (primary?.kind === 'managed' ? 'Managed workspace' : 'Unavailable')} />
+    <ConversationGitContext snapshot={summary.git ?? null} />
     {summary.blocked_reason && <p className="rounded bg-destructive/10 px-2 py-1 text-destructive">{summary.blocked_reason}</p>}
     {host?.online === false && <div className="flex items-center gap-1 text-muted-foreground"><Unplug className="size-3.5" />Host daemon offline; the browser is still online. <Link to="/command-center" className="underline">Reconnect Host</Link></div>}
     {!runtime && <p className="text-muted-foreground">This pinned runtime is unavailable. Start a new Conversation to choose another Host CLI.</p>}
   </div>
+}
+
+function managedGitSnapshot(): NonNullable<ConversationExecutionSummary['git']> {
+  return {
+    source: 'managed_workspace',
+    workspace_location_id: null,
+    branch: null,
+    commit_sha: null,
+    dirty: null,
+    execution_ready: true,
+    observed_at: new Date().toISOString(),
+  }
 }
 
 function AttachmentControls({ summary, locations, selectedLocationId, onLocationChange, mode, onModeChange, onMutate, disabled }: {
@@ -512,7 +572,6 @@ function AttachmentControls({ summary, locations, selectedLocationId, onLocation
   disabled: boolean
 }) {
   const hostId = summary.host?.host_id
-  const serverReadOnly = summary.host?.host_kind === 'server'
   const attached = new Set(summary.attachments.filter(item => item.status === 'active').map(item => item.workspace_location_id))
   const candidates = locations.filter(location => {
     if (!location.execution_ready || location.execution_host_id !== hostId || attached.has(location.workspace_location_id)) return false
@@ -525,7 +584,7 @@ function AttachmentControls({ summary, locations, selectedLocationId, onLocation
       return <div key={attachment.id} className="flex flex-wrap items-center gap-2 rounded border border-border px-2 py-1 text-xs">
       <span className="min-w-0 flex-1 truncate">{attachment.folder_name}{attachment.display_path ? ` · ${attachment.display_path}` : ''} · {attachment.access_mode}</span>
       {attachment.status === 'active' && <>
-        <Button size="sm" variant="ghost" disabled={disabled || serverReadOnly || attachment.access_mode === 'write'} onClick={() => void onMutate('set_access', attachment.id, 'write')}>Grant write</Button>
+        <Button size="sm" variant="ghost" disabled={disabled || attachment.access_mode === 'write'} onClick={() => void onMutate('set_access', attachment.id, 'write')}>Grant write</Button>
         <Button size="sm" variant="ghost" disabled={disabled || attachment.access_mode === 'read'} onClick={() => void onMutate('set_access', attachment.id, 'read')}>Read only</Button>
         <Button size="sm" variant="ghost" disabled={disabled} onClick={() => void onMutate('revoke', attachment.id)}>Revoke</Button>
       </>}
@@ -533,10 +592,10 @@ function AttachmentControls({ summary, locations, selectedLocationId, onLocation
     })}
     {candidates.length > 0 && <div className="flex flex-wrap items-end gap-2">
       <div className="min-w-0 flex-1"><SelectionField label="Folder" value={selectedLocationId} onChange={onLocationChange} options={candidates.map(location => ({ value: location.workspace_location_id, label: `${location.folder_name}${location.display_path ? ` · ${location.display_path}` : ''}` }))} placeholder="Choose a Folder to attach" disabled={disabled} /></div>
-      <div className="w-24"><SelectionField label="Access" value={serverReadOnly ? 'read' : mode} onChange={value => onModeChange(value as ConversationAttachmentAccessMode)} options={serverReadOnly ? [{ value: 'read', label: 'Read' }] : [{ value: 'read', label: 'Read' }, { value: 'write', label: 'Write' }]} placeholder="Access" disabled={disabled} /></div>
+      <div className="w-24"><SelectionField label="Access" value={mode} onChange={value => onModeChange(value as ConversationAttachmentAccessMode)} options={[{ value: 'read', label: 'Read' }, { value: 'write', label: 'Write' }]} placeholder="Access" disabled={disabled} /></div>
       <Button size="sm" disabled={disabled || !selectedLocationId} onClick={() => void onMutate('attach')}>Attach</Button>
     </div>}
-    {serverReadOnly && <p className="text-xs text-muted-foreground">Server-host attachments are read-only. Direct attached-Folder writes require a trusted remote Host.</p>}
+    <p className="text-xs text-muted-foreground">Attached Folders are writable by default. Choose Read only when this Conversation should only inspect that Folder.</p>
   </div>
 }
 

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { managedCliEntry, parseClaudeOAuthUsage, probeUsage, quotaFromRateLimitsResult, quotaFromRefusal } from "../src/usageProbe.js";
+import { managedToolHome } from "../src/tools.js";
 
 /**
  * Reading a subscription's remaining quota moved from the control plane to
@@ -63,7 +64,7 @@ describe("which program the probe enters", () => {
     args: ["/tools/codex_cli/1.10.0/node_modules/@agentclientprotocol/codex-acp/dist/index.js"],
     entry_args: ["/tools/codex_cli/1.10.0/node_modules/@agentclientprotocol/codex-acp/dist/index.js"],
     env: {},
-    home: "/tools/codex_cli/1.10.0/home",
+    home: "/managed-state/codex_cli/home",
     login_command: [
       "/usr/local/bin/node",
       "/tools/codex_cli/1.10.0/node_modules/@openai/codex/bin/codex.js",
@@ -117,7 +118,8 @@ describe("probing one copy on this host", () => {
 
   async function installClaude(credentials: unknown): Promise<void> {
     const tree = join(configDir, "tools", "claude_code", "1.0.0");
-    const home = join(tree, "home");
+    const home = managedToolHome("claude_code");
+    await mkdir(tree, { recursive: true });
     await mkdir(join(home, ".claude"), { recursive: true });
     await writeFile(join(tree, "manifest.json"), JSON.stringify({
       adapter_type: "claude_code", version: "1.0.0", command: "/bin/true", args: [], env: {},

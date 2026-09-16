@@ -16,6 +16,7 @@ import { hostRegisterRateLimited } from "./pairingRateLimit.js";
 import type { Pool } from "../../db/pool.js";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry.js";
 import { parseFolderReadResultFrame } from "./folderReadFrames.js";
+import { parseFolderWriteResultFrame } from "./folderWriteFrames.js";
 import { PgHostThreadRepository } from "./threadRepository.js";
 import {
   PgHostRuntimeProviderBindingRepository,
@@ -1110,6 +1111,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               const result = parseFolderReadResultFrame(frame)
                 ?? { ok: false as const, error: "read_failed" as const, message: "The host returned a malformed folder_read_result frame." };
               sharedHostConnectionRegistry.receiveFolderReadResult(hostId, frame.request_id, result);
+              return;
+            }
+            case "folder_write_result": {
+              const result = parseFolderWriteResultFrame(frame)
+                ?? { ok: false as const, error: "write_failed" as const, message: "The host returned a malformed folder_write_result frame." };
+              sharedHostConnectionRegistry.receiveFolderWriteResult(hostId, frame.request_id, result);
               return;
             }
             case "usage_probe_result":

@@ -11,6 +11,7 @@ import type {
   ThreadReferencePick,
   AgentOut,
   ConversationBackendCatalog,
+  ConversationExecutionSummary,
   Project,
   ProjectFolder,
   ProjectOverview,
@@ -33,6 +34,7 @@ import { audienceLabel } from './audience'
 import { ConversationSurface, type ConversationBackendSelection, type RoutingMode } from '../conversation/ConversationSurface'
 import { ConversationBackendSetupCard } from './conversation/ConversationBackendSetupCard'
 import { ConversationExecutionPreflight } from '../conversation/ConversationExecutionPreflight'
+import { conversationInputSourcesFromExecutionSummary } from '../conversation/ConversationInputComposer'
 
 type BackendSelection = {
   runtime_profile_id: string
@@ -93,6 +95,7 @@ export default function AgentGroupsPage() {
   const [draftConversationId, setDraftConversationId] = useState<string | null>(null)
   const locallyCommittedConversations = useRef(new Map<string, RoomConversationRecord>())
   const [executionReady, setExecutionReady] = useState(false)
+  const [executionSummary, setExecutionSummary] = useState<ConversationExecutionSummary | null>(null)
   const locallyCommittedRooms = useRef(new Map<string, Room>())
   const catalogRequestSequence = useRef(0)
   const roomRequestSequence = useRef(0)
@@ -660,6 +663,7 @@ export default function AgentGroupsPage() {
                     // the draft before the first message is allowed to run.
                     conversationId={currentConversation?.id ?? null}
                     executionReady={executionReady}
+                    inputFileSources={conversationInputSourcesFromExecutionSummary(executionSummary)}
                     executionPreflight={(
                       <ConversationExecutionPreflight
                         projectId={detail.room.project_id}
@@ -673,6 +677,7 @@ export default function AgentGroupsPage() {
                         }}
                         onNewConversation={() => startConversation()}
                         onReadyChange={setExecutionReady}
+                        onSummaryChange={setExecutionSummary}
                       />
                     )}
                     detail={detail}

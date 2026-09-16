@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
-import { agentsApi, hostsApi, proposalsApi, runsApi, sessionsApi } from '../../api/client'
+import { agentsApi, conversationInputApi, hostsApi, proposalsApi, runsApi, sessionsApi } from '../../api/client'
 import type {
   AgentOut,
   ChatActionPreview,
@@ -22,6 +22,10 @@ import { errMsg } from '../../lib/utils'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
 import { ConfirmDialog } from '../../components/ui/dialog'
+import type { ConversationInputPart } from '@rainver/protocol'
+import { ConversationGitContext } from '../conversation/ConversationGitContext'
+import { clearConversationDraft, readConversationDraft, writeConversationDraft } from '../conversation/conversationDraft'
+import { ConversationRunControls } from '../conversation/ConversationRunControls'
 
 /**
  * How far back a reload reads turns for.
@@ -42,6 +46,8 @@ interface ChatMessage {
   actionPreviews?: ChatActionPreview[]
   artifactRefs?: string[]
   runId?: string
+  runIds?: string[]
+  inputParts?: ConversationInputPart[]
 }
 
 interface BackendChoice {
@@ -75,6 +81,8 @@ export default function ChatPanel({
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string | undefined>(initialSessionId ?? undefined)
   const [input, setInput] = useState('')
+  const [inputParts, setInputParts] = useState<ConversationInputPart[]>([])
+  const [inputResetToken, setInputResetToken] = useState(0)
   const [sending, setSending] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(Boolean(initialSessionId))
   const [backendOptions, setBackendOptions] = useState<ConversationBackendOption[]>([])
@@ -89,6 +97,8 @@ export default function ChatPanel({
   // created during chat are already reflected in local state; re-fetching them
   // from the DB would wipe error messages that were never persisted.
   const externalSessionRef = useRef(initialSessionId)
+  const draftDestination = `direct:${agent.id}:${projectId ?? ''}:${sessionId ?? 'new'}`
+  const draftReadyRef = useRef<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -150,9 +160,11 @@ export default function ChatPanel({
           id: m.id,
           role: m.role,
           content: m.content,
+          inputParts: m.input_parts,
           actionPreviews: await refreshActionPreviews(Array.isArray(m.metadata_json?.action_previews) ? m.metadata_json.action_previews as ChatActionPreview[] : undefined),
           artifactRefs: Array.isArray(m.metadata_json?.artifact_refs) ? m.metadata_json.artifact_refs.filter((value): value is string => typeof value === 'string') : undefined,
           runId: m.run_id ?? undefined,
+          runIds: uniqueRunIds(m.run_id, m.metadata_json?.retry_run_ids),
           // The turn behind a saved reply, so D3's fold survives a reload
           // rather than existing only in the session that watched it stream.
           //
@@ -190,7 +202,60 @@ export default function ChatPanel({
     return () => { cancelled = true }
   }, [initialSessionId])
 
+  useEffect(() => {
+    let cancelled = false
+    if (draftReadyRef.current === draftDestination) return () => { cancelled = true }
+    draftReadyRef.current = null
+    const draft = readConversationDraft(draftDestination)
+    if (!draft) {
+      draftReadyRef.current = draftDestination
+      return
+    }
+    void (async () => {
+      const validated = await Promise.all(draft.input_parts.map(async part => {
+        try {
+          if (part.kind === 'image') {
+            await conversationInputApi.imageBlob(part.media_id)
+          } else if (sessionId) {
+            const files = await conversationInputApi.searchFiles(sessionId, part.relative_path)
+            if (!files.items.some(file => file.relative_path === part.relative_path
+              && file.project_folder_id === part.project_folder_id
+              && file.workspace_location_id === part.workspace_location_id)) return null
+          }
+          return part
+        } catch {
+          return null
+        }
+      }))
+      if (cancelled) return
+      setInput(draft.text)
+      setInputParts(validated.filter((part): part is ConversationInputPart => part !== null))
+      setInputResetToken(value => value + 1)
+      draftReadyRef.current = draftDestination
+    })()
+    return () => { cancelled = true }
+  }, [draftDestination, sessionId])
+
+  useEffect(() => {
+    if (draftReadyRef.current !== draftDestination || sending) return
+    const timer = window.setTimeout(() => writeConversationDraft({
+      destination: draftDestination,
+      text: input,
+      input_parts: inputParts,
+    }), 250)
+    return () => window.clearTimeout(timer)
+  }, [draftDestination, input, inputParts, sending])
+
   const selectedBackendOption = backendOptions.find(option => option.runtime_profile_id === backend?.runtime_profile_id) ?? null
+  const directInputFileSources = selectedBackendOption?.workspace_mode === 'location'
+    && selectedBackendOption.project_folder_id
+    && selectedBackendOption.workspace_location_id
+    ? [{
+      projectFolderId: selectedBackendOption.project_folder_id,
+      workspaceLocationId: selectedBackendOption.workspace_location_id,
+      label: 'Primary · Workspace',
+    }]
+    : []
   /**
    * A turn's request, from send until it resolves — including while it is
    * blocked, which is a stop rather than an end.
@@ -202,7 +267,7 @@ export default function ChatPanel({
   const inFlight = useRef(false)
   const awaitingDecision = messages.some(message => message.turn?.state === 'blocked')
 
-  const send = useCallback(async (text: string) => {
+  const send = useCallback(async (text: string, parts: ConversationInputPart[] = inputParts) => {
     const message = text.trim()
     // `inFlight` rather than `sending`: a blocked turn hands the composer back
     // so the person can go and approve something, but its request is still
@@ -214,11 +279,10 @@ export default function ChatPanel({
     // above the composer is driven by `awaitingDecision`, so a guard that
     // only knew about `inFlight` told the person their message was held and
     // then sent it anyway.
-    if (!message || inFlight.current || awaitingDecision || loadingHistory || loadingBackends || !backend || selectedBackendOption?.usable === false) return
+    if ((!message && parts.length === 0) || inFlight.current || awaitingDecision || loadingHistory || loadingBackends || !backend || selectedBackendOption?.usable === false) return
     inFlight.current = true
-    setInput('')
     setHostError(null)
-    setMessages(m => [...m, { role: 'user', content: message }])
+    setMessages(m => [...m, { role: 'user', content: message, inputParts: parts }])
     setSending(true)
     const streamingMessageId = `stream:${crypto.randomUUID()}`
     let streamedContent = ''
@@ -227,6 +291,7 @@ export default function ChatPanel({
         agent.id,
         {
           message,
+          ...(parts.length > 0 ? { input_parts: parts } : {}),
           session_id: sessionId,
           ...(projectId ? { project_id: projectId } : {}),
           backend: { runtime_profile_id: backend.runtime_profile_id },
@@ -250,7 +315,7 @@ export default function ChatPanel({
                 ? current
                 : current.map((item, itemIndex) =>
                     itemIndex === index
-                      ? { ...item, runId: accepted.run_id }
+                      ? { ...item, runId: accepted.run_id, runIds: [accepted.run_id] }
                       : item)
             })
           },
@@ -277,6 +342,11 @@ export default function ChatPanel({
       setRestoreWorkspace(false)
       onSessionChange?.(res.session_id)
       if (res.ok) {
+        setInput('')
+        setInputParts([])
+        clearConversationDraft(draftDestination)
+        clearConversationDraft(`direct:${agent.id}:${projectId ?? ''}:new`)
+        setInputResetToken(value => value + 1)
         setMessages(current => {
           const streamed = current.find(item => item.id === streamingMessageId)
           const completed: ChatMessage = {
@@ -287,6 +357,7 @@ export default function ChatPanel({
             actionPreviews: res.action_previews,
             artifactRefs: res.assistant_message?.artifact_refs,
             runId: res.run_id,
+            runIds: [res.run_id],
           }
           return streamed
             ? current.map(item => item.id === streamingMessageId ? completed : item)
@@ -314,13 +385,17 @@ export default function ChatPanel({
       }
     } catch (e) {
       const errorStatus = hostErrorStatus(e)
-      const note = errorStatus !== null && [403, 409, 503].includes(errorStatus) && selectedBackendOption?.host_bound
+      const rawNote = errMsg(e)
+      const gitContextStale = rawNote.toLowerCase().includes('git branch or commit changed')
+      const note = gitContextStale
+        ? rawNote
+        : errorStatus !== null && [403, 409, 503].includes(errorStatus) && selectedBackendOption?.host_bound
         ? errorStatus === 403
           ? 'This host-bound Agent can only be triggered by the Host owner.'
           : errorStatus === 503
             ? 'The execution Host is offline. Reconnect it before sending this direct message.'
             : 'The host-bound workspace is unavailable or belongs to a different conversation context.'
-        : errMsg(e)
+        : rawNote
       if (errorStatus !== null && [403, 409, 503].includes(errorStatus) && selectedBackendOption?.host_bound) setHostError(note)
       toast.error(note)
       setMessages(current => {
@@ -345,7 +420,66 @@ export default function ChatPanel({
       inFlight.current = false
       setSending(false)
     }
-  }, [agent.id, agent.space_id, awaitingDecision, backend, loadingBackends, loadingHistory, onSessionChange, projectId, restoreWorkspace, selectedBackendOption?.usable, sessionConfig, sessionId])
+  }, [agent.id, agent.space_id, awaitingDecision, backend, draftDestination, inputParts, loadingBackends, loadingHistory, onSessionChange, projectId, restoreWorkspace, selectedBackendOption?.usable, sessionConfig, sessionId])
+
+  const refreshDirectGit = useCallback(async () => {
+    if (!sessionId) return
+    try {
+      const next = await sessionsApi.refreshGitContext(sessionId)
+      setBackendOptions(current => current.map(option => option.runtime_profile_id === backend?.runtime_profile_id
+        ? { ...option, git: next.git ?? null }
+        : option))
+      setHostError(null)
+      toast.success('Git context refreshed')
+    } catch (error) {
+      const note = errMsg(error)
+      setHostError(note)
+      toast.error(note)
+    }
+  }, [backend?.runtime_profile_id, sessionId])
+
+  const retryRun = useCallback(async (runId: string) => {
+    const retried = await agentsApi.retryConversation(agent.id, runId, { spaceId: agent.space_id })
+    const streamingMessageId = `retry-stream:${crypto.randomUUID()}`
+    let streamedTurn: RunTurn | null = null
+    setSessionId(retried.session_id)
+    onSessionChange?.(retried.session_id)
+    setMessages(current => current.map(message => message.role === 'user' && message.runIds?.includes(runId)
+      ? { ...message, runIds: uniqueRunIds(...(message.runIds ?? []), retried.run_id) }
+      : message))
+    setMessages(current => [...current, {
+      id: streamingMessageId,
+      role: 'assistant',
+      content: '',
+      runId: retried.run_id,
+      turn: null,
+    }])
+    try {
+      await runsApi.streamTurn(retried.run_id, {
+        spaceId: agent.space_id,
+        onTurn: turn => {
+          streamedTurn = turn
+          const text = turn.parts.filter(part => part.type === 'text').map(part => part.text).join('')
+          setMessages(current => current.map(message => message.id === streamingMessageId
+            ? { ...message, content: text, turn }
+            : message))
+        },
+      })
+      const rows = await sessionsApi.messages(retried.session_id)
+      const assistant = rows.find(message => message.role === 'assistant' && message.run_id === retried.run_id)
+      const finalTurn = streamedTurn as RunTurn | null
+      const finalText = assistant?.content ?? finalTurn?.parts.filter(part => part.type === 'text').map(part => part.text).join('') ?? ''
+      setMessages(current => current.map(message => message.id === streamingMessageId
+        ? { ...message, id: assistant?.id ?? streamingMessageId, content: finalText, turn: settledTurn(finalTurn, finalTurn?.state ?? 'done', finalText) }
+        : message))
+    } catch (error) {
+      const note = errMsg(error)
+      setMessages(current => current.map(message => message.id === streamingMessageId
+        ? { ...message, content: message.content ? `${message.content}\n\n${note}` : note, error: true, turn: settledTurn(streamedTurn, 'failed', note) }
+        : message))
+      throw error
+    }
+  }, [agent.id, agent.space_id, onSessionChange])
 
   // Auto-send a draft carried from Home's assistant entry (the user already hit "Open").
   useEffect(() => {
@@ -358,7 +492,7 @@ export default function ChatPanel({
       backend
     ) {
       autoSentRef.current = true
-      void send(initialDraft)
+      void send(initialDraft, [])
     }
   }, [backend, initialDraft, loadingBackends, loadingHistory, send])
 
@@ -436,7 +570,11 @@ export default function ChatPanel({
           )}
         </div>
       )}
-      {hostError && <p className="mb-2 text-xs text-destructive" role="alert">{hostError}</p>}
+      {selectedBackendOption && <div className="mb-2 rounded-md border border-border bg-muted/20 px-3 py-2"><ConversationGitContext snapshot={selectedBackendOption.git ?? null} /></div>}
+      {hostError && <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-destructive" role="alert">
+        <span>{hostError}</span>
+        {sessionId && hostError.toLowerCase().includes('git branch or commit changed') && <Button type="button" size="sm" variant="outline" onClick={() => void refreshDirectGit()}>Refresh Git context</Button>}
+      </div>}
       {archivedManagedWorkspace && !hostBlocked && (
         <label className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
           <input type="checkbox" checked={restoreWorkspace} onChange={event => setRestoreWorkspace(event.target.checked)} disabled={sending} />
@@ -449,31 +587,41 @@ export default function ChatPanel({
         </p>
       )}
       <ConversationView
-        entries={messages.map((m, index) => ({
-          id: m.id ?? `entry-${index}`,
-          role: m.role === 'user' ? 'user' as const : 'assistant' as const,
-          content: m.content,
-          turn: m.turn ?? null,
-          error: m.error,
-          extra: (
-            <>
-              {(() => {
-                // Filtered here as in the Room: a card that names one decider
-                // is rendered for that person only (ADR 0003 §5).
-                const cards = decidableByViewer(m.actionPreviews ?? [], userId)
-                return cards.length ? <div className="mt-2 space-y-2">{cards.map((preview, index) => <ActionPreviewCard key={`${preview.action_id}:${preview.proposal_id ?? index}`} preview={preview} />)}</div> : null
-              })()}
-              {m.artifactRefs?.length ? <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
-                {m.artifactRefs?.map((artifactId, index) => <Link key={artifactId} className="text-accent-foreground hover:underline" to={`/artifacts/${artifactId}`}>Produced artifact {index + 1}</Link>)}
-              </div> : null}
-              {m.error && providerMissing && m.content.includes('model provider') && (
-                <div className="mt-1.5">
-                  <Link to="/providers" className="text-[12px] underline text-accent-foreground">Configure a provider →</Link>
-                </div>
-              )}
-            </>
-          ),
-        }))}
+        entries={messages.map((m, index) => {
+          const runIds = m.role === 'user' ? (m.runIds ?? (m.runId ? [m.runId] : [])) : []
+          return {
+            id: m.id ?? `entry-${index}`,
+            role: m.role === 'user' ? 'user' as const : 'assistant' as const,
+            content: m.content,
+            inputParts: m.inputParts,
+            turn: m.turn ?? null,
+            error: m.error,
+            extra: (
+              <>
+                {(() => {
+                  // Filtered here as in the Room: a card that names one decider
+                  // is rendered for that person only (ADR 0003 §5).
+                  const cards = decidableByViewer(m.actionPreviews ?? [], userId)
+                  return cards.length ? <div className="mt-2 space-y-2">{cards.map((preview, index) => <ActionPreviewCard key={`${preview.action_id}:${preview.proposal_id ?? index}`} preview={preview} />)}</div> : null
+                })()}
+                {m.artifactRefs?.length ? <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
+                  {m.artifactRefs?.map((artifactId, index) => <Link key={artifactId} className="text-accent-foreground hover:underline" to={`/artifacts/${artifactId}`}>Produced artifact {index + 1}</Link>)}
+                </div> : null}
+                {m.error && providerMissing && m.content.includes('model provider') && (
+                  <div className="mt-1.5">
+                    <Link to="/providers" className="text-[12px] underline text-accent-foreground">Configure a provider →</Link>
+                  </div>
+                )}
+              </>
+            ),
+            runControls: runIds.length > 0 ? runIds.map(runId => <ConversationRunControls
+              key={runId}
+              runId={runId}
+              projectId={projectId}
+              onRetry={retryRun}
+            />) : undefined,
+          }
+        })}
         sending={sending}
         loadingHistory={loadingHistory}
         input={input}
@@ -495,6 +643,13 @@ export default function ChatPanel({
         composerNote={awaitingDecision
           ? 'This turn is waiting for your decision. Review it to carry on.'
           : undefined}
+        inputParts={inputParts}
+        onInputPartsChange={setInputParts}
+        sessionId={sessionId}
+        projectId={projectId}
+        inputFileSources={directInputFileSources}
+        inputResetToken={inputResetToken}
+        inputCapabilities={selectedBackendOption?.prompt_capabilities}
       />
     </div>
   )
@@ -547,6 +702,11 @@ function hostErrorStatus(error: unknown): number | null {
   if (!error || typeof error !== 'object' || !('status' in error)) return null
   const status = (error as { status?: unknown }).status
   return typeof status === 'number' ? status : null
+}
+
+function uniqueRunIds(...values: unknown[]): string[] {
+  const ids = values.flatMap(value => Array.isArray(value) ? value : [value])
+  return [...new Set(ids.filter((value): value is string => typeof value === 'string' && value.length > 0))]
 }
 
 async function refreshActionPreviews(previews?: ChatActionPreview[]) {

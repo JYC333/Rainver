@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isAcpAuthRequiredError, parseAcpAuthMethods, parseAcpSessionOptions, parseAcpSessionProbeResult } from '../src/acpProbe.js'
+import { isAcpAuthRequiredError, parseAcpAuthMethods, parseAcpPromptCapabilities, parseAcpSessionOptions, parseAcpSessionProbeResult } from '../src/acpProbe.js'
 
 describe('ACP authentication method parsing', () => {
   it('normalizes every protocol auth kind without vendor-specific knowledge', () => {
@@ -59,6 +59,21 @@ describe('ACP session config option parsing', () => {
   it('does not project legacy modes into modern config options', () => {
     expect(parseAcpSessionOptions({ modes: { currentModeId: 'ask', availableModes: [] } }))
       .toEqual({ config_options: [] })
+  })
+})
+
+describe('ACP prompt capability parsing', () => {
+  it('normalizes image and embedded-context support while keeping the ACP baseline resource link', () => {
+    expect(parseAcpPromptCapabilities({
+      agentCapabilities: {
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
+      },
+    })).toEqual({ image: true, embedded_context: true, resource_link: true })
+  })
+
+  it('treats omitted optional prompt variants as explicit unsupported values', () => {
+    expect(parseAcpPromptCapabilities({ agentCapabilities: {} }))
+      .toEqual({ image: false, embedded_context: false, resource_link: true })
   })
 })
 

@@ -850,9 +850,12 @@ rootless bubblewrap namespace the daemon builds on the machine
 spawns natively with no namespace and no mount containment (B62). Neither
 runs the server-side sandbox this section once described — it is deleted.
 What remains below is the control plane's own file access: Artifact export,
-and the Project Folder reads it serves. For Files & Code browse reads on any
-host, the daemon runs the same shared `@rainver/folder-read` PathPolicy and
-byte/file-count limits before returning data over the `folder_read` channel.
+the Project Folder reads it serves, and the bounded direct File-page write path.
+For Files & Code browse reads on any host, the daemon runs the same shared
+`@rainver/folder-read` PathPolicy and byte/file-count limits before returning
+data over the `folder_read` channel. Direct human writes use the corresponding
+`folder_write` channel on remote Locations and never enter the Agent proposal
+flow.
 
 **Project Folder file access** (`server/src/modules/projectFolders/repository.ts`):
 - A registered Project Folder is one shared workspace with no personal area.
@@ -862,6 +865,11 @@ byte/file-count limits before returning data over the `folder_read` channel.
   filesystem.
 - `PathPolicy` (`@rainver/folder-read`) is enforced before any disk access.
 - `project_folder.read` policy is enforced before tree/file/status/diff reads.
+- Project-writer File-page create/edit/rollback uses the direct
+  `project_folder.apply_patch` policy action, an exact existence/SHA-256
+  precondition, atomic bounded writes, and a short-lived preimage record;
+  it does not create a Proposal. A remote Location additionally requires its
+  owning user and an online paired Host.
 - Protected-Folder, external-root, protected/restricted, full-diff, and secret-like
   path reads force a durable `PolicyDecisionRecord`.
 - Forbidden path patterns include `.ssh`, `.aws`, `.gcp`, `.azure`,

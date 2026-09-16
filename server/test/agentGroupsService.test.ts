@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { AgentGroupRunService } from "../src/modules/agentGroups/service.js";
+import { AgentGroupRunService, assertConversationGitBaseline } from "../src/modules/agentGroups/service.js";
 import type { QueryResult } from "../src/modules/routeUtils/common.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 
@@ -411,6 +411,27 @@ function memberRecord(agentId: string, overrides: Record<string, unknown> = {}) 
 }
 
 describe("AgentGroupRunService", () => {
+  it("rejects a Room dispatch when the current Git workspace no longer matches its baseline", () => {
+    expect(() => assertConversationGitBaseline(
+      {
+        primary_workspace_mode: "location",
+        git_observed_at: "2026-09-13T00:00:00.000Z",
+        git_branch: "main",
+        git_head: "before",
+        git_execution_ready: true,
+      },
+      {
+        source: "workspace_location",
+        workspace_location_id: "location-1",
+        branch: "main",
+        commit_sha: "after",
+        dirty: false,
+        execution_ready: true,
+        observed_at: "2026-09-13T00:00:01.000Z",
+      },
+    )).toThrowError(/Git branch or commit changed/);
+  });
+
   it("creates rooms without creating an initial run, job, or message", async () => {
     const db = new AgentGroupServiceDb(null);
     const service = new AgentGroupRunService(

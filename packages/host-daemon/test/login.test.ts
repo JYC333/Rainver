@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LOGIN_INPUT_BURST_CHARS, LOGIN_INPUT_SESSION_MAX_CHARS, createLoginInputGovernor, openLoginSession, resolveLoginCommand } from "../src/login.js";
 import { LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
-import { toolsDir } from "../src/tools.js";
+import { managedToolHome, toolsDir } from "../src/tools.js";
 
 let configDir: string;
 const LOGIN = { command: ["goose", "login"], home_subdir: ".goose", credential_file: "auth.json" };
@@ -29,20 +29,22 @@ describe("login sessions", () => {
     expect(own.env.HOME).toBe(process.env.HOME);
 
     const dir = join(toolsDir(), "acp_goose", "1.2.3");
-    await mkdir(join(dir, "home"), { recursive: true });
+    const home = managedToolHome("acp_goose");
+    await mkdir(dir, { recursive: true });
+    await mkdir(home, { recursive: true });
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "acp_goose", version: "1.2.3", command: "/opt/goose", args: [], env: { GOOSE_X: "1" }, home: join(dir, "home"),
+      adapter_type: "acp_goose", version: "1.2.3", command: "/opt/goose", args: [], env: { GOOSE_X: "1" }, home,
       login_command: ["/opt/goose", "login"], login: LOGIN, installed_at: "",
     }));
     const managed = resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "managed:1.2.3", login: null });
     expect(managed.command).toEqual(["/opt/goose", "login"]);
-    expect(managed.env).toMatchObject({ HOME: join(dir, "home"), GOOSE_X: "1" });
+    expect(managed.env).toMatchObject({ HOME: home, GOOSE_X: "1" });
     expect(managed.login).toEqual(LOGIN);
 
     // No declared method must fail closed: a login endpoint is never a remote
     // shell on the host, even inside a managed copy's HOME.
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "acp_goose", version: "1.2.3", command: "/opt/goose", args: [], env: {}, home: join(dir, "home"),
+      adapter_type: "acp_goose", version: "1.2.3", command: "/opt/goose", args: [], env: {}, home,
       login_command: null, login: null, installed_at: "",
     }));
     expect(() => resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "managed:1.2.3", login: null })).toThrow(/does not declare/);
@@ -75,9 +77,11 @@ describe("login sessions", () => {
 
   it("appends terminal-auth arguments and environment to the installed ACP command", async () => {
     const dir = join(toolsDir(), "registry_agent", "2.0.0");
-    await mkdir(join(dir, "home"), { recursive: true });
+    const home = managedToolHome("registry_agent");
+    await mkdir(dir, { recursive: true });
+    await mkdir(home, { recursive: true });
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "registry_agent", version: "2.0.0", command: "/opt/agent", args: ["acp"], env: { BASE: "yes" }, home: join(dir, "home"),
+      adapter_type: "registry_agent", version: "2.0.0", command: "/opt/agent", args: ["acp"], env: { BASE: "yes" }, home,
       login_command: null, login: null, installed_at: "",
     }));
     const resolved = resolveLoginCommand({
@@ -85,7 +89,7 @@ describe("login sessions", () => {
       auth_method: { id: "device", name: "Device", description: null, type: "terminal", args: ["login", "--device"], env: { AUTH: "1" } },
     });
     expect(resolved.command).toEqual(["/opt/agent", "acp", "login", "--device"]);
-    expect(resolved.env).toMatchObject({ BASE: "yes", AUTH: "1", HOME: join(dir, "home") });
+    expect(resolved.env).toMatchObject({ BASE: "yes", AUTH: "1", HOME: home });
 
     const own = resolveLoginCommand({
       session_id: "own-terminal", adapter_type: "registry_agent", installation: "own", login: null, argv: ["git", "status"],
@@ -108,7 +112,8 @@ describe("login sessions", () => {
     const frames: Record<string, unknown>[] = [];
     const logs: string[] = [];
     const dir = join(toolsDir(), "registry_agent", "3.0.0");
-    const home = join(dir, "home");
+    const home = managedToolHome("registry_agent");
+    await mkdir(dir, { recursive: true });
     await mkdir(home, { recursive: true });
     const initialized = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [{ id: "browser", name: "Browser login" }] } });
     const authenticated = JSON.stringify({ jsonrpc: "2.0", id: 2, result: {} });
@@ -171,21 +176,23 @@ describe("logout", () => {
     expect(own.env.HOME).toBe(process.env.HOME);
 
     const dir = join(toolsDir(), "opencode", "1.0.0");
-    await mkdir(join(dir, "home"), { recursive: true });
+    const home = managedToolHome("opencode");
+    await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "opencode", version: "1.0.0", command: join(dir, "opencode"), args: ["acp"], env: {}, home: join(dir, "home"),
+      adapter_type: "opencode", version: "1.0.0", command: join(dir, "opencode"), args: ["acp"], env: {}, home,
       login_command: [join(dir, "opencode"), "auth", "login"], login: SPEC, installed_at: "",
     }));
     const managed = resolveLoginCommand({ session_id: "s", adapter_type: "opencode", installation: "managed:1.0.0", login: null, login_action: "logout" });
     expect(managed.command).toEqual([join(dir, "opencode"), "auth", "logout"]);
-    expect(managed.env.HOME).toBe(join(dir, "home"));
+    expect(managed.env.HOME).toBe(home);
   });
 
   it("uses the fixed entry's `logout` for a registry agent Rainver logs in through `login`, and refuses everything else", async () => {
     const dir = join(toolsDir(), "acp_cursor", "latest");
-    await mkdir(join(dir, "home"), { recursive: true });
+    const home = managedToolHome("acp_cursor");
+    await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "acp_cursor", version: "latest", command: join(dir, "cursor-agent"), args: ["acp"], entry_args: [], env: {}, home: join(dir, "home"),
+      adapter_type: "acp_cursor", version: "latest", command: join(dir, "cursor-agent"), args: ["acp"], entry_args: [], env: {}, home,
       login_command: null, login: null, installed_at: "",
     }));
     const registry = resolveLoginCommand({ session_id: "s", adapter_type: "acp_cursor", installation: "managed:latest", login: null, login_action: "logout" });

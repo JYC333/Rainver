@@ -29,6 +29,7 @@ import {
   AmbientTrimLimitsSchema,
 } from "./ambientSessions.js";
 import { LaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema, RuntimeAuthMethodSchema } from "./hosts.js";
+import { ConversationInputResourceSchema } from "./conversationInput.js";
 
 /**
  * The most a single `login_input` frame may carry. Keystrokes are bytes; a
@@ -221,6 +222,8 @@ export type HostLaunchWorkSurface = z.infer<typeof HostLaunchWorkSurfaceSchema>;
 export const HostLaunchWorkspaceAccessSchema = z.object({
   workspace_location_id: IdSchema,
   access_mode: z.enum(["read", "write"]),
+  /** Only populated for a built-in Host; relative to its shared workspace root. */
+  workspace_relative_path: z.string().trim().min(1).max(4096).optional(),
 });
 export type HostLaunchWorkspaceAccess = z.infer<typeof HostLaunchWorkspaceAccessSchema>;
 
@@ -277,6 +280,19 @@ export const FolderReadDaemonErrorSchema = z.enum([
 ]);
 export type FolderReadDaemonError = z.infer<typeof FolderReadDaemonErrorSchema>;
 
+/** Errors returned by the explicit, user-initiated File-page write channel. */
+export const FolderWriteDaemonErrorSchema = z.enum([
+  "location_unknown",
+  "path_forbidden",
+  "not_found",
+  "is_directory",
+  "too_large",
+  "not_text",
+  "stale",
+  "write_failed",
+]);
+export type FolderWriteDaemonError = z.infer<typeof FolderWriteDaemonErrorSchema>;
+
 // ---------------------------------------------------------------------------
 // Control plane → daemon
 // ---------------------------------------------------------------------------
@@ -297,6 +313,8 @@ export const HostLaunchFrameSchema = z.object({
   workspace: LaunchWorkspaceSchema.optional(),
   /** Concrete attached Locations authorized for this Run; paths are resolved on the host. */
   workspace_access: z.array(HostLaunchWorkspaceAccessSchema).optional(),
+  /** Logical conversation file refs; the daemon resolves them to local paths. */
+  input_resources: z.array(ConversationInputResourceSchema).max(8).optional(),
   argv: z.array(z.string()),
   stdin: z.string().nullable().optional(),
   timeout_seconds: z.number().nullable().optional(),
@@ -358,6 +376,9 @@ export const HostCommandRunFrameSchema = z.object({
    */
   adapter_type: z.string().min(1).optional(),
   installation: z.string().min(1).optional(),
+  /** A managed runtime whose read-only tree should be visible; unlike `adapter_type`, this does not alter `command`. */
+  runtime_adapter_type: z.string().min(1).optional(),
+  runtime_installation: z.string().min(1).optional(),
   command: z.array(z.string().min(1)).min(1),
   stdin: z.string().nullable().optional(),
   timeout_seconds: z.number().positive(),
@@ -463,6 +484,26 @@ export const HostFolderReadFrameSchema = z.object({
   path: z.string().optional(),
   protected: z.boolean(),
 });
+export const HostFolderReadCancelFrameSchema = z.object({
+  type: z.literal("folder_read_cancel"),
+  request_id: IdSchema,
+});
+/**
+ * Direct File-page mutation. The daemon resolves the Location id to its own
+ * registered root; an absolute path never crosses the control-plane wire.
+ * `content: null` is a delete, used only when restoring a previously-created
+ * file during rollback.
+ */
+export const HostFolderWriteFrameSchema = z.object({
+  type: z.literal("folder_write"),
+  request_id: IdSchema,
+  workspace_location_id: IdSchema,
+  path: z.string(),
+  content: z.string().nullable(),
+  expected_exists: z.boolean(),
+  expected_sha256: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
+  protected: z.boolean(),
+});
 const managedWorkspaceActionFields = {
   request_id: IdSchema,
   agent_id: IdSchema,
@@ -514,6 +555,8 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("login_close"), session_id: IdSchema }),
   HostAmbientImportFrameSchema,
   HostFolderReadFrameSchema,
+  HostFolderReadCancelFrameSchema,
+  HostFolderWriteFrameSchema,
 ]);
 export type HostServerFrame = z.infer<typeof HostServerFrameSchema>;
 export type HostServerFrameOf<T extends HostServerFrame["type"]> = Extract<HostServerFrame, { type: T }>;
@@ -553,6 +596,18 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
       reason: z.string().nullable(),
       at: ISODateTimeSchema,
     })).max(200).optional(),
+  }),
+  z.object({
+    type: z.literal("folder_write_result"),
+    request_id: IdSchema,
+    ok: z.boolean(),
+    path: z.string().optional(),
+    exists: z.boolean().optional(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/u).nullable().optional(),
+    size: z.number().int().nonnegative().optional(),
+    line_count: z.number().int().nonnegative().optional(),
+    error: FolderWriteDaemonErrorSchema.optional(),
+    message: z.string().optional(),
   }),
   /**
    * One `command_run`'s whole result. Not streamed: a verification recipe is a

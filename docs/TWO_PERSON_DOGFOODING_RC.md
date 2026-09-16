@@ -111,7 +111,7 @@ Do not rely on any of these for daily dogfood workflows.
 | Workspace console persisted sessions | Feature-gated if the surface is off |
 | Any runtime adapter bypassing the credential resolver | Blocked by `RunOrchestrationService` design |
 | Any runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` contract |
-| File mutation not protected by approved proposal + PathPolicy | Blocked by code patch apply boundary |
+| Agent file mutation not protected by approved proposal + PathPolicy | Blocked by code patch apply boundary; human File-page writes use the separate audited optimistic direct path |
 
 **UI status of stub or hidden surfaces:**
 

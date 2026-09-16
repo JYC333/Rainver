@@ -88,9 +88,15 @@ function initializedResponse(online = true) {
   }
 }
 
-function renderPanel(sessionId: string | null = 'session-1', onReadyChange = vi.fn(), detailOverride = detail) {
+function renderPanel(
+  sessionId: string | null = 'session-1',
+  onReadyChange = vi.fn(),
+  detailOverride = detail,
+  preferredProjectFolderId: string | null = null,
+) {
   return render(<MemoryRouter><ConversationExecutionPreflight
-    projectId="project-1" roomId="room-1" sessionId={sessionId} detail={detailOverride} onReadyChange={onReadyChange}
+    projectId="project-1" roomId="room-1" sessionId={sessionId} detail={detailOverride}
+    preferredProjectFolderId={preferredProjectFolderId} onReadyChange={onReadyChange}
   /></MemoryRouter>)
 }
 
@@ -170,25 +176,53 @@ describe('ConversationExecutionPreflight', () => {
     }))
   })
 
-  it('leaves the Primary choice explicit when several Folders are available', async () => {
+  it('uses the current Files Folder as the draft Primary when several Folders are available', async () => {
     const locations = [
       { workspace_location_id: 'location-a', project_folder_id: 'folder-a', folder_name: 'Source', execution_host_id: 'host-1', display_path: '/work/source', execution_ready: true },
       { workspace_location_id: 'location-b', project_folder_id: 'folder-b', folder_name: 'Docs', execution_host_id: 'host-1', display_path: '/work/docs', execution_ready: true },
     ]
-    vi.mocked(sessionsApi.executionContext).mockResolvedValue(draftResponse(locations) as never)
-    vi.mocked(agentsApi.listRuntimeProfiles).mockResolvedValue([profile, {
-      ...profile, id: 'runtime-source', name: 'Claude on Source', workspace_mode: 'location', workspace_location_id: 'location-a',
-    }, {
-      ...profile, id: 'runtime-docs', name: 'Claude on Docs', workspace_mode: 'location', workspace_location_id: 'location-b',
-    }] as never)
-    renderPanel()
+    const response = draftResponse(locations)
+    response.available_runtime_profiles = [{
+      ...response.available_runtime_profiles[0]!,
+      runtime_profile_id: null,
+      workspace_mode: 'location',
+      workspace_location_id: 'location-b',
+      agent_name: 'Project Agent',
+    }]
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
+    renderPanel('session-1', vi.fn(), detail, 'folder-b')
     await waitFor(() => expect(screen.getByRole('button', { name: 'Execution Host' })).toHaveTextContent('Laptop'))
-    expect(screen.getByRole('button', { name: 'Primary workspace (cwd)' })).toHaveTextContent('Choose managed or a Folder')
-    expect(screen.getByRole('button', { name: 'Confirm execution context' })).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Primary workspace (cwd)' }))
-    expect(screen.getByRole('option', { name: /Source/ })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: /Docs/ })).toBeInTheDocument()
-    expect(screen.queryByTestId('preflight-no-folder')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Primary workspace (cwd)' })).toHaveTextContent('Docs')
+    expect(screen.getByRole('button', { name: 'Confirm execution context' })).not.toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
+    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      selection: { execution_host_id: 'host-1', primary: { kind: 'location', workspace_location_id: 'location-b' } },
+    })))
+  })
+
+  it('updates an untouched draft when Files publishes its selection after preflight loads', async () => {
+    const locations = [
+      { workspace_location_id: 'location-a', project_folder_id: 'folder-a', folder_name: 'Source', execution_host_id: 'host-1', display_path: '/work/source', execution_ready: true },
+      { workspace_location_id: 'location-b', project_folder_id: 'folder-b', folder_name: 'Docs', execution_host_id: 'host-1', display_path: '/work/docs', execution_ready: true },
+    ]
+    const response = draftResponse(locations)
+    response.summary.primary = { kind: 'managed', managed_workspace_id: 'session-1', display_path: null }
+    response.available_runtime_profiles = [{
+      ...response.available_runtime_profiles[0]!,
+      runtime_profile_id: null,
+      workspace_mode: 'location',
+      workspace_location_id: 'location-b',
+    }]
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue(response as never)
+    const onReadyChange = vi.fn()
+    const view = renderPanel('session-1', onReadyChange, detail, null)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Primary workspace (cwd)' })).toHaveTextContent('Managed workspace'))
+    view.rerender(<MemoryRouter><ConversationExecutionPreflight
+      projectId="project-1" roomId="room-1" sessionId="session-1" detail={detail}
+      preferredProjectFolderId="folder-b" onReadyChange={onReadyChange}
+    /></MemoryRouter>)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Primary workspace (cwd)' })).toHaveTextContent('Docs'))
   })
 
   it('requires and submits an explicit CLI for every participating Agent', async () => {
@@ -291,12 +325,12 @@ describe('ConversationExecutionPreflight', () => {
     fireEvent.click(screen.getByRole('option', { name: /Docs/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Attach' }))
     await waitFor(() => expect(sessionsApi.mutateExecutionAttachments).toHaveBeenCalledWith('session-1', expect.objectContaining({
-      action: 'attach', project_folder_id: 'folder-2', workspace_location_id: 'location-2', access_mode: 'read',
+      action: 'attach', project_folder_id: 'folder-2', workspace_location_id: 'location-2', access_mode: 'write',
     })))
     expect(screen.getByText('Primary cwd')).toBeInTheDocument()
   })
 
-  it('presents server-host attachments as read-only', async () => {
+  it('allows writable attachments on the built-in server Host', async () => {
     const response = initializedResponse() as ConversationExecutionPreflightResponse
     response.summary.host = { ...host, host_kind: 'server' }
     response.summary.attachments = [{
@@ -309,8 +343,8 @@ describe('ConversationExecutionPreflight', () => {
     renderPanel()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Execution context configured' }))
-    expect(await screen.findByText(/Server-host attachments are read-only/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Grant write' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Access' })).toHaveTextContent('Read')
+    expect(await screen.findByText(/Attached Folders are writable by default/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Grant write' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Access' })).toHaveTextContent('Write')
   })
 })

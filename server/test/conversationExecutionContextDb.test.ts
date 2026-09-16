@@ -402,7 +402,7 @@ describe("Conversation execution schema", () => {
     expect(preflight.summary).toMatchObject({ can_send: true, primary: { kind: "managed" }, host: { host_id: HOST } });
   });
 
-  it("keeps server-host attachments read-only instead of binding a real checkout writable", async (ctx) => {
+  it("allows writable attachments on the built-in server Host", async (ctx) => {
     if (!db.available) return ctx.skip();
     await db.pool.query(
       `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status,
@@ -436,18 +436,7 @@ describe("Conversation execution schema", () => {
         workspace_location_id: ATTACHED_LOCATION,
         access_mode: "write",
       },
-    )).rejects.toMatchObject({ statusCode: 422 });
-    await expect(service.mutateAttachment(
-      { spaceId: SPACE, userId: OWNER },
-      SESSION,
-      {
-        action: "attach",
-        mutation_id: randomUUID(),
-        project_folder_id: ATTACHED_FOLDER,
-        workspace_location_id: ATTACHED_LOCATION,
-        access_mode: "read",
-      },
-    )).resolves.toMatchObject({ attachment: { access_mode: "read" } });
+    )).resolves.toMatchObject({ attachment: { access_mode: "write" } });
   });
 
   it("requires the canonical Room grant before exposing a private Agent runtime", async (ctx) => {

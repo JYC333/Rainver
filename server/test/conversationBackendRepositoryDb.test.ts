@@ -99,13 +99,58 @@ beforeEach(async () => {
     `INSERT INTO sessions (
        id, space_id, user_id, agent_id, title, status, created_at, updated_at
      ) VALUES (
-       'session-1', 'space-1', 'user-1', 'agent-1', 'Thread', 'active', $1, $1
+       'session-1', 'space-1', 'user-1', NULL, 'Thread', 'active', $1, $1
      )`,
     [now],
   );
 });
 
 describe("PgConversationBackendRepository (real Postgres)", () => {
+
+  it("uses the ACP capability for a Host-owned model without server Provider metadata", async (ctx) => {
+    if (!db.available || !repository || !db.pool) return ctx.skip();
+
+    await db.pool.query(
+      `UPDATE hosts
+          SET capabilities_json = $2::jsonb
+        WHERE id = $1`,
+      [
+        "host-1",
+        JSON.stringify({
+          installations: {
+            claude_code: [{
+              id: "managed:1.0.0",
+              version: "1.0.0",
+              logged_in: true,
+              options: {
+                config_options: [],
+                prompt_capabilities: {
+                  image: true,
+                  embedded_context: true,
+                  resource_link: true,
+                },
+              },
+            }],
+          },
+        }),
+      ],
+    );
+
+    await expect(repository.resolveBinding({
+      space_id: "space-1",
+      user_id: "user-1",
+      session_id: "session-1",
+      agent_id: "agent-1",
+      requested: { runtime_profile_id: "runtime-cli" },
+    })).resolves.toMatchObject({
+      model_provider_id: null,
+      prompt_capabilities: {
+        image: true,
+        embedded_context: true,
+        resource_link: true,
+      },
+    });
+  });
 
   it("keeps initialized configuration snapshots and fails closed when the binding is disabled", async (ctx) => {
     if (!db.available || !repository || !db.pool) return ctx.skip();
@@ -176,6 +221,45 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
       message: "The initialized Conversation Agent runtime binding is missing",
     }));
     expect(binding.runtime_profile_id).toBe("runtime-cli");
+  });
+
+  it("reuses a direct Host thread after the direct Conversation is initialized", async (ctx) => {
+    if (!db.available || !repository || !db.pool) return ctx.skip();
+    const binding = await repository.resolveBinding({
+      space_id: "space-1",
+      user_id: "user-1",
+      session_id: "session-1",
+      agent_id: "agent-1",
+      requested: { runtime_profile_id: "runtime-cli" },
+    });
+    await db.pool.query(
+      `INSERT INTO conversation_execution_contexts (
+         id, space_id, session_id, execution_host_id, primary_workspace_mode,
+         state, initialized_at, initialized_by_user_id, created_at, updated_at
+       ) VALUES ('context-direct', 'space-1', 'session-1', 'host-1', 'managed',
+         'initialized', now(), 'user-1', now(), now())`,
+    );
+    await db.pool.query(
+      `INSERT INTO host_threads (
+         id, execution_host_id, workspace_mode, agent_id,
+         container_kind, container_user_id, adapter_type, runtime_installation,
+         status, created_by_user_id, created_at, updated_at
+       ) VALUES (
+         'thread-direct', 'host-1', 'managed', 'agent-1',
+         'direct', 'user-1', 'claude_code', 'managed:1.0.0',
+         'active', 'user-1', now(), now())`,
+    );
+
+    await expect(repository.resolveBinding({
+      space_id: "space-1",
+      user_id: "user-1",
+      session_id: "session-1",
+      agent_id: "agent-1",
+    })).resolves.toMatchObject({
+      binding_id: binding.binding_id,
+      runtime_profile_id: "runtime-cli",
+      adapter_type: "claude_code",
+    });
   });
 
   it("records an opaque runtime session and rotates isolated state when context changes", async (ctx) => {

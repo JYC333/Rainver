@@ -218,7 +218,10 @@ mode has no Location and lets the daemon derive a private workspace per Agent
 validated against the caller's ownership and the daemon's reported
 capabilities. Host-bound profiles do not require a server ModelProvider or
 server runtime-tool installation: the paired host owns the CLI login and
-runtime process. Room and direct chat dispatch apply the profile's owner-only
+runtime process. For input admission, an unbound Host-owned ACP profile uses
+the installation's initialize prompt capability as the image authority; a
+Provider-bound profile still requires the conservative runtime/Provider-model
+intersection. Room and direct chat dispatch apply the profile's owner-only
 trigger and record the real Agent id on the remote Run.
 
 A profile is the runtime an Agent runs on, not the Agent. What the CLI
@@ -249,6 +252,29 @@ Rules:
   per-run `adapter_type` / `model_provider_id` / `model` fields are kept only
   as compatibility inputs for older callers and should not be the primary
   frontend model.
+
+### Conversation development controls
+
+Direct Agent chat and Room chat share the same development-facing controls.
+The first Host-bound direct send creates and pins the Conversation execution
+context; later direct sends resolve the existing Agent × owner Host thread and
+reject a changed branch, commit, or execution-readiness state until the user
+refreshes the Git context. Room dispatch applies the same Git baseline check on
+the server before a send can commit a user message or any Run. The baseline and the
+Run-start `git_snapshot` are immutable audit inputs; refresh changes only the
+current Conversation baseline and never changes a branch or writes to a
+workspace.
+
+`ConversationRunControls` reuses `PATCH /api/v1/runs/{runId}/stop` for active
+turns and renders cancellation with retained partial output. Terminal
+Host-backed turns look up the exact `remote_diff` Artifact for that Run,
+including managed workspaces, and link back to Files & Code for the current
+Project view. Failed direct or Room turns expose an idempotent manual retry;
+the retry reuses the persisted user input and pinned execution context while
+adding retry Run ids to the original message instead of inserting a duplicate
+user message. Composer drafts are destination-scoped sessionStorage records
+containing only text and server-issued logical input references, validated on
+restore and discarded after seven days.
 
 ## Identity and memory
 

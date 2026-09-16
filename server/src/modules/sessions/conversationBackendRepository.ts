@@ -2,15 +2,18 @@ import { randomUUID } from "node:crypto";
 import type {
   ConversationBackendBinding,
   ConversationBackendOption,
+  ConversationGitSnapshot,
   RuntimeSessionConfigOption,
+  RuntimePromptCapabilities,
 } from "@rainver/protocol";
-import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
+import type { RunGitSnapshot } from "../runs/contractSnapshot.js";
+import { getRuntimeAdapterSpec, isAcpRuntimeAdapter, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import {
   isProviderEligibleForUser,
   providerCredentialEligibilitySql,
 } from "../providers/eligibility.js";
 import { isStale } from "../hosts/repository.js";
-import { hostInstallationIds, hostInstallationOptions } from "../hosts/capabilities.js";
+import { hostInstallationIds, hostInstallationOptions, hostInstallationPromptCapabilities } from "../hosts/capabilities.js";
 import type { Queryable } from "../routeUtils/common.js";
 
 interface BackendRow {
@@ -28,6 +31,7 @@ interface BackendRow {
   provider_has_eligible_credential: boolean | null;
   execution_host_id: string | null;
   workspace_location_id: string | null;
+  location_project_folder_id: string | null;
   workspace_mode?: "location" | "managed" | null;
   runtime_installation: string | null;
   agent_project_id: string | null;
@@ -37,9 +41,13 @@ interface BackendRow {
   host_status: string | null;
   host_last_heartbeat_at: string | null;
   host_capabilities_json: unknown;
+  provider_capabilities_json: unknown;
   location_status: string | null;
   location_project_id: string | null;
   location_execution_ready: boolean | null;
+  location_branch: string | null;
+  location_git_head: string | null;
+  location_dirty: boolean | null;
   is_default: boolean;
 }
 
@@ -79,6 +87,79 @@ export interface ResolvedConversationBackend extends ConversationBackendBinding 
   runtime_installation: string | null;
   retired_runtime_state_key: string | null;
   session_config_options?: RuntimeSessionConfigOption[];
+  prompt_capabilities?: RuntimePromptCapabilities | null;
+  /** Git snapshot captured with the backend's current execution target. */
+  git_snapshot?: RunGitSnapshot | null;
+}
+
+function effectivePromptCapabilities(profile: BackendRow): RuntimePromptCapabilities | null {
+  const hostBound = Boolean(profile.execution_host_id && profile.workspace_mode && profile.runtime_installation);
+  const runtime = hostBound
+    ? hostInstallationPromptCapabilities(profile.host_capabilities_json, profile.adapter_type, profile.runtime_installation!)
+    : null;
+  return {
+    image: effectiveImageCapability(profile, hostBound, runtime),
+    embedded_context: runtime?.embedded_context ?? null,
+    // ACP's v1 baseline includes ResourceLink. Keep it explicit in the
+    // normalized read model so admission can distinguish an old/unknown host
+    // report from a runtime that actively rejects links.
+    resource_link: runtime?.resource_link ?? null,
+  };
+}
+
+function effectiveImageCapability(
+  profile: BackendRow,
+  hostBound: boolean,
+  runtime: RuntimePromptCapabilities | null,
+): boolean | null {
+  const hostOwnsAcpModel = hostBound
+    && isAcpRuntimeAdapter(profile.adapter_type)
+    && profile.model_provider_id === null;
+  if (hostOwnsAcpModel) {
+    // An unbound ACP installation owns both the login and the model selected
+    // through its session config. There is intentionally no server Provider
+    // catalog to intersect with this capability; ACP is the authority here.
+    return runtime?.image ?? null;
+  }
+  return combineCapability(
+    runtime?.image ?? null,
+    explicitModelImageCapability(profile.provider_capabilities_json, profile.model_name),
+  );
+}
+
+function explicitModelImageCapability(value: unknown, model: string | null): boolean | null {
+  if (!model || !value || typeof value !== "object" || Array.isArray(value)) return null;
+  const source = value as Record<string, unknown>;
+  const modelCapabilities = source.model_capabilities;
+  if (modelCapabilities && typeof modelCapabilities === "object" && !Array.isArray(modelCapabilities)) {
+    const candidate = (modelCapabilities as Record<string, unknown>)[model];
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      const record = candidate as Record<string, unknown>;
+      if (typeof record.image_input === "boolean") return record.image_input;
+      if (typeof record.image === "boolean") return record.image;
+    }
+  }
+  const listed = source.image_input_models;
+  if (Array.isArray(listed) && listed.every((item) => typeof item === "string")) {
+    return listed.includes(model);
+  }
+  const modelList = source.models;
+  if (Array.isArray(modelList)) {
+    const entry = modelList.find((item) => item && typeof item === "object" && !Array.isArray(item)
+      && (item as Record<string, unknown>).id === model);
+    if (entry && typeof entry === "object") {
+      const record = entry as Record<string, unknown>;
+      if (typeof record.image_input === "boolean") return record.image_input;
+      if (typeof record.image === "boolean") return record.image;
+    }
+  }
+  return null;
+}
+
+function combineCapability(left: boolean | null, right: boolean | null): boolean | null {
+  if (left === false || right === false) return false;
+  if (left === true && right === true) return true;
+  return null;
 }
 
 export class ConversationBackendError extends Error {
@@ -122,9 +203,14 @@ export class PgConversationBackendRepository {
                 host.status AS host_status,
                 host.last_heartbeat_at AS host_last_heartbeat_at,
                 host.capabilities_json AS host_capabilities_json,
+                provider.capabilities_json AS provider_capabilities_json,
                 location.status AS location_status,
+                location.project_folder_id AS location_project_folder_id,
                 location_folder.project_id AS location_project_id,
                 location.execution_ready AS location_execution_ready,
+                location.branch AS location_branch,
+                location.git_head AS location_git_head,
+                location.dirty AS location_dirty,
                 profile.is_default
            FROM agent_runtime_profiles profile
            JOIN agents agent
@@ -230,9 +316,12 @@ export class PgConversationBackendRepository {
         host_bound: hostBound,
         host_id: hostBound ? profile.execution_host_id : null,
         workspace_mode: hostBound ? profile.workspace_mode : null,
+        project_folder_id: hostBound ? profile.location_project_folder_id : null,
+        workspace_location_id: hostBound ? profile.workspace_location_id : null,
         host_name: hostBound ? profile.host_name : null,
         host_online: hostBound ? hostOnline : null,
         host_owner_is_me: hostBound ? hostOwnerIsMe : null,
+        git: backendGitSnapshot(profile, hostBound),
         session_config_options: hostBound && profile.runtime_installation
           ? hostInstallationOptions(
               profile.host_capabilities_json,
@@ -240,6 +329,7 @@ export class PgConversationBackendRepository {
               profile.runtime_installation,
             ).filter((option) => !(profile.model_provider_id && option.category === "model"))
           : [],
+        prompt_capabilities: effectivePromptCapabilities(profile),
       }];
     });
   }
@@ -293,7 +383,7 @@ export class PgConversationBackendRepository {
       // legitimately change its catalog without changing this binding.
       const option = (await this.listOptions(input.space_id, input.user_id, input.agent_id))
         .find((candidate) => candidate.runtime_profile_id === existing.runtime_profile_id);
-      return { ...existing, session_config_options: option?.session_config_options ?? [] };
+      return { ...existing, session_config_options: option?.session_config_options ?? [], prompt_capabilities: option?.prompt_capabilities ?? null };
     }
     const options = await this.listOptions(
       input.space_id,
@@ -344,7 +434,7 @@ export class PgConversationBackendRepository {
       adapter_type: option.adapter_type,
     };
     const resolved = await this.upsertBinding(input, binding, existing?.runtime_state_key ?? null);
-    return { ...resolved, session_config_options: option.session_config_options ?? [] };
+    return { ...resolved, session_config_options: option.session_config_options ?? [], prompt_capabilities: option.prompt_capabilities ?? null };
   }
 
   async findBinding(
@@ -378,9 +468,6 @@ export class PgConversationBackendRepository {
               profile.workspace_mode,
               profile.runtime_installation
          FROM session_conversation_backends binding
-         JOIN sessions session_row
-           ON session_row.id = binding.session_id
-          AND session_row.space_id = binding.space_id
          JOIN agent_runtime_profiles profile
            ON profile.id = binding.runtime_profile_id
           AND profile.space_id = binding.space_id
@@ -423,11 +510,30 @@ export class PgConversationBackendRepository {
            ON profile.id = binding.runtime_profile_id
           AND profile.space_id = binding.space_id
           AND profile.agent_id = binding.agent_id
+         JOIN sessions session_row
+           ON session_row.id = binding.session_id
+          AND session_row.space_id = binding.space_id
          JOIN host_threads thread
-           ON thread.space_id = binding.space_id
-          AND thread.session_id = binding.session_id
-          AND thread.agent_id = binding.agent_id
-          AND thread.container_kind = 'conversation'
+           ON thread.agent_id = binding.agent_id
+          -- A Room Conversation uses a conversation-scoped Host thread; a
+          -- direct Agent Conversation deliberately owns a direct thread and
+          -- is keyed by its user rather than session_id. The binding is
+          -- Conversation-scoped in both cases, so derive the Host-thread
+          -- boundary from the Session instead of dropping direct bindings on
+          -- the second turn.
+          AND (
+            (session_row.room_id IS NULL
+              AND (
+                (thread.container_kind = 'direct'
+                  AND thread.container_user_id = session_row.user_id)
+                OR (thread.container_kind = 'conversation'
+                  AND thread.session_id = binding.session_id)
+              ))
+            OR (session_row.room_id IS NOT NULL
+              AND thread.space_id = binding.space_id
+              AND thread.container_kind = 'conversation'
+              AND thread.session_id = binding.session_id)
+          )
           AND thread.status IN ('active', 'session_reset')
           AND thread.execution_host_id = profile.execution_host_id
           AND thread.workspace_mode = profile.workspace_mode
@@ -535,4 +641,29 @@ export class PgConversationBackendRepository {
           : null,
     };
   }
+}
+
+function backendGitSnapshot(profile: BackendRow, hostBound: boolean): ConversationGitSnapshot | null {
+  if (!hostBound || !profile.workspace_mode) return null;
+  if (profile.workspace_mode === "managed") {
+    return {
+      source: "managed_workspace",
+      workspace_location_id: null,
+      branch: null,
+      commit_sha: null,
+      dirty: null,
+      execution_ready: true,
+      observed_at: new Date().toISOString(),
+    };
+  }
+  if (!profile.workspace_location_id) return null;
+  return {
+    source: "workspace_location",
+    workspace_location_id: profile.workspace_location_id,
+    branch: profile.location_branch,
+    commit_sha: profile.location_git_head,
+    dirty: profile.location_dirty,
+    execution_ready: profile.location_execution_ready === true,
+    observed_at: new Date().toISOString(),
+  };
 }

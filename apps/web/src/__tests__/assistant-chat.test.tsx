@@ -4,7 +4,7 @@ import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 
 // vi.mock factories are hoisted above the module body, so anything they reference
 // must be created via vi.hoisted (which runs first) to avoid a TDZ error.
-const { agent, getMock, messagesMock, backendsMock, hostsMock, turnMock } = vi.hoisted(() => ({
+const { agent, getMock, messagesMock, backendsMock, hostsMock, turnMock, runGetMock } = vi.hoisted(() => ({
   agent: {
     id: 'a1', space_id: 'personal-1', created_by_user_id: 'u1', name: 'Assistant',
     description: null, visibility: 'private', role_instruction: null, status: 'active',
@@ -17,13 +17,14 @@ const { agent, getMock, messagesMock, backendsMock, hostsMock, turnMock } = vi.h
   backendsMock: vi.fn(),
   hostsMock: vi.fn(),
   turnMock: vi.fn(),
+  runGetMock: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
   agentsApi: { get: getMock, chat: vi.fn(), conversationBackends: backendsMock },
   sessionsApi: { messages: messagesMock },
   hostsApi: { list: hostsMock },
-  runsApi: { turn: turnMock },
+  runsApi: { get: runGetMock, turn: turnMock },
 }))
 
 vi.mock('../contexts/SpaceContext', () => ({
@@ -81,6 +82,8 @@ describe('AssistantChatPage conversation backends', () => {
     hostsMock.mockResolvedValue({ items: [] })
     turnMock.mockReset()
     turnMock.mockRejectedValue(new Error('no turn'))
+    runGetMock.mockReset()
+    runGetMock.mockRejectedValue(new Error('no run'))
     // jsdom doesn't implement Element.scrollTo, which ChatPanel calls on mount.
     Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo
   })

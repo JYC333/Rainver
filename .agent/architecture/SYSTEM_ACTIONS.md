@@ -149,6 +149,12 @@ Run's artifacts come through `materializationService` instead, which does not
 consume declarations, so the action is withheld rather than accepted and
 ignored.
 
+The `task.create.required_outputs` field therefore carries only concrete file
+Artifact type labels. Replies, reports, inspections, and edits to an existing
+workspace file use `definition_of_done` and `task.report`; putting those
+natural-language outcomes in `required_outputs` creates an unsatisfiable file
+gate for a conversation Run.
+
 ## Declarative policy resources and derived schemas
 
 Most actions need no hand-written `if (definition.id === ...)` branch in

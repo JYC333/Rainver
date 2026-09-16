@@ -71,6 +71,9 @@ export interface VerificationTarget {
   host_id: string;
   workspace_location_id?: string | null;
   workspace?: LaunchWorkspace;
+  /** Runtime identity for a managed command on a strict Host; never a filesystem path. */
+  adapter_type?: string | null;
+  installation?: string | null;
 }
 
 export interface VerificationInput {

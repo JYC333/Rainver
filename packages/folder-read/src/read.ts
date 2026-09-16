@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import {
@@ -28,17 +29,19 @@ export class FolderReadError extends Error {
   }
 }
 
-export async function buildTree(root: string): Promise<FileNode> {
+export async function buildTree(root: string, signal?: AbortSignal): Promise<FileNode> {
+  throwIfAborted(signal);
   const info = await stat(root).catch(() => null);
   if (!info?.isDirectory()) throw new FolderReadError("not_found", "Project Folder directory not found on disk");
-  return buildTreeNode(root, root, 0, { count: 0 });
+  return buildTreeNode(root, root, 0, { count: 0 }, signal);
 }
 
 export async function readFolderFile(
   root: string,
   relPath: string,
-  opts: { protectedFolder?: boolean } = {},
+  opts: { protectedFolder?: boolean; signal?: AbortSignal } = {},
 ): Promise<FileContent> {
+  throwIfAborted(opts.signal);
   const resolved = resolveRelativePath(root, relPath, opts);
   await assertContainedPath(root, resolved.absolute, opts);
   const info = await stat(resolved.absolute).catch(() => null);
@@ -47,12 +50,15 @@ export async function readFolderFile(
   if (info.size > MAX_FILE_BYTES) {
     throw new FolderReadError("too_large", "File too large to display (max 1 MiB)");
   }
-  const content = await readFile(resolved.absolute, "utf8");
+  const bytes = await readFile(resolved.absolute);
+  throwIfAborted(opts.signal);
+  const content = bytes.toString("utf8");
   return {
     path: resolved.relative,
     content,
-    size: info.size,
+    size: bytes.byteLength,
     line_count: content.split(/\n/).length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
   };
 }
 
@@ -107,7 +113,8 @@ export function resolveRelativePath(
   };
 }
 
-async function buildTreeNode(root: string, nodePath: string, depth: number, counter: { count: number }): Promise<FileNode> {
+async function buildTreeNode(root: string, nodePath: string, depth: number, counter: { count: number }, signal?: AbortSignal): Promise<FileNode> {
+  throwIfAborted(signal);
   const info = await stat(nodePath);
   const rel = nodePath === root ? "." : relative(root, nodePath).split("\\").join("/");
   const node: FileNode = {
@@ -125,15 +132,23 @@ async function buildTreeNode(root: string, nodePath: string, depth: number, coun
   const entries = await readdir(nodePath, { withFileTypes: true }).catch(() => []);
   const children: FileNode[] = [];
   for (const entry of entries.sort((a, b) => Number(a.isFile()) - Number(b.isFile()) || a.name.localeCompare(b.name))) {
+    throwIfAborted(signal);
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory() && IGNORE_DIRS.has(entry.name)) continue;
     if (entry.name.startsWith(".") && !SHOW_HIDDEN.has(entry.name)) continue;
     counter.count += 1;
     if (counter.count > MAX_FILES) break;
-    children.push(await buildTreeNode(root, join(nodePath, entry.name), depth + 1, counter));
+    children.push(await buildTreeNode(root, join(nodePath, entry.name), depth + 1, counter, signal));
   }
   node.children = children;
   return node;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error("folder read cancelled");
+  error.name = "AbortError";
+  throw error;
 }
 
 async function assertContainedPath(

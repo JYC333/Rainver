@@ -9,6 +9,7 @@ import ProjectChatSidecar from './sidecar/ProjectChatSidecar'
 import { REVIEW_ATTENTION_CHANGED_EVENT } from '../../core/reviewAttention'
 import { useDeclareProjectCaptureProject } from '../../contexts/CaptureContext'
 import { inProjectHref } from './taskHref'
+import { ProjectFolderConversationProvider } from './ProjectFolderConversationContext'
 
 /**
  * The three things a person switches between while running a Project.
@@ -105,7 +106,8 @@ export default function ProjectAreaLayout() {
   useDeclareProjectCaptureProject(projectId)
 
   return (
-    <div className="min-h-full lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
+    <ProjectFolderConversationProvider key={projectId} projectId={projectId}>
+      <div className="min-h-full lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
       <aside className="border-b bg-muted/20 p-4 lg:border-b-0 lg:border-r">
         <div className="mb-5 px-2">
           <p className="truncate font-semibold">{project?.name ?? 'Project'}</p>
@@ -190,6 +192,7 @@ export default function ProjectAreaLayout() {
         <main className="min-w-0 flex-1"><Outlet /></main>
         <ProjectChatSidecar />
       </div>
-    </div>
+      </div>
+    </ProjectFolderConversationProvider>
   )
 }

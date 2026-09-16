@@ -1,4 +1,5 @@
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostLaunchIsolation, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
+import type { ContentBlock } from "./cliConversationProtocol.js";
 import type { CredentialSpendDeps } from "../policy/credentialSpend.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { RunRecord } from "./repository.js";
@@ -20,6 +21,7 @@ import { normalizeVendorEvents } from "./runtimeEventNormalization.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry, type HostRunCompletion } from "../hosts/connectionRegistry.js";
 import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization.js";
 import { getDbPool } from "../../db/pool.js";
+import { ConversationInputService } from "../sessions/conversationInputService.js";
 import type { ServerConfig } from "../../config.js";
 import type { ProviderProxyLeaseRegistry } from "../providers/proxy/lease.js";
 import type { Queryable } from "../routeUtils/common.js";
@@ -138,6 +140,41 @@ function runOverrideField(value: unknown, key: string): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const field = (value as Record<string, unknown>)[key];
   return typeof field === "string" && field.trim() ? field.trim() : null;
+}
+
+function chatTurnMessageId(value: unknown): string | null {
+  const root = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const turn = root.chat_turn && typeof root.chat_turn === "object" && !Array.isArray(root.chat_turn)
+    ? root.chat_turn as Record<string, unknown>
+    : {};
+  return typeof turn.user_message_id === "string" && turn.user_message_id.trim() ? turn.user_message_id : null;
+}
+
+function chatTurnRetryOfRunId(value: unknown): string | null {
+  const root = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const turn = root.chat_turn && typeof root.chat_turn === "object" && !Array.isArray(root.chat_turn)
+    ? root.chat_turn as Record<string, unknown>
+    : {};
+  return typeof turn.retry_of_run_id === "string" && turn.retry_of_run_id.trim() ? turn.retry_of_run_id : null;
+}
+
+function chatTurnPromptCapabilities(value: unknown): {
+  image: boolean | null;
+  embedded_context: boolean | null;
+  resource_link: boolean | null;
+} {
+  const root = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const backend = root.conversation_backend && typeof root.conversation_backend === "object" && !Array.isArray(root.conversation_backend)
+    ? root.conversation_backend as Record<string, unknown>
+    : {};
+  const capabilities = backend.prompt_capabilities && typeof backend.prompt_capabilities === "object" && !Array.isArray(backend.prompt_capabilities)
+    ? backend.prompt_capabilities as Record<string, unknown>
+    : {};
+  return {
+    image: typeof capabilities.image === "boolean" ? capabilities.image : null,
+    embedded_context: typeof capabilities.embedded_context === "boolean" ? capabilities.embedded_context : null,
+    resource_link: typeof capabilities.resource_link === "boolean" ? capabilities.resource_link : null,
+  };
 }
 
 
@@ -550,6 +587,56 @@ async function runRemoteHostCliAdapter(
     }]);
   }
 
+  let promptBlocks: ContentBlock[][] | undefined;
+  let inputResources: Array<{
+    input_id: string;
+    workspace_location_id: string;
+    relative_path: string;
+    workspace_relative_path?: string;
+    name: string;
+    media_type: string;
+    size_bytes: number;
+  }> = [];
+  const messageId = chatTurnMessageId(input.run.model_override_json);
+  if (messageId) {
+    if (!config?.databaseUrl) {
+      return remoteFailureWithEvent(
+        input,
+        spec.adapter_type,
+        "conversation_input_unavailable",
+        "This run contains structured conversation input, but the server database is unavailable to hydrate it.",
+        startedAt,
+      );
+    }
+    try {
+      const hydrated = await new ConversationInputService(
+        deps.db ?? getDbPool(config.databaseUrl),
+        config,
+      ).loadPromptParts({
+        spaceId: input.run.space_id,
+        messageId,
+        embeddedContext: chatTurnPromptCapabilities(input.run.model_override_json).embedded_context === true,
+        useImmutableSnapshot: chatTurnRetryOfRunId(input.run.model_override_json) !== null,
+        executionHostId: hostId,
+      });
+      if (hydrated.blocks.length > 0) {
+        promptBlocks = [[
+          ...(prompt ? [{ type: "text", text: prompt } as ContentBlock] : []),
+          ...(hydrated.blocks as ContentBlock[]),
+        ]];
+      }
+      inputResources = hydrated.resources;
+    } catch (error) {
+      return remoteFailureWithEvent(
+        input,
+        spec.adapter_type,
+        "conversation_input_unavailable",
+        error instanceof Error ? error.message : "Conversation input could not be prepared.",
+        startedAt,
+      );
+    }
+  }
+
   // Named here because the result envelope reports it too, and both must be
   // the same answer.
   const installation = dispatchInstallation(input.run);
@@ -563,6 +650,7 @@ async function runRemoteHostCliAdapter(
     workSurface?.frame ?? null,
     launchWorkspace(input.workspace, workspaceLocationId, input.workspace_relative_path ?? null),
     input.workspace_access ?? [],
+    inputResources,
     dispatchIsolation(input.run),
     input.max_concurrent_runs ?? null,
   );
@@ -598,6 +686,7 @@ async function runRemoteHostCliAdapter(
     // model name.
     attributed_model: providerBinding?.used_model ?? null,
     runtime_session_id: input.resume_session_id,
+    prompt_blocks: promptBlocks,
     on_thought_delta: (delta) => {
       const drafts = threadEvents.pushAcpThoughtDelta(delta);
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
@@ -875,8 +964,17 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     private readonly adapterType: string | null = null,
   /** Null when this Run was granted no tool and needs no way to call back. */
   private readonly workSurface: RunWorkSurfaceFrame | null = null,
-  private readonly workspace?: LaunchWorkspace,
-  private readonly workspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [],
+    private readonly workspace?: LaunchWorkspace,
+    private readonly workspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write"; workspace_relative_path?: string }> = [],
+    private readonly inputResources: Array<{
+      input_id: string;
+      workspace_location_id: string;
+      relative_path: string;
+      workspace_relative_path?: string;
+      name: string;
+      media_type: string;
+      size_bytes: number;
+    }> = [],
     /** The namespace policy a strict host applies; a trusted host ignores it. */
     private readonly isolation: HostLaunchIsolation = { sandbox_mode: "read_write", egress_profile: "default" },
     /**
@@ -961,6 +1059,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         work_surface: this.workSurface ?? undefined,
         workspace: this.workspace,
         workspace_access: this.workspaceAccess,
+        input_resources: this.inputResources,
         isolation: this.isolation,
       },
       onOutput,

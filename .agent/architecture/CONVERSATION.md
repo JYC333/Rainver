@@ -153,6 +153,23 @@ whether an existing pin survived a server or daemon restart. Current Host
 heartbeat, installation and workspace readiness are still checked before a
 send.
 
+The execution context also stores the Primary Workspace Git baseline. Direct
+Host sends and Room dispatch compare the current branch, commit, and readiness
+to that baseline on the server before a send can commit its user message or
+Run; a changed workspace returns a refresh-required conflict. The Run's immutable
+contract records the Git snapshot observed at its start. A user may refresh
+the baseline explicitly, but conversation controls do not switch branches,
+commit, push, or deploy.
+
+Conversation turns expose shared Run controls: active Runs can be stopped via
+the canonical Run API and finish visibly as cancelled with partial output;
+terminal Host Runs look up their exact `remote_diff` Artifact, including
+managed workspaces. Failed turns can be retried with an idempotency key using
+the original persisted input and execution pin; the retry links new Run ids to
+the original user message rather than adding a duplicate message. Draft
+recovery stores only validated text and logical input references in a
+destination-scoped, seven-day sessionStorage record.
+
 `action_preview` parts are deliberately not rendered. Both surfaces show a
 Proposal from the assistant message's own record instead, which is what
 survives a reload and what carries live reconciliation against the Proposal's

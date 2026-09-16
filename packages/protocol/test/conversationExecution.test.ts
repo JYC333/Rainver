@@ -49,7 +49,7 @@ describe("Conversation execution contracts", () => {
       mutation_id: "mutation-1",
       project_folder_id: "folder-1",
       workspace_location_id: "location-1",
-    })).toMatchObject({ action: "attach", access_mode: "read" });
+    })).toMatchObject({ action: "attach", access_mode: "write" });
     const summary = {
       session_id: "session-1",
       state: "initialized" as const,

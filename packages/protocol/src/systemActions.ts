@@ -205,7 +205,7 @@ const proposalInputs:Record<string,z.ZodType>={
     description: z.string().trim().max(20_000).nullable().optional(),
     acceptance_criteria_json: z.record(z.string(), z.unknown()).nullable().optional(),
     definition_of_done: z.string().trim().max(4_000).nullable().optional(),
-    required_outputs: z.array(z.string().trim().min(1).max(64)).max(20).optional(),
+    required_outputs: z.array(z.string().trim().min(1).max(64)).max(20).optional().describe("Only concrete file Artifact type labels that must be collected as deliverables. Do not use for a reply, report, check result, workspace edit, or filename; omit it for those Tasks."),
     priority: z.enum(["low", "normal", "high", "urgent"]).optional(),
     risk_level: z.enum(["low", "medium", "high", "critical"]).optional(),
     /** The scheduling fields; timing the person gave belongs here, not in the description. */

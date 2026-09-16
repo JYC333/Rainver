@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { runGit } from "@rainver/folder-read";
 
 // The well-known SHA-1 hash of an empty tree, constant across every git
 // repository — used as the base for a repo with no commits yet, since
@@ -7,18 +7,6 @@ import { spawn } from "node:child_process";
 // worktree-relative diff — `git diff <tree>`, the same mechanism `git diff
 // HEAD` uses — reads the real file off disk for those paths).
 const EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
-function runGit(args: string[], cwd: string): Promise<{ code: number; stdout: string }> {
-  return new Promise((resolve) => {
-    const child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "ignore"] });
-    let stdout = "";
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.on("error", () => resolve({ code: 1, stdout: "" }));
-    child.on("close", (code) => resolve({ code: code ?? 1, stdout }));
-  });
-}
 
 /**
  * Phase-1 diff capture (control-center-plan.md §5): unified `git diff HEAD`
@@ -29,29 +17,6 @@ function runGit(args: string[], cwd: string): Promise<{ code: number; stdout: st
  * upload endpoint truncates the whole payload by size (`MAX_DIFF_BYTES`);
  * that is the one place the cap lives.
  */
-/**
- * Makes a directory a repository, once, so what happens in it can be seen and
- * undone.
- *
- * ADR 0016 section 11 rests the whole undo story on git — a remote diff is a
- * read-only review artifact, and undo is git. A managed workspace was a plain
- * directory, so for the place an Agent works when a Conversation names no
- * Folder that sentence was simply false: no diff on the Run, nothing to revert
- * to, and no way for anyone to see what had been written.
- *
- * Best effort by design. A workspace that cannot become a repository — git
- * missing on a paired machine, a read-only mount — still runs; it loses the
- * diff, which is what it had before this existed. Never re-initialises an
- * existing repository, so a directory someone has already made their own is
- * left exactly as it is.
- */
-export async function ensureWorkspaceRepository(cwd: string): Promise<boolean> {
-  const isRepo = await runGit(["rev-parse", "--is-inside-work-tree"], cwd);
-  if (isRepo.code === 0 && isRepo.stdout.trim() === "true") return true;
-  const init = await runGit(["init", "--quiet"], cwd);
-  return init.code === 0;
-}
-
 export async function captureWorkspaceDiff(cwd: string): Promise<string | null> {
   const isRepo = await runGit(["rev-parse", "--is-inside-work-tree"], cwd);
   if (isRepo.code !== 0 || isRepo.stdout.trim() !== "true") return null;

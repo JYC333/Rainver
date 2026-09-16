@@ -27,9 +27,14 @@ export class HostCommandVerificationExecutor implements VerificationCommandExecu
     command: string[];
     timeoutSeconds: number;
   }): Promise<CliExecutionResult> {
+    // Verification commands stay direct argv. The runtime identity is a
+    // namespace-only hint so a managed ACP tree is visible without turning
+    // `pnpm test` or `test -e ...` into ACP arguments.
     const outcome = await sharedHostConnectionRegistry.runHostCommand(input.target.host_id, {
       ...(input.target.workspace ? { workspace: input.target.workspace } : {}),
       ...(input.target.workspace_location_id ? { workspace_location_id: input.target.workspace_location_id } : {}),
+      ...(input.target.adapter_type ? { runtime_adapter_type: input.target.adapter_type } : {}),
+      ...(input.target.installation ? { runtime_installation: input.target.installation } : {}),
       run_id: input.runId,
       command: input.command,
       timeout_seconds: input.timeoutSeconds,

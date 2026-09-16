@@ -1,7 +1,7 @@
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { ensureGitRepository } from "@rainver/folder-read";
 import { configDir } from "./config.js";
-import { ensureWorkspaceRepository } from "./gitDiff.js";
 
 const ARCHIVE_MARKER = ".removed-";
 export const MANAGED_WORKSPACE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -288,6 +288,6 @@ export async function ensureManagedWorkspace(
   // A repository from the first Run, so a managed workspace has the same diff
   // and the same undo a Location does. Without it ADR 0016 section 11's "undo
   // is git" was false for the very place an Agent works by default.
-  await ensureWorkspaceRepository(path);
+  await ensureGitRepository(path);
   return path;
 }

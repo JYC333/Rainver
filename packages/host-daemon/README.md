@@ -148,3 +148,31 @@ daemon and WebSocket sections. Use the `host-daemon` bundle in
 folder-access bundles when relevant; [COMMANDS](../../.agent/COMMANDS.md)
 is the command reference. This README describes installation and operation;
 command examples do not authorize deploying or changing an existing host.
+
+### Local release loop
+
+When developing the separately installed Host daemon, do not publish every
+build to GitHub just to test it. The repository includes a local release builder
+that produces the same verified archives as CI and points the existing
+installer at them through `file://`:
+
+```bash
+./ops/scripts/host/build-local-release.sh --install
+```
+
+The command builds the protocol/workspace dependencies, Host daemon, ACP
+adapter pack, and a Node 24 fallback for the current Linux architecture. It
+uses a unique `local-...` build id, disables automatic updates for the local
+install, and preserves the existing Host config and login state. No GitHub
+release or push is involved.
+
+To only create the local release, or to inspect/reuse its assets:
+
+```bash
+./ops/scripts/host/build-local-release.sh --output /tmp/rainver-host-release
+RAINVER_HOST_RELEASE_BASE_URL=file:///tmp/rainver-host-release \
+  bash ops/scripts/host/install-host.sh --channel edge --no-auto-update
+```
+
+The helper refuses to overwrite an existing output directory. It is intended
+for a Linux Host running Node 24, matching the supported Host runtime.

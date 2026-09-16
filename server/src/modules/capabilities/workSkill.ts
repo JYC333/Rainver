@@ -3,6 +3,7 @@ import {
   ACTION_RESULT_REPORTING_POLICY,
   DURABLE_ACTION_CLAIM_POLICY,
   IDENTIFIER_POLICY,
+  TASK_CONTRACT_POLICY,
 } from "../systemActions/conversationPolicy.js";
 
 /**
@@ -150,6 +151,9 @@ ${options.conversation
    unfinished work, and the person has to move it by hand.
 5. If you need a person to decide something, \`task.request_review\` and stop.
    Do not guess and continue.`}
+## Task contracts
+
+${TASK_CONTRACT_POLICY}
 ${options.deliverOutputs ? OUTPUT_DELIVERY_SECTION : ""}
 ## Rules
 
@@ -197,6 +201,7 @@ export function workSkillPromptPointer(
         ]
       : [
           "Use `task.list` for Task ids,",
+          `Before creating a Task, ${TASK_CONTRACT_POLICY}`,
           "`task.report` to say what happened,",
           ...(options.deliverOutputs
             ? ["`artifact.submit` to declare a deliverable you wrote into `$RAINVER_OUTPUT_DIR`,"]

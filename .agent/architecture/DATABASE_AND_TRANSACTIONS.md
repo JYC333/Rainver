@@ -179,6 +179,16 @@ whereas the Folder's active Location and Agent runtime-profile defaults are
 candidate inputs only before initialization and never dispatch fallbacks for
 an initialized Conversation.
 
+The same execution-context row stores the Git admission baseline
+(`git_branch`, `git_head`, `git_dirty`, `git_execution_ready`, and
+`git_observed_at`). Direct Host sends and Room dispatch lock/read the row and
+compare the current Primary Workspace branch, commit, and readiness before
+the send transaction can commit a user message or Run. A stale comparison
+rolls back the whole send; the explicit refresh route is the authorized
+baseline update. The Run contract separately snapshots the Git state observed
+at Run creation, so later refreshes do not rewrite historical execution
+evidence.
+
 ## Room conversation summary boundary
 
 Room summaries use two tables: `room_conversation_summary_versions` is
@@ -368,6 +378,25 @@ Current local deployment assumes one server process owns bootstrap and scheduler
 - Store large files in storage; store metadata and relative paths in DB.
 - Avoid long transactions and transaction-spanning external calls.
 - Do not rely on application-only `MAX()+1` ordering for distributed writers without a future lock/constraint note. Current `RunStep.step_index` uses `MAX()+1` — a documented distributed-runner risk.
+
+## Conversation input persistence
+
+Conversation image uploads use `conversation_input_media` for Space/owner-scoped
+metadata and a generated relative path below managed conversation-input storage;
+the database does not store browser paths or image bytes. A send claims pending
+media and inserts ordered `message_input_parts` in the same transaction as the
+message. Project file references instead create an immutable bounded
+`conversation_file_snapshots` row and its normalized message part in that same
+transaction. `conversation_turn_idempotencies` records client turn keys and
+the committed response for replay-safe sends. Expired or orphaned media is
+tombstoned first and unlinked by a retryable sweep, so a filesystem unlink
+failure does not lose the database record needed for cleanup.
+
+Manual conversation retries use the same short transaction boundary: an
+Idempotency-Key is fingerprinted to the original Run/session, the persisted
+input is revalidated against current recipient capabilities, and new retry Run
+ids are linked to the existing user message. Existing image media and file
+references are not re-uploaded or re-claimed during retry.
 
 ## Scoped Settings Store
 

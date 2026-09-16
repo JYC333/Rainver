@@ -379,14 +379,14 @@ not silently alter an existing Conversation.
 The Conversation execution context owns the single Primary Workspace: a
 managed workspace is keyed by Conversation, while a Location Primary and any
 Attached Folder Locations are concrete same-Host bindings. Attachments carry
-grants that are evaluated for each later Run; they never change cwd. Trusted
-remote Hosts may honor explicit read/write grants directly. Server-host
-attachments are read-only because writable checkouts must go through the
-managed worktree/diff/proposal/apply boundary; the service rejects a server
-write grant instead of bind-mounting a real checkout writable. A Location that
-becomes stale remains usable by an initialized Conversation that already pins
-it as Primary or attachment. A healthy vendor session resumes only its own Conversation × Agent
-thread, and a Host/CLI/Primary change requires a new Conversation. Vendor
+grants that are evaluated for each later Run; they never change cwd. Any
+selected Host, including the built-in server Host, may honor an explicit read
+or write grant. Server-host Locations remain confined to the managed workspace
+root, and the Host namespace enforces the grant's bind mode; the grant does not
+bypass that containment boundary. A Location that becomes stale remains usable
+by an initialized Conversation that already pins it as Primary or attachment.
+A healthy vendor session resumes only its own Conversation × Agent thread, and
+a Host/CLI/Primary change requires a new Conversation. Vendor
 state remains a disposable cache rather than a replay authority. One
 Conversation-wide dispatch lock serializes all Agents because they share the
 filesystem scope. There is no Room-owned runtime thread or Room Folder

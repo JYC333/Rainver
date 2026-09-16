@@ -364,7 +364,10 @@ describe("task.complete", () => {
     );
 
     await expect(completeTask(db.pool!, await agentContext(), { task_id: task, summary: "done anyway" }))
-      .rejects.toMatchObject({ statusCode: 422 });
+      .rejects.toMatchObject({
+        statusCode: 422,
+        message: expect.stringContaining("required file outputs are missing: document"),
+      });
     const row = await db.pool!.query<{ status: string }>(`SELECT status FROM tasks WHERE id = $1`, [task]);
     expect(row.rows[0]?.status).not.toBe("done");
   });

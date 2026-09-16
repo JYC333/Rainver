@@ -47,6 +47,17 @@ describe("projectFoldersRoutes", () => {
         size: 5,
         line_count: 1,
       });
+      await expectJson("POST", "/api/v1/projects/project-1/folders/folder-1/file", {
+        file: { path: "README.md", content: "edited", size: 6, line_count: 1, sha256: "a".repeat(64) },
+        revision: { id: "revision-1", path: "README.md", status: "available" },
+      });
+      await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/file/revisions?path=README.md", [{
+        id: "revision-1", path: "README.md", status: "available",
+      }]);
+      await expectJson("POST", "/api/v1/projects/project-1/folders/folder-1/file/rollback", {
+        file: { path: "README.md", content: "hello", size: 5, line_count: 1, sha256: "b".repeat(64) },
+        revision_id: "revision-1", rolled_back: true,
+      });
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/git/status", {
         is_repo: false, branch: null, files: [],
       });
@@ -77,7 +88,7 @@ describe("projectFoldersRoutes", () => {
 
   });
 
-  async function expectJson(method: "GET", url: string, expected: unknown): Promise<void> {
+  async function expectJson(method: "GET" | "POST", url: string, expected: unknown): Promise<void> {
     if (!app) throw new Error("test app not initialized");
     // Same-origin, as the web client's own `fetch` is: the folder read routes
     // spawn `git` on the owner's machine, so they refuse a cross-site request
@@ -101,6 +112,9 @@ describe("projectFoldersRoutes", () => {
     | "getFile"
     | "getGitStatus"
     | "getGitDiff"
+    | "editFile"
+    | "listFileRevisions"
+    | "rollbackFile"
   > {
     return {
       async list() {
@@ -139,6 +153,15 @@ describe("projectFoldersRoutes", () => {
       async getGitDiff() {
         return { diff: "", path: null, truncated: false, redacted: false };
       },
+      async editFile() {
+        return { file: { path: "README.md", content: "edited", size: 6, line_count: 1, sha256: "a".repeat(64) }, revision: { id: "revision-1", path: "README.md", status: "available" } };
+      },
+      async listFileRevisions() {
+        return [{ id: "revision-1", path: "README.md", status: "available" }];
+      },
+      async rollbackFile() {
+        return { file: { path: "README.md", content: "hello", size: 5, line_count: 1, sha256: "b".repeat(64) }, revision_id: "revision-1", rolled_back: true };
+      },
     } as unknown as Pick<
       PgProjectFolderRepository,
       | "list"
@@ -153,6 +176,9 @@ describe("projectFoldersRoutes", () => {
       | "getFile"
       | "getGitStatus"
       | "getGitDiff"
+      | "editFile"
+      | "listFileRevisions"
+      | "rollbackFile"
     >;
   }
 });

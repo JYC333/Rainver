@@ -139,7 +139,7 @@ export function CreateProjectFolderDialog({
         </DialogHeader>
         <div className="space-y-4 py-2">
           <p role="note" className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
-            A Project Folder is a shared workspace with no personal area. The whole registered Folder is available to Project members and mounted read-only for CLI runs; keep personal material in database-backed personal content.
+            A Project Folder is a shared workspace with no personal area. It is available to Project members, and a Conversation can bind its Primary or attached Location with read or write access; keep personal material in database-backed personal content.
           </p>
           <div className="space-y-1.5">
             <Label>Source</Label>

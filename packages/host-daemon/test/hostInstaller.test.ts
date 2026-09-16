@@ -11,6 +11,10 @@ const installerPath = resolve(
   fileURLToPath(new URL(".", import.meta.url)),
   "../../../ops/scripts/host/install-host.sh",
 );
+const localReleaseBuilderPath = resolve(
+  fileURLToPath(new URL(".", import.meta.url)),
+  "../../../ops/scripts/host/build-local-release.sh",
+);
 
 function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolveRun, reject) => {
@@ -28,6 +32,14 @@ function runCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Pr
 }
 
 describe("host release installer", () => {
+  it.runIf(process.platform === "linux")("exposes the local release builder for development installs", async () => {
+    const result = await runCommand("/bin/bash", [localReleaseBuilderPath, "--help"], process.env);
+
+    expect(result.stdout).toContain("Build the current checkout into a local Rainver Host release directory.");
+    expect(result.stdout).toContain("--install");
+    expect(result.stdout).toContain("--output DIR");
+  });
+
   it.runIf(process.platform === "linux")("does not download release archives when the selected channel build is already active", async () => {
     const root = await mkdtemp(join(tmpdir(), "rainver-host-installer-test-"));
     const installRoot = join(root, "install");

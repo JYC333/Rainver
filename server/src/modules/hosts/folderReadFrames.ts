@@ -112,7 +112,14 @@ function validateRemoteFile(value: Record<string, unknown>): FileContent | null 
   if (!isSafeRemoteRelativePath(value.path)) return null;
   if (typeof value.content !== "string" || Buffer.byteLength(value.content, "utf8") > MAX_FILE_BYTES) return null;
   if (!boundedInteger(value.size, MAX_FILE_BYTES) || !boundedInteger(value.line_count, MAX_FILE_BYTES + 1)) return null;
-  return { path: value.path, content: value.content, size: value.size, line_count: value.line_count };
+  if (value.sha256 !== undefined && (typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256))) return null;
+  return {
+    path: value.path,
+    content: value.content,
+    size: value.size,
+    line_count: value.line_count,
+    ...(value.sha256 === undefined ? {} : { sha256: value.sha256 }),
+  };
 }
 
 function validateRemoteGitStatus(value: Record<string, unknown>): GitStatus | null {

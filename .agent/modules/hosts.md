@@ -117,11 +117,39 @@ the physical topology:
   contains a filesystem path, and it lists workspaces only — runtime profiles
   are not reported, so nothing outside the daemon enumerates them.
 
+Each ACP installation's heartbeat also records normalized prompt capabilities
+under `installations[*].options.prompt_capabilities`: `image`,
+`embedded_context`, and `resource_link`. Missing ACP optional variants become
+explicit `false` values after a successful initialize; a probe that could not
+initialize remains `null` and is treated as unknown by conversation admission.
+Conversation image eligibility intersects this runtime report with the selected
+provider/model's known image capability when Rainver owns that Provider binding.
+For an unbound Host-owned ACP CLI, the runtime's initialize capability is the
+authoritative image answer because the model is selected inside the ACP session.
+The daemon resolves server-issued
+conversation `ResourceLink` ids to registered Workspace Location paths only
+after validating the launch's explicit access set; it never accepts an absolute
+path from the browser or launch payload. For the built-in Host, server-issued
+Location paths are relative to the shared instance workspace root, and the
+daemon checks both lexical containment and canonical `realpath` containment for
+the Location and its resolved resource; a paired Host uses only its registered
+local path map.
+
 Managed workspaces are daemon-owned directories, not Workspace Locations. A
 launch names an Agent and either a Conversation id or the direct owner's user
 id; the daemon derives the directory under its private config root. The server can
 request archive/restore actions and records a pending archive when the daemon
 is offline, but it never receives or stores the derived path.
+
+Conversation launches carry a Run-start Git snapshot (`branch`, commit, dirty
+state, readiness, and source/location identity) in the immutable Run contract.
+For a registered Location the snapshot comes from the current Location row;
+for a managed workspace it records the managed-workspace source and readiness.
+The Conversation execution context stores the baseline used to admit the next
+turn. A changed branch, commit, or readiness blocks direct and Room sends until
+the user explicitly refreshes that baseline. This is an admission/read-model
+control only: neither the browser nor the Host protocol gains branch switching,
+commit, push, or deployment authority.
 
 ## Server-host guard (ADR 0016 B62)
 
@@ -1124,6 +1152,14 @@ path. The server authorizes the requested active Location for its registered own
 records `force_record` audit metadata including `host_id`, and maps offline,
 timeout, forbidden, and missing-location outcomes to structured HTTP errors.
 
+The File page uses a matching bounded write exchange for explicit user actions:
+`folder_write` (server → daemon, Location id, relative path, content, and the
+observed existence/hash) and `folder_write_result` (daemon → server, resulting
+existence/hash and bounded metadata). Only the server-authorized owner can reach
+this path; the daemon resolves the Location from its local registration and
+never accepts an absolute filesystem path. This is a direct user File-page
+write, not an Agent Run and not a `code_patch` proposal.
+
 A pending run survives a brief WS drop: `HostConnectionRegistry` tracks
 pending runs by `run_id` (not nested per-connection) and gives a reconnect
 `RECONNECT_GRACE_MS` (60s) to resume the same in-flight run before failing it
@@ -1441,12 +1477,15 @@ translation that would have to be undone again in every variable the daemon
 writes.
 
 What a Run sees, and nothing else: its workspace (read-only or read-write per
-`sandbox_mode`), its own `runs/<run_id>/` directory — which is also its HOME,
+`sandbox_mode`), any explicitly attached Workspace Location roots (each bound
+read-only or read-write from its persisted attachment grant, then capped by the
+Run's isolation policy), its own `runs/<run_id>/` directory — which is also its HOME,
 one per Run — the Agent's runtime profile, the login home the profile links
-its credential out of, a managed copy's tree, and the daemon's own install
-root, where the ACP adapter and the `rainver` command live. The instance's
-other authority roots, the daemon's own registration, and every sibling
-workspace are simply absent.
+its credential out of, a managed copy's versioned executable tree, and the
+daemon's own install root, where the ACP adapter and the `rainver` command
+live. The managed executable tree and its stable login home are separate
+read-only binds. The instance's other authority roots, the daemon's own
+registration, and every sibling workspace are simply absent.
 
 Two of those are deliberately read-only. The login home, because on a shared
 host it holds the instance's one subscription login: a Run that could rewrite
@@ -1715,4 +1754,6 @@ guarantee.
 
 What contains a CLI Run is the host's namespace, its egress profile and
 ADR 0008's credential channel. Fixed verification recipes keep using
-`command_run`, which is unaffected.
+`command_run`; when the Run uses a managed installation, its adapter and
+installation identity travel with that frame so the same namespace binds the
+versioned executable tree.

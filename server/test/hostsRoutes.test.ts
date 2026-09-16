@@ -666,16 +666,17 @@ describe("hosts routes", () => {
           // the control plane so the host card does not keep a second copy of
           // that list in step.
           reports_subscription_quota: true,
-          options: {
-            config_options: [{
-              id: "model", name: "Model", description: null, category: "model", type: "select",
-              current_value: "sonnet",
-              options: [{ value: "sonnet", name: "Sonnet", description: null, group: null }],
-            }],
-            auth_methods: [],
-            cli_login_available: false,
-            authenticated: null,
-          },
+            options: {
+              config_options: [{
+                id: "model", name: "Model", description: null, category: "model", type: "select",
+                current_value: "sonnet",
+                options: [{ value: "sonnet", name: "Sonnet", description: null, group: null }],
+              }],
+              auth_methods: [],
+              cli_login_available: false,
+              authenticated: null,
+              prompt_capabilities: null,
+            },
         }],
       },
     });

@@ -26,6 +26,7 @@ import { RoomConversationSummaryService } from "../rooms/conversationSummaryServ
 import { RoomConversationTitleService } from "../rooms/conversationTitleService.js";
 import { readInstanceOperationsPolicy } from "../settings/index.js";
 import { DeploymentService } from "../deployment/service.js";
+import { ConversationInputService } from "../sessions/conversationInputService.js";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -100,6 +101,19 @@ export function startBackgroundServices(
         if (removed > 0) {
           log?.info(`[scheduler] conversation runtime state pruned ${removed} session(s)`);
         }
+      },
+    },
+    {
+      name: "conversation_input_media_retention",
+      intervalSeconds: 900,
+      runOnStart: false,
+      run: async () => {
+        if (!config.databaseUrl) return;
+        const removed = await new ConversationInputService(
+          getDbPool(config.databaseUrl),
+          config,
+        ).cleanupExpiredMedia();
+        if (removed > 0) log?.info(`[scheduler] conversation input media pruned ${removed} row(s)`);
       },
     },
   ];

@@ -9,6 +9,8 @@ import { Textarea } from '../../components/ui/textarea'
 import { EmptyState } from '../../components/ui/empty-state'
 import { ConversationTurn } from './ConversationTurn'
 import { ConversationComposer } from './ConversationComposer'
+import type { ConversationInputPart, RuntimePromptCapabilities } from '@rainver/protocol'
+import { ConversationInputPartsView, useConversationInputSendGuard, type ConversationInputFileSource } from './ConversationInputComposer'
 
 /**
  * What a surface hands this view for one entry in the transcript.
@@ -25,8 +27,11 @@ export interface ConversationEntry {
   /** The live or replayed turn, when this surface has it. */
   turn?: RunTurn | null
   error?: boolean
+  inputParts?: ConversationInputPart[]
   /** Rendered after the body — a reference card, an edit summary. */
   extra?: ReactNode
+  /** Run actions belong below the bubble, so a status card cannot resize it. */
+  runControls?: ReactNode
 }
 
 /**
@@ -51,6 +56,14 @@ export function ConversationView({
   composerNote,
   composerControls,
   runHref,
+  inputParts = [],
+  onInputPartsChange,
+  projectId,
+  projectFolderId,
+  inputFileSources,
+  sessionId,
+  inputResetToken,
+  inputCapabilities,
 }: {
   entries: ConversationEntry[]
   sending: boolean
@@ -66,6 +79,14 @@ export function ConversationView({
   composerNote?: string
   composerControls?: ReactNode
   runHref?: (entry: ConversationEntry) => string | undefined
+  inputParts?: ConversationInputPart[]
+  onInputPartsChange?: (parts: ConversationInputPart[]) => void
+  projectId?: string | null
+  projectFolderId?: string | null
+  inputFileSources?: ConversationInputFileSource[]
+  sessionId?: string | null
+  inputResetToken?: number
+  inputCapabilities?: RuntimePromptCapabilities | null
 }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -114,52 +135,88 @@ export function ConversationView({
 
       <form className="mt-3" onSubmit={event => { event.preventDefault(); onSend() }}>
         <ConversationComposer
-          editor={<Textarea
-          value={input}
-          onChange={event => onInputChange(event.target.value)}
-          onKeyDown={event => {
-            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
-              event.preventDefault()
-              onSend()
-            }
-          }}
-          placeholder={placeholder}
-          disabled={composerDisabled}
-          rows={2}
-          className="min-h-[84px] resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
-        />}
+          editor={<ConversationTextEditor
+            input={input}
+            onInputChange={onInputChange}
+            onSend={onSend}
+            placeholder={placeholder}
+            disabled={composerDisabled}
+          />}
           controls={composerControls}
           note={composerNote}
           sending={sending}
-          sendDisabled={composerDisabled || sending || loadingHistory || !input.trim()}
+          sendDisabled={composerDisabled || sending || loadingHistory || (!input.trim() && inputParts.length === 0)}
           onSend={onSend}
+          inputParts={inputParts}
+          onInputPartsChange={onInputPartsChange}
+          projectId={projectId}
+          projectFolderId={projectFolderId}
+          fileSources={inputFileSources}
+          sessionId={sessionId}
+          inputResetToken={inputResetToken}
+          inputCapabilities={inputCapabilities}
         />
       </form>
     </div>
   )
 }
 
+function ConversationTextEditor({ input, onInputChange, onSend, placeholder, disabled }: {
+  input: string
+  onInputChange: (value: string) => void
+  onSend: () => void
+  placeholder: string
+  disabled: boolean
+}) {
+  const canSend = useConversationInputSendGuard()
+  return (
+    <Textarea
+      value={input}
+      onChange={event => onInputChange(event.target.value)}
+      onKeyDown={event => {
+        if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+          event.preventDefault()
+          if (canSend()) onSend()
+        }
+      }}
+      placeholder={placeholder}
+      disabled={disabled}
+      rows={2}
+      className="min-h-[84px] resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+    />
+  )
+}
+
 function ConversationEntryView({ entry, runHref }: { entry: ConversationEntry; runHref?: string }) {
   if (entry.role === 'assistant' && entry.turn) {
     return (
-      <div>
+      <div className="min-w-0">
         <ConversationTurn turn={entry.turn} runHref={runHref} />
         {entry.extra}
+        {entry.runControls && <div className="w-fit min-w-0 max-w-[95%]">{entry.runControls}</div>}
       </div>
     )
   }
 
   return (
-    <Message from={entry.role}>
-      <MessageContent>
-        {entry.error && (
-          <span className="flex items-center gap-1.5 text-xs text-destructive">
-            <AlertTriangle className="size-3" /> Could not complete
-          </span>
-        )}
-        <MessageResponse>{entry.content}</MessageResponse>
-        {entry.extra}
-      </MessageContent>
-    </Message>
+    <div className="min-w-0">
+      <Message from={entry.role}>
+        <MessageContent>
+          {entry.error && (
+            <span className="flex items-center gap-1.5 text-xs text-destructive">
+              <AlertTriangle className="size-3" /> Could not complete
+            </span>
+          )}
+          <ConversationInputPartsView parts={entry.inputParts} />
+          {entry.content && <MessageResponse>{entry.content}</MessageResponse>}
+          {entry.extra}
+        </MessageContent>
+      </Message>
+      {entry.runControls && (
+        <div className={`w-fit min-w-0 max-w-[95%] ${entry.role === 'user' ? 'ml-auto' : ''}`}>
+          {entry.runControls}
+        </div>
+      )}
+    </div>
   )
 }

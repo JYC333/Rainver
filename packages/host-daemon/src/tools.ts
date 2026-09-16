@@ -79,6 +79,13 @@ function toolDir(adapterType: string, version: string): string {
   return join(toolsDir(), adapterType, version);
 }
 
+/** The versioned executable tree for a managed installation; its stable HOME lives elsewhere. */
+export function managedToolTree(adapterType: string, installation: string): string | null {
+  const version = managedVersion(installation);
+  if (!version || !SAFE_SEGMENT.test(adapterType)) return null;
+  return toolDir(adapterType, version);
+}
+
 function manifestPath(adapterType: string, version: string): string {
   return join(toolDir(adapterType, version), "manifest.json");
 }

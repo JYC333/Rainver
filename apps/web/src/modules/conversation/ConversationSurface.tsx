@@ -1,7 +1,7 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Bot, Loader2, Quote, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentsApi, ApiRequestError, roomsApi, runsApi } from '../../api/client'
+import { agentsApi, ApiRequestError, conversationInputApi, roomsApi, runsApi } from '../../api/client'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
@@ -32,6 +32,11 @@ import {
   type SessionConfigSelection,
 } from './ConversationSessionConfig'
 import { ConversationComposer } from './ConversationComposer'
+import type { ConversationInputPart } from '@rainver/protocol'
+import { ConversationInputPartsView, type ConversationInputFileSource } from './ConversationInputComposer'
+import { clearConversationDraft, readConversationDraft, writeConversationDraft } from './conversationDraft'
+import { ConversationRunControls } from './ConversationRunControls'
+import { notifyProjectFolderContentChanged } from '../../core/projectFolderEvents'
 
 /**
  * One conversation, rendered wherever a conversation is read.
@@ -122,6 +127,8 @@ export interface ConversationSurfaceProps {
   runSettings?: ReactNode
   /** Persistent execution selection shown immediately above the composer. */
   executionPreflight?: ReactNode
+  /** Primary and attached Folder roots authorized by the initialized context. */
+  inputFileSources?: ConversationInputFileSource[]
   /** False while the execution context is missing, blocked, or being configured. */
   executionReady?: boolean
   isOwner?: boolean
@@ -150,6 +157,7 @@ export function ConversationSurface({
   onBeforeContinue,
   runSettings,
   executionPreflight,
+  inputFileSources,
   executionReady = true,
   isOwner = false,
   emptyHint,
@@ -173,6 +181,7 @@ export function ConversationSurface({
   const scrollRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
   const [composer, setComposer] = useState(emptyRoomMessageComposerValue)
+  const [inputParts, setInputParts] = useState<ConversationInputPart[]>([])
   const previousConversationId = useRef<string | null | undefined>(undefined)
   const [resetToken, setResetToken] = useState(0)
   const [sending, setSending] = useState(false)
@@ -193,6 +202,8 @@ export function ConversationSurface({
   const [picking, setPicking] = useState(false)
   const pickingRef = useRef(false)
   const referencesAttachedRef = useRef(false)
+  const draftDestination = `room:${roomId}:${conversationId ?? 'new'}`
+  const draftReadyRef = useRef<string | null>(null)
 
   useEffect(() => {
     const previous = previousConversationId.current
@@ -201,10 +212,62 @@ export function ConversationSurface({
     // composer, so text cannot accidentally follow an existing thread.
     if (previous !== undefined && !(previous === null && conversationId !== null)) {
       setComposer(emptyRoomMessageComposerValue())
+      setInputParts([])
       setResetToken(value => value + 1)
     }
     previousConversationId.current = conversationId
   }, [conversationId])
+
+  useEffect(() => {
+    let cancelled = false
+    if (draftReadyRef.current === draftDestination) return () => { cancelled = true }
+    draftReadyRef.current = null
+    const draft = readConversationDraft(draftDestination)
+    if (!draft) {
+      draftReadyRef.current = draftDestination
+      return
+    }
+    void (async () => {
+      const validated = await Promise.all(draft.input_parts.map(async part => {
+        try {
+          if (part.kind === 'image') {
+            await conversationInputApi.imageBlob(part.media_id)
+            return part
+          }
+          if (conversationId) {
+            const result = await conversationInputApi.searchFiles(conversationId, part.relative_path)
+            return result.items.some(item => item.project_folder_id === part.project_folder_id
+              && item.workspace_location_id === part.workspace_location_id
+              && item.relative_path === part.relative_path)
+              ? part
+              : null
+          }
+          return inputFileSources?.some(source => source.projectFolderId === part.project_folder_id
+            && (!source.workspaceLocationId || source.workspaceLocationId === part.workspace_location_id))
+            ? part
+            : null
+        } catch {
+          return null
+        }
+      }))
+      if (cancelled) return
+      setComposer(current => ({ ...current, text: draft.text }))
+      setInputParts(validated.filter((part): part is ConversationInputPart => part !== null))
+      setResetToken(value => value + 1)
+      draftReadyRef.current = draftDestination
+    })()
+    return () => { cancelled = true }
+  }, [conversationId, draftDestination, inputFileSources])
+
+  useEffect(() => {
+    if (draftReadyRef.current !== draftDestination) return
+    const timer = window.setTimeout(() => writeConversationDraft({
+      destination: draftDestination,
+      text: composer.text,
+      input_parts: inputParts,
+    }), 250)
+    return () => window.clearTimeout(timer)
+  }, [composer.text, draftDestination, inputParts])
 
   useEffect(() => { runsRef.current = runs }, [runs])
   // Held in a ref, never in a dependency list. `loadMessages` reports the
@@ -216,6 +279,8 @@ export function ConversationSurface({
   useEffect(() => { conversationUpdatedRef.current = onConversationUpdated }, [onConversationUpdated])
   const onSentRef = useRef(onSent)
   useEffect(() => { onSentRef.current = onSent }, [onSent])
+  const inputFileSourcesRef = useRef(inputFileSources ?? [])
+  useEffect(() => { inputFileSourcesRef.current = inputFileSources ?? [] }, [inputFileSources])
   useEffect(() => { if (suppliedDetail !== undefined) setDetail(suppliedDetail) }, [suppliedDetail])
   useEffect(() => {
     if (suppliedDetail !== undefined) return
@@ -291,6 +356,7 @@ export function ConversationSurface({
           // each one would drop its own controller again.
           if (turn.state === 'working' || turn.state === 'blocked') return
           streamControllers.current.delete(runId)
+          notifyProjectFolderContentChanged(inputFileSourcesRef.current.map(source => source.projectFolderId))
           void loadMessages()
         },
       }).catch(error => {
@@ -317,6 +383,13 @@ export function ConversationSurface({
       })
     }
   }, [loadMessages])
+
+  const retryRun = useCallback(async (runId: string) => {
+    if (!conversationId) throw new Error('This conversation is no longer available')
+    const retried = await roomsApi.retryMessage(roomId, conversationId, runId)
+    watchRuns(retried.run_ids)
+    await loadMessages()
+  }, [conversationId, loadMessages, roomId, watchRuns])
 
   // A new conversation starts from nothing and follows its tail.
   useEffect(() => {
@@ -430,12 +503,33 @@ export function ConversationSurface({
   const backendCatalogs = conversationId
     ? loadedBackendCatalogs
     : { ...loadedBackendCatalogs, ...(suppliedBackendCatalogs ?? {}) }
+  const inputCapabilityMessage = useMemo(() => {
+    if (!inputParts.some(part => part.kind === 'image')) return null
+    const targetIds = routingMode === 'agent_coordination'
+      ? managerAgentId ? [managerAgentId] : []
+      : composer.routingSegments.length > 0
+        ? uniqueIds(composer.routingSegments.flatMap(segment => segment.recipient_agent_ids))
+        : managerAgentId ? [managerAgentId] : []
+    const incompatible = targetIds.flatMap(agentId => {
+      const catalog = backendCatalogs[agentId]
+      const binding = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
+      const option = catalog?.options.find(candidate => candidate.runtime_profile_id === binding?.runtime_profile_id)
+      return option?.prompt_capabilities?.image === false ? [roomAgents.find(agent => agent.id === agentId)?.name ?? agentId] : []
+    })
+    return incompatible.length > 0
+      ? `Images are not supported by ${incompatible.join(', ')}. Remove the affected image or choose another target.`
+      : null
+  }, [backendCatalogs, composer.routingSegments, inputParts, managerAgentId, roomAgents, routingMode])
 
   useEffect(() => {
     const agentIds = configurableAgentKey ? configurableAgentKey.split(':') : []
-    const requestedAgentIds = conversationId
-      ? agentIds
-      : agentIds.filter(agentId => !suppliedBackendCatalogs?.[agentId])
+    // A draft has no session boundary yet. The backend catalog endpoint
+    // authorizes a Project Agent through that Conversation's Room membership,
+    // so asking for a catalog before the draft exists is indistinguishable
+    // from asking for an unknown Agent and correctly returns 404. Preflight
+    // owns draft backend choices; this surface only needs catalogs after the
+    // server has created the Conversation.
+    const requestedAgentIds = conversationId ? agentIds : []
     if (requestedAgentIds.length === 0) {
       setSessionConfig(current => Object.fromEntries(agentIds.map(agentId => {
         const catalog = suppliedBackendCatalogs?.[agentId]
@@ -490,7 +584,7 @@ export function ConversationSurface({
 
   const sendMessage = useCallback(async (confirmDisclosure?: string[]) => {
     const text = composer.text.trim()
-    if (!conversationId || !text || sendingRef.current || !executionReady) return
+    if (!conversationId || (!text && inputParts.length === 0) || sendingRef.current || !executionReady) return
     const segments = composer.routingSegments
       .map(segment => ({ recipient_agent_ids: uniqueIds(segment.recipient_agent_ids), content: segment.content.trim() }))
       .filter(segment => segment.recipient_agent_ids.length > 0 && segment.content)
@@ -515,6 +609,7 @@ export function ConversationSurface({
       }
       const dispatched = await roomsApi.sendMessage(roomId, conversationId, {
         content: text,
+        ...(inputParts.length > 0 ? { input_parts: inputParts } : {}),
         routing_mode: routingMode,
         ...(variant === 'full' && routingMode === 'direct' && segments.length > 0
           ? { recipient_segments: segments }
@@ -528,6 +623,8 @@ export function ConversationSurface({
         conversationUpdatedRef.current?.(dispatched.conversation)
       }
       onSentRef.current?.()
+      clearConversationDraft(draftDestination)
+      clearConversationDraft(`room:${roomId}:new`)
       setResetToken(value => value + 1)
     } catch (error) {
       // The one refusal the person can answer. Held rather than reported: the
@@ -562,7 +659,7 @@ export function ConversationSurface({
       sendingRef.current = false
       setSending(false)
     }
-  }, [composer, configuredBackendsFor, conversationId, executionReady, focusRefs, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
+  }, [composer, configuredBackendsFor, conversationId, executionReady, focusRefs, inputParts, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
 
   // A decision made here continues the conversation here.
   const continueAfterDecision = useCallback(async (preview: ChatActionPreview, action: RoomActionDecision) => {
@@ -716,6 +813,10 @@ export function ConversationSurface({
               turn={message.role === 'assistant'
                 ? messageRunIds(message).map(runId => liveTurns[runId]).find(Boolean)
                 : undefined}
+              runIds={message.role === 'user' ? messageRunIds(message) : []}
+              runs={runs}
+              projectId={detail?.room.project_id ?? null}
+              onRetry={retryRun}
               onActionDecision={continueAfterDecision}
             />
             {/*
@@ -779,6 +880,7 @@ export function ConversationSurface({
         {executionPreflight}
         {runSettings}
         <ConversationComposer
+          renderInputReferences={false}
           editor={<RoomMessageComposer
             value={composer}
             onChange={setComposer}
@@ -789,6 +891,12 @@ export function ConversationSurface({
             disabled={sending}
             resetToken={resetToken}
             onSubmit={() => void sendMessage()}
+            projectId={detail?.room.project_id}
+            projectFolderId={detail?.room.project_folder_id}
+            fileSources={inputFileSources}
+            sessionId={conversationId}
+            inputParts={inputParts}
+            onInputPartsChange={setInputParts}
             embedded
           />}
           controls={(
@@ -814,8 +922,16 @@ export function ConversationSurface({
           )}
           note={!executionReady ? 'Configure the execution context before sending.' : undefined}
           sending={sending}
-          sendDisabled={sending || !executionReady || !composer.text.trim()}
+          sendDisabled={sending || !executionReady || (!composer.text.trim() && inputParts.length === 0)}
           onSend={() => void sendMessage()}
+          inputParts={inputParts}
+          onInputPartsChange={setInputParts}
+          inputCapabilityMessage={inputCapabilityMessage}
+          projectId={detail?.room.project_id}
+          projectFolderId={detail?.room.project_folder_id}
+          fileSources={inputFileSources}
+          sessionId={conversationId}
+          inputResetToken={resetToken}
         />
       </div>
     </div>
@@ -824,7 +940,7 @@ export function ConversationSurface({
 
 function RoomMessageView({
   message, compact, picked, pickable, onPickedChange,
-  viewerUserId, agents, humans, turn, onActionDecision,
+  viewerUserId, agents, humans, turn, runIds, runs, projectId, onRetry, onActionDecision,
 }: {
   message: RoomMessage
   compact: boolean
@@ -842,6 +958,10 @@ function RoomMessageView({
   humans: SpaceMember[]
   /** The turn this reply came from, when one is held for it. */
   turn?: RunTurn
+  runIds: string[]
+  runs: Record<string, Run>
+  projectId?: string | null
+  onRetry: (runId: string) => Promise<void>
   onActionDecision: (preview: ChatActionPreview, action: RoomActionDecision) => Promise<void>
 }) {
   const mine = message.role === 'user'
@@ -873,47 +993,51 @@ function RoomMessageView({
           />
         </label>
       )}
-      <div className={system
-        ? 'max-w-full rounded-lg border border-dashed border-border bg-muted/30 px-3 py-2 text-muted-foreground'
-        : mine
-        ? `${compact ? 'max-w-full' : 'max-w-[82%]'} rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-primary-foreground`
-        : `${compact ? 'max-w-full' : 'max-w-[82%]'} rounded-2xl rounded-bl-sm border border-border bg-muted/60 px-3 py-2`}>
-        <div className={`mb-1 flex items-center gap-2 text-[11px] font-medium ${mine ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
-          {!mine && <Bot className="size-3.5" />}
-          <span>{label}</span>
-          <span>{new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-        </div>
-        {/*
-          An Agent reply is its turn, when one is held: the reply with the
-          work that produced it folded above, which is what D3 asks for and
-          what a plain bubble cannot show.
-
-          The state is the turn's own. The server decides it in one place
-          (`turnReadModel.turnState`) with facts a client does not have — that
-          a `degraded` Run still carries a usable reply, that a chat Run
-          reaches `succeeded` before its reply is written — and re-deriving it
-          here from the Run's status produces a second, worse answer. Only the
-          prose is replaced, with what was actually saved.
-        */}
-        {turn
-          ? (
-            <ConversationTurn
-              turn={settledTurn(turn, turn.state, message.content)!}
-              runHref={`/runs/${turn.run_id}`}
-            />
-          )
-          : <MessageResponse>{message.content}</MessageResponse>}
-        {previews.length > 0 && (
-          <div className="mt-2 space-y-2" data-testid={`previews-${message.id}`}>
-            {previews.map((preview, index) => (
-              <RoomActionPreviewCard
-                key={`${preview.action_id}:${preview.proposal_id ?? index}`}
-                preview={preview}
-                onDecision={onActionDecision}
-              />
-            ))}
+      <div className={`min-w-0 ${compact ? 'max-w-full' : 'max-w-[82%]'}`}>
+        <div className={system
+          ? 'min-w-0 max-w-full rounded-lg border border-dashed border-border bg-muted/30 px-3 py-2 text-muted-foreground'
+          : mine
+          ? 'min-w-0 max-w-full rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-primary-foreground'
+          : 'min-w-0 max-w-full rounded-2xl rounded-bl-sm border border-border bg-muted/60 px-3 py-2'}>
+          <div className={`mb-1 flex min-w-0 items-center gap-2 text-[11px] font-medium ${mine ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
+            {!mine && <Bot className="size-3.5 shrink-0" />}
+            <span className="truncate">{label}</span>
+            <span className="shrink-0">{new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
           </div>
-        )}
+          {/*
+            An Agent reply is its turn, when one is held: the reply with the
+            work that produced it folded above, which is what D3 asks for and
+            what a plain bubble cannot show.
+
+            The state is the turn's own. The server decides it in one place
+            (`turnReadModel.turnState`) with facts a client does not have — that
+            a `degraded` Run still carries a usable reply, that a chat Run
+            reaches `succeeded` before its reply is written — and re-deriving it
+            here from the Run's status produces a second, worse answer. Only the
+            prose is replaced, with what was actually saved.
+          */}
+          <ConversationInputPartsView parts={message.input_parts} />
+          {turn
+            ? (
+              <ConversationTurn
+                turn={settledTurn(turn, turn.state, message.content)!}
+                runHref={`/runs/${turn.run_id}`}
+              />
+            )
+            : message.content && <MessageResponse>{message.content}</MessageResponse>}
+          {previews.length > 0 && (
+            <div className="mt-2 space-y-2" data-testid={`previews-${message.id}`}>
+              {previews.map((preview, index) => (
+                <RoomActionPreviewCard
+                  key={`${preview.action_id}:${preview.proposal_id ?? index}`}
+                  preview={preview}
+                  onDecision={onActionDecision}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+        {runIds.map(runId => <ConversationRunControls key={runId} runId={runId} run={runs[runId]} projectId={projectId} onRetry={onRetry} />)}
       </div>
     </div>
   )
@@ -1018,8 +1142,13 @@ export function messageRunIds(message: {
   run_id?: string | null
 }): string[] {
   const fanout = message.metadata_json?.run_ids
-  if (Array.isArray(fanout)) return fanout.filter((id): id is string => typeof id === 'string')
-  return message.run_id ? [message.run_id] : []
+  const retries = message.metadata_json?.retry_run_ids
+  const ids = [
+    ...(Array.isArray(fanout) ? fanout : []),
+    ...(Array.isArray(retries) ? retries : []),
+    ...(message.run_id ? [message.run_id] : []),
+  ]
+  return uniqueIds(ids.filter((id): id is string => typeof id === 'string'))
 }
 
 export function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {

@@ -17,6 +17,7 @@ import {
 import {
   DURABLE_ACTION_CLAIM_POLICY,
   PLAIN_STATUS_RESPONSE_POLICY,
+  TASK_CONTRACT_POLICY,
 } from "./conversationPolicy.js";
 
 export interface ManagedAgentToolSurfaceDeps extends SystemActionDispatcherDeps {
@@ -28,6 +29,7 @@ const MANAGED_ACTION_RESPONSE_POLICY = [
   "System action schemas and tool results are internal execution details.",
   "Do not print raw action arguments, JSON schemas, placeholder payloads, or tool-result objects unless the user explicitly asks for JSON.",
   DURABLE_ACTION_CLAIM_POLICY,
+  TASK_CONTRACT_POLICY,
   "When the user has clearly confirmed a supported action, call the action instead of simulating it in prose; then summarize the real result in ordinary language.",
   PLAIN_STATUS_RESPONSE_POLICY,
   "If no offered action can perform the request, state that limitation briefly and point to the owning product area.",

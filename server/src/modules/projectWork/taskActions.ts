@@ -341,7 +341,10 @@ export async function completeTask(
     );
     const missingOutputs = completion.missing.filter((reason) => reason.startsWith("required_output:"));
     if (missingOutputs.length > 0) {
-      throw new HttpError(422, "This Task declared outputs that do not exist yet", {
+      const outputTypes = missingOutputs
+        .map((reason) => reason.slice("required_output:".length))
+        .join(", ");
+      throw new HttpError(422, `This Task cannot be completed because these required file outputs are missing: ${outputTypes}. Required outputs are Artifact type labels, not reports or workspace edits; use artifact.submit when this Run can deliver a file, or ask for review.`, {
         code: "completion_requirements_unmet",
         missing: completion.missing,
         unacknowledged: missingOutputs,

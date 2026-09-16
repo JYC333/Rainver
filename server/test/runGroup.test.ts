@@ -25,6 +25,30 @@ import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("runContractSnapshot", () => {
+  it("keeps the dispatch-time Git snapshot immutable in the Run contract", () => {
+    const snapshot = createRunContractSnapshot({
+      source: { kind: "direct", id: "session-1" },
+      project_id: "project-1",
+      git_snapshot: {
+        source: "workspace_location",
+        workspace_location_id: "location-1",
+        branch: "feature/conversation",
+        commit_sha: "a".repeat(40),
+        dirty: true,
+        execution_ready: true,
+        observed_at: "2026-09-13T10:00:00.000Z",
+      },
+    }, "2026-09-13T10:00:01.000Z");
+
+    expect(contractRecord(snapshot).git_snapshot).toMatchObject({
+      workspace_location_id: "location-1",
+      branch: "feature/conversation",
+      commit_sha: "a".repeat(40),
+      dirty: true,
+    });
+    expect(snapshot.created_at).toBe("2026-09-13T10:00:01.000Z");
+  });
+
   describe("Run contract snapshots", () => {
     it("resolves Space, Automation, Workflow, and Plan caps with a persisted source trace", () => {
       const snapshot = createRunContractSnapshot({

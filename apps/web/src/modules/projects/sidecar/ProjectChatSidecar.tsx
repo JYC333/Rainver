@@ -6,14 +6,16 @@ import { toast } from 'sonner'
 import { projectsApi, roomsApi } from '../../../api/client'
 import { errMsg } from '../../../lib/utils'
 import { SpaceLink as Link } from '../../../core/spaceNav'
-import type { Room, RoomConversation as RoomConversationRecord } from '../../../types/api'
+import type { ConversationExecutionSummary, Room, RoomConversation as RoomConversationRecord } from '../../../types/api'
 import { Button } from '../../../components/ui/button'
 import { Select } from '../../../components/ui/select'
 import { Skeleton } from '../../../components/ui/skeleton'
 import { ConversationSurface } from '../../conversation/ConversationSurface'
 import { ConversationBackendSetupCard } from '../../agent_groups/conversation/ConversationBackendSetupCard'
 import { ConversationExecutionPreflight } from '../../conversation/ConversationExecutionPreflight'
+import { conversationInputSourcesFromExecutionSummary } from '../../conversation/ConversationInputComposer'
 import ProjectConversationBackendCard from '../ProjectConversationBackendCard'
+import { useProjectFolderConversation } from '../ProjectFolderConversationContext'
 
 /**
  * Talking to the Project's Agent without leaving what you are looking at.
@@ -132,6 +134,22 @@ export default function ProjectChatSidecar() {
   const [runtimeOpen, setRuntimeOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [executionReady, setExecutionReady] = useState(false)
+  const [executionSummary, setExecutionSummary] = useState<ConversationExecutionSummary | null>(null)
+  const { selectedFolderId, setConversationFolderIds } = useProjectFolderConversation()
+
+  const conversationFolderIds = useMemo(() => {
+    if (executionSummary?.state !== 'initialized') return null
+    const ids: string[] = []
+    if (executionSummary.primary?.kind === 'location') ids.push(executionSummary.primary.project_folder_id)
+    ids.push(...executionSummary.attachments
+      .filter(attachment => attachment.status === 'active')
+      .map(attachment => attachment.project_folder_id))
+    return Array.from(new Set(ids))
+  }, [executionSummary])
+
+  useEffect(() => {
+    setConversationFolderIds(conversationFolderIds)
+  }, [conversationFolderIds, setConversationFolderIds])
 
   // Per Project: whether you want the Agent alongside one Project says nothing
   // about whether you want it alongside another.
@@ -144,6 +162,7 @@ export default function ProjectChatSidecar() {
     setLoading(true)
     setSetupTargets([])
     setExecutionReady(false)
+    setExecutionSummary(null)
     void (async () => {
       try {
         setFailure(null)
@@ -307,11 +326,13 @@ export default function ProjectChatSidecar() {
             roomId={room.id}
             conversationId={sessionId || null}
             executionReady={executionReady}
+            inputFileSources={conversationInputSourcesFromExecutionSummary(executionSummary)}
             executionPreflight={(
               <ConversationExecutionPreflight
                 projectId={projectId}
                 roomId={room.id}
                 sessionId={sessionId || null}
+                preferredProjectFolderId={selectedFolderId}
                 onConversationCreated={conversation => {
                   setSessionId(conversation.id)
                   setConversations(current => [conversation, ...current.filter(item => item.id !== conversation.id)])
@@ -319,6 +340,7 @@ export default function ProjectChatSidecar() {
                 }}
                 onNewConversation={startThread}
                 onReadyChange={setExecutionReady}
+                onSummaryChange={setExecutionSummary}
               />
             )}
             variant="panel"

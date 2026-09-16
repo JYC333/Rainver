@@ -285,17 +285,37 @@ describe("Project Folder database invariants", () => {
 
   it("stamps a new Folder to the server host (ADR 0016)", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
-    const repo = new PgProjectFolderRepository(
-      db.pool,
-      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }),
-    );
-    const identity = { spaceId: SPACE, userId: USER };
-    const created = await repo.create(identity, PROJECT, { name: "New Managed Folder" });
-    const row = await db.pool.query<{ execution_host_id: string; execution_host_kind: string }>(
-      `SELECT execution_host_id, execution_host_kind FROM workspace_locations WHERE project_folder_id = $1`,
-      [created.id],
-    );
-    expect(row.rows[0]).toMatchObject({ execution_host_id: HOST, execution_host_kind: "server" });
+    const root = await mkdtemp(join(tmpdir(), "rainver-managed-folder-git-"));
+    try {
+      const repo = new PgProjectFolderRepository(
+        db.pool,
+        loadConfig({ WORKSPACE_ROOT: join(root, "workspaces"), SERVER_DATABASE_URL: db.connectionUri }),
+      );
+      const identity = { spaceId: SPACE, userId: USER };
+      const created = await repo.create(identity, PROJECT, { name: "New Managed Folder" });
+      const row = await db.pool.query<{
+        execution_host_id: string;
+        execution_host_kind: string;
+        root_path: string;
+      }>(
+        `SELECT execution_host_id, execution_host_kind, root_path
+           FROM workspace_locations WHERE project_folder_id = $1`,
+        [created.id],
+      );
+      expect(row.rows[0]).toMatchObject({ execution_host_id: HOST, execution_host_kind: "server" });
+      expect(await repo.getGitStatus(identity, PROJECT, created.id)).toMatchObject({
+        is_repo: true,
+        files: [],
+      });
+
+      await writeFile(join(row.rows[0]!.root_path, "created.txt"), "created\n", "utf8");
+      await expect(repo.getGitStatus(identity, PROJECT, created.id)).resolves.toMatchObject({
+        is_repo: true,
+        files: [{ path: "created.txt", status: "untracked" }],
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("reports an offline remote host while keeping server-only sandbox prep blocked (ADR 0016 B62-B64)", async (ctx) => {

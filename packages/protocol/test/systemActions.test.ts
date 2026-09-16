@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { POLICY_ACTION_REGISTRY, SYSTEM_ACTION_GATE_CLASSES, SYSTEM_ACTION_REGISTRY, SystemActionDefinitionSchema } from "../src/index.js";
+import { POLICY_ACTION_REGISTRY, SYSTEM_ACTION_GATE_CLASSES, SYSTEM_ACTION_REGISTRY, SystemActionDefinitionSchema, systemActionInputJsonSchema } from "../src/index.js";
 import type { SystemActionDefinition } from "../src/index.js";
 
 describe("SYSTEM_ACTION_REGISTRY", () => {
@@ -23,6 +23,13 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     expect(byId.get("source.backfill.propose_start")!.input_schema.safeParse({source_channel_id:"channel-1"}).success).toBe(false);
     expect(byId.get("project.propose_definition")!.input_schema.safeParse({goal:"Define reliable personal memory"}).success).toBe(true);
     expect(byId.get("inquiry.create_thread")!.input_schema.safeParse({ statement: "How should memory retrieval work?" }).success).toBe(true);
+  });
+
+  it("describes required Task outputs as file Artifacts rather than reply text", () => {
+    const definition = SYSTEM_ACTION_REGISTRY.find((action) => action.id === "task.create")!;
+    const schema = systemActionInputJsonSchema(definition) as { properties?: Record<string, { description?: string }> };
+    expect(schema.properties?.required_outputs?.description).toContain("concrete file Artifact type labels");
+    expect(schema.properties?.required_outputs?.description).toContain("omit it");
   });
 
   it("validates source.channel.propose_activation as Source Channel creation parameters, not a channel reference (D5)", () => {

@@ -61,6 +61,7 @@ export * from "./runs.js";
 export * from "./runToolSurface.js";
 export * from "./scheduler.js";
 export * from "./sessions.js";
+export * from "./conversationInputs.js";
 export * from "./conversationExecutionContexts.js";
 export * from "./conversationFolderAccess.js";
 export * from "./settings.js";

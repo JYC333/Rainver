@@ -10,6 +10,7 @@ import {
   resolveIdentity,
   sendRouteError, requiredString } from "../routeUtils/common.js";
 import { RoomService } from "./service.js";
+import { requireConversationIdempotencyKey } from "../sessions/conversationRetry.js";
 
 type RoomServicePort = Pick<
   RoomService,
@@ -35,6 +36,7 @@ type RoomServicePort = Pick<
   | "listMessages"
   | "getConversationSummary"
   | "sendMessage"
+  | "retryMessage"
   | "attachConversationReferences"
   | "continueAfterProposal"
 >;
@@ -377,6 +379,30 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             body,
           ),
         );
+      } catch (error) {
+        return sendRoomError(reply, error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/v1/rooms/:roomId/conversations/:sessionId/retry",
+    async (request, reply) => {
+      const identity = await resolveIdentity(context.config, request, reply);
+      if (!identity) return reply;
+      try {
+        const body = protocol.ConversationRetryRequestSchema.parse(jsonBody(request));
+        const idempotencyKey = requireConversationIdempotencyKey(request.headers["idempotency-key"]);
+        const result = await service(context).retryMessage(
+          identity,
+          roomId(request),
+          sessionId(request),
+          { ...body, idempotency_key: idempotencyKey },
+        );
+        return reply.code(202).send(protocol.ConversationRetryResponseSchema.parse({
+          ...result.value,
+          reused: result.reused,
+        }));
       } catch (error) {
         return sendRoomError(reply, error);
       }

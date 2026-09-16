@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decidableByViewer } from '../ConversationSurface'
+import { decidableByViewer, messageRunIds } from '../ConversationSurface'
 import type { ChatActionPreview } from '../../../types/api'
 
 /**
@@ -47,5 +47,12 @@ describe('which cards a person is shown', () => {
     const owned = preview({ proposal_id: 'proposal-3', decidable_by_user_id: OWNER })
     expect(decidableByViewer([shared, owned], MEMBER)).toEqual([shared])
     expect(decidableByViewer([shared, owned], OWNER)).toEqual([shared, owned])
+  })
+
+  it('keeps original and retry Runs attached to one Room message', () => {
+    expect(messageRunIds({
+      run_id: 'run-original',
+      metadata_json: { run_ids: ['run-original', 'run-recipient'], retry_run_ids: ['run-retry'] },
+    })).toEqual(['run-original', 'run-recipient', 'run-retry'])
   })
 })

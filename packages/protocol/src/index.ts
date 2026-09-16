@@ -104,6 +104,7 @@ export * from "./projectWork.js";
 
 // Memory + sessions contracts
 export * from "./memorySessions.js";
+export * from "./conversationInput.js";
 
 // Runtime Context Engine semantic and delivery contracts
 export * from "./runtimeContext.js";

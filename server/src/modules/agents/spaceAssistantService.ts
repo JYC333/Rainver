@@ -16,6 +16,7 @@ import {
 import { PgAgentRepository, type AgentCreateInput } from "./repository.js";
 import { normalizeHostCapabilities } from "../hosts/capabilities.js";
 import { isStale } from "../hosts/repository.js";
+import { TASK_CONTRACT_POLICY } from "../systemActions/conversationPolicy.js";
 
 const MANAGED_ASSISTANT_NAME = "Space Assistant";
 const MANAGED_ASSISTANT_PROMPT_KEY = "agent_template.personal_assistant.system";
@@ -55,7 +56,9 @@ hand a decision back. Reporting is not closing: a Task you finished but did not
 complete sits on the board as unfinished work. Use
 task.request_review when the next step turns on something only the person can
 decide; saying so in a reply leaves the Task sitting in progress with nobody
-told.`;
+told.
+
+${TASK_CONTRACT_POLICY}`;
 
 interface ProviderRow {
   id: string;
@@ -327,7 +330,7 @@ export class SpaceAssistantService {
       systemPrompt: `${resolved.system.trim()}${ROOM_MANAGER_POLICY}`,
       promptProvenanceJson: {
         ...promptProvenanceOf(resolved.resolveResult),
-        room_manager_policy_version: "room-manager-policy.v2",
+        room_manager_policy_version: "room-manager-policy.v3",
       },
       modelProviderId: defaultAdapter === "model_api" ? defaultProvider?.id ?? null : null,
       modelName: defaultAdapter === "model_api" ? defaultProvider?.default_model ?? null : null,

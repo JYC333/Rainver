@@ -32,7 +32,7 @@ interface ProjectFolderServices {
     | "getFile"
     | "getGitStatus"
     | "getGitDiff"
-  > & Partial<Pick<PgProjectFolderRepository, "listLocations" | "listHostExecutionTargets">>;
+  > & Partial<Pick<PgProjectFolderRepository, "listLocations" | "listHostExecutionTargets" | "editFile" | "listFileRevisions" | "rollbackFile">>;
 }
 
 type ProjectFolderServicesFactory = (context: ModuleContext) => ProjectFolderServices;
@@ -260,6 +260,59 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         projectId(request),
         folderId(request),
         requestedPath,
+      ));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/folders/:folderId/file", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const repository = services(context).repository;
+      if (!repository.editFile) return reply.code(501).send({ detail: "Project Folder file editing is unavailable" });
+      return reply.send(await repository.editFile(
+        id,
+        projectId(request),
+        folderId(request),
+        jsonBody(request),
+      ));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/folders/:folderId/file/revisions", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const requestedPath = query(request).path;
+      if (!requestedPath) throw new HttpError(422, "path is required");
+      const repository = services(context).repository;
+      if (!repository.listFileRevisions) return reply.code(501).send({ detail: "Project Folder file revisions are unavailable" });
+      return reply.send(await repository.listFileRevisions(
+        id,
+        projectId(request),
+        folderId(request),
+        requestedPath,
+      ));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/folders/:folderId/file/rollback", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const repository = services(context).repository;
+      if (!repository.rollbackFile) return reply.code(501).send({ detail: "Project Folder file rollback is unavailable" });
+      return reply.send(await repository.rollbackFile(
+        id,
+        projectId(request),
+        folderId(request),
+        jsonBody(request),
       ));
     } catch (error) {
       return sendRouteError(reply, error);

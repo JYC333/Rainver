@@ -5,6 +5,7 @@ import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { AgentGroupRunService, type AgentGroupMessageRecipientSegment } from "../agentGroups/service.js";
 import { HttpError, withDbTransaction, dateIso } from "../routeUtils/common.js";
 import { PgSessionRepository } from "../sessions/repository.js";
+import { PgRunRepository } from "../runs/repository.js";
 import { visibleRoomTranscriptSql } from "../sessions/messagePath.js";
 import {
   assertProjectWriter,
@@ -19,7 +20,7 @@ import { PgRoomRepository, ROOM_AUDIENCE_SQL, type RoomRecord } from "./reposito
 import { RoomReferenceService } from "./referenceService.js";
 import { ProjectOverviewService } from "../projects/overviewService.js";
 import { SpaceAssistantService, type ManagedAssistantPreparation } from "../agents/spaceAssistantService.js";
-import type { RoomDetail, RuntimeSessionConfigSelection, ThreadReferencePick } from "@rainver/protocol";
+import type { ConversationInputPart, RoomDetail, RuntimeSessionConfigSelection, ThreadReferencePick } from "@rainver/protocol";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { RoomRosterService } from "./rosterService.js";
 import { RoomConversationSummaryService } from "./conversationSummaryService.js";
@@ -27,6 +28,11 @@ import { requestRoomConversationTitle } from "./conversationTitleService.js";
 import { PgProposalRepository } from "../proposals/repository.js";
 import { createDefaultConversationContinuationRegistry } from "../proposals/continuationRegistry.js";
 import { PLAIN_STATUS_RESPONSE_POLICY } from "../systemActions/conversationPolicy.js";
+import { PgConversationBackendRepository } from "../sessions/conversationBackendRepository.js";
+import { ConversationInputError, ConversationInputService, type PreparedConversationInputPart } from "../sessions/conversationInputService.js";
+import { ConversationInputCapabilityError, assertConversationInputCapabilities } from "../sessions/conversationInputCapabilities.js";
+import { conversationRetryFingerprint, withConversationRetryIdempotency } from "../sessions/conversationRetry.js";
+import type { MessageOut } from "@rainver/protocol";
 
 export interface RoomIdentity {
   spaceId: string;
@@ -585,6 +591,7 @@ export class RoomService {
   /** Speak in an explicitly-created, initialized Conversation in a Room. */
   async sendMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: {
     content: string;
+    input_parts?: ConversationInputPart[];
     focus_refs?: Array<{ type: "task"; id: string }> | null;
     routing_mode?: "direct" | "agent_coordination";
     recipient_segments?: AgentGroupMessageRecipientSegment[] | null;
@@ -599,7 +606,8 @@ export class RoomService {
       const room = await requireRoom(rooms, identity, roomId, true);
       const conversation = await requireConversation(rooms, identity, roomId, sessionId);
       const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
-        content: requiredText(input.content, "content"),
+        content: input.content.trim(),
+        input_parts: input.input_parts ?? [],
         focus_refs: input.focus_refs ?? null,
         routing_mode: input.routing_mode ?? "direct",
         recipient_segments: input.recipient_segments ?? null,
@@ -607,6 +615,114 @@ export class RoomService {
         kind: "user",
       });
       return dispatched;
+    });
+  }
+
+  async retryMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: {
+    run_id: string;
+    idempotency_key: string;
+  }) {
+    return withDbTransaction(this.pool, async (client) => {
+      const rooms = new PgRoomRepository(client);
+      const room = await requireRoom(rooms, identity, roomId, true);
+      const conversation = await requireConversation(rooms, identity, roomId, sessionId);
+      const runs = new PgRunRepository(client);
+      const original = await runs.getVisibleRun(identity.spaceId, identity.userId, input.run_id);
+      if (!original || original.session_id !== conversation.id || !original.run_group_id) {
+        throw new HttpError(404, "The failed Run is not available in this Room conversation");
+      }
+      if (original.status !== "failed" && original.status !== "degraded") {
+        throw new HttpError(409, "Only a failed conversation turn can be retried");
+      }
+      const sessions = new PgSessionRepository(client);
+      const originalMessage = await sessions.roomMessageByRunId(
+        identity.spaceId,
+        identity.userId,
+        roomId,
+        conversation.id,
+        original.id,
+      );
+      if (!originalMessage || originalMessage.role !== "user") {
+        throw new HttpError(409, "The failed Run has no persisted Room input to retry");
+      }
+      const fingerprint = conversationRetryFingerprint({ kind: "room", runId: original.id, sessionId: conversation.id });
+      return withConversationRetryIdempotency(
+        client,
+        {
+          spaceId: identity.spaceId,
+          userId: identity.userId,
+          key: input.idempotency_key,
+          fingerprint,
+          sessionId: conversation.id,
+          messageId: originalMessage.id,
+          runId: original.id,
+        },
+        async () => {
+          const metadata = record(originalMessage.metadata_json);
+          const originalRunIds = Array.from(new Set([
+            ...stringArray(metadata.run_ids),
+            original.id,
+          ]));
+          const originalRuns = await Promise.all(originalRunIds.map(runId => runs.getRun(identity.spaceId, runId)));
+          const completeRuns = originalRuns.filter((run): run is NonNullable<typeof run> => Boolean(run));
+          if (completeRuns.length !== originalRunIds.length || completeRuns.some(run => run.session_id !== conversation.id || (run.status !== "failed" && run.status !== "degraded"))) {
+            throw new HttpError(409, "Every recipient Run in this Room turn must be failed before retry");
+          }
+          const segments = new Map<number, AgentGroupMessageRecipientSegment>();
+          const backends = new Map<string, { agent_id: string; runtime_profile_id: string; session_config?: RuntimeSessionConfigSelection[] }>();
+          for (const run of completeRuns) {
+            const model = record(run.model_override_json);
+            const turn = record(model.chat_turn);
+            const segmentIndex = typeof turn.current_segment_index === "number" ? turn.current_segment_index : 0;
+            const agentId = typeof turn.current_recipient_agent_id === "string" ? turn.current_recipient_agent_id : run.agent_id;
+            const content = typeof turn.assigned_task === "string" && turn.assigned_task.trim()
+              ? turn.assigned_task
+              : originalMessage.content;
+            const segment = segments.get(segmentIndex) ?? { recipient_agent_ids: [], content };
+            if (!segment.recipient_agent_ids.includes(agentId)) segment.recipient_agent_ids.push(agentId);
+            segments.set(segmentIndex, segment);
+            const backend = record(model.conversation_backend);
+            const runtimeProfileId = typeof backend?.runtime_profile_id === "string" ? backend.runtime_profile_id : null;
+            if (!runtimeProfileId) throw new HttpError(409, "Retry context needs review: a Room backend is missing");
+            const requestedConfig = Array.isArray(model.acp_session_config)
+              ? model.acp_session_config.filter((value): value is RuntimeSessionConfigSelection => Boolean(value && typeof value === "object"))
+              : [];
+            backends.set(agentId, { agent_id: agentId, runtime_profile_id: runtimeProfileId, ...(requestedConfig.length ? { session_config: requestedConfig } : {}) });
+          }
+          const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
+            content: originalMessage.content,
+            input_parts: [],
+            routing_mode: "direct",
+            recipient_segments: Array.from(segments.entries()).sort(([left], [right]) => left - right).map(([, segment]) => segment),
+            backends: Array.from(backends.values()),
+            kind: "user",
+            capability_input_parts: originalMessage.input_parts ?? [],
+            existing_user_message: originalMessage,
+            retry_of_run_id: original.id,
+          });
+          for (const runId of dispatched.run_ids) {
+            await sessions.appendRetryRunToUserMessage({
+              space_id: identity.spaceId,
+              user_id: identity.userId,
+              session_id: conversation.id,
+              message_id: originalMessage.id,
+              run_id: runId,
+            });
+          }
+          const runId = dispatched.run_ids[0];
+          if (!runId) throw new HttpError(500, "Room retry created no recipient Run");
+          return {
+            schema_version: "conversation_retry.v1" as const,
+            session_id: conversation.id,
+            run_id: runId,
+            run_ids: dispatched.run_ids,
+            retry_of_run_id: original.id,
+            user_message_id: originalMessage.id,
+            status: "queued" as const,
+            event_stream_url: `/api/v1/runs/${encodeURIComponent(runId)}/turn/stream`,
+          };
+        },
+      );
     });
   }
 
@@ -874,6 +990,13 @@ export class RoomService {
         runtime_profile_id: string;
         session_config?: RuntimeSessionConfigSelection[];
       }>;
+      input_parts?: ConversationInputPart[];
+      /** Marks a retry so remote prompt hydration can preserve immutable inputs. */
+      retry_of_run_id?: string | null;
+      /** Existing message-owned parts to validate for a retry without re-claiming them. */
+      capability_input_parts?: ConversationInputPart[];
+      prepared_input_parts?: PreparedConversationInputPart[];
+      existing_user_message?: MessageOut;
       /** See `AddMessageInput.created_at`; set when references precede it. */
       created_at?: string;
     } & (
@@ -912,6 +1035,58 @@ export class RoomService {
         }
       }
       const content = input.content;
+      if (!content && !(input.input_parts?.length) && !(input.capability_input_parts?.length)) {
+        throw new HttpError(422, "content or an input part is required");
+      }
+      let preparedInputParts = input.prepared_input_parts;
+      const capabilityInputParts = input.input_parts?.length
+        ? input.input_parts
+        : input.capability_input_parts ?? [];
+      if (input.kind === "user" && capabilityInputParts.length) {
+        const backendRepository = new PgConversationBackendRepository(client);
+        const recipientIds = roomRecipientIds(input, manager.agent_id);
+        const requestedBackends = new Map((input.backends ?? []).map((backend) => [backend.agent_id, backend]));
+        // Resolve and validate every recipient before claiming the turn or
+        // inserting the Room message. A mixed-capability fan-out is rejected
+        // as one unit and cannot leave a partial transcript or Run set.
+        const capabilityFailures: string[] = [];
+        for (const agentId of recipientIds) {
+          const selected = requestedBackends.get(agentId);
+          const backend = await backendRepository.resolveBinding({
+            space_id: identity.spaceId,
+            user_id: identity.userId,
+            session_id: sessionId,
+            agent_id: agentId,
+            requested: selected ? { runtime_profile_id: selected.runtime_profile_id } : null,
+          });
+          try {
+              assertConversationInputCapabilities(capabilityInputParts, backend.prompt_capabilities);
+          } catch (error) {
+            if (error instanceof ConversationInputCapabilityError) {
+              const label = agentMembers.find((member) => member.agent_id === agentId)?.agent_name ?? agentId;
+              capabilityFailures.push(`${label} (${agentId}): ${error.message}`);
+              continue;
+            }
+            throw error;
+          }
+        }
+        if (capabilityFailures.length > 0) {
+          throw new HttpError(422, `Conversation input is unsupported by: ${capabilityFailures.join("; ")}`);
+        }
+        if (input.input_parts?.length) {
+          try {
+            preparedInputParts = await new ConversationInputService(client, this.config).prepareMessageParts({
+              spaceId: identity.spaceId,
+              userId: identity.userId,
+              sessionId,
+              parts: input.input_parts,
+            });
+          } catch (error) {
+            if (error instanceof ConversationInputError) throw new HttpError(error.statusCode, error.message);
+            throw error;
+          }
+        }
+      }
       try {
         await new PgConversationRuntimeSessionRepository(client).claimTurn({
           space_id: identity.spaceId,
@@ -957,7 +1132,7 @@ export class RoomService {
               sessionId,
               { content, metadata: { room_id: roomId, ...continuationMetadata } },
             )
-          : await sessions.addRoomUserMessage(
+          : input.existing_user_message ?? await sessions.addRoomUserMessage(
               identity.spaceId,
               identity.userId,
               roomId,
@@ -965,7 +1140,21 @@ export class RoomService {
               { content, metadata: { room_id: roomId }, created_at: input.created_at },
             );
       if (!roomMessage) throw new HttpError(404, "Room conversation not found");
-      const renamedConversation = input.kind === "user"
+      if (!input.existing_user_message && preparedInputParts && preparedInputParts.length > 0) {
+        try {
+          await new ConversationInputService(client, this.config).attachMessageParts({
+            spaceId: identity.spaceId,
+            userId: identity.userId,
+            sessionId,
+            messageId: roomMessage.id,
+            parts: preparedInputParts,
+          });
+        } catch (error) {
+          if (error instanceof ConversationInputError) throw new HttpError(error.statusCode, error.message);
+          throw error;
+        }
+      }
+      const renamedConversation = input.kind === "user" && !input.existing_user_message
         ? await requestRoomConversationTitle(client, {
             spaceId: identity.spaceId,
             roomId,
@@ -994,7 +1183,7 @@ export class RoomService {
       const groups = new AgentGroupRunService(this.config, this.pool);
       const created = await groups.createGroupInTransaction(client, identity, {
         space_id: identity.spaceId,
-        title: input.kind === "user" ? firstLine(content) : continuationGroupTitle(input),
+        title: input.kind === "user" ? firstLine(content) || "Conversation input" : continuationGroupTitle(input),
         goal: "",
         manager_agent_id: manager.agent_id,
         member_agent_ids: agentMembers.map((member) => member.agent_id),
@@ -1016,6 +1205,8 @@ export class RoomService {
         space_id: identity.spaceId,
         group_id: created.group.id,
         content,
+        input_parts: input.input_parts?.length ? input.input_parts : input.capability_input_parts,
+        retry_of_run_id: input.retry_of_run_id,
         routing_mode: input.routing_mode,
         recipient_segments: effectiveSegments,
         metadata_json: {
@@ -1062,6 +1253,7 @@ export class RoomService {
       return {
         message: {
           ...roomMessage,
+          ...(input.input_parts?.length ? { input_parts: input.input_parts } : {}),
           metadata_json: {
             ...(roomMessage.metadata_json ?? {}),
             task_group_id: created.group.id,
@@ -1081,6 +1273,16 @@ function isConversationBackendRequired(error: unknown): boolean {
     && typeof error.responseBody === "object"
     && error.responseBody !== null
     && (error.responseBody as { code?: unknown }).code === "conversation_backend_required";
+}
+
+function roomRecipientIds(
+  input: { routing_mode: "direct" | "agent_coordination"; recipient_segments: AgentGroupMessageRecipientSegment[] | null },
+  managerAgentId: string,
+): string[] {
+  const raw = input.routing_mode === "agent_coordination"
+    ? [managerAgentId]
+    : input.recipient_segments?.flatMap((segment) => segment.recipient_agent_ids) ?? [managerAgentId];
+  return Array.from(new Set(raw.filter((id) => id.trim())));
 }
 
 function normalizeIdempotencyKey(value: string | null | undefined): string | null {

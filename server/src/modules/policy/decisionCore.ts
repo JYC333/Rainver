@@ -76,6 +76,7 @@ const PERSISTENCE_ACTIONS = new Set([
   "memory.update",
   "memory.archive",
   "project_folder.write_patch",
+  "project_folder.apply_patch",
   "proposal.create",
   "proposal.apply",
   "policy.change",
@@ -463,6 +464,25 @@ const ruleProjectFolderWritePatch: Rule = (ctx) => {
       reason_code: "project_folder_write_patch_via_proposal",
       policy_rule_id: "project_folder_write_patch_via_proposal",
       audit_code: "project_folder_write_via_proposal",
+    });
+  }
+  return null;
+};
+
+const ruleProjectFolderDirectApply: Rule = (ctx) => {
+  if (str(ctx.action) !== "project_folder.apply_patch") return null;
+  if (
+    ctx.actor_type === "user"
+    && ctx.direct_user_write === true
+    && (ctx.file_operation === "write" || ctx.file_operation === "rollback")
+  ) {
+    return makeDecision({
+      decision: "allow",
+      message: "Project Folder file change authorized directly by the user",
+      risk_level: "high",
+      reason_code: "project_folder_direct_user_write",
+      policy_rule_id: "project_folder_direct_user_write",
+      audit_code: "project_folder_direct_user_write",
     });
   }
   return null;
@@ -938,6 +958,7 @@ const BUILTIN_RULES: readonly Rule[] = [
   ruleUseCredential,
   ruleToolPermission,
   ruleProjectFolderWritePatch,
+  ruleProjectFolderDirectApply,
   ruleAutomation,
   ruleRuntimeExecuteRiskLevel,
   ruleRunSpawnChild,

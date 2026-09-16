@@ -14,6 +14,16 @@ export interface RunContractSource {
   id: string | null;
 }
 
+export interface RunGitSnapshot {
+  source: "workspace_location" | "managed_workspace" | "unavailable";
+  workspace_location_id: string | null;
+  branch: string | null;
+  commit_sha: string | null;
+  dirty: boolean | null;
+  execution_ready: boolean;
+  observed_at: string;
+}
+
 export interface RunBudgetSource {
   source: RunContractSource;
   /** Higher values win when a source explicitly declares precedence. */
@@ -61,6 +71,8 @@ export interface RunContractSnapshotInput {
   route_hints_json?: unknown;
   /** Server-owned policy facts captured by trusted internal run creators. */
   policy_context_json?: unknown;
+  /** Immutable Git facts captured when this conversation Run was admitted. */
+  git_snapshot?: RunGitSnapshot | null;
 }
 
 export interface RunContractSnapshot {
@@ -85,6 +97,7 @@ export interface RunContractSnapshot {
   attachment_manifest_json: unknown;
   route_hints_json: unknown;
   policy_context_json: unknown;
+  git_snapshot: RunGitSnapshot | null;
   created_at: string;
 }
 
@@ -120,6 +133,7 @@ export function createRunContractSnapshot(
     attachment_manifest_json: cloneJson(input?.attachment_manifest_json),
     route_hints_json: cloneJson(input?.route_hints_json),
     policy_context_json: cloneJson(input?.policy_context_json),
+    git_snapshot: input?.git_snapshot ? cloneJson(input.git_snapshot) as RunGitSnapshot : null,
     created_at: createdAt,
   };
 }

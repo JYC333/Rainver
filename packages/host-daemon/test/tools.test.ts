@@ -10,6 +10,7 @@ import {
   installedTools,
   loggedIn,
   managedInstallationId,
+  managedToolTree,
   managedVersion,
   packageName,
   readToolManifestSync,
@@ -33,9 +34,11 @@ const LOGIN = { command: ["goose", "login"], home_subdir: ".goose", credential_f
 
 async function writeManifest(adapterType: string, version: string, command: string, login = LOGIN) {
   const dir = join(toolsDir(), adapterType, version);
-  await mkdir(join(dir, "home"), { recursive: true });
+  const home = join(configDir, "managed-state", adapterType, "home");
+  await mkdir(dir, { recursive: true });
+  await mkdir(home, { recursive: true });
   await writeFile(join(dir, "manifest.json"), JSON.stringify({
-    adapter_type: adapterType, version, command, args: ["acp"], env: { TOOL_HOME: dir }, home: join(dir, "home"),
+    adapter_type: adapterType, version, command, args: ["acp"], env: { TOOL_HOME: dir }, home,
     login_command: [command, "login"], login, installed_at: "2026-08-26T00:00:00.000Z",
   }));
   return dir;
@@ -47,6 +50,9 @@ describe("managed installations", () => {
     expect(managedVersion("managed:1.2.3")).toBe("1.2.3");
     expect(managedVersion("own")).toBeNull();
     expect(managedVersion("managed:../x")).toBeNull();
+    expect(managedToolTree("codex_cli", "managed:1.2.3")).toBe(join(toolsDir(), "codex_cli", "1.2.3"));
+    expect(managedToolTree("codex_cli", "own")).toBeNull();
+    expect(managedToolTree("../codex_cli", "managed:1.2.3")).toBeNull();
     expect(packageName("@scope/name@1.2.3")).toBe("@scope/name");
     expect(packageName("name")).toBe("name");
   });
@@ -57,7 +63,7 @@ describe("managed installations", () => {
     expect(resolveAcpLaunch("acp_goose", ["--cwd", "/w"], "managed:1.2.3")).toEqual({
       command: "/opt/goose/bin/goose",
       args: ["acp", "--cwd", "/w"],
-      env: { TOOL_HOME: dir, HOME: join(dir, "home") },
+      env: { TOOL_HOME: dir, HOME: join(configDir, "managed-state", "acp_goose", "home") },
     });
     expect(() => resolveAcpLaunch("acp_goose", [], "managed:9.9.9")).toThrow(/not have acp_goose managed:9.9.9 installed/);
     // A builtin's command name is its ACP adapter package, not its adapter
@@ -70,14 +76,15 @@ describe("managed installations", () => {
   });
 
   it("reports every copy with its login state, and a managed-only runtime under its adapter type", async () => {
-    const dir = await writeManifest("acp_goose", "1.2.3", "/opt/goose/bin/goose");
+    await writeManifest("acp_goose", "1.2.3", "/opt/goose/bin/goose");
+    const home = join(configDir, "managed-state", "acp_goose", "home");
     await mkdir(join(toolsDir(), "half", "0.1"), { recursive: true }); // no manifest: not installed
     expect([...(await installedTools()).keys()]).toEqual(["acp_goose"]);
-    expect(loggedIn(join(dir, "home"), LOGIN)).toBe(false);
-    await mkdir(join(dir, "home", ".goose"), { recursive: true });
-    await writeFile(join(dir, "home", ".goose", "auth.json"), "{}");
-    expect(loggedIn(join(dir, "home"), LOGIN)).toBe(true);
-    expect(loggedIn(join(dir, "home"), null)).toBeNull();
+    expect(loggedIn(home, LOGIN)).toBe(false);
+    await mkdir(join(home, ".goose"), { recursive: true });
+    await writeFile(join(home, ".goose", "auth.json"), "{}");
+    expect(loggedIn(home, LOGIN)).toBe(true);
+    expect(loggedIn(home, null)).toBeNull();
 
     const capabilities = await detectCapabilities(undefined, [
       { adapter_type: "acp_goose", runtime: null, login: LOGIN },

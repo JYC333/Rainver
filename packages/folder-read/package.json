@@ -1,7 +1,7 @@
 {
   "name": "@rainver/folder-read",
   "version": "0.1.0",
-  "description": "Bounded, read-only Project Folder filesystem and Git operations for Rainver hosts.",
+  "description": "Bounded Project Folder filesystem and Git operations, including direct user file writes, for Rainver hosts.",
   "private": true,
   "type": "module",
   "engines": {

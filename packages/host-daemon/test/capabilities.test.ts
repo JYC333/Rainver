@@ -165,8 +165,9 @@ describe("what a runtime says it can be set to", () => {
     process.env.RAINVER_HOST_CONFIG_DIR = configDir;
     try {
       const dir = join(toolsDir(), "cli_login_test", "1.0.0");
-      const home = join(dir, "home");
+      const home = join(configDir, "managed-state", "cli_login_test", "home");
       const script = join(dir, "agent.cjs");
+      await mkdir(dir, { recursive: true });
       await mkdir(home, { recursive: true });
       await writeFile(script, "process.exit(process.argv[2] === 'login' && process.argv[3] === '--help' ? 0 : 1)\n");
       await writeFile(join(dir, "manifest.json"), JSON.stringify({

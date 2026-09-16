@@ -10,6 +10,7 @@
 
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema } from "./common.js";
+import { RuntimePromptCapabilitiesSchema, type RuntimePromptCapabilities } from "./conversationInput.js";
 
 export const RuntimeOptionChoiceSchema = z.object({
   value: z.string(),
@@ -110,8 +111,11 @@ export const RuntimeOptionsSchema = z.object({
   cli_login_available: z.boolean().optional(),
   /** Whether the post-initialize session probe succeeded; null when not tested. */
   authenticated: z.boolean().nullable().optional(),
+  /** ACP initialize prompt capabilities; null means the probe could not establish them. */
+  prompt_capabilities: RuntimePromptCapabilitiesSchema.nullable().optional(),
 });
 export type RuntimeOptions = z.infer<typeof RuntimeOptionsSchema>;
+export type { RuntimePromptCapabilities };
 
 export const OWN_INSTALLATION = "own";
 

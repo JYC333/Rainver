@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
 import { mkdir, readdir, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { HostLaunchIsolation } from "@rainver/protocol";
 import { configDir, requireConfig, workspacesRoot } from "./config.js";
 import { buildStrictNamespaceCommand } from "./strictNamespace.js";
-import { adapterIsBeingReplaced, daemonRuntimeRoot, holdingAdapter, resolveAcpLaunch, resolveLocationCwd, strictBindsForRun } from "./execution.js";
+import { adapterIsBeingReplaced, daemonRuntimeRoot, holdingAdapter, managedToolTreeForLaunch, resolveAcpLaunch, resolveLocationCwd, strictBindsForRun } from "./execution.js";
 import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
 
@@ -30,6 +30,9 @@ export interface CommandRunRequest {
   scratch_workspace?: boolean;
   adapter_type?: string;
   installation?: string;
+  /** A managed runtime whose tree is visible to this direct command, without changing its argv. */
+  runtime_adapter_type?: string;
+  runtime_installation?: string;
   command: string[];
   stdin?: string | null;
   report_entries?: boolean;
@@ -136,6 +139,8 @@ async function runHostCommandInner(
   // itself wrote, never from the frame.
   let resolved: { command: string; args: string[]; env: Record<string, string> };
   let tool: ReturnType<typeof readToolManifestSync> = null;
+  let runtimeTool: ReturnType<typeof readToolManifestSync> = null;
+  const runtimeBindingRequested = Boolean(request.runtime_adapter_type || request.runtime_installation);
   try {
     const [first, ...rest] = request.command;
     if (request.adapter_type) {
@@ -147,6 +152,17 @@ async function runHostCommandInner(
       tool = installation === OWN_INSTALLATION ? null : readToolManifestSync(request.adapter_type, installation);
     } else {
       resolved = { command: first!, args: rest, env: {} };
+    }
+    if (request.runtime_adapter_type || request.runtime_installation) {
+      if (!request.runtime_adapter_type || !request.runtime_installation) {
+        throw new Error("Managed runtime binding requires both adapter type and installation.");
+      }
+      runtimeTool = request.runtime_installation === OWN_INSTALLATION
+        ? null
+        : readToolManifestSync(request.runtime_adapter_type, request.runtime_installation);
+      if (request.runtime_installation !== OWN_INSTALLATION && !runtimeTool) {
+        throw new Error(`This daemon does not have ${request.runtime_adapter_type} ${request.runtime_installation} installed.`);
+      }
     }
   } catch (error) {
     return { exit_code: 1, stdout: "", stderr: "", timed_out: false, error: error instanceof Error ? error.message : String(error) };
@@ -172,6 +188,12 @@ async function runHostCommandInner(
   try {
     await mkdir(scratch, { recursive: true, mode: 0o700 });
     if (strict) {
+      // A verification command remains a direct command even when its Run
+      // uses a managed runtime. The runtime identity is a namespace input,
+      // not the command selector used by resolveAcpLaunch above.
+      const namespaceTool = runtimeBindingRequested ? runtimeTool : tool;
+      const namespaceAdapterType = runtimeBindingRequested ? request.runtime_adapter_type : request.adapter_type;
+      const namespaceInstallation = runtimeBindingRequested ? request.runtime_installation : request.installation;
       const namespace = buildStrictNamespaceCommand({
         command: resolved.command,
         args: resolved.args,
@@ -183,8 +205,8 @@ async function runHostCommandInner(
           // A managed copy lives under the daemon's own config directory, not
           // under its install root, so the namespace has neither the
           // executable nor its login home unless the tree is bound in.
-          loginHome: tool?.home ?? null,
-          toolTree: tool ? dirname(tool.home) : null,
+          loginHome: namespaceTool?.home ?? null,
+          toolTree: namespaceTool ? managedToolTreeForLaunch(namespaceAdapterType, namespaceInstallation) : null,
           runtimeRoot: daemonRuntimeRoot(),
         }),
         // Read-write because a verification recipe builds and tests; no

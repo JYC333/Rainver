@@ -245,6 +245,23 @@ configuration/policy snapshot. Later profile/Host changes cannot reconfigure
 or rebind that Conversation; incompatible Host/CLI changes block the Run.
 There is no server fallback to a different Host, CLI, or workspace.
 
+Before a Room send can commit, the server locks the Conversation execution
+context and compares the current Primary Workspace's Git branch, commit, and
+readiness with the persisted baseline. A stale workspace returns `409` and
+rolls back the send transaction, so no Room message, group, or recipient Run
+is persisted; the explicit execution-context Git refresh route is the only way
+to advance that baseline. This remains true for direct API callers and for
+image-only messages, not only for the preflight UI.
+
+The shared conversation turn controls stop active Runs through the canonical
+Run stop route, retain partial output on cancellation, and show the exact
+per-Run `remote_diff` Artifact when a Host uploaded one. Retry is manual and
+idempotent: it checks every failed/degraded recipient Run, revalidates the
+original image/file parts against current recipient capabilities, reuses the
+original user Message, and records new retry Run ids in that message. Drafts
+are kept in destination-scoped sessionStorage as validated logical references;
+they never contain image bytes, absolute Host paths, or credentials.
+
 Each Conversation × Agent owns one live `host_threads` row. It pins the
 Location or managed mode, Agent/container identity, adapter, installation, and
 opaque vendor session. A first turn, a changed conversation, or a reset sends
@@ -385,6 +402,27 @@ Agent's pin instead of selecting the first usable default. The Room session
 remains canonical conversation storage. See `modules/agents.md` for the shared
 direct-chat/Room execution model.
 
+The shared composer accepts PNG, JPEG, and WebP images by paste, drop, or an
+accessible picker. Uploads become authenticated pending media immediately and
+remain removable until send; historical images use the authenticated media
+route rather than public URLs. In an initialized Project Conversation, typing
+`@` combines active Agent mentions with bounded Files results from the Primary
+and attached Folder Locations. Each File result shows its source and relative
+path, and selecting it creates a structured file reference shown as a path chip
+inside the message input; the server
+re-authorizes and snapshots the text file before dispatch. Image-only messages
+are valid when every selected runtime/model supports images, otherwise the
+composer names the incompatible Agent and blocks send. For a Host-owned ACP
+profile, support comes from the selected installation's initialize capability;
+Provider/model metadata is part of the decision only when the profile has a
+server Provider binding. A normal Host Run receives the managed file as a
+server-issued ResourceLink and relative path; a manual retry uses the original
+immutable snapshot instead. User-uploaded images remain actual multimodal
+image inputs rather than being silently converted into workspace files.
+Conversation Folder attachments are writable by default; the user can choose
+Read only for an explicit read-only grant, and the selected Host namespace still
+confines both modes to the authorized Location root.
+
 ## Project state context (Phase A)
 
 `RoomService.sendMessage` builds a domain-neutral "Project state" text block
@@ -455,11 +493,17 @@ person says: a stated goal → `project.propose_definition`
 dates, blockers) and `inquiry.list_threads` (each Thread's recorded
 `next_step`) (`PLAN_ACTION_POLICY`). The Project-state block lists pending
 decisions (attention class `gate`) before anything else and carries each
-item's summary, so an Inquiry next step arrives with its rationale and a
+item’s summary, so an Inquiry next step arrives with its rationale and a
 pending proposal is never crowded out by a busy board. A conversation turn
 gets eight model turns in the managed loop (`CONVERSATION_MAX_MODEL_TURNS`),
 twice a dispatched Task's default, because the policies chain reads and
 writes before the reply.
+
+The same policy tells the Agent that `task.create.required_outputs` is only for
+file Artifact types collected as deliverables. A reply, inspection, or edit to
+an existing workspace file must use `definition_of_done` and `task.report`
+instead, because a conversation Run does not have the remote output-delivery
+action that satisfies a declared file output.
 
 A revised goal supersedes the pending draft: `proposeDefinition` reuses the
 pending proposal only for the same Run (a retry) or an identical definition;
@@ -767,6 +811,8 @@ the order it was assembled.
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/messages` — speak in an
   initialized Conversation; Host, CLI, Primary, and attachment scope are
   already pinned
+- `POST /api/v1/rooms/:roomId/conversations/:sessionId/retry` — manually retry
+  a failed or degraded turn using its persisted user input and pinned context
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/references` — copy
   picked content into a thread that already exists
 - `GET /api/v1/projects/:projectId/readers` — who may be invited into a Room
@@ -800,7 +846,10 @@ the order it was assembled.
   cursor, freshness/retry state, and owner-only provider/usage metadata
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/messages` — send a
   message; supports direct `@agent` recipient segmentation or manager
-  coordination, and optional explicit per-recipient backend selection
+  coordination, optional explicit per-recipient backend selection, and
+  server-owned `input_parts` for images or authorized text-file snapshots
+- `POST /api/v1/sessions/:sessionId/execution-context/refresh-git` — explicitly
+  advance the initialized Conversation's Git admission baseline
 - `GET /api/v1/projects/:projectId/host-execution-targets` — the caller's
   online remote Hosts, this Project's Locations, and reported CLI
   adapter/installation choices for the host-bound Agent selector
@@ -808,6 +857,15 @@ the order it was assembled.
 ## Invariants
 
 - Room membership never widens Project authority.
+- A Room message carrying an image or file reference validates every selected
+  recipient's prompt capability before claiming the turn, inserting the
+  message, or creating any recipient Run. One incompatible or unknown image
+  target rejects the complete send; it never fans out a partial Room turn.
+- Conversation input images are pending, Space-scoped media rows until the
+  sender's message claims them in the same transaction. File references are
+  re-authorized through Project Folder reads and stored as bounded immutable
+  snapshots, so later workspace changes do not rewrite transcript or retry
+  input.
 - A reference is resolved once, under the attacher's identity, with oversight
   excluded, and never re-read. Nothing re-authorizes it per turn, because
   there is nothing live to re-authorize.

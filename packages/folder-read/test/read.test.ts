@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,9 @@ import {
   folderGitDiff,
   readFolderFile,
   resolveRelativePath,
+  restoreFolderFile,
   runGit,
+  writeFolderFile,
 } from "../src/index.js";
 
 const roots: string[] = [];
@@ -38,6 +41,7 @@ describe("folder-read filesystem operations", () => {
       path: "README.md",
       content: "one\ntwo\n",
       line_count: 3,
+      sha256: createHash("sha256").update("one\ntwo\n").digest("hex"),
     });
   });
 
@@ -109,5 +113,60 @@ describe("folder-read filesystem operations", () => {
 
   it("exposes typed folder read errors", () => {
     expect(new FolderReadError("too_large", "too big")).toBeInstanceOf(Error);
+  });
+
+  it("writes atomically, captures the preimage, and restores an empty file", async () => {
+    const root = await tempRoot();
+    await writeFile(join(root, "README.md"), "before", "utf8");
+    const written = await writeFolderFile(root, "README.md", "after", {
+      expectedExists: true,
+      expectedSha256: createHash("sha256").update("before").digest("hex"),
+    });
+    expect(written.before).toMatchObject({ exists: true, content: "before" });
+    expect(written.content).toBe("after");
+    await restoreFolderFile(root, "README.md", "", {
+      expectedExists: true,
+      expectedSha256: createHash("sha256").update("after").digest("hex"),
+    });
+    await expect(readFile(join(root, "README.md"), "utf8")).resolves.toBe("");
+  });
+
+  it("rejects stale writes, permits user script writes, and keeps secrets blocked", async () => {
+    const root = await tempRoot();
+    await writeFile(join(root, "run.sh"), "old", "utf8");
+    await expect(writeFolderFile(root, "run.sh", "new", {
+      expectedExists: true,
+      expectedSha256: "0".repeat(64),
+    })).rejects.toMatchObject({ code: "stale" });
+    await expect(writeFolderFile(root, "run.sh", "new", {
+      expectedExists: true,
+      expectedSha256: createHash("sha256").update("old").digest("hex"),
+    })).resolves.toMatchObject({ content: "new" });
+    await expect(writeFolderFile(root, ".env.local", "secret", {
+      expectedExists: false,
+      expectedSha256: null,
+    })).rejects.toMatchObject({ code: "path_forbidden" });
+  });
+
+  it("serializes concurrent writes that share the same preimage", async () => {
+    const root = await tempRoot();
+    await writeFile(join(root, "README.md"), "before", "utf8");
+    const expectedSha256 = createHash("sha256").update("before").digest("hex");
+    const results = await Promise.allSettled([
+      writeFolderFile(root, "README.md", "first", { expectedExists: true, expectedSha256 }),
+      writeFolderFile(root, "README.md", "second", { expectedExists: true, expectedSha256 }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.find((result) => result.status === "rejected")?.reason).toMatchObject({ code: "stale" });
+    await expect(readFile(join(root, "README.md"), "utf8")).resolves.toMatch(/^(first|second)$/);
+  });
+
+  it("refuses to rewrite a non-UTF-8 file as text", async () => {
+    const root = await tempRoot();
+    await writeFile(join(root, "binary.dat"), Buffer.from([0xff, 0xfe, 0x00]));
+    await expect(writeFolderFile(root, "binary.dat", "text", {
+      expectedExists: true,
+      expectedSha256: createHash("sha256").update(Buffer.from([0xff, 0xfe, 0x00])).digest("hex"),
+    })).rejects.toMatchObject({ code: "not_text" });
   });
 });

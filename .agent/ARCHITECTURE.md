@@ -9,7 +9,7 @@
 │     apps/web/src/                                   │
 ├─────────────────────────────────────────────────────┤
 │  11. Files & Code                                   │
-│     tree, file, git status, git diff (read-only)    │
+│     tree/file/Git reads + direct human edit/undo    │
 │     server/src/modules/projectFolders + hosts       │
 ├─────────────────────────────────────────────────────┤
 │  10. Runtime / host daemon                          │

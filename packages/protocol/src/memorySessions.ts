@@ -6,9 +6,13 @@
  */
 
 import { z } from "zod";
+import { ConversationGitSnapshotSchema } from "./conversationExecution.js";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 import { RuntimeSessionConfigOptionSchema, RuntimeSessionConfigSelectionSchema } from "./hosts.js";
 import { TraceSafeJsonSchema } from "./runOrchestration.js";
+import {
+  ConversationInputPartsSchema,
+} from "./conversationInput.js";
 
 const JsonObjectSchema = z.record(z.unknown());
 const TraceSafeObjectSchema = TraceSafeJsonSchema.refine(
@@ -76,6 +80,8 @@ const CommonMessageMetadata = {
   task_group_id: IdSchema.nullish(),
   /** One dispatch, several recipient Agents, one Run each. */
   run_ids: z.array(IdSchema).nullish(),
+  /** Additional Runs created by an explicit retry of this message. */
+  retry_run_ids: z.array(IdSchema).nullish(),
   recipient_run_ids: z.array(IdSchema).nullish(),
   /** The producing Run's terminal status, for an Agent reply. */
   status: z.string().nullish(),
@@ -175,6 +181,7 @@ export const MessageOutSchema = z
     parent_message_id: IdSchema.nullish(),
     /** The Run that produced this message, or that this message started. */
     run_id: IdSchema.nullish(),
+    input_parts: ConversationInputPartsSchema.optional(),
     created_at: ISODateTimeSchema,
     ...SecretResponseGuards,
   })
@@ -205,21 +212,51 @@ export const SessionCreateRequestSchema = z
 
 export const MessageCreateRequestSchema = z
   .object({
-    content: z.string().min(1),
+    content: z.string().trim().max(8000).default(""),
+    input_parts: ConversationInputPartsSchema.default([]),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.content && value.input_parts.length === 0) {
+      ctx.addIssue({ code: "custom", path: ["content"], message: "content or an input part is required" });
+    }
+  });
 
 export const ChatTurnRequestSchema = z
   .object({
-    message: z.string().trim().min(1).max(8000),
+    message: z.string().trim().max(8000).default(""),
+    input_parts: ConversationInputPartsSchema.default([]),
     session_id: IdSchema.nullish(),
     project_id: IdSchema.nullish(),
     restore_workspace: z.boolean().default(false),
     backend: z.object({ runtime_profile_id: IdSchema }).strict().optional(),
     session_config: z.array(RuntimeSessionConfigSelectionSchema).max(32).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!value.message && value.input_parts.length === 0) {
+      ctx.addIssue({ code: "custom", path: ["message"], message: "message or an input part is required" });
+    }
+  });
 export type ChatTurnRequest = z.infer<typeof ChatTurnRequestSchema>;
+
+export const ConversationRetryRequestSchema = z.object({
+  run_id: IdSchema,
+}).strict();
+export type ConversationRetryRequest = z.infer<typeof ConversationRetryRequestSchema>;
+
+export const ConversationRetryResponseSchema = z.object({
+  schema_version: z.literal("conversation_retry.v1"),
+  session_id: IdSchema,
+  run_id: IdSchema,
+  run_ids: z.array(IdSchema).min(1),
+  retry_of_run_id: IdSchema,
+  user_message_id: IdSchema,
+  status: z.literal("queued"),
+  event_stream_url: z.string().trim().min(1),
+  reused: z.boolean(),
+}).strict();
+export type ConversationRetryResponse = z.infer<typeof ConversationRetryResponseSchema>;
 
 export const ConversationBackendBindingSchema = z.object({
   runtime_profile_id: IdSchema,
@@ -239,10 +276,18 @@ export const ConversationBackendOptionSchema = z.object({
   host_bound: z.boolean().optional(),
   host_id: IdSchema.nullish().optional(),
   workspace_mode: z.enum(["location", "managed"]).nullish().optional(),
+  project_folder_id: IdSchema.nullish().optional(),
+  workspace_location_id: IdSchema.nullish().optional(),
+  git: ConversationGitSnapshotSchema.nullable().optional(),
   host_name: z.string().nullish().optional(),
   host_online: z.boolean().nullish().optional(),
   host_owner_is_me: z.boolean().nullish().optional(),
   session_config_options: z.array(RuntimeSessionConfigOptionSchema).optional(),
+  prompt_capabilities: z.object({
+    image: z.boolean().nullable(),
+    embedded_context: z.boolean().nullable(),
+    resource_link: z.boolean().nullable(),
+  }).strict().nullable().optional(),
 }).strict();
 export type ConversationBackendOption = z.infer<
   typeof ConversationBackendOptionSchema

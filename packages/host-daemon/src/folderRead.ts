@@ -87,15 +87,20 @@ export function resolveFolderReadRequest(
 }
 
 /** Performs one bounded, read-only operation on a registered workspace. */
-export async function performFolderRead(request: FolderReadRequest): Promise<FolderReadResult> {
+export async function performFolderRead(request: FolderReadRequest, signal?: AbortSignal): Promise<FolderReadResult> {
+  if (signal?.aborted) {
+    const error = new Error("folder read cancelled");
+    error.name = "AbortError";
+    throw error;
+  }
   try {
     let result: FileNode | FileContent | GitStatus | GitDiff;
     switch (request.kind) {
       case "tree":
-        result = await buildTree(request.root);
+        result = await buildTree(request.root, signal);
         break;
       case "file":
-        result = await readFolderFile(request.root, request.path!, { protectedFolder: request.protected });
+        result = await readFolderFile(request.root, request.path!, { protectedFolder: request.protected, signal });
         break;
       case "git_status":
         result = await folderGitStatus(request.root);

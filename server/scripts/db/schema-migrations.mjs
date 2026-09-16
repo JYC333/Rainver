@@ -43,8 +43,10 @@ function drizzleKit(args) {
  * drizzle-kit resolves `--out` by prefixing "./", so an absolute path silently
  * becomes "./<abs>" and every snapshot read fails — and it still exits 0. So
  * the out dir is always passed relative to `server/`, and any error text in
- * the output is treated as failure. Returns true when drizzle-kit reported
- * that the schema already matches the chain.
+ * the output is treated as failure. The caller determines whether a migration
+ * was needed from the output directory because some drizzle-kit invocations do
+ * not expose their human-readable no-change message through child-process
+ * pipes.
  */
 function generateInto(outDir, name, { custom = false, reportOutput = true } = {}) {
   const args = [
@@ -153,6 +155,7 @@ function parseArgs(argv) {
   const opts = { name: null, custom: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    if (arg === "--") continue;
     if (arg === "--custom") opts.custom = true;
     else if (arg === "--name") opts.name = argv[++i] ?? null;
     else if (arg.startsWith("--name=")) opts.name = arg.slice("--name=".length);
@@ -167,12 +170,11 @@ function generate(argv) {
     throw new Error("usage: pnpm run schema:generate -- --name <snake_case_name> [--custom]");
   }
   const before = new Set(assertChain(migrationDir));
-  const unchanged = generateInto(migrationDir, name, { custom });
+  generateInto(migrationDir, name, { custom });
   const after = assertChain(migrationDir);
   assertExtensionsMigrated(migrationDir, after);
   const added = after.filter((file) => !before.has(file));
   if (added.length === 0) {
-    if (!unchanged) throw new Error("drizzle-kit produced neither a migration nor a no-change report");
     console.log("schema-migrations: schema already matches the migration chain; nothing generated");
     return;
   }
@@ -194,8 +196,14 @@ function check() {
   assertExtensionsMigrated(migrationDir, files);
   const tempRoot = scratchDir();
   try {
-    cpSync(migrationDir, tempRoot, { recursive: true });
-    const unchanged = generateInto(tempRoot, "drift_check", { reportOutput: false });
+    // `scratchDir()` creates the destination first, so copying the directory
+    // itself would create `<temp>/migrations/` and leave the output directory
+    // without the chain's journal/snapshots. Copy the chain contents into the
+    // already-created scratch directory instead.
+    for (const entry of readdirSync(migrationDir)) {
+      cpSync(join(migrationDir, entry), join(tempRoot, entry), { recursive: true });
+    }
+    generateInto(tempRoot, "drift_check", { reportOutput: false });
     const drift = migrationFiles(tempRoot).filter((file) => !files.includes(file));
     if (drift.length > 0) {
       const sql = readFileSync(join(tempRoot, drift[0]), "utf8");
@@ -205,7 +213,6 @@ function check() {
         + "run: pnpm run schema:generate -- --name <name>",
       );
     }
-    if (!unchanged) throw new Error("drizzle-kit produced neither a migration nor a no-change report");
     console.log(`schema-migrations: ${files.length} migration(s) in sync with server/src/db/schema`);
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });

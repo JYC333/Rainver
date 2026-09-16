@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ConversationInputPartsSchema } from "./conversationInput.js";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 import {
   AgentRunMessageRecipientSegmentSchema,
@@ -345,6 +346,8 @@ export const RoomMessageSchema = z.object({
   parent_message_id: IdSchema.nullish(),
   /** The Run that produced this message, or that this message started. */
   run_id: IdSchema.nullish(),
+  /** Ordered images and managed file references backed by server snapshots. */
+  input_parts: ConversationInputPartsSchema.optional(),
   created_at: ISODateTimeSchema,
   ...SecretResponseGuards,
 }).strict().superRefine((message, context) => {
@@ -444,7 +447,8 @@ export const RoomMessageFocusRefSchema = z.object({
 export type RoomMessageFocusRef = z.infer<typeof RoomMessageFocusRefSchema>;
 
 export const SendRoomMessageRequestSchema = z.object({
-  content: z.string().trim().min(1).max(8000),
+  content: z.string().trim().max(8000).default(""),
+  input_parts: ConversationInputPartsSchema.default([]),
   focus_refs: z.array(RoomMessageFocusRefSchema).max(4).nullish(),
   routing_mode: AgentRunMessageRoutingModeSchema.default("direct"),
   recipient_segments: z.array(AgentRunMessageRecipientSegmentSchema).min(1).nullish(),
@@ -453,7 +457,11 @@ export const SendRoomMessageRequestSchema = z.object({
     runtime_profile_id: IdSchema,
     session_config: z.array(RuntimeSessionConfigSelectionSchema).max(32).optional(),
   }).strict()).default([]),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  if (!value.content && value.input_parts.length === 0) {
+    ctx.addIssue({ code: "custom", path: ["content"], message: "content or an input part is required" });
+  }
+});
 export type SendRoomMessageRequest = z.infer<typeof SendRoomMessageRequestSchema>;
 
 export const ContinueRoomAfterProposalRequestSchema = z.object({

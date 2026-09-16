@@ -70,4 +70,12 @@ describe("the workspace a verifier runs in", () => {
   it("carries no workspace for a paired host, which resolves the Location itself", () => {
     expect(verificationTargetForTest(port({ hostKind: "remote" }))?.workspace).toBeUndefined();
   });
+
+  it("carries the Run's managed runtime identity to Host verification", () => {
+    expect(verificationTargetForTest(port({}), {
+      adapter_type: "codex_cli",
+      model_override_json: { installation: "managed:1.11.0" },
+      runtime_profile_snapshot_json: { runtime_installation: "own" },
+    })).toMatchObject({ adapter_type: "codex_cli", installation: "managed:1.11.0" });
+  });
 })

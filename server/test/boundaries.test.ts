@@ -31,6 +31,9 @@ const ALLOWED_BARE_BY_FILE = new Map<string, string>([
   // hello/heartbeat channel — confined here so a second module cannot grow
   // its own ad hoc realtime transport.
   ["@fastify/websocket", join("src", "modules", "hosts", "routes.ts")],
+  // Multipart parsing is installed once in the gateway shell; route modules
+  // consume the shared parser rather than registering their own plugin.
+  ["@fastify/multipart", join("src", "gateway", "appShell.ts")],
   // The official ACP SDK — confined to the one module that owns the
   // protocol lifecycle so a second hand-rolled implementation cannot grow
   // elsewhere. See REUSE_AND_DEPENDENCY_POLICY.md's canonical mechanism row.

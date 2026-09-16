@@ -74,7 +74,8 @@ copy could select — and a copy offers several. One sample of a
 non-deterministic runtime is weak evidence for a permanent verdict, and a
 vendor ships a new version faster than a sweep can be repeated. Its strongest
 question — will the runtime write outside what it was given — became
-structural under ADR 0016: the daemon binds the workspace and nothing else.
+structural under ADR 0016: the daemon binds the selected workspace and only the
+explicitly attached Workspace Locations, with no sibling Locations exposed.
 What was left either duplicated what using the runtime already proves (an
 output contract is exercised by every ACP turn) or tested instruction-following
 against a threat the credential channel already closes.
@@ -365,14 +366,15 @@ Blocked requests fail before invocation with `permission_bypass_not_allowed`.
 
 ## Isolation Limits
 
-Low/medium-risk Folder-bound CLI runs use `read_only`: on the built-in host the
-daemon exposes the Location through a rootless bubblewrap mount namespace with
-an OS-enforced read-only view, built from the dispatch's `isolation` policy.
-The namespace begins with an empty filesystem and exposes only system runtime
-trees, exact DNS/NSS/linker/CA configuration files (not the whole `/etc`), the
-installed copy's own tree, the working directory, the Run's own HOME, and the
-explicit binds the daemon materialized for it; other host paths, Spaces, and
-other copies' runtime-state directories are not readable. Network reach follows
+Folder-bound CLI runs use the dispatch's `isolation` policy: on the built-in
+Host the daemon exposes the Primary and explicitly attached Locations through a
+rootless bubblewrap mount namespace, with each Location's persisted access mode
+(`read` or `write`) enforced by the bind. The namespace begins with an empty
+filesystem and exposes only system runtime trees, exact DNS/NSS/linker/CA
+configuration files (not the whole `/etc`), the installed copy's own tree, the
+working directory, the Run's own HOME, and the explicit binds the daemon
+materialized for it; other host paths, Spaces, and other copies' runtime-state
+directories are not readable. Network reach follows
 the dispatch's `egress_profile`, but only `none` is containment (the namespace
 gets `--unshare-net`); `default` and `install` point the Run's proxy variables
 at the daemon's CONNECT proxy, which is policy and a record rather than a wall

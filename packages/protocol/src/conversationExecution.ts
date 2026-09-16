@@ -72,6 +72,18 @@ export const ConversationPrimarySummarySchema = z.discriminatedUnion("kind", [
 ]);
 export type ConversationPrimarySummary = z.infer<typeof ConversationPrimarySummarySchema>;
 
+/** The Git facts the Conversation is about to use for its next Run. */
+export const ConversationGitSnapshotSchema = z.object({
+  source: z.enum(["workspace_location", "managed_workspace", "unavailable"]),
+  workspace_location_id: IdSchema.nullable(),
+  branch: z.string().nullable(),
+  commit_sha: z.string().nullable(),
+  dirty: z.boolean().nullable(),
+  execution_ready: z.boolean(),
+  observed_at: ISODateTimeSchema,
+}).strict();
+export type ConversationGitSnapshot = z.infer<typeof ConversationGitSnapshotSchema>;
+
 export const ConversationAttachmentSummarySchema = z.object({
   id: IdSchema,
   project_folder_id: IdSchema,
@@ -95,6 +107,7 @@ export const ConversationExecutionSummarySchema = z.object({
   /** Every pinned Conversation × Agent runtime, not only the manager. */
   runtimes: z.array(ConversationRuntimeSelectionSchema).default([]),
   primary: ConversationPrimarySummarySchema.nullable(),
+  git: ConversationGitSnapshotSchema.nullable().optional(),
   attachments: z.array(ConversationAttachmentSummarySchema),
   dispatch_locked: z.boolean(),
   queue_paused_at: ISODateTimeSchema.nullable(),
@@ -140,6 +153,7 @@ export const ConversationExecutionPreflightResponseSchema = z.object({
     execution_host_id: IdSchema,
     display_path: z.string().nullable(),
     execution_ready: z.boolean(),
+    git: ConversationGitSnapshotSchema.optional(),
   }).strict()),
 }).strict();
 export type ConversationExecutionPreflightResponse = z.infer<typeof ConversationExecutionPreflightResponseSchema>;
@@ -158,7 +172,7 @@ export const ConversationAttachmentMutationSchema = z.discriminatedUnion("action
     mutation_id: IdSchema,
     project_folder_id: IdSchema,
     workspace_location_id: IdSchema,
-    access_mode: ConversationAttachmentAccessModeSchema.default("read"),
+    access_mode: ConversationAttachmentAccessModeSchema.default("write"),
   }).strict(),
   z.object({
     action: z.literal("set_access"),

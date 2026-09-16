@@ -105,6 +105,7 @@ registry `default_decision`. Not full RBAC/ABAC — they express intent and defa
 | `context.inject_memory` | memory | low | allow | context/runs modules |
 | `context.render_for_runtime` | context | low | allow | runs module |
 | `project_folder.write_patch` | project_folder | high | require_approval | projectFolders/proposal appliers |
+| `project_folder.apply_patch` | project_folder | high | require_approval by default; direct user File-page context allows | `server/src/modules/projectFolders/repository.ts` via `enforce()`; no Proposal is created |
 | `artifact.persist` | artifact | low | allow (audit_required) | run materialization |
 | `proposal.create` | proposal | low | allow | proposals + target modules via `enforce()` |
 | `proposal.apply` | proposal | medium | require_approval | proposal apply service via `enforceProposalApply()` |
@@ -181,13 +182,13 @@ runtime-skill binding, and accepted config proposal application.
 ### Reserved actions — lifecycle_status=RESERVED
 
 Registered for registry completeness and fail-closed defence-in-depth.
-`current_enforcement_point="not_implemented"`. `PolicyGateway` always denies these.
-Not wired to business code. The registry is **not** full RBAC/ABAC.
+Except for the wired direct File-page action listed above, these actions have
+`current_enforcement_point="not_implemented"`. `PolicyGateway` always denies
+reserved actions. The registry is **not** full RBAC/ABAC.
 
 | Action | Resource | Risk | Default Decision |
 |---|---|---|---|
 | `context.use_personal_grant` | personal_memory_grant | high | require_approval |
-| `project_folder.apply_patch` | project_folder | high | require_approval |
 | `artifact.export` | artifact | high | require_approval |
 | `proposal.approve` | proposal | medium | require_approval |
 | `memory.read_private` | memory | high | require_approval |
@@ -315,6 +316,7 @@ preflight.
 | `proposal.create` | `server/src/modules/proposals/` and target modules via `enforce()` | Code patch collection uses `force_record=True` |
 | `proposal.apply` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Before accepted proposal side effects |
 | `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers via `enforce()` | Before any Project Folder file writes |
+| `project_folder.apply_patch` | `server/src/modules/projectFolders/repository.ts` via `enforce()` | Before direct human File-page create/edit/rollback; direct user context is allowed and no Proposal is created |
 | `policy.change` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Protected by the `proposal.apply` gate for `policy_change` proposals |
 | `runtime_skill.render` | execution-control policy resolution | Before enabled runtime-skill content may enter an accepted Delivery |
 | `retrieval.search` | `server/src/modules/retrieval/tool/service.ts` via `enforce()` | Before managed-run Knowledge search execution |

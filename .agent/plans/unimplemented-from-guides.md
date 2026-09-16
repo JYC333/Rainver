@@ -80,7 +80,8 @@ path D, commercialization priority list.
 Extracted from `git-diff-review.md`.
 
 **Current fact:** Files & Code under `projectFolders` can read tree, file,
-git status, and git diff (including remote Locations). There is no
+git status, and git diff (including remote Locations), and Project writers can
+directly create/edit bounded files with short-lived optimistic rollback. There is no
 `DiffReview` / `DiffAnnotation` table, no commit-on-approve flow, and no
 dedicated DiffViewer review page.
 

@@ -130,7 +130,7 @@ describe("what a strict Run is given besides its workspace", () => {
   const inputs = {
     runDir: "/runner/host/runs/run-1",
     profileDir: "/runner/host/agents/a1/profiles/conversation/c1/opencode/ambient",
-    loginHome: "/runner/host/tools/opencode/1.18/home",
+    loginHome: "/runner/host/managed-state/opencode/home",
     toolTree: "/runner/host/tools/opencode/1.18",
     runtimeRoot: "/app",
   };
@@ -148,8 +148,8 @@ describe("what a strict Run is given besides its workspace", () => {
       // instance's one subscription login, and a Run that could rewrite it
       // could bill every other member's Runs to an account of its choosing.
       { path: inputs.loginHome, access: "read_only" },
-      // The copy's `home/` is inside its tree, so nothing writable is added
-      // for it either.
+      // The managed copy's versioned executable tree is separately read-only;
+      // its stable login HOME is the read-only bind immediately above.
       { path: inputs.toolTree, access: "read_only" },
     ]);
   });
@@ -245,6 +245,20 @@ describe("planning a strict launch", () => {
     const { args } = plan({ isolation: undefined });
     expect(args).toContain("--unshare-net");
     expect(binds(args).get("/runner/workspaces/project")).toBe("read_only");
+  });
+
+  it("binds authorized attachment Locations without widening the Run isolation", () => {
+    const attachedPath = "/runner/workspaces/shared/docs";
+    const writable = plan({
+      workspaceBinds: [{ path: attachedPath, access_mode: "write" }],
+    });
+    expect(binds(writable.args).get(attachedPath)).toBe("read_write");
+
+    const readOnly = plan({
+      isolation: { sandbox_mode: "read_only", egress_profile: "default" },
+      workspaceBinds: [{ path: attachedPath, access_mode: "write" }],
+    });
+    expect(binds(readOnly.args).get(attachedPath)).toBe("read_only");
   });
 
   it("refuses a run id that would place the run directory outside the daemon's own", () => {

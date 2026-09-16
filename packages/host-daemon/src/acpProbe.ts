@@ -21,6 +21,20 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+/** ACP v1 omits optional prompt variants when unsupported. */
+export function parseAcpPromptCapabilities(resultValue: unknown): RuntimeOptions["prompt_capabilities"] {
+  const result = record(resultValue);
+  if (!Object.prototype.hasOwnProperty.call(result, "agentCapabilities")) return null;
+  const agent = record(result.agentCapabilities);
+  const prompt = record(agent.promptCapabilities);
+  return {
+    image: prompt.image === true,
+    embedded_context: prompt.embeddedContext === true,
+    // ResourceLink is part of ACP's baseline prompt content.
+    resource_link: true,
+  };
+}
+
 function selectChoice(value: unknown, group: string | null): RuntimeOptionChoice | null {
   const entry = record(value);
   const id = stringOrNull(entry.value);
@@ -102,7 +116,11 @@ export function parseAcpSessionProbeResult(
   result: unknown,
   error: unknown,
   authMethods: RuntimeAuthMethod[],
+  promptCapabilities: RuntimeOptions["prompt_capabilities"] = null,
 ): RuntimeOptions | null {
+  const capabilityFields = promptCapabilities
+    ? { prompt_capabilities: promptCapabilities }
+    : {};
   if (error !== undefined && !isAcpAuthRequiredError(error)) {
     // The session probe is inconclusive, but the auth methods came from a
     // successful `initialize` and are the only login path a registry agent
@@ -110,12 +128,13 @@ export function parseAcpSessionProbeResult(
     // dropping the methods here left such a copy with no Log in button and
     // no way to ever become logged in. Keep them; the login state is unknown.
     if (authMethods.length === 0) return null;
-    return { config_options: [], auth_methods: authMethods, authenticated: null };
+    return { config_options: [], auth_methods: authMethods, authenticated: null, ...capabilityFields };
   }
   return {
     ...parseAcpSessionOptions(result),
     auth_methods: authMethods,
     authenticated: error === undefined,
+    ...capabilityFields,
   };
 }
 
@@ -148,6 +167,7 @@ export function probeAcpOptions(
 ): Promise<RuntimeOptions | null> {
   return new Promise((resolve) => {
     let authMethods: RuntimeAuthMethod[] = [];
+    let promptCapabilities: RuntimeOptions["prompt_capabilities"] = null;
     let settled = false;
     let stderr = "";
     // ACP Agent Auth is per process: a copy that is logged in on this host
@@ -216,6 +236,7 @@ export function probeAcpOptions(
           }
           authMethods = parseAcpAuthMethods(record(message.result).authMethods)
             .filter((method) => method.type !== "terminal" || terminalAuthAvailable());
+          promptCapabilities = parseAcpPromptCapabilities(message.result);
           openSession();
           continue;
         }
@@ -226,7 +247,7 @@ export function probeAcpOptions(
             send({ jsonrpc: "2.0", id: 3, method: "authenticate", params: { methodId: agentMethod.id } });
             continue;
           }
-          const parsed = parseAcpSessionProbeResult(message.result, message.error, authMethods);
+          const parsed = parseAcpSessionProbeResult(message.result, message.error, authMethods, promptCapabilities);
           finish(
             parsed,
             parsed === null
@@ -239,7 +260,12 @@ export function probeAcpOptions(
           if (message.error) {
             // The copy is not logged in on this host: report exactly that, with
             // the methods intact so the Log in button exists.
-            finish({ config_options: [], auth_methods: authMethods, authenticated: false });
+            finish({
+              config_options: [],
+              auth_methods: authMethods,
+              authenticated: false,
+              ...(promptCapabilities ? { prompt_capabilities: promptCapabilities } : {}),
+            });
             continue;
           }
           sessionRequestId = 4;
@@ -248,7 +274,12 @@ export function probeAcpOptions(
       }
     });
     child.on("error", (error) => finish(null, `cannot start ${command}: ${error.message}`));
-    child.on("close", (code, signal) => finish(null, `exited (${signal ?? `code ${code}`}) before answering${stderrTail()}`));
+    child.on("close", (code, signal) => {
+      // stderr/stdout data events can be queued immediately after the child's
+      // close notification. Give those readable streams one turn to deliver
+      // their final diagnostics before resolving the probe.
+      setImmediate(() => finish(null, `exited (${signal ?? `code ${code}`}) before answering${stderrTail()}`));
+    });
 
     send({
       jsonrpc: "2.0",

@@ -7,6 +7,7 @@ import type {
   ConversationExecutionPreflightResponse,
   ConversationExecutionRuntimeProfile,
   ConversationExecutionSummary,
+  ConversationGitSnapshot,
   ConversationExecutionSelection,
   ConversationPrimarySelection,
   ConversationRuntimeSelection,
@@ -163,6 +164,12 @@ export class ConversationExecutionContextService {
       const host = await this.requireHost(repository, identity.userId, request.selection.execution_host_id);
       this.assertHostUsable(host);
       const primary = await this.validatePrimary(repository, session, host, request.selection.primary);
+      const initializedGit = primary.kind === "location"
+        ? conversationGitSnapshot(await repository.getLocation(identity.spaceId, primary.projectFolderId!, primary.locationId!))
+        : managedGitSnapshot();
+      if (!initializedGit) {
+        throw new ConversationExecutionContextError(409, "The selected Git workspace is unavailable; refresh and try again");
+      }
       const profile = await this.resolveRuntime(repository, client, session, host, primary, request.runtime, identity.userId);
       const participantAgentIds = await repository.listConversationParticipantAgentIds(session);
       for (const runtime of requestedRuntimes) {
@@ -201,6 +208,13 @@ export class ConversationExecutionContextService {
         projectFolderId: primary.projectFolderId,
         locationId: primary.locationId,
         userId: identity.userId,
+        git: {
+          branch: initializedGit.branch,
+          commitSha: initializedGit.commit_sha,
+          dirty: initializedGit.dirty,
+          executionReady: initializedGit.execution_ready,
+          observedAt: initializedGit.observed_at,
+        },
       });
       const threads = new PgHostThreadRepository(client);
       for (const participant of participantProfiles) {
@@ -269,6 +283,41 @@ export class ConversationExecutionContextService {
     });
   }
 
+  async refreshGit(
+    identity: ConversationExecutionContextIdentity,
+    sessionId: string,
+  ): Promise<ConversationExecutionSummary> {
+    return withTransaction(this.pool, async (client) => {
+      const repository = new PgConversationExecutionContextRepository(client);
+      const session = await repository.getVisibleSession(identity, sessionId, { forUpdate: true });
+      if (!session) throw new ConversationExecutionContextError(404, "Conversation not found");
+      const context = await repository.lockDraft(session);
+      if (context.state !== "initialized") {
+        throw new ConversationExecutionContextError(409, "Initialize the Conversation execution context before refreshing Git");
+      }
+      const location = context.primary_workspace_location_id && context.primary_project_folder_id
+        ? await repository.getLocation(identity.spaceId, context.primary_project_folder_id, context.primary_workspace_location_id)
+        : null;
+      const git = context.primary_workspace_mode === "managed"
+        ? managedGitSnapshot()
+        : conversationGitSnapshot(location);
+      if (!git) throw new ConversationExecutionContextError(409, "The selected Git workspace is unavailable; choose a new Conversation");
+      const refreshed = await repository.refreshGitBaseline({
+        spaceId: identity.spaceId,
+        sessionId,
+        git: {
+          branch: git.branch,
+          commitSha: git.commit_sha,
+          dirty: git.dirty,
+          executionReady: git.execution_ready,
+          observedAt: git.observed_at,
+        },
+      });
+      if (!refreshed) throw new ConversationExecutionContextError(409, "The Conversation execution context is no longer initialized");
+      return this.buildSummary(repository, identity, session, refreshed);
+    });
+  }
+
   async mutateAttachment(
     identity: ConversationExecutionContextIdentity,
     sessionId: string,
@@ -309,15 +358,6 @@ export class ConversationExecutionContextService {
           attachment: attachmentSummary(existing),
           effective_after_run_id: replay.effective_after_run_id,
         };
-      }
-      if (mutation.action !== "revoke" && mutation.access_mode === "write") {
-        const host = await this.requireHost(repository, identity.userId, context.execution_host_id);
-        if (host.kind === "server") {
-          throw new ConversationExecutionContextError(
-            422,
-            "Server-host Folder attachments are read-only; use a trusted remote Host for direct attached-Folder writes",
-          );
-        }
       }
       let attachment;
       let event: string;
@@ -597,12 +637,24 @@ export class ConversationExecutionContextService {
         : primaryLocation
         ? { kind: "location" as const, project_folder_id: primaryLocation.project_folder_id, workspace_location_id: primaryLocation.id, display_path: primaryLocation.display_path }
         : { kind: "managed" as const, managed_workspace_id: session.id, display_path: null };
-    const summary = this.summaryFromParts(context, session.id, host ? hostSummary(host, session.id) : null, pinnedRuntimeChoice(runtime), primary, await repository.listAttachments(identity.spaceId, session.id), runtimes);
+    const git = defaultPrimary?.kind === "location"
+      ? conversationGitSnapshot(primaryLocation)
+      : defaultPrimary?.kind === "managed"
+        ? managedGitSnapshot()
+        : null;
+    const summary = this.summaryFromParts(context, session.id, host ? hostSummary(host, session.id) : null, pinnedRuntimeChoice(runtime), primary, git, await repository.listAttachments(identity.spaceId, session.id), runtimes);
     const blockedReason = context.state === "initialized"
       ? initializedBlockReason(summary, initializedRuntimeAvailability)
       : draftBlockReason(host, defaultPrimary, primaryLocation, runtime, hosts, executableLocations, usableRuntimeCandidates);
+    const staleGit = context.state === "initialized" && gitContextChanged(context, git);
     return {
-      summary: { ...summary, can_send: blockedReason === null, blocked_reason: blockedReason },
+      summary: {
+        ...summary,
+        can_send: blockedReason === null && !staleGit,
+        blocked_reason: staleGit
+          ? "Git branch or commit changed after this Conversation was initialized; refresh the execution context before sending"
+          : blockedReason,
+      },
       available_hosts: hosts.map((candidate) => hostSummary(candidate, session.id)),
       available_runtime_profiles: availableRuntimeProfiles,
       available_primary_locations: activeLocations.map((location) => ({
@@ -612,6 +664,7 @@ export class ConversationExecutionContextService {
         execution_host_id: location.execution_host_id,
         display_path: location.display_path,
         execution_ready: location.execution_ready,
+        git: conversationGitSnapshot(location) ?? undefined,
       })),
     };
   }
@@ -634,7 +687,13 @@ export class ConversationExecutionContextService {
     const runtimes = context.state === "initialized"
       ? await this.runtimesForInitialized(repository, identity, session)
       : [];
-    return this.summaryFromParts(context, session.id, host ? hostSummary(host, session.id) : null, pinnedRuntimeChoice(runtime), primarySummary(context, location, session.id), await repository.listAttachments(identity.spaceId, session.id), runtimes);
+    const primary = primarySummary(context, location, session.id);
+    const git = primary?.kind === "location"
+      ? conversationGitSnapshot(location)
+      : primary?.kind === "managed"
+        ? managedGitSnapshot()
+        : null;
+    return this.summaryFromParts(context, session.id, host ? hostSummary(host, session.id) : null, pinnedRuntimeChoice(runtime), primary, git, await repository.listAttachments(identity.spaceId, session.id), runtimes);
   }
 
   private summaryFromParts(
@@ -643,6 +702,7 @@ export class ConversationExecutionContextService {
     host: ConversationExecutionHostSummary | null,
     runtime: ConversationRuntimeSelection | null,
     primary: ConversationExecutionSummary["primary"],
+    git: ConversationGitSnapshot | null,
     attachments: ReturnType<typeof attachmentSummary>[],
     runtimes: ConversationRuntimeSelection[] = runtime ? [runtime] : [],
   ): ConversationExecutionSummary {
@@ -653,6 +713,7 @@ export class ConversationExecutionContextService {
       runtime,
       runtimes,
       primary,
+      git,
       attachments,
       dispatch_locked: Boolean(context.dispatch_lock_id),
       queue_paused_at: context.queue_paused_at,
@@ -802,6 +863,47 @@ export class ConversationExecutionContextService {
     }
     return profile;
   }
+}
+
+function conversationGitSnapshot(
+  location: ExecutionLocationRow | null,
+): ConversationGitSnapshot | null {
+  if (!location) return null;
+  return {
+    source: "workspace_location",
+    workspace_location_id: location.id,
+    branch: location.branch,
+    commit_sha: location.git_head,
+    dirty: location.dirty,
+    execution_ready: location.execution_ready,
+    observed_at: new Date().toISOString(),
+  };
+}
+
+function managedGitSnapshot(): ConversationGitSnapshot {
+  return {
+    source: "managed_workspace",
+    workspace_location_id: null,
+    branch: null,
+    commit_sha: null,
+    dirty: null,
+    execution_ready: true,
+    observed_at: new Date().toISOString(),
+  };
+}
+
+function gitContextChanged(
+  context: Pick<ExecutionContextRow, "git_observed_at" | "git_branch" | "git_head" | "git_execution_ready" | "primary_workspace_location_id">,
+  current: ConversationGitSnapshot | null,
+): boolean {
+  // Older initialized contexts predate the baseline fields. They remain
+  // usable and acquire the baseline on the next new Conversation.
+  if (!context.git_observed_at) return false;
+  if (!current) return true;
+  return context.primary_workspace_location_id !== current.workspace_location_id
+    || context.git_branch !== current.branch
+    || context.git_head !== current.commit_sha
+    || context.git_execution_ready !== current.execution_ready;
 }
 
 function runtimeChoice(candidate: ConversationExecutionRuntimeProfile): ConversationRuntimeChoice {

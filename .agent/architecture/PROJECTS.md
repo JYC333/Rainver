@@ -121,9 +121,10 @@ to the active Location directly. Project Conversations pin their Primary
 Location (or a Conversation-owned managed workspace) in the execution context
 and never consult a Folder-level preferred Location.
 An initialized Conversation may also retain same-Host attachment pins when a
-new active checkout is selected. Trusted remote Hosts can receive explicit
-read/write attachment grants; server-host attachments are read-only so a Run
-cannot bypass the managed worktree and patch-application boundary.
+new active checkout is selected. Any selected Host, including the built-in
+server Host, can receive an explicit read or write attachment grant. The Host
+namespace still confines every bound Location to its authorized root; a write
+grant does not bypass that containment boundary.
 
 A Folder has no separate owner, visibility, membership, or access-level
 authority — it inherits its owning Project's ACL completely. Unregistering a
@@ -993,6 +994,9 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | POST | `/projects/{id}/folders/{folderId}/unregister` | Remove only the registration row; never touches disk |
 | POST | `/projects/{id}/folders/scan` | Scan for unregistered directories eligible to connect |
 | GET | `/projects/{id}/folders/{folderId}/tree` \| `/file` \| `/git/status` \| `/git/diff` | Files & Code reads; the requested active remote Location round-trips through the owning host daemon |
+| POST | `/projects/{id}/folders/{folderId}/file` | Direct Project-writer text-file create/edit with optimistic existence/hash check; remote Locations use the owning Host's `folder_write` channel |
+| GET | `/projects/{id}/folders/{folderId}/file/revisions` | List available bounded preimages for the active Location |
+| POST | `/projects/{id}/folders/{folderId}/file/rollback` | Directly restore one available user-file revision, refusing stale later changes |
 | PUT | `/projects/{id}/research/initial-intake` | Save or update the explicit body `workflow_id`; omitting it creates a new draft Workflow |
 | POST | `/projects/{id}/research/initial-intake/start` | Start or idempotently resume the explicit body `workflow_id`; omitting it creates/reuses by its selected Inquiry Thread |
 | GET | `/projects/{id}/research/workflow` | List research workflows for the project |

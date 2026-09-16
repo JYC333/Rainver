@@ -51,6 +51,13 @@ export async function isGitRepo(path: string): Promise<boolean> {
   }
 }
 
+/** Ensure a writable managed directory has the Git baseline used by status and diff readers. */
+export async function ensureGitRepository(path: string): Promise<boolean> {
+  if (await isGitRepo(path)) return true;
+  const result = await runGit(["init", "--quiet"], path, 30_000);
+  return result.code === 0;
+}
+
 export function parsePorcelain(output: string): GitChangedFile[] {
   const result: GitChangedFile[] = [];
   for (const line of output.split(/\r?\n/)) {

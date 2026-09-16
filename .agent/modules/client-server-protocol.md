@@ -34,6 +34,19 @@ paths (`/` and not `//`); the browser drops anything else.
 
 **Request body:** JSON with snake_case fields.
 
+Conversation message requests accept a trimmed `content`/`message` string plus
+an ordered `input_parts` array. Text-only requests remain compatible; an
+image-only request is valid when the selected runtime/model explicitly supports
+images. Image bytes use the authenticated multipart endpoint
+`POST /api/v1/conversation-inputs/media` and are referenced in JSON by the
+server-issued `media_id`; the browser never sends a Host path or base64 image
+body. Historical image bytes are served only through the authenticated
+Space-scoped `GET /api/v1/conversation-inputs/media/{mediaId}` endpoint.
+File snapshots are bounded server-side at send time. When an ACP prompt needs
+the live file, the server sends a server-issued resource id plus a
+`workspace_relative_path` only for the built-in Host; that path is relative to
+the shared instance workspace root and is never an absolute browser field.
+
 **Response shape:**
 ```json
 // Single resource

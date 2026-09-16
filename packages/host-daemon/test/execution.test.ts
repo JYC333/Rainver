@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { connect } from "node:net";
+import { pathToFileURL } from "node:url";
 import { saveConfig } from "../src/config.js";
 import { startEgressProxy } from "../src/egressProxy.js";
 import { existsSync } from "node:fs";
@@ -11,10 +12,14 @@ import {
   handleStdin,
   handleStdinClose,
   handleTerminate,
+  managedToolTreeForLaunch,
   REMOTE_CWD_PLACEHOLDER,
   resolveAcpEntrypoint,
   resolveAcpLaunch,
+  resolveInputResourcePaths,
   setEgressProxy,
+  substituteAcpInput,
+  substituteStructuredInputResources,
 } from "../src/execution.js";
 
 let configDir: string;
@@ -39,6 +44,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   delete process.env.RAINVER_HOST_CONFIG_DIR;
+  delete process.env.RAINVER_HOST_WORKSPACES_ROOT;
   await rm(configDir, { recursive: true, force: true });
   await rm(workspaceDir, { recursive: true, force: true });
   await rm(attachedWorkspaceDir, { recursive: true, force: true });
@@ -69,6 +75,96 @@ const AGENT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CONV = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 describe("handleLaunch", () => {
+  it("resolves authorized logical input resources and rejects traversal or ungranted Locations", () => {
+    expect(resolveInputResourcePaths([
+      {
+        input_id: "part-1",
+        workspace_location_id: "location-attached",
+        relative_path: "docs/README.md",
+        name: "README.md",
+        media_type: "text/markdown",
+        size_bytes: 10,
+      },
+    ], { "location-attached": attachedWorkspaceDir }, new Set(["location-attached"]))).toEqual({
+      "part-1": join(attachedWorkspaceDir, "docs/README.md"),
+    });
+    expect(() => resolveInputResourcePaths([
+      {
+        input_id: "part-2",
+        workspace_location_id: "location-attached",
+        relative_path: "../outside.txt",
+        name: "outside.txt",
+        media_type: "text/plain",
+        size_bytes: 7,
+      },
+    ], { "location-attached": attachedWorkspaceDir }, new Set(["location-attached"]))).toThrow(/escapes/);
+    expect(() => resolveInputResourcePaths([
+      {
+        input_id: "part-3",
+        workspace_location_id: "location-other",
+        relative_path: "file.txt",
+        name: "file.txt",
+        media_type: "text/plain",
+        size_bytes: 7,
+      },
+    ], { "location-other": attachedWorkspaceDir }, new Set())).toThrow(/access set/);
+    expect(resolveInputResourcePaths([
+      {
+        input_id: "part-4",
+        workspace_location_id: "location-builtin",
+        workspace_relative_path: ".",
+        relative_path: "docs/README.md",
+        name: "README.md",
+        media_type: "text/markdown",
+        size_bytes: 10,
+      },
+    ], {}, new Set(["location-builtin"]), workspaceDir)).toEqual({
+      "part-4": join(workspaceDir, "docs/README.md"),
+    });
+    expect(() => resolveInputResourcePaths([
+      {
+        input_id: "part-5",
+        workspace_location_id: "location-builtin",
+        workspace_relative_path: "../outside",
+        relative_path: "file.txt",
+        name: "file.txt",
+        media_type: "text/plain",
+        size_bytes: 7,
+      },
+    ], {}, new Set(["location-builtin"]), workspaceDir)).toThrow(/shared workspace root/);
+  });
+
+  it("rewrites only server-issued resource links in structured JSON", () => {
+    const input = JSON.stringify({
+      prompt: [
+        { type: "resource_link", uri: "rainver:conversation-input:part-1", name: "README.md" },
+        { type: "text", text: "rainver:conversation-input:part-1 must stay text" },
+      ],
+    }) + "\n";
+    const output = substituteStructuredInputResources(input, { "part-1": join(attachedWorkspaceDir, "README.md") });
+    expect(JSON.parse(output).prompt[0].uri).toBe(pathToFileURL(join(attachedWorkspaceDir, "README.md")).href);
+    expect(JSON.parse(output).prompt[1].text).toContain("rainver:conversation-input:part-1");
+    expect(substituteStructuredInputResources("not JSON", { "part-1": "/tmp/file" })).toBe("not JSON");
+  });
+
+  it("replaces the ACP cwd field without mutating an attached snapshot", () => {
+    const input = JSON.stringify({
+      params: {
+        cwd: REMOTE_CWD_PLACEHOLDER,
+        prompt: [
+          { type: "resource_link", uri: "rainver:conversation-input:part-1", name: "README.md" },
+          { type: "text", text: `body ${REMOTE_CWD_PLACEHOLDER}` },
+        ],
+      },
+    }) + "\n";
+    const output = JSON.parse(substituteAcpInput(input, { [REMOTE_CWD_PLACEHOLDER]: workspaceDir }, {
+      "part-1": join(workspaceDir, "README.md"),
+    }));
+    expect(output.params.cwd).toBe(workspaceDir);
+    expect(output.params.prompt[0].uri).toBe(pathToFileURL(join(workspaceDir, "README.md")).href);
+    expect(output.params.prompt[1].text).toBe(`body ${REMOTE_CWD_PLACEHOLDER}`);
+  });
+
   it("streams stdout as output frames and reports a clean exit", async () => {
     const { frames, send, complete } = collectSend();
     await handleLaunch(
@@ -250,6 +346,29 @@ describe("handleLaunch", () => {
     }]);
   });
 
+  it("fails closed when an attached built-in location escapes the shared root", async () => {
+    process.env.RAINVER_HOST_WORKSPACES_ROOT = workspaceDir;
+    const { send, complete } = collectSend();
+    await handleLaunch(
+      {
+        run_id: "run-attached-traversal",
+        launch_id: "launch-13b",
+        workspace_location_id: "folder-1",
+        workspace_access: [{
+          workspace_location_id: "location-builtin",
+          workspace_relative_path: "../outside",
+          access_mode: "read",
+        }],
+        argv: ["sh", "-c", "echo should-not-run"],
+      },
+      send,
+      () => {},
+    );
+    const done = await complete();
+    expect(done.exit_code).toBe(1);
+    expect(String(done.error)).toContain("shared workspace root");
+  });
+
   it("fails closed when an authorized attached location is not registered on this host", async () => {
     const { send, complete } = collectSend();
     await handleLaunch(
@@ -319,6 +438,11 @@ describe("handleLaunch", () => {
     const claude = resolveAcpLaunch("claude-agent-acp", []);
     expect(claude.args).toEqual([resolveAcpEntrypoint("claude-agent-acp")]);
     expect(claude.env).toEqual({ CLAUDE_CODE_EXECUTABLE: "claude" });
+  });
+
+  it("derives a managed strict launch's executable bind from its versioned tree, not its separate login HOME", () => {
+    expect(managedToolTreeForLaunch("codex_cli", "managed:1.11.0")).toBe(join(configDir, "tools", "codex_cli", "1.11.0"));
+    expect(managedToolTreeForLaunch("codex_cli", "own")).toBeNull();
   });
 
   it("spawns codex_cli's pinned codex-acp dependency through node rather than a PATH lookup, without setting CODEX_PATH for other adapters", async () => {

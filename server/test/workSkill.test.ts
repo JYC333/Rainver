@@ -23,6 +23,7 @@ describe("the Skill a Run is given", () => {
     const skill = renderWorkSkill(options);
     expect(skill).toContain("Your reply is the message they read");
     expect(skill).toContain("project.propose_definition");
+    expect(skill).toContain("Artifact type labels");
     expect(skill).not.toContain("reaches it");
     expect(skill).not.toContain("artifact.submit");
     const pointer = workSkillPromptPointer("/host/SKILL.md", options);

@@ -11,6 +11,8 @@ export interface FileContent {
   content: string;
   size: number;
   line_count: number;
+  /** SHA-256 of the exact UTF-8 bytes returned, for conversation snapshots. */
+  sha256?: string;
 }
 
 export interface GitChangedFile {

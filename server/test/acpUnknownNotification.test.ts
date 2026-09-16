@@ -45,6 +45,39 @@ describe("an ACP notification the controller does not recognise", () => {
   });
 });
 
+describe("structured conversation prompt content", () => {
+  it("sends ACP image and resource blocks without stringifying or rewriting them", () => {
+    const sent: Record<string, unknown>[] = [];
+    const acp = createCliConversationController({
+      adapter_type: "codex_cli",
+      cwd: "/workspace",
+      prompt_blocks: [[
+        { type: "text", text: "Describe this" },
+        { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+        { type: "resource_link", uri: "rainver:conversation-input:part-1", name: "README.md", mimeType: "text/markdown", size: 12 },
+      ]],
+    });
+    expect(acp).toBeDefined();
+    acp!.start((message) => sent.push(message));
+    acp!.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, (message) => sent.push(message), () => {});
+    acp!.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1", configOptions: [] } }, (message) => sent.push(message), () => {});
+
+    expect(sent.find((message) => message.method === "session/prompt")).toEqual({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "session/prompt",
+      params: {
+        sessionId: "session-1",
+        prompt: [
+          { type: "text", text: "Describe this" },
+          { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+          { type: "resource_link", uri: "rainver:conversation-input:part-1", name: "README.md", mimeType: "text/markdown", size: 12 },
+        ],
+      },
+    });
+  });
+});
+
 /**
  * Which options a session has depends on the ones already set. Codex offers
  * `fast-mode` at `session/new` and withdraws it once the model is one that

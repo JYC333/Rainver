@@ -21,10 +21,10 @@ used to live here are in
 | Public internet sharing | Not present. Instance-local targeted publication exists (`publications`) |
 | Public SaaS / multi-tenant | Out of scope |
 | API key persistence UI | Feature-gated (501 in production); no `api_keys` table |
-| Files & Code interactive session execution | Removed. Files & Code is read-only tree/file/git status/git diff |
+| Files & Code interactive session execution | Removed. Files & Code has bounded human file editing, but no interactive Agent-session execution |
 | Runtime adapter bypassing credential resolver | Blocked by `RunOrchestrationService` |
 | Runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` |
-| File mutation without approved proposal + PathPolicy | Blocked by code-patch apply |
+| Agent file mutation without approved proposal + PathPolicy | Blocked by code-patch apply; explicit human File-page writes are a separate bounded direct path with optimistic rollback |
 | Automatic memory promotion from source/evidence | Blocked by proposal/apply |
 | Vector index over an **external** corpus | Not present. Space-internal pgvector recall exists |
 | Native `capability` runtime adapter | Declared and disabled |

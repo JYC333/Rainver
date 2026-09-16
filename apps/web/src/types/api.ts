@@ -28,6 +28,7 @@ import type {
   CaptureResponse,
   ChatTurnAccepted,
   ChatTurnRequest,
+  ConversationInputPart,
   ContinueRoomAfterProposalRequest,
   DiagnosticTurnPart,
   RunTurn,
@@ -63,6 +64,7 @@ import type {
   ConversationBackendBinding,
   ConversationBackendCatalog,
   ConversationBackendOption,
+  ConversationRetryResponse,
   RuntimeSessionConfigOption,
   RuntimeSessionConfigSelection,
   CreateAgentRunGroupRequest,
@@ -264,6 +266,7 @@ import type {
 } from '@rainver/protocol'
 export type {
   MemoryVersion,
+  ConversationRetryResponse,
   AgentRunGroup,
   AgentRunGroupMember,
   AgentRunGroupTimeline,
@@ -2006,6 +2009,7 @@ export interface Message {
   parent_message_id: string | null
   /** The Run that produced this message, or that this message started. */
   run_id: string | null
+  input_parts?: ConversationInputPart[]
   created_at: string
 }
 
@@ -3971,6 +3975,31 @@ export interface FileContent {
   content: string
   size: number
   line_count: number
+  sha256?: string
+}
+
+export interface ProjectFileRevision {
+  id: string
+  project_folder_id: string
+  workspace_location_id: string
+  path: string
+  before_exists: boolean
+  after_exists: boolean
+  after_sha256: string | null
+  created_at: string
+  expires_at: string
+  status: 'available' | 'rolled_back' | 'pruned'
+}
+
+export interface ProjectFileEdit {
+  file: FileContent
+  revision: ProjectFileRevision
+}
+
+export interface ProjectFileRollback {
+  file: FileContent | null
+  revision_id: string
+  rolled_back: true
 }
 
 export interface GitChangedFile {

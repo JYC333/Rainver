@@ -2,8 +2,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectChatSidecar, { focusRefsFor } from '../sidecar/ProjectChatSidecar'
-import { projectsApi, proposalsApi, roomsApi, sessionsApi } from '../../../api/client'
+import { projectsApi, proposalsApi, roomsApi, runsApi, sessionsApi } from '../../../api/client'
 import { projectTaskHref } from '../taskHref'
+import { subscribeProjectFolderContentChanged } from '../../../core/projectFolderEvents'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() } }))
 vi.mock('../../../contexts/SpaceContext', () => ({
@@ -223,6 +224,36 @@ describe('Project chat sidecar', () => {
       backends: [],
       focus_refs: [{ type: 'task', id: TASK }],
     }))
+  })
+
+  it('announces Folder content changes when the Conversation run settles', async () => {
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
+      summary: {
+        session_id: 'conv-2', state: 'initialized',
+        host: { host_id: 'host-1', host_name: 'Local Host', host_kind: 'server', online: true, managed_workspace_available: true, daemon_last_heartbeat_at: null },
+        runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', adapter_type: 'claude', runtime_installation: 'claude' },
+        primary: { kind: 'location', project_folder_id: 'folder-1', workspace_location_id: 'location-1', display_path: '/workspace/source' },
+        attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null,
+      },
+      available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
+    } as never)
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-3', session_id: 'conv-2', role: 'user', content: 'Create a file', metadata_json: {} },
+      conversation: { id: 'conv-2', title: 'Depth repair' }, task_group_ids: [], run_ids: ['run-1'],
+    } as never)
+    vi.mocked(runsApi.streamTurn).mockImplementation(async (_runId, options) => {
+      options.onTurn({ state: 'done' } as never)
+    })
+    const changed = vi.fn()
+    const stop = subscribeProjectFolderContentChanged(changed)
+
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    await waitFor(() => expect(sessionsApi.executionContext).toHaveBeenCalledWith('conv-2'))
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Create a file' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(changed).toHaveBeenCalledWith({ projectFolderIds: ['folder-1'] }))
+    stop()
   })
 
   it('opens the full Room on the conversation being read', async () => {

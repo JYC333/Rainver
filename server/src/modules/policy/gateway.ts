@@ -41,6 +41,7 @@ function buildEngineCtx(req: PolicyCheckRequest): Record<string, unknown> {
   const ctx: Record<string, unknown> = { action: req.action };
   if (req.space_id) ctx.space_id = req.space_id;
   if (req.resource_space_id) ctx.resource_space_id = req.resource_space_id;
+  if (req.actor_type) ctx.actor_type = req.actor_type;
   if (req.actor_id) ctx.actor_id = req.actor_id;
   if (req.actor_ref) ctx.actor_ref = req.actor_ref;
   if (req.resource_type) ctx.resource_type = req.resource_type;

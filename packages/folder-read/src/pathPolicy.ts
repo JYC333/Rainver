@@ -33,6 +33,8 @@ export interface PathPolicyInput {
   /** Protected Folders forbid direct .git access — use the worktree sandbox instead. */
   protectedFolder?: boolean;
   forTrustedCodePatchApply?: boolean;
+  /** A person explicitly editing through the File page may write scripts. */
+  allowUserWrite?: boolean;
 }
 
 /**
@@ -95,6 +97,7 @@ export function validatePath(input: PathPolicyInput): string {
   if (
     mode === "write"
     && input.forTrustedCodePatchApply !== true
+    && input.allowUserWrite !== true
     && FORBIDDEN_WRITE_SUFFIXES.has(suffix)
   ) {
     throw new PathPolicyError(

@@ -81,6 +81,7 @@ import type {
   ConversationExecutionPreflightRequest,
   ConversationExecutionPreflightResponse,
   ConversationExecutionInitializeRequest,
+  ConversationRetryResponse,
   ConversationExecutionSummary,
   CreateAgentFromTemplateBody,
   CreateAgentRunGroupRequest,
@@ -146,6 +147,9 @@ import type {
   InstanceOperationsSettings,
   InstanceOperationsSettingsUpdate,
   FileContent,
+  ProjectFileEdit,
+  ProjectFileRevision,
+  ProjectFileRollback,
   FileNode,
   GitStatus,
   Host,
@@ -433,7 +437,11 @@ import type {
   UsageSubjectsResponse,
   UsageSummaryResponse,
   UsageTimeseriesResponse,
+  ConversationInputMediaOut,
+  ConversationInputPart,
+  ConversationInputFileSearchResponse,
 } from '@rainver/protocol'
+import { ConversationInputMediaOutSchema } from '@rainver/protocol'
 
 const BASE = '/api/v1'
 
@@ -470,6 +478,7 @@ interface RequestOptions {
   includeSpaceContext?: boolean
   spaceId?: string
   idempotencyKey?: string
+  signal?: AbortSignal
 }
 
 export class ApiRequestError extends Error {
@@ -501,6 +510,7 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
   const url = BASE + path
 
   const opts: RequestInit = { method, headers }
+  if (options.signal) opts.signal = options.signal
   if (body !== undefined) opts.body = isForm ? (body as FormData) : JSON.stringify(body)
 
   const r = await fetch(url, opts)
@@ -534,6 +544,55 @@ const post  = <T>(path: string, body?: unknown, options?: RequestOptions) => req
 const put   = <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>('PUT',    path, body, options)
 const patch = <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>('PATCH',  path, body, options)
 const del   = <T>(path: string, options?: RequestOptions)                => request<T>('DELETE', path, undefined, options)
+
+export const conversationInputApi = {
+  uploadImage: (file: File, onProgress?: (progress: number) => void): Promise<ConversationInputMediaOut> => {
+    const form = new FormData()
+    form.append('file', file, file.name)
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `${BASE}/conversation-inputs/media`)
+      xhr.withCredentials = true
+      if (_apiKey) xhr.setRequestHeader('Authorization', `Bearer ${_apiKey}`)
+      xhr.setRequestHeader('X-Rainver-Space-Id', _spaceId)
+      xhr.upload.onprogress = event => {
+        if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100))
+      }
+      xhr.onerror = () => reject(new ApiRequestError('Image upload failed', 0))
+      xhr.onabort = () => reject(new ApiRequestError('Image upload cancelled', 0))
+      xhr.onload = () => {
+        if (xhr.status === 401) window.dispatchEvent(new CustomEvent('auth:required'))
+        let payload: unknown = null
+        try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null } catch { /* use status text */ }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const error = payload && typeof payload === 'object'
+            ? payload as ApiError & { code?: unknown }
+            : { error: `${xhr.status} ${xhr.statusText}` }
+          const message = formatApiErrorMessage(error, `${xhr.status} ${xhr.statusText}`)
+          reject(new ApiRequestError(message, xhr.status, typeof error.code === 'string' ? error.code : undefined, error as unknown as Record<string, unknown>))
+          return
+        }
+        try {
+          resolve(ConversationInputMediaOutSchema.parse(payload))
+        } catch {
+          reject(new ApiRequestError('Image upload returned an invalid response', xhr.status))
+        }
+      }
+      xhr.send(form)
+    })
+  },
+  deletePendingImage: (mediaId: string) => del<null>(`/conversation-inputs/media/${encodeURIComponent(mediaId)}`),
+  imageBlob: async (mediaId: string): Promise<Blob> => {
+    const headers: Record<string, string> = { 'X-Rainver-Space-Id': _spaceId }
+    if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
+    const response = await fetch(`${BASE}/conversation-inputs/media/${encodeURIComponent(mediaId)}`, { headers })
+    if (response.status === 401) window.dispatchEvent(new CustomEvent('auth:required'))
+    if (!response.ok) throw new ApiRequestError(`Could not load image (${response.status})`, response.status)
+    return response.blob()
+  },
+  searchFiles: (sessionId: string, query: string, signal?: AbortSignal) =>
+    get<ConversationInputFileSearchResponse>(`/sessions/${encodeURIComponent(sessionId)}/input-files?q=${encodeURIComponent(query)}&limit=20`, { signal }),
+}
 
 /**
  * Reads an SSE body, yielding one `{ event, data }` per frame.
@@ -1140,6 +1199,8 @@ export const sessionsApi = {
     post<ConversationExecutionPreflightResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/preflight`, body),
   initializeExecution: (id: string, body: ConversationExecutionInitializeRequest) =>
     post<ConversationExecutionSummary>(`/sessions/${encodeURIComponent(id)}/execution-context/initialize`, body),
+  refreshGitContext: (id: string) =>
+    post<ConversationExecutionSummary>(`/sessions/${encodeURIComponent(id)}/execution-context/refresh-git`, {}),
   mutateExecutionAttachments: (id: string, body: ConversationAttachmentMutation) =>
     post<ConversationAttachmentMutationResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/attachments`, body),
   remove:     (id: string)                          => del<Session>(`/sessions/${id}`),
@@ -1453,7 +1514,7 @@ export const roomsApi = {
   sendMessage: (
     roomId: string,
     sessionId: string,
-    body: SendRoomMessageRequest,
+    body: Omit<SendRoomMessageRequest, 'input_parts'> & { input_parts?: ConversationInputPart[] },
   ) =>
     post<{
       message: RoomMessage
@@ -1461,6 +1522,10 @@ export const roomsApi = {
       task_group_ids: string[]
       run_ids: string[]
     }>(`/rooms/${roomId}/conversations/${sessionId}/messages`, body),
+  retryMessage: (roomId: string, sessionId: string, runId: string, options: { idempotencyKey?: string } = {}) =>
+    post<ConversationRetryResponse>(`/rooms/${roomId}/conversations/${sessionId}/retry`, { run_id: runId }, {
+      idempotencyKey: options.idempotencyKey ?? crypto.randomUUID(),
+    }),
   continueAfterProposal: (
     roomId: string,
     sessionId: string,
@@ -1847,6 +1912,7 @@ export const agentsApi = {
     agentId: string,
     body: {
       message: string
+      input_parts?: ConversationInputPart[]
       session_id?: string
       project_id?: string
       restore_workspace?: boolean
@@ -1859,6 +1925,11 @@ export const agentsApi = {
       onTurn?: (turn: RunTurn) => void
     } = {},
   ) => postChatTurn(`/agents/${agentId}/chat`, body, options),
+  retryConversation: (agentId: string, runId: string, options: { spaceId?: string; idempotencyKey?: string } = {}) =>
+    post<ConversationRetryResponse>(`/agents/${encodeURIComponent(agentId)}/chat/retry`, { run_id: runId }, {
+      ...options,
+      idempotencyKey: options.idempotencyKey ?? crypto.randomUUID(),
+    }),
   resetContext: (agentId: string) =>
     post<{ agent_id: string; session_reset: boolean; thread_id: string | null; workspace_mode: 'location' | 'managed' | null }>(`/agents/${agentId}/chat/reset-context`, {}),
   listRuns:       (limit = 50)        => get<Run[]>(`/agents/runs?limit=${limit}`),
@@ -1929,6 +2000,12 @@ export const projectFoldersApi = {
     get<FileNode>(`/projects/${projectId}/folders/${folderId}/tree`),
   file:    (projectId: string, folderId: string, path: string) =>
     get<FileContent>(`/projects/${projectId}/folders/${folderId}/file?path=${encodeURIComponent(path)}`),
+  editFile: (projectId: string, folderId: string, data: { path: string; content: string; expected_path: string | null; expected_exists: boolean; expected_sha256: string | null }) =>
+    post<ProjectFileEdit>(`/projects/${projectId}/folders/${folderId}/file`, data),
+  fileRevisions: (projectId: string, folderId: string, path: string) =>
+    get<ProjectFileRevision[]>(`/projects/${projectId}/folders/${folderId}/file/revisions?path=${encodeURIComponent(path)}`),
+  rollbackFile: (projectId: string, folderId: string, revisionId: string) =>
+    post<ProjectFileRollback>(`/projects/${projectId}/folders/${folderId}/file/rollback`, { revision_id: revisionId }),
   gitStatus: (projectId: string, folderId: string) =>
     get<GitStatus>(`/projects/${projectId}/folders/${folderId}/git/status`),
   gitDiff: (projectId: string, folderId: string, path?: string) =>

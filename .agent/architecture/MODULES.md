@@ -86,11 +86,11 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 | `runtimeContext` | kernel | `/runtime-context/*` | yes | Work Context read/create, preview, and checkpoint corrections. The public facade is also the support-package gateway listed below. |
 | `contentAccess` | kernel | `/content-access/*` | empty | Resource visibility, access logs, demotion disclosures, and publication-proposal writes. |
 | `proposals` | kernel | `/proposals*` | yes | Proposal approval/apply orchestration and applier registry; unsupported proposal types fail closed. |
-| `sessions` | product | `/sessions*`, `/rooms/{roomId}/conversations/{sessionId}/execution*` | empty | Conversation identity, canonical messages, the Conversation execution-context preflight/initialization and attachment mutations, user × session backend bindings, serialized turn claims, and opaque vendor runtime-session state mappings. The execution-context row is the sole Host/Primary/attachment authority; vendor state is an invalidatable replay optimization, while canonical messages and Runtime Context checkpoints remain authoritative. |
+| `sessions` | product | `/sessions*`, `/rooms/{roomId}/conversations/{sessionId}/execution*` | empty | Conversation identity, canonical messages, destination-scoped drafts at the web edge, execution-context preflight/initialization/Git-baseline refresh and attachment mutations, user × session backend bindings, idempotent manual retry linkage, serialized turn claims, and opaque vendor runtime-session state mappings. The execution-context row is the sole Host/Primary/attachment/Git admission authority; vendor state is an invalidatable replay optimization, while canonical messages and Runtime Context checkpoints remain authoritative. |
 | `agentTemplates` | product | `/agent-templates*` | empty | Catalog-backed template list/read/create-agent surfaces. |
-| `agents` | product | `/agents*` | empty | Agent profiles, versions, assistant chat/settings, template services, agent-scoped run/proposal reads. |
+| `agents` | product | `/agents*` | empty | Agent profiles, versions, assistant chat/settings, direct conversation Host/Git admission and retry routes, template services, agent-scoped run/proposal reads. |
 | `agentGroups` | product | `/agent-groups*` | empty | One-task collaboration records opened by Room messages: timeline, trace, pause/resume/cancel. Not a second conversation UI. |
-| `rooms` | product | `/rooms*`, `/projects/{projectId}/mainline-room`, `/projects/{projectId}/conversations` | empty | Project-bound Rooms, rosters, conversations. See [modules/rooms.md](../modules/rooms.md). |
+| `rooms` | product | `/rooms*`, `/projects/{projectId}/mainline-room`, `/projects/{projectId}/conversations` | empty | Project-bound Rooms, rosters, conversations, Room retry and recipient capability/Git admission. See [modules/rooms.md](../modules/rooms.md). |
 | `prompts` | capability | `/prompts/assets*` | empty | Prompt asset facade over evolvable assets, built-in manifest sync, immutable prompt versions, rendering/preview, evaluation evidence, labeled deployment refs, production promotion proposals, rollback, and runtime resolution. |
 | `personalMemoryGrants` | kernel | `/personal-memory-grants*` | empty | Personal memory grant preview/create/list/revoke/audit. |
 | `memory` | kernel | `/memory*` | yes, lazy | Memory entries, read logging, search, and memory proposal creation. |
@@ -117,7 +117,7 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 | `projectWork` | product | `/projects/{projectId}/board`, `/projects/{projectId}/updates*`, `/tasks/{taskId}/work`, `/tasks/{taskId}/stage` | empty | Board read model, Updates stream + undo, Task work projection and stage commands. |
 | `plans` | product | `/plans*` | empty | Durable plan/version execution read and command surface: approval-gated materialization, structured list/detail views, execution, reconciliation, and revision. |
 | `projectFolderExecutionConfigs` | product | `/projects/{projectId}/folders/{folderId}/execution-config*` | empty | Project Folder execution config read/create/update. |
-| `projectFolders` | product | `/projects/{projectId}/folders*` | yes | Project Folder records, PathPolicy, sandbox/worktree helpers, and Files & Code (tree/file/git status/git diff) read routes. Remote reads authorize through `hosts`/`connectionRegistry` and execute shared `@rainver/folder-read` on the owning daemon. There is no separate console route module. |
+| `projectFolders` | product | `/projects/{projectId}/folders*` | yes | Project Folder records, PathPolicy, sandbox/worktree helpers, and Files & Code (tree/file/git status/diff plus direct user edit/revision/rollback) routes. Remote reads and user writes authorize through `hosts`/`connectionRegistry` and execute shared `@rainver/folder-read` on the owning daemon. There is no separate console route module. |
 | `hosts` | infra | `/hosts*` | empty | Pairing, registration, workspaces, installations, provider bindings, host-side login stream. See [modules/hosts.md](../modules/hosts.md). |
 | `acpAgents` | infra | `/acp-agents*` | empty | ACP agent registry overlay for host installations. |
 | `routing` | infra | `/runs/{runId}/route-decision` | empty | Read of the C2 route decision stamped on a Run. |
@@ -191,8 +191,9 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
 - Proposal apply dispatch goes through `ProposalApplierRegistry`; no hardcoded proposal-type
   apply chain remains.
 - Interactive agent-session execution over a Project Folder was never
-  implemented and has been removed; current Files & Code routes are
-  read-only tree/file/git status/git diff surfaces under `projectFolders`;
+implemented and has been removed; current Files & Code routes are tree/file/
+git status/git diff plus direct human edit/revision/rollback surfaces under
+`projectFolders`;
   remote Locations round-trip through `hosts` `connectionRegistry` to the
   owning daemon's `@rainver/folder-read` package.
 - Frontend Home and personal views consume `frontendSupport`/`/me` aggregate read

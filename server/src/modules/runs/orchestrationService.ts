@@ -18,7 +18,7 @@ import {
   executeManagedApiNoToolAdapter,
   type ManagedApiNoToolAdapterDeps,
 } from "./managedApiAdapter.js";
-import { executeRemoteHostCliAdapter, type RemoteHostCliAdapterDeps } from "./remoteHostCliAdapter.js";
+import { dispatchInstallation, executeRemoteHostCliAdapter, type RemoteHostCliAdapterDeps } from "./remoteHostCliAdapter.js";
 import { PgHostThreadEventRepository, createSerializedThreadEventSink } from "../hosts/threadEventRepository.js";
 import { serializeCalls } from "../routeUtils/common.js";
 import { AgentGroupRunLifecycleProjector } from "../agentGroups/lifecycleProjector.js";
@@ -333,7 +333,7 @@ export interface HostExecutionPort {
   readonly workspaceLocationId?: string | null;
   readonly workspaceRelativePath?: string | null;
   readonly workspace?: LaunchWorkspace;
-  readonly workspaceAccess?: Array<{ workspace_location_id: string; access_mode: "read" | "write" }>;
+  readonly workspaceAccess?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; workspace_relative_path?: string }>;
   readonly workspaceMounts?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
   readonly workspaceManager?: RunSandboxManagerPort;
   readonly codePatchCollector?: RunCodePatchCollectorPort;
@@ -518,11 +518,18 @@ function workspaceForVerification(port: HostExecutionPort): LaunchWorkspace | nu
 
 export { verificationTarget as verificationTargetForTest };
 
-function verificationTarget(port: HostExecutionPort | null | undefined): VerificationTarget | null {
+function verificationTarget(
+  port: HostExecutionPort | null | undefined,
+  run?: Pick<RunRecord, "adapter_type" | "model_override_json" | "runtime_profile_snapshot_json">,
+): VerificationTarget | null {
   if (!port?.hostId) return null;
   return {
     host_id: port.hostId,
     workspace_location_id: port.workspaceLocationId ?? null,
+    ...(run?.adapter_type ? {
+      adapter_type: run.adapter_type,
+      installation: dispatchInstallation(run),
+    } : {}),
     // The same resolution the launch gets: a verifier asks its questions in
     // the Run's own workspace, and on the built-in host that is a directory
     // the daemon has no registration for.
@@ -1316,7 +1323,7 @@ export class RunOrchestrationService {
         validationStarted = true;
         verificationResults = await this.adapters.verificationEngine.verify({
           run: materializationRun,
-          execution_target: verificationTarget(preparedRuntime?.execution_port),
+          execution_target: verificationTarget(preparedRuntime?.execution_port, materializationRun),
           base_commit_sha: preparedRuntime?.base_commit_sha ?? null,
           output_json: adapterResult.output_json,
           materialization_items: [],
@@ -1349,7 +1356,7 @@ export class RunOrchestrationService {
         if (this.adapters.verificationEngine) {
           const postMaterialization = await this.adapters.verificationEngine.verify({
             run: materializationRun,
-            execution_target: verificationTarget(preparedRuntime?.execution_port),
+            execution_target: verificationTarget(preparedRuntime?.execution_port, materializationRun),
             base_commit_sha: preparedRuntime?.base_commit_sha ?? null,
             output_json: adapterResult.output_json,
             materialization_items: materialization.items,
@@ -2075,6 +2082,9 @@ export class RunOrchestrationService {
         workspaceMounts,
       );
     }
+    const effectiveWorkspaceAccess = resolved.hostKind === "server"
+      ? await this.resolveBuiltinWorkspaceAccess(run.space_id, resolved.hostId, workspaceAccess)
+      : workspaceAccess;
     return new HostDaemonExecutionAdapter(
       resolved.hostKind,
       resolved.hostId,
@@ -2083,7 +2093,7 @@ export class RunOrchestrationService {
         ? await this.builtinLocationRelativePath(resolved.workspaceLocationId)
         : null,
       workspace,
-      workspaceAccess,
+      effectiveWorkspaceAccess,
     );
   }
 
@@ -2166,13 +2176,51 @@ export class RunOrchestrationService {
           "This server Host cannot safely mount an attached Folder outside its managed workspace root.",
         );
       }
-      if (item.access_mode === "write") {
+      return { ...item, path };
+    });
+  }
+
+  private async resolveBuiltinWorkspaceAccess(
+    spaceId: string,
+    hostId: string,
+    access: Array<{ workspace_location_id: string; access_mode: "read" | "write" }>,
+  ): Promise<Array<{ workspace_location_id: string; access_mode: "read" | "write"; workspace_relative_path: string }>> {
+    if (access.length === 0) return [];
+    const result = await getDbPool(this.config.databaseUrl!).query<{
+      id: string;
+      root_path: string | null;
+      execution_host_id: string;
+      execution_host_kind: string;
+      status: string;
+      execution_ready: boolean;
+    }>(
+      `SELECT id, root_path, execution_host_id, execution_host_kind, status, execution_ready
+         FROM workspace_locations
+        WHERE space_id = $1 AND id = ANY($2::varchar[])`,
+      [spaceId, access.map((item) => item.workspace_location_id)],
+    );
+    const locations = new Map(result.rows.map((row) => [row.id, row]));
+    const root = resolve(this.config.workspaceRoot);
+    return access.map((item) => {
+      const location = locations.get(item.workspace_location_id);
+      if (!location || location.execution_host_id !== hostId
+        || location.execution_host_kind !== "server"
+        || !["active", "stale"].includes(location.status)
+        || location.execution_ready !== true) {
         throw new RunPreparationError(
-          "conversation_workspace_access_unsupported",
-          "Server-host Folder attachments are read-only; use a trusted remote Host for direct attached-Folder writes.",
+          "conversation_workspace_access_unavailable",
+          "A Conversation attachment is no longer available on the built-in execution Host.",
         );
       }
-      return { ...item, path };
+      const absolutePath = locationAbsoluteRoot(location, this.config.workspaceRoot);
+      const relative = relativePath(root, absolutePath);
+      if (isAbsolute(relative) || relative === ".." || relative.startsWith(`..${sep}`)) {
+        throw new RunPreparationError(
+          "conversation_workspace_access_unsupported",
+          "This built-in Host cannot safely resolve an attached Folder outside its managed workspace root.",
+        );
+      }
+      return { ...item, workspace_relative_path: relative || "." };
     });
   }
 

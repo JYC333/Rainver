@@ -198,6 +198,7 @@ what is installed.
 | Outbound HTTP to model providers and CLI runtimes | `undici` + `ProxyAgent` through the network-profile transport | `server/src/modules/networkProfiles/transport.ts` |
 | Other outbound HTTP (source fetch, skill import, tool download) | `@rainver/outbound-guard`, through `fetchSource` / `fetchGuarded` — see the row below, which is the canonical one. Do not invent a second HTTP client or retry wrapper, and do not call native `fetch` for a URL a member can influence. The skill importer is the recorded exception: it is bounded by a host allowlist and reads a body with no ceiling | `server/src/modules/sources/sourceFetch.ts` |
 | WebSocket server | `@fastify/websocket` — **hosts channel only** | `server/src/modules/hosts/routes.ts` |
+| Multipart request parsing | `@fastify/multipart`, registered once by the gateway shell with the shared body-size limit | `server/src/gateway/appShell.ts`, `server/src/modules/sessions/routes.ts` |
 | Server-sent events | `streaming` module | `server/src/modules/streaming/` |
 | Scoped settings | `ScopedSettingsStore` + typed descriptors | `server/src/modules/settings/` |
 | Recurring in-process work and its cursor state | `SchedulerRegistry` + `PgSchedulerTaskStore` (`scheduler_tasks`) | `server/src/modules/scheduler/` |

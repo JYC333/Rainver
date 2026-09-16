@@ -175,7 +175,12 @@ describe("verification engine", () => {
           },
         },
       }),
-      execution_target: { host_id: "host-1", workspace_location_id: "loc-1" },
+      execution_target: {
+        host_id: "host-1",
+        workspace_location_id: "loc-1",
+        adapter_type: "codex_cli",
+        installation: "managed:1.11.0",
+      },
       base_commit_sha: null,
       output_json: {},
       materialization_items: [] as RunMaterializationItemSummary[],
@@ -185,7 +190,15 @@ describe("verification engine", () => {
     // The workspace is named, never resolved here: the engine used to hand the
     // executor a server path, which is why verification only ever worked for a
     // Run the server itself had provisioned.
-    expect(calls).toContainEqual({ command: ["pnpm", "test"], target: { host_id: "host-1", workspace_location_id: "loc-1" } });
+    expect(calls).toContainEqual({
+      command: ["pnpm", "test"],
+      target: {
+        host_id: "host-1",
+        workspace_location_id: "loc-1",
+        adapter_type: "codex_cli",
+        installation: "managed:1.11.0",
+      },
+    });
     // And nothing else. Changed-file detection asks the same host the same way
     // when a verifier needs it — but a recipe that declares no git-backed
     // verifier must not send `git diff` and `git status` to that host anyway,

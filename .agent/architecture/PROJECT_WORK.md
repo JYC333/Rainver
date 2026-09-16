@@ -183,6 +183,14 @@ Required outputs: each entry in `tasks.required_outputs_json` is matched
 case-insensitively against the `artifact_type` of the Task's `role = 'output'`
 artifacts. An empty or absent declaration imposes no gate.
 
+The declaration is deliberately narrow: `required_outputs_json` contains file
+Artifact type labels, not a natural-language answer, report, check result, or
+filename. A Task completed by a reply, an inspection, or a change to an
+existing workspace file leaves the declaration absent and uses
+`definition_of_done` plus `task.report` for its readable account. A workspace
+edit or a `task.report` alone cannot satisfy a declared file output; a Run with
+an output-delivery surface must declare and leave the file for collection.
+
 ### What this replaced
 
 `bool_and(terminal) AND NOT bool_or(failure)` over **every Run the Task ever

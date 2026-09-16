@@ -367,7 +367,7 @@ during those plans' approvals, not oversights.
 
 | Item | Trigger |
 |---|---|
-| **Remote in-place execution's propose→apply governance ("pit 3")** — changes land on disk before review on a trusted host, inverting this system's usual propose-then-apply order; no design chosen yet. | A dedicated design discussion, per the user's explicit request to revisit this separately |
+| **Remote Agent in-place execution's propose→apply governance ("pit 3")** — Agent changes land on disk before review on a trusted host, inverting this system's usual propose-then-apply order; the explicit human File-page write/rollback path is now separately bounded and direct, but Agent governance remains open. | A dedicated design discussion about Agent-authored remote changes, per the user's explicit request to revisit this separately |
 | **Execution-location axis in `DeterministicRouteSelector`** | Phase-1 explicit (project, workspace, runtime) dispatch stops being sufficient — e.g. a project needs "run wherever is free" rather than a user-picked host |
 | **Server-host daemon unification** (wrapping the server's own execution in the same daemon protocol as remote hosts, retiring `ServerHostExecutionAdapter` as a special case) | The two execution paths (server-local + daemon) have both been in daily use long enough to know the daemon protocol is stable |
 | **Cross-host task-thread migration** (resuming a vendor CLI session on a different host than it started on) | A real workflow needs to move a task between machines mid-thread |

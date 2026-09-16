@@ -7,19 +7,22 @@ These are facts the codebase doesn't make obvious at a glance.
 
 ## Project Folders
 
-**Creating a managed Project Folder auto-creates a folder on disk — but only if the Docker volume is writable.**
+**Creating a managed Project Folder creates and initializes a Git repository on disk — but only if the Docker volume is writable and Git is available.**
 
 `POST /api/v1/projects/{projectId}/folders` with neither `repo_url` nor
-`root_path` (the "create managed Folder" flow) calls `mkdir()` under
-`WORKSPACE_ROOT/<spaceId>/` via `createManagedDir()`. This only works if the
-container can write to that mount. In the `ops/compose/docker-compose.<mode>.yml`
-files this mount must not be `:ro` (read-only), which would silently
-block mkdir. PathPolicy still enforces read-only access at the API layer
-for the file browser — the `:ro` Docker flag was redundant.
+`root_path` (the "create managed Folder" flow) calls `mkdir()` and `git init`
+under `WORKSPACE_ROOT/<spaceId>/` via `createManagedDir()`. This only works if
+the container can write to that mount and has Git available. In the
+`ops/compose/docker-compose.<mode>.yml` files this mount must not be `:ro`
+(read-only), which would block creation or initialization. PathPolicy still
+enforces read-only access at the API layer for the file browser — the `:ro`
+Docker flag was redundant.
 
 `repo_url` clones into a managed directory; `root_path` (the "connect
 existing" flow) must come from `scanCandidates()` — arbitrary host paths are
-never accepted directly.
+never accepted directly. Connect existing and paired-host registration preserve
+the directory's existing Git state; they do not initialize an unrelated
+directory.
 
 **Project Folder path resolution** (`projectFolderAbsoluteRoot()` in
 `server/src/modules/projectFolders/repository.ts`):
@@ -59,7 +62,8 @@ Proposal. Read access is allowed. The forbidden write suffixes are declared in
 **There is no interactive agent-session execution over a Project Folder.**
 
 Files & Code routes live inside the registered `projectFolders` module and
-are read-only: tree, file, git status, and git diff. The former Workspace
+provide bounded tree, file, git status, and git diff reads plus explicit human
+file create/edit/rollback controls. The former Workspace
 Console's runtime-status/session create/detail/run/stop surface was a
 never-implemented stub and has been removed entirely — do not describe it as
 a current local CLI execution path.

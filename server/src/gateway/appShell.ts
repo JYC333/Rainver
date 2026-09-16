@@ -13,6 +13,7 @@ import Fastify, {
   type FastifyInstance,
   type FastifyServerOptions,
 } from "fastify";
+import multipart from "@fastify/multipart";
 import type { ServerConfig } from "../config.js";
 import { NO_STORE_CACHE_CONTROL } from "./cacheControl.js";
 import { registerErrorEnvelopeHandler } from "./errorEnvelope.js";
@@ -79,6 +80,16 @@ export function createServerApp(config: ServerConfig, options: ServerAppOptions 
   app.removeAllContentTypeParsers();
   app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => {
     done(null, body);
+  });
+  // Conversation image uploads are consumed as streams by the owning route.
+  // The plugin is registered at the composition root so its request
+  // decoration is available to both the full server and focused module tests.
+  app.register(multipart, {
+    limits: {
+      files: 1,
+      fields: 4,
+      fileSize: 10 * 1024 * 1024,
+    },
   });
 
   return app;

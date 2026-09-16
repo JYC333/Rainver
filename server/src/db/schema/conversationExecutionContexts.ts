@@ -6,6 +6,7 @@ import {
 	timestamp,
 	unique,
 	varchar,
+	boolean,
 	type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -38,6 +39,12 @@ export const conversationExecutionContexts = pgTable("conversation_execution_con
 	initializedByUserId: varchar("initialized_by_user_id", { length: 36 }),
 	dispatchLockId: varchar("dispatch_lock_id", { length: 36 }),
 	queuePausedAt: timestamp("queue_paused_at", { withTimezone: true, mode: "string" }),
+	/** Git context captured when the immutable execution selection was initialized. */
+	gitBranch: varchar("git_branch", { length: 256 }),
+	gitHead: varchar("git_head", { length: 128 }),
+	gitDirty: boolean("git_dirty"),
+	gitExecutionReady: boolean("git_execution_ready"),
+	gitObservedAt: timestamp("git_observed_at", { withTimezone: true, mode: "string" }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

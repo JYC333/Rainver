@@ -3,16 +3,16 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { configDir, requireConfig, workspacesRoot } from "./config.js";
 import { buildStrictNamespaceCommand, type StrictBind } from "./strictNamespace.js";
 import { uploadRunDiff, uploadRunOutputs } from "./api.js";
 import { captureWorkspaceDiff } from "./gitDiff.js";
 import { collectOutputFiles } from "./outputFiles.js";
 import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
-import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
+import { managedToolTree, OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, runtimeProfileContainerPath, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
 import { isPackagedAdapter, resolvePackagedAdapter } from "./adapterInstallation.js";
 import { egressProxyEnv, proxyBypassHosts, type EgressProfile, type EgressProxyHandle } from "./egressProxy.js";
@@ -25,6 +25,25 @@ export interface LaunchWorkspace {
   workspace_relative_path?: string;
   agent_id?: string;
   container?: ManagedWorkspaceContainer;
+}
+
+function isWithinPath(root: string, target: string): boolean {
+  return target === root || target.startsWith(`${root}${sep}`);
+}
+
+/** Resolve a server-issued Location path without allowing lexical or symlink escapes. */
+function resolveSharedLocationRoot(sharedRoot: string, relativePath: string): string {
+  const lexicalSharedRoot = resolve(sharedRoot);
+  const lexicalLocationRoot = resolve(lexicalSharedRoot, relativePath);
+  if (!isWithinPath(lexicalSharedRoot, lexicalLocationRoot)) {
+    throw new Error("conversation input Location escapes the shared workspace root");
+  }
+  const canonicalSharedRoot = realpathSync(lexicalSharedRoot);
+  const canonicalLocationRoot = realpathSync(lexicalLocationRoot);
+  if (!isWithinPath(canonicalSharedRoot, canonicalLocationRoot)) {
+    throw new Error("conversation input Location escapes the shared workspace root");
+  }
+  return canonicalLocationRoot;
 }
 
 /**
@@ -47,9 +66,47 @@ export function resolveLocationCwd(
   const registered = locationId ? workspaces[locationId] : undefined;
   if (registered) return registered;
   if (!relativePath || !root) return null;
-  const target = resolve(root, relativePath);
-  if (target !== resolve(root) && !target.startsWith(resolve(root) + sep)) return null;
-  return target;
+  try {
+    return resolveSharedLocationRoot(root, relativePath);
+  } catch {
+    return null;
+  }
+}
+
+export function resolveInputResourcePaths(
+  resources: NonNullable<HostLaunchFrame["input_resources"]> | undefined,
+  workspaces: Record<string, string>,
+  allowedLocationIds: ReadonlySet<string>,
+  sharedWorkspaceRoot: string | null = null,
+): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const resource of resources ?? []) {
+    if (!allowedLocationIds.has(resource.workspace_location_id)) {
+      throw new Error(`conversation input ${resource.input_id} names a Location outside this Run's access set`);
+    }
+    const configuredRoot = workspaces[resource.workspace_location_id];
+    const root = configuredRoot ?? (
+      sharedWorkspaceRoot && resource.workspace_relative_path
+        ? resolveSharedLocationRoot(sharedWorkspaceRoot, resource.workspace_relative_path)
+        : undefined
+    );
+    if (!root) throw new Error(`This daemon has no local path registered for input Location ${resource.workspace_location_id}.`);
+    const canonicalRoot = configuredRoot ? realpathSync(root) : root;
+    const target = resolve(canonicalRoot, resource.relative_path);
+    if (!isWithinPath(canonicalRoot, target)) {
+      throw new Error(`conversation input ${resource.input_id} escapes its registered Location`);
+    }
+    if (!existsSync(target)) {
+      resolved[resource.input_id] = target;
+      continue;
+    }
+    const canonicalTarget = realpathSync(target);
+    if (!isWithinPath(canonicalRoot, canonicalTarget)) {
+      throw new Error(`conversation input ${resource.input_id} escapes its registered Location`);
+    }
+    resolved[resource.input_id] = canonicalTarget;
+  }
+  return resolved;
 }
 
 /**
@@ -73,6 +130,8 @@ interface ActiveRun {
   launchId: string;
   /** What the control plane wrote where a value only this machine knows belongs. */
   placeholders: Record<string, string>;
+  /** Server-authorized logical conversation resources resolved by this daemon. */
+  inputResourcePaths: Record<string, string>;
   /** Which runtime this run is executing, so an upgrade of that copy can drain it. */
   adapterType: string | null;
   timedOut: boolean;
@@ -107,30 +166,14 @@ export function launchFailureMessage(input: {
 
 /**
  * ACP runtime replatform P2 (A2): the daemon must not become a vendor
- * protocol translator, so it never parses the ACP JSON-RPC frames it relays
- * — but a remote ACP session still needs to tell the agent its real working
- * directory, and only the daemon (not the server, per ADR 0016 B64) knows
- * that path. This is the one deliberate exception: a plain, protocol-agnostic
- * text substitution on the outgoing byte stream, not JSON parsing or ACP
- * method awareness. The server embeds this exact literal wherever it would
- * otherwise need to write a real filesystem path
- * (`server/src/modules/runs/remoteHostCliAdapter.ts`'s
- * `REMOTE_HOST_ACP_CWD_PLACEHOLDER`); every run's registered workspace path
- * substitutes cleanly since every remote dispatch is workspace-bound
- * (phase 2 C9).
- *
- * Accepted risk (P2 discovery review, documented not fixed): this is a
- * blind substring replace over the outgoing byte stream, not a substitution
- * scoped to a specific JSON field. A registered workspace path containing a
- * character JSON must escape (`"`, `\`) would corrupt every ACP frame for
- * that workspace — the paths a user registers on their own paired machine
- * are operator-controlled, not attacker input, so this is judged low-risk
- * for now. If it is ever hit in practice, the fix is to serialize the
- * substituted value with `JSON.stringify` and splice it in as a JSON string
- * literal rather than a raw text swap.
+ * protocol translator. Raw placeholder substitution remains for argv and
+ * legacy non-ACP values; structured ACP JSON goes through `substituteAcpInput`,
+ * which changes only the protocol's `cwd` fields and server-issued resource
+ * links, never user text, filenames, or snapshot bodies.
  */
 export { REMOTE_CWD_PLACEHOLDER };
 
+/** Substitute placeholders in an argv value or legacy non-ACP payload. */
 export function substituteCwd(value: string, cwd: string): string {
   return substitutePlaceholders(value, { [REMOTE_CWD_PLACEHOLDER]: cwd });
 }
@@ -142,6 +185,97 @@ export function substitutePlaceholders(value: string, placeholders: Record<strin
     result = result.split(placeholder).join(replacement);
   }
   return result;
+}
+
+/**
+ * Resolve only the ACP ResourceLink URI owned by a conversation input part.
+ * CWD and Skill placeholders retain their legacy handling; new resources use
+ * parsed JSON fields so a filename or snapshot body containing the same token
+ * can never be rewritten accidentally.
+ */
+export function substituteStructuredInputResources(
+  value: string,
+  paths: Record<string, string>,
+): string {
+  if (Object.keys(paths).length === 0 || !value.trim().startsWith("{")) return value;
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { return value; }
+  let changed = false;
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    const object = node as Record<string, unknown>;
+    if (object.type === "resource_link" && typeof object.uri === "string") {
+      const prefix = "rainver:conversation-input:";
+      if (object.uri.startsWith(prefix)) {
+        const path = paths[object.uri.slice(prefix.length)];
+        if (path) {
+          object.uri = pathToFileURL(path).href;
+          changed = true;
+        }
+      }
+    }
+    Object.values(object).forEach(visit);
+  };
+  visit(parsed);
+  if (!changed) return value;
+  const serialized = JSON.stringify(parsed);
+  return value.endsWith("\n") ? `${serialized}\n` : serialized;
+}
+
+/**
+ * Translate an ACP frame without touching user-owned text. The only runtime
+ * placeholder inside an ACP JSON payload is `cwd`; resource links are replaced
+ * by the logical input id. Snapshot bodies and filenames remain opaque text.
+ */
+export function substituteAcpInput(
+  value: string,
+  placeholders: Record<string, string>,
+  paths: Record<string, string>,
+): string {
+  // Legacy commands still send plain-text stdin. Preserve the old placeholder
+  // contract for those payloads; only parsed ACP JSON needs field-scoped
+  // substitution to keep user-owned text opaque.
+  if (!value.trim().startsWith("{")) return substitutePlaceholders(value, placeholders);
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { return substitutePlaceholders(value, placeholders); }
+  let changed = false;
+  const visit = (node: unknown): void => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    const object = node as Record<string, unknown>;
+    if (object.type === "resource_link" && typeof object.uri === "string") {
+      const prefix = "rainver:conversation-input:";
+      if (object.uri.startsWith(prefix)) {
+        const path = paths[object.uri.slice(prefix.length)];
+        if (path) {
+          object.uri = pathToFileURL(path).href;
+          changed = true;
+        }
+      }
+    }
+    for (const [key, child] of Object.entries(object)) {
+      if (key === "cwd" && typeof child === "string") {
+        const translated = substitutePlaceholders(child, placeholders);
+        if (translated !== child) {
+          object[key] = translated;
+          changed = true;
+        }
+      } else {
+        visit(child);
+      }
+    }
+  };
+  visit(parsed);
+  if (!changed) return value;
+  const serialized = JSON.stringify(parsed);
+  return value.endsWith("\n") ? `${serialized}\n` : serialized;
 }
 
 /**
@@ -202,6 +336,12 @@ export function resolveAcpLaunch(
     env.CLAUDE_CODE_EXECUTABLE = "claude";
   }
   return { command: process.execPath, args: [entrypoint, ...args], env };
+}
+
+/** Resolve the separate read-only binary tree needed by a managed strict launch. */
+export function managedToolTreeForLaunch(adapterType: string | undefined, installation: string | undefined): string | null {
+  if (!adapterType || !installation || installation === OWN_INSTALLATION) return null;
+  return managedToolTree(adapterType, installation);
 }
 
 /**
@@ -641,6 +781,8 @@ export function strictBindsForRun(input: {
   loginHome: string | null;
   toolTree: string | null;
   runtimeRoot: string;
+  /** Authorized Workspace Locations that must be visible inside the namespace. */
+  workspaceBinds?: ReadonlyArray<StrictBind>;
 }): StrictBind[] {
   const binds: StrictBind[] = [
     // Its outputs, its work surface, and the `rainver` launcher written there.
@@ -661,8 +803,13 @@ export function strictBindsForRun(input: {
   // A refresh that fails surfaces as the runtime's login prompt, which an
   // instance admin answers through the host card — outside any namespace.
   if (input.loginHome) binds.push({ path: input.loginHome, access: "read_only" });
-  // A managed copy's `home/` sits inside its tree, so the tree covers it.
+  // A managed copy's versioned executable tree is separate from its stable
+  // login HOME, which is bound above on its own.
   if (input.toolTree) binds.push({ path: input.toolTree, access: "read_only" });
+  // Conversation attachments are resolved and authorized before this point.
+  // Keep their physical roots as explicit binds rather than exposing the
+  // shared workspace parent, which would make sibling Locations visible.
+  if (input.workspaceBinds) binds.push(...input.workspaceBinds);
   return binds;
 }
 
@@ -698,6 +845,8 @@ export function planStrictLaunch(input: {
   loginHome: string | null;
   toolTree: string | null;
   runtimeRoot: string;
+  /** Authorized Workspace Locations materialized by launchRun on this host. */
+  workspaceBinds?: ReadonlyArray<{ path: string; access_mode: "read" | "write" }>;
 }): StrictLaunch {
   // **The container contributes nothing.** A trusted host keeps the machine's
   // environment because it is the owner's machine; a strict host is not
@@ -727,6 +876,15 @@ export function planStrictLaunch(input: {
     // is what B68 keys by Agent × container in the first place.
     HOME: home,
   };
+  const isolation = input.isolation ?? DEFAULT_STRICT_ISOLATION;
+  const workspaceBinds = (input.workspaceBinds ?? []).map(({ path, access_mode }) => ({
+    path,
+    // The Run's isolation policy is the upper bound. An attachment grant can
+    // never turn a read-only namespace into a writable one.
+    access: isolation.sandbox_mode === "read_write" && access_mode === "write"
+      ? "read_write" as const
+      : "read_only" as const,
+  }));
   const { command, args } = buildStrictNamespaceCommand({
     command: input.command,
     args: input.args,
@@ -738,8 +896,9 @@ export function planStrictLaunch(input: {
       loginHome: input.loginHome,
       toolTree: input.toolTree,
       runtimeRoot: input.runtimeRoot,
+      workspaceBinds,
     }),
-    isolation: input.isolation ?? DEFAULT_STRICT_ISOLATION,
+    isolation,
     env,
   });
   return { command, args, home, env };
@@ -828,10 +987,28 @@ async function launchRun(
     return;
   }
   let attachedWorkspaceEnv: Record<string, string> = {};
+  let attachedWorkspaceBinds: Array<{ path: string; access_mode: "read" | "write" }> = [];
   if (frame.workspace_access && frame.workspace_access.length > 0) {
     const attached = [] as Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
     for (const attachment of frame.workspace_access) {
-      const path = config.workspaces[attachment.workspace_location_id];
+      const configuredPath = config.workspaces[attachment.workspace_location_id];
+      const sharedRoot = workspacesRoot();
+      let path: string | undefined = configuredPath;
+      if (!path && sharedRoot && attachment.workspace_relative_path) {
+        try {
+          path = resolveSharedLocationRoot(sharedRoot, attachment.workspace_relative_path);
+        } catch (error) {
+          send({
+            type: "complete",
+            run_id: frame.run_id,
+            launch_id: frame.launch_id,
+            exit_code: 1,
+            timed_out: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+      }
       if (!path) {
         send({
           type: "complete",
@@ -843,12 +1020,36 @@ async function launchRun(
         });
         return;
       }
-      attached.push({ ...attachment, path });
+      attached.push({
+        workspace_location_id: attachment.workspace_location_id,
+        access_mode: attachment.access_mode,
+        path,
+      });
     }
     // The daemon is the only component that can resolve physical paths. Keep
     // the control-plane authorization explicit for the child without ever
     // accepting an arbitrary path from the launch frame.
     attachedWorkspaceEnv.RAINVER_WORKSPACE_ACCESS = JSON.stringify(attached);
+    attachedWorkspaceBinds = attached.map(({ path, access_mode }) => ({ path, access_mode }));
+  }
+  let inputResourcePaths: Record<string, string>;
+  try {
+    const allowedLocationIds = new Set([
+      frame.workspace_location_id,
+      frame.workspace?.kind === "location" ? frame.workspace.workspace_location_id : undefined,
+      ...(frame.workspace_access?.map((item) => item.workspace_location_id) ?? []),
+    ].filter((value): value is string => Boolean(value)));
+    inputResourcePaths = resolveInputResourcePaths(frame.input_resources, config.workspaces, allowedLocationIds, workspacesRoot());
+  } catch (error) {
+    send({
+      type: "complete",
+      run_id: frame.run_id,
+      launch_id: frame.launch_id,
+      exit_code: 1,
+      timed_out: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
   }
   const [rawCommand, ...args] = frame.argv.map((arg) => substituteCwd(arg, cwd));
   if (!rawCommand) {
@@ -1037,8 +1238,9 @@ async function launchRun(
         ]),
         profileDir,
         loginHome,
-        toolTree: tool ? dirname(tool.home) : null,
+        toolTree: tool ? managedToolTreeForLaunch(frame.adapter_type ?? rawCommand, frame.installation) : null,
         runtimeRoot: daemonRuntimeRoot(),
+        workspaceBinds: attachedWorkspaceBinds,
       });
       await mkdir(plan.home, { recursive: true, mode: 0o700 });
       spawnCommand = plan.command;
@@ -1091,6 +1293,7 @@ async function launchRun(
       [REMOTE_CWD_PLACEHOLDER]: cwd,
       ...(workSurfaceEnv.RAINVER_SKILL_PATH ? { [WORK_SKILL_PATH_PLACEHOLDER]: workSurfaceEnv.RAINVER_SKILL_PATH } : {}),
     },
+    inputResourcePaths,
     adapterType: frame.adapter_type ?? null,
     timedOut: false,
     terminationRequested: false,
@@ -1107,7 +1310,10 @@ async function launchRun(
   // frame's handler could otherwise run first and find no active run.
   send({ type: "launched", run_id: frame.run_id, launch_id: frame.launch_id });
 
-  if (frame.stdin) child.stdin?.write(substitutePlaceholders(frame.stdin, active.placeholders));
+  if (frame.stdin) {
+    const translated = substituteAcpInput(frame.stdin, active.placeholders, active.inputResourcePaths);
+    child.stdin?.write(translated);
+  }
   if (!frame.keep_stdin_open) child.stdin?.end();
 
   child.stdout?.on("data", (chunk: Buffer) => {
@@ -1217,7 +1423,7 @@ export function handleTerminate(frame: TerminateFrame, log: (line: string) => vo
 export function handleStdin(frame: StdinFrame): void {
   const active = activeRuns.get(frame.run_id);
   if (!active) return;
-  active.child.stdin?.write(substitutePlaceholders(frame.value, active.placeholders));
+  active.child.stdin?.write(substituteAcpInput(frame.value, active.placeholders, active.inputResourcePaths));
 }
 
 /** Ends the run's child process stdin, mirroring the default (non-`keep_stdin_open`) behavior in `handleLaunch`. */

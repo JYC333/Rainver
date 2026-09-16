@@ -7,6 +7,7 @@ import {
   type RuntimeOptions,
   type RuntimeSessionConfigOption,
   type RuntimeAccount,
+  type RuntimePromptCapabilities,
 } from "@rainver/protocol";
 
 /**
@@ -32,7 +33,7 @@ export function hasSubscriptionQuota(adapterType: string): boolean {
  * server ship together, so obsolete capability layouts are rejected instead
  * of maintaining a second interpretation path.
  */
-export type { HostCapabilities, RuntimeAuthMethod, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions, RuntimeSessionConfigOption } from "@rainver/protocol";
+export type { HostCapabilities, RuntimeAuthMethod, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions, RuntimeSessionConfigOption, RuntimePromptCapabilities } from "@rainver/protocol";
 export { OWN_INSTALLATION } from "@rainver/protocol";
 
 function record(value: unknown): Record<string, unknown> {
@@ -98,8 +99,19 @@ function options(value: unknown): RuntimeOptions | null {
         auth_methods: authMethods(entry.auth_methods),
         cli_login_available: entry.cli_login_available === true,
         authenticated: typeof entry.authenticated === "boolean" ? entry.authenticated : null,
+        prompt_capabilities: promptCapabilities(entry.prompt_capabilities),
       }
     : null;
+}
+
+function promptCapabilities(value: unknown): RuntimePromptCapabilities | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entry = value as Record<string, unknown>;
+  return {
+    image: typeof entry.image === "boolean" ? entry.image : null,
+    embedded_context: typeof entry.embedded_context === "boolean" ? entry.embedded_context : null,
+    resource_link: typeof entry.resource_link === "boolean" ? entry.resource_link : null,
+  };
 }
 function accounts(value: unknown): RuntimeAccount[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -174,4 +186,13 @@ export function hostInstallationCliLoginAvailable(
 ): boolean {
   return normalizeHostCapabilities(capabilities).installations[adapterType]
     ?.find((copy) => copy.id === installationId)?.options?.cli_login_available === true;
+}
+
+export function hostInstallationPromptCapabilities(
+  capabilities: unknown,
+  adapterType: string,
+  installationId: string,
+): RuntimePromptCapabilities | null {
+  return normalizeHostCapabilities(capabilities).installations[adapterType]
+    ?.find((copy) => copy.id === installationId)?.options?.prompt_capabilities ?? null;
 }

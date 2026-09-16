@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FileContent, FileNode, GitDiff, GitStatus } from "@rainver/folder-read";
-import type { HostDaemonFrameOf, HostLaunchFrame, HostLaunchPayload, HostServerFrame, HostServerFrameOf, HostUsageQuota } from "@rainver/protocol";
+import type { FolderWriteDaemonError, HostDaemonFrameOf, HostLaunchFrame, HostLaunchPayload, HostServerFrame, HostServerFrameOf, HostUsageQuota } from "@rainver/protocol";
 
 /** A request frame's payload: everything but the tag and the id the registry assigns. */
 export type HostRequestPayload<T extends HostServerFrame["type"]> = Omit<HostServerFrameOf<T>, "type" | "request_id">;
@@ -145,6 +145,17 @@ export type FolderReadSuccess<K extends FolderReadKind = FolderReadKind> =
 export type FolderReadFailure = { ok: false; error: FolderReadFailureCode; message?: string };
 export type FolderReadResult<K extends FolderReadKind = FolderReadKind> = FolderReadSuccess<K> | FolderReadFailure;
 
+export type FolderWriteFailureCode = "host_offline" | "host_timeout" | FolderWriteDaemonError;
+export type FolderWriteSuccess = {
+  ok: true;
+  path: string;
+  exists: boolean;
+  sha256: string | null;
+  size: number;
+  line_count: number;
+};
+export type FolderWriteResult = FolderWriteSuccess | { ok: false; error: FolderWriteFailureCode; message?: string };
+
 export interface ManagedWorkspaceResult {
   ok: boolean;
   changed: boolean;
@@ -189,6 +200,7 @@ const HOST_COMMAND_GRACE_MS = 30 * 1000;
  */
 const AMBIENT_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
 export const FOLDER_READ_TIMEOUT_MS = 15_000;
+export const FOLDER_WRITE_TIMEOUT_MS = 15_000;
 export const HOST_ACTION_TIMEOUT_MS = 15_000;
 const MANAGED_WORKSPACE_TIMEOUT_MS = 15_000;
 /**
@@ -222,6 +234,14 @@ export class HostConnectionRegistry {
     hostId: string;
     kind: FolderReadKind;
     resolve: (result: FolderReadResult) => void;
+    timer: ReturnType<typeof setTimeout>;
+    onAbort?: () => void;
+    signal?: AbortSignal;
+  }>();
+  private readonly pendingFolderWrites = new Map<string, {
+    hostId: string;
+    path: string;
+    resolve: (result: FolderWriteResult) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
   /** Generic single-frame host requests (list_dirs, workspace_register, workspace_forget). */
@@ -269,6 +289,13 @@ export class HostConnectionRegistry {
     for (const [requestId, pending] of this.pendingFolderReads) {
       if (pending.hostId !== hostId) continue;
       this.pendingFolderReads.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.onAbort && pending.signal?.removeEventListener("abort", pending.onAbort);
+      pending.resolve({ ok: false, error: "host_offline" });
+    }
+    for (const [requestId, pending] of this.pendingFolderWrites) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingFolderWrites.delete(requestId);
       clearTimeout(pending.timer);
       pending.resolve({ ok: false, error: "host_offline" });
     }
@@ -584,23 +611,44 @@ export class HostConnectionRegistry {
   }
 
   /** Asks a daemon for one bounded live tree/file/Git read. */
-  requestFolderRead<K extends FolderReadKind>(hostId: string, frame: HostRequestPayload<"folder_read"> & { kind: K }): Promise<FolderReadResult<K>> {
+  requestFolderRead<K extends FolderReadKind>(hostId: string, frame: HostRequestPayload<"folder_read"> & { kind: K }, signal?: AbortSignal): Promise<FolderReadResult<K>> {
     const connection = this.connections.get(hostId);
     if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline" });
     const kind = frame.kind;
     const requestId = randomUUID();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        const pending = this.pendingFolderReads.get(requestId);
+        if (!pending) return;
+        this.pendingFolderReads.delete(requestId);
+        clearTimeout(pending.timer);
+        try {
+          connection.sink?.send({ type: "folder_read_cancel", request_id: requestId });
+        } catch {
+          // The host is already unavailable; rejecting the caller is enough.
+        }
+        const error = new Error("folder read cancelled");
+        error.name = "AbortError";
+        reject(error);
+      };
       const timer = setTimeout(() => {
         this.pendingFolderReads.delete(requestId);
+        signal?.removeEventListener("abort", onAbort);
         resolve({ ok: false, error: "host_timeout" });
       }, FOLDER_READ_TIMEOUT_MS);
       timer.unref?.();
-      this.pendingFolderReads.set(requestId, { hostId, kind, resolve: resolve as (result: FolderReadResult) => void, timer });
+      this.pendingFolderReads.set(requestId, { hostId, kind, resolve: resolve as (result: FolderReadResult) => void, timer, onAbort, signal });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
       try {
         connection.sink!.send({ ...frame, type: "folder_read", request_id: requestId });
       } catch {
         clearTimeout(timer);
         this.pendingFolderReads.delete(requestId);
+        signal?.removeEventListener("abort", onAbort);
         resolve({ ok: false, error: "host_offline" });
       }
     });
@@ -613,6 +661,46 @@ export class HostConnectionRegistry {
     if (result.ok && result.kind !== pending.kind) return;
     clearTimeout(pending.timer);
     this.pendingFolderReads.delete(requestId);
+    if (pending.signal && pending.onAbort) pending.signal.removeEventListener("abort", pending.onAbort);
+    pending.resolve(result);
+  }
+
+  /** Sends one user-initiated File-page write to the daemon owning a Location. */
+  requestFolderWrite(
+    hostId: string,
+    frame: HostRequestPayload<"folder_write">,
+  ): Promise<FolderWriteResult> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline" });
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingFolderWrites.delete(requestId);
+        resolve({ ok: false, error: "host_timeout" });
+      }, FOLDER_WRITE_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingFolderWrites.set(requestId, { hostId, path: frame.path, resolve, timer });
+      try {
+        connection.sink!.send({ ...frame, type: "folder_write", request_id: requestId });
+      } catch {
+        clearTimeout(timer);
+        this.pendingFolderWrites.delete(requestId);
+        resolve({ ok: false, error: "host_offline" });
+      }
+    });
+  }
+
+  receiveFolderWriteResult(hostId: string, requestId: string, result: FolderWriteResult): void {
+    const pending = this.pendingFolderWrites.get(requestId);
+    if (!pending || pending.hostId !== hostId) return;
+    if (result.ok && result.path !== pending.path) {
+      clearTimeout(pending.timer);
+      this.pendingFolderWrites.delete(requestId);
+      pending.resolve({ ok: false, error: "write_failed", message: "The host returned a different file path than requested." });
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingFolderWrites.delete(requestId);
     pending.resolve(result);
   }
 

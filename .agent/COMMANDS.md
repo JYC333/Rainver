@@ -249,6 +249,17 @@ curl -X POST http://localhost:3000/api/v1/hosts/<host-id>/installations/claude_c
 curl http://localhost:3000/api/v1/hosts/runtime-changes -H "Authorization: Bearer <token>"
 ```
 
+For fast local development of a separately installed Host, build and install
+the current checkout without publishing to GitHub:
+
+```bash
+./ops/scripts/host/build-local-release.sh --install
+```
+
+The helper emits the same verified archives and `SHA256SUMS` consumed by the
+normal installer, using a local `file://` release source. Use `--output DIR`
+when the release should remain available for a later manual install.
+
 One current version per adapter per host, plus exactly one kept behind it as
 the rollback target. An upgrade drains that copy's Runs first and refuses
 rather than killing one, so "still in use" is an ordinary answer. There is no

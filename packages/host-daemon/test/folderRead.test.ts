@@ -64,4 +64,13 @@ describe("folder_read operations", () => {
     const result = await performFolderRead(resolveFolderReadRequest({ request_id: "large", workspace_location_id: "loc", kind: "file", path: "large.txt", protected: false }, { loc: root }));
     expect(result).toMatchObject({ ok: false, error: "too_large" });
   });
+
+  it("honors cancellation before starting a bounded read", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(performFolderRead(
+      resolveFolderReadRequest({ request_id: "cancelled", workspace_location_id: "loc", kind: "tree", protected: false }, { loc: root }),
+      controller.signal,
+    )).rejects.toMatchObject({ name: "AbortError" });
+  });
 });

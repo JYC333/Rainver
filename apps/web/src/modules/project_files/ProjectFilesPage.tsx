@@ -1,27 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { Folder, GitBranch, FileDiff, Loader, Plus, RefreshCw, Settings as SettingsIcon, Trash2 } from 'lucide-react'
+import { Folder, GitBranch, FileDiff, Info, Loader, Plus, RefreshCw, Settings as SettingsIcon, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { projectFoldersApi } from '../../api/client'
 import { errBody, errMsg, type ApiErrorDetails } from '../../lib/utils'
-import type { FileContent, FileNode, GitChangedFile, GitStatus, ProjectFolder, WorkspaceLocation } from '../../types/api'
+import type { FileContent, FileNode, GitChangedFile, GitStatus, ProjectFileRevision, ProjectFolder, WorkspaceLocation } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Select } from '../../components/ui/select'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Button } from '../../components/ui/button'
 import { ConfirmDialog } from '../../components/ui/dialog'
-import { CenterEmpty, DiffViewer, FileTreeNode, FileViewer, STATUS_VARIANT, changeIndex } from './ProjectFilesParts'
+import { CenterEmpty, DiffViewer, FileEditor, FileEditorSaveInput, FileTreeNode, FileViewer, STATUS_VARIANT, changeIndex } from './ProjectFilesParts'
 import { CreateProjectFolderDialog } from './CreateProjectFolderDialog'
+import { useProjectFolderConversation } from '../projects/ProjectFolderConversationContext'
+import { subscribeProjectFolderContentChanged } from '../../core/projectFolderEvents'
 
 type CenterView =
   | { mode: 'empty' }
   | { mode: 'file'; data: FileContent }
+  | { mode: 'new-file' }
   | { mode: 'diff'; diff: string; path: string }
 
 type LeftTab = 'files' | 'changes'
 type ReadError = ApiErrorDetails
+
+function fileCacheKey(folderId: string, path: string): string {
+  return `${folderId}\u0000${path}`
+}
 
 function relativeLastSeen(value: string | null | undefined): string {
   if (!value) return 'unknown'
@@ -70,6 +77,19 @@ export default function ProjectFilesPage() {
 
   const [folders, setFolders] = useState<ProjectFolder[]>([])
   const [selectedFolder, setSelectedFolder] = useState<ProjectFolder | null>(null)
+  const { conversationFolderIds, setSelectedFolderId } = useProjectFolderConversation()
+  const [manuallySelectedFolderId, setManuallySelectedFolderId] = useState<string | null>(null)
+  const [dismissedFolderNoticeId, setDismissedFolderNoticeId] = useState<string | null>(null)
+  const showFolderSwitchNotice = Boolean(
+    manuallySelectedFolderId
+    && conversationFolderIds !== null
+    && !conversationFolderIds.includes(manuallySelectedFolderId)
+    && dismissedFolderNoticeId !== manuallySelectedFolderId,
+  )
+
+  useEffect(() => {
+    setSelectedFolderId(selectedFolder?.id ?? null)
+  }, [selectedFolder?.id, setSelectedFolderId])
   const [locations, setLocations] = useState<WorkspaceLocation[]>([])
   const [foldersLoading, setFoldersLoading] = useState(true)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
@@ -93,8 +113,13 @@ export default function ProjectFilesPage() {
   const [treeLoading, setTreeLoading] = useState(false)
   const [gitLoading, setGitLoading] = useState(false)
   const [readError, setReadError] = useState<ReadError | null>(null)
+  const [fileRevisions, setFileRevisions] = useState<ProjectFileRevision[]>([])
+  const [mutationLoading, setMutationLoading] = useState(false)
+  const [revisionToRollback, setRevisionToRollback] = useState<ProjectFileRevision | null>(null)
   const readGeneration = useRef(0)
   const activeFolderId = useRef<string | null>(null)
+  const fileSelectionGeneration = useRef(0)
+  const fileCache = useRef(new Map<string, FileContent>())
   // A response only counts if it belongs to the Folder still on screen and
   // to the latest load/retry round; anything older would overwrite newer state.
   const isCurrent = (folderId: string, generation: number): boolean =>
@@ -182,22 +207,43 @@ export default function ProjectFilesPage() {
       activeFolderId.current = null
       setLocations([])
       setGitStatus(null)
+      setFileRevisions([])
       setReadError(null)
       setCenterLoading(false)
       return
     }
     const generation = ++readGeneration.current
     activeFolderId.current = selectedFolder.id
+    fileSelectionGeneration.current += 1
+    fileCache.current.clear()
     setCenterView({ mode: 'empty' })
     setSelectedFilePath(null)
     setCenterLoading(false)
     setLocations([])
     setGitStatus(null)
+    setFileRevisions([])
     setReadError(null)
     void loadLocations(selectedFolder, generation)
     void loadTree(selectedFolder, generation)
     void loadGitStatus(selectedFolder, generation)
   }, [selectedFolder, loadLocations, loadTree, loadGitStatus])
+
+  const loadFileRevisions = useCallback(async (folder: ProjectFolder, path: string, generation = readGeneration.current) => {
+    try {
+      const revisions = await projectFoldersApi.fileRevisions(projectId, folder.id, path)
+      if (isCurrent(folder.id, generation)) setFileRevisions(revisions)
+    } catch {
+      // The file itself remains usable when history is temporarily unavailable.
+      if (isCurrent(folder.id, generation)) setFileRevisions([])
+    }
+  }, [projectId])
+
+  const refreshAfterFileMutation = useCallback(async (folder: ProjectFolder, path: string, generation = readGeneration.current) => {
+    setReadError(null)
+    void loadTree(folder, generation)
+    void loadGitStatus(folder, generation)
+    await loadFileRevisions(folder, path, generation)
+  }, [loadFileRevisions, loadGitStatus, loadTree])
 
   const retryReads = useCallback(() => {
     if (!selectedFolder) return
@@ -205,27 +251,135 @@ export default function ProjectFilesPage() {
     activeFolderId.current = selectedFolder.id
     setLocations([])
     setGitStatus(null)
+    setFileRevisions([])
     setReadError(null)
     void loadLocations(selectedFolder, generation)
     void loadTree(selectedFolder, generation)
     void loadGitStatus(selectedFolder, generation)
   }, [selectedFolder, loadLocations, loadTree, loadGitStatus])
 
+  useEffect(() => {
+    if (!selectedFolder) return
+    return subscribeProjectFolderContentChanged(({ projectFolderIds }) => {
+      if (!projectFolderIds.includes(selectedFolder.id)) return
+      const generation = ++readGeneration.current
+      activeFolderId.current = selectedFolder.id
+      fileCache.current.clear()
+      setReadError(null)
+      void loadTree(selectedFolder, generation)
+      void loadGitStatus(selectedFolder, generation)
+    })
+  }, [selectedFolder, loadGitStatus, loadTree])
+
   async function handleFileSelect(path: string) {
     if (!selectedFolder) return
     const folderId = selectedFolder.id
     const generation = readGeneration.current
+    const selection = ++fileSelectionGeneration.current
+    const cacheKey = fileCacheKey(folderId, path)
+    const cachedFile = fileCache.current.get(cacheKey)
     setSelectedFilePath(path)
-    setCenterLoading(true)
+    setFileRevisions([])
+    if (cachedFile) {
+      setCenterView({ mode: 'file', data: cachedFile })
+      setCenterLoading(false)
+    } else {
+      setCenterLoading(true)
+    }
+    // Revision history is supplementary: start it with the file read, but do
+    // not make the file viewer wait for a second round trip before appearing.
+    const revisionsPromise = projectFoldersApi.fileRevisions(projectId, folderId, path)
+      .catch(() => [] as ProjectFileRevision[])
+    const isCurrentSelection = () => (
+      selection === fileSelectionGeneration.current
+      && isCurrent(folderId, generation)
+    )
     try {
-      const fc = await projectFoldersApi.file(projectId, selectedFolder.id, path)
-      if (isCurrent(folderId, generation)) {
+      const fc = await projectFoldersApi.file(projectId, folderId, path)
+      if (isCurrentSelection()) {
+        fileCache.current.set(cacheKey, fc)
         setCenterView({ mode: 'file', data: fc })
+        setCenterLoading(false)
       }
+      const revisions = await revisionsPromise
+      if (isCurrentSelection()) setFileRevisions(revisions)
     } catch (e) {
-      if (isCurrent(folderId, generation)) toast.error(errMsg(e))
+      if (isCurrentSelection()) toast.error(errMsg(e))
     } finally {
-      if (isCurrent(folderId, generation)) setCenterLoading(false)
+      if (isCurrentSelection()) setCenterLoading(false)
+    }
+  }
+
+  function handleNewFile() {
+    if (!selectedFolder) return
+    fileSelectionGeneration.current += 1
+    setReadError(null)
+    setSelectedFilePath(null)
+    setFileRevisions([])
+    setCenterView({ mode: 'new-file' })
+  }
+
+  async function handleFileSave(input: FileEditorSaveInput): Promise<boolean> {
+    if (!selectedFolder) return false
+    const folder = selectedFolder
+    const generation = readGeneration.current
+    const existing = centerView.mode === 'file' ? centerView.data : null
+    if (existing && !existing.sha256) {
+      toast.error('Refresh this file before editing it so the current version can be checked')
+      return false
+    }
+    setMutationLoading(true)
+    try {
+      const result = await projectFoldersApi.editFile(projectId, folder.id, {
+        path: input.path,
+        content: input.content,
+        expected_path: existing?.path ?? null,
+        expected_exists: Boolean(existing),
+        expected_sha256: existing?.sha256 ?? null,
+      })
+      if (!isCurrent(folder.id, generation)) return true
+      setReadError(null)
+      setSelectedFilePath(result.file.path)
+      fileCache.current.set(fileCacheKey(folder.id, result.file.path), result.file)
+      setCenterView({ mode: 'file', data: result.file })
+      setFileRevisions([result.revision])
+      toast.success('File saved directly to the Project Folder')
+      await refreshAfterFileMutation(folder, result.file.path, generation)
+      return true
+    } catch (error) {
+      toast.error(errMsg(error))
+      return false
+    } finally {
+      setMutationLoading(false)
+    }
+  }
+
+  async function handleRollback(revision: ProjectFileRevision) {
+    if (!selectedFolder) return
+    const folder = selectedFolder
+    const generation = readGeneration.current
+    setMutationLoading(true)
+    try {
+      const result = await projectFoldersApi.rollbackFile(projectId, folder.id, revision.id)
+      if (!isCurrent(folder.id, generation)) return
+      setReadError(null)
+      if (result.file) {
+        setSelectedFilePath(result.file.path)
+        fileCache.current.set(fileCacheKey(folder.id, result.file.path), result.file)
+        setCenterView({ mode: 'file', data: result.file })
+        await refreshAfterFileMutation(folder, result.file.path, generation)
+      } else {
+        setSelectedFilePath(null)
+        setFileRevisions([])
+        setCenterView({ mode: 'empty' })
+        void loadTree(folder, generation)
+        void loadGitStatus(folder, generation)
+      }
+      toast.success('File change rolled back')
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setMutationLoading(false)
     }
   }
 
@@ -233,17 +387,18 @@ export default function ProjectFilesPage() {
     if (!selectedFolder) return
     const folderId = selectedFolder.id
     const generation = readGeneration.current
+    const selection = ++fileSelectionGeneration.current
     setSelectedFilePath(file.path)
     setCenterLoading(true)
     try {
       const { diff } = await projectFoldersApi.gitDiff(projectId, selectedFolder.id, file.path)
-      if (isCurrent(folderId, generation)) {
+      if (selection === fileSelectionGeneration.current && isCurrent(folderId, generation)) {
         setCenterView({ mode: 'diff', diff, path: file.path })
       }
     } catch (e) {
-      if (isCurrent(folderId, generation)) toast.error(errMsg(e))
+      if (selection === fileSelectionGeneration.current && isCurrent(folderId, generation)) toast.error(errMsg(e))
     } finally {
-      if (isCurrent(folderId, generation)) setCenterLoading(false)
+      if (selection === fileSelectionGeneration.current && isCurrent(folderId, generation)) setCenterLoading(false)
     }
   }
 
@@ -304,6 +459,18 @@ export default function ProjectFilesPage() {
           if (target) void unregisterFolder(target)
         }}
       />
+      <ConfirmDialog
+        open={Boolean(revisionToRollback)}
+        onOpenChange={open => { if (!open) setRevisionToRollback(null) }}
+        title={`Rollback “${revisionToRollback?.path ?? ''}”?`}
+        description="This restores the file to the version from immediately before that save. It will stop if the file changed afterward."
+        confirmLabel="Rollback change"
+        onConfirm={() => {
+          const revision = revisionToRollback
+          setRevisionToRollback(null)
+          if (revision) void handleRollback(revision)
+        }}
+      />
       <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b bg-card">
         <div
           className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
@@ -318,7 +485,14 @@ export default function ProjectFilesPage() {
             <Select
               size="sm"
               value={selectedFolder?.id ?? ''}
-              onChange={id => setSelectedFolder(folders.find(f => f.id === id) ?? null)}
+              onChange={id => {
+                const nextFolder = folders.find(f => f.id === id) ?? null
+                if (nextFolder?.id !== selectedFolder?.id) {
+                  setManuallySelectedFolderId(nextFolder?.id ?? null)
+                  setDismissedFolderNoticeId(null)
+                }
+                setSelectedFolder(nextFolder)
+              }}
               options={folders.map(f => ({ value: f.id, label: f.name }))}
               className="w-40"
             />
@@ -345,6 +519,12 @@ export default function ProjectFilesPage() {
             <Plus className="size-3.5" />
             New Folder
           </Button>
+          {selectedFolder && (
+            <Button size="sm" variant="outline" className="gap-1.5" onClick={handleNewFile} disabled={mutationLoading}>
+              <Plus className="size-3.5" />
+              New File
+            </Button>
+          )}
           {selectedFolder && (
             <button
               onClick={() => setFolderToUnregister(selectedFolder)}
@@ -378,6 +558,23 @@ export default function ProjectFilesPage() {
           )}
         </div>
       </div>
+
+      {showFolderSwitchNotice && (
+        <div role="status" aria-live="polite" className="shrink-0 flex items-start gap-2 border-b border-primary/20 bg-primary/5 px-4 py-2 text-xs text-muted-foreground">
+          <Info className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden="true" />
+          <p className="min-w-0 flex-1">
+            Folder switched. This conversation remains pinned to its original execution context and will not switch automatically. Start a new conversation or attach the new Folder explicitly to work there.
+          </p>
+          <button
+            type="button"
+            className="shrink-0 text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            aria-label="Dismiss Folder context notice"
+            onClick={() => setDismissedFolderNoticeId(manuallySelectedFolderId)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <div className="flex-1 flex min-h-0">
         <div className="w-64 shrink-0 border-r flex flex-col min-h-0 bg-card/50">
@@ -467,31 +664,55 @@ export default function ProjectFilesPage() {
           </Tabs>
         </div>
 
-        <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-background">
-          {centerLoading ? (
+        <div className="relative flex-1 min-w-0 flex flex-col min-h-0 bg-background">
+          {centerLoading && (centerView.mode === 'empty' || centerView.mode === 'new-file') ? (
             <div className="flex items-center justify-center h-full">
               <Loader className="size-5 animate-spin text-muted-foreground" />
             </div>
-          ) : readError ? (
-            <CenterEmpty
-              message={readErrorMessage(readError)}
-              action={isReadErrorRetryable(readError)
-                ? <Button size="sm" variant="outline" onClick={retryReads}>Retry</Button>
-                : undefined}
-            />
-          ) : centerView.mode === 'file' ? (
-            <FileViewer file={centerView.data} />
-          ) : centerView.mode === 'diff' ? (
-            <div className="flex flex-col h-full">
-              <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b bg-muted/30">
-                <FileDiff className="size-3.5 text-muted-foreground" />
-                <span className="text-xs font-mono text-muted-foreground">{centerView.path}</span>
-              </div>
-              <div className="flex-1 min-h-0 overflow-auto">
-                <DiffViewer diff={centerView.diff} />
-              </div>
-            </div>
-          ) : <CenterEmpty />}
+          ) : (
+            <>
+              {readError ? (
+                <CenterEmpty
+                  message={readErrorMessage(readError)}
+                  action={isReadErrorRetryable(readError)
+                    ? <Button size="sm" variant="outline" onClick={retryReads}>Retry</Button>
+                    : undefined}
+                />
+              ) : centerView.mode === 'file' ? (
+                <FileViewer
+                  file={centerView.data}
+                  revision={fileRevisions[0] ?? null}
+                  saving={mutationLoading}
+                  onSave={handleFileSave}
+                  onRollback={setRevisionToRollback}
+                />
+              ) : centerView.mode === 'new-file' ? (
+                <FileEditor
+                  file={null}
+                  saving={mutationLoading}
+                  onSave={handleFileSave}
+                  onCancel={() => setCenterView({ mode: 'empty' })}
+                />
+              ) : centerView.mode === 'diff' ? (
+                <div className="flex flex-col h-full">
+                  <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b bg-muted/30">
+                    <FileDiff className="size-3.5 text-muted-foreground" />
+                    <span className="text-xs font-mono text-muted-foreground">{centerView.path}</span>
+                  </div>
+                  <div className="flex-1 min-h-0 overflow-auto">
+                    <DiffViewer diff={centerView.diff} />
+                  </div>
+                </div>
+              ) : <CenterEmpty />}
+              {centerLoading && (
+                <div role="status" aria-label="Loading file" className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center">
+                  <span className="mt-1 flex items-center gap-1.5 rounded-full bg-background/90 px-2 py-0.5 text-[10px] text-muted-foreground shadow-sm">
+                    <Loader className="size-3 animate-spin" /> Opening…
+                  </span>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>
