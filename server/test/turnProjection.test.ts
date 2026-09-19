@@ -43,13 +43,34 @@ describe("turn projection", () => {
     ]);
   });
 
-  it("reports an update without its tool call as a protocol error", () => {
+  it("reads a legacy update without its start instead of inventing a failure", () => {
     const { parts } = projectHostThreadTurn([
-      hostRow({ event_index: 7, event_type: "tool_activity_finished", tool_call_id: "c9", status: "failed", tool_result_summary: "exit 1" }),
+      hostRow({ event_index: 7, event_type: "tool_activity_finished", tool_call_id: "c9", tool_name: "search", tool_kind: "search", status: "succeeded", tool_result_summary: "3 hits" }),
     ]);
     expect(parts).toMatchObject([{
-      type: "tool_call", call_id: "c9", name: "Tool call not found",
-      status: "failed", output: "Tool call not found",
+      type: "tool_call", call_id: "c9", name: "search", kind: "search",
+      status: "succeeded", output: "3 hits",
+    }]);
+  });
+
+  it("coalesces a legacy start/update pair whose ACP bridge omitted the call id", () => {
+    const { parts } = projectHostThreadTurn([
+      hostRow({ event_index: 0, event_type: "tool_activity_started", tool_name: "task.create", status: "in_progress" }),
+      hostRow({ event_index: 1, event_type: "tool_activity_finished", tool_name: "task.create", status: "succeeded" }),
+    ]);
+    expect(parts).toEqual([{
+      type: "tool_call", index: 0, call_id: null, name: "task.create", kind: null,
+      status: "succeeded", input: null, output: null,
+    }]);
+  });
+
+  it("reconstructs a managed completion when its start event is absent", () => {
+    const { parts } = projectRunEventTurn([
+      runRow({ event_index: 0, event_type: "tool_call_completed", metadata_json: { call_id: "c1", tool_name: "task.complete" } }),
+    ]);
+    expect(parts).toEqual([{
+      type: "tool_call", index: 0, call_id: "c1", name: "task.complete", kind: null,
+      status: "succeeded", input: null, output: null,
     }]);
   });
 

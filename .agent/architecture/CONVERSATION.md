@@ -57,6 +57,14 @@ protocol order, while `tool_call` and every later `tool_call_update` upsert one
 entry by `tool_call_id`. Pending, running and terminal updates therefore never
 become separate rows. One pure fold, two sources.
 
+ACP tool lifecycles are correlated once at the adapter boundary by
+`runtimeAdapters/acpToolCallLifecycle.ts`, shared by the thread and semantic
+event normalizers. Every newly persisted tool event has a trace-local id, and
+an update whose provider start was absent is preceded by an inferred start.
+The projection retains read compatibility for older rows with missing starts
+or null ids, but incomplete trace metadata is never presented as a tool
+failure; only a provider-reported failed status is one.
+
 ### State is decided once, on the server
 
 `turnReadModel.turnState` is the sole authority for which of D3's four states a
@@ -136,7 +144,10 @@ The four states are one bubble, not four components. Within the bubble, parts
 remain in protocol order; the renderer does not regroup all work ahead of all
 assistant messages:
 
-- **working** — the steps as they happen, text streaming under them.
+- **working** — active and failed steps as they happen, text streaming under
+  them; consecutive successful tool calls collapse in place into disclosures
+  so a tool-heavy turn does not become a wall of completed cards and expanding
+  it restores the protocol chronology.
 - **blocked** — stopped, waiting on the person, said plainly and with somewhere
   to go and act.
 - **done** — the reply is the bubble; the work folds into one line above it.

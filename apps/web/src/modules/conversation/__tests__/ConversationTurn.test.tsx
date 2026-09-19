@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import type { RunTurn, TurnPart } from '../../../types/api'
+import type { RunTurn, ToolCallTurnPart, TurnPart } from '../../../types/api'
 import { ConversationTurn } from '../ConversationTurn'
 
 // `SpaceLink` resolves a logical path against the active Space; the turn's
@@ -23,7 +23,7 @@ function turn(state: RunTurn['state'], parts: TurnPart[], blockedOn: RunTurn['bl
   }
 }
 
-const tool = (index: number, name: string, status: 'running' | 'succeeded' | 'failed'): TurnPart =>
+const tool = (index: number, name: string, status: 'running' | 'succeeded' | 'failed'): ToolCallTurnPart =>
   ({ type: 'tool_call', index, call_id: `c${index}`, name, kind: null, status, input: null, output: null })
 
 function show(node: React.ReactElement) {
@@ -31,14 +31,18 @@ function show(node: React.ReactElement) {
 }
 
 describe('ConversationTurn — the states of D3', () => {
-  it('working: shows the steps as they happen, with the text after them', () => {
+  it('working: folds completed tools while keeping the live text visible', () => {
     show(<ConversationTurn turn={turn('working', [
       tool(0, 'search', 'succeeded'),
       { type: 'text', index: 1, text: 'Looking at the results.' },
     ])} />)
-    expect(screen.getByText('search')).toBeInTheDocument()
+    expect(screen.getByText('1 tool call completed')).toBeInTheDocument()
+    expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(screen.getByText('Looking at the results.')).toBeInTheDocument()
     expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('1 tool call completed'))
+    expect(screen.getByText('search')).toBeInTheDocument()
   })
 
   it('renders assistant messages, thought and tools in protocol order', () => {
@@ -48,10 +52,34 @@ describe('ConversationTurn — the states of D3', () => {
       { type: 'reasoning', index: 2, text: 'Checking details.' },
       { type: 'text', index: 3, text: 'Done.' },
     ])} />)
+    fireEvent.click(screen.getByText('1 tool call completed'))
     const text = container.textContent ?? ''
     expect(text.indexOf('I will inspect.')).toBeLessThan(text.indexOf('read'))
     expect(text.indexOf('read')).toBeLessThan(text.indexOf('Thought for a few seconds'))
     expect(text.indexOf('Thought for a few seconds')).toBeLessThan(text.indexOf('Done.'))
+  })
+
+  it('working: keeps active and failed tools visible while summarising successes', () => {
+    show(<ConversationTurn turn={turn('working', [
+      tool(0, 'inquiry.list_threads', 'succeeded'),
+      tool(1, 'task.create', 'succeeded'),
+      tool(2, 'task.complete', 'succeeded'),
+      tool(3, 'search', 'running'),
+      tool(4, 'write', 'failed'),
+    ])} />)
+    expect(screen.getByText('3 tool calls completed')).toBeInTheDocument()
+    expect(screen.getByText('search')).toBeInTheDocument()
+    expect(screen.getByText('write')).toBeInTheDocument()
+    expect(screen.queryByText('task.create')).not.toBeInTheDocument()
+  })
+
+  it('keeps completed-tool summaries at their chronological positions', () => {
+    show(<ConversationTurn turn={turn('working', [
+      tool(0, 'first', 'succeeded'),
+      { type: 'text', index: 1, text: 'Between calls.' },
+      tool(2, 'second', 'succeeded'),
+    ])} />)
+    expect(screen.getAllByText('1 tool call completed')).toHaveLength(2)
   })
 
   it('done: the reply is the bubble, and the work folds into one line', () => {
@@ -79,12 +107,15 @@ describe('ConversationTurn — the states of D3', () => {
 
   it('failed: the bubble carries the failure, and the steps stay open', () => {
     show(<ConversationTurn turn={turn('failed', [
-      tool(0, 'write', 'failed'),
+      { ...tool(0, 'write', 'failed'), output: 'Upstream refused.' },
       { type: 'diagnostic', index: 1, level: 'error', text: 'Upstream refused.', error_code: 'provider_unavailable' },
     ])} />)
     expect(screen.getByText('Upstream refused.')).toBeInTheDocument()
     expect(screen.getByText('write')).toBeInTheDocument()
     expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('write'))
+    expect(screen.getAllByText('Upstream refused.')).toHaveLength(2)
+    expect(screen.queryByText('null')).not.toBeInTheDocument()
   })
 
   it('blocked: says what it is waiting for, and where to go', () => {

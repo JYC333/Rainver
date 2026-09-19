@@ -192,6 +192,24 @@ describe("runtimeEventNormalization", () => {
       expect(events.every((event) => event.call_id === "call-1")).toBe(true);
     });
 
+    it("repairs missing starts and anonymous ids before writing semantic events", () => {
+      const repaired = normalizeVendorEvents("codex_cli", [{
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "session-1",
+          update: { sessionUpdate: "tool_call_update", title: "task.create", status: "completed" },
+        },
+      }], "2026-07-25T00:00:00.000Z");
+
+      expect(repaired.map((event) => event.type)).toEqual([
+        "tool_call_started",
+        "tool_call_completed",
+      ]);
+      expect(repaired[0]?.call_id).toMatch(/^rainver:acp:anonymous:/);
+      expect(repaired[1]?.call_id).toBe(repaired[0]?.call_id);
+    });
+
     it("produces no normalized event for an ACP initialize response echoed for diagnostics", () => {
       const events = normalizeVendorEvents("opencode", [
         {
@@ -269,5 +287,4 @@ describe("runtimeSkillProvider", () => {
     });
   });
 });
-
 

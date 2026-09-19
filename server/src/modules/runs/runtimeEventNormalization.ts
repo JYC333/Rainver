@@ -4,6 +4,7 @@ import type {
 } from "@rainver/protocol";
 import { redactEvidenceText } from "./evidenceRedaction.js";
 import { isAcpRuntimeAdapter } from "../runtimeAdapters/specs.js";
+import { createAcpToolCallLifecycle } from "../runtimeAdapters/acpToolCallLifecycle.js";
 
 export function normalizeManagedModelEvents(
   events: CanonicalModelEvent[],
@@ -41,60 +42,95 @@ export function normalizeVendorEvents(
   events: Record<string, unknown>[],
   completedAt: string,
 ): RuntimeSemanticEvent[] {
-  return events.flatMap((event) => {
-    const native = normalizeNativeProtocolEvent(adapterType, event, completedAt);
-    return native ? [native] : [];
-  });
+  const normalizer = createVendorEventNormalizer(adapterType);
+  return events.flatMap((event) => normalizer.push(event, completedAt));
 }
 
-function normalizeNativeProtocolEvent(
-  adapterType: string,
-  event: Record<string, unknown>,
-  occurredAt: string,
-): RuntimeSemanticEvent | null {
-  // ACP runtime replatform P3/P4: all conversation runtimes speak the same
-  // session/update vocabulary. This branch is protocol-shaped, not
-  // vendor-specific.
-  if (
-    isAcpRuntimeAdapter(adapterType)
-    && event.method === "session/update"
-  ) {
+/**
+ * Stateful normalizer for one vendor session/run.
+ *
+ * The stream owns lifecycle correlation. Callers processing events one at a
+ * time must retain this instance; the batch helper above is for tests and
+ * already-collected event arrays.
+ */
+export function createVendorEventNormalizer(adapterType: string): {
+  push(event: Record<string, unknown>, occurredAt: string): RuntimeSemanticEvent[];
+} {
+  const toolCalls = createAcpToolCallLifecycle();
+
+  const push = (event: Record<string, unknown>, occurredAt: string): RuntimeSemanticEvent[] => {
+    // ACP runtime replatform P3/P4: all conversation runtimes speak the same
+    // session/update vocabulary. This branch is protocol-shaped, not
+    // vendor-specific.
+    if (!isAcpRuntimeAdapter(adapterType) || event.method !== "session/update") return [];
+
     const update = recordValue(recordValue(event.params).update);
     const updateType = stringValue(update.sessionUpdate);
-    const callId = stringValue(update.toolCallId ?? update.tool_call_id);
+    const suppliedCallId = stringValue(update.toolCallId ?? update.tool_call_id);
+    const toolName = redactToolName(stringValue(update.title ?? update.name));
     if (updateType?.toLowerCase().includes("compact")) {
-      return runtimeEvent("provider_compacted", occurredAt, null, "Provider compacted its session context.", {
+      return [runtimeEvent("provider_compacted", occurredAt, null, "Provider compacted its session context.", {
         adapter_type: adapterType,
-      });
+      })];
     }
     if (updateType === "tool_call") {
-      return runtimeEvent(
-        "tool_call_started",
-        occurredAt,
-        callId,
-        "Tool call started.",
-        {
-          adapter_type: adapterType,
-          tool_name: redactToolName(stringValue(update.title ?? update.name)),
-        },
-      );
+      const status = stringValue(update.status);
+      const lifecycle = toolCalls.started({
+        callId: suppliedCallId,
+        name: toolName,
+        status,
+      });
+      return [
+        toolStartedEvent(adapterType, occurredAt, lifecycle.callId, toolName),
+        ...((status === "completed" || status === "failed")
+          ? [toolTerminalEvent(adapterType, occurredAt, lifecycle.callId, toolName, status)]
+          : []),
+      ];
     }
     if (updateType === "tool_call_update") {
       const status = stringValue(update.status);
-      if (status !== "completed" && status !== "failed") return null;
-      return runtimeEvent(
-        status === "failed" ? "tool_call_failed" : "tool_call_completed",
-        occurredAt,
-        callId,
-        status === "failed" ? "Tool call failed." : "Tool call completed.",
-        {
-          adapter_type: adapterType,
-          tool_name: redactToolName(stringValue(update.title ?? update.name)),
-        },
-      );
+      const lifecycle = toolCalls.updated({ callId: suppliedCallId, name: toolName, status });
+      const inferredStart = lifecycle.missingStart
+        ? [toolStartedEvent(adapterType, occurredAt, lifecycle.callId, toolName)]
+        : [];
+      if (status !== "completed" && status !== "failed") return inferredStart;
+      return [
+        ...inferredStart,
+        toolTerminalEvent(adapterType, occurredAt, lifecycle.callId, toolName, status),
+      ];
     }
-  }
-  return null;
+    return [];
+  };
+
+  return { push };
+}
+
+function toolStartedEvent(
+  adapterType: string,
+  occurredAt: string,
+  callId: string,
+  toolName: string | null,
+): RuntimeSemanticEvent {
+  return runtimeEvent("tool_call_started", occurredAt, callId, "Tool call started.", {
+    adapter_type: adapterType,
+    tool_name: toolName,
+  });
+}
+
+function toolTerminalEvent(
+  adapterType: string,
+  occurredAt: string,
+  callId: string,
+  toolName: string | null,
+  status: "completed" | "failed",
+): RuntimeSemanticEvent {
+  return runtimeEvent(
+    status === "failed" ? "tool_call_failed" : "tool_call_completed",
+    occurredAt,
+    callId,
+    status === "failed" ? "Tool call failed." : "Tool call completed.",
+    { adapter_type: adapterType, tool_name: toolName },
+  );
 }
 
 export function terminalRuntimeEvents(input: {

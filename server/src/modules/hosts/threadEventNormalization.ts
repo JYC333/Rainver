@@ -1,4 +1,5 @@
 import type { HostThreadEventType } from "./threadEventRepository.js";
+import { createAcpToolCallLifecycle } from "../runtimeAdapters/acpToolCallLifecycle.js";
 
 export interface ThreadEventDraft {
   event_type: HostThreadEventType;
@@ -32,6 +33,7 @@ export function createThreadEventNormalizer(): {
   finish(): ThreadEventDraft[];
 } {
   let stderrBuffer = "";
+  const toolCalls = createAcpToolCallLifecycle();
   let assistantSegment: {
     kind: "assistant_text" | "assistant_thought";
     text: string;
@@ -87,12 +89,14 @@ export function createThreadEventNormalizer(): {
     const callId = stringValue(update.toolCallId ?? update.tool_call_id);
     if (update.sessionUpdate === "tool_call") {
       const status = acpToolStatus(stringValue(update.status)) ?? "pending";
+      const toolName = stringValue(update.title ?? update.name);
+      const lifecycle = toolCalls.started({ callId, name: toolName, status: stringValue(update.status) });
       return [
         ...flushTextSegment(),
         {
           event_type: "tool_activity_started",
-          tool_call_id: callId,
-          tool_name: stringValue(update.title ?? update.name),
+          tool_call_id: lifecycle.callId,
+          tool_name: toolName,
           tool_input_summary: summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS),
           // ACP runtime replatform P3 (A9): the 9-category kind is what
           // makes claude/codex/opencode tool rows comparable in the UI.
@@ -106,19 +110,36 @@ export function createThreadEventNormalizer(): {
     if (update.sessionUpdate === "tool_call_update") {
       const status = stringValue(update.status);
       if (status !== null && !["pending", "in_progress", "completed", "failed"].includes(status)) return [];
+      const toolName = stringValue(update.title ?? update.name);
+      const toolKind = stringValue(update.kind);
+      const toolInput = summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS);
+      const toolOutput = summarizeToolResultContent(update.content)
+        ?? summarizeJson(update.rawOutput ?? update.raw_output, MAX_TOOL_RESULT_SUMMARY_CHARS);
+      const lifecycle = toolCalls.updated({ callId, name: toolName, status });
+      const start: ThreadEventDraft[] = lifecycle.missingStart
+        ? [{
+            event_type: "tool_activity_started",
+            tool_call_id: lifecycle.callId,
+            tool_name: toolName,
+            tool_input_summary: toolInput,
+            tool_kind: toolKind,
+            tool_result_summary: null,
+            status: "pending",
+          }]
+        : [];
       return [
         ...flushTextSegment(),
+        ...start,
         {
           event_type: "tool_activity_finished",
-          tool_call_id: callId,
-          tool_name: stringValue(update.title ?? update.name),
-          tool_input_summary: summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS),
-          tool_kind: stringValue(update.kind),
+          tool_call_id: lifecycle.callId,
+          tool_name: toolName,
+          tool_input_summary: toolInput,
+          tool_kind: toolKind,
           status: acpToolStatus(status),
           // A9: absorbed for claude/opencode; codex-acp 1.6.2 reports none
           // (a known adapter asymmetry, not a bug).
-          tool_result_summary: summarizeToolResultContent(update.content)
-            ?? summarizeJson(update.rawOutput ?? update.raw_output, MAX_TOOL_RESULT_SUMMARY_CHARS),
+          tool_result_summary: toolOutput,
         },
       ];
     }

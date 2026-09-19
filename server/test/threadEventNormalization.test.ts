@@ -67,6 +67,10 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
 
   it("maps ACP tool_call_update's in_progress status through as a non-terminal update, not just completed/failed", () => {
     const normalizer = createThreadEventNormalizer();
+    normalizer.pushAcpProtocolEvent({
+      method: "session/update",
+      params: { update: { sessionUpdate: "tool_call", toolCallId: "call-1" } },
+    });
     const drafts = normalizer.pushAcpProtocolEvent({
       method: "session/update",
       params: {
@@ -86,6 +90,10 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
 
   it("marks a failed tool_result as status failed", () => {
     const normalizer = createThreadEventNormalizer();
+    normalizer.pushAcpProtocolEvent({
+      method: "session/update",
+      params: { update: { sessionUpdate: "tool_call", toolCallId: "call-1" } },
+    });
     const drafts = normalizer.pushAcpProtocolEvent({
       method: "session/update",
       params: {
@@ -105,6 +113,10 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
 
   it("absorbs bounded tool-result content but ignores the declined diff variant (A9)", () => {
     const normalizer = createThreadEventNormalizer();
+    normalizer.pushAcpProtocolEvent({
+      method: "session/update",
+      params: { update: { sessionUpdate: "tool_call", toolCallId: "call-1" } },
+    });
     const drafts = normalizer.pushAcpProtocolEvent({
       method: "session/update",
       params: {
@@ -132,6 +144,10 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
 
   it("bounds an oversized ACP tool result instead of persisting it unbounded", () => {
     const normalizer = createThreadEventNormalizer();
+    normalizer.pushAcpProtocolEvent({
+      method: "session/update",
+      params: { update: { sessionUpdate: "tool_call", toolCallId: "call-1" } },
+    });
     const longText = "x".repeat(5_000);
     const drafts = normalizer.pushAcpProtocolEvent({
       method: "session/update",
@@ -147,6 +163,61 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
     const summary = drafts[0]?.tool_result_summary ?? "";
     expect(summary.length).toBeLessThan(longText.length);
     expect(summary.endsWith("…")).toBe(true);
+  });
+
+  it("repairs an update whose ACP start event is missing", () => {
+    const normalizer = createThreadEventNormalizer();
+    const drafts = normalizer.pushAcpProtocolEvent({
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call-1",
+          title: "Search",
+          status: "completed",
+        },
+      },
+    });
+    expect(drafts.map((draft) => [draft.event_type, draft.tool_call_id])).toEqual([
+      ["tool_activity_started", "call-1"],
+      ["tool_activity_finished", "call-1"],
+    ]);
+  });
+
+  it("assigns one stable local id to an anonymous ACP tool lifecycle", () => {
+    const normalizer = createThreadEventNormalizer();
+    const started = normalizer.pushAcpProtocolEvent({
+      method: "session/update",
+      params: { update: { sessionUpdate: "tool_call", title: "task.create" } },
+    });
+    const finished = normalizer.pushAcpProtocolEvent({
+      method: "session/update",
+      params: { update: { sessionUpdate: "tool_call_update", title: "task.create", status: "completed" } },
+    });
+    expect(started[0]?.tool_call_id).toMatch(/^rainver:acp:anonymous:/);
+    expect(finished[0]?.tool_call_id).toBe(started[0]?.tool_call_id);
+  });
+
+  it("keeps one lifecycle when only the update supplies the provider id", () => {
+    const normalizer = createThreadEventNormalizer();
+    const started = normalizer.pushAcpProtocolEvent({
+      method: "session/update",
+      params: { update: { sessionUpdate: "tool_call", title: "task.create" } },
+    });
+    const finished = normalizer.pushAcpProtocolEvent({
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "provider-call-1",
+          title: "task.create",
+          status: "completed",
+        },
+      },
+    });
+    expect(finished).toHaveLength(1);
+    expect(finished[0]?.event_type).toBe("tool_activity_finished");
+    expect(finished[0]?.tool_call_id).toBe(started[0]?.tool_call_id);
   });
 
   it("appends an ACP plan update as a JSON snapshot event", () => {

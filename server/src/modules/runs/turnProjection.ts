@@ -138,19 +138,21 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
         break;
       }
       case "tool_activity_finished": {
-        const index = row.tool_call_id ? toolIndexByCallId.get(row.tool_call_id) : undefined;
+        const index = findToolPart(parts, toolIndexByCallId, row.tool_call_id, row.tool_name);
         if (index === undefined) {
-          // Zed treats an update without its ToolCall as a protocol error. Do
-          // the same instead of inventing a generic successful `tool` row.
+          // Compatibility for rows written before ACP lifecycle correlation
+          // was enforced at ingestion. Preserve the recorded terminal update
+          // without turning incomplete historical trace metadata into a
+          // user-facing tool failure. New rows always carry a start and id.
           openText = null;
           const missingIndex = append({
             type: "tool_call",
             call_id: row.tool_call_id,
-            name: "Tool call not found",
-            kind: "fetch",
-            status: "failed",
-            input: null,
-            output: "Tool call not found",
+            name: toolLabel(row.tool_name, row.tool_kind),
+            kind: row.tool_kind,
+            status: toolStatus(row.status, "running"),
+            input: row.tool_input_summary,
+            output: row.tool_result_summary,
           });
           if (row.tool_call_id) toolIndexByCallId.set(row.tool_call_id, missingIndex);
           break;
@@ -269,16 +271,21 @@ export function projectRunEventTurn(
       case "tool_call_completed":
       case "tool_call_failed": {
         const status: ToolCallStatus = row.event_type === "tool_call_failed" ? "failed" : "succeeded";
-        const index = callId ? toolIndexByCallId.get(callId) : undefined;
+        const toolName = stringValue(metadata.tool_name);
+        const index = findToolPart(parts, toolIndexByCallId, callId, toolName);
         if (index === undefined) {
+          // Compatibility for historical semantic logs whose start was
+          // absent. Reconstruct from the terminal event we do have; degraded
+          // trace fidelity is not a failed tool invocation. Ingestion now
+          // writes a correlated start before every such completion.
           const missingIndex = append({
             type: "tool_call",
             call_id: callId,
-            name: "Tool call not found",
-            kind: "fetch",
-            status: "failed",
+            name: toolLabel(toolName, null),
+            kind: null,
+            status,
             input: null,
-            output: "Tool call not found",
+            output: null,
           });
           if (callId) toolIndexByCallId.set(callId, missingIndex);
           break;
@@ -385,6 +392,32 @@ function toolStatus(status: string | null, fallback: ToolCallStatus): ToolCallSt
 
 function toolLabel(name: string | null, kind: string | null): string {
   return name ?? kind ?? "Tool call";
+}
+
+/**
+ * Finds the tool entry an update patches.
+ *
+ * Current ingestion guarantees an id. For historical rows, fall back to the
+ * newest still-open anonymous call, preferring the same reported name. This
+ * keeps an old start/update pair with a null id as one visible step.
+ */
+function findToolPart(
+  parts: readonly TurnPart[],
+  toolIndexByCallId: ReadonlyMap<string, number>,
+  callId: string | null,
+  toolName: string | null,
+): number | undefined {
+  if (callId) return toolIndexByCallId.get(callId);
+
+  let newestOpen: number | undefined;
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part?.type !== "tool_call" || part.call_id !== null) continue;
+    if (part.status !== "pending" && part.status !== "running") continue;
+    if (newestOpen === undefined) newestOpen = index;
+    if (toolName && part.name === toolName) return index;
+  }
+  return newestOpen;
 }
 
 function runStatusToTurnState(status: string | null | undefined): TurnState | null {

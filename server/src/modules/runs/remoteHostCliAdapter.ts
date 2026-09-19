@@ -17,7 +17,7 @@ import {
   createCliConversationController,
   withAcpModelSelection,
 } from "./cliConversationProtocol.js";
-import { normalizeVendorEvents } from "./runtimeEventNormalization.js";
+import { createVendorEventNormalizer } from "./runtimeEventNormalization.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry, type HostRunCompletion } from "../hosts/connectionRegistry.js";
 import { createThreadEventNormalizer, type ThreadEventDraft } from "../hosts/threadEventNormalization.js";
 import { getDbPool } from "../../db/pool.js";
@@ -426,6 +426,7 @@ async function runRemoteHostCliAdapter(
 
   const registry = deps.connectionRegistry ?? sharedHostConnectionRegistry;
   const threadEvents = createThreadEventNormalizer();
+  const runtimeEvents = createVendorEventNormalizer(spec.adapter_type);
   const timeoutSeconds = resolveTimeoutSeconds(input, spec.limits.default_timeout_seconds, spec.limits.max_timeout_seconds);
 
   // The control plane's choice of model backend for this run, if it made one.
@@ -702,7 +703,7 @@ async function runRemoteHostCliAdapter(
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
     },
     on_protocol_event: (event) => {
-      for (const semanticEvent of normalizeVendorEvents(spec.adapter_type, [event], new Date().toISOString())) {
+      for (const semanticEvent of runtimeEvents.push(event, new Date().toISOString())) {
         void input.runtime_event_sink?.(semanticEvent);
       }
       const drafts = threadEvents.pushAcpProtocolEvent(event);

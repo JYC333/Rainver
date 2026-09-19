@@ -12,6 +12,7 @@ import {
 import { Shimmer } from '../../components/ai-elements/shimmer'
 import { SpaceLink } from '../../core/spaceNav'
 import { cn } from '../../lib/utils'
+import { presentTurnParts } from './turnPresentation'
 
 /**
  * One Agent turn, in whichever of its four states it is in.
@@ -64,6 +65,9 @@ export function ConversationTurn({
   // what is happening.
   const [showWork, setShowWork] = useState(false)
   const stepsOpen = working || blocked || turn.state === 'failed' || showWork
+  const presentedParts = presentTurnParts(turn.parts, {
+    groupCompletedTools: working || blocked || turn.state === 'failed',
+  })
 
   return (
     <Message from="assistant" className={cn('gap-1.5', className)}>
@@ -85,12 +89,16 @@ export function ConversationTurn({
         )}
 
         <div className="flex flex-col gap-0.5">
-          {turn.parts.map(part => {
+          {presentedParts.map(item => {
+            if (item.type === 'completed_tool_group') {
+              return stepsOpen ? <CompletedToolCalls key={item.key} tools={item.tools} /> : null
+            }
+            const part = item.part
             if (part.type === 'text') {
-              return <MessageResponse key={part.index}>{part.text}</MessageResponse>
+              return <MessageResponse key={item.key}>{part.text}</MessageResponse>
             }
             if (part.type === 'action_preview' || !stepsOpen) return null
-            return <TurnStep key={part.index} part={part} />
+            return <TurnStep key={item.key} part={part} />
           })}
         </div>
 
@@ -133,6 +141,24 @@ type StepPart = Extract<TurnPart, { type: 'tool_call' | 'reasoning' | 'plan' | '
 function isStep(part: TurnPart): part is StepPart {
   return part.type === 'tool_call' || part.type === 'reasoning'
     || part.type === 'plan' || part.type === 'diagnostic'
+}
+
+function CompletedToolCalls({ tools }: { tools: Extract<TurnPart, { type: 'tool_call' }>[] }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(current => !current)}
+        className="flex min-h-7 w-fit items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+      >
+        <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
+        <span>{tools.length} tool {tools.length === 1 ? 'call' : 'calls'} completed</span>
+      </button>
+      {open && tools.map(tool => <TurnStep key={tool.index} part={tool} />)}
+    </div>
+  )
 }
 
 function TurnStep({ part }: { part: StepPart }) {
