@@ -1,4 +1,5 @@
-import type { ConversationInputPart, RuntimePromptCapabilities } from "@rainver/protocol";
+import type { RuntimePromptCapabilities } from "@rainver/protocol";
+import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 
 export class ConversationInputCapabilityError extends Error {
   constructor(readonly statusCode: number, message: string) {
@@ -12,7 +13,7 @@ export class ConversationInputCapabilityError extends Error {
  * dispatch calls it for every recipient before it fans out any Run.
  */
 export function assertConversationInputCapabilities(
-  parts: readonly ConversationInputPart[],
+  parts: readonly { kind: "image" | "file_reference" | "input_resource" }[],
   capabilities: RuntimePromptCapabilities | null | undefined,
 ): void {
   if (parts.some((part) => part.kind === "image")) {
@@ -27,6 +28,23 @@ export function assertConversationInputCapabilities(
     throw new ConversationInputCapabilityError(
       422,
       "The selected Agent does not support authorized file references",
+    );
+  }
+}
+
+/** New immutable resources require the same governed Run tool surface used by
+ * managed API and CLI adapters; an arbitrary custom executor cannot receive
+ * the descriptor or call the canonical dispatcher safely. */
+export function assertConversationInputResourceTools(
+  parts: readonly { kind: "image" | "file_reference" | "input_resource" }[],
+  adapterType: string | null | undefined,
+): void {
+  if (!parts.some((part) => part.kind === "input_resource")) return;
+  const executorFamily = getRuntimeAdapterSpec(adapterType ?? "")?.executor_family;
+  if (executorFamily !== "managed_api" && executorFamily !== "local_cli") {
+    throw new ConversationInputCapabilityError(
+      422,
+      "This Agent runtime cannot lazily read attached resources; choose a managed API or supported CLI backend before sending",
     );
   }
 }

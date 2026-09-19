@@ -1,4 +1,4 @@
-export { isBlockedAddress, isLoopbackAddress } from "./blockList.js";
+export { isBlockedAddress, isLoopbackAddress, isSyntheticDnsAddress } from "./blockList.js";
 export {
   OUTBOUND_REFUSED_MESSAGE,
   OutboundAddressRefusedError,

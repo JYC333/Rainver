@@ -369,15 +369,26 @@ chmod 755 "$BIN_DIR/rainver-host"
 service_env="${XDG_CONFIG_HOME:-$HOME/.config}/rainver-host/service.env"
 mkdir -p "$(dirname "$service_env")"
 if [[ ! -f "$service_env" ]]; then
-  escaped_path="${PATH//\\/\\\\}"; escaped_path="${escaped_path//\"/\\\"}"
+  # The service needs the interactive user's CLI PATH, but the install may be
+  # the first thing that creates BIN_DIR (normally ~/.local/bin). Shell startup
+  # files often add that directory only when it already exists, so make the
+  # directory we just installed into discoverable even when the caller's PATH
+  # did not contain it yet.
+  service_path="$PATH"
+  case ":$service_path:" in
+    *":$BIN_DIR:"*) ;;
+    *) service_path="$BIN_DIR${service_path:+:$service_path}" ;;
+  esac
+  escaped_path="${service_path//\\/\\\\}"; escaped_path="${escaped_path//\"/\\\"}"
   escaped_config="${CONFIG_DIR//\\/\\\\}"; escaped_config="${escaped_config//\"/\\\"}"
   printf 'PATH="%s"\nRAINVER_HOST_CONFIG_DIR="%s"\n' "$escaped_path" "$escaped_config" > "$service_env"
   chmod 600 "$service_env"
 fi
 
 daemon_launcher="$INSTALL_ROOT/rainver-host-daemon"
-printf '#!/usr/bin/env bash\nset -a\nsource %q\nset +a\nexport RAINVER_HOST_INSTALL_ROOT=%q\nexport RAINVER_HOST_UPDATE_CHANNEL=%q\nexport RAINVER_HOST_ADAPTER_ROOT=%q\nexec %q %q\n' \
+printf '#!/usr/bin/env bash\nset -a\nsource %q\nset +a\nrainver_host_bin_dir=%q\ncase ":${PATH:-}:" in\n  *":$rainver_host_bin_dir:"*) ;;\n  *) export PATH="$rainver_host_bin_dir${PATH:+:$PATH}" ;;\nesac\nunset rainver_host_bin_dir\nexport RAINVER_HOST_INSTALL_ROOT=%q\nexport RAINVER_HOST_UPDATE_CHANNEL=%q\nexport RAINVER_HOST_ADAPTER_ROOT=%q\nexec %q %q\n' \
   "$service_env" \
+  "$BIN_DIR" \
   "$INSTALL_ROOT" \
   "$release_channel" \
   "$INSTALL_ROOT/adapters/current" \

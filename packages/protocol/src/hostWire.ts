@@ -264,6 +264,18 @@ export const HostLaunchIsolationSchema = z.object({
 });
 export type HostLaunchIsolation = z.infer<typeof HostLaunchIsolationSchema>;
 
+/** How the built-in host reaches public targets after applying Run egress policy. */
+export const HostEgressTransportSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("direct") }),
+  z.object({ mode: z.literal("system_tun") }),
+  z.object({
+    mode: z.literal("http_proxy"),
+    proxy_url: z.string().url(),
+    no_proxy: z.string().nullable(),
+  }),
+]);
+export type HostEgressTransport = z.infer<typeof HostEgressTransportSchema>;
+
 export const ManagedWorkspaceContainerKindSchema = z.enum(["direct", "conversation"]);
 
 export const FolderReadKindSchema = z.enum(["tree", "file", "git_status", "git_diff"]);
@@ -332,6 +344,8 @@ export const HostLaunchFrameSchema = z.object({
   work_surface: HostLaunchWorkSurfaceSchema.optional(),
   /** Namespace policy for a strict host; ignored by a trusted one. */
   isolation: HostLaunchIsolationSchema.optional(),
+  /** Instance-admin-selected public route for a strict host; ignored by a trusted one. */
+  egress_transport: HostEgressTransportSchema.optional(),
 });
 export type HostLaunchFrame = z.infer<typeof HostLaunchFrameSchema>;
 /** What a dispatcher supplies; the registry adds `type`, `run_id` and the `launch_id` nonce. */
@@ -483,6 +497,8 @@ export const HostFolderReadFrameSchema = z.object({
   kind: FolderReadKindSchema,
   path: z.string().optional(),
   protected: z.boolean(),
+  /** Explicit user action may request a decoded UTF-16 conversion preview. */
+  include_utf16_preview: z.boolean().optional(),
 });
 export const HostFolderReadCancelFrameSchema = z.object({
   type: z.literal("folder_read_cancel"),
@@ -503,6 +519,8 @@ export const HostFolderWriteFrameSchema = z.object({
   expected_exists: z.boolean(),
   expected_sha256: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
   protected: z.boolean(),
+  allow_encoding_conversion: z.boolean().optional(),
+  restore_encoding: z.enum(["utf8", "utf16le", "utf16be"]).optional(),
 });
 const managedWorkspaceActionFields = {
   request_id: IdSchema,

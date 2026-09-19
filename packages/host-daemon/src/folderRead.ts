@@ -22,6 +22,7 @@ export interface FolderReadRequest {
   kind: FolderReadKind;
   path?: string;
   protected: boolean;
+  include_utf16_preview?: boolean;
   root: string;
 }
 
@@ -82,6 +83,7 @@ export function resolveFolderReadRequest(
     kind,
     ...(path === undefined ? {} : { path }),
     protected: frame.protected,
+    ...(frame.include_utf16_preview === true ? { include_utf16_preview: true } : {}),
     root,
   };
 }
@@ -100,7 +102,11 @@ export async function performFolderRead(request: FolderReadRequest, signal?: Abo
         result = await buildTree(request.root, signal);
         break;
       case "file":
-        result = await readFolderFile(request.root, request.path!, { protectedFolder: request.protected, signal });
+        result = await readFolderFile(request.root, request.path!, {
+          protectedFolder: request.protected,
+          signal,
+          includeUtf16Preview: request.include_utf16_preview,
+        });
         break;
       case "git_status":
         result = await folderGitStatus(request.root);

@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { MAX_WRITE_FILE_BYTES } from "./limits.js";
 import { isInside, PathPolicyError, validatePath } from "./pathPolicy.js";
+import { decodeFileBytes } from "./read.js";
 
 export type FolderWriteErrorCode = "not_found" | "is_directory" | "too_large" | "path_forbidden" | "not_text" | "stale" | "write_failed";
 
@@ -35,6 +36,13 @@ export interface FileWriteOptions {
   protectedFolder?: boolean;
   expectedExists?: boolean;
   expectedSha256?: string | null;
+  /** Only the explicit File-page conversion flow may replace a valid BOM-marked UTF-16 preimage. */
+  allowEncodingConversion?: boolean;
+}
+
+export interface FileRestoreOptions extends FileWriteOptions {
+  /** Recreate the rollback preimage in its original encoding. */
+  restoreEncoding?: "utf8" | "utf16le" | "utf16be";
 }
 
 const writeLocks = new Map<string, Promise<void>>();
@@ -66,14 +74,14 @@ export async function restoreFolderFile(
   root: string,
   requestedPath: string,
   content: string | null,
-  options: FileWriteOptions = {},
+  options: FileRestoreOptions = {},
 ): Promise<FileWriteResult> {
   const resolved = await resolveWriteTarget(root, requestedPath, options);
   return withWriteLock(resolved.lockKey, async () => {
     const before = await readState(resolved.absolute, resolved.relative, options, resolved.canonicalRoot);
     assertExpected(before, options);
     if (content !== null) {
-      const bytes = Buffer.from(content, "utf8");
+      const bytes = encodeRestoredContent(content, options.restoreEncoding ?? "utf8");
       if (bytes.byteLength > MAX_WRITE_FILE_BYTES) {
         throw new FolderWriteError("too_large", `File is too large to write (max ${MAX_WRITE_FILE_BYTES} bytes)`);
       }
@@ -237,7 +245,7 @@ async function acquireFileLock(key: string): Promise<() => Promise<void>> {
 async function readState(
   absolute: string,
   relativePath: string,
-  options: Pick<FileWriteOptions, "protectedFolder">,
+  options: Pick<FileWriteOptions, "protectedFolder" | "allowEncodingConversion">,
   canonicalRoot: string,
 ): Promise<FileWriteState> {
   const info = await stat(absolute).catch((error: NodeJS.ErrnoException) => {
@@ -261,9 +269,29 @@ async function readState(
   }
   const content = bytes.toString("utf8");
   if (!Buffer.from(content, "utf8").equals(bytes)) {
+    if (options.allowEncodingConversion) {
+      const decoded = decodeFileBytes(bytes, { includeUtf16Preview: true });
+      if ((decoded.encoding === "utf16le" || decoded.encoding === "utf16be") && decoded.conversion_available) {
+        return { path: relativePath, exists: true, content: decoded.content, sha256: hash(bytes) };
+      }
+    }
     throw new FolderWriteError("not_text", "Only UTF-8 text files can be edited");
   }
   return { path: relativePath, exists: true, content, sha256: hash(bytes) };
+}
+
+function encodeRestoredContent(content: string, encoding: "utf8" | "utf16le" | "utf16be"): Buffer {
+  if (encoding === "utf8") return Buffer.from(content, "utf8");
+  const body = Buffer.from(content.startsWith("\uFEFF") ? content.slice(1) : content, "utf16le");
+  if (encoding === "utf16be") {
+    for (let index = 0; index < body.length; index += 2) {
+      const first = body[index]!;
+      body[index] = body[index + 1]!;
+      body[index + 1] = first;
+    }
+    return Buffer.concat([Buffer.from([0xfe, 0xff]), body]);
+  }
+  return Buffer.concat([Buffer.from([0xff, 0xfe]), body]);
 }
 
 function assertExpected(before: FileWriteState, options: FileWriteOptions): void {

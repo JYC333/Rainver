@@ -58,6 +58,67 @@ describe("folder-read filesystem operations", () => {
     await expect(readFolderFile(root, "large.txt")).rejects.toMatchObject({ code: "too_large" });
   });
 
+  it("admits only strict UTF-8 for editing and reports exact text metadata", async () => {
+    const root = await tempRoot();
+    await writeFile(join(root, "bom.txt"), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("one\r\ntwo\r\n") ]));
+    await writeFile(join(root, "mixed.txt"), "one\r\ntwo\nthree\r", "utf8");
+    await writeFile(join(root, "invalid.txt"), Buffer.from([0xc3, 0x28]));
+    await writeFile(join(root, "binary.dat"), Buffer.from([0x00, 0xff, 0x01]));
+
+    await expect(readFolderFile(root, "bom.txt")).resolves.toMatchObject({
+      content: "one\r\ntwo\r\n",
+      encoding: "utf8",
+      has_bom: true,
+      line_ending_mode: "crlf",
+      writable: true,
+      conversion_available: false,
+    });
+    await expect(readFolderFile(root, "mixed.txt")).resolves.toMatchObject({
+      encoding: "utf8",
+      line_ending_mode: "mixed",
+      writable: true,
+    });
+    await expect(readFolderFile(root, "invalid.txt")).resolves.toMatchObject({
+      content: "",
+      encoding: "unknown",
+      writable: false,
+      conversion_available: false,
+    });
+    await expect(readFolderFile(root, "binary.dat")).resolves.toMatchObject({
+      content: "",
+      encoding: "binary",
+      writable: false,
+    });
+  });
+
+  it("recognises BOM-marked UTF-16 and exposes content only for conversion preview", async () => {
+    const root = await tempRoot();
+    const text = "one\r\ntwo\n";
+    const littleEndian = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
+    const bigEndianBody = Buffer.from(text, "utf16le");
+    for (let index = 0; index < bigEndianBody.length; index += 2) {
+      const first = bigEndianBody[index]!;
+      bigEndianBody[index] = bigEndianBody[index + 1]!;
+      bigEndianBody[index + 1] = first;
+    }
+    await writeFile(join(root, "little.txt"), littleEndian);
+    await writeFile(join(root, "big.txt"), Buffer.concat([Buffer.from([0xfe, 0xff]), bigEndianBody]));
+
+    await expect(readFolderFile(root, "little.txt")).resolves.toMatchObject({
+      content: "",
+      encoding: "utf16le",
+      has_bom: true,
+      writable: false,
+      conversion_available: true,
+    });
+    await expect(readFolderFile(root, "little.txt", { includeUtf16Preview: true })).resolves.toMatchObject({ content: text });
+    await expect(readFolderFile(root, "big.txt", { includeUtf16Preview: true })).resolves.toMatchObject({
+      content: text,
+      encoding: "utf16be",
+      writable: false,
+    });
+  });
+
   it("does not follow symlinks outside the registered root", async () => {
     const root = await tempRoot();
     const outside = await tempRoot();
@@ -168,5 +229,31 @@ describe("folder-read filesystem operations", () => {
       expectedExists: true,
       expectedSha256: createHash("sha256").update(Buffer.from([0xff, 0xfe, 0x00])).digest("hex"),
     })).rejects.toMatchObject({ code: "not_text" });
+  });
+
+  it("converts valid BOM-marked UTF-16 only when explicit and restores its original encoding", async () => {
+    const root = await tempRoot();
+    const original = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("before\r\n", "utf16le")]);
+    const path = join(root, "utf16.txt");
+    await writeFile(path, original);
+    const expectedSha256 = createHash("sha256").update(original).digest("hex");
+
+    await expect(writeFolderFile(root, "utf16.txt", "after\n", {
+      expectedExists: true,
+      expectedSha256,
+    })).rejects.toMatchObject({ code: "not_text" });
+    const converted = await writeFolderFile(root, "utf16.txt", "after\n", {
+      expectedExists: true,
+      expectedSha256,
+      allowEncodingConversion: true,
+    });
+    expect(converted.before).toMatchObject({ content: "before\r\n", sha256: expectedSha256 });
+
+    await restoreFolderFile(root, "utf16.txt", "before\r\n", {
+      expectedExists: true,
+      expectedSha256: converted.sha256,
+      restoreEncoding: "utf16le",
+    });
+    await expect(readFile(path)).resolves.toEqual(original);
   });
 });

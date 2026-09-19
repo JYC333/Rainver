@@ -994,9 +994,9 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | POST | `/projects/{id}/folders/{folderId}/unregister` | Remove only the registration row; never touches disk |
 | POST | `/projects/{id}/folders/scan` | Scan for unregistered directories eligible to connect |
 | GET | `/projects/{id}/folders/{folderId}/tree` \| `/file` \| `/git/status` \| `/git/diff` | Files & Code reads; the requested active remote Location round-trips through the owning host daemon |
-| POST | `/projects/{id}/folders/{folderId}/file` | Direct Project-writer text-file create/edit with optimistic existence/hash check; remote Locations use the owning Host's `folder_write` channel |
+| GET / PUT / POST | `/projects/{id}/folders/{folderId}/file/draft*` | Autosaved Project-writer recovery draft, rebase/discard/save-to-Folder operations; the Project Folder remains canonical |
 | GET | `/projects/{id}/folders/{folderId}/file/revisions` | List available bounded preimages for the active Location |
-| POST | `/projects/{id}/folders/{folderId}/file/rollback` | Directly restore one available user-file revision, refusing stale later changes |
+| POST | `/projects/{id}/folders/{folderId}/file/revisions/restore-as-draft` | Preview/restore a historical preimage into the contextual draft without mutating the Folder |
 | PUT | `/projects/{id}/research/initial-intake` | Save or update the explicit body `workflow_id`; omitting it creates a new draft Workflow |
 | POST | `/projects/{id}/research/initial-intake/start` | Start or idempotently resume the explicit body `workflow_id`; omitting it creates/reuses by its selected Inquiry Thread |
 | GET | `/projects/{id}/research/workflow` | List research workflows for the project |

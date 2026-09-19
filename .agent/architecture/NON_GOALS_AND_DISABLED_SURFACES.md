@@ -24,7 +24,7 @@ used to live here are in
 | Files & Code interactive session execution | Removed. Files & Code has bounded human file editing, but no interactive Agent-session execution |
 | Runtime adapter bypassing credential resolver | Blocked by `RunOrchestrationService` |
 | Runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` |
-| Agent file mutation without approved proposal + PathPolicy | Blocked by code-patch apply; explicit human File-page writes are a separate bounded direct path with optimistic rollback |
+| Agent file mutation without approved proposal + PathPolicy | Blocked by code-patch apply; explicit human File-page edits are draft-backed and only Save to Folder performs the bounded direct write |
 | Automatic memory promotion from source/evidence | Blocked by proposal/apply |
 | Vector index over an **external** corpus | Not present. Space-internal pgvector recall exists |
 | Native `capability` runtime adapter | Declared and disabled |

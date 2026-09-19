@@ -126,14 +126,15 @@ Conversation image eligibility intersects this runtime report with the selected
 provider/model's known image capability when Rainver owns that Provider binding.
 For an unbound Host-owned ACP CLI, the runtime's initialize capability is the
 authoritative image answer because the model is selected inside the ACP session.
-The daemon resolves server-issued
-conversation `ResourceLink` ids to registered Workspace Location paths only
-after validating the launch's explicit access set; it never accepts an absolute
-path from the browser or launch payload. For the built-in Host, server-issued
-Location paths are relative to the shared instance workspace root, and the
-daemon checks both lexical containment and canonical `realpath` containment for
-the Location and its resolved resource; a paired Host uses only its registered
-local path map.
+The daemon resolves server-issued live-folder `ResourceLink` ids to registered
+Workspace Location paths only after validating the launch's explicit access set;
+it never accepts an absolute path from the browser or launch payload. Current
+Files & Code attachments are database-backed immutable message resources, so
+they do not materialize as Host temporary files and do not enter this path
+resolver. Legacy live-folder links retain the existing containment checks: for
+the built-in Host, Location paths are relative to the shared instance workspace
+root and checked lexically and by canonical `realpath`; a paired Host uses only
+its registered local path map.
 
 Managed workspaces are daemon-owned directories, not Workspace Locations. A
 launch names an Agent and either a Conversation id or the direct owner's user
@@ -1152,13 +1153,18 @@ path. The server authorizes the requested active Location for its registered own
 records `force_record` audit metadata including `host_id`, and maps offline,
 timeout, forbidden, and missing-location outcomes to structured HTTP errors.
 
-The File page uses a matching bounded write exchange for explicit user actions:
+Save to Folder uses a matching bounded write exchange after the server has
+flushed and revalidated the exact owner draft version:
 `folder_write` (server → daemon, Location id, relative path, content, and the
 observed existence/hash) and `folder_write_result` (daemon → server, resulting
 existence/hash and bounded metadata). Only the server-authorized owner can reach
 this path; the daemon resolves the Location from its local registration and
-never accepts an absolute filesystem path. This is a direct user File-page
-write, not an Agent Run and not a `code_patch` proposal.
+never accepts an absolute filesystem path. This is a direct human save, not an
+Agent Run and not a `code_patch` proposal; history restore never reaches the
+daemon until the user explicitly saves the resulting draft. Explicit UTF-16
+conversion carries a narrow conversion flag; compensating rollback carries the
+original encoding so a failed save restores the byte encoding rather than
+silently leaving a UTF-8 replacement.
 
 A pending run survives a brief WS drop: `HostConnectionRegistry` tracks
 pending runs by `run_id` (not nested per-connection) and gives a reconnect
@@ -1552,6 +1558,26 @@ CGNAT, or the cloud metadata endpoint — is dialled under any profile,
 public name pointing at a private one is refused too. The proxy also speaks
 CONNECT only: a plain proxied GET would put the request's own headers through
 the daemon, which is not something it should ever hold.
+
+The built-in Host has one explicit instance-admin-selected transport: `direct`
+(the fail-closed default), `system_tun`, or `http_proxy`. It is stored with the
+other instance operations settings and copied into each strict Host launch
+frame, so a saved change applies to the next Run without changing environment
+variables or restarting containers. Paired trusted Hosts ignore the field.
+`system_tun` lets RFC 2544 benchmarking addresses (`198.18.0.0/15`) returned
+for a hostname act as opaque fake-IP handles for the host's TUN. `http_proxy`
+chains through the configured HTTP(S) CONNECT endpoint and supports explicit
+NO_PROXY-style direct exceptions. The Run still sees only Rainver's loopback
+proxy and per-Run credential; it never receives the upstream coordinates.
+
+Rainver applies the Run's name policy and resolved-address guard before opening
+either transport. `direct` never interprets a reserved address as synthetic.
+Under `system_tun`, a literal `198.18/15` target, any real private/internal
+answer, or a synthetic answer mixed with a real private answer remains refused;
+only a hostname with exclusively public/synthetic answers can use the fake-IP
+route. Under `http_proxy`, the original hostname is passed upstream so that
+proxy owns final resolution. These are transport strategies, not vendor-domain
+allowlists.
 
 What a Run reached and was refused comes back on the `complete` frame
 (`egress`, bounded at 200 entries) and orchestration turns the *refusals* into

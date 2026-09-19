@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertConversationInputCapabilities } from "../src/modules/sessions/conversationInputCapabilities.js";
+import { assertConversationInputCapabilities, assertConversationInputResourceTools } from "../src/modules/sessions/conversationInputCapabilities.js";
 
 const image = {
   kind: "image" as const,
@@ -11,6 +11,17 @@ const image = {
 
 const file = {
   kind: "file_reference" as const,
+  project_folder_id: "folder-1",
+  workspace_location_id: "location-1",
+  relative_path: "README.md",
+  display_name: "README.md",
+  media_type: "text/markdown",
+  byte_size: 12,
+  sha256: "a".repeat(64),
+};
+const resource = {
+  kind: "input_resource" as const,
+  source_state: "saved" as const,
   project_folder_id: "folder-1",
   workspace_location_id: "location-1",
   relative_path: "README.md",
@@ -46,5 +57,11 @@ describe("conversation input capability admission", () => {
       embedded_context: null,
       resource_link: false,
     })).toThrow(/does not support authorized file references/);
+  });
+
+  it("admits immutable resources only on a runtime with the governed tool surface", () => {
+    expect(() => assertConversationInputResourceTools([resource], "model_api")).not.toThrow();
+    expect(() => assertConversationInputResourceTools([resource], "custom_runtime")).toThrow(/cannot lazily read attached resources/);
+    expect(() => assertConversationInputResourceTools([file], "custom_runtime")).not.toThrow();
   });
 });

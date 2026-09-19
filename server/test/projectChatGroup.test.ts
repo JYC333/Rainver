@@ -79,6 +79,16 @@ describe("projectChatToolPermissions", () => {
       expect(conversationToolGrantInput({ project_id: null }).scenario_tool_allowance).toBe(CONVERSATION_TOOL_ALLOWANCE);
       expect(conversationToolGrantInput({ room_id: "room-1" }).scenario_tool_allowance).toBe(ROOM_CONVERSATION_TOOL_ALLOWANCE);
     });
+    it("adds lazy resource tools only when the triggering message owns resources",()=>{
+      const clean = conversationToolGrantInput({ project_id: "project-1" });
+      const withResource = conversationToolGrantInput({ project_id: "project-1", has_input_resources: true });
+      expect(clean.scenario_tool_allowance).not.toContain("input_resource.read");
+      expect(withResource.scenario_tool_allowance).toEqual([
+        ...ROOM_CONVERSATION_TOOL_ALLOWANCE,
+        "input_resource.read",
+        "input_resource.search",
+      ]);
+    });
     it("publishes required model fields for proposal tools, derived from the Zod that validates them",async ()=>{
       const definitionFor=(id:string)=>{
         const found=SYSTEM_ACTION_REGISTRY.find((definition)=>definition.id===id);

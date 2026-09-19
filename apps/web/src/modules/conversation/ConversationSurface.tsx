@@ -34,6 +34,7 @@ import {
 import { ConversationComposer } from './ConversationComposer'
 import type { ConversationInputPart } from '@rainver/protocol'
 import { ConversationInputPartsView, type ConversationInputFileSource } from './ConversationInputComposer'
+import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
 import { clearConversationDraft, readConversationDraft, writeConversationDraft } from './conversationDraft'
 import { ConversationRunControls } from './ConversationRunControls'
 import { notifyProjectFolderContentChanged } from '../../core/projectFolderEvents'
@@ -74,6 +75,20 @@ type PendingProposalContinuation = {
 }
 
 const MESSAGE_PAGE_SIZE = 50
+
+function sameCurrentFilePart(part: ConversationInputPart, current: CurrentFileAttachment): boolean {
+  if (part.kind === 'file_reference') {
+    return part.project_folder_id === current.projectFolderId
+      && part.workspace_location_id === current.workspaceLocationId
+      && part.relative_path === current.relativePath
+  }
+  if (part.kind !== 'input_resource') return false
+  return part.source_state === 'draft'
+    ? part.draft_id === current.draftId
+    : part.project_folder_id === current.projectFolderId
+      && part.workspace_location_id === current.workspaceLocationId
+      && part.relative_path === current.relativePath
+}
 
 export interface ConversationSurfaceProps {
   roomId: string
@@ -129,6 +144,8 @@ export interface ConversationSurfaceProps {
   executionPreflight?: ReactNode
   /** Primary and attached Folder roots authorized by the initialized context. */
   inputFileSources?: ConversationInputFileSource[]
+  /** The Files & Code sidecar's one implicit current-file producer. */
+  implicitInputResource?: CurrentFileAttachment | null
   /** False while the execution context is missing, blocked, or being configured. */
   executionReady?: boolean
   isOwner?: boolean
@@ -158,6 +175,7 @@ export function ConversationSurface({
   runSettings,
   executionPreflight,
   inputFileSources,
+  implicitInputResource = null,
   executionReady = true,
   isOwner = false,
   emptyHint,
@@ -234,7 +252,7 @@ export function ConversationSurface({
             await conversationInputApi.imageBlob(part.media_id)
             return part
           }
-          if (conversationId) {
+          if (conversationId && part.kind === 'file_reference') {
             const result = await conversationInputApi.searchFiles(conversationId, part.relative_path)
             return result.items.some(item => item.project_folder_id === part.project_folder_id
               && item.workspace_location_id === part.workspace_location_id
@@ -242,7 +260,8 @@ export function ConversationSurface({
               ? part
               : null
           }
-          return inputFileSources?.some(source => source.projectFolderId === part.project_folder_id
+          if (part.kind === 'input_resource') return part
+          return part.kind === 'file_reference' && inputFileSources?.some(source => source.projectFolderId === part.project_folder_id
             && (!source.workspaceLocationId || source.workspaceLocationId === part.workspace_location_id))
             ? part
             : null
@@ -584,7 +603,7 @@ export function ConversationSurface({
 
   const sendMessage = useCallback(async (confirmDisclosure?: string[]) => {
     const text = composer.text.trim()
-    if (!conversationId || (!text && inputParts.length === 0) || sendingRef.current || !executionReady) return
+    if (!conversationId || sendingRef.current || !executionReady) return
     const segments = composer.routingSegments
       .map(segment => ({ recipient_agent_ids: uniqueIds(segment.recipient_agent_ids), content: segment.content.trim() }))
       .filter(segment => segment.recipient_agent_ids.length > 0 && segment.content)
@@ -597,6 +616,13 @@ export function ConversationSurface({
     setSending(true)
     followRef.current = true
     try {
+      let effectiveInputParts = inputParts.filter(part => !implicitInputResource || !sameCurrentFilePart(part, implicitInputResource))
+      if (implicitInputResource) {
+        const resource = await implicitInputResource.flushForSend()
+        if (!resource) throw new Error('The current file is no longer available to attach')
+        effectiveInputParts = [...effectiveInputParts, resource]
+      }
+      if (!text && effectiveInputParts.length === 0) return
       // Preflight opens the draft explicitly, so attach held references
       // immediately before the first addressed send and keep them idempotent
       // across retries.
@@ -609,7 +635,7 @@ export function ConversationSurface({
       }
       const dispatched = await roomsApi.sendMessage(roomId, conversationId, {
         content: text,
-        ...(inputParts.length > 0 ? { input_parts: inputParts } : {}),
+        ...(effectiveInputParts.length > 0 ? { input_parts: effectiveInputParts } : {}),
         routing_mode: routingMode,
         ...(variant === 'full' && routingMode === 'direct' && segments.length > 0
           ? { recipient_segments: segments }
@@ -659,7 +685,7 @@ export function ConversationSurface({
       sendingRef.current = false
       setSending(false)
     }
-  }, [composer, configuredBackendsFor, conversationId, executionReady, focusRefs, inputParts, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
+  }, [composer, configuredBackendsFor, conversationId, executionReady, focusRefs, implicitInputResource, inputParts, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
 
   // A decision made here continues the conversation here.
   const continueAfterDecision = useCallback(async (preview: ChatActionPreview, action: RoomActionDecision) => {
@@ -922,7 +948,7 @@ export function ConversationSurface({
           )}
           note={!executionReady ? 'Configure the execution context before sending.' : undefined}
           sending={sending}
-          sendDisabled={sending || !executionReady || (!composer.text.trim() && inputParts.length === 0)}
+          sendDisabled={sending || !executionReady || (!composer.text.trim() && inputParts.length === 0 && !implicitInputResource)}
           onSend={() => void sendMessage()}
           inputParts={inputParts}
           onInputPartsChange={setInputParts}

@@ -242,6 +242,7 @@ what is installed.
 | Toasts | `sonner` | `apps/web/src/core/Shell.tsx` |
 | Graph rendering | `@antv/g6` behind the graph renderer boundary | `apps/web/src/components/graph/core/createGraphRenderer.ts` |
 | Rich text editing | TipTap | `apps/web/src/components/editor/` |
+| Complete text-file/code editing | CodeMirror 6 through the local Files & Code adapter; keep language chunks lazy and do not use a React wrapper | `apps/web/src/modules/project_files/CodeMirrorEditor.tsx` |
 | Markdown → editor document | `markdown-it` | `apps/web/src/components/editor/markdownToProseMirror.ts` |
 | Drag and drop | `@dnd-kit` | components |
 | Conversation / Agent-turn UI | **AI Elements** (Vercel's shadcn registry) — copied source under `components/ai-elements/`, not a runtime dependency, so it is edited in place like any other component here; re-add through the CLI rather than merging | `apps/web/src/components/ai-elements/`, `components.json` |

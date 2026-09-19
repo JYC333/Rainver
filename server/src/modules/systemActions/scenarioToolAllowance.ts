@@ -72,6 +72,12 @@ export const CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "memory.revise",
 ];
 
+/** Added only for a turn whose persisted message owns text resources. */
+export const INPUT_RESOURCE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
+  "input_resource.read",
+  "input_resource.search",
+];
+
 const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "project.propose_definition",
   "inquiry.list_threads",
@@ -183,6 +189,7 @@ export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
 export function conversationToolGrantInput(scope: {
   room_id?: string | null;
   project_id?: string | null;
+  has_input_resources?: boolean;
 }): {
   capabilities_json: SystemActionId[];
   scenario_tool_allowance: readonly SystemActionId[];
@@ -190,8 +197,11 @@ export function conversationToolGrantInput(scope: {
   // A Room is the Project's conversation surface; a direct chat opened in a
   // Project is the same conversation with one audience. Either way the
   // Project write surface belongs to the place, not to the Agent.
-  const allowance = scope.room_id || scope.project_id
+  const baseAllowance = scope.room_id || scope.project_id
     ? ROOM_CONVERSATION_TOOL_ALLOWANCE
     : CONVERSATION_TOOL_ALLOWANCE;
+  const allowance = scope.has_input_resources
+    ? [...baseAllowance, ...INPUT_RESOURCE_TOOL_ALLOWANCE]
+    : baseAllowance;
   return { capabilities_json: [...allowance], scenario_tool_allowance: allowance };
 }

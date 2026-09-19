@@ -216,11 +216,16 @@ export default function ChatPanel({
         try {
           if (part.kind === 'image') {
             await conversationInputApi.imageBlob(part.media_id)
-          } else if (sessionId) {
+          } else if (part.kind === 'file_reference' && sessionId) {
             const files = await conversationInputApi.searchFiles(sessionId, part.relative_path)
             if (!files.items.some(file => file.relative_path === part.relative_path
               && file.project_folder_id === part.project_folder_id
               && file.workspace_location_id === part.workspace_location_id)) return null
+          } else if (part.kind === 'input_resource') {
+            // Resource parts are frozen by the server when the message is
+            // sent; a browser draft keeps the opaque request and lets the
+            // current-file producer revalidate it at send time.
+            return part
           }
           return part
         } catch {

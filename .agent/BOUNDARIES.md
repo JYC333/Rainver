@@ -270,7 +270,7 @@ launcher/control panel. See [ADR 0005](decisions/0005-desktop-runtime.md).
 
 **B19A** — Files & Code reads are policy-gated. `project_folder.read` is enforced for tree, file, git status, and git diff. Protected-Folder, external-root, restricted/protected, full-diff, and secret-like reads force durable audit records.
 
-**B19B** — Human File-page writes are a separate direct path, not an Agent or Proposal mutation. A Project writer may write only bounded text content to the active Workspace Location after an existence/hash check; PathPolicy, secret/symlink/traversal guards, durable `project_folder.apply_patch` audit, and short-lived preimage rollback remain mandatory. A remote Location requires its owning online Host.
+**B19B** — Human File-page edits are draft-backed, not an Agent or Proposal mutation. A Project writer may autosave only bounded text content to an owner-scoped recovery draft; Save to Folder is the sole canonical file write and requires the exact draft version, existence/hash check, PathPolicy, secret/symlink/traversal guards, durable `project_folder.apply_patch` audit, and short-lived preimage capture. History is restore-as-draft only; there is no direct browser-content or user-facing rollback path. A remote Location requires its owning online Host.
 
 ---
 

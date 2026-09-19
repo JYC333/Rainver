@@ -1,4 +1,4 @@
-import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostLaunchIsolation, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
+import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
 import type { ContentBlock } from "./cliConversationProtocol.js";
 import type { CredentialSpendDeps } from "../policy/credentialSpend.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
@@ -25,6 +25,7 @@ import { ConversationInputService } from "../sessions/conversationInputService.j
 import type { ServerConfig } from "../../config.js";
 import type { ProviderProxyLeaseRegistry } from "../providers/proxy/lease.js";
 import type { Queryable } from "../routeUtils/common.js";
+import { managedHostEgressTransport, readInstanceOperationsPolicy } from "../settings/index.js";
 import {
   boundAcpModelId,
   buildRemoteProviderBinding,
@@ -640,6 +641,10 @@ async function runRemoteHostCliAdapter(
   // Named here because the result envelope reports it too, and both must be
   // the same answer.
   const installation = dispatchInstallation(input.run);
+  const strictHost = await hostIsStrict(deps.config?.databaseUrl, hostId);
+  const egressTransport = !deps.executor && strictHost && deps.config
+    ? managedHostEgressTransport(await readInstanceOperationsPolicy(deps.config))
+    : { mode: "direct" } satisfies HostEgressTransport;
   const executor = deps.executor ?? new RemoteWsCliCommandExecutor(
     hostId,
     workspaceLocationId,
@@ -652,6 +657,7 @@ async function runRemoteHostCliAdapter(
     input.workspace_access ?? [],
     inputResources,
     dispatchIsolation(input.run),
+    egressTransport,
     input.max_concurrent_runs ?? null,
   );
   let stdoutText = "";
@@ -664,7 +670,7 @@ async function runRemoteHostCliAdapter(
     // Strict only. `dispatchIsolation` above says how the daemon binds the
     // workspace; this says what the runtime must not undo inside it. A paired
     // machine keeps its owner's own settings (B62, ADR 0016 section 3).
-    await hostIsStrict(deps.config?.databaseUrl, hostId) ? spec.strict_session_config : undefined,
+    strictHost ? spec.strict_session_config : undefined,
   );
   const runtimeModel = providerBinding
     ? boundAcpModelId(spec.adapter_type as VendorCliAdapterType, requestedModel)
@@ -977,6 +983,8 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     }> = [],
     /** The namespace policy a strict host applies; a trusted host ignores it. */
     private readonly isolation: HostLaunchIsolation = { sandbox_mode: "read_write", egress_profile: "default" },
+    /** Instance-selected public route for the built-in host; a trusted host ignores it. */
+    private readonly egressTransport: HostEgressTransport = { mode: "direct" },
     /**
      * How many Runs this host executes at once, or null for no cap. Set for
      * the built-in host, where the container's own limits and this count are
@@ -1061,6 +1069,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         workspace_access: this.workspaceAccess,
         input_resources: this.inputResources,
         isolation: this.isolation,
+        egress_transport: this.egressTransport,
       },
       onOutput,
       input.on_stderr_chunk,

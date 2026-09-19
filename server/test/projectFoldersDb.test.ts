@@ -1,12 +1,13 @@
 import { join } from "node:path";
 import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { loadConfig } from "../src/config.js";
 import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository.js";
+import { PgProjectFileRevisionStore } from "../src/modules/projectFolders/fileRevisionStore.js";
 import { PgRunSandboxManager } from "../src/modules/projectFolders/sandbox.js";
 import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
@@ -84,7 +85,97 @@ async function insertFolder(
   );
 }
 
+/**
+ * Save to Folder is the only human write path onto a Host, and it had no
+ * database-backed coverage at all: both bugs these tests pin were invisible to
+ * the fake-database route tests next door.
+ */
+async function draftFolder(pool: Pool, id: string): Promise<{ folderRoot: string; repo: PgProjectFolderRepository; cleanup: () => Promise<void> }> {
+  const root = await mkdtemp(join(tmpdir(), "rainver-folder-drafts-"));
+  const workspaceRoot = join(root, "workspaces");
+  const folderRoot = join(workspaceRoot, id);
+  await mkdir(folderRoot, { recursive: true });
+  await insertFolder(pool, { id, rootPath: folderRoot });
+  return {
+    folderRoot,
+    repo: new PgProjectFolderRepository(
+      pool,
+      loadConfig({ WORKSPACE_ROOT: workspaceRoot, SERVER_DATABASE_URL: db.connectionUri }),
+    ),
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
+
+function draftBody(input: {
+  content: string;
+  relativePath: string;
+  baseSha256?: string | null;
+  preserveBom?: boolean;
+  expectedVersion?: number | null;
+  lineEndingMode?: "lf" | "crlf" | "mixed" | "none";
+}): Record<string, unknown> {
+  const baseSha256 = input.baseSha256 ?? null;
+  return {
+    target_kind: baseSha256 ? "existing" : "new",
+    ...(input.expectedVersion !== undefined ? { expected_version: input.expectedVersion } : {}),
+    relative_path: input.relativePath,
+    base_exists: Boolean(baseSha256),
+    base_sha256: baseSha256,
+    content: input.content,
+    content_sha256: createHash("sha256").update(input.content, "utf8").digest("hex"),
+    byte_size: Buffer.byteLength(input.content, "utf8"),
+    source_encoding: "utf8",
+    preserve_bom: input.preserveBom ?? false,
+    line_ending_mode: input.lineEndingMode ?? "lf",
+  };
+}
+
 describe("Project Folder database invariants", () => {
+  it("does not inspect or delete drafts through a Folder id from another Project", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = "15151515-1515-4515-8515-151515151515";
+    const root = await mkdtemp(join(tmpdir(), "rainver-cross-project-folder-"));
+    try {
+      await insertFolder(db.pool, { id: folderId, projectId: SECOND_PROJECT, rootPath: root });
+      const repo = new PgProjectFolderRepository(
+        db.pool,
+        loadConfig({ WORKSPACE_ROOT: root, SERVER_DATABASE_URL: db.connectionUri }),
+      );
+      const identity = { spaceId: SPACE, userId: USER };
+      const draft = await repo.upsertDraft(
+        identity,
+        SECOND_PROJECT,
+        folderId,
+        draftBody({ content: "private\n", relativePath: "private.txt" }),
+      );
+
+      await expect(repo.unregister(identity, PROJECT, folderId, { confirm: true })).resolves.toBe(false);
+      await expect(db.pool.query(`SELECT id FROM project_file_drafts WHERE id=$1`, [draft.id]))
+        .resolves.toMatchObject({ rowCount: 1 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats expected_version null as an absent-draft precondition", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = "14141414-1414-4414-8414-141414141414";
+    const { repo, cleanup } = await draftFolder(db.pool, folderId);
+    try {
+      const identity = { spaceId: SPACE, userId: USER };
+      const first = draftBody({ content: "first\n", relativePath: "race.txt", expectedVersion: null });
+      await repo.upsertDraft(identity, PROJECT, folderId, first);
+      await expect(repo.upsertDraft(identity, PROJECT, folderId, {
+        ...first,
+        content: "stale tab\n",
+        content_sha256: createHash("sha256").update("stale tab\n").digest("hex"),
+        byte_size: Buffer.byteLength("stale tab\n"),
+      })).rejects.toMatchObject({ statusCode: 409, responseBody: { code: "draft_version_conflict" } });
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("lists and gets Project-inherited Folders without a Folder-local visibility ACL", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "60606060-6060-4060-8060-606060606060";
@@ -455,6 +546,180 @@ describe("Project Folder database invariants", () => {
       expect(audits.rows.every((row) => row.metadata_json?.host_id === issued.host_id)).toBe(true);
     } finally {
       request.mockRestore();
+    }
+  });
+  /** A file that does not exist yet is how every new file starts. The local
+   *  host reports that as `FolderReadError("not_found")`, which the save path
+   *  turned into a 404 instead of "this draft creates the file". */
+  it("creates a file that is not on the local host yet", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, "16161616-1616-4616-8616-161616161616");
+    try {
+      const identity = { spaceId: SPACE, userId: USER };
+      const folderId = "16161616-1616-4616-8616-161616161616";
+      const content = "# Today\n";
+      const draft = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({ content, relativePath: "today.md" }));
+
+      const saved = await repo.saveDraft(identity, PROJECT, folderId, {
+        draft_id: draft.id,
+        draft_version: draft.version,
+      });
+
+      expect(saved).toMatchObject({
+        draft_deleted: true,
+        file: { path: "today.md", content },
+        revision: { path: "today.md", before_exists: false, after_exists: true },
+      });
+      await expect(readFile(join(folderRoot, "today.md"), "utf8")).resolves.toBe(content);
+      await expect(db.pool.query(
+        `SELECT 1 FROM project_file_drafts WHERE id = $1`,
+        [draft.id],
+      )).resolves.toMatchObject({ rowCount: 0 });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("removes a newly-created file when database commit fails after the physical write", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = "13131313-1313-4313-8313-131313131313";
+    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, folderId);
+    const revisionFailure = vi.spyOn(PgProjectFileRevisionStore.prototype, "createInTransaction")
+      .mockRejectedValueOnce(new Error("forced revision failure"));
+    try {
+      const identity = { spaceId: SPACE, userId: USER };
+      const draft = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({
+        content: "temporary\n",
+        relativePath: "rollback.txt",
+      }));
+
+      await expect(repo.saveDraft(identity, PROJECT, folderId, {
+        draft_id: draft.id,
+        draft_version: draft.version,
+      })).rejects.toThrow("forced revision failure");
+      await expect(readFile(join(folderRoot, "rollback.txt"), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      revisionFailure.mockRestore();
+      await cleanup();
+    }
+  });
+
+  /** The save result is what the editor keeps as the file's current state, so
+   *  it has to be byte-honest: reporting the body without `has_bom` made the
+   *  very next save strip the BOM off a Windows-authored file. */
+  it("reports a saved file exactly as a fresh read would, BOM included", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = "17171717-1717-4717-8717-171717171717";
+    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, folderId);
+    try {
+      const identity = { spaceId: SPACE, userId: USER };
+      const filePath = join(folderRoot, "bom.txt");
+      const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+      await writeFile(filePath, Buffer.concat([bom, Buffer.from("alpha\n", "utf8")]));
+      const opened = await repo.getFile(identity, PROJECT, folderId, "bom.txt");
+      expect(opened).toMatchObject({ encoding: "utf8", has_bom: true, content: "alpha\n" });
+
+      const firstEdit = "alpha\nbeta\n";
+      const firstDraft = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({
+        content: firstEdit, relativePath: "bom.txt", baseSha256: opened.sha256, preserveBom: true,
+      }));
+      const saved = await repo.saveDraft(identity, PROJECT, folderId, {
+        draft_id: firstDraft.id, draft_version: firstDraft.version,
+      });
+
+      const onDisk = await readFile(filePath);
+      expect(onDisk.subarray(0, 3)).toEqual(bom);
+      expect(saved.file).toMatchObject({
+        content: firstEdit,
+        encoding: "utf8",
+        has_bom: true,
+        size: onDisk.byteLength,
+        sha256: createHash("sha256").update(onDisk).digest("hex"),
+      });
+
+      // Exactly what the editor does next: build the following draft from the
+      // save result it cached, not from a re-read.
+      const secondEdit = "alpha\nbeta\ngamma\n";
+      const secondDraft = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({
+        content: secondEdit,
+        relativePath: "bom.txt",
+        baseSha256: saved.file.sha256,
+        preserveBom: Boolean(saved.file.has_bom),
+      }));
+      await repo.saveDraft(identity, PROJECT, folderId, {
+        draft_id: secondDraft.id, draft_version: secondDraft.version,
+      });
+
+      expect((await readFile(filePath)).subarray(0, 3)).toEqual(bom);
+      await expect(repo.getFile(identity, PROJECT, folderId, "bom.txt"))
+        .resolves.toMatchObject({ has_bom: true, content: secondEdit });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("saves an explicitly converted UTF-16 draft as UTF-8", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = "18181818-1818-4818-8818-181818181818";
+    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, folderId);
+    try {
+      const identity = { spaceId: SPACE, userId: USER };
+      const filePath = join(folderRoot, "utf16.txt");
+      await writeFile(filePath, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("alpha\r\n", "utf16le")]));
+      const opened = await repo.getFile(identity, PROJECT, folderId, "utf16.txt", { includeUtf16Preview: true });
+      expect(opened).toMatchObject({ encoding: "utf16le", conversion_available: true, content: "alpha\r\n" });
+      const converted = "alpha\nbeta\n";
+      const draft = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({
+        content: converted,
+        relativePath: "utf16.txt",
+        baseSha256: opened.sha256,
+      }));
+
+      await repo.saveDraft(identity, PROJECT, folderId, { draft_id: draft.id, draft_version: draft.version });
+
+      await expect(readFile(filePath, "utf8")).resolves.toBe(converted);
+      await expect(repo.getFile(identity, PROJECT, folderId, "utf16.txt"))
+        .resolves.toMatchObject({ encoding: "utf8", has_bom: false, content: converted });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("requires explicit confirmation before normalizing mixed line endings", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = "19191919-1919-4919-8919-191919191919";
+    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, folderId);
+    try {
+      const identity = { spaceId: SPACE, userId: USER };
+      const filePath = join(folderRoot, "mixed.txt");
+      await writeFile(filePath, "one\r\ntwo\n", "utf8");
+      const opened = await repo.getFile(identity, PROJECT, folderId, "mixed.txt");
+      const normalized = "one\ntwo\nthree\n";
+      const draft = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({
+        content: normalized,
+        relativePath: "mixed.txt",
+        baseSha256: opened.sha256,
+        lineEndingMode: "mixed",
+      }));
+
+      await expect(repo.saveDraft(identity, PROJECT, folderId, {
+        draft_id: draft.id,
+        draft_version: draft.version,
+      })).rejects.toMatchObject({
+        statusCode: 409,
+        responseBody: { code: "mixed_line_endings_confirmation_required" },
+      });
+      await expect(readFile(filePath, "utf8")).resolves.toBe("one\r\ntwo\n");
+
+      await repo.saveDraft(identity, PROJECT, folderId, {
+        draft_id: draft.id,
+        draft_version: draft.version,
+        confirm_mixed_line_ending_normalization: true,
+      });
+      await expect(readFile(filePath, "utf8")).resolves.toBe(normalized);
+    } finally {
+      await cleanup();
     }
   });
 });

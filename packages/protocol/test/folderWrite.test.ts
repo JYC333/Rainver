@@ -12,6 +12,7 @@ describe("folder_write wire contract", () => {
       expected_exists: false,
       expected_sha256: null,
       protected: false,
+      allow_encoding_conversion: true,
     }).success).toBe(true);
     expect(HostServerFrameSchema.safeParse({
       type: "folder_write",
@@ -22,6 +23,7 @@ describe("folder_write wire contract", () => {
       expected_exists: true,
       expected_sha256: "a".repeat(64),
       protected: true,
+      restore_encoding: "utf16le",
     }).success).toBe(true);
   });
 

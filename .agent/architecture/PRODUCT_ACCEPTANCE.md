@@ -132,10 +132,11 @@ content, Git status/diff, and Folder settings. Execute isolated code work,
 review validation and a patch Proposal, then apply or reject it and exercise
 rollback. Unregister a Folder and confirm disk content is not deleted.
 
-Evidence: Project Folder, configuration, snapshots, code Run, bounded diff,
-validation, Proposal decision, apply/rollback operation, and remaining disk
-repository. No Exchange directory, credential path, or arbitrary host path may
-appear as product state.
+Evidence: Project Folder, configuration, drafts, snapshots, code Run, bounded
+diff, validation, Proposal decision, code-patch apply/rollback operation,
+human Save to Folder, and Restore as draft, plus the remaining disk repository.
+No direct browser-content rollback, Exchange directory, credential path, or
+arbitrary host path may appear as product state.
 
 ### 9. Room conversation and materialize
 

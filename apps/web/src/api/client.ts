@@ -147,9 +147,10 @@ import type {
   InstanceOperationsSettings,
   InstanceOperationsSettingsUpdate,
   FileContent,
-  ProjectFileEdit,
   ProjectFileRevision,
-  ProjectFileRollback,
+  ProjectFileDraft,
+  ProjectFileDraftQuota,
+  ProjectFileDraftSave,
   FileNode,
   GitStatus,
   Host,
@@ -1994,18 +1995,56 @@ export const projectFoldersApi = {
     patch<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`, data),
   archive: (projectId: string, folderId: string) =>
     del<null>(`/projects/${projectId}/folders/${folderId}`),
-  unregister: (projectId: string, folderId: string) =>
-    post<null>(`/projects/${projectId}/folders/${folderId}/unregister`),
+  unregister: (projectId: string, folderId: string, confirm = false) =>
+    post<null>(`/projects/${projectId}/folders/${folderId}/unregister`, confirm ? { confirm: true } : {}),
   tree:    (projectId: string, folderId: string) =>
     get<FileNode>(`/projects/${projectId}/folders/${folderId}/tree`),
-  file:    (projectId: string, folderId: string, path: string) =>
-    get<FileContent>(`/projects/${projectId}/folders/${folderId}/file?path=${encodeURIComponent(path)}`),
-  editFile: (projectId: string, folderId: string, data: { path: string; content: string; expected_path: string | null; expected_exists: boolean; expected_sha256: string | null }) =>
-    post<ProjectFileEdit>(`/projects/${projectId}/folders/${folderId}/file`, data),
+  file:    (projectId: string, folderId: string, path: string, options: { convertUtf8?: boolean } = {}) =>
+    get<FileContent>(`/projects/${projectId}/folders/${folderId}/file?path=${encodeURIComponent(path)}${options.convertUtf8 ? '&convert=utf8' : ''}`),
+  draft:   (projectId: string, folderId: string, path: string) =>
+    get<ProjectFileDraft | null>(`/projects/${projectId}/folders/${folderId}/file/draft?path=${encodeURIComponent(path)}`),
+  upsertDraft: (projectId: string, folderId: string, data: {
+    expected_version?: number | null
+    target_kind: 'existing' | 'new'
+    relative_path: string
+    base_exists: boolean
+    base_sha256: string | null
+    content: string
+    content_sha256: string
+    byte_size: number
+    source_encoding: 'utf8' | 'utf16le' | 'utf16be'
+    preserve_bom: boolean
+    line_ending_mode: 'lf' | 'crlf' | 'mixed' | 'none'
+  }) => put<ProjectFileDraft>(`/projects/${projectId}/folders/${folderId}/file/draft`, data),
+  rebaseDraft: (projectId: string, folderId: string, data: {
+    expected_version: number
+    target_kind: 'existing' | 'new'
+    relative_path: string
+    base_exists: boolean
+    base_sha256: string | null
+    content: string
+    content_sha256: string
+    byte_size: number
+    source_encoding: 'utf8' | 'utf16le' | 'utf16be'
+    preserve_bom: boolean
+    line_ending_mode: 'lf' | 'crlf' | 'mixed' | 'none'
+  }) => post<ProjectFileDraft>(`/projects/${projectId}/folders/${folderId}/file/draft/rebase`, data),
+  discardDraft: (projectId: string, folderId: string, draftId: string, draftVersion: number) =>
+    post<{ discarded: true }>(`/projects/${projectId}/folders/${folderId}/file/draft/discard`, { draft_id: draftId, draft_version: draftVersion }),
+  saveDraft: (projectId: string, folderId: string, draftId: string, draftVersion: number, confirmMixedLineEndingNormalization = false) =>
+    post<ProjectFileDraftSave>(`/projects/${projectId}/folders/${folderId}/file/draft/save`, {
+      draft_id: draftId,
+      draft_version: draftVersion,
+      confirm_mixed_line_ending_normalization: confirmMixedLineEndingNormalization,
+    }),
+  draftQuota: (projectId: string, folderId: string) =>
+    get<ProjectFileDraftQuota>(`/projects/${projectId}/folders/${folderId}/drafts/quota`),
   fileRevisions: (projectId: string, folderId: string, path: string) =>
     get<ProjectFileRevision[]>(`/projects/${projectId}/folders/${folderId}/file/revisions?path=${encodeURIComponent(path)}`),
-  rollbackFile: (projectId: string, folderId: string, revisionId: string) =>
-    post<ProjectFileRollback>(`/projects/${projectId}/folders/${folderId}/file/rollback`, { revision_id: revisionId }),
+  restoreRevisionAsDraft: (projectId: string, folderId: string, revisionId: string) =>
+    post<ProjectFileDraft>(`/projects/${projectId}/folders/${folderId}/file/revisions/restore-as-draft`, { revision_id: revisionId }),
+  previewRevision: (projectId: string, folderId: string, revisionId: string) =>
+    get<{ revision: ProjectFileRevision; content: string | null }>(`/projects/${projectId}/folders/${folderId}/file/revisions/${encodeURIComponent(revisionId)}/preview`),
   gitStatus: (projectId: string, folderId: string) =>
     get<GitStatus>(`/projects/${projectId}/folders/${folderId}/git/status`),
   gitDiff: (projectId: string, folderId: string, path?: string) =>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isBlockedAddress, isLoopbackAddress } from "../src/blockList.js";
+import { isBlockedAddress, isLoopbackAddress, isSyntheticDnsAddress } from "../src/blockList.js";
 
 describe("isBlockedAddress", () => {
   it("blocks this instance's own IPv4 networks", () => {
@@ -37,6 +37,20 @@ describe("isBlockedAddress", () => {
     for (const value of ["", "localhost", "127.0.0.1:80", null, undefined]) {
       expect(isBlockedAddress(value as string | null | undefined), String(value)).toBe(true);
     }
+  });
+});
+
+describe("isSyntheticDnsAddress", () => {
+  it("recognises only RFC 2544 fake-IP/benchmarking space", () => {
+    expect(isSyntheticDnsAddress("198.18.0.1")).toBe(true);
+    expect(isSyntheticDnsAddress("198.19.255.254")).toBe(true);
+    for (const address of ["198.20.0.1", "10.0.0.1", "127.0.0.1", "::1", "fake.example", null]) {
+      expect(isSyntheticDnsAddress(address), String(address)).toBe(false);
+    }
+  });
+
+  it("does not weaken the direct-address block list", () => {
+    expect(isBlockedAddress("198.18.0.1")).toBe(true);
   });
 });
 

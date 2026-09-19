@@ -1,10 +1,13 @@
 import { createServer, type Server } from "node:net";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { isBlockedAddress } from "@rainver/outbound-guard";
 import {
   egressProxyEnv,
+  isSyntheticDnsHostnameRoute,
   policyAllows,
   proxyBypassHosts,
+  shouldBypassUpstreamProxy,
   startEgressProxy,
   type EgressProxyHandle,
 } from "../src/egressProxy.js";
@@ -79,6 +82,129 @@ describe("what a Run may reach", () => {
   it("allows nothing at all under none", () => {
     expect(policyAllows("none", "github.com").allowed).toBe(false);
   });
+
+  it("recognises synthetic DNS only for hostnames with no real private answer", () => {
+    expect(isSyntheticDnsHostnameRoute("chatgpt.com", [{ address: "198.18.0.26" }], false)).toBe(false);
+    expect(isSyntheticDnsHostnameRoute("chatgpt.com", [{ address: "198.18.0.26" }], true)).toBe(true);
+    expect(isSyntheticDnsHostnameRoute("chatgpt.com", [
+      { address: "198.18.0.26" },
+      { address: "1.1.1.1" },
+    ], true)).toBe(true);
+    expect(isSyntheticDnsHostnameRoute("198.18.0.26", [{ address: "198.18.0.26" }], true)).toBe(false);
+    expect(isSyntheticDnsHostnameRoute("internal.example", [{ address: "10.0.0.5" }], true)).toBe(false);
+    expect(isSyntheticDnsHostnameRoute("mixed.example", [
+      { address: "198.18.0.26" },
+      { address: "10.0.0.5" },
+    ], true)).toBe(false);
+  });
+});
+
+describe("host-owned upstream proxy routing", () => {
+  let upstreamProxy: HttpServer;
+  let proxy: EgressProxyHandle;
+  let upstreamPort = 0;
+  const targets: string[] = [];
+  const proxyAuthorizations: Array<string | undefined> = [];
+  const upstreamSockets = new Set<import("node:net").Socket>();
+  const logs: string[] = [];
+
+  beforeAll(async () => {
+    upstreamProxy = createHttpServer();
+    upstreamProxy.on("connection", (socket) => {
+      upstreamSockets.add(socket);
+      socket.once("close", () => upstreamSockets.delete(socket));
+    });
+    upstreamProxy.on("connect", (request, socket) => {
+      targets.push(request.url ?? "");
+      proxyAuthorizations.push(request.headers["proxy-authorization"]);
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\nhello-through-upstream");
+    });
+    await new Promise<void>((resolve) => upstreamProxy.listen(0, "127.0.0.1", resolve));
+    const address = upstreamProxy.address();
+    upstreamPort = typeof address === "object" && address ? address.port : 0;
+    proxy = await startEgressProxy((line) => logs.push(line), {
+      lookup: async (host) => [{
+        address: host === "internal.example" ? "10.0.0.5" : "198.18.12.34",
+        family: 4,
+      }],
+    });
+  });
+
+  afterAll(async () => {
+    for (const socket of upstreamSockets) socket.destroy();
+    await new Promise<void>((resolve) => upstreamProxy.close(() => resolve()));
+    await proxy.close();
+  });
+
+  afterEach(() => {
+    proxy.revoke("proxied-run");
+    targets.splice(0);
+    proxyAuthorizations.splice(0);
+  });
+
+  async function request(target: string): Promise<string> {
+    const grant = proxy.grant("proxied-run", "default", {
+      mode: "http_proxy",
+      proxy_url: `http://managed-user:s%40cret@127.0.0.1:${upstreamPort}`,
+      no_proxy: null,
+    });
+    const { connect: dial } = await import("node:net");
+    const [host, rawPort] = proxy.address.split(":");
+    return await new Promise<string>((resolve, reject) => {
+      const socket = dial({ host, port: Number(rawPort) }, () => {
+        const auth = Buffer.from(`run:${grant.token}`).toString("base64");
+        socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\nProxy-Authorization: Basic ${auth}\r\n\r\n`);
+      });
+      let received = "";
+      socket.on("data", (chunk: Buffer) => {
+        received += chunk.toString("utf8");
+        if (received.includes("hello-through-upstream") || received.includes(" 403 ")) {
+          socket.destroy();
+          resolve(received);
+        }
+      });
+      socket.on("error", reject);
+      socket.on("close", () => resolve(received));
+    });
+  }
+
+  it("passes the original hostname to an upstream proxy when local DNS returns a synthetic address", async () => {
+    const response = await request("api.openai.com:443");
+    expect(response).toContain("200 Connection Established");
+    expect(response).toContain("hello-through-upstream");
+    expect(targets).toEqual(["api.openai.com:443"]);
+    expect(proxyAuthorizations).toEqual([
+      `Basic ${Buffer.from("managed-user:s@cret").toString("base64")}`,
+    ]);
+    expect(logs.join("\n")).not.toContain("managed-user");
+    expect(logs.join("\n")).not.toContain("s@cret");
+    expect(proxy.log("proxied-run")).toEqual([
+      expect.objectContaining({ allowed: true, host: "api.openai.com", port: 443 }),
+    ]);
+  });
+
+  it("never treats a literal synthetic address as a hostname for upstream resolution", async () => {
+    const response = await request("198.18.12.34:443");
+    expect(response).toContain("403 Forbidden");
+    expect(targets).toEqual([]);
+  });
+
+  it("keeps real private DNS answers blocked even when an upstream proxy is configured", async () => {
+    const response = await request("internal.example:443");
+    expect(response).toContain("403 Forbidden");
+    expect(response).toContain("inside this instance's own network");
+    expect(targets).toEqual([]);
+  });
+});
+
+describe("upstream proxy configuration", () => {
+  it("implements host, suffix, wildcard and port-scoped NO_PROXY entries", () => {
+    expect(shouldBypassUpstreamProxy("api.example.com", 443, "localhost,.example.com")).toBe(true);
+    expect(shouldBypassUpstreamProxy("example.com", 443, "*.example.com")).toBe(false);
+    expect(shouldBypassUpstreamProxy("api.example.com", 443, "api.example.com:8443")).toBe(false);
+    expect(shouldBypassUpstreamProxy("api.example.com", 8443, "api.example.com:8443")).toBe(true);
+    expect(shouldBypassUpstreamProxy("anything.example", 443, "*")).toBe(true);
+  });
 });
 
 describe("the proxy as a running server", () => {
@@ -128,13 +254,13 @@ describe("the proxy as a running server", () => {
   });
 
   it("refuses a token that was revoked when its Run finished", async () => {
-    const grant = proxy.grant("run-1", "default");
+    const grant = proxy.grant("run-1", "default", { mode: "direct" });
     proxy.revoke("run-1");
     expect(await connect("example.com:443", grant.token)).toContain("407");
   });
 
   it("refuses the instance's own network even for a Run granted install", async () => {
-    const grant = proxy.grant("run-1", "install");
+    const grant = proxy.grant("run-1", "install", { mode: "direct" });
     const response = await connect(`127.0.0.1:${upstreamPort}`, grant.token);
     expect(response).toContain("403");
     expect(response).toMatch(/own network/i);
@@ -144,7 +270,7 @@ describe("the proxy as a running server", () => {
   });
 
   it("refuses a registry under default and records the reason for the Run", async () => {
-    const grant = proxy.grant("run-1", "default");
+    const grant = proxy.grant("run-1", "default", { mode: "direct" });
     const response = await connect("registry.npmjs.org:443", grant.token);
     expect(response).toContain("403");
     // The record is what answers "why did the install fail" after the Run.
@@ -154,7 +280,7 @@ describe("the proxy as a running server", () => {
   });
 
   it("accepts CONNECT only", async () => {
-    const grant = proxy.grant("run-1", "default");
+    const grant = proxy.grant("run-1", "default", { mode: "direct" });
     const { connect: dial } = await import("node:net");
     const [host, port] = proxy.address.split(":");
     const response = await new Promise<string>((resolve) => {
@@ -174,7 +300,7 @@ describe("the proxy as a running server", () => {
     // `[::1]:443` is how a client writes one. With the brackets left on, the
     // host was never recognised as an address at all — so every IPv6 target
     // failed *and* skipped the block list.
-    const grant = proxy.grant("run-1", "install");
+    const grant = proxy.grant("run-1", "install", { mode: "direct" });
     const response = await connect("[::1]:443", grant.token);
     expect(response).toContain("403");
     expect(response).toMatch(/own network/i);
@@ -184,7 +310,7 @@ describe("the proxy as a running server", () => {
     // A client that writes its request line and headers separately is
     // ordinary; reading one chunk turned that into a 405 or a 407 depending
     // on where the split fell.
-    const grant = proxy.grant("run-1", "default");
+    const grant = proxy.grant("run-1", "default", { mode: "direct" });
     const { connect: dial } = await import("node:net");
     const [host, port] = proxy.address.split(":");
     const response = await new Promise<string>((resolve) => {
@@ -222,8 +348,8 @@ describe("the proxy as a running server", () => {
   });
 
   it("gives one Run's environment a credential another Run cannot use", () => {
-    const first = proxy.grant("run-1", "install");
-    const second = proxy.grant("run-2", "default");
+    const first = proxy.grant("run-1", "install", { mode: "direct" });
+    const second = proxy.grant("run-2", "default", { mode: "direct" });
     expect(first.token).not.toBe(second.token);
     const env = egressProxyEnv(proxy.address, first.token);
     expect(env.HTTPS_PROXY).toContain(first.token);

@@ -832,7 +832,7 @@ describe("what a Run reports about its egress", () => {
       );
       // While the Run is alive, exactly what a package install does: a CONNECT
       // to a registry, which `default` refuses by name.
-      const grant = proxy.grant("run-egress-1", "default");
+      const grant = proxy.grant("run-egress-1", "default", { mode: "direct" });
       await refuse(proxy.address, grant.token);
       await launched;
 

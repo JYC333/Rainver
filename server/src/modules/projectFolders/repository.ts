@@ -6,8 +6,6 @@ import {
   folderGitDiff,
   folderGitStatus,
   FolderReadError,
-  FolderWriteError,
-  MAX_WRITE_FILE_BYTES,
   ensureGitRepository,
   isWireRelativePath,
   looksSecretLikePath,
@@ -39,6 +37,15 @@ import {
   type WorkspaceLocationOut,
 } from "./workspaceLocations.js";
 import { PgProjectFileRevisionStore, type ProjectFileRevisionOut } from "./fileRevisionStore.js";
+import {
+  DraftQuotaError,
+  DraftVersionConflictError,
+  PgProjectFileDraftRepository,
+  PROJECT_FILE_DRAFT_MAX_BYTES,
+  PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES,
+  type ProjectFileDraftMutation,
+  type ProjectFileDraftRow,
+} from "./draftRepository.js";
 
 const FOLDER_KINDS = new Set(["code", "data", "docs"]);
 
@@ -115,15 +122,11 @@ export interface ScanCandidate {
   path: string;
 }
 
-export interface ProjectFileEditOut {
+export interface ProjectFileDraftSaveOut {
   file: FileContent;
   revision: ProjectFileRevisionOut;
-}
-
-export interface ProjectFileRollbackOut {
-  file: FileContent | null;
-  revision_id: string;
-  rolled_back: true;
+  draft_deleted: boolean;
+  newer_draft_retained: boolean;
 }
 
 export class PgProjectFolderRepository {
@@ -492,13 +495,52 @@ export class PgProjectFolderRepository {
    * Removes only the Rainver registration row. Never deletes, moves, or
    * rewrites the physical directory.
    */
-  async unregister(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<boolean> {
-    await this.assertProjectActive(identity, projectId, { allowArchived: true });
-    const result = await this.db.query(
-      `DELETE FROM project_folders WHERE id = $1 AND space_id = $2 AND project_id = $3`,
-      [folderId, identity.spaceId, projectId],
-    );
-    return (result.rowCount ?? 0) > 0;
+  async unregister(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    options: { confirm?: boolean } = {},
+  ): Promise<boolean> {
+    return withTransactionIfPool(this.db, async (db) => {
+      const project = await db.query<{ status: string }>(
+        `SELECT status FROM projects
+          WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL
+          FOR UPDATE`,
+        [projectId, identity.spaceId],
+      );
+      if (!project.rows[0]) throw new HttpError(404, "Project not found");
+      await assertProjectWriterForMutation(db, identity.spaceId, projectId, identity.userId);
+      const folder = await db.query<{ id: string }>(
+        `SELECT id FROM project_folders
+          WHERE id = $1 AND space_id = $2 AND project_id = $3
+          FOR UPDATE`,
+        [folderId, identity.spaceId, projectId],
+      );
+      if (!folder.rows[0]) return false;
+      const drafts = await db.query<{ active_draft_count: string | number; affected_user_count: string | number }>(
+        `SELECT count(*)::bigint AS active_draft_count,
+                count(DISTINCT owner_user_id)::bigint AS affected_user_count
+           FROM project_file_drafts
+          WHERE space_id = $1 AND project_folder_id = $2 AND expires_at > NOW()`,
+        [identity.spaceId, folderId],
+      );
+      const activeDraftCount = Number(drafts.rows[0]?.active_draft_count ?? 0);
+      const affectedUserCount = Number(drafts.rows[0]?.affected_user_count ?? 0);
+      if (activeDraftCount > 0 && options.confirm !== true) {
+        throw new HttpError(409, "Active File drafts must be explicitly confirmed before unregistering this Folder", {
+          detail: "Active File drafts must be explicitly confirmed before unregistering this Folder",
+          code: "active_drafts_require_confirmation",
+          active_draft_count: activeDraftCount,
+          affected_user_count: affectedUserCount,
+        });
+      }
+      await new PgProjectFileDraftRepository(db).deleteForFolder(db, identity.spaceId, folderId);
+      const result = await db.query(
+        `DELETE FROM project_folders WHERE id = $1 AND space_id = $2 AND project_id = $3`,
+        [folderId, identity.spaceId, projectId],
+      );
+      return (result.rowCount ?? 0) > 0;
+    });
   }
 
   /**
@@ -603,101 +645,310 @@ export class PgProjectFolderRepository {
     }
   }
 
-  async getFile(identity: SpaceUserIdentity, projectId: string, folderId: string, requestedPath: string): Promise<FileContent> {
+  async getFile(identity: SpaceUserIdentity, projectId: string, folderId: string, requestedPath: string, options: { includeUtf16Preview?: boolean } = {}): Promise<FileContent> {
     const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
     const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
     if (location.execution_host_kind === "remote") {
-      return this.readRemote(folder, identity.userId, location, "file", requestedPath);
+      return this.readRemote(folder, identity.userId, location, "file", requestedPath, undefined, options);
     }
     const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
     const relPath = resolveRelativePath(root, requestedPath, { protectedFolder: folder.protected }).relative;
     await this.enforceFolderRead(folder, identity.userId, "file", relPath);
     try {
-      const content = await readFolderFile(root, requestedPath, { protectedFolder: folder.protected });
+      const content = await readFolderFile(root, requestedPath, { protectedFolder: folder.protected, includeUtf16Preview: options.includeUtf16Preview });
       return { ...content, path: requestedPath };
     } catch (error) {
       throw mapFolderReadError(error);
     }
   }
 
-  /** Apply a direct File-page edit after policy, ACL, path, and stale checks. */
-  async editFile(
+  async getDraft(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    requestedPath: string,
+  ): Promise<ProjectFileDraftRow | null> {
+    const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
+    const path = parseEditablePath(requestedPath);
+    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folder.id);
+    return new PgProjectFileDraftRepository(this.db).get({
+      spaceId: folder.space_id,
+      ownerUserId: identity.userId,
+      projectFolderId: folder.id,
+      workspaceLocationId: location.id,
+      relativePath: path,
+    });
+  }
+
+  async upsertDraft(
     identity: SpaceUserIdentity,
     projectId: string,
     folderId: string,
     body: Record<string, unknown>,
-  ): Promise<ProjectFileEditOut> {
+  ): Promise<ProjectFileDraftRow> {
     const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
-    const input = parseFileEditInput(body);
-    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
-    await this.enforceFolderWrite(folder, identity.userId, input.path, "write");
-
-    let physical: { beforeExists: boolean; beforeContent: string | null; afterSha256: string } | null = null;
+    const mutation = parseDraftMutation(body);
+    if (mutation.sourceEncoding !== "utf8") {
+      throw new HttpError(415, "Convert the UTF-16 file to UTF-8 before creating a draft");
+    }
+    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folder.id);
     try {
-      let file: FileContent;
-      if (location.execution_host_kind === "remote") {
-        assertRemoteWriteAccess(location, identity.userId);
-        const before = await this.readRemoteFileForWrite(folder, identity.userId, location, input.path);
-        const result = await sharedHostConnectionRegistry.requestFolderWrite(location.execution_host_id, {
-          workspace_location_id: location.id,
-          path: input.path,
-          content: input.content,
-          expected_exists: input.expectedExists,
-          expected_sha256: input.expectedSha256,
-          protected: Boolean(folder.protected),
-        });
-        if (!result.ok) throw mapRemoteFolderWriteError(result, location.host_name);
-        const expectedAfterSha = hashText(input.content);
-        physical = { beforeExists: Boolean(before), beforeContent: before?.content ?? null, afterSha256: expectedAfterSha };
-        if (!result.exists || result.sha256 !== expectedAfterSha) {
-          throw new HttpError(502, `The host acknowledged an unexpected version of ${input.path}`);
-        }
-        file = fileContent(input.path, input.content, expectedAfterSha);
-      } else {
-        const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
-        const result = await writeFolderFile(root, input.path, input.content, {
-          protectedFolder: Boolean(folder.protected),
-          expectedExists: input.expectedExists,
-          expectedSha256: input.expectedSha256,
-        });
-        physical = {
-          beforeExists: result.before.exists,
-          beforeContent: result.before.content,
-          afterSha256: result.sha256!,
-        };
-        file = {
-          path: result.path,
-          content: input.content,
-          size: result.size,
-          line_count: result.line_count,
-          sha256: result.sha256 ?? undefined,
-        };
-      }
-
-      const revision = await new PgProjectFileRevisionStore(this.db).create({
+      return await new PgProjectFileDraftRepository(this.db).upsert({
         spaceId: folder.space_id,
         projectId,
         projectFolderId: folder.id,
         workspaceLocationId: location.id,
-        path: input.path,
-        beforeExists: physical.beforeExists,
-        beforeContent: physical.beforeContent,
-        afterExists: true,
-        afterSha256: physical.afterSha256,
-        userId: identity.userId,
-        retentionDays: folder.snapshot_retention_days,
-        maxCount: folder.snapshot_max_count,
+        ownerUserId: identity.userId,
+        mutation,
       });
-      return { file, revision };
     } catch (error) {
-      if (physical) {
-        try {
-          await this.restorePhysicalFile(folder, identity.userId, location, input.path, physical.beforeContent, true, physical.afterSha256);
-        } catch (rollbackError) {
-          throw new HttpError(502, `The file write failed and automatic rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : "unknown rollback error"}`);
-        }
+      if (error instanceof DraftVersionConflictError) {
+        throw new HttpError(409, error.message, {
+          detail: error.message,
+          code: "draft_version_conflict",
+          current: error.current,
+        });
       }
-      throw mapFolderWriteError(error);
+      if (error instanceof DraftQuotaError) {
+        throw new HttpError(413, error.message, {
+          detail: error.message,
+          code: "draft_quota_exceeded",
+          used_bytes: error.usedBytes,
+          requested_bytes: error.requestedBytes,
+          limit_bytes: PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES,
+        });
+      }
+      throw error;
+    }
+  }
+
+  async discardDraft(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    body: Record<string, unknown>,
+  ): Promise<{ discarded: true }> {
+    const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
+    const id = requiredText(body.draft_id, "draft_id");
+    const version = positiveInteger(body.draft_version, "draft_version");
+    const drafts = new PgProjectFileDraftRepository(this.db);
+    const current = await drafts.getById({ id, spaceId: folder.space_id, ownerUserId: identity.userId, projectFolderId: folder.id });
+    if (!current) throw new HttpError(404, "Draft not found or expired");
+    if (current.version !== version) {
+      throw new HttpError(409, "The draft changed in another tab", { detail: "The draft changed in another tab", code: "draft_version_conflict", current });
+    }
+    if (!await drafts.discard({ id, spaceId: folder.space_id, ownerUserId: identity.userId, expectedVersion: version })) {
+      throw new HttpError(409, "The draft changed in another tab", { detail: "The draft changed in another tab", code: "draft_version_conflict" });
+    }
+    return { discarded: true };
+  }
+
+  async draftQuota(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+  ): Promise<{ used_bytes: number; limit_bytes: number }> {
+    await this.requireWritableActiveFolder(identity, projectId, folderId);
+    return new PgProjectFileDraftRepository(this.db).quota(identity.spaceId, identity.userId);
+  }
+
+  async saveDraft(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    body: Record<string, unknown>,
+  ): Promise<ProjectFileDraftSaveOut> {
+    const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
+    const draftId = requiredText(body.draft_id, "draft_id");
+    const requestedVersion = positiveInteger(body.draft_version, "draft_version");
+    const drafts = new PgProjectFileDraftRepository(this.db);
+    const draft = await drafts.getById({ id: draftId, spaceId: folder.space_id, ownerUserId: identity.userId, projectFolderId: folder.id });
+    if (!draft) throw new HttpError(404, "Draft not found or expired");
+    if (draft.version !== requestedVersion) {
+      throw new HttpError(409, "The draft changed in another tab", { detail: "The draft changed in another tab", code: "draft_version_conflict", current: draft });
+    }
+    await this.enforceFolderWrite(folder, identity.userId, draft.relative_path);
+    const location = await resolveLocationWithHost(this.db, folder.space_id, folder.id, draft.workspace_location_id);
+    const current = await this.readCurrentFileForDraft(folder, identity.userId, location, draft.relative_path);
+    if (current.exists !== draft.base_exists || (draft.base_exists && current.file?.sha256 !== draft.base_sha256)) {
+      throw new HttpError(409, "The Project Folder file changed since this draft was created", {
+        detail: "The Project Folder file changed since this draft was created",
+        code: "host_file_conflict",
+        draft,
+        current: current.file ? { sha256: current.file.sha256, size: current.file.size } : { exists: false },
+      });
+    }
+    const normalizesMixedLineEndings = draft.line_ending_mode === "mixed"
+      || lineEndingMode(draft.content) === "mixed"
+      || current.file?.line_ending_mode === "mixed";
+    if (normalizesMixedLineEndings && body.confirm_mixed_line_ending_normalization !== true) {
+      throw new HttpError(409, "Saving this draft will normalize mixed line endings", {
+        detail: "Saving this draft will normalize mixed line endings",
+        code: "mixed_line_endings_confirmation_required",
+      });
+    }
+
+    const serialized = serializeDraftText(draft);
+    const afterSha256 = hashText(serialized);
+    let beforeExists = current.exists;
+    let beforeContent = current.file ? revisionText(current.file) : null;
+    let physicalWritten = false;
+    try {
+      if (location.execution_host_kind === "remote") {
+        assertRemoteWriteAccess(location, identity.userId);
+        const result = await sharedHostConnectionRegistry.requestFolderWrite(location.execution_host_id, {
+          workspace_location_id: location.id,
+          path: draft.relative_path,
+          content: serialized,
+          expected_exists: current.exists,
+          expected_sha256: current.file?.sha256 ?? null,
+          protected: Boolean(folder.protected),
+          allow_encoding_conversion: current.file?.encoding === "utf16le" || current.file?.encoding === "utf16be",
+        });
+        if (!result.ok) throw mapRemoteFolderWriteError(result, location.host_name);
+        physicalWritten = true;
+        if (!result.exists || result.sha256 !== afterSha256) throw new HttpError(502, "The host acknowledged an unexpected file version");
+      } else {
+        const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
+        const result = await writeFolderFile(root, draft.relative_path, serialized, {
+          protectedFolder: Boolean(folder.protected),
+          expectedExists: current.exists,
+          expectedSha256: current.file?.sha256 ?? null,
+          allowEncodingConversion: current.file?.encoding === "utf16le" || current.file?.encoding === "utf16be",
+        });
+        physicalWritten = true;
+        beforeExists = result.before.exists;
+        if (result.sha256 !== afterSha256) throw new HttpError(502, "The host acknowledged an unexpected file version");
+      }
+
+      const revisionStore = new PgProjectFileRevisionStore(this.db);
+      const committed = await withTransactionIfPool(this.db, async (db) => {
+        const revision = await revisionStore.createInTransaction(db, {
+          spaceId: folder.space_id,
+          projectId,
+          projectFolderId: folder.id,
+          workspaceLocationId: location.id,
+          path: draft.relative_path,
+          beforeExists,
+          beforeContent,
+          afterExists: true,
+          afterSha256,
+          userId: identity.userId,
+          retentionDays: folder.snapshot_retention_days,
+          maxCount: folder.snapshot_max_count,
+        });
+        const draftDeleted = await drafts.deleteExact(db, {
+          id: draft.id,
+          spaceId: folder.space_id,
+          ownerUserId: identity.userId,
+          version: draft.version,
+        });
+        return { revision, draftDeleted };
+      });
+      return {
+        file: savedFileContent(draft, serialized, afterSha256),
+        revision: committed.revision,
+        draft_deleted: committed.draftDeleted,
+        newer_draft_retained: !committed.draftDeleted,
+      };
+    } catch (error) {
+      if (!physicalWritten) throw error;
+      try {
+        await this.restorePhysicalFile(
+          folder,
+          identity.userId,
+          location,
+          draft.relative_path,
+          beforeContent,
+          true,
+          afterSha256,
+          current.file?.encoding === "utf16le" || current.file?.encoding === "utf16be" ? current.file.encoding : "utf8",
+        );
+      } catch (rollbackError) {
+        throw new HttpError(502, `The draft save failed and automatic rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : "unknown rollback error"}`);
+      }
+      throw error;
+    }
+  }
+
+  async restoreRevisionAsDraft(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    body: Record<string, unknown>,
+  ): Promise<ProjectFileDraftRow> {
+    const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
+    const revisionId = requiredText(body.revision_id, "revision_id");
+    const revision = await new PgProjectFileRevisionStore(this.db).getAvailable(folder.space_id, projectId, folder.id, revisionId);
+    if (!revision) throw new HttpError(404, "File revision not found or expired");
+    const location = await resolveLocationWithHost(this.db, folder.space_id, folder.id, revision.workspace_location_id);
+    const current = await this.readCurrentFileForDraft(folder, identity.userId, location, revision.path);
+    const content = revision.before_exists ? revision.before_content ?? "" : "";
+    return new PgProjectFileDraftRepository(this.db).upsert({
+      spaceId: folder.space_id,
+      projectId,
+      projectFolderId: folder.id,
+      workspaceLocationId: location.id,
+      ownerUserId: identity.userId,
+      mutation: {
+        targetKind: current.exists ? "existing" : "new",
+        relativePath: revision.path,
+        baseExists: current.exists,
+        baseSha256: current.file?.sha256 ?? null,
+        content,
+        contentSha256: hashText(content),
+        byteSize: Buffer.byteLength(content, "utf8"),
+        sourceEncoding: "utf8",
+        preserveBom: content.startsWith("\uFEFF"),
+        lineEndingMode: lineEndingMode(content),
+      },
+    });
+  }
+
+  async previewRevision(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    folderId: string,
+    revisionId: string,
+  ): Promise<{ revision: ProjectFileRevisionOut; content: string | null }> {
+    const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
+    const id = requiredText(revisionId, "revision_id");
+    const revision = await new PgProjectFileRevisionStore(this.db).getAvailable(folder.space_id, projectId, folder.id, id);
+    if (!revision) throw new HttpError(404, "File revision not found or expired");
+    return {
+      revision,
+      content: revision.before_exists ? revision.before_content ?? "" : null,
+    };
+  }
+
+  private async readCurrentFileForDraft(
+    folder: ProjectFolderRow,
+    userId: string,
+    location: ActiveLocationWithHost,
+    path: string,
+  ): Promise<{ exists: boolean; file: FileContent | null }> {
+    try {
+      const file = location.execution_host_kind === "remote"
+        ? await this.readRemoteFileForWrite(folder, userId, location, path)
+        : await (async () => {
+            const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
+            await this.enforceFolderRead(folder, userId, "file", path);
+            return readFolderFile(root, path, { protectedFolder: Boolean(folder.protected), includeUtf16Preview: true });
+          })();
+      if (!file) return { exists: false, file: null };
+      const convertibleUtf16 = (file.encoding === "utf16le" || file.encoding === "utf16be")
+        && file.conversion_available === true;
+      if (!convertibleUtf16 && (file.writable === false || (file.encoding && file.encoding !== "utf8"))) {
+        throw new HttpError(415, "Only valid UTF-8 text files can be saved");
+      }
+      return { exists: true, file };
+    } catch (error) {
+      // A missing file is how a *new* file starts, on either host kind. The
+      // local branch reports it as `FolderReadError("not_found")`, so it has to
+      // be mapped before the 404 test rather than after it.
+      const mapped = error instanceof FolderReadError ? folderReadHttpError(error) : error;
+      if (mapped instanceof HttpError && mapped.statusCode === 404) return { exists: false, file: null };
+      throw mapped;
     }
   }
 
@@ -711,42 +962,6 @@ export class PgProjectFolderRepository {
     const path = parseEditablePath(requestedPath);
     const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
     return new PgProjectFileRevisionStore(this.db).listForFile(identity.spaceId, projectId, folderId, location.id, path);
-  }
-
-  async rollbackFile(
-    identity: SpaceUserIdentity,
-    projectId: string,
-    folderId: string,
-    body: Record<string, unknown>,
-  ): Promise<ProjectFileRollbackOut> {
-    const folder = await this.requireWritableActiveFolder(identity, projectId, folderId);
-    const revisionId = typeof body.revision_id === "string" ? body.revision_id.trim() : "";
-    if (!revisionId) throw new HttpError(422, "revision_id is required");
-    const store = new PgProjectFileRevisionStore(this.db);
-    const revision = await store.getAvailable(identity.spaceId, projectId, folderId, revisionId);
-    if (!revision) throw new HttpError(404, "File revision not found or expired");
-    const location = await resolveLocationWithHost(this.db, identity.spaceId, folderId, revision.workspace_location_id);
-    await this.enforceFolderWrite(folder, identity.userId, revision.path, "rollback");
-    try {
-      await this.restorePhysicalFile(
-        folder,
-        identity.userId,
-        location,
-        revision.path,
-        revision.before_exists ? revision.before_content ?? "" : null,
-        revision.after_exists,
-        revision.after_sha256,
-      );
-    } catch (error) {
-      throw mapFolderWriteError(error);
-    }
-    if (!await store.markRolledBack(revision.id, identity.userId)) {
-      throw new HttpError(409, "This file revision was already rolled back");
-    }
-    const file = revision.before_exists
-      ? fileContent(revision.path, revision.before_content ?? "", hashText(revision.before_content ?? ""))
-      : null;
-    return { file, revision_id: revision.id, rolled_back: true };
   }
 
   async getGitStatus(identity: SpaceUserIdentity, projectId: string, folderId: string): Promise<GitStatus> {
@@ -943,7 +1158,6 @@ export class PgProjectFolderRepository {
     folder: ProjectFolderRow,
     userId: string,
     relativePath: string,
-    operation: "write" | "rollback",
   ): Promise<void> {
     const result = await enforce(this.config, await loadActionRegistry(), {
       action: "project_folder.apply_patch",
@@ -955,13 +1169,13 @@ export class PgProjectFolderRepository {
       resource_space_id: folder.space_id,
       context: {
         direct_user_write: true,
-        file_operation: operation,
+        file_operation: "write",
         project_folder_id: folder.id,
         relative_path: relativePath,
       },
       metadata_json: {
         direct_user_write: true,
-        file_operation: operation,
+        file_operation: "write",
         project_folder_id: folder.id,
         relative_path: relativePath,
       },
@@ -979,7 +1193,7 @@ export class PgProjectFolderRepository {
     path: string,
   ): Promise<FileContent | null> {
     try {
-      return await this.readRemote(folder, userId, location, "file", path);
+      return await this.readRemote(folder, userId, location, "file", path, undefined, { includeUtf16Preview: true });
     } catch (error) {
       if (error instanceof HttpError && error.statusCode === 404) return null;
       throw error;
@@ -994,6 +1208,7 @@ export class PgProjectFolderRepository {
     content: string | null,
     expectedExists: boolean,
     expectedSha256: string | null,
+    restoreEncoding: "utf8" | "utf16le" | "utf16be",
   ): Promise<void> {
     if (location.execution_host_kind === "remote") {
       assertRemoteWriteAccess(location, userId);
@@ -1004,6 +1219,7 @@ export class PgProjectFolderRepository {
         expected_exists: expectedExists,
         expected_sha256: expectedSha256,
         protected: Boolean(folder.protected),
+        restore_encoding: restoreEncoding,
       });
       if (!result.ok) throw mapRemoteFolderWriteError(result, location.host_name);
       return;
@@ -1013,6 +1229,7 @@ export class PgProjectFolderRepository {
       protectedFolder: Boolean(folder.protected),
       expectedExists,
       expectedSha256,
+      restoreEncoding,
     });
   }
 
@@ -1023,6 +1240,7 @@ export class PgProjectFolderRepository {
     kind: K,
     requestedPath?: string,
     signal?: AbortSignal,
+    options: { includeUtf16Preview?: boolean } = {},
   ): Promise<FolderReadPayload[K]> {
     if (requestedPath !== undefined && !isWireRelativePath(requestedPath)) {
       const detail = "folder_read paths must be relative";
@@ -1050,6 +1268,7 @@ export class PgProjectFolderRepository {
       kind,
       ...(requestedPath === undefined ? {} : { path: requestedPath }),
       protected: Boolean(folder.protected),
+      ...(options.includeUtf16Preview === true ? { include_utf16_preview: true } : {}),
     }, signal);
     if (result.ok) return result.result;
     throw mapRemoteFolderReadError(result, location.host_name);
@@ -1112,39 +1331,21 @@ function isPool(db: Queryable): db is Pool {
 
 function mapFolderReadError(error: unknown): never {
   if (!(error instanceof FolderReadError)) throw error;
-  switch (error.code) {
-    case "not_found":
-      throw new HttpError(404, error.message);
-    case "is_directory":
-      throw new HttpError(400, error.message);
-    case "too_large":
-      throw new HttpError(413, error.message);
-    case "path_forbidden":
-      throw new HttpError(403, error.message);
-  }
-  throw new HttpError(500, "Unknown Folder read failure");
+  throw folderReadHttpError(error);
 }
 
-function mapFolderWriteError(error: unknown): never {
-  if (error instanceof HttpError) throw error;
-  if (!(error instanceof FolderWriteError)) throw error;
+function folderReadHttpError(error: FolderReadError): HttpError {
   switch (error.code) {
     case "not_found":
-      throw new HttpError(404, error.message);
+      return new HttpError(404, error.message);
     case "is_directory":
-      throw new HttpError(400, error.message);
+      return new HttpError(400, error.message);
     case "too_large":
-      throw new HttpError(413, error.message);
+      return new HttpError(413, error.message);
     case "path_forbidden":
-      throw new HttpError(403, error.message);
-    case "not_text":
-      throw new HttpError(415, error.message);
-    case "stale":
-      throw new HttpError(409, error.message, { detail: error.message, code: "stale_file" });
-    case "write_failed":
-      throw new HttpError(500, error.message);
+      return new HttpError(403, error.message);
   }
-  throw new HttpError(500, "Unknown Folder write failure");
+  return new HttpError(500, "Unknown Folder read failure");
 }
 
 function mapRemoteFolderReadError(result: FolderReadFailure, hostName: string): HttpError {
@@ -1208,40 +1409,83 @@ function mapRemoteFolderWriteError(
   return new HttpError(502, message, { detail: message, code: "write_failed", host_name: hostName });
 }
 
-function parseFileEditInput(body: Record<string, unknown>): {
-  path: string;
-  content: string;
-  expectedPath: string | null;
-  expectedExists: boolean;
-  expectedSha256: string | null;
-} {
-  const path = parseEditablePath(body.path);
+function parseDraftMutation(body: Record<string, unknown>): ProjectFileDraftMutation {
+  const targetKind = body.target_kind === "new" || body.target_kind === "existing" ? body.target_kind : null;
+  if (!targetKind) throw new HttpError(422, "target_kind must be existing or new");
+  const relativePath = parseEditablePath(body.relative_path);
   if (typeof body.content !== "string") throw new HttpError(422, "content is required");
-  if (Buffer.byteLength(body.content, "utf8") > MAX_WRITE_FILE_BYTES) {
-    throw new HttpError(413, `File is too large to write (max ${MAX_WRITE_FILE_BYTES} bytes)`);
+  const byteSize = body.byte_size;
+  if (!Number.isSafeInteger(byteSize) || (byteSize as number) < 0 || (byteSize as number) > PROJECT_FILE_DRAFT_MAX_BYTES) {
+    throw new HttpError(422, "byte_size is outside the draft limit");
   }
-  if (typeof body.expected_exists !== "boolean") throw new HttpError(422, "expected_exists is required");
-  const expectedPath = body.expected_path === null || typeof body.expected_path === "string"
-    ? body.expected_path === null ? null : parseEditablePath(body.expected_path)
-    : undefined;
-  if (expectedPath === undefined) throw new HttpError(422, "expected_path is required");
-  const expectedSha256 = body.expected_sha256 === null || typeof body.expected_sha256 === "string"
-    ? body.expected_sha256 ?? null
-    : undefined;
-  if (expectedSha256 === undefined) throw new HttpError(422, "expected_sha256 must be a SHA-256 hash or null");
-  if (body.expected_exists && expectedPath !== path) {
-    throw new HttpError(409, "The file path changed after it was opened");
+  const actualByteSize = Buffer.byteLength(body.content, "utf8");
+  if (actualByteSize !== byteSize) throw new HttpError(422, "byte_size does not match UTF-8 content");
+  const contentSha256 = body.content_sha256;
+  if (typeof contentSha256 !== "string" || !/^[a-f0-9]{64}$/.test(contentSha256) || contentSha256 !== hashText(body.content)) {
+    throw new HttpError(422, "content_sha256 does not match UTF-8 content");
   }
-  if (!body.expected_exists && expectedPath !== null) {
-    throw new HttpError(422, "expected_path must be null for a new file");
+  const baseExists = body.base_exists;
+  if (typeof baseExists !== "boolean") throw new HttpError(422, "base_exists is required");
+  if (targetKind === "new" && baseExists) {
+    throw new HttpError(422, "base_exists must be false for a new file");
   }
-  if (body.expected_exists && (expectedSha256 === null || !/^[a-f0-9]{64}$/.test(expectedSha256))) {
-    throw new HttpError(422, "expected_sha256 is required for an existing file");
+  const baseSha256 = body.base_sha256 === null ? null : body.base_sha256;
+  if (baseExists && (typeof baseSha256 !== "string" || !/^[a-f0-9]{64}$/.test(baseSha256))) {
+    throw new HttpError(422, "base_sha256 is required for an existing file");
   }
-  if (!body.expected_exists && expectedSha256 !== null) {
-    throw new HttpError(422, "expected_sha256 must be null for a new file");
-  }
-  return { path, content: body.content, expectedPath, expectedExists: body.expected_exists, expectedSha256 };
+  if (!baseExists && baseSha256 !== null) throw new HttpError(422, "base_sha256 must be null for a new file");
+  const sourceEncoding = body.source_encoding === "utf8" || body.source_encoding === "utf16le" || body.source_encoding === "utf16be"
+    ? body.source_encoding
+    : null;
+  if (!sourceEncoding) throw new HttpError(422, "source_encoding is invalid");
+  const preserveBom = body.preserve_bom;
+  if (typeof preserveBom !== "boolean") throw new HttpError(422, "preserve_bom is required");
+  const lineEndingMode = body.line_ending_mode === "lf" || body.line_ending_mode === "crlf" || body.line_ending_mode === "mixed" || body.line_ending_mode === "none"
+    ? body.line_ending_mode
+    : null;
+  if (!lineEndingMode) throw new HttpError(422, "line_ending_mode is invalid");
+  const expectedVersion = body.expected_version === undefined || body.expected_version === null
+    ? body.expected_version ?? null
+    : positiveInteger(body.expected_version, "expected_version");
+  return {
+    expectedVersion,
+    targetKind,
+    relativePath,
+    baseExists,
+    baseSha256: baseSha256 as string | null,
+    content: body.content,
+    contentSha256,
+    byteSize: byteSize as number,
+    sourceEncoding,
+    preserveBom,
+    lineEndingMode,
+  };
+}
+
+function serializeDraftText(draft: ProjectFileDraftRow): string {
+  let content = draft.content.replace(/\r\n|\r|\n/gu, "\n");
+  if (content.startsWith("\uFEFF")) content = content.slice(1);
+  if (draft.line_ending_mode === "crlf") content = content.replace(/\n/gu, "\r\n");
+  if (draft.preserve_bom && !content.startsWith("\uFEFF")) content = `\uFEFF${content}`;
+  return content;
+}
+
+function revisionText(file: FileContent): string {
+  return file.has_bom ? `\uFEFF${file.content}` : file.content;
+}
+
+function lineEndingMode(content: string): "lf" | "crlf" | "mixed" | "none" {
+  const crlf = /\r\n/u.test(content);
+  const loneLf = /(^|[^\r])\n/u.test(content);
+  const loneCr = /\r(?!\n)/u.test(content);
+  if (!crlf && !loneLf && !loneCr) return "none";
+  if (loneCr || (crlf && loneLf)) return "mixed";
+  return crlf ? "crlf" : "lf";
+}
+
+function positiveInteger(value: unknown, field: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) throw new HttpError(422, `${field} must be a positive integer`);
+  return value as number;
 }
 
 function parseEditablePath(value: unknown): string {
@@ -1273,13 +1517,26 @@ function assertRemoteWriteAccess(location: ActiveLocationWithHost, userId: strin
   }
 }
 
-function fileContent(path: string, content: string, sha256: string): FileContent {
+/**
+ * The saved file exactly as a fresh `getFile` would report it: `content` is the
+ * decoded body without its BOM, while `size`/`sha256` describe the bytes on
+ * disk. Returning a body-only shape here made the cached result drop
+ * `has_bom`/`encoding`, so the next draft built from it silently stripped the
+ * file's BOM.
+ */
+function savedFileContent(draft: ProjectFileDraftRow, serialized: string, sha256: string): FileContent {
+  const content = draft.preserve_bom && serialized.startsWith("\uFEFF") ? serialized.slice(1) : serialized;
   return {
-    path,
+    path: draft.relative_path,
     content,
-    size: Buffer.byteLength(content, "utf8"),
+    size: Buffer.byteLength(serialized, "utf8"),
     line_count: content.split(/\n/).length,
     sha256,
+    encoding: "utf8",
+    has_bom: draft.preserve_bom,
+    line_ending_mode: lineEndingMode(content),
+    writable: true,
+    conversion_available: false,
   };
 }
 

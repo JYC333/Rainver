@@ -74,6 +74,9 @@ describe("instance operations settings", () => {
       backup_retention_count: 7,
       content_access_log_retention_enabled: true,
       content_access_log_retention_days: 90,
+      managed_host_egress_mode: "direct",
+      managed_host_proxy_url: null,
+      managed_host_no_proxy: null,
       updated_at: null,
     });
 
@@ -87,6 +90,7 @@ describe("instance operations settings", () => {
         backup_on_startup: false,
         content_access_log_retention_enabled: false,
         content_access_log_retention_days: 365,
+        managed_host_egress_mode: "system_tun",
       },
     });
     expect(saved.statusCode).toBe(200);
@@ -97,6 +101,8 @@ describe("instance operations settings", () => {
       backup_on_startup: false,
       content_access_log_retention_enabled: false,
       content_access_log_retention_days: 365,
+      managed_host_egress_mode: "system_tun",
+      managed_host_proxy_url: null,
     });
     expect(saved.json().updated_at).toBeTruthy();
 
@@ -111,5 +117,43 @@ describe("instance operations settings", () => {
     __setAuthIdentityForTests({ userId: ADMIN, spaceId: SPACE } as never);
     const response = await app.inject({ method: "PUT", url: "/api/v1/system/instance-settings", payload: { backup_interval_hours: 0 } });
     expect(response.statusCode).toBe(422);
+  });
+
+  it("validates and normalizes the built-in Host route", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    __setAuthIdentityForTests({ userId: ADMIN, spaceId: SPACE } as never);
+
+    const missing = await app.inject({
+      method: "PUT",
+      url: "/api/v1/system/instance-settings",
+      payload: { managed_host_egress_mode: "http_proxy" },
+    });
+    expect(missing.statusCode).toBe(422);
+
+    const credentials = await app.inject({
+      method: "PUT",
+      url: "/api/v1/system/instance-settings",
+      payload: {
+        managed_host_egress_mode: "http_proxy",
+        managed_host_proxy_url: "http://user:secret@proxy.example:7890",
+      },
+    });
+    expect(credentials.statusCode).toBe(422);
+
+    const saved = await app.inject({
+      method: "PUT",
+      url: "/api/v1/system/instance-settings",
+      payload: {
+        managed_host_egress_mode: "http_proxy",
+        managed_host_proxy_url: "http://proxy.example:7890",
+        managed_host_no_proxy: " .internal.example ",
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({
+      managed_host_egress_mode: "http_proxy",
+      managed_host_proxy_url: "http://proxy.example:7890",
+      managed_host_no_proxy: ".internal.example",
+    });
   });
 });

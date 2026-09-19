@@ -705,6 +705,34 @@ export const POLICY_ACTION_REGISTRY = [
     record_failure_mode: "best_effort",
   },
   {
+    action: "input_resource.read",
+    resource_type: "conversation_input_resource",
+    default_risk_level: "low",
+    default_decision: "allow",
+    audit_required: true,
+    approval_capability: null,
+    default_required_approver_role: null,
+    current_enforcement_point:
+      "server/src/modules/sessions/conversationInputResourceService.ts",
+    description: "Read bounded lines from an immutable conversation resource.",
+    lifecycle_status: "wired_direct",
+    record_failure_mode: "fail_closed",
+  },
+  {
+    action: "input_resource.search",
+    resource_type: "conversation_input_resource",
+    default_risk_level: "low",
+    default_decision: "allow",
+    audit_required: true,
+    approval_capability: null,
+    default_required_approver_role: null,
+    current_enforcement_point:
+      "server/src/modules/sessions/conversationInputResourceService.ts",
+    description: "Search bounded text in an immutable conversation resource.",
+    lifecycle_status: "wired_direct",
+    record_failure_mode: "fail_closed",
+  },
+  {
     action: "project_folder.apply_patch",
     resource_type: "project_folder",
     default_risk_level: "high",
@@ -715,7 +743,7 @@ export const POLICY_ACTION_REGISTRY = [
     current_enforcement_point:
       "server/src/modules/projectFolders/repository.ts",
     description:
-      "Apply a direct user-authored file change to a Project Folder, with optimistic concurrency and rollback support.",
+      "Save a user-authored recovery draft to a Project Folder after exact optimistic concurrency checks; history restoration remains draft-only.",
     lifecycle_status: "wired_direct",
     record_failure_mode: "fail_closed",
   },

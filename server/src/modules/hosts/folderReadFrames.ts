@@ -6,6 +6,7 @@
  * applied, so a misbehaving or stale daemon cannot push an unbounded or
  * path-escaping payload into Files & Code.
  */
+import { createHash } from "node:crypto";
 import {
   MAX_DIFF_BYTES,
   MAX_FILE_BYTES,
@@ -113,13 +114,57 @@ function validateRemoteFile(value: Record<string, unknown>): FileContent | null 
   if (typeof value.content !== "string" || Buffer.byteLength(value.content, "utf8") > MAX_FILE_BYTES) return null;
   if (!boundedInteger(value.size, MAX_FILE_BYTES) || !boundedInteger(value.line_count, MAX_FILE_BYTES + 1)) return null;
   if (value.sha256 !== undefined && (typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256))) return null;
+  if (value.encoding !== undefined && (typeof value.encoding !== "string" || !["utf8", "utf16le", "utf16be", "binary", "unknown"].includes(value.encoding))) return null;
+  const rawBytes = reconstructRawBytes(value);
+  if (rawBytes && value.size !== rawBytes.byteLength) return null;
+  // A non-UTF-8 admission result deliberately carries no body while still
+  // reporting the line count of the file it declined to send, so the count can
+  // only be checked against the body when there is one.
+  const bodyless = value.content === "" && value.encoding !== undefined && value.encoding !== "utf8";
+  if (!bodyless && value.line_count !== 0 && value.line_count !== value.content.split(/\n/).length) return null;
+  if (rawBytes && value.sha256 !== undefined) {
+    const computedSha256 = createHash("sha256").update(rawBytes).digest("hex");
+    if (value.sha256 !== computedSha256) return null;
+  }
+  if (value.has_bom !== undefined && typeof value.has_bom !== "boolean") return null;
+  if (value.line_ending_mode !== undefined && (typeof value.line_ending_mode !== "string" || !["lf", "crlf", "mixed", "none"].includes(value.line_ending_mode))) return null;
+  if (value.writable !== undefined && typeof value.writable !== "boolean") return null;
+  if (value.conversion_available !== undefined && typeof value.conversion_available !== "boolean") return null;
   return {
     path: value.path,
     content: value.content,
     size: value.size,
     line_count: value.line_count,
     ...(value.sha256 === undefined ? {} : { sha256: value.sha256 }),
+    ...(value.encoding === undefined ? {} : { encoding: value.encoding as FileContent["encoding"] }),
+    ...(value.has_bom === undefined ? {} : { has_bom: value.has_bom }),
+    ...(value.line_ending_mode === undefined ? {} : { line_ending_mode: value.line_ending_mode as FileContent["line_ending_mode"] }),
+    ...(value.writable === undefined ? {} : { writable: value.writable }),
+    ...(value.conversion_available === undefined ? {} : { conversion_available: value.conversion_available }),
   };
+}
+
+function reconstructRawBytes(value: Record<string, unknown>): Buffer | null {
+  const encoding = value.encoding;
+  if (encoding === "binary" || encoding === "unknown") return null;
+  if (encoding === "utf16le" || encoding === "utf16be") {
+    // A normal UTF-16 response intentionally carries no body, so there is no
+    // safe way to recompute its original digest here. Conversion previews do
+    // carry decoded text and can be reconstructed for exact validation.
+    if (typeof value.content !== "string" || value.content.length === 0) return null;
+    const little = Buffer.from(value.content, "utf16le");
+    if (encoding === "utf16le") return Buffer.concat([Buffer.from([0xff, 0xfe]), little]);
+    for (let index = 0; index < little.length; index += 2) {
+      const first = little[index]!;
+      little[index] = little[index + 1]!;
+      little[index + 1] = first;
+    }
+    return Buffer.concat([Buffer.from([0xfe, 0xff]), little]);
+  }
+  const contentBytes = Buffer.from(typeof value.content === "string" ? value.content : "", "utf8");
+  return value.has_bom === true
+    ? Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), contentBytes])
+    : contentBytes;
 }
 
 function validateRemoteGitStatus(value: Record<string, unknown>): GitStatus | null {

@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -33,6 +33,7 @@ import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository.js
 import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
 import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import { ConversationExecutionContextService } from "../src/modules/sessions/executionContextService.js";
+import { ConversationInputResourceService } from "../src/modules/sessions/conversationInputResourceService.js";
 import { finalizeChatTurn } from "../src/modules/runs/chatTurnFinalizer.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import {
@@ -1651,6 +1652,108 @@ describe("Room workflow (real Postgres)", () => {
       statusCode: 404,
       message: "The managed Assistant can only run through a Room conversation",
     });
+  });
+
+  /** A retry re-runs the persisted message, and the retried Run hydrates that
+   *  message's frozen resources — so it must keep the tools that read them.
+   *  A retry dispatches no new input parts, and deciding the allowance from
+   *  those left the Run holding a prompt that named tools it did not have. */
+  it("keeps the lazy resource tools when a turn with an attached file is retried", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Resource Room" });
+    const conversation = await seedConversation(owner, created.room.id, "Main thread");
+    const body = "export const answer = 42;\n";
+    const bodySha = createHash("sha256").update(body, "utf8").digest("hex");
+    await db.pool.query(
+      `INSERT INTO project_file_drafts (
+         id, space_id, project_id, project_folder_id, workspace_location_id, owner_user_id,
+         target_kind, relative_path, base_exists, base_sha256, content, content_sha256,
+         byte_size, version, source_encoding, preserve_bom, line_ending_mode,
+         created_at, updated_at, expires_at
+       ) VALUES ('draft-1','space-1','project-1','folder-1','location-1','user-1',
+         'new','src/answer.ts',false,NULL,$1,$2,$3,1,'utf8',false,'lf',
+         now(), now(), now() + interval '90 days')`,
+      [body, bodySha, Buffer.byteLength(body, "utf8")],
+    );
+    await db.pool.query(
+      `INSERT INTO conversation_folder_access_grants (
+         id, space_id, session_id, project_folder_id, workspace_location_id,
+         access_mode, status, granted_by_user_id, granted_at, updated_at
+       ) VALUES (gen_random_uuid()::varchar,'space-1',$1,'folder-1','location-1',
+         'read','active','user-1', now(), now())`,
+      [conversation.id],
+    );
+
+    const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
+      content: "Look at the file I have open.",
+      input_parts: [{
+        kind: "input_resource",
+        source_state: "draft",
+        draft_id: "draft-1",
+        draft_version: 1,
+        content_sha256: bodySha,
+        display_name: "answer.ts",
+        media_type: "text/plain",
+        byte_size: Buffer.byteLength(body, "utf8"),
+      }],
+      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
+    });
+    const runs = new PgRunRepository(db.pool);
+    const first = await runs.getRun("space-1", sent.run_ids[0]!);
+    expect(first?.capabilities_json).toEqual(
+      expect.arrayContaining(["input_resource.read", "input_resource.search"]),
+    );
+
+    // The turn ends the way a failed one does in production: the Run is failed
+    // and its Host thread is no longer claimed by it.
+    await db.pool.query(`UPDATE runs SET status = 'failed' WHERE id = $1`, [sent.run_ids[0]]);
+    await db.pool.query(
+      `UPDATE host_threads SET dispatch_lock_id = NULL, updated_at = now()
+        WHERE space_id = 'space-1' AND session_id = $1 AND agent_id = 'agent-1'`,
+      [conversation.id],
+    );
+    const retried = await service.retryMessage(owner, created.room.id, conversation.id, {
+      run_id: sent.run_ids[0]!,
+      idempotency_key: "retry-resource-turn",
+    });
+
+    expect(retried.reused).toBe(false);
+    const retriedRun = await runs.getRun("space-1", retried.value.run_ids[0]!);
+    expect(retriedRun?.capabilities_json).toEqual(
+      expect.arrayContaining(["input_resource.read", "input_resource.search"]),
+    );
+    // The retry reuses the message's own frozen resource; it must not claim a
+    // second one, and the draft it came from stays where it was.
+    await expect(db.pool.query(
+      `SELECT count(*)::int AS rows FROM conversation_input_resources WHERE space_id = 'space-1'`,
+    )).resolves.toMatchObject({ rows: [{ rows: 1 }] });
+    await expect(db.pool.query(
+      `SELECT version FROM project_file_drafts WHERE id = 'draft-1'`,
+    )).resolves.toMatchObject({ rows: [{ version: 1 }] });
+
+    const resource = await db.pool.query<{ id: string; message_id: string }>(
+      `SELECT id,message_id FROM conversation_input_resources WHERE space_id='space-1' LIMIT 1`,
+    );
+    const inputResource = new ConversationInputResourceService(db.pool);
+    await expect(inputResource.read({
+      spaceId: "space-1",
+      runId: retried.value.run_ids[0]!,
+      messageId: resource.rows[0]!.message_id,
+      request: { resource_id: resource.rows[0]!.id, start_line: 1, line_count: 10 },
+    })).resolves.toMatchObject({ content: body });
+
+    await db.pool.query(
+      `UPDATE room_user_members SET status='removed', updated_at=now()
+        WHERE space_id='space-1' AND room_id=$1 AND user_id='user-1'`,
+      [created.room.id],
+    );
+    await expect(inputResource.read({
+      spaceId: "space-1",
+      runId: retried.value.run_ids[0]!,
+      messageId: resource.rows[0]!.message_id,
+      request: { resource_id: resource.rows[0]!.id, start_line: 1, line_count: 10 },
+    })).rejects.toMatchObject({ code: "resource_not_found" });
   });
 
   it("keeps healthy CLI state stable as bounded raw history advances", async (ctx) => {

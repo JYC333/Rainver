@@ -16,6 +16,8 @@ export interface FolderWriteRequest {
   expected_exists: boolean;
   expected_sha256: string | null;
   protected: boolean;
+  allow_encoding_conversion: boolean;
+  restore_encoding: "utf8" | "utf16le" | "utf16be" | null;
   root: string;
 }
 
@@ -55,22 +57,26 @@ export function resolveFolderWriteRequest(
     expected_exists: frame.expected_exists,
     expected_sha256: frame.expected_sha256,
     protected: frame.protected,
+    allow_encoding_conversion: frame.allow_encoding_conversion === true,
+    restore_encoding: frame.restore_encoding ?? null,
     root,
   };
 }
 
 export async function performFolderWrite(request: FolderWriteRequest): Promise<FolderWriteResult> {
   try {
-    const result = request.content === null
-      ? await restoreFolderFile(request.root, request.path, null, {
+    const result = request.content === null || request.restore_encoding
+      ? await restoreFolderFile(request.root, request.path, request.content, {
           protectedFolder: request.protected,
           expectedExists: request.expected_exists,
           expectedSha256: request.expected_sha256,
+          ...(request.restore_encoding ? { restoreEncoding: request.restore_encoding } : {}),
         })
       : await writeFolderFile(request.root, request.path, request.content, {
           protectedFolder: request.protected,
           expectedExists: request.expected_exists,
           expectedSha256: request.expected_sha256,
+          allowEncodingConversion: request.allow_encoding_conversion,
         });
     return {
       type: "folder_write_result",

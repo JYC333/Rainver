@@ -39,6 +39,7 @@ describe("the launch frame across the wire", () => {
       dir_env: { RAINVER_SKILL_PATH: "skills/rainver/SKILL.md" },
     },
     isolation: { sandbox_mode: "read_only", egress_profile: "none" },
+    egress_transport: { mode: "system_tun" },
   };
   const overWire = (frame: unknown) => JSON.parse(JSON.stringify(frame)) as unknown;
 
@@ -59,6 +60,7 @@ describe("the launch frame across the wire", () => {
       provider_binding: wire.provider_binding,
       work_surface: wire.work_surface,
       isolation: wire.isolation,
+      egress_transport: wire.egress_transport,
     };
     const parsed = parseServerFrame(overWire(wire));
     if (!parsed.ok || parsed.frame.type !== "launch") throw new Error("launch frame did not parse");

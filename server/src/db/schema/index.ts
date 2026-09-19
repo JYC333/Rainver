@@ -82,4 +82,5 @@ export * from "./hostRuntimeProviderBindings.js";
 export * from "./hostRuntimeChanges.js";
 export * from "./hostRuntimeUsage.js";
 export * from "./projectFolders.js";
+export * from "./projectFileDrafts.js";
 export * from "./workspaceLocations.js";

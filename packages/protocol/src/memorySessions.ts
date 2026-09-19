@@ -11,8 +11,10 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 import { RuntimeSessionConfigOptionSchema, RuntimeSessionConfigSelectionSchema } from "./hosts.js";
 import { TraceSafeJsonSchema } from "./runOrchestration.js";
 import {
+  ConversationInputPartSchema,
   ConversationInputPartsSchema,
 } from "./conversationInput.js";
+import { ConversationInputResourceMessagePartSchema } from "./conversationInputResources.js";
 
 const JsonObjectSchema = z.record(z.unknown());
 const TraceSafeObjectSchema = TraceSafeJsonSchema.refine(
@@ -167,6 +169,14 @@ export const MessageMetadataSchema = z.union([
 ]);
 export type MessageMetadata = z.infer<typeof MessageMetadataSchema>;
 
+/** Message read models include the frozen resource metadata, while create
+ * requests use the source-admission shapes from conversationInput.ts. */
+export const ConversationMessageInputPartSchema = z.union([
+  ConversationInputPartSchema,
+  ConversationInputResourceMessagePartSchema,
+]);
+export const ConversationMessageInputPartsSchema = z.array(ConversationMessageInputPartSchema);
+
 export const MessageOutSchema = z
   .object({
     id: IdSchema,
@@ -181,7 +191,7 @@ export const MessageOutSchema = z
     parent_message_id: IdSchema.nullish(),
     /** The Run that produced this message, or that this message started. */
     run_id: IdSchema.nullish(),
-    input_parts: ConversationInputPartsSchema.optional(),
+    input_parts: ConversationMessageInputPartsSchema.optional(),
     created_at: ISODateTimeSchema,
     ...SecretResponseGuards,
   })

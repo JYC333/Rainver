@@ -30,7 +30,7 @@ import { createDefaultConversationContinuationRegistry } from "../proposals/cont
 import { PLAIN_STATUS_RESPONSE_POLICY } from "../systemActions/conversationPolicy.js";
 import { PgConversationBackendRepository } from "../sessions/conversationBackendRepository.js";
 import { ConversationInputError, ConversationInputService, type PreparedConversationInputPart } from "../sessions/conversationInputService.js";
-import { ConversationInputCapabilityError, assertConversationInputCapabilities } from "../sessions/conversationInputCapabilities.js";
+import { ConversationInputCapabilityError, assertConversationInputCapabilities, assertConversationInputResourceTools } from "../sessions/conversationInputCapabilities.js";
 import { conversationRetryFingerprint, withConversationRetryIdempotency } from "../sessions/conversationRetry.js";
 import type { MessageOut } from "@rainver/protocol";
 
@@ -994,7 +994,7 @@ export class RoomService {
       /** Marks a retry so remote prompt hydration can preserve immutable inputs. */
       retry_of_run_id?: string | null;
       /** Existing message-owned parts to validate for a retry without re-claiming them. */
-      capability_input_parts?: ConversationInputPart[];
+      capability_input_parts?: Array<{ kind: "image" | "file_reference" | "input_resource" }>;
       prepared_input_parts?: PreparedConversationInputPart[];
       existing_user_message?: MessageOut;
       /** See `AddMessageInput.created_at`; set when references precede it. */
@@ -1060,7 +1060,8 @@ export class RoomService {
             requested: selected ? { runtime_profile_id: selected.runtime_profile_id } : null,
           });
           try {
-              assertConversationInputCapabilities(capabilityInputParts, backend.prompt_capabilities);
+            assertConversationInputCapabilities(capabilityInputParts, backend.prompt_capabilities);
+            assertConversationInputResourceTools(capabilityInputParts, backend.adapter_type);
           } catch (error) {
             if (error instanceof ConversationInputCapabilityError) {
               const label = agentMembers.find((member) => member.agent_id === agentId)?.agent_name ?? agentId;
@@ -1205,7 +1206,13 @@ export class RoomService {
         space_id: identity.spaceId,
         group_id: created.group.id,
         content,
-        input_parts: input.input_parts?.length ? input.input_parts : input.capability_input_parts,
+        // Retry capability parts are read-only metadata from the original
+        // message. The persisted message already owns its frozen inputs; do
+        // not feed the read-model shape back through the create-input path —
+        // but the retried Run still hydrates those inputs, so the turn's tool
+        // surface has to be decided from them.
+        input_parts: input.input_parts,
+        capability_input_parts: input.capability_input_parts,
         retry_of_run_id: input.retry_of_run_id,
         routing_mode: input.routing_mode,
         recipient_segments: effectiveSegments,

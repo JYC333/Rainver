@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectChatSidecar, { focusRefsFor } from '../sidecar/ProjectChatSidecar'
+import { ProjectFolderConversationProvider, useProjectFolderConversation, type CurrentFileAttachment } from '../ProjectFolderConversationContext'
 import { projectsApi, proposalsApi, roomsApi, runsApi, sessionsApi } from '../../../api/client'
 import { projectTaskHref } from '../taskHref'
 import { subscribeProjectFolderContentChanged } from '../../../core/projectFolderEvents'
@@ -68,6 +70,51 @@ function renderAt(path: string) {
       </Routes>
     </MemoryRouter>,
   )
+}
+
+function CurrentFileSeed({ attachment, folderIds }: { attachment: CurrentFileAttachment; folderIds: readonly string[] }) {
+  const { setCurrentFileAttachment, setConversationFolderIds } = useProjectFolderConversation()
+  useEffect(() => {
+    setCurrentFileAttachment(attachment)
+    setConversationFolderIds(folderIds)
+  }, [attachment, folderIds, setConversationFolderIds, setCurrentFileAttachment])
+  return null
+}
+
+function renderWithCurrentFile(path: string, attachment: CurrentFileAttachment) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <ProjectFolderConversationProvider projectId={PROJECT}>
+        <CurrentFileSeed attachment={attachment} folderIds={[attachment.projectFolderId]} />
+        <Routes>
+          <Route path="/spaces/:spaceId/projects/:projectId/*" element={<ProjectChatSidecar />} />
+        </Routes>
+      </ProjectFolderConversationProvider>
+    </MemoryRouter>,
+  )
+}
+
+function currentFileAttachment(overrides: Partial<CurrentFileAttachment> = {}): CurrentFileAttachment {
+  return {
+    sourceKey: 'folder-1:location-1:src/app.ts',
+    projectFolderId: 'folder-1',
+    workspaceLocationId: 'location-1',
+    relativePath: 'src/app.ts',
+    displayName: 'app.ts',
+    mediaType: 'text/plain',
+    sourceState: 'saved',
+    byteSize: 24,
+    sha256: 'a'.repeat(64),
+    draftId: null,
+    draftVersion: null,
+    contentSha256: null,
+    status: 'clean',
+    flushForSend: vi.fn().mockResolvedValue({
+      kind: 'input_resource', source_state: 'saved', project_folder_id: 'folder-1', workspace_location_id: 'location-1',
+      relative_path: 'src/app.ts', display_name: 'app.ts', media_type: 'text/plain', byte_size: 24, sha256: 'a'.repeat(64),
+    }),
+    ...overrides,
+  }
 }
 
 function viewport(wide: boolean) {
@@ -224,6 +271,52 @@ describe('Project chat sidecar', () => {
       backends: [],
       focus_refs: [{ type: 'task', id: TASK }],
     }))
+  })
+
+  it('shows the Files current-file bar and includes the acknowledged resource by default', async () => {
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
+      summary: {
+        session_id: 'conv-2', state: 'initialized',
+        host: { host_id: 'host-1', host_name: 'Local Host', host_kind: 'server', online: true, managed_workspace_available: true, daemon_last_heartbeat_at: null },
+        runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', adapter_type: 'claude', runtime_installation: 'claude' },
+        primary: { kind: 'location', project_folder_id: 'folder-1', workspace_location_id: 'location-1', display_path: '/workspace/source' },
+        attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null,
+      },
+      available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
+    } as never)
+    const attachment = currentFileAttachment()
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({ message: { id: 'm-1', session_id: 'conv-2', role: 'user', content: 'inspect', input_parts: [] }, conversation: { id: 'conv-2', title: 'Depth repair' }, task_group_ids: [], run_ids: [] } as never)
+    renderWithCurrentFile(`/spaces/space-1/projects/${PROJECT}/files`, attachment)
+    expect(await screen.findByTestId('current-file-bar')).toHaveTextContent('src/app.ts')
+    expect(screen.getByRole('button', { name: 'Remove current file' })).toBeInTheDocument()
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'inspect' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'conv-2', expect.objectContaining({
+      content: 'inspect',
+      input_parts: [expect.objectContaining({ kind: 'input_resource', source_state: 'saved', relative_path: 'src/app.ts' })],
+    })))
+    expect(attachment.flushForSend).toHaveBeenCalledTimes(1)
+  })
+
+  it('can remove and re-add the current file without changing the editor', async () => {
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
+      summary: {
+        session_id: 'conv-2', state: 'initialized',
+        host: { host_id: 'host-1', host_name: 'Local Host', host_kind: 'server', online: true, managed_workspace_available: true, daemon_last_heartbeat_at: null },
+        runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', adapter_type: 'claude', runtime_installation: 'claude' },
+        primary: { kind: 'location', project_folder_id: 'folder-1', workspace_location_id: 'location-1', display_path: '/workspace/source' },
+        attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null,
+      },
+      available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
+    } as never)
+    const attachment = currentFileAttachment()
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({ message: { id: 'm-1', session_id: 'conv-2', role: 'user', content: 'text', input_parts: [] }, conversation: { id: 'conv-2', title: 'Depth repair' }, task_group_ids: [], run_ids: [] } as never)
+    renderWithCurrentFile(`/spaces/space-1/projects/${PROJECT}/files`, attachment)
+    const bar = await screen.findByTestId('current-file-bar')
+    fireEvent.click(within(bar).getByRole('button', { name: 'Remove current file' }))
+    expect(within(bar).getByRole('button', { name: 'Add current file' })).toBeInTheDocument()
+    fireEvent.click(within(bar).getByRole('button', { name: 'Add current file' }))
+    expect(within(bar).getByRole('button', { name: 'Remove current file' })).toBeInTheDocument()
   })
 
   it('announces Folder content changes when the Conversation run settles', async () => {

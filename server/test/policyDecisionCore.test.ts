@@ -648,7 +648,7 @@ describe("computeDecision lifecycle gating", () => {
     expect(decision.actor_id).toBe("u1");
     expect(decision.space_id).toBe("s1");
   });
-  it("allows only the File page's direct user write and rollback context", () => {
+  it("allows only the File page's direct user write context", () => {
     const write = computeDecision(registry, req("project_folder.apply_patch", {
       actor_type: "user",
       context: { direct_user_write: true, file_operation: "write" },
@@ -662,7 +662,7 @@ describe("computeDecision lifecycle gating", () => {
       context: { direct_user_write: true, file_operation: "write" },
     })).decision;
     expect(write).toMatchObject({ decision: "allow", audit_code: "project_folder_direct_user_write" });
-    expect(rollback).toMatchObject({ decision: "allow", audit_code: "project_folder_direct_user_write" });
+    expect(rollback.decision).toBe("require_approval");
     expect(copiedFlag.decision).toBe("require_approval");
   });
 });

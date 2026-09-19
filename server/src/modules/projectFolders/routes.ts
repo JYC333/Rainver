@@ -32,7 +32,7 @@ interface ProjectFolderServices {
     | "getFile"
     | "getGitStatus"
     | "getGitDiff"
-  > & Partial<Pick<PgProjectFolderRepository, "listLocations" | "listHostExecutionTargets" | "editFile" | "listFileRevisions" | "rollbackFile">>;
+  > & Partial<Pick<PgProjectFolderRepository, "listLocations" | "listHostExecutionTargets" | "listFileRevisions" | "getDraft" | "upsertDraft" | "discardDraft" | "draftQuota" | "saveDraft" | "restoreRevisionAsDraft" | "previewRevision">>;
 }
 
 type ProjectFolderServicesFactory = (context: ModuleContext) => ProjectFolderServices;
@@ -218,7 +218,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       // offline daemon keeps it, and `workspace list` shows the divergence).
       const remoteLocations = (await new PgWorkspaceLocationRepository(dbPool(context.config)).listForFolder(id, folderId(request)))
         .filter((location) => location.execution_host_kind === "remote");
-      const removed = await services(context).repository.unregister(id, projectId(request), folderId(request));
+      const removed = await services(context).repository.unregister(
+        id,
+        projectId(request),
+        folderId(request),
+        { confirm: jsonBody(request).confirm === true },
+      );
       if (!removed) return reply.code(404).send({ detail: "Project Folder not found" });
       for (const location of remoteLocations) {
         void sharedHostConnectionRegistry.forgetHostWorkspace(location.execution_host_id, location.id);
@@ -260,24 +265,82 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         projectId(request),
         folderId(request),
         requestedPath,
+        { includeUtf16Preview: query(request).convert === "utf8" },
       ));
     } catch (error) {
       return sendRouteError(reply, error);
     }
   });
 
-  app.post("/api/v1/projects/:projectId/folders/:folderId/file", async (request, reply) => {
+  app.get("/api/v1/projects/:projectId/folders/:folderId/file/draft", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const path = query(request).path;
+      if (!path) throw new HttpError(422, "path is required");
+      const repository = services(context).repository;
+      if (!repository.getDraft) return reply.code(501).send({ detail: "Project Folder drafts are unavailable" });
+      return reply.send(await repository.getDraft(id, projectId(request), folderId(request), path));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.put("/api/v1/projects/:projectId/folders/:folderId/file/draft", async (request, reply) => {
     try {
       const id = await identity(context, request, reply);
       if (!id) return reply;
       const repository = services(context).repository;
-      if (!repository.editFile) return reply.code(501).send({ detail: "Project Folder file editing is unavailable" });
-      return reply.send(await repository.editFile(
-        id,
-        projectId(request),
-        folderId(request),
-        jsonBody(request),
-      ));
+      if (!repository.upsertDraft) return reply.code(501).send({ detail: "Project Folder drafts are unavailable" });
+      return reply.send(await repository.upsertDraft(id, projectId(request), folderId(request), jsonBody(request)));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/folders/:folderId/file/draft/rebase", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const repository = services(context).repository;
+      if (!repository.upsertDraft) return reply.code(501).send({ detail: "Project Folder drafts are unavailable" });
+      return reply.send(await repository.upsertDraft(id, projectId(request), folderId(request), jsonBody(request)));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/folders/:folderId/file/draft/discard", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const repository = services(context).repository;
+      if (!repository.discardDraft) return reply.code(501).send({ detail: "Project Folder drafts are unavailable" });
+      return reply.send(await repository.discardDraft(id, projectId(request), folderId(request), jsonBody(request)));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/folders/:folderId/file/draft/save", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const repository = services(context).repository;
+      if (!repository.saveDraft) return reply.code(501).send({ detail: "Project Folder draft saving is unavailable" });
+      return reply.send(await repository.saveDraft(id, projectId(request), folderId(request), jsonBody(request)));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/folders/:folderId/drafts/quota", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const repository = services(context).repository;
+      if (!repository.draftQuota) return reply.code(501).send({ detail: "Project Folder drafts are unavailable" });
+      return reply.send(await repository.draftQuota(id, projectId(request), folderId(request)));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -302,18 +365,27 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  app.post("/api/v1/projects/:projectId/folders/:folderId/file/rollback", async (request, reply) => {
+  app.post("/api/v1/projects/:projectId/folders/:folderId/file/revisions/restore-as-draft", async (request, reply) => {
     try {
       const id = await identity(context, request, reply);
       if (!id) return reply;
       const repository = services(context).repository;
-      if (!repository.rollbackFile) return reply.code(501).send({ detail: "Project Folder file rollback is unavailable" });
-      return reply.send(await repository.rollbackFile(
-        id,
-        projectId(request),
-        folderId(request),
-        jsonBody(request),
-      ));
+      if (!repository.restoreRevisionAsDraft) return reply.code(501).send({ detail: "Restore as draft is unavailable" });
+      return reply.send(await repository.restoreRevisionAsDraft(id, projectId(request), folderId(request), jsonBody(request)));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/projects/:projectId/folders/:folderId/file/revisions/:revisionId/preview", async (request, reply) => {
+    try {
+      const id = await identity(context, request, reply);
+      if (!id) return reply;
+      const repository = services(context).repository;
+      if (!repository.previewRevision) return reply.code(501).send({ detail: "Revision preview is unavailable" });
+      const revisionId = params(request).revisionId;
+      if (!revisionId) throw new HttpError(422, "revisionId is required");
+      return reply.send(await repository.previewRevision(id, projectId(request), folderId(request), revisionId));
     } catch (error) {
       return sendRouteError(reply, error);
     }

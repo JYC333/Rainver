@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type React from 'react'
 import { useLocation, useParams } from 'react-router-dom'
-import { MessageSquare, PanelRightClose, Plus, X } from 'lucide-react'
+import { Check, FileCode2, MessageSquare, PanelRightClose, Plus, X } from 'lucide-react'
 import { toast } from 'sonner'
+import { CONVERSATION_MAX_FILE_SNAPSHOT_BYTES } from '@rainver/protocol'
 import { projectsApi, roomsApi } from '../../../api/client'
 import { errMsg } from '../../../lib/utils'
 import { SpaceLink as Link } from '../../../core/spaceNav'
@@ -15,7 +16,7 @@ import { ConversationBackendSetupCard } from '../../agent_groups/conversation/Co
 import { ConversationExecutionPreflight } from '../../conversation/ConversationExecutionPreflight'
 import { conversationInputSourcesFromExecutionSummary } from '../../conversation/ConversationInputComposer'
 import ProjectConversationBackendCard from '../ProjectConversationBackendCard'
-import { useProjectFolderConversation } from '../ProjectFolderConversationContext'
+import { useProjectFolderConversation, type CurrentFileAttachment } from '../ProjectFolderConversationContext'
 
 /**
  * Talking to the Project's Agent without leaving what you are looking at.
@@ -81,6 +82,7 @@ export default function ProjectChatSidecar() {
   // same conversation side by side is not a second opinion, it is a bug the
   // person has to reason about.
   const onRoomsArea = /\/rooms(\/|$)/.test(pathname)
+  const onFilesArea = /\/files(\/|$)/.test(pathname)
 
   const openKey = `${STORAGE_PREFIX}.${projectId}.open`
   const conversationKey = (roomId: string) => `${STORAGE_PREFIX}.room.${roomId}.conversation`
@@ -135,7 +137,12 @@ export default function ProjectChatSidecar() {
   const [loading, setLoading] = useState(true)
   const [executionReady, setExecutionReady] = useState(false)
   const [executionSummary, setExecutionSummary] = useState<ConversationExecutionSummary | null>(null)
-  const { selectedFolderId, setConversationFolderIds } = useProjectFolderConversation()
+  const { selectedFolderId, setConversationFolderIds, currentFileAttachment } = useProjectFolderConversation()
+  const [currentFileIncluded, setCurrentFileIncluded] = useState(true)
+
+  useEffect(() => {
+    setCurrentFileIncluded(true)
+  }, [currentFileAttachment?.sourceKey])
 
   const conversationFolderIds = useMemo(() => {
     if (executionSummary?.state !== 'initialized') return null
@@ -199,6 +206,25 @@ export default function ProjectChatSidecar() {
   }, [projectId, open, onRoomsArea])
 
   const focusRefs = useMemo(() => focusRefsFor(pathname), [pathname])
+
+  const currentFileAvailability = useMemo(() => {
+    if (!currentFileAttachment) return { allowed: false, reason: '' }
+    if (currentFileAttachment.status === 'conflict') return { allowed: false, reason: 'Resolve the current file conflict before attaching it.' }
+    if (currentFileAttachment.status === 'offline') return { allowed: false, reason: 'The Folder host is offline.' }
+    if (currentFileAttachment.status === 'unsupported') return { allowed: false, reason: 'This file is not an attachable text file.' }
+    if (currentFileAttachment.byteSize > CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) {
+      return { allowed: false, reason: `This file is ${formatBytes(currentFileAttachment.byteSize)}; the message limit is ${formatBytes(CONVERSATION_MAX_FILE_SNAPSHOT_BYTES)}.` }
+    }
+    if (conversationFolderIds === null) return { allowed: false, reason: 'Attach or initialize this Folder in the conversation first.' }
+    if (!conversationFolderIds.includes(currentFileAttachment.projectFolderId)) {
+      return { allowed: false, reason: 'This Folder is outside the conversation execution context. Attach it explicitly or start a new conversation.' }
+    }
+    return { allowed: true, reason: '' }
+  }, [conversationFolderIds, currentFileAttachment])
+
+  const implicitInputResource = onFilesArea && currentFileAttachment && currentFileIncluded && currentFileAvailability.allowed
+    ? currentFileAttachment
+    : null
 
   /**
    * Leave the composer bound to no conversation until the user explicitly
@@ -317,6 +343,14 @@ export default function ProjectChatSidecar() {
           )}
           {/* The same conversation module the full Room page renders: one
               implementation of what a conversation is, two places it is read. */}
+          {onFilesArea && currentFileAttachment && (
+            <CurrentFileBar
+              attachment={currentFileAttachment}
+              included={currentFileIncluded}
+              availability={currentFileAvailability}
+              onToggle={() => setCurrentFileIncluded(value => !value)}
+            />
+          )}
           <ConversationSurface
             // Picking works here too: the panel has the Room's other
             // threads, so a pick has somewhere to go. Starting a new thread is
@@ -327,6 +361,7 @@ export default function ProjectChatSidecar() {
             conversationId={sessionId || null}
             executionReady={executionReady}
             inputFileSources={conversationInputSourcesFromExecutionSummary(executionSummary)}
+            implicitInputResource={implicitInputResource}
             executionPreflight={(
               <ConversationExecutionPreflight
                 projectId={projectId}
@@ -380,5 +415,62 @@ export default function ProjectChatSidecar() {
         </Link>
       </div>
     </aside>
+  )
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function CurrentFileBar({
+  attachment,
+  included,
+  availability,
+  onToggle,
+}: {
+  attachment: CurrentFileAttachment
+  included: boolean
+  availability: { allowed: boolean; reason: string }
+  onToggle: () => void
+}) {
+  const stateLabel = attachment.sourceState === 'draft' ? 'Draft' : 'Saved'
+  const statusLabel = attachment.status === 'saving' ? 'saving…' : attachment.status === 'conflict' ? 'conflict' : null
+  const disabled = !availability.allowed
+  return (
+    <div className="shrink-0 border-b border-border bg-muted/20 px-3 py-2" data-testid="current-file-bar">
+      <div className="flex items-start gap-2">
+        <FileCode2 className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 text-xs font-medium">
+            <span>Current file</span>
+            <span className="rounded border px-1 text-[9px] font-normal text-muted-foreground">{stateLabel}</span>
+            {statusLabel && <span className="text-[10px] text-amber-600 dark:text-amber-400">{statusLabel}</span>}
+          </div>
+          <div className="truncate font-mono text-[10px] text-muted-foreground" title={attachment.relativePath}>
+            {attachment.relativePath} · {formatBytes(attachment.byteSize)}
+          </div>
+          {attachment.selection && (
+            <div className="text-[10px] text-muted-foreground">
+              Selection L{attachment.selection.start_line}:C{attachment.selection.start_column}–L{attachment.selection.end_line}:C{attachment.selection.end_column}
+            </div>
+          )}
+          {disabled && <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">{availability.reason}</p>}
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant={included && !disabled ? 'secondary' : 'ghost'}
+          className="h-6 shrink-0 gap-1 px-2 text-[10px]"
+          disabled={disabled}
+          onClick={onToggle}
+          aria-label={included ? 'Remove current file' : 'Add current file'}
+          title={disabled ? availability.reason : undefined}
+        >
+          {included ? <><Check className="size-3" /> Included</> : 'Add'}
+        </Button>
+      </div>
+    </div>
   )
 }

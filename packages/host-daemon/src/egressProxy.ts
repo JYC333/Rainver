@@ -1,8 +1,12 @@
+import { request as httpRequest, type ClientRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { connect, createServer, type Server, type Socket } from "node:net";
+import type { Duplex } from "node:stream";
 import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
-import { isBlockedAddress } from "@rainver/outbound-guard";
+import { isBlockedAddress, isSyntheticDnsAddress } from "@rainver/outbound-guard";
+import type { HostEgressTransport } from "@rainver/protocol";
 
 /**
  * The host's own egress proxy: one HTTP CONNECT server, on the container's
@@ -93,11 +97,29 @@ export function policyAllows(profile: EgressProfile, host: string): { allowed: b
   return { allowed: true, reason: null };
 }
 
+/**
+ * TUN/fake-IP DNS returns RFC 2544 benchmarking addresses as opaque handles.
+ * A hostname whose blocked answers are exclusively from that synthetic range
+ * may be dialled as a hostname route; a literal address, or any real private
+ * answer mixed into the set, remains refused.
+ */
+export function isSyntheticDnsHostnameRoute(
+  host: string,
+  answers: ReadonlyArray<{ address: string }>,
+  enabled: boolean,
+): boolean {
+  return enabled
+    && isIP(host) === 0
+    && answers.length > 0
+    && answers.some(({ address }) => isSyntheticDnsAddress(address))
+    && answers.every(({ address }) => !isBlockedAddress(address) || isSyntheticDnsAddress(address));
+}
+
 export interface EgressProxyHandle {
   /** `host:port` a Run's `HTTP_PROXY` points at. */
   readonly address: string;
   /** Registers a Run's policy and returns the credential its environment carries. */
-  grant(runId: string, profile: EgressProfile): EgressGrant;
+  grant(runId: string, profile: EgressProfile, transport: HostEgressTransport): EgressGrant;
   /**
    * Forgets a Run's policy and its log; later connections on its token are
    * refused. Called once the completion frame has read the log, so nothing is
@@ -115,6 +137,18 @@ export interface EgressProxyHandle {
   close(): Promise<void>;
 }
 
+export interface UpstreamProxyConfig {
+  url: URL;
+  noProxy: string | null;
+}
+
+type TargetLookup = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
+
+export interface EgressProxyOptions {
+  /** Test seam; production resolves every answer through the operating system. */
+  lookup?: TargetLookup;
+}
+
 /** How long to wait for an upstream to accept, before the client is told it could not be reached. */
 const UPSTREAM_CONNECT_TIMEOUT_MS = 15_000;
 
@@ -127,10 +161,14 @@ const MAX_LOG_ENTRIES = 200;
  * Loopback on purpose: only this container's processes can reach it, so the
  * grant token is about telling *Runs* apart, not about keeping strangers out.
  */
-export async function startEgressProxy(log: (line: string) => void = () => {}): Promise<EgressProxyHandle> {
-  const grants = new Map<string, { runId: string; profile: EgressProfile }>();
+export async function startEgressProxy(
+  log: (line: string) => void = () => {},
+  options: EgressProxyOptions = {},
+): Promise<EgressProxyHandle> {
+  const grants = new Map<string, { runId: string; profile: EgressProfile; transport: HostEgressTransport }>();
   const runTokens = new Map<string, string>();
   const decisions = new Map<string, EgressDecision[]>();
+  const clients = new Set<Socket>();
 
   const record = (runId: string, decision: EgressDecision) => {
     const entries = decisions.get(runId) ?? [];
@@ -154,6 +192,8 @@ export async function startEgressProxy(log: (line: string) => void = () => {}): 
 
   const server: Server = createServer();
   server.on("connection", (client: Socket) => {
+    clients.add(client);
+    client.once("close", () => clients.delete(client));
     // Accumulated, not read from the first chunk: a CONNECT request arrives
     // split whenever the client writes its headers separately, and reading one
     // chunk turned that into a 405 or a 407 depending on where the split fell.
@@ -222,18 +262,45 @@ export async function startEgressProxy(log: (line: string) => void = () => {}): 
     // Resolved before the policy's last word: a public name that resolves into
     // the instance's own network is exactly how a Run reaches a sibling
     // service, and the name alone cannot say so.
-    let address: string;
+    let answers: Array<{ address: string; family: number }>;
     try {
-      address = isIP(host) ? host : (await lookup(host)).address;
+      answers = isIP(host)
+        ? [{ address: host, family: isIP(host) }]
+        : await (options.lookup ?? ((name) => lookup(name, { all: true })))(host);
     } catch {
       return deny(`${host} could not be resolved.`, 502);
     }
-    if (isBlockedAddress(address)) {
+    if (answers.length === 0) return deny(`${host} could not be resolved.`, 502);
+
+    let upstreamProxy: UpstreamProxyConfig | null = null;
+    if (grant.transport.mode === "http_proxy") {
+      try {
+        upstreamProxy = { url: new URL(grant.transport.proxy_url), noProxy: grant.transport.no_proxy };
+      } catch {
+        return deny("The configured managed-host HTTP proxy URL is invalid.", 502);
+      }
+    }
+    const useUpstream = upstreamProxy !== null
+      && !shouldBypassUpstreamProxy(host, port, upstreamProxy.noProxy);
+    const blocked = answers.find(({ address }) => isBlockedAddress(address));
+    // RFC 2544 answers for a hostname are synthetic handles used by TUN/fake-IP
+    // resolvers, not real destinations. A direct route dials the handle for the
+    // system TUN to recover; an upstream route passes the original hostname so
+    // that proxy owns resolution. Every real private/internal answer remains a
+    // refusal, as does a literal 198.18/15 target.
+    const syntheticRoute = isSyntheticDnsHostnameRoute(
+      host,
+      answers,
+      grant.transport.mode === "system_tun" || useUpstream,
+    );
+    if (blocked && !syntheticRoute) {
       return deny(
-        `${host} resolves to ${address}, which is inside this instance's own network. `
+        `${host} resolves to ${blocked.address}, which is inside this instance's own network. `
         + "Runs reach the public Internet only.",
       );
     }
+    const address = answers.find(({ address: candidate }) => !isBlockedAddress(candidate))?.address
+      ?? answers[0]!.address;
 
     // Registered before the socket exists, so a client that left during DNS
     // resolution still tears down whatever this is about to open — `close`
@@ -246,27 +313,23 @@ export async function startEgressProxy(log: (line: string) => void = () => {}): 
     // everything after this point; a piped destination error does not destroy
     // its source, so this is the only teardown there is.
     let clientGone = client.destroyed;
-    let upstream: Socket | null = null;
-    client.on("close", () => { clientGone = true; upstream?.destroy(); });
-    client.on("error", () => upstream?.destroy());
-    upstream = connect({ host: address, port }, () => {
-      const socket = upstream!;
-      socket.setTimeout(0);
-      if (clientGone) { socket.destroy(); return; }
+    let upstream: Duplex | null = null;
+    let pendingRequest: ClientRequest | null = null;
+    client.on("close", () => { clientGone = true; upstream?.destroy(); pendingRequest?.destroy(); });
+    client.on("error", () => { upstream?.destroy(); pendingRequest?.destroy(); });
+    const onConnected = (tunnel: Duplex) => {
+      upstream = tunnel;
+      if (typeof (tunnel as Socket).setTimeout === "function") (tunnel as Socket).setTimeout(0);
+      if (clientGone) { tunnel.destroy(); return; }
       established = true;
       record(grant.runId, { allowed: true, host, port, reason: null, at });
       client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      if (pipelined.length > 0) socket.write(pipelined);
-      socket.pipe(client);
-      client.pipe(socket);
+      if (pipelined.length > 0) tunnel.write(pipelined);
+      tunnel.pipe(client);
+      client.pipe(tunnel);
       client.resume();
-    });
-    // A host that accepts nothing leaves the client waiting on a response that
-    // never comes; the Run's own timeout is minutes away.
-    upstream.setTimeout(UPSTREAM_CONNECT_TIMEOUT_MS, () => {
-      if (!established) upstream?.destroy(new Error(`Timed out connecting to ${host}`));
-    });
-    upstream.on("error", (error) => {
+    };
+    const onConnectError = (error: Error) => {
       // After the tunnel is open there is no protocol left to speak: writing an
       // HTTP response here injects plaintext into the Run's own TLS session,
       // which it reports as a corrupt record rather than a reset. And a
@@ -275,7 +338,22 @@ export async function startEgressProxy(log: (line: string) => void = () => {}): 
       if (established) { client.destroy(); return; }
       record(grant.runId, { allowed: false, host, port, reason: error.message, at });
       refuse(client, 502, `Could not reach ${host}: ${error.message}`);
-    });
+    };
+
+    if (useUpstream) {
+      const opening = openUpstreamTunnel(upstreamProxy!, host, port);
+      pendingRequest = opening.request;
+      opening.socket.then(onConnected, onConnectError);
+    } else {
+      const direct = connect({ host: address, port }, () => onConnected(direct));
+      upstream = direct;
+      // A host that accepts nothing leaves the client waiting on a response
+      // that never comes; the Run's own timeout is minutes away.
+      direct.setTimeout(UPSTREAM_CONNECT_TIMEOUT_MS, () => {
+        if (!established) upstream?.destroy(new Error(`Timed out connecting to ${host}`));
+      });
+      direct.on("error", onConnectError);
+    }
 
   }
 
@@ -321,11 +399,11 @@ export async function startEgressProxy(log: (line: string) => void = () => {}): 
 
   return {
     address: `127.0.0.1:${port}`,
-    grant(runId, profile) {
+    grant(runId, profile, transport) {
       const previous = runTokens.get(runId);
       if (previous) grants.delete(previous);
       const token = randomBytes(24).toString("hex");
-      grants.set(token, { runId, profile });
+      grants.set(token, { runId, profile, transport });
       runTokens.set(runId, token);
       return { token, profile };
     },
@@ -342,9 +420,73 @@ export async function startEgressProxy(log: (line: string) => void = () => {}): 
       decisions.delete(runId);
     },
     async close() {
+      for (const client of clients) client.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
+}
+
+export function shouldBypassUpstreamProxy(host: string, port: number, noProxy: string | null): boolean {
+  if (!noProxy?.trim()) return false;
+  const normalized = host.toLowerCase().replace(/\.$/, "");
+  return noProxy.split(",").map((entry) => entry.trim()).filter(Boolean).some((raw) => {
+    if (raw === "*") return true;
+    const lastColon = raw.lastIndexOf(":");
+    const hasPort = lastColon > 0 && /^\d+$/.test(raw.slice(lastColon + 1)) && !raw.startsWith("[");
+    if (hasPort && Number(raw.slice(lastColon + 1)) !== port) return false;
+    const entry = (hasPort ? raw.slice(0, lastColon) : raw).toLowerCase().replace(/\.$/, "");
+    if (entry.startsWith("*.")) return normalized.endsWith(entry.slice(1));
+    if (entry.startsWith(".")) return normalized === entry.slice(1) || normalized.endsWith(entry);
+    return normalized === entry;
+  });
+}
+
+function openUpstreamTunnel(
+  proxy: UpstreamProxyConfig,
+  host: string,
+  port: number,
+): { request: ClientRequest; socket: Promise<Duplex> } {
+  const authority = `${isIP(host) === 6 ? `[${host}]` : host}:${port}`;
+  let resolveSocket!: (socket: Duplex) => void;
+  let rejectSocket!: (error: Error) => void;
+  const socket = new Promise<Duplex>((resolve, reject) => {
+    resolveSocket = resolve;
+    rejectSocket = reject;
+  });
+  const headers: Record<string, string> = { Host: authority };
+  if (proxy.url.username || proxy.url.password) {
+    const username = decodeURIComponent(proxy.url.username);
+    const password = decodeURIComponent(proxy.url.password);
+    headers["Proxy-Authorization"] = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+  }
+  const request = (proxy.url.protocol === "https:" ? httpsRequest : httpRequest)({
+    protocol: proxy.url.protocol,
+    hostname: proxy.url.hostname,
+    port: proxy.url.port || (proxy.url.protocol === "https:" ? 443 : 80),
+    method: "CONNECT",
+    path: authority,
+    headers,
+    agent: false,
+  });
+  request.setTimeout(UPSTREAM_CONNECT_TIMEOUT_MS, () => {
+    request.destroy(new Error(`Timed out connecting through the configured upstream proxy`));
+  });
+  request.once("connect", (response, tunnel, head) => {
+    request.setTimeout(0);
+    if (response.statusCode !== 200) {
+      tunnel.destroy();
+      rejectSocket(new Error(`Upstream proxy refused CONNECT with HTTP ${response.statusCode ?? 502}`));
+      return;
+    }
+    if (head.length > 0) tunnel.unshift(head);
+    resolveSocket(tunnel);
+  });
+  request.once("error", (error: NodeJS.ErrnoException) => {
+    const code = error.code ? ` (${error.code})` : "";
+    rejectSocket(new Error(`Configured upstream proxy could not establish the tunnel${code}`));
+  });
+  request.end();
+  return { request, socket };
 }
 
 /**

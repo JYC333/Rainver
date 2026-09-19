@@ -124,7 +124,13 @@ describe("executeRemoteHostCliAdapter", () => {
     // adapter takes before dispatching is not part of its contract.
     await vi.waitUntil(() => sink.sent.length === 1);
     const launchFrame = sink.sent[0]!;
-    expect(launchFrame).toMatchObject({ type: "launch", run_id: "run-1", keep_stdin_open: true, stdin: null });
+    expect(launchFrame).toMatchObject({
+      type: "launch",
+      run_id: "run-1",
+      keep_stdin_open: true,
+      stdin: null,
+      egress_transport: { mode: "direct" },
+    });
     expect(launchFrame.argv as string[]).toContain("rainver:remote-workspace-cwd");
 
     // The controller must not write its `initialize` request until the

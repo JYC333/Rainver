@@ -12,6 +12,7 @@ import { registerProjectsSystemActionExecutors } from "../projects/projectsSyste
 import { registerPlansSystemActionExecutors } from "../plans/plansSystemActionExecutors.js";
 import { registerProjectWorkSystemActionExecutors } from "../projectWork/projectWorkSystemActionExecutors.js";
 import { registerPolicySystemActionExecutors } from "../policy/policySystemActionExecutors.js";
+import { registerConversationInputResourceExecutors } from "../sessions/conversationInputResourceService.js";
 
 /**
  * Central import of per-module `registerXxxSystemActionExecutors` functions,
@@ -30,6 +31,7 @@ export function registerModuleSystemActionExecutors(
   config: ServerConfig,
   run: RunRecord,
   granted: { generic: boolean; researchAcquisition: boolean },
+  context: { messageId: string | null } = { messageId: null },
 ): void {
   if (granted.generic && config.databaseUrl && run.instructed_by_user_id) {
     registerInquirySystemActionExecutors(executors, config, run);
@@ -49,6 +51,9 @@ export function registerModuleSystemActionExecutors(
   // reason rather than by being invisible.
   if (granted.generic && config.databaseUrl) {
     registerMemoryDirectWriteExecutors(executors, config, run);
+    if (context.messageId) {
+      registerConversationInputResourceExecutors(executors, config, run, context.messageId);
+    }
   }
   if (granted.researchAcquisition && config.databaseUrl && run.instructed_by_user_id) {
     registerProjectResearchSystemActionExecutors(executors, config, run);

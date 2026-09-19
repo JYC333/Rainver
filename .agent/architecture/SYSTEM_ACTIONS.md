@@ -222,6 +222,14 @@ managed loop's tool set. Exposure requires all of:
    Agent (see below);
 3. a call-time PolicyGateway decision allows the registered policy action.
 
+Conversation turns that contain a current-file attachment additionally receive
+the read-only `input_resource.read` and `input_resource.search` grants. Their
+executors revalidate that the server-issued resource belongs to the authorized
+message, Run, Space, and session before returning bounded lines or literal
+matches. The resource body is never copied into tool summaries, audit records,
+or Host workspaces; a turn without an attached resource does not receive these
+actions merely because the Agent requested them.
+
 ### Scenario tool allowances
 
 `buildRunToolGrants` intersects what a Run declares with what it is allowed,

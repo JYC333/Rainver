@@ -92,6 +92,12 @@ export interface SendAgentGroupMessageInput {
   content: string;
   /** Allows a Room turn to carry only persisted structured input. */
   input_parts?: ConversationInputPart[];
+  /**
+   * Read-only kinds of the parts the persisted message already owns. A retry
+   * claims nothing new, so this — not `input_parts` — is what says whether the
+   * turn still carries resources the Run must be able to read.
+   */
+  capability_input_parts?: Array<{ kind: "image" | "file_reference" | "input_resource" }>;
   /** Marks a Room retry so remote prompt hydration can use immutable inputs. */
   retry_of_run_id?: string | null;
   parent_message_id?: string | null;
@@ -423,7 +429,13 @@ export class AgentGroupRunService {
       // Host kind is intentionally absent from this decision. It selects the
       // delivery mechanism for the same Run-scoped tool surface; it is not a
       // second authority for what a conversation may do.
-      const conversationToolGrantInput = conversationToolGrantInputFor(group);
+      const turnInputPartKinds: ReadonlyArray<{ kind: string }> = input.input_parts?.length
+        ? input.input_parts
+        : input.capability_input_parts ?? [];
+      const conversationToolGrantInput = conversationToolGrantInputFor({
+        ...group,
+        has_input_resources: turnInputPartKinds.some((part) => part.kind === "input_resource"),
+      });
       const roomRunGranteeUserIds = group.room_id
         ? await repos.groups.listActiveRoomUserIds(input.space_id, group.room_id)
         : [];
@@ -1137,7 +1149,17 @@ export class AgentGroupRunService {
       // The child acts in the same conversation its parent was spoken to in,
       // and is allowed the same things there. Declaring nothing here meant a
       // delegated specialist could call no action at all.
-      ...conversationToolGrantInputFor({ room_id: group.room_id, project_id: parentRun.project_id }),
+      ...conversationToolGrantInputFor({
+        room_id: group.room_id,
+        project_id: parentRun.project_id,
+        // Only a Room child carries the parent's `chat_turn`, and the resource
+        // executor is registered from that turn's message. A child without one
+        // would be handed tools with nothing behind them, so it is not told it
+        // has them.
+        has_input_resources: Boolean(group.room_id)
+          && Array.isArray(parentRun.capabilities_json)
+          && parentRun.capabilities_json.some((capability) => capability === "input_resource.read"),
+      }),
       parent_run_id: input.parent_run_id,
       root_run_id: input.root_run_id,
       run_group_id: input.group_id,

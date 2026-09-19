@@ -474,7 +474,7 @@ const ruleProjectFolderDirectApply: Rule = (ctx) => {
   if (
     ctx.actor_type === "user"
     && ctx.direct_user_write === true
-    && (ctx.file_operation === "write" || ctx.file_operation === "rollback")
+    && ctx.file_operation === "write"
   ) {
     return makeDecision({
       decision: "allow",

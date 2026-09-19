@@ -43,6 +43,13 @@
       "when": 1789245322115,
       "tag": "0005_conversation_development_usability",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789659867072,
+      "tag": "0006_file_drafts_and_input_resources",
+      "breakpoints": true
     }
   ]
 }

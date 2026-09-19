@@ -59,6 +59,20 @@ function buildBlockList(): BlockList {
 
 const BLOCKED = buildBlockList();
 
+function buildSyntheticDnsList(): BlockList {
+  const list = new BlockList();
+  // RFC 2544 benchmarking space is not a destination on the public Internet.
+  // TUN/fake-IP resolvers deliberately return it as an opaque handle and
+  // recover the original hostname when a connection reaches their proxy. It
+  // remains in BLOCKED for every direct connection; callers may use this
+  // narrower classification only when an explicitly configured upstream
+  // proxy, rather than Rainver, owns target-name resolution.
+  list.addSubnet("198.18.0.0", 15);
+  return list;
+}
+
+const SYNTHETIC_DNS = buildSyntheticDnsList();
+
 function buildLoopbackList(): BlockList {
   const list = new BlockList();
   list.addSubnet("127.0.0.0", 8);
@@ -107,4 +121,16 @@ export function isBlockedAddress(address: string | null | undefined): boolean {
   const version = isIP(address);
   if (version === 0) return true;
   return BLOCKED.check(address, version === 6 ? "ipv6" : "ipv4");
+}
+
+/**
+ * Whether an address is standardized benchmarking space commonly used as a
+ * synthetic DNS handle by TUN proxies. This never makes the address directly
+ * reachable; it lets a caller distinguish it from real private/internal
+ * networks when that caller will pass the original hostname to a trusted
+ * upstream proxy for resolution.
+ */
+export function isSyntheticDnsAddress(address: string | null | undefined): boolean {
+  if (typeof address !== "string" || isIP(address) !== 4) return false;
+  return SYNTHETIC_DNS.check(address, "ipv4");
 }

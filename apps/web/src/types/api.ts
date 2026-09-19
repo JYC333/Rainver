@@ -261,6 +261,7 @@ import type {
   SpaceOversightMode,
   SpaceRetrievalSettings,
   SpaceRetrievalSettingsUpdate,
+  ProjectFileDraft,
   UpdateAgentRunGroupRequest,
   UpdateAgentRunGroupResponse,
 } from '@rainver/protocol'
@@ -525,6 +526,7 @@ export type {
   SpaceOversightMode,
   SpaceRetrievalSettings,
   SpaceRetrievalSettingsUpdate,
+  ProjectFileDraft,
   UpdateAgentRunGroupRequest,
   UpdateAgentRunGroupResponse,
 }
@@ -3976,6 +3978,23 @@ export interface FileContent {
   size: number
   line_count: number
   sha256?: string
+  encoding?: 'utf8' | 'utf16le' | 'utf16be' | 'binary' | 'unknown'
+  has_bom?: boolean
+  line_ending_mode?: 'lf' | 'crlf' | 'mixed' | 'none'
+  writable?: boolean
+  conversion_available?: boolean
+}
+
+export interface ProjectFileDraftQuota {
+  used_bytes: number
+  limit_bytes: number
+}
+
+export interface ProjectFileDraftSave {
+  file: FileContent
+  revision: ProjectFileRevision
+  draft_deleted: boolean
+  newer_draft_retained: boolean
 }
 
 export interface ProjectFileRevision {
@@ -3989,17 +4008,6 @@ export interface ProjectFileRevision {
   created_at: string
   expires_at: string
   status: 'available' | 'rolled_back' | 'pruned'
-}
-
-export interface ProjectFileEdit {
-  file: FileContent
-  revision: ProjectFileRevision
-}
-
-export interface ProjectFileRollback {
-  file: FileContent | null
-  revision_id: string
-  rolled_back: true
 }
 
 export interface GitChangedFile {

@@ -1,8 +1,6 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, FileCode, FilePlus, FileText, Folder, RotateCcw, Save, X } from 'lucide-react'
-import type { FileContent, FileNode, GitChangedFile, ProjectFileRevision } from '../../types/api'
-import { Button } from '../../components/ui/button'
-import { Input } from '../../components/ui/input'
+import { ChevronDown, ChevronRight, FileCode, FileText, Folder } from 'lucide-react'
+import type { FileNode, GitChangedFile } from '../../types/api'
 
 export const STATUS_VARIANT: Record<string, string> = {
   modified:  'bg-amber-500/15 text-amber-600',
@@ -157,119 +155,6 @@ export function DiffViewer({ diff }: { diff: string }) {
         </div>
       ))}
     </pre>
-  )
-}
-
-export interface FileEditorSaveInput {
-  path: string
-  content: string
-}
-
-export function FileEditor({
-  file,
-  onSave,
-  onCancel,
-  saving = false,
-}: {
-  file: FileContent | null
-  onSave: (input: FileEditorSaveInput) => Promise<boolean>
-  onCancel: () => void
-  saving?: boolean
-}) {
-  const [path, setPath] = useState(file?.path ?? '')
-  const [content, setContent] = useState(file?.content ?? '')
-
-  async function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!path.trim()) return
-    await onSave({ path: path.trim(), content })
-  }
-
-  return (
-    <form className="flex flex-col h-full" onSubmit={event => void submit(event)}>
-      <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b bg-muted/30">
-        <FilePlus className="size-3.5 text-muted-foreground" />
-        <Input
-          aria-label="File path"
-          value={path}
-          onChange={event => setPath(event.target.value)}
-          placeholder="path/to/file.txt"
-          className="h-7 max-w-md font-mono text-xs"
-          disabled={saving}
-          readOnly={Boolean(file)}
-          autoFocus={!file}
-        />
-        <span className="ml-auto flex items-center gap-1.5">
-          <Button type="button" size="sm" variant="ghost" onClick={onCancel} disabled={saving}>
-            <X className="size-3.5" /> Cancel
-          </Button>
-          <Button type="submit" size="sm" className="gap-1.5" disabled={saving || !path.trim()}>
-            <Save className="size-3.5" /> {saving ? 'Saving…' : 'Save directly'}
-          </Button>
-        </span>
-      </div>
-      <div className="shrink-0 px-4 py-2 text-[11px] text-muted-foreground border-b">
-        Changes are written directly to this Project Folder. The previous version is kept for rollback.
-      </div>
-      <textarea
-        aria-label="File content"
-        value={content}
-        onChange={event => setContent(event.target.value)}
-        className="flex-1 min-h-0 w-full resize-none overflow-auto bg-background p-4 text-xs font-mono leading-5 text-foreground/90 focus:outline-none focus:ring-1 focus:ring-inset focus:ring-ring"
-        disabled={saving}
-        spellCheck={false}
-      />
-    </form>
-  )
-}
-
-export function FileViewer({
-  file,
-  revision,
-  onSave,
-  onRollback,
-  saving = false,
-}: {
-  file: FileContent
-  revision?: ProjectFileRevision | null
-  onSave?: (input: FileEditorSaveInput) => Promise<boolean>
-  onRollback?: (revision: ProjectFileRevision) => void
-  saving?: boolean
-}) {
-  const [editing, setEditing] = useState(false)
-  if (editing && onSave) {
-    return (
-      <FileEditor
-        file={file}
-        saving={saving}
-        onSave={async input => {
-          const saved = await onSave(input)
-          if (saved) setEditing(false)
-          return saved
-        }}
-        onCancel={() => setEditing(false)}
-      />
-    )
-  }
-  return (
-    <div className="flex flex-col h-full">
-      <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b bg-muted/30">
-        <FileCode className="size-3.5 text-muted-foreground" />
-        <span className="text-xs font-mono text-muted-foreground">{file.path}</span>
-        <span className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground">
-          <span>{file.line_count} lines · {file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB`}</span>
-          {onSave && <Button type="button" size="sm" variant="outline" className="h-6 gap-1 px-2 text-[10px]" onClick={() => setEditing(true)}>
-            Edit
-          </Button>}
-          {revision && onRollback && <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 px-2 text-[10px]" onClick={() => onRollback(revision)}>
-            <RotateCcw className="size-3" /> Rollback
-          </Button>}
-        </span>
-      </div>
-      <pre className="flex-1 overflow-auto text-xs font-mono leading-5 p-4 text-foreground/90">
-        {file.content}
-      </pre>
-    </div>
   )
 }
 

@@ -27,6 +27,7 @@ import { RoomConversationTitleService } from "../rooms/conversationTitleService.
 import { readInstanceOperationsPolicy } from "../settings/index.js";
 import { DeploymentService } from "../deployment/service.js";
 import { ConversationInputService } from "../sessions/conversationInputService.js";
+import { PgProjectFileDraftRepository } from "../projectFolders/draftRepository.js";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -116,9 +117,32 @@ export function startBackgroundServices(
         if (removed > 0) log?.info(`[scheduler] conversation input media pruned ${removed} row(s)`);
       },
     },
+    {
+      name: "conversation_input_resource_blob_retention",
+      intervalSeconds: 900,
+      runOnStart: false,
+      run: async () => {
+        if (!config.databaseUrl) return;
+        const removed = await new ConversationInputService(
+          getDbPool(config.databaseUrl),
+          config,
+        ).cleanupUnreferencedResourceBlobs();
+        if (removed > 0) log?.info(`[scheduler] conversation input resource blobs pruned ${removed} row(s)`);
+      },
+    },
   ];
 
   if (config.databaseUrl) {
+    tasks.push({
+      name: "project_file_draft_retention",
+      intervalSeconds: 900,
+      runOnStart: false,
+      run: async () => {
+        const removed = await new PgProjectFileDraftRepository(getDbPool(config.databaseUrl!)).deleteExpired();
+        if (removed > 0) log?.info(`[scheduler] project file drafts pruned ${removed} row(s)`);
+      },
+    });
+
     tasks.push({
       name: "information_digest_automation_provisioning",
       intervalSeconds: 3600,

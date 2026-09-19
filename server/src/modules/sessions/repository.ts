@@ -11,7 +11,7 @@ import {
   type SessionOut,
   type SessionPage,
   type ConversationInputPart,
-  ConversationInputPartsSchema,
+  ConversationMessageInputPartsSchema,
 } from "@rainver/protocol";
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
 import { ROOT_BRANCH_PATH, visibleRoomTranscriptSql } from "./messagePath.js";
@@ -276,13 +276,28 @@ export class PgSessionRepository {
                       CASE WHEN part.kind = 'image' THEN jsonb_build_object(
                         'kind', 'image', 'media_id', part.media_id, 'filename', part.display_name,
                         'media_type', part.media_type, 'byte_size', part.byte_size, 'sha256', part.sha256
-                      ) ELSE jsonb_build_object(
+                      ) WHEN part.kind = 'input_resource' THEN jsonb_strip_nulls(jsonb_build_object(
+                        'kind', 'input_resource', 'id', part.id, 'resource_id', part.resource_id,
+                        'source_state', resource.source_state, 'display_name', part.display_name,
+                        'media_type', part.media_type, 'byte_size', part.byte_size,
+                        'sha256', part.sha256, 'relative_path', resource.relative_path,
+                        'captured_at', resource.captured_at,
+                        'selection', CASE WHEN resource.selection_start_line IS NULL THEN NULL ELSE jsonb_build_object(
+                          'start_line', resource.selection_start_line,
+                          'start_column', resource.selection_start_column,
+                          'end_line', resource.selection_end_line,
+                          'end_column', resource.selection_end_column
+                        ) END
+                      )) ELSE jsonb_build_object(
                         'kind', 'file_reference', 'project_folder_id', part.project_folder_id,
                         'workspace_location_id', part.workspace_location_id, 'relative_path', part.relative_path,
                         'display_name', part.display_name, 'media_type', part.media_type,
                         'byte_size', part.byte_size, 'sha256', part.sha256
                       ) END ORDER BY part.position
-                    ) FROM message_input_parts part WHERE part.space_id = m.space_id AND part.message_id = m.id
+                    ) FROM message_input_parts part
+                    LEFT JOIN conversation_input_resources resource
+                      ON resource.id = part.resource_id AND resource.space_id = part.space_id
+                    WHERE part.space_id = m.space_id AND part.message_id = m.id
                   ), '[]'::jsonb) AS input_parts,
                   m.path_depth,
                   m.created_at
@@ -375,10 +390,13 @@ export class PgSessionRepository {
         WHERE m.space_id = $1
           AND m.session_id = $2
           AND m.role = 'user'
-          AND (m.metadata_json->'run_ids' ? $5::text OR m.metadata_json->'retry_run_ids' ? $5::text)
+          AND (m.metadata_json->'run_ids' ? $3::text OR m.metadata_json->'retry_run_ids' ? $3::text)
           AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
         LIMIT 1`,
-      [spaceId, sessionId, roomId, userId, runId],
+      // Only the three this statement names: the Room and viewer are the
+      // second read's arguments, and binding them here left PostgreSQL unable
+      // to type an unreferenced parameter, which failed every retry.
+      [spaceId, sessionId, runId],
     );
     const id = result.rows[0]?.id;
     return id ? this.roomMessageById(spaceId, userId, roomId, sessionId, id) : null;
@@ -436,13 +454,28 @@ export class PgSessionRepository {
                       CASE WHEN part.kind = 'image' THEN jsonb_build_object(
                         'kind', 'image', 'media_id', part.media_id, 'filename', part.display_name,
                         'media_type', part.media_type, 'byte_size', part.byte_size, 'sha256', part.sha256
-                      ) ELSE jsonb_build_object(
+                      ) WHEN part.kind = 'input_resource' THEN jsonb_strip_nulls(jsonb_build_object(
+                        'kind', 'input_resource', 'id', part.id, 'resource_id', part.resource_id,
+                        'source_state', resource.source_state, 'display_name', part.display_name,
+                        'media_type', part.media_type, 'byte_size', part.byte_size,
+                        'sha256', part.sha256, 'relative_path', resource.relative_path,
+                        'captured_at', resource.captured_at,
+                        'selection', CASE WHEN resource.selection_start_line IS NULL THEN NULL ELSE jsonb_build_object(
+                          'start_line', resource.selection_start_line,
+                          'start_column', resource.selection_start_column,
+                          'end_line', resource.selection_end_line,
+                          'end_column', resource.selection_end_column
+                        ) END
+                      )) ELSE jsonb_build_object(
                         'kind', 'file_reference', 'project_folder_id', part.project_folder_id,
                         'workspace_location_id', part.workspace_location_id, 'relative_path', part.relative_path,
                         'display_name', part.display_name, 'media_type', part.media_type,
                         'byte_size', part.byte_size, 'sha256', part.sha256
                       ) END ORDER BY part.position
-                    ) FROM message_input_parts part WHERE part.space_id = m.space_id AND part.message_id = m.id
+                    ) FROM message_input_parts part
+                    LEFT JOIN conversation_input_resources resource
+                      ON resource.id = part.resource_id AND resource.space_id = part.space_id
+                    WHERE part.space_id = m.space_id AND part.message_id = m.id
                   ), '[]'::jsonb) AS input_parts,
                   m.path_depth,
                   m.created_at
@@ -1313,8 +1346,8 @@ function messageToOut(row: MessageRow): MessageOut {
     metadata_json: recordOrNull(row.metadata_json),
     parent_message_id: row.parent_message_id,
     run_id: row.run_id,
-    input_parts: ConversationInputPartsSchema.safeParse(row.input_parts ?? []).success
-      ? ConversationInputPartsSchema.parse(row.input_parts ?? [])
+    input_parts: ConversationMessageInputPartsSchema.safeParse(row.input_parts ?? []).success
+      ? ConversationMessageInputPartsSchema.parse(row.input_parts ?? [])
       : [],
     created_at: dateValue(row.created_at) ?? new Date(0).toISOString(),
   };

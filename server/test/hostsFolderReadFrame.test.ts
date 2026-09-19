@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { MAX_FILES } from "@rainver/folder-read";
 import { parseFolderReadResultFrame } from "../src/modules/hosts/folderReadFrames.js";
@@ -36,6 +37,47 @@ describe("folder_read_result host frame validation", () => {
     expect(parseFolderReadResultFrame({ ok: false, error: "not-a-code", message: "bad" })).toBeNull();
     expect(parseFolderReadResultFrame({ ok: false, error: "path_forbidden", message: "blocked" }))
       .toMatchObject({ ok: false, error: "path_forbidden" });
+  });
+
+  it("checks exact UTF-8 bytes while allowing intentionally bodyless UTF-16 metadata", () => {
+    const bomContent = "hello\n";
+    const bomBytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(bomContent)]);
+    expect(parseFolderReadResultFrame({
+      ok: true,
+      kind: "file",
+      result: {
+        path: "README.md",
+        content: bomContent,
+        size: bomBytes.byteLength,
+        line_count: 2,
+        sha256: createHash("sha256").update(bomBytes).digest("hex"),
+        encoding: "utf8",
+        has_bom: true,
+        line_ending_mode: "lf",
+        writable: true,
+        conversion_available: false,
+      },
+    })).toMatchObject({ ok: true, kind: "file" });
+    // Exactly what the daemon sends for a multi-line UTF-16 file: the body is
+    // withheld, but the line count is the file's own and must not be checked
+    // against the empty body.
+    expect(parseFolderReadResultFrame({
+      ok: true,
+      kind: "file",
+      result: { path: "legacy.txt", content: "", size: 26, line_count: 3, sha256: "a".repeat(64), encoding: "utf16le", has_bom: true, writable: false, conversion_available: true },
+    })).toMatchObject({ ok: true, kind: "file", result: { line_count: 3 } });
+    // The exemption is the withheld body, not the count: a UTF-8 result still
+    // has to agree with the body it carries.
+    expect(parseFolderReadResultFrame({
+      ok: true,
+      kind: "file",
+      result: { path: "README.md", content: "", size: 0, line_count: 3, encoding: "utf8", has_bom: false },
+    })).toBeNull();
+    expect(parseFolderReadResultFrame({
+      ok: true,
+      kind: "file",
+      result: { path: "README.md", content: "hello", size: 5, line_count: 1, sha256: "b".repeat(64), encoding: "utf8" },
+    })).toBeNull();
   });
 
   it("rejects absolute paths in every success result shape", () => {

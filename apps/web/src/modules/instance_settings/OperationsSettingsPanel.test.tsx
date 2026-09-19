@@ -16,6 +16,9 @@ const settings = {
   backup_on_startup: true,
   content_access_log_retention_enabled: true,
   content_access_log_retention_days: 90,
+  managed_host_egress_mode: 'direct' as const,
+  managed_host_proxy_url: null,
+  managed_host_no_proxy: null,
   updated_at: null,
 }
 
@@ -39,5 +42,24 @@ describe('OperationsSettingsPanel', () => {
         backup_retention_count: 7,
         content_access_log_retention_days: 90,
       })))
+  })
+
+  it('saves the built-in Host route as instance policy', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(instanceOperationsApi.update).mockResolvedValue({
+      ...settings,
+      managed_host_egress_mode: 'system_tun',
+    })
+    render(<OperationsSettingsPanel />)
+
+    await user.selectOptions(await screen.findByLabelText('Public network route'), 'system_tun')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(instanceOperationsApi.update).toHaveBeenCalledWith(expect.objectContaining({
+      managed_host_egress_mode: 'system_tun',
+      managed_host_proxy_url: null,
+      managed_host_no_proxy: null,
+    })))
+    expect(screen.getByText(/next Run; no container restart/i)).toBeInTheDocument()
   })
 })

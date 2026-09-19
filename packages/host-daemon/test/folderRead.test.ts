@@ -65,6 +65,28 @@ describe("folder_read operations", () => {
     expect(result).toMatchObject({ ok: false, error: "too_large" });
   });
 
+  it("passes strict admission metadata through the host folder_read result", async () => {
+    await writeFile(join(root, "bom.md"), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("one\r\ntwo\r\n") ]));
+    const result = await performFolderRead(resolveFolderReadRequest({
+      request_id: "bom",
+      workspace_location_id: "loc",
+      kind: "file",
+      path: "bom.md",
+      protected: false,
+    }, { loc: root }));
+    expect(result).toMatchObject({
+      ok: true,
+      kind: "file",
+      result: {
+        content: "one\r\ntwo\r\n",
+        encoding: "utf8",
+        has_bom: true,
+        line_ending_mode: "crlf",
+        writable: true,
+      },
+    });
+  });
+
   it("honors cancellation before starting a bounded read", async () => {
     const controller = new AbortController();
     controller.abort();

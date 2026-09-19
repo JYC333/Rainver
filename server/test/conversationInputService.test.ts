@@ -126,6 +126,91 @@ describe("ConversationInputService image storage", () => {
     })).rejects.toMatchObject({ statusCode: 415 });
   });
 
+  it("freezes a saved current-file resource only after exact Folder authorization and SHA validation", async () => {
+    const content = "export const answer = 42;\n";
+    const sha256 = (await import("node:crypto")).createHash("sha256").update(content).digest("hex");
+    const db = fakeDb((sql) => {
+      if (sql.startsWith("SELECT project_id FROM sessions")) return [{ project_id: "project-1" }];
+      if (sql.startsWith("SELECT true AS ok")) return [{ ok: true }];
+      return [];
+    });
+    vi.spyOn(PgProjectFolderRepository.prototype, "getFile").mockResolvedValueOnce({
+      path: "src/answer.ts",
+      content,
+      size: Buffer.byteLength(content),
+      line_count: 2,
+      sha256,
+    });
+    const { service } = await serviceWithRoot(db);
+
+    await expect(service.prepareMessageParts({
+      spaceId: "space-1", userId: "user-1", sessionId: "session-1",
+      parts: [{
+        kind: "input_resource", source_state: "saved",
+        project_folder_id: "folder-1", workspace_location_id: "location-1",
+        relative_path: "src/answer.ts", display_name: "answer.ts", media_type: "text/typescript",
+        byte_size: Buffer.byteLength(content), sha256,
+      }],
+    })).resolves.toMatchObject([{
+      kind: "input_resource", source_state: "saved", project_id: "project-1",
+      relative_path: "src/answer.ts", content, sha256,
+    }]);
+  });
+
+  it("refuses a draft resource whose acknowledged version or hash is stale", async () => {
+    const db = fakeDb((sql) => {
+      if (sql.startsWith("SELECT project_id FROM sessions")) return [{ project_id: "project-1" }];
+      if (sql.startsWith("SELECT id, project_id, project_folder_id")) return [{
+        id: "draft-1", project_id: "project-1", project_folder_id: "folder-1",
+        workspace_location_id: "location-1", relative_path: "src/answer.ts",
+        base_exists: true, base_sha256: "b".repeat(64), content: "new", content_sha256: "c".repeat(64),
+        byte_size: 3, version: 4,
+      }];
+      return [{ ok: true }];
+    });
+    const { service } = await serviceWithRoot(db);
+
+    await expect(service.prepareMessageParts({
+      spaceId: "space-1", userId: "user-1", sessionId: "session-1",
+      parts: [{
+        kind: "input_resource", source_state: "draft", draft_id: "draft-1", draft_version: 3,
+        content_sha256: "c".repeat(64), display_name: "answer.ts", media_type: "text/typescript",
+        byte_size: 3,
+      }],
+    })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("stores resource references without copying the body into message_input_parts", async () => {
+    const content = "line one\nline two";
+    const sha256 = (await import("node:crypto")).createHash("sha256").update(content).digest("hex");
+    const db = fakeDb((sql) => {
+      if (sql.startsWith("SELECT project_id FROM sessions")) return [{ project_id: "project-1" }];
+      if (sql.startsWith("SELECT true AS ok")) return [{ ok: true }];
+      return [];
+    });
+    vi.spyOn(PgProjectFolderRepository.prototype, "getFile").mockResolvedValueOnce({
+      path: "README.md", content, size: Buffer.byteLength(content), line_count: 2, sha256,
+    });
+    const { service } = await serviceWithRoot(db);
+    const prepared = await service.prepareMessageParts({
+      spaceId: "space-1", userId: "user-1", sessionId: "session-1",
+      parts: [{
+        kind: "input_resource", source_state: "saved", project_folder_id: "folder-1",
+        workspace_location_id: "location-1", relative_path: "README.md", display_name: "README.md",
+        media_type: "text/markdown", byte_size: Buffer.byteLength(content), sha256,
+      }],
+    });
+    await service.attachMessageParts({
+      spaceId: "space-1", userId: "user-1", sessionId: "session-1", messageId: "message-1", parts: prepared,
+    });
+    const calls = (db.query as ReturnType<typeof vi.fn>).mock.calls;
+    const partInsert = calls.find(([sql]) => typeof sql === "string" && sql.startsWith("INSERT INTO message_input_parts"));
+    expect(partInsert?.[0]).not.toContain("content");
+    expect(partInsert?.[1]).not.toContain(content);
+    expect(calls.some(([sql]) => typeof sql === "string" && sql.startsWith("INSERT INTO conversation_input_resource_blobs"))).toBe(true);
+    expect(calls.some(([sql]) => typeof sql === "string" && sql.startsWith("INSERT INTO conversation_input_resources"))).toBe(true);
+  });
+
   it("searches the execution context's pinned Location rather than the Folder's current Location", async () => {
     const db = fakeDb((sql) => {
       if (sql.startsWith("SELECT s.id")) return [{ id: "session-1", space_id: "space-1", project_id: "project-1", room_id: null, project_folder_id: null }];
@@ -254,5 +339,49 @@ describe("ConversationInputService image storage", () => {
     ]);
     const promptQuery = (db.query as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string;
     expect(promptQuery).toContain("snapshot.content AS snapshot_content");
+  });
+
+  it("hydrates a new resource retry as a descriptor rather than embedding its body", async () => {
+    const db = fakeDb((sql) => sql.startsWith("SELECT part.id AS part_id") ? [{
+      part_id: "part-1", kind: "input_resource", media_id: null, resource_id: "resource-1",
+      display_name: "README.md", media_type: "text/markdown", byte_size: 12,
+      storage_path: null, relative_path: null, workspace_location_id: null, snapshot_id: null,
+      resource_source_state: "draft", resource_sha256: "a".repeat(64),
+      resource_captured_at: "2026-09-18T12:00:00.000Z",
+      resource_relative_path: "README.md",
+      resource_workspace_location_id: "location-1", resource_selection_start_line: 1,
+      resource_selection_start_column: 1, resource_selection_end_line: 1,
+      resource_selection_end_column: 5, location_root_path: null,
+      location_host_id: null, location_host_kind: null,
+    }] : []);
+    const { service } = await serviceWithRoot(db);
+
+    const hydrated = await service.loadPromptParts({
+      spaceId: "space-1", messageId: "message-1", embeddedContext: true, useImmutableSnapshot: true,
+    });
+    expect(hydrated.blocks).toEqual([
+      {
+        type: "resource_link",
+        uri: "rainver:conversation-input-resource:resource-1",
+        name: "README.md",
+        mimeType: "text/markdown",
+        size: 12,
+      },
+      {
+        type: "text",
+        text: expect.stringContaining("input_resource.read"),
+      },
+    ]);
+    expect(JSON.stringify(hydrated.blocks)).not.toContain("immutable body");
+    expect(JSON.stringify(hydrated.blocks)).toContain("2026-09-18T12:00:00.000Z");
+    expect(hydrated.blocks[1]?.text).toContain(`"sha256":"${"a".repeat(64)}"`);
+    expect(hydrated.blocks[1]?.text).toContain(`"selection":{"start_line":1`);
+    expect(hydrated.blocks[1]?.text).toContain("source_state=draft is the user's latest acknowledged unsaved content");
+    expect(hydrated.blocks[1]?.text).toContain("read that resource's complete draft with input_resource.read");
+    expect(hydrated.blocks[1]?.text).toContain("continue from next_line while truncated=true");
+    expect(hydrated.blocks[1]?.text).toContain("do not base the change on the same-path workspace file");
+    // New resource ids are resolved through the Run-scoped System Actions,
+    // never sent as Host workspace locators.
+    expect(hydrated.resources).toEqual([]);
   });
 });

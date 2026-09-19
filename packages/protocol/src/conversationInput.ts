@@ -8,6 +8,13 @@
 
 import { z } from "zod";
 import { IdSchema } from "./common.js";
+import {
+  ConversationInputResourcePartSchema,
+  INPUT_RESOURCE_MAX_BYTES,
+  INPUT_RESOURCE_MAX_REFERENCES,
+  INPUT_RESOURCE_MAX_TOTAL_BYTES,
+  type ConversationInputResourcePart,
+} from "./conversationInputResources.js";
 
 export const CONVERSATION_MAX_IMAGES = 4;
 export const CONVERSATION_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -57,9 +64,10 @@ export const ConversationInputFileReferencePartSchema = z.object({
 }).strict();
 export type ConversationInputFileReferencePart = z.infer<typeof ConversationInputFileReferencePartSchema>;
 
-export const ConversationInputPartSchema = z.discriminatedUnion("kind", [
+export const ConversationInputPartSchema = z.union([
   ConversationInputImagePartSchema,
   ConversationInputFileReferencePartSchema,
+  ConversationInputResourcePartSchema,
 ]);
 export type ConversationInputPart = z.infer<typeof ConversationInputPartSchema>;
 
@@ -68,19 +76,27 @@ export const ConversationInputPartsSchema = z.array(ConversationInputPartSchema)
   .superRefine((parts, ctx) => {
     const images = parts.filter((part): part is ConversationInputImagePart => part.kind === "image");
     const files = parts.filter((part): part is ConversationInputFileReferencePart => part.kind === "file_reference");
+    const resources = parts.filter((part): part is ConversationInputResourcePart => part.kind === "input_resource");
     if (images.length > CONVERSATION_MAX_IMAGES) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: `at most ${CONVERSATION_MAX_IMAGES} images are allowed` });
     }
-    if (files.length > CONVERSATION_MAX_FILE_REFERENCES) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `at most ${CONVERSATION_MAX_FILE_REFERENCES} file references are allowed` });
+    if (files.length + resources.length > CONVERSATION_MAX_FILE_REFERENCES) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `at most ${CONVERSATION_MAX_FILE_REFERENCES} file references or resources are allowed` });
     }
     const totalImageBytes = images.reduce((sum, part) => sum + part.byte_size, 0);
     if (totalImageBytes > CONVERSATION_MAX_TOTAL_IMAGE_BYTES) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: `images exceed the ${CONVERSATION_MAX_TOTAL_IMAGE_BYTES}-byte message limit` });
     }
-    const totalFileBytes = files.reduce((sum, part) => sum + part.byte_size, 0);
+    const totalFileBytes = files.reduce((sum, part) => sum + part.byte_size, 0)
+      + resources.reduce((sum, part) => sum + part.byte_size, 0);
     if (totalFileBytes > CONVERSATION_MAX_TOTAL_FILE_SNAPSHOT_BYTES) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `file references exceed the ${CONVERSATION_MAX_TOTAL_FILE_SNAPSHOT_BYTES}-byte message limit` });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `file references or resources exceed the ${CONVERSATION_MAX_TOTAL_FILE_SNAPSHOT_BYTES}-byte message limit` });
+    }
+    if (resources.some((part) => part.byte_size > INPUT_RESOURCE_MAX_BYTES)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `a resource exceeds the ${INPUT_RESOURCE_MAX_BYTES}-byte message limit` });
+    }
+    if (resources.length > INPUT_RESOURCE_MAX_REFERENCES || totalFileBytes > INPUT_RESOURCE_MAX_TOTAL_BYTES) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `resources exceed the ${INPUT_RESOURCE_MAX_TOTAL_BYTES}-byte message limit` });
     }
   });
 

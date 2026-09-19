@@ -139,7 +139,7 @@ capture / trigger
 | Runtime credential use | Credential resolver + secret redaction | Active |
 | Project Folder file read | `project_folder.read` route check + `PathPolicy` | Active |
 | Project Folder Agent file write / code patch | Approved `code_patch` proposal gate + `PathPolicy` | Active |
-| Project Folder human File-page write / rollback | Project-writer direct path + `project_folder.apply_patch` audit + `PathPolicy` + optimistic preimage check | Active |
+| Project Folder human File-page save | Draft-backed Save to Folder + `project_folder.apply_patch` audit + `PathPolicy` + optimistic draft/Host precondition; history is restore-as-draft only | Active |
 | Sandbox path access | Execution Project Folder boundary, worktree root validation | Active |
 | Deployment / deployer calls | Instance-admin job records + internal-token pull channel; operator-only deployer socket allowlist | Active |
 | Automatic system self-evolution | Removed; Evolution runs require an explicit Agent | Removed |

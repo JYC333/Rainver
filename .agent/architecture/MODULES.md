@@ -117,7 +117,7 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 | `projectWork` | product | `/projects/{projectId}/board`, `/projects/{projectId}/updates*`, `/tasks/{taskId}/work`, `/tasks/{taskId}/stage` | empty | Board read model, Updates stream + undo, Task work projection and stage commands. |
 | `plans` | product | `/plans*` | empty | Durable plan/version execution read and command surface: approval-gated materialization, structured list/detail views, execution, reconciliation, and revision. |
 | `projectFolderExecutionConfigs` | product | `/projects/{projectId}/folders/{folderId}/execution-config*` | empty | Project Folder execution config read/create/update. |
-| `projectFolders` | product | `/projects/{projectId}/folders*` | yes | Project Folder records, PathPolicy, sandbox/worktree helpers, and Files & Code (tree/file/git status/diff plus direct user edit/revision/rollback) routes. Remote reads and user writes authorize through `hosts`/`connectionRegistry` and execute shared `@rainver/folder-read` on the owning daemon. There is no separate console route module. |
+| `projectFolders` | product | `/projects/{projectId}/folders*` | yes | Project Folder records, PathPolicy, sandbox/worktree helpers, and Files & Code (tree/file/git status/diff, CodeMirror drafts, Save to Folder, and revision restore-as-draft) routes. Remote reads and human saves authorize through `hosts`/`connectionRegistry` and execute shared `@rainver/folder-read` on the owning daemon. There is no separate console route module. |
 | `hosts` | infra | `/hosts*` | empty | Pairing, registration, workspaces, installations, provider bindings, host-side login stream. See [modules/hosts.md](../modules/hosts.md). |
 | `acpAgents` | infra | `/acp-agents*` | empty | ACP agent registry overlay for host installations. |
 | `routing` | infra | `/runs/{runId}/route-decision` | empty | Read of the C2 route decision stamped on a Run. |
@@ -191,11 +191,13 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
 - Proposal apply dispatch goes through `ProposalApplierRegistry`; no hardcoded proposal-type
   apply chain remains.
 - Interactive agent-session execution over a Project Folder was never
-implemented and has been removed; current Files & Code routes are tree/file/
-git status/git diff plus direct human edit/revision/rollback surfaces under
-`projectFolders`;
+  implemented and has been removed; current Files & Code routes are tree/file/
+  git status/git diff plus draft-backed Save to Folder and restore-as-draft
+  surfaces under `projectFolders`;
   remote Locations round-trip through `hosts` `connectionRegistry` to the
-  owning daemon's `@rainver/folder-read` package.
+  owning daemon's `@rainver/folder-read` package. Sent current-file state is
+  owned by `sessions` as an immutable message resource and read through the
+  `input_resource` System Actions.
 - Frontend Home and personal views consume `frontendSupport`/`/me` aggregate read
   models instead of independently re-implementing proposal/activity/runtime logic.
 

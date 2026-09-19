@@ -16,6 +16,12 @@ export { PgCodePatchCollector, registerProjectFolderProposalAppliers } from "./c
 export { PgProjectFolderRepository } from "./repository.js";
 export type { ProjectFolderRow, ProjectFolderOut } from "./repository.js";
 export {
+  PgProjectFileDraftRepository,
+  DraftQuotaError,
+  DraftVersionConflictError,
+} from "./draftRepository.js";
+export type { ProjectFileDraftRow, ProjectFileDraftMutation } from "./draftRepository.js";
+export {
   PgWorkspaceLocationRepository,
   assertServerHostLocation,
   locationAbsoluteRoot,

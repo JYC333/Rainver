@@ -62,7 +62,7 @@ import {
 } from "./agentRouteInputs.js";
 import { conversationToolGrantInput } from "../systemActions/scenarioToolAllowance.js";
 import { ConversationInputError, ConversationInputService } from "../sessions/conversationInputService.js";
-import { ConversationInputCapabilityError, assertConversationInputCapabilities } from "../sessions/conversationInputCapabilities.js";
+import { ConversationInputCapabilityError, assertConversationInputCapabilities, assertConversationInputResourceTools } from "../sessions/conversationInputCapabilities.js";
 import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
 import type { RunGitSnapshot } from "../runs/contractSnapshot.js";
 import { conversationRetryFingerprint, requireConversationIdempotencyKey, withConversationRetryIdempotency } from "../sessions/conversationRetry.js";
@@ -945,6 +945,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         );
         try {
           assertConversationInputCapabilities(req.input_parts, backend.prompt_capabilities);
+          assertConversationInputResourceTools(req.input_parts, backend.adapter_type);
         } catch (error) {
           if (error instanceof ConversationInputCapabilityError) {
             throw new ChatContextError(`Agent '${agent.name}' cannot accept this conversation input: ${error.message}`, error.statusCode);
@@ -1064,6 +1065,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           sessionId: session.id,
           message: req.message,
           currentMessage: userMessage,
+          hasInputResources: preparedInputParts?.some((part) => part.kind === "input_resource") === true,
           projectId: req.project_id,
           visibility: creation.visibility,
           backend,
@@ -1249,6 +1251,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             );
             try {
               assertConversationInputCapabilities(originalMessage.input_parts ?? [], backend.prompt_capabilities);
+              assertConversationInputResourceTools(originalMessage.input_parts ?? [], backend.adapter_type);
             } catch (error) {
               if (error instanceof ConversationInputCapabilityError) {
                 throw new ChatContextError(`Retry context needs review: ${error.message}`, error.statusCode);
@@ -1292,6 +1295,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               sessionId: session.id,
               message: originalMessage.content,
               currentMessage: originalMessage,
+              hasInputResources: originalMessage.input_parts?.some((part) => part.kind === "input_resource") === true,
               projectId: session.project_id,
               visibility: "private",
               backend,
@@ -1395,6 +1399,7 @@ async function prepareChatRun(
     sessionId: string;
     message: string;
     currentMessage: MessageOut;
+    hasInputResources: boolean;
     projectId?: string | null;
     visibility: "private" | "space_shared" | "selected_users";
     backend: ResolvedConversationBackend;
@@ -1430,7 +1435,10 @@ async function prepareChatRun(
     // The same allowance a Room message or a delegation gets in this Project;
     // this used to be a private three-action list from before scenario
     // allowances existed, so a direct chat could not do what a Room could.
-    ...conversationToolGrantInput({ project_id: input.projectId ?? null }),
+    ...conversationToolGrantInput({
+      project_id: input.projectId ?? null,
+      has_input_resources: input.hasInputResources,
+    }),
     prompt: input.hostPromptContext
       ? `${input.hostPromptContext}\n\n[Assigned direct-chat message]\n${input.message}`
       : input.message,

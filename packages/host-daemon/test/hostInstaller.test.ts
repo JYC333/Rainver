@@ -182,7 +182,7 @@ describe("host release installer", () => {
     }
   });
 
-  it.runIf(process.platform === "linux")("loads the captured CLI PATH through the generated daemon launcher", async () => {
+  it.runIf(process.platform === "linux")("loads the captured CLI PATH and install bin directory through the generated daemon launcher", async () => {
     const root = await mkdtemp(join(tmpdir(), "rainver-host-path-test-"));
     const installRoot = join(root, "install");
     const binDir = join(root, "bin");
@@ -235,6 +235,9 @@ describe("host release installer", () => {
 
       const result = await runCommand("/bin/bash", [installerPath], {
         ...process.env,
+        // Deliberately omit binDir: the installer must make the directory it
+        // just installed into visible to the daemon even when shell startup
+        // did not put it on PATH yet.
         PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
         XDG_CONFIG_HOME: xdgConfig,
         RAINVER_HOST_INSTALL_ROOT: installRoot,
@@ -251,15 +254,30 @@ describe("host release installer", () => {
       expect(unit).not.toContain("EnvironmentFile=");
       const cliLauncher = await readFile(join(binDir, "rainver-host"), "utf8");
       const daemonLauncher = await readFile(join(installRoot, "rainver-host-daemon"), "utf8");
+      const serviceEnv = join(xdgConfig, "rainver-host", "service.env");
       expect(cliLauncher).toContain(realpathSync(process.execPath));
       expect(daemonLauncher).toContain(realpathSync(process.execPath));
       expect(cliLauncher).not.toContain(join(fakeBin, "node"));
       expect(daemonLauncher).not.toContain(join(fakeBin, "node"));
+      expect((await readFile(serviceEnv, "utf8")).split("\n")[0]!.split(delimiter).slice(0, 2)).toEqual([
+        `PATH="${binDir}`,
+        fakeBin,
+      ]);
       await runCommand(join(installRoot, "rainver-host-daemon"), [], {
         PATH: "/usr/bin:/bin",
         RAINVER_TEST_OUTPUT: daemonEnvironment,
       });
-      expect((await readFile(daemonEnvironment, "utf8")).split(delimiter)[0]).toBe(fakeBin);
+      expect((await readFile(daemonEnvironment, "utf8")).split(delimiter).slice(0, 2)).toEqual([binDir, fakeBin]);
+
+      // A launcher produced by an update must also repair the effective PATH
+      // of a legacy service.env without overwriting that user-owned file.
+      await writeFile(serviceEnv, `PATH="${fakeBin}"\nRAINVER_HOST_CONFIG_DIR="${configDir}"\n`);
+      await runCommand(join(installRoot, "rainver-host-daemon"), [], {
+        PATH: "/usr/bin:/bin",
+        RAINVER_TEST_OUTPUT: daemonEnvironment,
+      });
+      expect((await readFile(daemonEnvironment, "utf8")).split(delimiter)).toEqual([binDir, fakeBin]);
+      expect(await readFile(serviceEnv, "utf8")).toBe(`PATH="${fakeBin}"\nRAINVER_HOST_CONFIG_DIR="${configDir}"\n`);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

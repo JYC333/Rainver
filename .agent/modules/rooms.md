@@ -421,7 +421,12 @@ immutable snapshot instead. User-uploaded images remain actual multimodal
 image inputs rather than being silently converted into workspace files.
 Conversation Folder attachments are writable by default; the user can choose
 Read only for an explicit read-only grant, and the selected Host namespace still
-confines both modes to the authorized Location root.
+confines both modes to the authorized Location root. The Files & Code sidecar
+adds the selected current-file state only while that Area is mounted; it is
+visible as a removable `Current file` bar and is not a global attachment entry.
+The send freezes saved/draft bytes into an immutable message resource without
+putting the body in the prompt. The Agent reads that resource lazily through
+the Run-scoped `input_resource.read/search` tools.
 
 ## Project state context (Phase A)
 
@@ -862,10 +867,11 @@ the order it was assembled.
   message, or creating any recipient Run. One incompatible or unknown image
   target rejects the complete send; it never fans out a partial Room turn.
 - Conversation input images are pending, Space-scoped media rows until the
-  sender's message claims them in the same transaction. File references are
-  re-authorized through Project Folder reads and stored as bounded immutable
-  snapshots, so later workspace changes do not rewrite transcript or retry
-  input.
+  sender's message claims them in the same transaction. Current-file
+  references are re-authorized through Project Folder reads and frozen as
+  bounded message-owned resources, so later workspace changes do not rewrite
+  transcript or retry input. The older `conversation_file_snapshots` shape is
+  retained only for readable historical messages.
 - A reference is resolved once, under the attacher's identity, with oversight
   excluded, and never re-read. Nothing re-authorizes it per turn, because
   there is nothing live to re-authorize.

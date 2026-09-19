@@ -1,4 +1,4 @@
-import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostLaunchFrame, type HostLaunchIsolation, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
+import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostEgressTransport, type HostLaunchFrame, type HostLaunchIsolation, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
 import { homedir } from "node:os";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -727,6 +727,7 @@ export function runEgressLog(runId: string) {
 function grantRunEgress(
   runId: string,
   profile: EgressProfile,
+  transport: HostEgressTransport,
   /**
    * Everything the control plane is handing this Run that could name one of
    * its own addresses: the environment, and the config files a provider
@@ -736,7 +737,7 @@ function grantRunEgress(
   sources: readonly string[],
 ): Record<string, string> {
   if (!egressProxy || profile === "none") return {};
-  const grant = egressProxy.grant(runId, profile);
+  const grant = egressProxy.grant(runId, profile, transport);
   const bypass = proxyBypassHosts([...sources, ...(controlPlaneUrl ? [controlPlaneUrl] : [])]);
   return egressProxyEnv(egressProxy.address, grant.token, bypass);
 }
@@ -1232,7 +1233,7 @@ async function launchRun(
         derivedEnv,
         ambient: process.env,
         isolation: frame.isolation,
-        egress: grantRunEgress(frame.run_id, frame.isolation?.egress_profile ?? "none", [
+        egress: grantRunEgress(frame.run_id, frame.isolation?.egress_profile ?? "none", frame.egress_transport ?? { mode: "direct" }, [
           ...Object.values(derivedEnv),
           ...(frame.provider_binding?.files ?? []).map((file) => file.contents),
         ]),

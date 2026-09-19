@@ -129,6 +129,8 @@ export class SystemActionDispatcher {
     registerModuleSystemActionExecutors(executors, config, run, {
       generic: permittedGenericDefinitions.length > 0,
       researchAcquisition: permittedResearchAcquisitionDefinitions.length > 0,
+    }, {
+      messageId: triggeringMessageId(run.model_override_json),
     });
 
     const actionEvents = deps.actionEventSink ?? defaultActionEventSink(config, run);
@@ -273,6 +275,14 @@ export class SystemActionDispatcher {
       return toolCallFailureResult(call, error);
     }
   }
+}
+
+function triggeringMessageId(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const chatTurn = (value as Record<string, unknown>).chat_turn;
+  if (!chatTurn || typeof chatTurn !== "object" || Array.isArray(chatTurn)) return null;
+  const messageId = (chatTurn as Record<string, unknown>).user_message_id;
+  return typeof messageId === "string" && messageId.trim() ? messageId : null;
 }
 
 function systemActionToolBinding(

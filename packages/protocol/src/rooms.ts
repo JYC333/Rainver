@@ -5,7 +5,7 @@ import {
   AgentRunMessageRecipientSegmentSchema,
   AgentRunMessageRoutingModeSchema,
 } from "./agentGroupRuns.js";
-import { MessageMetadataSchema } from "./memorySessions.js";
+import { ConversationMessageInputPartsSchema, MessageMetadataSchema } from "./memorySessions.js";
 import { RuntimeSessionConfigSelectionSchema } from "./hosts.js";
 
 export const RoomSchema = z.object({
@@ -347,7 +347,7 @@ export const RoomMessageSchema = z.object({
   /** The Run that produced this message, or that this message started. */
   run_id: IdSchema.nullish(),
   /** Ordered images and managed file references backed by server snapshots. */
-  input_parts: ConversationInputPartsSchema.optional(),
+  input_parts: ConversationMessageInputPartsSchema.optional(),
   created_at: ISODateTimeSchema,
   ...SecretResponseGuards,
 }).strict().superRefine((message, context) => {

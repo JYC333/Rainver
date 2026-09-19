@@ -42,7 +42,25 @@ export class PgProjectFileRevisionStore {
     retentionDays?: number | null;
     maxCount?: number | null;
   }): Promise<ProjectFileRevisionOut> {
-    const write = async (db: Queryable): Promise<ProjectFileRevisionOut> => {
+    const write = (db: Queryable): Promise<ProjectFileRevisionOut> => this.createInTransaction(db, input);
+    return isPool(this.db) ? withTransaction(this.db, write) : write(this.db);
+  }
+
+  /** Create a revision inside a caller-owned transaction (for draft save). */
+  async createInTransaction(db: Queryable, input: {
+    spaceId: string;
+    projectId: string;
+    projectFolderId: string;
+    workspaceLocationId: string;
+    path: string;
+    beforeExists: boolean;
+    beforeContent: string | null;
+    afterExists: boolean;
+    afterSha256: string | null;
+    userId: string;
+    retentionDays?: number | null;
+    maxCount?: number | null;
+  }): Promise<ProjectFileRevisionOut> {
       const id = randomUUID();
       const now = new Date();
       const retentionDays = input.retentionDays ?? DEFAULT_RETENTION_DAYS;
@@ -75,8 +93,6 @@ export class PgProjectFileRevisionStore {
         [input.projectFolderId, maxCount],
       );
       return revisionToOut(result.rows[0]!);
-    };
-    return isPool(this.db) ? withTransaction(this.db, write) : write(this.db);
   }
 
   async listForFile(spaceId: string, projectId: string, folderId: string, workspaceLocationId: string, path: string): Promise<ProjectFileRevisionOut[]> {
@@ -111,15 +127,6 @@ export class PgProjectFileRevisionStore {
     } : null;
   }
 
-  async markRolledBack(id: string, userId: string): Promise<boolean> {
-    const result = await this.db.query(
-      `UPDATE project_file_revisions
-          SET status = 'rolled_back', rolled_back_by_user_id = $2, rolled_back_at = $3
-        WHERE id = $1 AND status = 'available'`,
-      [id, userId, new Date().toISOString()],
-    );
-    return (result.rowCount ?? 0) > 0;
-  }
 }
 
 interface ProjectFileRevisionRow {

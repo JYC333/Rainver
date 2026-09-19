@@ -3,10 +3,15 @@
 ## Status
 Implemented. Files & Code is a Project-local Area, not a global operator console.
 
+The shipped full-file editor, recovery drafts, and message-owned lazy input
+resources are recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-input-resources.md).
+This module guide describes the post-integration behavior.
+
 ## Purpose
-Project-local interface for browsing and directly editing a Project Folder's files, reviewing git
-status/diffs, and rolling back a user's recent edit. All file access goes through server-side
-repositories — the frontend never accesses the host filesystem directly.
+Project-local interface for browsing and editing a Project Folder's files with CodeMirror 6,
+recovering unsaved human drafts, reviewing git status/diffs, and restoring history into a draft.
+All file access goes through server-side repositories — the frontend never accesses the host
+filesystem directly.
 
 ## Owns
 - Project Folder file tree browser UI (`/projects/{projectId}/files`)
@@ -14,7 +19,8 @@ repositories — the frontend never accesses the host filesystem directly.
 - Project Folder settings UI (`/projects/{projectId}/folders/{folderId}`), including
   per-Folder snapshot retention overrides
 - Files & Code backend read APIs (tree, file content, git status, git diff)
-- Files & Code direct user write/revision APIs (create, edit, revision list, rollback)
+- Files & Code draft/save/revision APIs (the only human write path is Save to Folder)
+- CodeMirror editor lifecycle, draft autosave controller, and contextual history/restore UI
 - Project Folder CRUD (create via managed dir / clone / connect existing, update, archive,
   unregister, scan)
 
@@ -42,9 +48,15 @@ POST       /api/v1/projects/{projectId}/folders/{folderId}/unregister
 POST       /api/v1/projects/{projectId}/folders/scan
 GET        /api/v1/projects/{projectId}/folders/{folderId}/tree?path=...
 GET        /api/v1/projects/{projectId}/folders/{folderId}/file?path=...
-POST       /api/v1/projects/{projectId}/folders/{folderId}/file
+GET        /api/v1/projects/{projectId}/folders/{folderId}/file?path=...&convert=utf8 (explicit UTF-16 preview)
+GET/PUT    /api/v1/projects/{projectId}/folders/{folderId}/file/draft?path=...
+POST       /api/v1/projects/{projectId}/folders/{folderId}/file/draft/rebase
+POST       /api/v1/projects/{projectId}/folders/{folderId}/file/draft/discard
+POST       /api/v1/projects/{projectId}/folders/{folderId}/file/draft/save
+GET        /api/v1/projects/{projectId}/folders/{folderId}/drafts/quota
 GET        /api/v1/projects/{projectId}/folders/{folderId}/file/revisions?path=...
-POST       /api/v1/projects/{projectId}/folders/{folderId}/file/rollback
+POST       /api/v1/projects/{projectId}/folders/{folderId}/file/revisions/restore-as-draft
+GET        /api/v1/projects/{projectId}/folders/{folderId}/file/revisions/{revisionId}/preview
 GET        /api/v1/projects/{projectId}/folders/{folderId}/git/status
 GET        /api/v1/projects/{projectId}/folders/{folderId}/git/diff?path=...
 GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
@@ -69,13 +81,32 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - Frontend must not access arbitrary server paths — all file access via
   `PgProjectFolderRepository` / `PgRunSandboxManager`.
 - Agent code changes still use the `code_patch` proposal flow. A person using
-  Files & Code may create or edit a bounded text file directly; each successful
-  write stores the preimage in `project_file_revisions` for a bounded, optimistic
-  rollback. Direct writes do not create a proposal or enter proposal review.
-- Direct writes require the exact file existence/hash observed by the editor,
-  are atomic, reject traversal/symlink escapes and secret-like paths, and are
-  capped at 1 MiB, matching the File-page read limit. Rollback stops with a stale-file conflict if the file changed
-  after the saved revision.
+  Files & Code edits a bounded text file in a recovery draft; Save to Folder
+  stores the preimage in `project_file_revisions` and then removes only the exact
+  saved draft version. There is no direct browser-content write or user-facing
+  rollback route. History offers Restore as draft, which never mutates the
+  Project Folder; revision rows and historical status values remain readable for
+  compatibility.
+- Save to Folder requires the exact draft version and Host existence/hash observed
+  by the editor, is atomic, rejects traversal/symlink escapes and secret-like
+  paths, and is capped at 1 MiB, matching the File-page read limit.
+- Drafts are private recovery rows owned by the authenticated Project writer:
+  opening a file creates none, the first changed document upserts one bounded
+  row, and a successful Save to Folder deletes only the exact saved version.
+  Draft reads/upserts/discards use optimistic versions, a 1 MiB item cap, a
+  50 MiB per-space/user aggregate cap, and rolling expiry; they are not a
+  global draft list. Unregister reports active-draft counts before requiring
+  explicit confirmation and removes confirmed rows in the same transaction.
+- A writable file is always an editable CodeMirror 6 view. The first document
+  change starts the serial 1.5-second idle / 10-second maximum-age draft queue;
+  blur, file switch, Folder switch, and Cmd/Ctrl+S flush the same queue. A
+  saved draft is safe to leave in the browser; only unacknowledged in-memory
+  changes trigger the navigation warning.
+- File admission is strict and byte-honest. UTF-8 (including BOM and LF/CRLF
+  metadata) is writable; mixed endings are reported; UTF-16 BOM files are
+  read-only until the explicit `convert=utf8` preview action; malformed or
+  binary/unknown bytes return an empty read-only body rather than replacement
+  characters or guessed encoding.
 - Files & Code tree/file/status/diff reads enforce `project_folder.read` before data is returned.
 - The active remote Location is authorized on the server (including an audit
   record with `host_id`) and served live over the `folder_read` channel by the
@@ -84,21 +115,32 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - Remote File-page writes use the same authenticated Host connection through a
   bounded `folder_write` / `folder_write_result` exchange. The server sends only
   the Location id and relative path; the daemon resolves the registered root,
-  applies the shared write policy, and returns the resulting SHA-256.
-- Conversation file references reuse the same Project Folder authorization and
-  `getFile` path/secret policy. A send stores a bounded UTF-8 snapshot plus
-  Folder/Location ids and a digest; a normal Run sends only a server-issued
-  ResourceLink and the Folder-relative path, while a manual retry hydrates the
-  immutable snapshot. The Host resolves the server-issued relative reference
-  against the launch's explicit Location access set. Once a
-  Conversation execution context is initialized, its shared composer searches
-  through `GET /api/v1/sessions/{sessionId}/input-files`, which searches only
-  the bounded trees of that session's Primary and active attached Folders. A
-  pre-initialization draft may use the same bounded tree reads to show the
-  context picker, but neither path provides a separate file index or an
-  arbitrary-path browser search. File reads expose the digest of the exact
-  returned bytes so the browser can pin a send reference without sending file
-  content back as a request field.
+  applies the shared write policy, and returns the resulting SHA-256. UTF-16
+  replacement is accepted only for the explicit conversion flow, and failed
+  saves restore the preimage in its original encoding.
+- Conversation current-file references reuse the same Project Folder
+  authorization and `getFile` path/secret policy. The Files sidecar sends only
+  saved/draft state metadata (including the exact draft version or body hash,
+  location, and selection); it never sends the body. A saved attachment is
+  described by its decoded UTF-8 body rather than the bytes on disk, so a
+  BOM-marked file attaches unchanged; a converted UTF-16 preview has no saved
+  body on the Host and is attachable only as an acknowledged draft. The message
+  transaction freezes the bounded UTF-8 bytes into an immutable, message-owned
+  resource.
+  Normal and retry Runs receive only its descriptor and read it lazily through
+  the governed `input_resource.read/search` actions; no Host temporary file,
+  generic database URL, or prompt-embedded body is used. Legacy
+  `conversation_file_snapshots` remain readable and are hydrated only by their
+  compatibility paths. The shared composer still searches authorized Folder
+  trees through `GET /api/v1/sessions/{sessionId}/input-files` for explicit
+  path references; that search is not a second resource index.
+- An attached immutable resource is the authoritative input state for its Run.
+  For `source_state=draft`, the runtime instruction requires the Agent to read
+  the complete resource before reading or changing the same relative path and
+  to use that acknowledged draft, not the older workspace file, as its
+  baseline. This does not promote the draft to the Folder or grant the Agent a
+  live-draft write path; external Folder changes continue to trigger the normal
+  draft conflict protection.
 - A conversation's Changes card resolves the exact `remote_diff` Artifact
   attached to the completed Host Run, including managed-workspace Runs. It is
   a read-only link to the Run's captured output; `Files & Code` remains the

@@ -39,7 +39,7 @@ export async function buildTree(root: string, signal?: AbortSignal): Promise<Fil
 export async function readFolderFile(
   root: string,
   relPath: string,
-  opts: { protectedFolder?: boolean; signal?: AbortSignal } = {},
+  opts: { protectedFolder?: boolean; signal?: AbortSignal; includeUtf16Preview?: boolean } = {},
 ): Promise<FileContent> {
   throwIfAborted(opts.signal);
   const resolved = resolveRelativePath(root, relPath, opts);
@@ -52,14 +52,122 @@ export async function readFolderFile(
   }
   const bytes = await readFile(resolved.absolute);
   throwIfAborted(opts.signal);
-  const content = bytes.toString("utf8");
+  const decoded = decodeFileBytes(bytes, { includeUtf16Preview: opts.includeUtf16Preview === true });
   return {
     path: resolved.relative,
-    content,
+    content: decoded.content,
     size: bytes.byteLength,
-    line_count: content.split(/\n/).length,
+    line_count: decoded.line_count,
     sha256: createHash("sha256").update(bytes).digest("hex"),
+    encoding: decoded.encoding,
+    has_bom: decoded.has_bom,
+    line_ending_mode: decoded.line_ending_mode,
+    writable: decoded.writable,
+    conversion_available: decoded.conversion_available,
   };
+}
+
+/**
+ * Decode a bounded file without ever replacing malformed bytes. UTF-16 is
+ * recognised only with a BOM; its body is returned only when the caller has
+ * explicitly requested a conversion preview. Binary/unknown input has an
+ * empty body and is therefore safe to render as read-only metadata.
+ */
+export function decodeFileBytes(
+  bytes: Uint8Array,
+  options: { includeUtf16Preview?: boolean } = {},
+): Pick<FileContent, "content" | "line_count" | "encoding" | "has_bom" | "line_ending_mode" | "writable" | "conversion_available"> {
+  const input = Buffer.from(bytes);
+  const utf8Bom = input.length >= 3 && input[0] === 0xef && input[1] === 0xbb && input[2] === 0xbf;
+  const utf16LeBom = input.length >= 2 && input[0] === 0xff && input[1] === 0xfe;
+  const utf16BeBom = input.length >= 2 && input[0] === 0xfe && input[1] === 0xff;
+
+  if (utf16LeBom || utf16BeBom) {
+    const body = input.subarray(2);
+    const decoded = decodeUtf16(body, utf16BeBom);
+    if (decoded !== null) {
+      const metadata = textMetadata(decoded, utf16BeBom ? "utf16be" : "utf16le", true, false, true);
+      return {
+        ...metadata,
+        content: options.includeUtf16Preview === true ? decoded : "",
+        writable: false,
+        conversion_available: true,
+      };
+    }
+    return unknownMetadata("unknown", true, true);
+  }
+
+  const body = utf8Bom ? input.subarray(3) : input;
+  try {
+    const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
+    return textMetadata(content, "utf8", utf8Bom, true, false);
+  } catch {
+    return unknownMetadata(hasNul(input) ? "binary" : "unknown", utf8Bom, false);
+  }
+}
+
+function decodeUtf16(body: Uint8Array, bigEndian: boolean): string | null {
+  if (body.byteLength % 2 !== 0) return null;
+  const bytes = Buffer.from(body);
+  if (bigEndian) {
+    for (let index = 0; index < bytes.length; index += 2) {
+      const first = bytes[index]!;
+      bytes[index] = bytes[index + 1]!;
+      bytes[index + 1] = first;
+    }
+  }
+  try {
+    return new TextDecoder("utf-16le", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+function textMetadata(
+  content: string,
+  encoding: "utf8" | "utf16le" | "utf16be",
+  hasBom: boolean,
+  writable: boolean,
+  conversionAvailable: boolean,
+): Pick<FileContent, "content" | "line_count" | "encoding" | "has_bom" | "line_ending_mode" | "writable" | "conversion_available"> {
+  return {
+    content,
+    line_count: content.split(/\n/).length,
+    encoding,
+    has_bom: hasBom,
+    line_ending_mode: lineEndingMode(content),
+    writable,
+    conversion_available: conversionAvailable,
+  };
+}
+
+function unknownMetadata(
+  encoding: "binary" | "unknown",
+  hasBom: boolean,
+  conversionAvailable: boolean,
+): Pick<FileContent, "content" | "line_count" | "encoding" | "has_bom" | "line_ending_mode" | "writable" | "conversion_available"> {
+  return {
+    content: "",
+    line_count: 0,
+    encoding,
+    has_bom: hasBom,
+    line_ending_mode: "none",
+    writable: false,
+    conversion_available: conversionAvailable,
+  };
+}
+
+function lineEndingMode(content: string): "lf" | "crlf" | "mixed" | "none" {
+  const crlf = /\r\n/u.test(content);
+  const loneLf = /(^|[^\r])\n/u.test(content);
+  const loneCr = /\r(?!\n)/u.test(content);
+  if (!crlf && !loneLf && !loneCr) return "none";
+  if ((crlf ? 1 : 0) + (loneLf || loneCr ? 1 : 0) > 1 || loneCr) return "mixed";
+  return crlf ? "crlf" : "lf";
+}
+
+function hasNul(bytes: Uint8Array): boolean {
+  return bytes.some((byte) => byte === 0);
 }
 
 export async function folderGitStatus(root: string): Promise<GitStatus> {

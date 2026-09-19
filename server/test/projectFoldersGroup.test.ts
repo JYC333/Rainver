@@ -47,17 +47,14 @@ describe("projectFoldersRoutes", () => {
         size: 5,
         line_count: 1,
       });
-      await expectJson("POST", "/api/v1/projects/project-1/folders/folder-1/file", {
-        file: { path: "README.md", content: "edited", size: 6, line_count: 1, sha256: "a".repeat(64) },
-        revision: { id: "revision-1", path: "README.md", status: "available" },
+      await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/file/draft?path=README.md", null);
+      await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/drafts/quota", {
+        used_bytes: 0,
+        limit_bytes: 50 * 1024 * 1024,
       });
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/file/revisions?path=README.md", [{
         id: "revision-1", path: "README.md", status: "available",
       }]);
-      await expectJson("POST", "/api/v1/projects/project-1/folders/folder-1/file/rollback", {
-        file: { path: "README.md", content: "hello", size: 5, line_count: 1, sha256: "b".repeat(64) },
-        revision_id: "revision-1", rolled_back: true,
-      });
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/git/status", {
         is_repo: false, branch: null, files: [],
       });
@@ -112,9 +109,7 @@ describe("projectFoldersRoutes", () => {
     | "getFile"
     | "getGitStatus"
     | "getGitDiff"
-    | "editFile"
     | "listFileRevisions"
-    | "rollbackFile"
   > {
     return {
       async list() {
@@ -147,20 +142,20 @@ describe("projectFoldersRoutes", () => {
       async getFile(_identity: unknown, _projectId: unknown, _folderId: unknown, requestedPath: string) {
         return { path: requestedPath, content: "hello", size: 5, line_count: 1 };
       },
+      async getDraft() {
+        return null;
+      },
+      async draftQuota() {
+        return { used_bytes: 0, limit_bytes: 50 * 1024 * 1024 };
+      },
       async getGitStatus() {
         return { is_repo: false, branch: null, files: [] };
       },
       async getGitDiff() {
         return { diff: "", path: null, truncated: false, redacted: false };
       },
-      async editFile() {
-        return { file: { path: "README.md", content: "edited", size: 6, line_count: 1, sha256: "a".repeat(64) }, revision: { id: "revision-1", path: "README.md", status: "available" } };
-      },
       async listFileRevisions() {
         return [{ id: "revision-1", path: "README.md", status: "available" }];
-      },
-      async rollbackFile() {
-        return { file: { path: "README.md", content: "hello", size: 5, line_count: 1, sha256: "b".repeat(64) }, revision_id: "revision-1", rolled_back: true };
       },
     } as unknown as Pick<
       PgProjectFolderRepository,
@@ -176,9 +171,7 @@ describe("projectFoldersRoutes", () => {
       | "getFile"
       | "getGitStatus"
       | "getGitDiff"
-      | "editFile"
       | "listFileRevisions"
-      | "rollbackFile"
     >;
   }
 });
@@ -200,16 +193,23 @@ describe("projectFoldersSecurity", () => {
       if (norm.startsWith("SELECT id, status FROM projects")) {
         return { rows: [{ id: "project-1", status: "active" }], rowCount: 1 };
       }
+      if (norm.startsWith("SELECT status FROM projects")) {
+        return { rows: [{ status: "active" }], rowCount: 1 };
+      }
       if (norm.startsWith("SELECT owner_user_id FROM projects")) {
         return { rows: [{ owner_user_id: this.projectOwnerId }], rowCount: 1 };
       }
       if (
         norm.startsWith("SELECT role FROM space_memberships") ||
         norm.startsWith("SELECT role FROM project_members") ||
-        norm.startsWith("SELECT root_path FROM project_folders") ||
-        norm.startsWith("SELECT id FROM project_folders")
+        norm.startsWith("SELECT root_path FROM project_folders")
       ) {
         return { rows: [], rowCount: 0 };
+      }
+      if (norm.startsWith("SELECT id FROM project_folders")) {
+        return norm.includes("FOR UPDATE")
+          ? { rows: [{ id: "folder-1" }], rowCount: 1 }
+          : { rows: [], rowCount: 0 };
       }
       if (norm.startsWith("DELETE FROM project_folders")) {
         return { rows: [], rowCount: this.deleteRowCount };

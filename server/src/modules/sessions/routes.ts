@@ -431,7 +431,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             messageId: created.id,
             parts: prepared,
           });
-          return { ...created, input_parts: parsed.data.input_parts };
+          // Re-read the persisted projection so a new immutable resource
+          // returns its resource id/capture metadata rather than echoing the
+          // admission request (which intentionally contains no body).
+          return await txRepository.messageById(identity.spaceId, identity.userId, sessionId, created.id)
+            ?? { ...created, input_parts: parsed.data.input_parts };
         });
       } else {
         message = await services.repository.addMessage(

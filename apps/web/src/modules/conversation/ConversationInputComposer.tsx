@@ -4,6 +4,7 @@ import type {
   ConversationInputFileReferencePart,
   ConversationInputImagePart,
   ConversationInputPart,
+  ConversationInputResourceMessagePart,
   ConversationExecutionSummary,
 } from '@rainver/protocol'
 import {
@@ -544,16 +545,29 @@ function ImageAttachment({ part, upload, onRemove }: { part: ConversationInputIm
   )
 }
 
-export function ConversationInputPartsView({ parts }: { parts?: ConversationInputPart[] }) {
+export function ConversationInputPartsView({ parts }: { parts?: Array<ConversationInputPart | ConversationInputResourceMessagePart> }) {
   if (!parts?.length) return null
+  const inputParts = parts.filter((part): part is ConversationInputPart => 'kind' in part)
+  const resourceParts = parts.filter((part): part is ConversationInputPart | ConversationInputResourceMessagePart => 'kind' in part && part.kind === 'input_resource')
   return (
     <div className="mt-1 flex min-w-0 max-w-full flex-wrap gap-2" aria-label="Message inputs">
-      {parts.filter((part): part is ConversationInputImagePart => part.kind === 'image').map(part => <ImageAttachment key={part.media_id} part={part} />)}
-      {parts.filter((part): part is ConversationInputFileReferencePart => part.kind === 'file_reference').map(part => (
+      {inputParts.filter((part): part is ConversationInputImagePart => part.kind === 'image').map(part => <ImageAttachment key={part.media_id} part={part} />)}
+      {inputParts.filter((part): part is ConversationInputFileReferencePart => part.kind === 'file_reference').map(part => (
         <div key={`${part.project_folder_id}:${part.relative_path}`} className="flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1.5 text-xs" title={`Referenced file: ${part.relative_path}`} aria-label={`Referenced file ${part.relative_path}`}>
           <FileText className="size-3.5 text-muted-foreground" /> <span className="max-w-56 truncate">{part.relative_path}</span>
         </div>
       ))}
+      {resourceParts.map(part => {
+        if (!('source_state' in part) || !('display_name' in part) || !('sha256' in part)) return null
+        const path = 'relative_path' in part && part.relative_path ? part.relative_path : part.display_name
+        return (
+          <div key={'resource_id' in part ? part.resource_id : `${part.source_state}:${part.display_name}:${part.sha256}`} className="flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1.5 text-xs" title={`Current file: ${path}`} aria-label={`Current file ${path}`}>
+            <FileText className="size-3.5 text-muted-foreground" />
+            <span className="max-w-56 truncate">{path}</span>
+            <span className="rounded border px-1 text-[9px] text-muted-foreground">{part.source_state === 'draft' ? 'Draft' : 'Saved'}</span>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -603,7 +617,20 @@ function flattenFileTree(root: FileNode | null, source: ConversationInputFileSou
 }
 
 function samePart(a: ConversationInputPart, b: ConversationInputPart): boolean {
-  return a.kind === b.kind && (a.kind === 'image' ? a.media_id === (b.kind === 'image' ? b.media_id : '') : a.project_folder_id === (b.kind === 'file_reference' ? b.project_folder_id : '') && a.relative_path === (b.kind === 'file_reference' ? b.relative_path : ''))
+  if (a.kind !== b.kind) return false
+  if (a.kind === 'image' && b.kind === 'image') return a.media_id === b.media_id
+  if (a.kind === 'file_reference' && b.kind === 'file_reference') {
+    return a.project_folder_id === b.project_folder_id && a.workspace_location_id === b.workspace_location_id && a.relative_path === b.relative_path
+  }
+  if (a.kind === 'input_resource' && b.kind === 'input_resource') {
+    return a.source_state === 'draft'
+      ? b.source_state === 'draft' && a.draft_id === b.draft_id
+      : b.source_state === 'saved'
+        && a.project_folder_id === b.project_folder_id
+        && a.workspace_location_id === b.workspace_location_id
+        && a.relative_path === b.relative_path
+  }
+  return false
 }
 
 function formatBytes(bytes: number): string {

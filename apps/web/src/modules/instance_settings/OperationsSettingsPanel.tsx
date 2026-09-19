@@ -20,6 +20,9 @@ function draftFrom(settings: InstanceOperationsSettings): Draft {
     backup_on_startup: settings.backup_on_startup,
     content_access_log_retention_enabled: settings.content_access_log_retention_enabled,
     content_access_log_retention_days: settings.content_access_log_retention_days,
+    managed_host_egress_mode: settings.managed_host_egress_mode,
+    managed_host_proxy_url: settings.managed_host_proxy_url,
+    managed_host_no_proxy: settings.managed_host_no_proxy,
   }
 }
 
@@ -122,6 +125,46 @@ export function OperationsSettingsPanel() {
             <div><h3 className="text-sm font-semibold">Access audit retention</h3><p className="text-xs text-muted-foreground">Controls automatic pruning of cross-owner content access records.</p></div>
             <Toggle label="Prune expired access logs" checked={draft.content_access_log_retention_enabled} disabled={busy} onChange={value => setDraft(current => current ? { ...current, content_access_log_retention_enabled: value } : current)} />
             <div className="max-w-xs"><Label htmlFor="access-log-retention">Retention (days)</Label><Input id="access-log-retention" type="number" min={1} max={3650} value={draft.content_access_log_retention_days} disabled={busy || !draft.content_access_log_retention_enabled} onChange={event => setDraft(current => current ? { ...current, content_access_log_retention_days: Number(event.target.value) } : current)} /></div>
+          </section>
+
+          <section className="space-y-3 border-t border-border pt-4">
+            <div>
+              <h3 className="text-sm font-semibold">Built-in Host network</h3>
+              <p className="text-xs text-muted-foreground">Controls how Managed Runs reach public services after Rainver applies their egress policy. Changes apply to the next Run; no container restart is needed.</p>
+            </div>
+            <div className="max-w-md">
+              <Label htmlFor="managed-host-egress-mode">Public network route</Label>
+              <select
+                id="managed-host-egress-mode"
+                className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
+                value={draft.managed_host_egress_mode}
+                disabled={busy}
+                onChange={event => setDraft(current => current ? { ...current, managed_host_egress_mode: event.target.value as Draft['managed_host_egress_mode'] } : current)}
+              >
+                <option value="direct">Direct network</option>
+                <option value="system_tun">System TUN / virtual network adapter</option>
+                <option value="http_proxy">HTTP proxy</option>
+              </select>
+            </div>
+            {draft.managed_host_egress_mode === 'system_tun' && (
+              <p className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                Use this when the host proxy exposes public domains as RFC 2544 fake-IP addresses and routes those addresses through a system-level TUN adapter.
+              </p>
+            )}
+            {draft.managed_host_egress_mode === 'http_proxy' && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <Label htmlFor="managed-host-proxy-url">Proxy URL</Label>
+                  <Input id="managed-host-proxy-url" placeholder="http://proxy.example:7890" value={draft.managed_host_proxy_url ?? ''} disabled={busy} onChange={event => setDraft(current => current ? { ...current, managed_host_proxy_url: event.target.value || null } : current)} />
+                  <p className="mt-1 text-xs text-muted-foreground">HTTP(S) URL only. Credentials are not stored in this setting.</p>
+                </div>
+                <div>
+                  <Label htmlFor="managed-host-no-proxy">Direct exceptions</Label>
+                  <Input id="managed-host-no-proxy" placeholder="localhost,.example.internal" value={draft.managed_host_no_proxy ?? ''} disabled={busy} onChange={event => setDraft(current => current ? { ...current, managed_host_no_proxy: event.target.value || null } : current)} />
+                  <p className="mt-1 text-xs text-muted-foreground">Optional comma-separated NO_PROXY entries.</p>
+                </div>
+              </div>
+            )}
           </section>
         </div>
       ) : <p className="mt-4 text-sm text-muted-foreground">Operations settings are unavailable.</p>}

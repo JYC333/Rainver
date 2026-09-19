@@ -107,11 +107,14 @@ journalctl --user -u rainver-host -f
 systemctl --user list-timers rainver-host-update.timer
 ```
 
-The service runs as the installing user, never as root. It captures that
-user's `PATH` on first installation, and the generated daemon launcher loads
-`~/.config/rainver-host/service.env` before Node starts, so discovery does not
-depend on systemd's default PATH or its `EnvironmentFile` path parsing. Edit
-that file and restart the service if those paths later change.
+The service runs as the installing user, never as root. On first installation
+it captures that user's `PATH` and ensures the directory containing the
+`rainver-host` command (normally `~/.local/bin`) is included. The generated
+daemon launcher loads `~/.config/rainver-host/service.env` before Node starts,
+so discovery does not depend on systemd's default PATH or its `EnvironmentFile`
+path parsing. An update also adds the command directory to the daemon's
+effective PATH for legacy configurations without rewriting the file. Edit that
+file and restart the service if other paths later change.
 
 On a headless machine where the user logs in only over SSH, enable systemd
 lingering once if the service must remain alive after the final logout:

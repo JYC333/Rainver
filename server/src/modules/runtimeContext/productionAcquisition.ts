@@ -65,6 +65,10 @@ import {
 import { enforce } from "../policy/service.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
+import {
+  loadConversationInputResourceDescriptors,
+  renderConversationInputResourceDescriptors,
+} from "../sessions/conversationInputService.js";
 
 type SetupRow = {
   id: string;
@@ -181,6 +185,13 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
           runId: run.id,
         });
     if (!current || !current.content.trim()) throw new Error("Current input is missing or outside the Work Context scope");
+    const inputResourceDescriptors = request.turn.current_message_ref.type === "message"
+      ? await loadConversationInputResourceDescriptors(this.db, {
+          spaceId: request.identity.spaceId,
+          messageId: request.turn.current_message_ref.id,
+        })
+      : [];
+    const inputResourceText = renderConversationInputResourceDescriptors(inputResourceDescriptors);
     const project = await this.context.loadPublishedProjectContext(
       request.identity.spaceId,
       authority.projectId,
@@ -202,8 +213,11 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
       selection: "required",
       semanticRole: "user_input",
       trust: current.role === "system" ? "system_approved" : "user_confirmed",
-      text: current.content,
-      revalidation: { message_created_at: String(current.created_at ?? "") },
+      text: inputResourceText ? `${current.content}\n\n${inputResourceText}` : current.content,
+      revalidation: {
+        message_created_at: String(current.created_at ?? ""),
+        input_resource_ids: inputResourceDescriptors.map((descriptor) => descriptor.resource_id),
+      },
     })];
     if (request.turn.current_message_ref.type === "message" && isRoomConversation(run.model_override_json)) {
       if (run.prompt?.trim()) {

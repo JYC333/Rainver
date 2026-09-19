@@ -1,4 +1,27 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import type { ConversationInputResourcePart, InputResourceSelection } from '@rainver/protocol'
+
+export type CurrentFileAttachmentStatus = 'clean' | 'draft' | 'saving' | 'conflict' | 'offline' | 'unsupported'
+
+/** The mounted Files editor's acknowledged, sendable state. */
+export interface CurrentFileAttachment {
+  sourceKey: string
+  projectFolderId: string
+  workspaceLocationId: string | null
+  relativePath: string
+  displayName: string
+  mediaType: string
+  sourceState: 'saved' | 'draft'
+  byteSize: number
+  sha256: string | null
+  draftId: string | null
+  draftVersion: number | null
+  contentSha256: string | null
+  selection?: InputResourceSelection
+  status: CurrentFileAttachmentStatus
+  /** Flushes the editor, then returns the exact acknowledged resource part. */
+  flushForSend: () => Promise<ConversationInputResourcePart | null>
+}
 
 interface ProjectFolderConversationContextValue {
   /** The Folder currently selected in Files & Code, if that Area is mounted. */
@@ -7,6 +30,9 @@ interface ProjectFolderConversationContextValue {
   /** Null means that the current conversation has not exposed an initialized execution context yet. */
   conversationFolderIds: string[] | null
   setConversationFolderIds: (ids: readonly string[] | null) => void
+  /** Only the mounted Files & Code editor may publish this; it is not a global file picker. */
+  currentFileAttachment: CurrentFileAttachment | null
+  setCurrentFileAttachment: (attachment: CurrentFileAttachment | null) => void
 }
 
 const ProjectFolderConversationContext = createContext<ProjectFolderConversationContextValue>({
@@ -14,11 +40,14 @@ const ProjectFolderConversationContext = createContext<ProjectFolderConversation
   setSelectedFolderId: () => undefined,
   conversationFolderIds: null,
   setConversationFolderIds: () => undefined,
+  currentFileAttachment: null,
+  setCurrentFileAttachment: () => undefined,
 })
 
 export function ProjectFolderConversationProvider({ projectId, children }: { projectId: string; children: ReactNode }) {
   const [selectedFolderId, setSelectedFolderIdState] = useState<string | null>(null)
   const [conversationFolderIds, setConversationFolderIdsState] = useState<string[] | null>(null)
+  const [currentFileAttachment, setCurrentFileAttachmentState] = useState<CurrentFileAttachment | null>(null)
   const previousProjectId = useRef(projectId)
 
   const setSelectedFolderId = useCallback((id: string | null) => {
@@ -38,9 +67,21 @@ export function ProjectFolderConversationProvider({ projectId, children }: { pro
     previousProjectId.current = projectId
     setSelectedFolderIdState(null)
     setConversationFolderIdsState(null)
+    setCurrentFileAttachmentState(null)
   }, [projectId])
 
-  const value = useMemo(() => ({ selectedFolderId, setSelectedFolderId, conversationFolderIds, setConversationFolderIds }), [conversationFolderIds, selectedFolderId, setConversationFolderIds, setSelectedFolderId])
+  const setCurrentFileAttachment = useCallback((attachment: CurrentFileAttachment | null) => {
+    setCurrentFileAttachmentState(attachment)
+  }, [])
+
+  const value = useMemo(() => ({
+    selectedFolderId,
+    setSelectedFolderId,
+    conversationFolderIds,
+    setConversationFolderIds,
+    currentFileAttachment,
+    setCurrentFileAttachment,
+  }), [conversationFolderIds, currentFileAttachment, selectedFolderId, setConversationFolderIds, setCurrentFileAttachment, setSelectedFolderId])
   return <ProjectFolderConversationContext.Provider value={value}>{children}</ProjectFolderConversationContext.Provider>
 }
 

@@ -5,6 +5,10 @@ import {
   AgentWaitForResultsInputSchema,
   RuntimeDelegationOutputItemSchema,
 } from "./agentGroupRuns.js";
+import {
+  InputResourceReadInputSchema,
+  InputResourceSearchInputSchema,
+} from "./conversationInputResources.js";
 
 export const SYSTEM_ACTION_VISIBILITY_VALUES = [
   "internal_only",
@@ -102,7 +106,7 @@ export interface SystemActionPolicyResource {
 }
 
 export const SystemActionDefinitionSchema = z.object({
-  id: z.string().regex(/^[a-z][a-z0-9]*(?:\.[a-z][a-z0-9_]*)+$/),
+  id: z.string().regex(/^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/),
   version: z.number().int().positive(),
   title: z.string().min(1),
   description: z.string().min(1),
@@ -387,11 +391,15 @@ const proposalInputs:Record<string,z.ZodType>={
     operation_id: z.string().min(1).describe("The research Operation id exactly as returned by research.list_operations. Never invent, abbreviate, or derive one — ids are copied from a tool result, never composed."),
     reason: z.string().trim().min(1).max(2000).optional(),
   }).strict(),
+  "input_resource.read": InputResourceReadInputSchema,
+  "input_resource.search": InputResourceSearchInputSchema,
 };
 const visibility = (...values: SystemActionVisibility[]) => new Set(values);
 
 export const SYSTEM_ACTION_REGISTRY = [
   agentAction("authorization.request", "Request authorization for a denied action", "policy", "AuthorizationRequestService.createFromDeniedDecision", "authorization.request.create", "durable", { resource_type: "authorization_request", resource_id_fallback: "run", check_action_approval_grant: false }),
+  agentAction("input_resource.read", "Read lines from an attached conversation resource", "conversationInput", "ConversationInputResourceService.read", "input_resource.read", "none", { resource_type: "conversation_input_resource", resource_id_input_field: "resource_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  agentAction("input_resource.search", "Search an attached conversation resource", "conversationInput", "ConversationInputResourceService.search", "input_resource.search", "none", { resource_type: "conversation_input_resource", resource_id_input_field: "resource_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   action("retrieval.search", "Search knowledge", "retrieval", "RetrievalToolService.search", "retrieval.search", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
   action("retrieval.brief", "Build knowledge brief", "retrieval", "RetrievalToolService.brief", "retrieval.brief", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
   action("memory.retrieval.search", "Search memory", "memory", "RetrievalToolService.search", "memory.retrieval.search", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),

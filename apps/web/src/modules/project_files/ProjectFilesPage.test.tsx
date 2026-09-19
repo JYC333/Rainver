@@ -4,8 +4,11 @@ import { useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { projectFoldersApi } from '../../api/client'
 import ProjectFilesPage from './ProjectFilesPage'
-import { ProjectFolderConversationProvider, useProjectFolderConversation } from '../projects/ProjectFolderConversationContext'
+import { ProjectFolderConversationProvider, useProjectFolderConversation, type CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
+import { sha256Utf8 } from './draftController'
+import type { FileContent } from '../../types/api'
 import { notifyProjectFolderContentChanged } from '../../core/projectFolderEvents'
+import { ProjectFileEditor } from './ProjectFileEditor'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -19,9 +22,14 @@ vi.mock('../../api/client', () => ({
     gitStatus: vi.fn(),
     locations: vi.fn().mockResolvedValue([]),
     file: vi.fn(),
+    draft: vi.fn().mockResolvedValue(null),
+    upsertDraft: vi.fn(),
+    rebaseDraft: vi.fn(),
+    discardDraft: vi.fn(),
+    saveDraft: vi.fn(),
+    previewRevision: vi.fn(),
+    restoreRevisionAsDraft: vi.fn(),
     fileRevisions: vi.fn().mockResolvedValue([]),
-    editFile: vi.fn(),
-    rollbackFile: vi.fn(),
     gitDiff: vi.fn(),
     scan: vi.fn().mockResolvedValue({ items: [] }),
     create: vi.fn(),
@@ -65,12 +73,24 @@ function SelectedFolderProbe({ onChange }: { onChange: (id: string | null) => vo
   return null
 }
 
-function renderPage(path = '/projects/project-1/files', conversationFolderIds?: readonly string[], onSelectedFolderChange?: (id: string | null) => void) {
+function CurrentFileProbe({ onChange }: { onChange: (attachment: CurrentFileAttachment | null) => void }) {
+  const { currentFileAttachment } = useProjectFolderConversation()
+  useEffect(() => { onChange(currentFileAttachment) }, [currentFileAttachment, onChange])
+  return null
+}
+
+function renderPage(
+  path = '/projects/project-1/files',
+  conversationFolderIds?: readonly string[],
+  onSelectedFolderChange?: (id: string | null) => void,
+  onCurrentFileChange?: (attachment: CurrentFileAttachment | null) => void,
+) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <ProjectFolderConversationProvider projectId="project-1">
         {conversationFolderIds && <ConversationFolderSeed ids={conversationFolderIds} />}
         {onSelectedFolderChange && <SelectedFolderProbe onChange={onSelectedFolderChange} />}
+        {onCurrentFileChange && <CurrentFileProbe onChange={onCurrentFileChange} />}
         <Routes>
           <Route path="/projects/:projectId/files" element={<ProjectFilesPage />} />
         </Routes>
@@ -80,6 +100,91 @@ function renderPage(path = '/projects/project-1/files', conversationFolderIds?: 
 }
 
 describe('Project Files & Code Area', () => {
+  it('requires confirmation before saving a draft that normalizes mixed line endings', async () => {
+    const draft = {
+      id: 'draft-mixed', space_id: 'space-1', project_id: 'project-1', project_folder_id: 'folder-1',
+      workspace_location_id: 'location-1', owner_user_id: 'user-1', target_kind: 'existing' as const,
+      relative_path: 'mixed.txt', base_exists: true, base_sha256: 'a'.repeat(64),
+      content: 'one\ntwo\n', content_sha256: 'b'.repeat(64), byte_size: 8, version: 1,
+      source_encoding: 'utf8' as const, preserve_bom: false, line_ending_mode: 'mixed' as const,
+      created_at: '2026-09-18T12:00:00.000Z', updated_at: '2026-09-18T12:00:00.000Z', expires_at: '2026-09-19T12:00:00.000Z',
+    }
+    const saved = {
+      file: { path: 'mixed.txt', content: draft.content, size: 8, line_count: 3, sha256: 'c'.repeat(64), encoding: 'utf8' as const, writable: true },
+      revision: { id: 'revision-1', project_folder_id: 'folder-1', workspace_location_id: 'location-1', path: 'mixed.txt', before_exists: true, after_exists: true, after_sha256: 'c'.repeat(64), created_at: '', expires_at: '', status: 'available' as const },
+      draft_deleted: true,
+      newer_draft_retained: false,
+    }
+    const onDraftSave = vi.fn().mockResolvedValue(saved)
+    render(<ProjectFileEditor
+      file={{ path: 'mixed.txt', content: 'one\r\ntwo\n', size: 10, line_count: 3, sha256: 'a'.repeat(64), encoding: 'utf8', writable: true, line_ending_mode: 'mixed' }}
+      draft={draft}
+      onDraftUpsert={vi.fn()}
+      onDraftDiscard={vi.fn()}
+      onDraftSave={onDraftSave}
+      onDraftRebase={vi.fn()}
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save to Folder' }))
+    expect(await screen.findByText('Normalize mixed line endings?')).toBeInTheDocument()
+    expect(onDraftSave).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Normalize and save' }))
+    await waitFor(() => expect(onDraftSave).toHaveBeenCalledWith(draft, {
+      confirmMixedLineEndingNormalization: true,
+    }))
+  })
+
+  it('does not flash a Host conflict while a successful save adopts the new file', async () => {
+    const draft = {
+      id: 'draft-save', space_id: 'space-1', project_id: 'project-1', project_folder_id: 'folder-1',
+      workspace_location_id: 'location-1', owner_user_id: 'user-1', target_kind: 'existing' as const,
+      relative_path: 'notes.md', base_exists: true, base_sha256: 'a'.repeat(64),
+      content: 'updated\n', content_sha256: 'b'.repeat(64), byte_size: 8, version: 1,
+      source_encoding: 'utf8' as const, preserve_bom: false, line_ending_mode: 'lf' as const,
+      created_at: '', updated_at: '', expires_at: '',
+    }
+    const saved = {
+      file: { path: 'notes.md', content: draft.content, size: 8, line_count: 2, sha256: 'c'.repeat(64), encoding: 'utf8' as const, writable: true },
+      revision: { id: 'revision-save', project_folder_id: 'folder-1', workspace_location_id: 'location-1', path: 'notes.md', before_exists: true, after_exists: true, after_sha256: 'c'.repeat(64), created_at: '', expires_at: '', status: 'available' as const },
+      draft_deleted: true,
+      newer_draft_retained: false,
+    }
+    const pendingSave = deferred<typeof saved>()
+    const onDraftSave = vi.fn(() => pendingSave.promise)
+    const onDraftUpsert = vi.fn()
+    const onDraftDiscard = vi.fn()
+    const onDraftRebase = vi.fn()
+    const originalFile = { path: 'notes.md', content: 'original\n', size: 9, line_count: 2, sha256: 'a'.repeat(64), encoding: 'utf8' as const, writable: true }
+    const { rerender } = render(<ProjectFileEditor
+      file={originalFile}
+      draft={draft}
+      onDraftUpsert={onDraftUpsert}
+      onDraftDiscard={onDraftDiscard}
+      onDraftSave={onDraftSave}
+      onDraftRebase={onDraftRebase}
+    />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save to Folder' }))
+    await waitFor(() => expect(onDraftSave).toHaveBeenCalledTimes(1))
+
+    rerender(<ProjectFileEditor
+      file={saved.file}
+      draft={draft}
+      saving={false}
+      onDraftUpsert={onDraftUpsert}
+      onDraftDiscard={onDraftDiscard}
+      onDraftSave={onDraftSave}
+      onDraftRebase={onDraftRebase}
+    />)
+    expect(screen.queryByText('The Folder file changed after this draft was saved.')).not.toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Saving to Folder…')
+
+    await act(async () => { pendingSave.resolve(saved); await pendingSave.promise })
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Clean'))
+    expect(screen.queryByText('The Folder file changed after this draft was saved.')).not.toBeInTheDocument()
+  })
+
   it('keeps the Area reachable for a Project with zero Folders', async () => {
     vi.mocked(projectFoldersApi.list).mockResolvedValue({
       items: [], total: 0, limit: 200, offset: 0,
@@ -172,7 +277,35 @@ describe('Project Files & Code Area', () => {
     expect(screen.getByText(/never deleted, moved, or rewritten/i)).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /unregister folder/i }))
-    await waitFor(() => expect(projectFoldersApi.unregister).toHaveBeenCalledWith('project-1', 'folder-1'))
+    await waitFor(() => expect(projectFoldersApi.unregister).toHaveBeenCalledWith('project-1', 'folder-1', false))
+  })
+
+  /** The server refuses while recovery drafts are live and reports how many it
+   *  would discard; without the second step the Folder could not be
+   *  unregistered from this page at all. */
+  it('confirms the active recovery drafts the server refuses to discard silently', async () => {
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({
+      items: [folder('folder-1', 'Source')], total: 1, limit: 200, offset: 0,
+    })
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.unregister).mockImplementation(async (_projectId, _folderId, confirm) => {
+      if (confirm) return null as never
+      throw Object.assign(new Error('Active File drafts must be explicitly confirmed before unregistering this Folder'), {
+        payload: { code: 'active_drafts_require_confirmation', active_draft_count: 2, affected_user_count: 1 },
+      })
+    })
+
+    renderPage()
+
+    fireEvent.click(await screen.findByTitle('Unregister Source'))
+    fireEvent.click(screen.getByRole('button', { name: /unregister folder/i }))
+
+    expect(await screen.findByRole('heading', { name: /discard unsaved recovery drafts/i })).toBeInTheDocument()
+    expect(screen.getByText(/2 unsaved recovery drafts from 1 person/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /unregister and discard drafts/i }))
+    await waitFor(() => expect(projectFoldersApi.unregister).toHaveBeenCalledWith('project-1', 'folder-1', true))
   })
 
   it('tints changed files and their folders in the tree by Git status', async () => {
@@ -619,31 +752,111 @@ describe('Project Files & Code Area', () => {
     expect(screen.queryByText('on Old laptop')).not.toBeInTheDocument()
   })
 
-  it('writes a new file directly from the File page', async () => {
+  it('opens a new file in the always-editable CodeMirror surface', async () => {
     vi.mocked(projectFoldersApi.list).mockResolvedValue({
       items: [folder('folder-1', 'Source')], total: 1, limit: 200, offset: 0,
     })
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [] })
     vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
-    vi.mocked(projectFoldersApi.editFile).mockResolvedValue({
-      file: { path: 'notes/today.md', content: '# Today\n', size: 8, line_count: 2, sha256: 'a'.repeat(64) },
+    const savedDraft = {
+      id: 'draft-1', space_id: 'space-1', project_id: 'project-1', project_folder_id: 'folder-1',
+      workspace_location_id: 'location-1', owner_user_id: 'user-1', target_kind: 'new' as const,
+      relative_path: 'notes/today.md', base_exists: false, base_sha256: null,
+      content: '# Today\n', content_sha256: 'b'.repeat(64), byte_size: 8, version: 1,
+      source_encoding: 'utf8' as const, preserve_bom: false, line_ending_mode: 'lf' as const,
+      created_at: '', updated_at: '', expires_at: '',
+    }
+    vi.mocked(projectFoldersApi.upsertDraft).mockResolvedValue(savedDraft)
+    vi.mocked(projectFoldersApi.saveDraft).mockResolvedValue({
+      file: { path: 'notes/today.md', content: '# Today\n', size: 8, line_count: 2, sha256: 'a'.repeat(64), encoding: 'utf8', writable: true },
       revision: { id: 'revision-1', project_folder_id: 'folder-1', workspace_location_id: 'location-1', path: 'notes/today.md', before_exists: false, after_exists: true, after_sha256: 'a'.repeat(64), created_at: '', expires_at: '', status: 'available' },
+      draft_deleted: true, newer_draft_retained: false,
     })
 
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'New File' }))
     fireEvent.change(screen.getByRole('textbox', { name: 'File path' }), { target: { value: 'notes/today.md' } })
-    fireEvent.change(screen.getByRole('textbox', { name: 'File content' }), { target: { value: '# Today\n' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save directly' }))
-
-    await waitFor(() => expect(projectFoldersApi.editFile).toHaveBeenCalledWith('project-1', 'folder-1', {
-      path: 'notes/today.md', content: '# Today\n', expected_path: null, expected_exists: false, expected_sha256: null,
-    }))
-    expect(await screen.findByText('notes/today.md')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'File content' })).toHaveAttribute('contenteditable', 'true')
+    expect(screen.queryByRole('button', { name: 'Save directly' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save to Folder' })).toBeDisabled()
   })
 
-  it('edits an existing file and offers rollback for the saved revision', async () => {
+  /** The editor is keyed on the file it renders. Keyed on the pending
+   *  selection, it remounted against the file still on screen and pinned its
+   *  path state to it — every later draft and attachment then named the wrong
+   *  file. */
+  it('binds the editor to the file it shows, not to the one still loading', async () => {
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({
+      items: [folder('folder-1', 'Source')], total: 1, limit: 200, offset: 0,
+    })
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({
+      name: 'source', path: '.', type: 'dir', children: [
+        { name: 'a.txt', path: 'a.txt', type: 'file', size: 3 },
+        { name: 'b.txt', path: 'b.txt', type: 'file', size: 3 },
+      ],
+    })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    const second = deferred<FileContent>()
+    vi.mocked(projectFoldersApi.file)
+      .mockResolvedValueOnce({ path: 'a.txt', content: 'aa\n', size: 3, line_count: 2, sha256: 'a'.repeat(64), encoding: 'utf8', writable: true })
+      .mockReturnValueOnce(second.promise as never)
+
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: /a\.txt/ }))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'File path' })).toHaveValue('a.txt'))
+
+    fireEvent.click(screen.getByRole('button', { name: /b\.txt/ }))
+    expect(screen.getByRole('textbox', { name: 'File path' })).toHaveValue('a.txt')
+
+    second.resolve({ path: 'b.txt', content: 'bb\n', size: 3, line_count: 2, sha256: 'b'.repeat(64), encoding: 'utf8', writable: true })
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'File path' })).toHaveValue('b.txt'))
+  })
+
+  /** The message freezes the decoded body, so the attachment must describe
+   *  that body. A BOM-marked file's bytes on disk are three longer and hash
+   *  differently, and admission rejected every one of them. */
+  it('attaches a BOM-marked file by its decoded body, not by its bytes on disk', async () => {
+    const body = 'hello\n'
+    const diskSha = 'd'.repeat(64)
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({
+      items: [folder('folder-1', 'Source')], total: 1, limit: 200, offset: 0,
+    })
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({
+      name: 'source', path: '.', type: 'dir', children: [{ name: 'notes.md', path: 'notes.md', type: 'file', size: 9 }],
+    })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.file).mockResolvedValue({
+      path: 'notes.md', content: body, size: 9, line_count: 2, sha256: diskSha,
+      encoding: 'utf8', has_bom: true, writable: true, line_ending_mode: 'lf',
+    })
+    vi.mocked(projectFoldersApi.locations).mockResolvedValue([{
+      id: 'location-1', project_folder_id: 'folder-1', execution_host_id: 'host-1',
+      execution_host_kind: 'server', display_path: '/managed/source', root_path: '/managed/source',
+      branch: null, git_head: null, dirty: false, status: 'active',
+      execution_ready: true, last_seen_at: null, created_at: '', updated_at: '',
+      host_name: 'Server', host_online: true, host_owner_is_me: true,
+    }] as never)
+
+    let attachment: CurrentFileAttachment | null = null
+    renderPage('/projects/project-1/files', undefined, undefined, next => { attachment = next })
+
+    fireEvent.click(await screen.findByRole('button', { name: /notes\.md/ }))
+    await waitFor(() => expect(attachment?.relativePath).toBe('notes.md'))
+
+    let part: Awaited<ReturnType<CurrentFileAttachment['flushForSend']>> = null
+    await act(async () => { part = await attachment!.flushForSend() })
+
+    expect(part).toMatchObject({
+      kind: 'input_resource', source_state: 'saved', relative_path: 'notes.md',
+      byte_size: new TextEncoder().encode(body).byteLength,
+      sha256: await sha256Utf8(body),
+    })
+    expect((part as { sha256?: string } | null)?.sha256).not.toBe(diskSha)
+  })
+
+  it('keeps editing active and offers History with Restore as draft instead of rollback', async () => {
     const originalHash = 'a'.repeat(64)
     const revision = { id: 'revision-1', project_folder_id: 'folder-1', workspace_location_id: 'location-1', path: 'README.md', before_exists: true, after_exists: true, after_sha256: 'b'.repeat(64), created_at: '', expires_at: '', status: 'available' as const }
     vi.mocked(projectFoldersApi.list).mockResolvedValue({
@@ -651,37 +864,24 @@ describe('Project Files & Code Area', () => {
     })
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [{ name: 'README.md', path: 'README.md', type: 'file', size: 8 }] })
     vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
-    vi.mocked(projectFoldersApi.file).mockResolvedValue({ path: 'README.md', content: 'before\n', size: 7, line_count: 2, sha256: originalHash })
+    vi.mocked(projectFoldersApi.file).mockResolvedValue({ path: 'README.md', content: 'before\n', size: 7, line_count: 2, sha256: originalHash, encoding: 'utf8', writable: true, line_ending_mode: 'lf' })
     vi.mocked(projectFoldersApi.fileRevisions).mockResolvedValue([revision])
-    vi.mocked(projectFoldersApi.editFile).mockResolvedValue({
-      file: { path: 'README.md', content: 'after\n', size: 6, line_count: 2, sha256: 'b'.repeat(64) }, revision,
-    })
-    vi.mocked(projectFoldersApi.rollbackFile).mockResolvedValue({
-      file: { path: 'README.md', content: 'before\n', size: 7, line_count: 2, sha256: originalHash }, revision_id: revision.id, rolled_back: true,
+    vi.mocked(projectFoldersApi.previewRevision).mockResolvedValue({ revision, content: 'before\n' })
+    vi.mocked(projectFoldersApi.restoreRevisionAsDraft).mockResolvedValue({
+      id: 'draft-1', space_id: 'space-1', project_id: 'project-1', project_folder_id: 'folder-1', workspace_location_id: 'location-1', owner_user_id: 'user-1',
+      target_kind: 'existing', relative_path: 'README.md', base_exists: true, base_sha256: originalHash, content: 'before\n', content_sha256: 'c'.repeat(64), byte_size: 7, version: 1,
+      source_encoding: 'utf8', preserve_bom: false, line_ending_mode: 'lf', created_at: '', updated_at: '', expires_at: '',
     })
 
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: /README\.md/ }))
     expect(await screen.findByText('before')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    expect(screen.getByRole('textbox', { name: 'File path' })).toHaveAttribute('readonly')
-    fireEvent.change(screen.getByRole('textbox', { name: 'File content' }), { target: { value: 'after\n' } })
-    vi.mocked(projectFoldersApi.editFile).mockRejectedValueOnce(new Error('stale file'))
-    fireEvent.click(screen.getByRole('button', { name: 'Save directly' }))
-
-    await waitFor(() => {
-      expect(screen.getByRole('textbox', { name: 'File content' })).toHaveValue('after\n')
-      expect(screen.getByRole('button', { name: 'Save directly' })).not.toBeDisabled()
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Save directly' }))
-
-    await waitFor(() => expect(projectFoldersApi.editFile).toHaveBeenCalledWith('project-1', 'folder-1', {
-      path: 'README.md', content: 'after\n', expected_path: 'README.md', expected_exists: true, expected_sha256: originalHash,
-    }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Rollback' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Rollback change' }))
-
-    await waitFor(() => expect(projectFoldersApi.rollbackFile).toHaveBeenCalledWith('project-1', 'folder-1', 'revision-1'))
-    expect(await screen.findByText('before')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'File content' })).toHaveAttribute('contenteditable', 'true')
+    expect(screen.queryByRole('button', { name: 'Rollback' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+    fireEvent.click(await screen.findByRole('button', { name: /previous content/ }))
+    expect(await screen.findByText('Restore as draft')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Restore as draft' }))
+    await waitFor(() => expect(projectFoldersApi.restoreRevisionAsDraft).toHaveBeenCalledWith('project-1', 'folder-1', 'revision-1'))
   })
 })

@@ -9,6 +9,10 @@ the hosts module. There is no general product event bus.
 How the web client talks to `/api/v1`. Unknown paths return the local
 404 catch-all.
 
+The Files & Code recovery-draft and lazy message-owned input-resource contract
+is recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-input-resources.md)
+and is now the shipped behavior.
+
 ## Owns
 - REST API conventions (request/response shape, error format, pagination)
 - Agent-turn SSE
@@ -42,10 +46,20 @@ images. Image bytes use the authenticated multipart endpoint
 server-issued `media_id`; the browser never sends a Host path or base64 image
 body. Historical image bytes are served only through the authenticated
 Space-scoped `GET /api/v1/conversation-inputs/media/{mediaId}` endpoint.
-File snapshots are bounded server-side at send time. When an ACP prompt needs
-the live file, the server sends a server-issued resource id plus a
-`workspace_relative_path` only for the built-in Host; that path is relative to
-the shared instance workspace root and is never an absolute browser field.
+Current-file attachments carry only server-validated saved/draft metadata in
+`input_parts` (Folder, Location, relative path, source state, version/hash, and
+optional selection). At send time the server freezes the exact bounded body in
+an immutable message-owned resource and gives the Run a server-issued resource
+id. The initial prompt contains the descriptor, not the body. Agents read or
+search it through the Run-scoped `input_resource.read/search` actions; no
+generic database URL, Host temporary path, or absolute browser path is exposed.
+Legacy file snapshots remain readable for older messages and retry paths.
+
+Files & Code draft routes use optimistic `draft_id`/`draft_version` mutations;
+draft content stays in the authenticated server database and is not carried in
+a current-file attachment descriptor. `GET .../file?path=...&convert=utf8` is
+the explicit UTF-16 preview request; ordinary malformed/binary reads return
+bounded read-only metadata and no replacement-decoded body.
 
 **Response shape:**
 ```json

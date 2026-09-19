@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -39,6 +40,27 @@ describe("folder_write frame validation", () => {
 });
 
 describe("folder_write operations", () => {
+  it("converts UTF-16 only when requested and restores the rollback preimage encoding", async () => {
+    const original = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("before\n", "utf16le")]);
+    await writeFile(join(root, "utf16.txt"), original);
+    const originalSha = createHash("sha256").update(original).digest("hex");
+    const converted = await performFolderWrite(resolveFolderWriteRequest({
+      request_id: "convert", workspace_location_id: "loc", path: "utf16.txt",
+      content: "after\n", expected_exists: true, expected_sha256: originalSha,
+      protected: false, allow_encoding_conversion: true,
+    }, { loc: root }));
+    expect(converted).toMatchObject({ ok: true });
+    if (!converted.ok) throw new Error("expected conversion to succeed");
+
+    const restored = await performFolderWrite(resolveFolderWriteRequest({
+      request_id: "restore", workspace_location_id: "loc", path: "utf16.txt",
+      content: "before\n", expected_exists: true, expected_sha256: converted.sha256,
+      protected: false, restore_encoding: "utf16le",
+    }, { loc: root }));
+    expect(restored).toMatchObject({ ok: true });
+    await expect(readFile(join(root, "utf16.txt"))).resolves.toEqual(original);
+  });
+
   it("creates, updates, and removes a file with optimistic concurrency", async () => {
     const workspaces = { loc: root };
     const created = await performFolderWrite(resolveFolderWriteRequest({

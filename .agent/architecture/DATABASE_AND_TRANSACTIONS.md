@@ -385,12 +385,17 @@ Conversation image uploads use `conversation_input_media` for Space/owner-scoped
 metadata and a generated relative path below managed conversation-input storage;
 the database does not store browser paths or image bytes. A send claims pending
 media and inserts ordered `message_input_parts` in the same transaction as the
-message. Project file references instead create an immutable bounded
-`conversation_file_snapshots` row and its normalized message part in that same
-transaction. `conversation_turn_idempotencies` records client turn keys and
-the committed response for replay-safe sends. Expired or orphaned media is
-tombstoned first and unlinked by a retryable sweep, so a filesystem unlink
-failure does not lose the database record needed for cleanup.
+message. A current Files & Code attachment instead revalidates the saved/draft
+descriptor, writes or reuses a bounded content-addressed blob, inserts its
+message-owned `conversation_input_resources` row, and appends the normalized
+`input_resource` part in that same transaction. The resource is immutable and
+later read through Run-scoped actions; it is not materialized on a Host. Legacy
+`conversation_file_snapshots` rows remain readable for historical messages and
+compatibility retries. `conversation_turn_idempotencies` records client turn
+keys and the committed response for replay-safe sends. Expired or orphaned
+media/resources are tombstoned or unreferenced by retryable sweeps, so a
+filesystem or blob cleanup failure does not lose the database record needed for
+cleanup.
 
 Manual conversation retries use the same short transaction boundary: an
 Idempotency-Key is fingerprinted to the original Run/session, the persisted
