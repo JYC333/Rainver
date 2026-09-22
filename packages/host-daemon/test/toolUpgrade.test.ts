@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installTool, installedTools, managedToolHome, managedVersionsFor, platformKey, readToolManifestSync, rollbackTargetFor, rollbackTool, uninstallTool } from "../src/tools.js";
-import { adapterIsBeingReplaced, holdingAdapter, withAdapterDrained } from "../src/execution.js";
+import { isRuntimeKeyBeingReplaced, withRuntimeKeyHeld, withRuntimeKeyDrained } from "../src/execution.js";
 
 /**
  * Upgrading a copy replaces the runtime every Run of that Agent uses, so ADR
@@ -12,13 +12,13 @@ import { adapterIsBeingReplaced, holdingAdapter, withAdapterDrained } from "../s
  */
 let configDir: string;
 
-async function seed(adapterType: string, version: string, installedAt: string): Promise<void> {
-  const tree = join(configDir, "tools", adapterType, version);
-  const home = managedToolHome(adapterType);
+async function seed(runtimeKey: string, version: string, installedAt: string): Promise<void> {
+  const tree = join(configDir, "tools", runtimeKey, version);
+  const home = managedToolHome(runtimeKey);
   await mkdir(tree, { recursive: true });
   await mkdir(home, { recursive: true });
   await writeFile(join(tree, "manifest.json"), JSON.stringify({
-    adapter_type: adapterType, version, command: "/bin/true", args: [], env: {},
+    runtime_key: runtimeKey, version, command: "/bin/true", args: [], env: {},
     home, login_command: null, login: null, installed_at: installedAt,
   }));
 }
@@ -74,13 +74,8 @@ describe("one current copy per adapter, with one kept behind it", () => {
 
 async function install(version: string) {
   const url = "https://downloads.example.test/cli";
-  vi.stubGlobal("fetch", vi.fn(async () => {
-    const response = new Response("test executable");
-    Object.defineProperty(response, "url", { value: url });
-    return response;
-  }));
   return installTool({
-    request_id: "install", adapter_type: "codex_cli", version,
+    request_id: "install", runtime_key: "codex_cli", version,
     distribution: { kind: "binary", platforms: {
       [platformKey()]: { archive: url, sha256: null, cmd: "bin", args: [], env: {} },
     } },
@@ -88,7 +83,10 @@ async function install(version: string) {
     runtime_version_command: process.platform === "win32"
       ? ["cmd.exe", "/d", "/s", "/c", "echo codex-cli 9.8.7"]
       : ["/bin/echo", "codex-cli 9.8.7"],
-  }, () => {});
+  }, () => {}, {
+    guard: { pin: async () => [{ address: "93.184.216.34", family: 4 as const }] },
+    fetch: async () => new Response("test executable"),
+  });
 }
 
 describe("managed CLI native state survives binary replacement", () => {
@@ -117,7 +115,7 @@ describe("managed CLI native state survives binary replacement", () => {
     expect(await readFile(join(home, ".codex", "sessions.jsonl"), "utf8")).toBe("history continued after upgrade");
     expect(await readFile(join(home, ".codex", "auth.json"), "utf8")).toBe("refreshed login");
     expect(await readFile(join(profile, "session.jsonl"), "utf8")).toBe("Agent native history");
-    await uninstallTool({ request_id: "remove", adapter_type: "codex_cli", version: "2.0.0" });
+    await uninstallTool({ request_id: "remove", runtime_key: "codex_cli", version: "2.0.0" });
     expect((await install("4.0.0")).home).toBe(home);
     expect(await readFile(join(home, ".codex", "sessions.jsonl"), "utf8")).toBe("history continued after upgrade");
   });
@@ -127,37 +125,37 @@ describe("managed CLI native state survives binary replacement", () => {
 describe("a replacement holds the adapter closed, not merely drained", () => {
   it("refuses a launch of the copy being replaced, and reopens afterwards", async () => {
     let observedDuring: boolean | null = null;
-    const result = await withAdapterDrained("codex_cli", 5_000, async () => {
+    const result = await withRuntimeKeyDrained("codex_cli", 5_000, async () => {
       // A drain that reports quiet and then downloads for a minute is a window
       // in which the next dispatch starts against the copy about to be
       // deleted. The door has to stay shut for the whole replacement.
-      observedDuring = adapterIsBeingReplaced("codex_cli");
+      observedDuring = isRuntimeKeyBeingReplaced("codex_cli");
       return "replaced";
     });
 
     expect(result).toBe("replaced");
     expect(observedDuring).toBe(true);
-    expect(adapterIsBeingReplaced("codex_cli")).toBe(false);
+    expect(isRuntimeKeyBeingReplaced("codex_cli")).toBe(false);
   });
 
   it("leaves other adapters alone", async () => {
-    await withAdapterDrained("codex_cli", 5_000, async () => {
-      expect(adapterIsBeingReplaced("claude_code")).toBe(false);
+    await withRuntimeKeyDrained("codex_cli", 5_000, async () => {
+      expect(isRuntimeKeyBeingReplaced("claude_code")).toBe(false);
     });
   });
 
   it("reopens the door even when the replacement fails", async () => {
-    await expect(withAdapterDrained("codex_cli", 5_000, () => Promise.reject(new Error("download failed"))))
+    await expect(withRuntimeKeyDrained("codex_cli", 5_000, () => Promise.reject(new Error("download failed"))))
       .rejects.toThrow("download failed");
     // Otherwise one failed upgrade would refuse every later Run of that
     // runtime until the daemon restarted.
-    expect(adapterIsBeingReplaced("codex_cli")).toBe(false);
+    expect(isRuntimeKeyBeingReplaced("codex_cli")).toBe(false);
   });
 
   it("refuses a second concurrent change rather than interleaving two", async () => {
     let release!: () => void;
-    const held = withAdapterDrained("codex_cli", 5_000, () => new Promise<void>((resolve) => { release = resolve; }));
-    await expect(withAdapterDrained("codex_cli", 5_000, async () => undefined))
+    const held = withRuntimeKeyDrained("codex_cli", 5_000, () => new Promise<void>((resolve) => { release = resolve; }));
+    await expect(withRuntimeKeyDrained("codex_cli", 5_000, async () => undefined))
       .rejects.toThrow(/already in progress/);
     release();
     await held;
@@ -167,10 +165,10 @@ describe("a replacement holds the adapter closed, not merely drained", () => {
 describe("a replacement waits for work already running", () => {
   it("drains for a verification command that is in neither run registry", async () => {
     let finishCommand!: () => void;
-    const command = holdingAdapter("codex_cli", () => new Promise<void>((resolve) => { finishCommand = resolve; }));
+    const command = withRuntimeKeyHeld("codex_cli", () => new Promise<void>((resolve) => { finishCommand = resolve; }));
 
     let replaced = false;
-    const replacement = withAdapterDrained("codex_cli", 5_000, async () => { replaced = true; });
+    const replacement = withRuntimeKeyDrained("codex_cli", 5_000, async () => { replaced = true; });
     // The order the closed door alone does not cover: the work started first,
     // so only being counted keeps the replacement from deleting the tree it is
     // executing from.
@@ -185,9 +183,9 @@ describe("a replacement waits for work already running", () => {
 
   it("gives up rather than killing the work it is waiting for", async () => {
     let finishCommand!: () => void;
-    const command = holdingAdapter("codex_cli", () => new Promise<void>((resolve) => { finishCommand = resolve; }));
+    const command = withRuntimeKeyHeld("codex_cli", () => new Promise<void>((resolve) => { finishCommand = resolve; }));
 
-    await expect(withAdapterDrained("codex_cli", 600, async () => undefined))
+    await expect(withRuntimeKeyDrained("codex_cli", 600, async () => undefined))
       .rejects.toThrow(/still using codex_cli/);
 
     finishCommand();
@@ -195,10 +193,10 @@ describe("a replacement waits for work already running", () => {
   });
 
   it("releases its hold when the work throws", async () => {
-    await expect(holdingAdapter("codex_cli", () => Promise.reject(new Error("recipe failed"))))
+    await expect(withRuntimeKeyHeld("codex_cli", () => Promise.reject(new Error("recipe failed"))))
       .rejects.toThrow("recipe failed");
     // Otherwise one failed recipe would block every later upgrade of that
     // runtime until the daemon restarted.
-    await expect(withAdapterDrained("codex_cli", 600, async () => "replaced")).resolves.toBe("replaced");
+    await expect(withRuntimeKeyDrained("codex_cli", 600, async () => "replaced")).resolves.toBe("replaced");
   });
 });

@@ -185,7 +185,7 @@ currently holds.
 
 | Gate | Requirement |
 |---|---|
-| Enabling `autonomous_tick` (Always-on) | Provider-fallback and tool-degradation evidence must exist, because an autonomously launched Run has nobody reading its result. The `model_provider_mismatch` and `managed_tool_degraded` events serve this; no change may remove them while Always-on is enabled. |
+| Enabling `autonomous_tick` (Always-on) | Provider-fallback and tool-degradation evidence must exist, because an autonomously launched Run has nobody reading its result. Tool degradation is covered: the `degraded` terminal status and the `managed_tool_degraded` warning event serve it, and no change may remove them while Always-on is enabled. Provider fallback is **not** covered — the `model_provider_mismatch` event this row used to name exists nowhere in the code, so a Run silently served by a fallback Provider's own default model leaves no evidence. Emitting it is an open gap Always-on must close before it is enabled, not a condition that already holds. |
 | Any CLI runtime use | Install the runtime on the built-in execution host from the host card and log it in. There is no conformance gate any more: the C3 suite was retired on 2026-09-09 because a one-shot behavioural verdict, cached against a version key and blind to the model actually selected, was not evidence to gate dispatch on. What contains a CLI Run is the host namespace, its egress profile and ADR 0008's credential channel. This covers spawning a vendor CLI and nothing else: it does not gate subscription capacity, which reaches runs through the isolated in-process OAuth channel described by [ADR 0008](../decisions/0008-credential-channel-isolation.md). |
 | Enabling retry or Always-on once cost is non-null | The Run retry cost cap (`runs/supervisor.ts`) and the autonomy daily cost limit were calibrated before catalog cost reached `estimated_cost_usd`. Re-check both against observed spend before enabling either feature, rather than discovering the thresholds by a run being refused. |
 | Controlled product acceptance | Follow [../architecture/PRODUCT_ACCEPTANCE.md](../architecture/PRODUCT_ACCEPTANCE.md). Its OpenCode smoke section depends on the CLI gate above; the managed-API and Source sections do not. |
@@ -207,7 +207,7 @@ Re-derive all nine terms together, including the two name-based ones
 (`preference` at 20, and `profile_preference` at 25, which is *lower* than the
 +30 shape bonus it can lose to). Deleting `executionShapeScore()` may be done
 earlier as cleanup, but it is not a behaviour change and must not be recorded
-as one. `request.adapter_types` and `request.runtime_profile_is_explicit` are
+as one. `request.runtime_keys` and `request.runtime_profile_is_explicit` are
 hard constraints and stay exactly as strict as they are.
 
 ### Add the funding dimension to the candidate model
@@ -225,8 +225,8 @@ API key are different funding modes. It belongs on the candidate and must not
 be folded into `RuntimeAdapterSpec` or the provider record.
 
 `marginal_cash_cost` cannot simply be derived from `estimated_cost_usd`: that
-average is grouped by `adapter_type`, so it mixes every funding mode and every
-model on that adapter into one number. Either the history CTE gains a finer
+average is grouped by `runtime_key`, so it mixes every funding mode and every
+model on that runtime into one number. Either the history CTE gains a finer
 grouping key or marginal cost comes from somewhere else. Decide this explicitly.
 
 ### Score quota pressure, not just cost

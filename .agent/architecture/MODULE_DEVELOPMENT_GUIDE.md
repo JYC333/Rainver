@@ -117,7 +117,7 @@ Keep facades narrow so tests and peer modules do not couple to internal helpers.
 | Post-run side effect | Register a run-finalized hook with `PostRunFinalizationService` integration. |
 | Proposal apply behavior | Put mutation logic in the target module and register it with the server proposal applier registry. |
 | Runtime adapter | Register adapter/spec in `server/src/modules/runtimeAdapters`; adapters return `RuntimeAdapterResult` and use server runtime services. |
-| Model API runtime | Use `model_api` for no-tools provider-backed execution; it calls server providers and does not use CLI credentials, terminal, local-host, or sandbox capabilities. |
+| Agent runtime | Add an ACP-backed `AgentRuntimeDefinition`/registry entry and use the shared `AcpRuntimeAdapter`; do not add a Server-side Agent loop. Bounded provider calls belong to ProviderTask and the owning domain. |
 | Capability/workflow/open-skill control plane | Add or change `server/src/modules/capabilities`; do not widen `catalog` into remote import, marketplace, or execution ownership. |
 
 ### Static contribution registries
@@ -237,9 +237,12 @@ Use a `Protocol`/`ABC` when callers need substitution or tests need a fake. Exis
 | Policy gateway | `server/src/modules/policy` |
 
 Do not add ports for their own sake. A facade export is enough for a single concrete service
-with no substitution need. A port over a third-party package — as with the managed agent loop
-over `@earendil-works/pi-agent-core` — is how an adopted dependency stays replaceable without
-every caller naming it.
+with no substitution need. A port over a third-party package — as with `cron-parser`, whose
+only import is `automations/schedule.ts` behind the unchanged `parseSchedule` /
+`computeNextRunAt` / `InvalidScheduleError` facade — is how an adopted dependency stays
+replaceable without every caller naming it. The ACP SDK is confined the same way: only
+`runs/cliConversationProtocol.ts` imports `@agentclientprotocol/sdk`, and the rest of the
+server sees `AcpRuntimeAdapter` and the controller it returns.
 
 ## Guardrails
 

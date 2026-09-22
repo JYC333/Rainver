@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedServerRuntimeProfile, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig } from "../src/config.js";
 import { writeNote } from "../src/modules/knowledge/noteRevisionService.js";
@@ -16,6 +16,8 @@ import { InquiryIterationService } from "../src/modules/inquiry/iterationService
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService.js";
 import { ExperimentRunService } from "../src/modules/experiments/runService.js";
 import { ExperimentInterpretationService } from "../src/modules/experiments/interpretationService.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres coverage for Knowledge promotion and revalidation:
@@ -32,6 +34,7 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROJECT = "55555555-5555-4555-8555-555555555555";
 const AGENT = "99999999-9999-4999-8999-999999999999";
 const AGENT_VERSION = "99999999-9999-4999-8999-999999999998";
+const SERVER_HOST = "99999999-9999-4999-8999-999999999996";
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 
@@ -41,7 +44,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["knowledge_revalidation_outcomes", "knowledge_promotion_candidates", "knowledge_promotion_review_packets", "domain_change_outbox", "inquiry_thread_revisions", "note_revisions", "notes", "note_collections", "knowledge_items", "space_objects", "proposals", "experiment_interpretations", "experiment_observations", "experiment_runs", "experiment_versions", "experiment_definitions", "inquiry_threads", "projects", "space_memberships", "users", "spaces"],
+    ["knowledge_revalidation_outcomes", "knowledge_promotion_candidates", "knowledge_promotion_review_packets", "domain_change_outbox", "inquiry_thread_revisions", "note_revisions", "notes", "note_collections", "knowledge_items", "space_objects", "proposals", "experiment_interpretations", "experiment_observations", "experiment_runs", "experiment_versions", "experiment_definitions", "inquiry_threads", "projects", "agent_runtime_profiles", "space_memberships", "hosts", "machines", "users", "spaces"],
     { cascade: true },
   );
   const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
@@ -52,12 +55,26 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,
-       context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at
-     ) VALUES ($1,$2,$3,'v1','Extract governed candidates.','{}','{}','{}','{}','[]','{}','{}',$4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES ($1, $2, $3, 'v1', 'Extract governed candidates.', '{}', '{}', '[]', '{}', $4)`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
   await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
+  await seedServerRuntimeProfile(db.pool, {
+    agent: AGENT,
+    space: SPACE,
+    hostId: SERVER_HOST,
+    now,
+  });
 });
 
 function doc(paragraphs: string[]): Record<string, unknown> {
@@ -121,6 +138,12 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       [runId],
     )).rows[0]!.count).toBe(1);
 
+    const runs = new PgRunRepository(db.pool);
+    const queuedRun = await runs.getAgentRun(SPACE, runId);
+    if (!queuedRun) throw new Error("Knowledge extraction Run disappeared before fixture completion");
+    await new PgRouteDecisionRepository(db.pool).routeRun(queuedRun);
+    const startedAt = new Date().toISOString();
+    await runs.markRunRunning({ run_id: runId, space_id: SPACE, started_at: startedAt });
     await db.pool.query(
       `UPDATE runs SET status='succeeded',output_json=$2::jsonb,ended_at=$3,updated_at=$3 WHERE id=$1`,
       [runId, JSON.stringify(canonicalRunOutput({
@@ -133,7 +156,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
             proposed_content: "A durable finding worth reviewing.",
           }],
         },
-      })), new Date().toISOString()],
+      })), startedAt],
     );
     expect(await extraction.reconcile(SPACE, runId)).toBe(1);
     expect(await extraction.reconcile(SPACE, runId)).toBe(1);
@@ -292,8 +315,8 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     const runId = randomUUID();
     const now = new Date().toISOString();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id)
-       VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,$5,$6,'selected_users','full',$7,$6)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $5, $6, 'selected_users', 'full', $7, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [runId, SPACE, AGENT, AGENT_VERSION, now, OWNER, PROJECT],
     );
     await db.pool.query(

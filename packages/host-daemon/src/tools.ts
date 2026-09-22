@@ -1,12 +1,13 @@
 import type { HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec, RuntimeAccount } from "@rainver/protocol";
 import { helperProcessEnv } from "./providerBinding.js";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, rename, writeFile } from "node:fs/promises";
 import { arch, platform } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, parse, resolve } from "node:path";
 import { configDir } from "./config.js";
+import { probeAcpHealth } from "./acpProbe.js";
+import { downloadRuntimeArtifact, type RuntimeArtifactDownloadDependencies } from "./toolDownload.js";
 
 /**
  * Agents from the ACP registry that the control plane asked this daemon to
@@ -29,17 +30,18 @@ export const OWN_INSTALLATION = "own";
 /** The wire contract's login spec; the server's adapter spec is the source. */
 export type ToolLoginSpec = RuntimeLoginSpec;
 export interface ToolManifest {
-  adapter_type: string;
+  runtime_key: string;
   version: string;
   /** Version reported by the vendor CLI bundled inside this ACP package. */
   runtime_version: string | null;
+  health_check_protocol?: "acp" | null;
   /** How to launch: the command, resolved to an absolute path where one exists. */
   command: string;
   args: string[];
   /** Args required to enter the installed CLI, before protocol/login args. */
   entry_args?: string[];
   env: Record<string, string>;
-  /** Stable managed HOME for this adapter, separate from binaries and the machine's own CLI. */
+  /** Stable managed HOME for this runtime, separate from binaries and the machine's own CLI. */
   home: string;
   /** The login command inside this tree, rendered; null when the runtime declares none. */
   login_command: string[] | null;
@@ -57,10 +59,10 @@ export function toolsDir(): string {
   return join(configDir(), "tools");
 }
 
-/** Persistent vendor-owned data for one managed adapter, outside versioned binaries. */
-export function managedToolHome(adapterType: string): string {
-  if (!SAFE_SEGMENT.test(adapterType)) throw new Error(`Unusable managed adapter: ${adapterType}`);
-  return join(configDir(), "managed-state", adapterType, "home");
+/** Persistent vendor-owned data for one managed runtime, outside versioned binaries. */
+export function managedToolHome(runtimeKey: string): string {
+  if (!SAFE_SEGMENT.test(runtimeKey)) throw new Error(`Unusable runtime key: ${runtimeKey}`);
+  return join(configDir(), "managed-state", runtimeKey, "home");
 }
 
 /** `managed:<version>` → the version, or null for `own` and anything malformed. */
@@ -74,37 +76,47 @@ export function managedInstallationId(version: string): string {
   return `${MANAGED_PREFIX}${version}`;
 }
 
-function toolDir(adapterType: string, version: string): string {
-  if (!SAFE_SEGMENT.test(adapterType) || !SAFE_SEGMENT.test(version)) throw new Error(`Unusable adapter or version: ${adapterType}@${version}`);
-  return join(toolsDir(), adapterType, version);
+function toolDir(runtimeKey: string, version: string): string {
+  if (!SAFE_SEGMENT.test(runtimeKey) || !SAFE_SEGMENT.test(version)) throw new Error(`Unusable runtime key or version: ${runtimeKey}@${version}`);
+  return join(toolsDir(), runtimeKey, version);
 }
 
 /** The versioned executable tree for a managed installation; its stable HOME lives elsewhere. */
-export function managedToolTree(adapterType: string, installation: string): string | null {
+export function managedToolTree(runtimeKey: string, installation: string): string | null {
   const version = managedVersion(installation);
-  if (!version || !SAFE_SEGMENT.test(adapterType)) return null;
-  return toolDir(adapterType, version);
+  if (!version || !SAFE_SEGMENT.test(runtimeKey)) return null;
+  return toolDir(runtimeKey, version);
 }
 
-function manifestPath(adapterType: string, version: string): string {
-  return join(toolDir(adapterType, version), "manifest.json");
+function manifestPath(runtimeKey: string, version: string): string {
+  return join(toolDir(runtimeKey, version), "manifest.json");
 }
 
 /** Synchronous because launch resolution is; a manifest is one small file. */
-export function readToolManifestSync(adapterType: string, installation: string): ToolManifest | null {
+export function readToolManifestSync(runtimeKey: string, installation: string): ToolManifest | null {
   const version = managedVersion(installation);
-  if (!version || !SAFE_SEGMENT.test(adapterType)) return null;
+  if (!version || !SAFE_SEGMENT.test(runtimeKey)) return null;
   try {
-    const manifest = JSON.parse(readFileSync(manifestPath(adapterType, version), "utf8")) as ToolManifest;
-    return typeof manifest.command === "string" && Array.isArray(manifest.args) && typeof manifest.home === "string" ? manifest : null;
+    const parsed: unknown = JSON.parse(readFileSync(manifestPath(runtimeKey, version), "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    // A manifest must declare the same runtime key as the runtime-keyed path
+    // it was opened under; anything else is an unreadable installation, which
+    // callers treat as "no managed copy" rather than guessing at its identity.
+    if (
+      record.runtime_key !== runtimeKey
+      || typeof record.command !== "string"
+      || !Array.isArray(record.args)
+      || typeof record.home !== "string"
+    ) return null;
+    return record as unknown as ToolManifest;
   } catch {
     return null;
   }
 }
 
-/** Every managed installation on this machine, grouped by adapter. */
 /**
- * The *current* managed copy of each adapter — one per adapter (ADR 0016 §9).
+ * The *current* managed copy of each runtime — one per runtime key (ADR 0016 §9).
  *
  * A version kept behind the current one is a rollback target, not a second
  * installation: reporting it would put two copies of one Agent on the host
@@ -113,15 +125,15 @@ export function readToolManifestSync(adapterType: string, installation: string):
  */
 export async function installedTools(): Promise<Map<string, ToolManifest[]>> {
   const result = new Map<string, ToolManifest[]>();
-  let adapters: string[];
+  let runtimeKeys: string[];
   try {
-    adapters = await readdir(toolsDir());
+    runtimeKeys = await readdir(toolsDir());
   } catch {
     return result;
   }
-  for (const adapterType of adapters) {
-    const current = managedVersionsFor(adapterType)[0];
-    if (current) result.set(adapterType, [current]);
+  for (const runtimeKey of runtimeKeys) {
+    const current = managedVersionsFor(runtimeKey)[0];
+    if (current) result.set(runtimeKey, [current]);
   }
   return result;
 }
@@ -170,30 +182,30 @@ export function heldAccounts(home: string, login: ToolLoginSpec | null): Runtime
 }
 
 export async function uninstallTool(frame: UninstallToolFrame): Promise<boolean> {
-  const dir = toolDir(frame.adapter_type, frame.version);
-  if (!existsSync(manifestPath(frame.adapter_type, frame.version))) return false;
+  const dir = toolDir(frame.runtime_key, frame.version);
+  if (!existsSync(manifestPath(frame.runtime_key, frame.version))) return false;
   await rm(dir, { recursive: true, force: true });
   return true;
 }
 
 /**
- * Every managed version of one adapter on this machine, newest install first.
+ * Every managed version of one runtime on this machine, newest install first.
  *
  * The current copy is the newest; at most one older copy is kept behind it, as
  * the one-step rollback target (ADR 0016 §9). Older than that is
  * deleted on the next install. User state is kept outside those directories.
  */
-export function managedVersionsFor(adapterType: string): ToolManifest[] {
-  if (!SAFE_SEGMENT.test(adapterType)) return [];
+export function managedVersionsFor(runtimeKey: string): ToolManifest[] {
+  if (!SAFE_SEGMENT.test(runtimeKey)) return [];
   let versions: string[];
   try {
-    versions = readdirSync(join(toolsDir(), adapterType));
+    versions = readdirSync(join(toolsDir(), runtimeKey));
   } catch {
     return [];
   }
   return versions
     .flatMap((directory) => {
-      const manifest = readToolManifestSync(adapterType, managedInstallationId(directory));
+      const manifest = readToolManifestSync(runtimeKey, managedInstallationId(directory));
       // Keyed by the directory it was found in, not by what the file claims:
       // a manifest whose `version` disagrees would otherwise make a rollback
       // delete some other version's directory. `installed_at` may be missing
@@ -204,9 +216,9 @@ export function managedVersionsFor(adapterType: string): ToolManifest[] {
     .sort((a, b) => b.installed_at.localeCompare(a.installed_at));
 }
 
-/** The version an upgrade of this adapter could be undone to, or null when there is none. */
-export function rollbackTargetFor(adapterType: string): ToolManifest | null {
-  return managedVersionsFor(adapterType)[1] ?? null;
+/** The version an upgrade of this runtime could be undone to, or null when there is none. */
+export function rollbackTargetFor(runtimeKey: string): ToolManifest | null {
+  return managedVersionsFor(runtimeKey)[1] ?? null;
 }
 
 /**
@@ -214,13 +226,13 @@ export function rollbackTargetFor(adapterType: string): ToolManifest | null {
  * kept behind it.
  *
  * Only binaries roll back: the latest login, native history and configuration
- * remain in the adapter's stable HOME.
+ * remain in the runtime's stable HOME.
  */
-export async function rollbackTool(adapterType: string): Promise<ToolManifest | null> {
-  const versions = managedVersionsFor(adapterType);
+export async function rollbackTool(runtimeKey: string): Promise<ToolManifest | null> {
+  const versions = managedVersionsFor(runtimeKey);
   const [current, previous] = versions;
   if (!current || !previous) return null;
-  await rm(toolDir(adapterType, current.version), { recursive: true, force: true });
+  await rm(toolDir(runtimeKey, current.version), { recursive: true, force: true });
   return previous;
 }
 
@@ -229,14 +241,18 @@ export async function rollbackTool(adapterType: string): Promise<ToolManifest | 
  * half-finished install never reads as an installed tool. Re-installing an
  * existing version replaces it.
  */
-export async function installTool(frame: InstallToolFrame, log: (line: string) => void): Promise<ToolManifest> {
-  const finalDir = toolDir(frame.adapter_type, frame.version);
-  const home = managedToolHome(frame.adapter_type);
+export async function installTool(
+  frame: InstallToolFrame,
+  log: (line: string) => void,
+  downloadDependencies?: RuntimeArtifactDownloadDependencies,
+): Promise<ToolManifest> {
+  const finalDir = toolDir(frame.runtime_key, frame.version);
+  const home = managedToolHome(frame.runtime_key);
   const stagingDir = `${finalDir}.installing`;
   await rm(stagingDir, { recursive: true, force: true });
   await mkdir(stagingDir, { recursive: true, mode: 0o700 });
   try {
-    const launch = await materialize(frame.distribution, stagingDir, log);
+    const launch = await materialize(frame.distribution, stagingDir, log, downloadDependencies);
     // User data is outside the version directory, so replacing or pruning
     // binaries cannot remove login, native history, settings, or Skills.
     await mkdir(home, { recursive: true, mode: 0o700 });
@@ -246,10 +262,20 @@ export async function installTool(frame: InstallToolFrame, log: (line: string) =
       home,
       launch.env,
     );
+    if (frame.health_check_protocol === "acp") {
+      const healthy = await probeAcpHealth(
+        launch.command,
+        [...(launch.entry_args ?? []), ...launch.args],
+        { ...launch.env, ...managedHomeEnvironment(home) },
+        stagingDir,
+      );
+      if (!healthy) throw new Error("The managed runtime failed its ACP initialize health check; the previous installation remains active.");
+    }
     const manifest: ToolManifest = {
-      adapter_type: frame.adapter_type,
+      runtime_key: frame.runtime_key,
       version: frame.version,
       runtime_version: runtimeVersion,
+      health_check_protocol: frame.health_check_protocol ?? null,
       ...launch,
       home,
       login_command: renderManagedLoginCommand(stagingDir, frame.login),
@@ -259,15 +285,15 @@ export async function installTool(frame: InstallToolFrame, log: (line: string) =
     await writeFile(join(stagingDir, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
     await rm(finalDir, { recursive: true, force: true });
     await rename(stagingDir, finalDir);
-    // One current copy per adapter, plus exactly one kept behind it so the
+  // One current copy per runtime key, plus exactly one kept behind it so the
     // upgrade has something to be undone to (ADR 0016 §9). User state is outside
     // this tree.
-    const keep = new Set([frame.version, ...managedVersionsFor(frame.adapter_type)
+    const keep = new Set([frame.version, ...managedVersionsFor(frame.runtime_key)
       .filter((manifest) => manifest.version !== frame.version)
       .slice(0, 1)
       .map((manifest) => manifest.version)]);
-    for (const sibling of await readdir(join(toolsDir(), frame.adapter_type)).catch(() => [] as string[])) {
-      if (!keep.has(sibling)) await rm(join(toolsDir(), frame.adapter_type, sibling), { recursive: true, force: true });
+    for (const sibling of await readdir(join(toolsDir(), frame.runtime_key)).catch(() => [] as string[])) {
+      if (!keep.has(sibling)) await rm(join(toolsDir(), frame.runtime_key, sibling), { recursive: true, force: true });
     }
     // The launch was resolved against the staging path; rewrite every
     // string of it against the final one.
@@ -302,7 +328,7 @@ function probeManagedRuntimeVersion(
     let output = "";
     const child = spawn(command, args, {
       cwd: tree,
-      env: { ...helperProcessEnv(process.env), ...toolEnv, HOME: home },
+      env: { ...helperProcessEnv(process.env), ...toolEnv, ...managedHomeEnvironment(home) },
       stdio: ["ignore", "pipe", "pipe"],
     });
     const finish = (value: string | null) => {
@@ -327,10 +353,23 @@ function probeManagedRuntimeVersion(
   });
 }
 
+function managedHomeEnvironment(home: string): Record<string, string> {
+  if (platform() !== "win32") return { HOME: home };
+  const root = parse(home).root;
+  if (root.length < 3) return { HOME: home, USERPROFILE: home };
+  return {
+    HOME: home,
+    USERPROFILE: home,
+    HOMEDRIVE: root.slice(0, 2),
+    HOMEPATH: home.slice(2),
+  };
+}
+
 async function materialize(
   distribution: ToolDistribution,
   dir: string,
   log: (line: string) => void,
+  downloadDependencies?: RuntimeArtifactDownloadDependencies,
 ): Promise<Pick<ToolManifest, "command" | "args" | "entry_args" | "env">> {
   if (distribution.kind === "npx") {
     // A pinned `npm install` into this directory, not `npx`: what runs is what
@@ -355,7 +394,7 @@ async function materialize(
   const target = distribution.platforms[key];
   if (!target) throw new Error(`No binary for this platform (${key}); available: ${Object.keys(distribution.platforms).join(", ")}`);
   const archive = join(dir, "archive");
-  await download(target.archive, archive, target.sha256, log);
+  await downloadRuntimeArtifact(target.archive, archive, target.sha256, log, downloadDependencies);
   await extract(archive, target.archive, dir, log);
   await rm(archive, { force: true });
   const command = resolve(dir, target.cmd);
@@ -381,29 +420,6 @@ export function platformKey(): string {
   const os = platform() === "win32" ? "windows" : platform();
   const cpu = arch() === "x64" ? "x86_64" : arch() === "arm64" ? "aarch64" : arch();
   return `${os}-${cpu}`;
-}
-
-async function download(url: string, to: string, sha256: string | null, log: (line: string) => void): Promise<void> {
-  if (!url.startsWith("https://")) throw new Error(`Refusing to download over ${url.split(":")[0]}: ${url}`);
-  log(`downloading ${url}`);
-  // Redirects are followed here, unlike every other fetch this daemon makes:
-  // an adapter archive comes from a third-party publisher through the ACP
-  // registry, and a GitHub release asset always 302s to
-  // `objects.githubusercontent.com`. Refusing would break the ordinary case.
-  // Nothing of ours travels with it — no token, no cookie — and the check that
-  // matters is re-applied to where it actually landed.
-  const response = await fetch(url);
-  if (!response.url.startsWith("https://")) {
-    throw new Error(`Refusing a download redirected off https: ${response.url}`);
-  }
-  if (!response.ok) throw new Error(`Download failed: ${response.status} ${url}`);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (sha256) {
-    const actual = createHash("sha256").update(bytes).digest("hex");
-    if (actual !== sha256.toLowerCase()) throw new Error(`sha256 mismatch for ${url}: expected ${sha256}, got ${actual}`);
-  }
-  await mkdir(dirname(to), { recursive: true });
-  await writeFile(to, bytes, { mode: 0o600 });
 }
 
 async function extract(archive: string, url: string, dir: string, log: (line: string) => void): Promise<void> {

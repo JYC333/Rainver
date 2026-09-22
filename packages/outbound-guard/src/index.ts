@@ -21,6 +21,7 @@ export {
   DEFAULT_MAX_REDIRECTS,
   DEFAULT_OUTBOUND_DEADLINE_MS,
   guardedFetch,
+  undiciPinnedFetch,
   type GuardedRequest,
   type GuardedResponse,
   type PinnedFetch,

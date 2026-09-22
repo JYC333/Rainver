@@ -1,8 +1,11 @@
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MAX_REDIRECTS,
   DEFAULT_OUTBOUND_DEADLINE_MS,
   guardedFetch,
+  undiciPinnedFetch,
   type PinnedFetch,
 } from "../src/fetch.js";
 import { createOutboundGuard, type OutboundGuard, type PinnedAddress } from "../src/guard.js";
@@ -109,6 +112,20 @@ describe("guardedFetch", () => {
     expect(hops).toHaveLength(2);
   });
 
+  it("requires HTTPS on every hop when the caller opts into an HTTPS-only download", async () => {
+    const { fetch, hops } = recorder([
+      new Response(null, { status: 302, headers: { location: "http://metadata.test/latest" } }),
+      new Response("should not be fetched", { status: 200 }),
+    ]);
+    const guard = createOutboundGuard({ lookup: async () => PUBLIC });
+    await expect(guardedFetch({
+      url: "https://example.test/archive",
+      requireHttps: true,
+      maxDownloadBytes: 1024,
+    }, { guard, fetch })).rejects.toMatchObject({ status: 422, message: "Outbound redirect must use HTTPS" });
+    expect(hops).toHaveLength(1);
+  });
+
   it("caps the body and reports that it was cut", async () => {
     const { fetch } = recorder([new Response("0123456789", { status: 200 })]);
     const result = await guardedFetch({ url: "https://example.test/a", maxDownloadBytes: 4 }, { guard: publicGuard, fetch });
@@ -208,4 +225,51 @@ describe("guardedFetch", () => {
       { guard, fetch },
     )).rejects.toThrow();
   });
+
+  /**
+   * The shipped transport, not an injected recorder: `undiciPinnedFetch` is
+   * the only thing that turns a pinned address into a socket, and the
+   * rebinding defence is entirely in the dispatcher's `connect.lookup`. The
+   * host name here never resolves (`.invalid` is reserved and has no
+   * delegation), so the request can only arrive if the lookup answered with
+   * the pinned address instead of resolving the name.
+   */
+  it("opens the socket to the pinned address rather than resolving the host name", async () => {
+    const requested: string[] = [];
+    const server = await listenLoopback((request, response) => {
+      requested.push(String(request.headers.host));
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("pinned");
+    });
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const response = await undiciPinnedFetch(
+        `http://never-resolves.invalid:${port}/probe`,
+        { method: "GET", headers: {}, signal: AbortSignal.timeout(5000), redirect: "manual" },
+        [{ address: "127.0.0.1", family: 4 }],
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("pinned");
+      // TLS and the Host header still see the real name; only the address is pinned.
+      expect(requested).toEqual([`never-resolves.invalid:${port}`]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  /** The same transport refuses when the guard pinned nothing for that family. */
+  it("fails to connect when no pinned address matches", async () => {
+    await expect(undiciPinnedFetch(
+      "http://never-resolves.invalid:9/probe",
+      { method: "GET", headers: {}, signal: AbortSignal.timeout(5000), redirect: "manual" },
+      [],
+    )).rejects.toThrow();
+  });
 });
+
+function listenLoopback(
+  handler: (request: IncomingMessage, response: ServerResponse) => void,
+): Promise<Server> {
+  const server = createServer(handler);
+  return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
+}

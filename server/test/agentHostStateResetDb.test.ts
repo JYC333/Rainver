@@ -131,7 +131,7 @@ describe("clearing an Agent's host state", () => {
     await db.pool.query(
       `INSERT INTO host_threads (
          id, space_id, execution_host_id, workspace_mode, agent_id, container_kind, container_user_id,
-         adapter_type, runtime_installation, status, dispatch_lock_id, created_by_user_id, created_at, updated_at
+         runtime_key, runtime_installation, status, dispatch_lock_id, created_by_user_id, created_at, updated_at
        ) VALUES ($1, $2, $3, 'managed', $4, 'direct', $5, 'claude_code', 'own', 'active', $6, $5, now(), now())`,
       [randomUUID(), SPACE, HOST, AGENT, OWNER, randomUUID()],
     );
@@ -169,13 +169,12 @@ describe("clearing an Agent's host state", () => {
       [task, SPACE, PROJECT, folder, OWNER, now],
     );
     const thread = await new PgHostThreadRepository(db.pool).create({
-      executionHostId: HOST, workspaceLocationId: location, taskId: task, adapterType: "claude_code", createdByUserId: OWNER,
+      executionHostId: HOST, workspaceLocationId: location, taskId: task, runtimeKey: "claude_code", createdByUserId: OWNER,
     });
     const runId = randomUUID();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-                         owner_user_id, visibility, host_task_thread_id, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'system', 'manual', 'running', 'live', $5, 'private', $6, now(), now())`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, owner_user_id, visibility, host_task_thread_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'system', 'manual', 'running', 'live', $5, 'private', $6, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [runId, SPACE, AGENT, VERSION, OWNER, thread.id],
     );
 
@@ -210,7 +209,7 @@ describe("clearing an Agent's host state", () => {
     await db.pool.query(
       `INSERT INTO host_threads (
          id, space_id, execution_host_id, workspace_mode, agent_id, container_kind, container_user_id,
-         adapter_type, runtime_installation, status, vendor_session_id, created_by_user_id, created_at, updated_at
+         runtime_key, runtime_installation, status, vendor_session_id, created_by_user_id, created_at, updated_at
        ) VALUES ($1, $2, $3, 'managed', $4, 'direct', $5, 'claude_code', 'own', 'active', 'vendor-1', $5, now(), now())`,
       [threadId, SPACE, HOST, AGENT, OWNER],
     );

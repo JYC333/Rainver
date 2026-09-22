@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { HostLaunchIsolation } from "@rainver/protocol";
 import { configDir, requireConfig, workspacesRoot } from "./config.js";
 import { buildStrictNamespaceCommand } from "./strictNamespace.js";
-import { adapterIsBeingReplaced, daemonRuntimeRoot, holdingAdapter, managedToolTreeForLaunch, resolveAcpLaunch, resolveLocationCwd, strictBindsForRun } from "./execution.js";
+import { isRuntimeKeyBeingReplaced, daemonRuntimeRoot, withRuntimeKeyHeld, managedToolTreeForLaunch, resolveAcpLaunch, resolveLocationCwd, strictBindsForRun } from "./execution.js";
 import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
 
@@ -28,10 +28,10 @@ export interface CommandRunRequest {
   workspace_location_id?: string;
   run_id?: string;
   scratch_workspace?: boolean;
-  adapter_type?: string;
+  runtime_key?: string;
   installation?: string;
   /** A managed runtime whose tree is visible to this direct command, without changing its argv. */
-  runtime_adapter_type?: string;
+  runtime_tree_key?: string;
   runtime_installation?: string;
   command: string[];
   stdin?: string | null;
@@ -103,7 +103,7 @@ export async function runHostCommand(
   // recipe runs for minutes and is in neither run registry, so without this a
   // drain reports quiet and the replacement deletes the tree it is executing
   // from.
-  return holdingAdapter(request.adapter_type, () => runHostCommandInner(request, log));
+  return withRuntimeKeyHeld(request.runtime_key, () => runHostCommandInner(request, log));
 }
 
 async function runHostCommandInner(
@@ -120,10 +120,10 @@ async function runHostCommandInner(
   // A verification recipe or C3 probe launches the same copy a Run does, and
   // it is in neither run registry — so the drain cannot see it and the closed
   // door has to. Refused, not queued: the caller is waiting on an HTTP request.
-  if (adapterIsBeingReplaced(request.adapter_type)) {
+  if (isRuntimeKeyBeingReplaced(request.runtime_key)) {
     return {
       exit_code: 1, stdout: "", stderr: "", timed_out: false,
-      error: `${request.adapter_type} is being upgraded on this host; retry in a moment.`,
+      error: `${request.runtime_key} is being upgraded on this host; retry in a moment.`,
     };
   }
   const scratch = join(configDir(), "commands", request.request_id);
@@ -140,28 +140,28 @@ async function runHostCommandInner(
   let resolved: { command: string; args: string[]; env: Record<string, string> };
   let tool: ReturnType<typeof readToolManifestSync> = null;
   let runtimeTool: ReturnType<typeof readToolManifestSync> = null;
-  const runtimeBindingRequested = Boolean(request.runtime_adapter_type || request.runtime_installation);
+  const runtimeBindingRequested = Boolean(request.runtime_tree_key || request.runtime_installation);
   try {
     const [first, ...rest] = request.command;
-    if (request.adapter_type) {
+    if (request.runtime_key) {
       const installation = request.installation ?? OWN_INSTALLATION;
       // The manifest's own `env` is not optional decoration: for a managed copy
       // it carries `HOME`, which is that copy's login home. Dropping it ran the
       // copy as though it had never been logged in.
-      resolved = resolveAcpLaunch(request.adapter_type, request.command, installation, request.adapter_type);
-      tool = installation === OWN_INSTALLATION ? null : readToolManifestSync(request.adapter_type, installation);
+      resolved = resolveAcpLaunch(request.runtime_key, request.command, installation, request.runtime_key);
+      tool = installation === OWN_INSTALLATION ? null : readToolManifestSync(request.runtime_key, installation);
     } else {
       resolved = { command: first!, args: rest, env: {} };
     }
-    if (request.runtime_adapter_type || request.runtime_installation) {
-      if (!request.runtime_adapter_type || !request.runtime_installation) {
-        throw new Error("Managed runtime binding requires both adapter type and installation.");
+    if (request.runtime_tree_key || request.runtime_installation) {
+      if (!request.runtime_tree_key || !request.runtime_installation) {
+        throw new Error("Managed runtime binding requires both runtime key and installation.");
       }
       runtimeTool = request.runtime_installation === OWN_INSTALLATION
         ? null
-        : readToolManifestSync(request.runtime_adapter_type, request.runtime_installation);
+        : readToolManifestSync(request.runtime_tree_key, request.runtime_installation);
       if (request.runtime_installation !== OWN_INSTALLATION && !runtimeTool) {
-        throw new Error(`This daemon does not have ${request.runtime_adapter_type} ${request.runtime_installation} installed.`);
+        throw new Error(`This daemon does not have ${request.runtime_tree_key} ${request.runtime_installation} installed.`);
       }
     }
   } catch (error) {
@@ -192,7 +192,7 @@ async function runHostCommandInner(
       // uses a managed runtime. The runtime identity is a namespace input,
       // not the command selector used by resolveAcpLaunch above.
       const namespaceTool = runtimeBindingRequested ? runtimeTool : tool;
-      const namespaceAdapterType = runtimeBindingRequested ? request.runtime_adapter_type : request.adapter_type;
+      const namespaceRuntimeKey = runtimeBindingRequested ? request.runtime_tree_key : request.runtime_key;
       const namespaceInstallation = runtimeBindingRequested ? request.runtime_installation : request.installation;
       const namespace = buildStrictNamespaceCommand({
         command: resolved.command,
@@ -206,7 +206,7 @@ async function runHostCommandInner(
           // under its install root, so the namespace has neither the
           // executable nor its login home unless the tree is bound in.
           loginHome: namespaceTool?.home ?? null,
-          toolTree: namespaceTool ? managedToolTreeForLaunch(namespaceAdapterType, namespaceInstallation) : null,
+          toolTree: namespaceTool ? managedToolTreeForLaunch(namespaceRuntimeKey, namespaceInstallation) : null,
           runtimeRoot: daemonRuntimeRoot(),
         }),
         // Read-write because a verification recipe builds and tests; no

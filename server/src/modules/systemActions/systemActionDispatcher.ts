@@ -1,8 +1,6 @@
 import type {
   CanonicalToolCall,
   CanonicalToolDefinition,
-  RuntimeHostExecuteRequest,
-  RuntimeHostExecuteResponse,
 } from "@rainver/protocol";
 import { systemActionInputJsonSchema } from "@rainver/protocol";
 import type {
@@ -19,13 +17,12 @@ import {
 } from "../runs/managedAgentDelegationTools.js";
 import {
   resolveRetrievalToolBinding,
-  isRetrievalPreflightMode,
-  type ManagedApiRetrievalToolDeps,
+  type RetrievalToolDeps,
   runRetrievalToolCall,
   validateRetrievalToolInput,
   type ResolvedRetrievalToolBinding,
 } from "../runs/managedRetrievalTools.js";
-import type { RunRecord } from "../runs/repository.js";
+import type { AgentRunRecord } from "../runs/repository.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { getDbPool } from "../../db/pool.js";
 import { loadSystemActionRegistry } from "./registry.js";
@@ -38,43 +35,41 @@ import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService
 import { registerModuleSystemActionExecutors } from "./executorRegistry.js";
 import { memoryPolicyContext } from "../memory/memoryPolicyContext.js";
 import { effectiveRunTrigger } from "./effectiveRunTrigger.js";
+import type { SystemActionDispatchResult } from "./toolResult.js";
 
-export interface SystemActionDispatcherDeps extends ManagedApiRetrievalToolDeps {
+export interface SystemActionDispatcherDeps extends RetrievalToolDeps {
   agentDelegationTools?: AgentDelegationToolDeps;
   actionEventSink?: (eventType: "action_invoked" | "action_completed", call: CanonicalToolCall, metadata?: Record<string, unknown>) => Promise<void>;
 }
 
-export interface SystemActionDispatchResult {
-  modelResult: unknown;
-  summary: Record<string, unknown>;
-  artifact?: unknown;
-  /** Terminates the caller's batch — the `authorization.request` executor's own pause signal. */
-  suspend?: RuntimeHostExecuteResponse;
-}
+export type { SystemActionDispatchResult } from "./toolResult.js";
+
+const NOT_GRANTED_MESSAGE = "This system action is not granted to the Run.";
 
 /**
  * Run-scoped single-call entry point over `SystemActionGateway`: grants,
- * dispatch, and a normalized result. Shared by the managed model loop
- * (`ManagedAgentToolSurface`), the CLI tool surface, and — by construction,
- * since there is only one path — any future thin adapter.
+ * dispatch, and a normalized result. ACP runtimes call this through the Host
+ * daemon tool transport; the Server never owns the surrounding model loop.
  */
 export class SystemActionDispatcher {
   private constructor(
-    private readonly run: RunRecord,
+    private readonly run: AgentRunRecord,
     private readonly gateway: SystemActionGateway,
+    private readonly recordRefusedAction: (
+      call: CanonicalToolCall,
+      errorCode: string,
+      errorMessage: string,
+    ) => Promise<void>,
     private readonly permittedActionIds: Set<string>,
     readonly retrieval: ResolvedRetrievalToolBinding | null,
     readonly delegation: Awaited<ReturnType<typeof resolveAgentDelegationToolBinding>>,
     readonly genericDefinitions: CanonicalToolDefinition[],
-    readonly genericBindings: RuntimeHostExecuteRequest["tool_bindings"],
     readonly researchDefinitions: CanonicalToolDefinition[],
-    readonly researchBindings: RuntimeHostExecuteRequest["tool_bindings"],
   ) {}
 
   static async create(
     config: ServerConfig,
-    run: RunRecord,
-    request: RuntimeHostExecuteRequest,
+    run: AgentRunRecord,
     deps: SystemActionDispatcherDeps = {},
   ): Promise<SystemActionDispatcher> {
     const [retrieval, delegation] = await Promise.all([
@@ -95,14 +90,10 @@ export class SystemActionDispatcher {
       );
     const genericDefinitions: CanonicalToolDefinition[] = genericRegistryDefinitions
       .map((definition) => ({ name: definition.id, description: definition.description, input_schema: systemActionInputJsonSchema(definition) }));
-    const genericBindings = genericRegistryDefinitions.map(systemActionToolBinding);
-
     const researchRegistryDefinitions = [...registry.values()]
       .filter((definition) => definition.agent_tool_surface === "research" && grantedActionIds.has(definition.id));
     const researchAcquisitionDefinitions: CanonicalToolDefinition[] = researchRegistryDefinitions
       .map((definition) => ({ name: definition.id, description: definition.description, input_schema: systemActionInputJsonSchema(definition) }));
-    const researchAcquisitionBindings = researchRegistryDefinitions.map(systemActionToolBinding);
-
     const permitted = new Set(
       [...registry.values()]
         .filter(
@@ -115,16 +106,12 @@ export class SystemActionDispatcher {
     );
     if (retrieval) {
       retrieval.toolDefinitions = retrieval.toolDefinitions.filter((tool) => permitted.has(tool.name));
-      retrieval.toolBindings = retrieval.toolBindings.filter((tool) => permitted.has(tool.id));
     }
     if (delegation) {
       delegation.toolDefinitions = delegation.toolDefinitions.filter((tool) => permitted.has(tool.name));
-      delegation.toolBindings = delegation.toolBindings.filter((tool) => permitted.has(tool.id));
     }
     const permittedGenericDefinitions = genericDefinitions.filter((tool) => permitted.has(tool.name));
-    const permittedGenericBindings = genericBindings.filter((tool) => permitted.has(tool.id));
     const permittedResearchAcquisitionDefinitions = researchAcquisitionDefinitions.filter((tool) => permitted.has(tool.name));
-    const permittedResearchAcquisitionBindings = researchAcquisitionBindings.filter((tool) => permitted.has(tool.id));
 
     registerModuleSystemActionExecutors(executors, config, run, {
       generic: permittedGenericDefinitions.length > 0,
@@ -163,7 +150,6 @@ export class SystemActionDispatcher {
             { id: tool.name, name: tool.name, arguments_json: JSON.stringify(input) },
             delegation,
             run,
-            request,
             context.policy_decision?.details as never,
           ),
         );
@@ -185,6 +171,33 @@ export class SystemActionDispatcher {
         await actionEvents(eventType, { id: context.idempotency_key ?? definition.id, name: definition.id, arguments_json: "{}" }, metadata);
       } catch (error) {
         if (policyRegistry.get(definition.policy_action)?.record_failure_mode === "fail_closed") throw error;
+      }
+    };
+
+    /**
+     * A refusal that never reaches the gateway still has to leave Run
+     * evidence. `governedToolDegradation` folds failed `action_completed`
+     * events into the Run's terminal status, so an ungranted tool that
+     * returned early wrote nothing and the Run finished clean. This reuses
+     * the same sink and the same event shape rather than adding a second
+     * writer.
+     */
+    const recordRefusedAction = async (
+      call: CanonicalToolCall,
+      errorCode: string,
+      errorMessage: string,
+    ): Promise<void> => {
+      try {
+        await emitActionEvent(
+          { id: call.name, policy_action: registry.get(call.name as SystemActionId)?.policy_action ?? "" },
+          "action_completed",
+          { idempotency_key: call.id },
+          { ok: false, error_code: errorCode, error_message: errorMessage },
+        );
+      } catch {
+        // The refusal itself is the authoritative answer to the runtime; a
+        // fail-closed record mode cannot turn an already-denied call into a
+        // thrown dispatch.
       }
     };
 
@@ -211,29 +224,24 @@ export class SystemActionDispatcher {
     return new SystemActionDispatcher(
       run,
       gateway,
+      recordRefusedAction,
       // The permitted set, not the raw grants: `list`/`describe` show what
       // `permitted` allows, and dispatch must refuse exactly what they hide.
       permitted,
       retrieval,
       delegation,
       permittedGenericDefinitions,
-      permittedGenericBindings,
       permittedResearchAcquisitionDefinitions,
-      permittedResearchAcquisitionBindings,
     );
   }
 
   /**
-   * Every action definition this Run is granted, with model-facing schemas.
-   * A retrieval binding in a preflight mode contributes no definitions here,
-   * matching `retrievalToolContribution` for the managed loop: in
-   * `preflight_search`/`preflight_brief` the system performs the governed
-   * retrieval step itself, so the tool must not be offered for direct call.
+   * Every action definition granted to this Run, with model-facing schemas.
+   * Retrieval definitions are contributed only by an explicitly enabled,
+   * policy-authorized retrieval binding.
    */
   listGrantedDefinitions(): CanonicalToolDefinition[] {
-    const retrievalDefinitions = this.retrieval && !isRetrievalPreflightMode(this.retrieval.toolMode)
-      ? this.retrieval.toolDefinitions
-      : [];
+    const retrievalDefinitions = this.retrieval?.toolDefinitions ?? [];
     return [
       ...retrievalDefinitions,
       ...(this.delegation?.toolDefinitions ?? []),
@@ -244,12 +252,13 @@ export class SystemActionDispatcher {
 
   async dispatch(call: CanonicalToolCall): Promise<SystemActionDispatchResult> {
     if (!this.permittedActionIds.has(call.name)) {
+      await this.recordRefusedAction(call, "system_action_not_granted", NOT_GRANTED_MESSAGE);
       return {
         modelResult: {
           ok: false,
           tool: call.name,
           error_code: "system_action_not_granted",
-          error: "This system action is not granted to the Run.",
+          error: NOT_GRANTED_MESSAGE,
         },
         summary: {
           tool_name: call.name,
@@ -285,23 +294,6 @@ function triggeringMessageId(value: unknown): string | null {
   return typeof messageId === "string" && messageId.trim() ? messageId : null;
 }
 
-function systemActionToolBinding(
-  definition: SystemActionDefinition,
-): RuntimeHostExecuteRequest["tool_bindings"][number] {
-  return {
-    id: definition.id,
-    external_type: "internal",
-    external_ref: definition.id,
-    display_name: definition.id,
-    required_scopes: [definition.id],
-    credential_ref: null,
-    data_exposure_level: "model_provider",
-    observability_level: "structured_events",
-    side_effect_level: definition.side_effects,
-    approval_required: definition.side_effects === "proposal",
-  };
-}
-
 /**
  * `agent.delegate` and retrieval keep an explicit custom adapter — their
  * enforcement genuinely differs (group budget/lineage; domain enablement).
@@ -314,7 +306,7 @@ async function enforcePolicyForAction(
   config: ServerConfig,
   definition: SystemActionDefinition,
   input: unknown,
-  run: RunRecord,
+  run: AgentRunRecord,
   retrieval: ResolvedRetrievalToolBinding | null,
   actor: { spaceId: string; instructedByUserId: string; agentId: string; runId: string },
   delegation: Awaited<ReturnType<typeof resolveAgentDelegationToolBinding>>,
@@ -394,7 +386,7 @@ export async function enforceDeclaredResourcePolicy(
   definition: SystemActionDefinition,
   resource: SystemActionPolicyResource,
   input: unknown,
-  run: RunRecord,
+  run: AgentRunRecord,
 ) {
   const resourceType = resource.resource_type ?? definition.owning_module;
   const resourceId = resolveDeclaredResourceId(resource, input, run);
@@ -451,7 +443,11 @@ export async function enforceDeclaredResourcePolicy(
   };
 }
 
-export function resolveDeclaredResourceId(resource: SystemActionPolicyResource, input: unknown, run: RunRecord): string {
+export function resolveDeclaredResourceId(
+  resource: SystemActionPolicyResource,
+  input: unknown,
+  run: Pick<AgentRunRecord, "id" | "project_id">,
+): string {
   const fromInput = resource.resource_id_input_field
     ? (input as Record<string, unknown>)[resource.resource_id_input_field]
     : undefined;
@@ -488,7 +484,7 @@ function toolCallFailureResult(call: CanonicalToolCall, error: unknown): SystemA
   };
 }
 
-function defaultActionEventSink(config: ServerConfig, run: RunRecord) {
+function defaultActionEventSink(config: ServerConfig, run: AgentRunRecord) {
   if (!config.databaseUrl) return undefined;
   const repository = new PgRunRepository(getDbPool(config.databaseUrl));
   return async (

@@ -7,15 +7,30 @@ import {
   RunExecuteRequestSchema,
   RunExecutionKnownErrorCodeSchema,
   RunInputEnvelopeSchema,
-  RunJobEnvelopeSchema,
-  RunJobPayloadSchema,
   RunJobResultSchema,
   RuntimeSemanticEventSchema,
   RunTerminalResultSchema,
-  RunTraceSafeSummarySchema,
+  SecretFreeJsonRecordSchema,
+  stripSecretFields,
 } from "../src/index";
 
 describe("run orchestration contract", () => {
+  it("rejects nested credential identifiers and strips them recursively without mutating input", () => {
+    const config = {
+      effort: "medium",
+      max_tokens: 1024,
+      nested: [{ apiKey: "secret", credentialProfileId: "credential-1", keep: true }],
+    };
+
+    expect(SecretFreeJsonRecordSchema.safeParse(config).success).toBe(false);
+    expect(stripSecretFields(config)).toEqual({
+      effort: "medium",
+      max_tokens: 1024,
+      nested: [{ keep: true }],
+    });
+    expect(config.nested[0]).toMatchObject({ apiKey: "secret", credentialProfileId: "credential-1" });
+  });
+
   it("parses run_input.v1 and rejects secrets or escaping output paths", () => {
     const input = {
       schema_version: "run_input.v1",
@@ -149,8 +164,8 @@ describe("run orchestration contract", () => {
 
   it("parses terminal result and adapter result envelopes without secret fields", () => {
     const adapter = RunAdapterResultEnvelopeSchema.parse({
-      adapter_type: "ts_agent_host",
-      adapter_kind: "managed_api",
+      runtime_key: "opencode",
+      adapter_kind: "local_cli",
       success: true,
       output_text: "done",
       output_json: { artifacts: [{ title: "summary" }] },
@@ -205,13 +220,13 @@ describe("run orchestration contract", () => {
       status: "running",
       summary: "Adapter started",
       metadata_json: {
-        adapter_type: "codex_cli",
+        runtime_key: "codex_cli",
         argv_summary: ["codex", "exec"],
       },
     });
 
     expect(event.metadata_json).toEqual({
-      adapter_type: "codex_cli",
+      runtime_key: "codex_cli",
       argv_summary: ["codex", "exec"],
     });
     expect(
@@ -226,50 +241,6 @@ describe("run orchestration contract", () => {
         metadata_json: { nested: { stderr: "raw adapter log" } },
       }).success,
     ).toBe(false);
-  });
-
-  it("covers existing agent_run job payload forms", () => {
-    expect(
-      RunJobPayloadSchema.parse({
-        space_id: "space-1",
-        user_id: "user-1",
-        run_id: "run-1",
-        root_run_id: "run-root",
-        run_group_id: "group-1",
-        delegation_id: "delegation-1",
-        instructed_by_agent_id: "agent-manager",
-        simulate_failure: false,
-      }).run_id,
-    ).toBe("run-1");
-
-    expect(
-      RunJobPayloadSchema.parse({
-        space_id: "space-1",
-        user_id: "user-1",
-        task_id: "task-1",
-        agent_id: "agent-1",
-        set_task_in_progress: true,
-      }).task_id,
-    ).toBe("task-1");
-
-    const envelope = RunJobEnvelopeSchema.parse({
-      job_id: "job-1",
-      space_id: "space-1",
-      user_id: "user-1",
-      attempts: 1,
-      max_attempts: 3,
-      worker_id: "worker-1",
-      payload: {
-        agent_id: "agent-1",
-        prompt: "Do the work",
-        adapter_type: "model_api",
-      },
-    });
-
-    expect(envelope.payload.agent_id).toBe("agent-1");
-    expect(RunJobPayloadSchema.safeParse({ space_id: "space-1" }).success).toBe(
-      false,
-    );
   });
 
   it("parses job result and stable known error codes", () => {
@@ -293,66 +264,6 @@ describe("run orchestration contract", () => {
       RunJobResultSchema.safeParse({
         ...result,
         metadata_json: { private_memory_text: "raw private memory" },
-      }).success,
-    ).toBe(false);
-  });
-
-  it("parses trace-safe summaries and rejects raw file or patch content", () => {
-    const summary = RunTraceSafeSummarySchema.parse({
-      run_id: "run-1",
-      space_id: "space-1",
-      status: "failed",
-      adapter_type: "codex_cli",
-      model_provider_id: null,
-      required_sandbox_level: "worktree",
-      parent_run_id: "run-parent",
-      root_run_id: "run-root",
-      run_group_id: "group-1",
-      delegation_id: "delegation-1",
-      instructed_by_agent_id: "agent-manager",
-      started_at: "2026-06-12T10:00:00.000Z",
-      completed_at: "2026-06-12T10:00:03.000Z",
-      error_code: "adapter_nonzero_exit",
-      event_summaries: [
-        {
-          event_type: "adapter_completed",
-          status: "failed",
-          summary: "Adapter exited nonzero",
-          error_code: "adapter_nonzero_exit",
-          metadata_json: { exit_code: 1 },
-        },
-      ],
-      artifact_summaries: [
-        { artifact_id: "artifact-1", artifact_type: "runtime_output", title: "Output" },
-      ],
-      proposal_summaries: [
-        { proposal_id: "proposal-1", proposal_type: "code_patch", status: "pending" },
-      ],
-    });
-
-    expect(summary.event_summaries).toHaveLength(1);
-    expect(
-      RunTraceSafeSummarySchema.safeParse({
-        ...summary,
-        event_summaries: [
-          {
-            event_type: "patch_collected",
-            status: "succeeded",
-            metadata_json: { full_patch: "diff --git ..." },
-          },
-        ],
-      }).success,
-    ).toBe(false);
-    expect(
-      RunTraceSafeSummarySchema.safeParse({
-        ...summary,
-        event_summaries: [
-          {
-            event_type: "artifact_ingested",
-            status: "succeeded",
-            metadata_json: { file_content: "raw file body" },
-          },
-        ],
       }).success,
     ).toBe(false);
   });

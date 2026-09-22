@@ -102,6 +102,7 @@ export class ProjectResearchMonitorComparisonService {
       newMaterial: material,
     });
     const run = await new PgRunRepository(this.db).createQueuedRunWithBudgetAdmission({
+      execution_kind: "agent",
       agent_id: input.agentId,
       space_id: input.spaceId,
       user_id: input.userId,

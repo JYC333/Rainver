@@ -6,7 +6,7 @@ import { toast } from 'sonner'
 import { agentsApi, artifactsApi, boardsApi, tasksApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg, isNotFoundError } from '../../lib/utils'
-import type { AgentOut, Board, PlanDetail, Task, TaskArtifact, TaskProposal, TaskRunCreateBody, TaskRunListItem } from '../../types/api'
+import type { AgentOut, AgentRuntimeProfileOut, Board, PlanDetail, Task, TaskArtifact, TaskProposal, TaskRunCreateBody, TaskRunListItem } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -50,6 +50,11 @@ export default function TaskDetailPage() {
   const [props, setProps] = useState<TaskProposal[]>([])
   const [plan, setPlan] = useState<PlanDetail | null>(null)
   const [agents, setAgents] = useState<AgentOut[]>([])
+  const [runtimeProfiles, setRuntimeProfiles] = useState<AgentRuntimeProfileOut[]>([])
+  const [runtimeProfilePick, setRuntimeProfilePick] = useState('')
+  /** The Agent's own default Profile; picking it means "no explicit choice". */
+  const [defaultRuntimeProfileId, setDefaultRuntimeProfileId] = useState('')
+  const [runtimeProfileError, setRuntimeProfileError] = useState('')
   const [boards, setBoards] = useState<Board[]>([])
   const [loading, setLoading] = useState(true)
   const [mode, setMode] = useState<string>('live')
@@ -101,6 +106,33 @@ export default function TaskDetailPage() {
   }, [taskId, activeSpaceId])
 
   useEffect(() => { load() }, [load])
+  const profileAgentId = task?.assigned_agent_id || agentPick
+  useEffect(() => {
+    if (!profileAgentId) {
+      setRuntimeProfiles([])
+      setRuntimeProfilePick('')
+      setDefaultRuntimeProfileId('')
+      setRuntimeProfileError('')
+      return
+    }
+    let current = true
+    setRuntimeProfiles([])
+    setRuntimeProfilePick('')
+    setDefaultRuntimeProfileId('')
+    setRuntimeProfileError('')
+    void agentsApi.listRuntimeProfiles(profileAgentId).then(profiles => {
+      if (!current) return
+      const enabled = profiles.filter(profile => profile.enabled)
+      const fallback = enabled.find(profile => profile.is_default)?.id ?? enabled[0]?.id ?? ''
+      setRuntimeProfiles(enabled)
+      setDefaultRuntimeProfileId(fallback)
+      setRuntimeProfilePick(fallback)
+      if (enabled.length === 0) setRuntimeProfileError('This Agent has no enabled Runtime Profile.')
+    }).catch(() => {
+      if (current) setRuntimeProfileError('Runtime Profiles could not be loaded.')
+    })
+    return () => { current = false }
+  }, [profileAgentId])
   // Navigating to another Task starts at Work again — where a fresh mount
   // starts. The guard is the point: this effect predates the Work tab and ran
   // on mount too, so it silently overrode the default above on every visit,
@@ -117,6 +149,10 @@ export default function TaskDetailPage() {
     setCreatingRun(true)
     try {
       const body: TaskRunCreateBody = { mode }
+      // The default path sends no Profile at all: the server resolves the
+      // Agent's default and records the selection as `default`. Only a pick
+      // that differs from it is an explicit choice.
+      if (runtimeProfilePick && runtimeProfilePick !== defaultRuntimeProfileId) body.runtime_profile_id = runtimeProfilePick
       const aid = task.assigned_agent_id || agentPick || undefined
       if (aid) body.agent_id = aid
       await tasksApi.createRun(taskId, body)
@@ -135,7 +171,12 @@ export default function TaskDetailPage() {
     if (!agentId) { toast.error('Select an agent for the planning Run'); return }
     setRequestingPlan(true)
     try {
-      const run = await tasksApi.requestPlan(task.id, { agent_id: agentId })
+      const run = await tasksApi.requestPlan(task.id, {
+        agent_id: agentId,
+        ...(runtimeProfilePick && runtimeProfilePick !== defaultRuntimeProfileId
+          ? { runtime_profile_id: runtimeProfilePick }
+          : {}),
+      })
       toast.success(`Planning Run queued: ${run.id.slice(0, 8)}…`)
       await load()
     } catch (error) {
@@ -237,6 +278,23 @@ export default function TaskDetailPage() {
               />
             </div>
           )}
+          {/* Phase 4 gate: the default path needs no runtime form. The picker
+              appears only when the Agent actually has more than one enabled
+              Profile to choose between. */}
+          {runtimeProfiles.length > 1 && (
+            <div className="min-w-[240px]">
+              <Label className="text-xs">Runtime Profile</Label>
+              <Select
+                ariaLabel="Runtime Profile"
+                value={runtimeProfilePick}
+                options={runtimeProfiles.map(profile => ({
+                  value: profile.id,
+                  label: `${profile.name}${profile.is_default ? ' · default' : ''} · ${profile.runtime_key} · ${profile.backend_mode}`,
+                }))}
+                onChange={setRuntimeProfilePick}
+              />
+            </div>
+          )}
           <div className="min-w-[140px]">
             <Label className="text-xs">Mode</Label>
             <Select
@@ -255,6 +313,9 @@ export default function TaskDetailPage() {
             {creatingRun ? 'Creating…' : 'Create queued run'}
           </Button>
         </div>
+        {runtimeProfileError && (
+          <p role="alert" className="text-xs text-destructive">{runtimeProfileError}</p>
+        )}
         {task.task_role === 'source' && (
           <Card className="mt-3 border-primary/30 bg-primary/5 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">

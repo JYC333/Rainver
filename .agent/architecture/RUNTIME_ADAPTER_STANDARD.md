@@ -7,31 +7,30 @@ Rainver owns run lifecycle, accepted Runtime Context Delivery, policy gates, cre
 gating, sandbox/worktree governance, artifacts, proposals, and audit/events.
 Vendor CLIs such as Claude Code and Codex CLI are local CLI runtime adapters.
 
-`RuntimeAdapterSpec` defines built-in adapter semantics. For server-owned execution
-the catalog lives in `server/src/modules/runtimeAdapters/specs.ts`.
-Specs cover credential mode, sandbox requirement, invocation template,
-permission bypass capability, usage behavior,
-output parser, catalog display, executor family, and conservative delegation/
-observability/trust claims. Where a runtime exposes a verified config control,
-the local CLI renderer must materialize and verify it before execution; the
-current Claude Code path denies the runtime-internal `Task` tool, while Codex
-declares its subagent control `unknown` and is capped at `low` trust by that
-declaration alone.
-Runtime adapter database rows are not part of the current product schema. Runtime
-selection uses an Agent's selected/default `AgentRuntimeProfile`, which is
-snapshotted onto each run.
+`RuntimeAdapterSpec` defines built-in launch, credential, capability, usage and
+distribution facts. The code-owned catalog lives in
+`server/src/modules/runtimeAdapters/specs.ts`; `AgentRuntimeDefinition` exposes
+only selectable ACP runtimes. Runtime adapter database rows are not part of
+the product schema. Runtime selection uses the Agent's selected/default
+`AgentRuntimeProfile`, which is snapshotted onto each Run.
 
-Every implemented local CLI executes through `HostDaemonExecutionAdapter`
-and the daemon transport. Non-CLI adapters remain in-process and retain Runtime
-Context Delivery. The daemon performs strict isolation on the built-in host
-and native execution on a trusted host; the application server never spawns a
-vendor process.
+Do not treat declarative subagent-control or trust metadata as enforcement.
+The current Host-daemon launch does not apply the legacy server-local deny
+configuration; those claims do not raise the effective trust level. Rainver
+still owns tool grants, policy decisions and the Host isolation boundary.
+
+Every implemented Agent runtime is a local CLI using ACP. The Server routes
+Runs through `AcpRuntimeAdapter` / `AcpController` and the selected Host
+daemon; there is no in-process Agent loop or second runtime protocol. The same
+daemon contract serves the built-in Server Runtime and paired Hosts, with
+strict isolation on the built-in Host and owner-managed execution on paired
+Hosts. The application server never spawns a vendor process.
 
 **The tool surface is adapter-neutral.** When `run_input.v1` contains tool
 grants, the executing side puts the `rainver` command (`packages/agent-cli`)
 in front of the Run as an absolute path in `RAINVER_CLI`, writes the Rainver
 Work Skill beside it, and appends a pointer to that Skill to the prompt the
-runtime is sent. Nothing in that path is keyed on `adapter_type` — an adapter
+runtime is sent. Nothing in that path is keyed on `runtime_key` — an adapter
 newly registered from the ACP registry gets the surface with no code added,
 which the three per-vendor MCP configuration writers this replaced each
 needed. The surface is only a transport over
@@ -40,9 +39,11 @@ immutable AgentVersion allowlists, policy, approval/proposal behavior,
 idempotency, domain executors, and audit remain server-owned.
 
 Use `/api/v1/hosts/:hostId/installations/*` for installing, logging in,
-upgrading and rolling back a CLI copy, and `RuntimeAdapterSpec` /
-`adapter_type` for runtime semantics. The `/runtime-adapters` and
-`/runtime-tools` instance APIs are both retired.
+upgrading and rolling back a CLI copy, and `AgentRuntimeDefinition` plus its
+`RuntimeAdapterSpec` for runtime semantics. `runtime_key` is the one name a
+runtime has on the host wire and in a managed installation's manifest; there is
+no second identity field. The `/runtime-adapters` and `/runtime-tools` instance
+APIs are both retired.
 
 What a host reports about a copy is non-mutating: its id, version, whether it
 is logged in, the accounts a multi-account CLI holds, and the version kept
@@ -54,11 +55,11 @@ host (ADR 0016 §7). Permission bypass is policy controlled and denied before
 invocation unless both runtime config and runtime policy allow it under
 worktree isolation.
 
-Accepted Runtime Context Delivery is rendered directly at the adapter boundary;
-its context is not copied into vendor context files. Vendor-specific control
-files needed to disable unsupported delegation may still be generated only in
-the private run/conversation sandbox. They are never written to the real
-Project Folder because Rainver remains the source of truth.
+Accepted Runtime Context Delivery is assembled by the Server and projected
+into ACP's prompt channel; the Host daemon relays the ACP transport and owns
+the runtime process. Runtime context is not copied into the real Project
+Folder. Host workspace isolation is enforced by the daemon namespace, not by
+the `PathPolicy` used for Rainver-mediated file operations.
 
 Subscription CLIs are explicit `local_cli` external-egress destinations in the
 immutable execution-control snapshot. Preflight and live Delivery authorization
@@ -81,23 +82,20 @@ server-side probe that ran it beside the application server is gone with the
 Runner, and the host-side one lands with the usage work. No quota refresh
 spawns a vendor CLI in the application-server namespace.
 
-All three implemented vendor adapters speak ACP over stdio. The server
-controller negotiates sessions and consumes semantic events; the daemon only
-relays bytes. Host-bound runs resume vendor sessions and receive a prompt plus
-work surface, without server-brokered Runtime Context Delivery. In-process
-runtimes continue to consume the Runtime Context Gateway.
+All implemented builtin runtimes speak ACP over stdio. The Server controller
+negotiates or resumes sessions and consumes semantic events; the daemon
+relays bytes and owns subprocess lifecycle. Host-bound Runs receive the
+Server-prepared prompt and work surface over the same ACP path.
 
-To add a new local CLI adapter: add its `RuntimeAdapterType` member, add it to
-`VendorCliAdapterType`, and add a validated `RuntimeAdapterSpec`. Membership
-checks read the spec (`isVendorCliAdapter`, `isAcpRuntimeAdapter`), so a
-vendor CLI that speaks ACP natively then dispatches to remote hosts — launch
-argv, capability discovery, and the option probe all derive from the spec —
-without daemon changes. The compiler then names the per-vendor tables keyed on
-`VendorCliAdapterType` that need an entry (subscription egress hosts), and
-ModelProvider binding needs vendor-specific config generation
-(`runtimeProviderBinding.ts` / `remoteProviderBinding.ts`) if the CLI accepts a
-provider at all. Do not add `adapter_type === "<vendor>"` literal checks for
-"is this a CLI" — use the predicates.
+To add a builtin runtime, define its canonical `runtime_key`, validated
+`RuntimeAdapterSpec`, and `AgentRuntimeDefinition`; it must declare ACP and
+pass the implemented-runtime admission checks. Launch, capability discovery,
+and option probes derive from those definitions, so the shared Host daemon
+needs no per-runtime execution loop. ModelProvider support, where appropriate,
+still needs explicit runtime configuration and compatibility tests in
+`runs/adapterProviderRequirement.ts` / `runs/remoteProviderBinding.ts`. Use registry
+predicates such as `isAcpRuntimeAdapter`; do not create parallel protocol
+drivers or legacy runtime-identity branches.
 
 A builtin ACP adapter also declares how a *managed* copy is obtained on an
 execution host (`distribution: { registry_id }`, resolved against the ACP

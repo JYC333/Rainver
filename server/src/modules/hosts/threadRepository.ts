@@ -22,7 +22,7 @@ export interface HostThread {
   /** Read-model joins retained for navigation; not stored on the thread row. */
   project_folder_id: string | null;
   host_id: string;
-  adapter_type: string;
+  runtime_key: string;
   runtime_installation: string;
   vendor_session_id: string | null;
   last_run_id: string | null;
@@ -37,7 +37,7 @@ export interface HostThread {
   pending_archive_at: string | null;
 }
 
-const COLUMNS = `id, space_id, execution_host_id, workspace_location_id, workspace_mode, task_id, session_id, agent_id, container_kind, container_user_id, adapter_type, runtime_installation, vendor_session_id,
+const COLUMNS = `id, space_id, execution_host_id, workspace_location_id, workspace_mode, task_id, session_id, agent_id, container_kind, container_user_id, runtime_key, runtime_installation, vendor_session_id,
   last_run_id, last_session_id, dispatch_lock_id, retired_vendor_session_ids, status, created_by_user_id, created_at, updated_at, pending_archive_at`;
 
 function normalizeReturnedThread(row: HostThread): HostThread {
@@ -58,7 +58,7 @@ export class PgHostThreadRepository {
   async create(input: {
     executionHostId?: string | null;
     workspaceLocationId: string;
-    adapterType: string;
+    runtimeKey: string;
     runtimeInstallation?: string;
     createdByUserId: string;
     taskId?: string | null;
@@ -67,10 +67,10 @@ export class PgHostThreadRepository {
     const now = new Date().toISOString();
     const result = await this.db.query<HostThread>(
       `INSERT INTO host_threads (
-         id, execution_host_id, workspace_location_id, workspace_mode, task_id, adapter_type, runtime_installation, status, created_by_user_id, created_at, updated_at
+         id, execution_host_id, workspace_location_id, workspace_mode, task_id, runtime_key, runtime_installation, status, created_by_user_id, created_at, updated_at
        ) VALUES ($1, $2, $3, 'location', $4, $5, $6, 'active', $7, $8, $8)
        RETURNING ${COLUMNS}`,
-      [id, input.executionHostId ?? null, input.workspaceLocationId, input.taskId ?? null, input.adapterType, input.runtimeInstallation ?? "own", input.createdByUserId, now],
+      [id, input.executionHostId ?? null, input.workspaceLocationId, input.taskId ?? null, input.runtimeKey, input.runtimeInstallation ?? "own", input.createdByUserId, now],
     );
     return result.rows[0]!;
   }
@@ -82,7 +82,7 @@ export class PgHostThreadRepository {
     spaceId: string;
     sessionId: string;
     agentId: string;
-    adapterType: string;
+    runtimeKey: string;
     runtimeInstallation?: string;
     createdByUserId: string;
   }): Promise<HostThread> {
@@ -97,10 +97,10 @@ export class PgHostThreadRepository {
     const result = await this.db.query<HostThread>(
       `INSERT INTO host_threads (
          id, space_id, execution_host_id, workspace_location_id, workspace_mode, session_id, agent_id, container_kind,
-         adapter_type, runtime_installation, status, created_by_user_id, created_at, updated_at
+         runtime_key, runtime_installation, status, created_by_user_id, created_at, updated_at
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'conversation', $8, $9, 'active', $10, $11, $11)
        RETURNING ${COLUMNS}`,
-      [id, input.spaceId, input.executionHostId, input.workspaceLocationId ?? null, input.workspaceMode, input.sessionId, input.agentId, input.adapterType, input.runtimeInstallation ?? "own", input.createdByUserId, now],
+      [id, input.spaceId, input.executionHostId, input.workspaceLocationId ?? null, input.workspaceMode, input.sessionId, input.agentId, input.runtimeKey, input.runtimeInstallation ?? "own", input.createdByUserId, now],
     );
     return result.rows[0]!;
   }
@@ -113,7 +113,7 @@ export class PgHostThreadRepository {
     spaceId: string;
     sessionId: string;
     agentId: string;
-    adapterType: string;
+    runtimeKey: string;
     runtimeInstallation?: string;
     createdByUserId: string;
   }): Promise<HostThread> {
@@ -128,11 +128,11 @@ export class PgHostThreadRepository {
     const inserted = await this.db.query<HostThread>(
       `INSERT INTO host_threads (
          id, space_id, execution_host_id, workspace_location_id, workspace_mode, session_id, agent_id, container_kind,
-         adapter_type, runtime_installation, status, created_by_user_id, created_at, updated_at
+         runtime_key, runtime_installation, status, created_by_user_id, created_at, updated_at
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'conversation', $8, $9, 'active', $10, $11, $11)
        ON CONFLICT (session_id, agent_id) WHERE container_kind = 'conversation' AND status IN ('active', 'session_reset') AND session_id IS NOT NULL DO NOTHING
        RETURNING ${COLUMNS}`,
-      [id, input.spaceId, input.executionHostId, input.workspaceLocationId ?? null, input.workspaceMode, input.sessionId, input.agentId, input.adapterType, input.runtimeInstallation ?? "own", input.createdByUserId, now],
+      [id, input.spaceId, input.executionHostId, input.workspaceLocationId ?? null, input.workspaceMode, input.sessionId, input.agentId, input.runtimeKey, input.runtimeInstallation ?? "own", input.createdByUserId, now],
     );
     if (inserted.rows[0]) return inserted.rows[0];
     const existing = await this.getForConversationAgent(input.spaceId, input.sessionId, input.agentId);
@@ -157,7 +157,7 @@ export class PgHostThreadRepository {
     workspaceLocationId?: string | null;
     userId: string;
     agentId: string;
-    adapterType: string;
+    runtimeKey: string;
     runtimeInstallation?: string;
     createdByUserId: string;
   }): Promise<HostThread> {
@@ -172,7 +172,7 @@ export class PgHostThreadRepository {
     const inserted = await this.db.query<HostThread>(
       `INSERT INTO host_threads (
          id, execution_host_id, workspace_location_id, workspace_mode, agent_id, container_kind,
-         container_user_id, adapter_type, runtime_installation, status,
+         container_user_id, runtime_key, runtime_installation, status,
          created_by_user_id, created_at, updated_at
        ) VALUES ($1, $2, $3, $4, $5, 'direct', $6, $7, $8, 'active', $9, $10, $10)
        ON CONFLICT (agent_id, container_user_id) WHERE status IN ('active', 'session_reset') DO NOTHING
@@ -184,7 +184,7 @@ export class PgHostThreadRepository {
         input.workspaceMode,
         input.agentId,
         input.userId,
-        input.adapterType,
+        input.runtimeKey,
         input.runtimeInstallation ?? "own",
         input.createdByUserId,
         now,
@@ -424,14 +424,11 @@ export class PgHostThreadRepository {
   }
 
   /**
-   * Retires a Location thread's vendor session because the next Run is a
-   * different Agent's. The session lives in the previous Agent's profile
-   * (`resolveRuntimeProfileScope` keys a `location` container by the Run's
-   * Agent), so resuming it from the new Agent's profile would fail with "no
-   * such conversation" and reset anyway — this says so at admission instead,
-   * and records the session it moved on from.
+   * Retire a Location thread's ACP session before changing its Agent or
+   * Runtime Profile. Vendor sessions are scoped to that execution identity;
+   * resuming one from a different identity would fail later inside the runtime.
    */
-  async retireLocationSessionForAgentChange(threadId: string): Promise<boolean> {
+  async resetLocationSession(threadId: string): Promise<boolean> {
     const result = await this.db.query(
       `UPDATE host_threads
           SET status = 'session_reset',
@@ -503,14 +500,14 @@ export class PgHostThreadRepository {
 
   async listVendorSessionIds(input: {
     workspaceLocationId: string;
-    adapterType: string;
+    runtimeKey: string;
     runtimeInstallation: string;
   }): Promise<Set<string>> {
     const result = await this.db.query<{ vendor_session_id: string }>(
       `SELECT vendor_session_id
          FROM host_threads
         WHERE (workspace_location_id = $1 OR workspace_location_id IS NULL)
-          AND adapter_type = $2
+          AND runtime_key = $2
           AND runtime_installation = $3
           AND vendor_session_id IS NOT NULL
        UNION
@@ -518,9 +515,9 @@ export class PgHostThreadRepository {
          FROM host_threads
          CROSS JOIN LATERAL jsonb_array_elements_text(retired_vendor_session_ids) AS retired(value)
         WHERE (workspace_location_id = $1 OR workspace_location_id IS NULL)
-          AND adapter_type = $2
+          AND runtime_key = $2
           AND runtime_installation = $3`,
-      [input.workspaceLocationId, input.adapterType, input.runtimeInstallation],
+      [input.workspaceLocationId, input.runtimeKey, input.runtimeInstallation],
     );
     return new Set(result.rows.map((row) => row.vendor_session_id));
   }

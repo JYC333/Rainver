@@ -3,14 +3,17 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { RunWorkflowService } from "../src/modules/evolution/runWorkflowService.js";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import { seedServerRuntimeProfile } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const AGENT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const VERSION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const ACTOR = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const SERVER_HOST = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const IDENTITY = { spaceId: SPACE, userId: USER };
 
 
@@ -20,7 +23,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "spaces", "users"],
+    ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "agent_runtime_profiles", "hosts", "machines", "spaces", "users"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -46,22 +49,43 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1, $2, $3, 'v1', 'Test', '{}'::jsonb, '{"adapter_type":"model_api"}'::jsonb,
-       '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       -- The low-risk path this file asserts on is the AgentVersion's own
+       -- classification, not a routing workaround: the contract takes the
+       -- stricter of the request and the Version, so the product default
+       -- would make every "low-risk draft" assertion here medium.
+       risk_level,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'Test',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       'low',
+       $4
+     )`,
     [VERSION, AGENT, SPACE, now],
   );
-  await db.pool.query(
-    `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, runtime_config_json,
-       runtime_policy_json, enabled, is_default, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'Default', 'model_api', '{"adapter_type":"model_api"}'::jsonb,
-       '{}'::jsonb, true, true, $4, $4)`,
-    [randomUUID(), SPACE, AGENT, now],
-  );
   await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
+  await seedServerRuntimeProfile(db.pool, {
+    agent: AGENT,
+    space: SPACE,
+    hostId: SERVER_HOST,
+    now,
+  });
   await db.pool.query(
     `INSERT INTO actors (id, space_id, actor_type, user_id, agent_id, display_name, status, metadata_json, created_at, updated_at)
      VALUES ($1, $2, 'agent', $3, $4, 'Workflow actor', 'active', '{}'::jsonb, $5, $5)`,
@@ -69,33 +93,75 @@ beforeEach(async () => {
   );
 });
 
-async function seedRun(riskLevel: string): Promise<string> {
-  const run = await new PgRunRepository(db.pool).createQueuedRun({
-    agent_id: AGENT,
-    space_id: SPACE,
-    user_id: USER,
-    mode: "live",
-    run_type: "agent",
-    trigger_origin: "manual",
-    capability_id: "research.search",
-    prompt: "Inspect /tmp/private-output using sk-testSecretValue1234567890",
-    contract_snapshot: {
-      source: { kind: "direct", id: null },
-      risk_level: riskLevel,
-      required_outputs_json: { artifact_type: "report" },
-    },
-  });
+async function seedRun(riskLevel: "low" | "high"): Promise<string> {
+  const prompt = "Inspect /tmp/private-output using sk-testSecretValue1234567890";
+  const contractSnapshot = {
+    source: { kind: "direct" as const, id: null },
+    risk_level: riskLevel,
+    required_outputs_json: { artifact_type: "report" },
+  };
+  let runId: string;
+  const runs = new PgRunRepository(db.pool);
   const now = new Date().toISOString();
-  await db.pool.query(
-    `UPDATE runs SET status = 'succeeded', ended_at = $2, updated_at = $2, output_json = '{"result":"ok"}'::jsonb WHERE id = $1`,
-    [run.id, now],
-  );
+  if (riskLevel === "high") {
+    // This approval test consumes an already-completed historical Run. The
+    // current ACP admission policy correctly rejects high-risk CLI dispatch,
+    // so seed its frozen execution snapshot instead of bypassing routing.
+    const inserted = await db.pool.query<{ id: string }>(
+      `INSERT INTO runs (
+         id, space_id, agent_id, agent_version_id, execution_kind,
+         runtime_profile_id, runtime_profile_selection_source, runtime_key,
+         runtime_profile_snapshot_json, run_type, trigger_origin, status, mode,
+         prompt, contract_snapshot_json, started_at, ended_at, output_json,
+         instructed_by_user_id, owner_user_id, visibility, access_level,
+         created_at, updated_at
+       )
+       SELECT $1::varchar(36), $2::varchar(36), $3::varchar(36), $4::varchar(36), 'agent', profile.id, 'default', profile.runtime_key,
+              jsonb_build_object(
+                'id', profile.id, 'runtime_key', profile.runtime_key,
+                'backend_mode', profile.backend_mode,
+                'model_provider_id', profile.model_provider_id,
+                'model_name', profile.model_name,
+                'runtime_config_json', profile.runtime_config_json,
+                'runtime_policy_json', profile.runtime_policy_json
+              ), 'agent', 'manual', 'succeeded', 'live', $5, $6::jsonb,
+              $7, $7, '{"result":"ok"}'::jsonb, $8, $8,
+              'space_shared', 'full', $7, $7
+         FROM agent_runtime_profiles profile
+        WHERE profile.space_id = $2::varchar(36) AND profile.agent_id = $3::varchar(36)
+          AND profile.is_default = TRUE AND profile.enabled = TRUE
+       RETURNING id`,
+      [randomUUID(), SPACE, AGENT, VERSION, prompt, JSON.stringify(contractSnapshot), now, USER],
+    );
+    if (!inserted.rows[0]) throw new Error("Historical workflow-save Run requires the default Runtime Profile");
+    runId = inserted.rows[0].id;
+  } else {
+    const run = await runs.createQueuedRun({
+      execution_kind: "agent",
+      agent_id: AGENT,
+      space_id: SPACE,
+      user_id: USER,
+      mode: "live",
+      run_type: "agent",
+      trigger_origin: "manual",
+      capability_id: "research.search",
+      prompt,
+      contract_snapshot: contractSnapshot,
+    });
+    await new PgRouteDecisionRepository(db.pool).routeRun(run);
+    await runs.markRunRunning({ run_id: run.id, space_id: SPACE, started_at: now });
+    await db.pool.query(
+      `UPDATE runs SET status = 'succeeded', ended_at = $2, updated_at = $2, output_json = '{"result":"ok"}'::jsonb WHERE id = $1`,
+      [run.id, now],
+    );
+    runId = run.id;
+  }
   await db.pool.query(
     `INSERT INTO run_evaluations (
        id, space_id, run_id, evaluator_type, evaluator_version, outcome_status,
        trajectory_status, evidence_json, rule_trace_json, evaluated_at
      ) VALUES ($1, $2, $3, 'deterministic_harness', 'test', 'passed', 'acceptable', '{}'::jsonb, '[]'::jsonb, $4)`,
-    [randomUUID(), SPACE, run.id, now],
+    [randomUUID(), SPACE, runId, now],
   );
   await db.pool.query(
     `INSERT INTO run_steps (
@@ -103,7 +169,7 @@ async function seedRun(riskLevel: string): Promise<string> {
        input_summary, output_summary, metadata_json, created_at, updated_at
      ) VALUES ($1, $2, $3, $4, 0, 'completed', 'succeeded', 'Inspect /tmp/private-output using sk-testSecretValue1234567890',
        'input', 'done at /tmp/private-output', '{}'::jsonb, $5, $5)`,
-    [randomUUID(), SPACE, run.id, ACTOR, now],
+    [randomUUID(), SPACE, runId, ACTOR, now],
   );
   await db.pool.query(
     `INSERT INTO verification_results (
@@ -111,16 +177,16 @@ async function seedRun(riskLevel: string): Promise<string> {
        evidence_refs_json, details_json, started_at, completed_at, created_at
      ) VALUES ($1, $2, $3, 'output_schema', 'v1', 'passed', 'Schema passed',
        '[]'::jsonb, '{}'::jsonb, $4, $4, $4)`,
-    [randomUUID(), SPACE, run.id, now],
+    [randomUUID(), SPACE, runId, now],
   );
   await db.pool.query(
     `INSERT INTO artifacts (
        id, space_id, run_id, artifact_type, title, content, mime_type,
        export_formats_json, created_at, updated_at, visibility, access_level
      ) VALUES ($1, $2, $3, 'report', 'Report', 'safe', 'text/plain', '[]'::jsonb, $4, $4, 'space_shared', 'full')`,
-    [randomUUID(), SPACE, run.id, now],
+    [randomUUID(), SPACE, runId, now],
   );
-  return run.id;
+  return runId;
 }
 
 describe("save run as workflow (real Postgres)", () => {

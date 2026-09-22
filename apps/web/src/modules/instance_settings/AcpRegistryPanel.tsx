@@ -6,7 +6,7 @@ import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Input } from '../../components/ui/input'
 import { errMsg } from '../../lib/utils'
-import type { HostRuntimeAdapterOption } from '../../types/api'
+import type { HostRuntimeDefinitionOption } from '../../types/api'
 
 /**
  * The instance admin's ACP registry panel (Instance Settings, beside the
@@ -16,7 +16,7 @@ import type { HostRuntimeAdapterOption } from '../../types/api'
  * carries a copy. Installing on a host is the owner's, under Hosts.
  */
 export default function AcpRegistryPanel() {
-  const [adapters, setAdapters] = useState<HostRuntimeAdapterOption[]>([])
+  const [adapters, setAdapters] = useState<HostRuntimeDefinitionOption[]>([])
   const [enabled, setEnabled] = useState<AcpAgentOut[] | null>(null)
   const [registry, setRegistry] = useState<AcpRegistryEntry[] | null>(null)
   const [registryError, setRegistryError] = useState<string | null>(null)
@@ -25,7 +25,7 @@ export default function AcpRegistryPanel() {
 
   useEffect(() => {
     let cancelled = false
-    void hostsApi.listRuntimeAdapters().then(result => { if (!cancelled) setAdapters(result.items) }).catch(() => {})
+    void hostsApi.listRuntimeDefinitions().then(result => { if (!cancelled) setAdapters(result.items) }).catch(() => {})
     void acpAgentsApi.list().then(result => { if (!cancelled) setEnabled(result.items) }).catch(error => toast.error(errMsg(error)))
     void acpAgentsApi.registry()
       .then(result => { if (!cancelled) setRegistry(result.items) })

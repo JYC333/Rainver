@@ -7,6 +7,7 @@ import { updateSpaceRetrievalSettings } from "../src/modules/retrieval/settings.
 import type { RunRecord } from "../src/modules/runs/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -87,19 +88,23 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json, capabilities_json,
-       tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1,$2,$3,'v1','test','{}','{}','{}','{}','[]','{}','{}',now())`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES ($1, $2, $3, 'v1', 'test', '{}', '{}', '[]', '{}', now())`,
     [AGENT_VERSION, AGENT, SPACE],
   );
   await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
+  await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT, space: SPACE });
   await db.pool.query(
-    `INSERT INTO runs (
-       id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status,
-       mode, adapter_type, required_sandbox_level, project_id, project_folder_id,
-       instructed_by_user_id, owner_user_id, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'agent','manual','running','live','codex_cli','ephemeral',$5,$6,$7,$7,now(),now())`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, required_sandbox_level, project_id, project_folder_id, instructed_by_user_id, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'manual', 'running', 'live', 'ephemeral', $5, $6, $7, $7, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [RUN, SPACE, AGENT, AGENT_VERSION, PROJECT, FOLDER, OWNER],
   );
 });
@@ -383,7 +388,7 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       project_folder_id: FOLDER,
       session_id: null,
       project_id: PROJECT,
-      adapter_type: "codex_cli",
+      runtime_key: "codex_cli",
       model_provider_id: null,
       required_sandbox_level: "ephemeral",
       trigger_origin: "manual",
@@ -568,8 +573,16 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       project_folder_id: FOLDER,
       session_id: null,
       project_id: PROJECT,
-      adapter_type: "opencode",
-      model_provider_id: "provider-1",
+      runtime_key: "opencode",
+      model_provider_id: null,
+      runtime_profile_snapshot_json: {
+        runtime_key: "opencode",
+        backend_mode: "model_provider",
+        model_provider_id: "provider-1",
+        model_name: "test-model",
+        runtime_config_json: {},
+        runtime_policy_json: {},
+      },
       required_sandbox_level: "ephemeral",
       trigger_origin: "manual",
       instructed_by_user_id: OWNER,
@@ -611,7 +624,7 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       project_folder_id: FOLDER,
       session_id: null,
       project_id: PROJECT,
-      adapter_type: "codex_cli",
+      runtime_key: "codex_cli",
       model_provider_id: null,
       required_sandbox_level: "ephemeral",
       trigger_origin: "manual",
@@ -661,8 +674,16 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       project_folder_id: FOLDER,
       session_id: null,
       project_id: PROJECT,
-      adapter_type: "model_api",
-      model_provider_id: "provider-external",
+      runtime_key: "opencode",
+      model_provider_id: null,
+      runtime_profile_snapshot_json: {
+        runtime_key: "opencode",
+        backend_mode: "model_provider",
+        model_provider_id: "provider-external",
+        model_name: "test-model",
+        runtime_config_json: {},
+        runtime_policy_json: {},
+      },
       required_sandbox_level: "none",
       trigger_origin: "manual",
       instructed_by_user_id: OWNER,
@@ -697,7 +718,7 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       project_folder_id: FOLDER,
       session_id: null,
       project_id: PROJECT,
-      adapter_type: "codex_cli",
+      runtime_key: "codex_cli",
       model_provider_id: null,
       required_sandbox_level: "ephemeral",
       trigger_origin: "delegation",
@@ -733,7 +754,7 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       project_folder_id: FOLDER,
       session_id: null,
       project_id: PROJECT,
-      adapter_type: "codex_cli",
+      runtime_key: "codex_cli",
       model_provider_id: null,
       required_sandbox_level: "ephemeral",
       trigger_origin: "job",
@@ -765,17 +786,12 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
     );
     await db.pool.query(
       `INSERT INTO automation_runs (
-         id, automation_id, run_id, triggered_by_user_id, trigger_type, created_at
-       ) VALUES ($1,$2,$3,$4,'manual',now())`,
+         id, automation_id, target_type, run_id, triggered_by_user_id, trigger_type, created_at
+       ) VALUES ($1,$2,'agent_run',$3,$4,'manual',now())`,
       ["automation-run-1", AUTOMATION, RUN, OWNER],
     );
     await db.pool.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status,
-         mode, adapter_type, required_sandbox_level, project_id, project_folder_id,
-         root_run_id, instructed_by_user_id, owner_user_id, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'agent','job','running','live','codex_cli','ephemeral',
-         $5,$6,$7,$8,$8,now(),now())`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, required_sandbox_level, project_id, project_folder_id, root_run_id, instructed_by_user_id, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'job', 'running', 'live', 'ephemeral', $5, $6, $7, $8, $8, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [CHILD_RUN, SPACE, AGENT, AGENT_VERSION, PROJECT, FOLDER, RUN, OWNER],
     );
     const resolved = await repository().resolveForExecution({
@@ -793,7 +809,7 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       project_folder_id: FOLDER,
       session_id: null,
       project_id: PROJECT,
-      adapter_type: "codex_cli",
+      runtime_key: "codex_cli",
       model_provider_id: null,
       required_sandbox_level: "ephemeral",
       root_run_id: RUN,

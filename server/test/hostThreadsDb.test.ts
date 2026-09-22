@@ -10,6 +10,8 @@ import { resolveRuntimeProfileScope, runtimeProfileKey } from "../src/modules/ru
 import { PgHostThreadEventRepository } from "../src/modules/hosts/threadEventRepository.js";
 import { PgRoomRepository } from "../src/modules/rooms/repository.js";
 import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/workspaceLocations.js";
+import { PgTaskRepository } from "../src/modules/tasks/repository.js";
+import { isTerminalRunStatus } from "../src/modules/runs/orchestrationResults.js";
 
 const SPACE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OWNER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -22,6 +24,8 @@ const TASK = "44444444-4444-4444-8444-444444444444";
 const AGENT = "55555555-5555-4555-8555-555555555555";
 const VERSION = "66666666-6666-4666-8666-666666666666";
 const CONVERSATION = "88888888-8888-4888-8888-888888888888";
+const OTHER_TASK = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const DISPATCH_PROFILE = "aaaa1111-1111-4111-8111-111111111111";
 
 const db = useTestDatabase(import.meta.filename);
 let roomId = "";
@@ -105,7 +109,7 @@ describe("host_threads owner constraints", () => {
     const taskThread = await new PgHostThreadRepository(db.pool).create({
       workspaceLocationId: LOCATION,
       taskId: TASK,
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       createdByUserId: OWNER,
     });
     await expect(new PgHostThreadRepository(db.pool).getForLocation(taskThread.id, LOCATION, TASK))
@@ -133,7 +137,7 @@ describe("host_threads owner constraints", () => {
       spaceId: SPACE,
       sessionId: CONVERSATION,
       agentId: AGENT,
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       runtimeInstallation: "own",
       createdByUserId: OWNER,
     });
@@ -159,13 +163,13 @@ describe("host_threads owner constraints", () => {
       spaceId: SPACE,
       sessionId: CONVERSATION,
       agentId: AGENT,
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       createdByUserId: OWNER,
     })).resolves.toMatchObject({ id: first.id });
     await expect(db.pool.query(
       `INSERT INTO host_threads (
          id, space_id, execution_host_id, workspace_mode, session_id, agent_id, container_kind,
-         adapter_type, runtime_installation, status, created_by_user_id, created_at, updated_at
+         runtime_key, runtime_installation, status, created_by_user_id, created_at, updated_at
        ) VALUES ($1, $2, $3, 'managed', $4, $5, 'conversation', 'claude_code', 'own', 'active', $6, now(), now())`,
       [randomUUID(), SPACE, HOST, CONVERSATION, AGENT, OWNER],
     )).rejects.toMatchObject({ code: "23505" });
@@ -206,7 +210,7 @@ describe("host_threads owner constraints", () => {
         spaceId: SPACE,
         sessionId,
         agentId,
-        adapterType: "claude_code",
+        runtimeKey: "claude_code",
         runtimeInstallation: "own",
         createdByUserId: OWNER,
       });
@@ -233,7 +237,7 @@ describe("host_threads owner constraints", () => {
       workspaceMode: "managed",
       agentId: AGENT,
       userId: OWNER,
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       runtimeInstallation: "own",
       createdByUserId: OWNER,
     });
@@ -241,10 +245,14 @@ describe("host_threads owner constraints", () => {
       .resolves.toEqual({ agent_id: AGENT, container_kind: "direct", container_id: OWNER });
     await expect(resolveRuntimeProfileScope(db.pool, { agent_id: AGENT, host_task_thread_id: null }, LOCATION))
       .resolves.toEqual({ agent_id: AGENT, container_kind: "location", container_id: LOCATION });
-    // No container at all is a caller that skipped resolution. Proceeding would
-    // hand the run the machine's own state root by another name.
+    // An ordinary Server Agent Run with no Conversation or Location has a
+    // durable Agent-scoped profile rather than borrowing the host-global login.
     await expect(resolveRuntimeProfileScope(db.pool, { agent_id: AGENT, host_task_thread_id: null }, null))
-      .rejects.toThrow(/runtime profile has no container/);
+      .resolves.toEqual({ agent_id: AGENT, container_kind: "agent", container_id: AGENT });
+    expect(runtimeProfileKey({ agent_id: AGENT, container_kind: "agent", container_id: AGENT }, "claude_code", null))
+      .toBe(`agents/${AGENT}/agent/${AGENT}/claude_code/ambient`);
+    await expect(resolveRuntimeProfileScope(db.pool, { agent_id: AGENT, host_task_thread_id: randomUUID() }, null))
+      .rejects.toThrow(/Host thread has no valid runtime profile container/);
 
     // A Run whose Agent is not the thread's would write into another Agent's
     // profile and archive the wrong one. The two are the same on every path
@@ -269,7 +277,7 @@ describe("host_threads owner constraints", () => {
         spaceId: SPACE,
         sessionId: CONVERSATION,
         agentId,
-        adapterType: "claude_code",
+        runtimeKey: "claude_code",
         runtimeInstallation: "own",
         createdByUserId: OWNER,
       });
@@ -307,7 +315,7 @@ describe("host_threads owner constraints", () => {
       spaceId: SPACE,
       sessionId: CONVERSATION,
       agentId: AGENT,
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       runtimeInstallation: "own",
       createdByUserId: OWNER,
     });
@@ -338,7 +346,7 @@ describe("host_threads owner constraints", () => {
     const taskThread = await repository.create({
       workspaceLocationId: LOCATION,
       taskId: TASK,
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       createdByUserId: OWNER,
     });
     await db.pool.query(
@@ -346,9 +354,21 @@ describe("host_threads owner constraints", () => {
       [taskThread.id, HOST],
     );
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-                         owner_user_id, visibility, host_task_thread_id, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'space_shared', $6, now(), now())`,
+      `INSERT INTO runs (
+         id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+         runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+         owner_user_id, visibility, host_task_thread_id, created_at, updated_at, execution_kind
+       ) VALUES (
+         $1,$2,$3,$4,'agent','manual','succeeded','live',
+         (SELECT id FROM agent_runtime_profiles WHERE space_id=$2::varchar(36) AND agent_id=$3::varchar(36) AND is_default=TRUE),
+         'default',
+         (SELECT runtime_key FROM agent_runtime_profiles WHERE space_id=$2::varchar(36) AND agent_id=$3::varchar(36) AND is_default=TRUE),
+         (SELECT jsonb_build_object('id',id,'runtime_key',runtime_key,'backend_mode',backend_mode,
+             'model_provider_id',model_provider_id,'model_name',model_name,
+             'runtime_config_json',runtime_config_json,'runtime_policy_json',runtime_policy_json)
+            FROM agent_runtime_profiles WHERE space_id=$2::varchar(36) AND agent_id=$3::varchar(36) AND is_default=TRUE),
+         $5,'space_shared',$6,now(),now(),'agent'
+       )`,
       [randomUUID(), SPACE, AGENT, VERSION, OWNER, taskThread.id],
     );
 
@@ -376,7 +396,7 @@ describe("host_threads owner constraints", () => {
     // now lives in another Agent's untouched profile.
     const repository = new PgHostThreadRepository(db.pool);
     const taskThread = await repository.create({
-      workspaceLocationId: LOCATION, taskId: TASK, adapterType: "claude_code", createdByUserId: OWNER,
+      workspaceLocationId: LOCATION, taskId: TASK, runtimeKey: "claude_code", createdByUserId: OWNER,
     });
     await db.pool.query(
       `UPDATE host_threads SET execution_host_id = $2, vendor_session_id = 'vendor-task' WHERE id = $1`,
@@ -389,9 +409,21 @@ describe("host_threads owner constraints", () => {
     });
     for (const [agent, version, when] of [[AGENT, VERSION, "now() - interval '1 hour'"], [otherAgent, otherVersion, "now()"]] as const) {
       await db.pool.query(
-        `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-                           owner_user_id, visibility, host_task_thread_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'space_shared', $6, ${when}, ${when})`,
+        `INSERT INTO runs (
+           id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+           runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+           owner_user_id, visibility, host_task_thread_id, created_at, updated_at, execution_kind
+         ) VALUES (
+           $1,$2,$3,$4,'agent','manual','succeeded','live',
+           (SELECT id FROM agent_runtime_profiles WHERE space_id=$2::varchar(36) AND agent_id=$3::varchar(36) AND is_default=TRUE),
+           'default',
+           (SELECT runtime_key FROM agent_runtime_profiles WHERE space_id=$2::varchar(36) AND agent_id=$3::varchar(36) AND is_default=TRUE),
+           (SELECT jsonb_build_object('id',id,'runtime_key',runtime_key,'backend_mode',backend_mode,
+               'model_provider_id',model_provider_id,'model_name',model_name,
+               'runtime_config_json',runtime_config_json,'runtime_policy_json',runtime_policy_json)
+              FROM agent_runtime_profiles WHERE space_id=$2::varchar(36) AND agent_id=$3::varchar(36) AND is_default=TRUE),
+           $5,'space_shared',$6,${when},${when},'agent'
+         )`,
         [randomUUID(), SPACE, agent, version, OWNER, taskThread.id],
       );
     }
@@ -403,19 +435,17 @@ describe("host_threads owner constraints", () => {
     expect(await repository.retireAgentSessionsOnHost(otherAgent, HOST)).toBe(1);
   });
 
-  it("retires a Location thread's session when the next Run is another Agent's, and nothing else's", async (ctx) => {
+  it("resets a Location thread's session for a different execution identity, and nothing else's", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // Task admission calls this when the dispatching Agent differs from the
-    // one whose Run last used the thread: the session is in that Agent's
-    // profile and cannot be resumed from the new one, so it is retired as a
-    // recorded decision rather than failing on the next turn.
+    // A Task dispatch resets the session when its selected Agent or Runtime
+    // Profile differs from the execution identity that last used the thread.
     const repository = new PgHostThreadRepository(db.pool);
     const taskThread = await repository.create({
-      workspaceLocationId: LOCATION, taskId: TASK, adapterType: "claude_code", createdByUserId: OWNER,
+      workspaceLocationId: LOCATION, taskId: TASK, runtimeKey: "claude_code", createdByUserId: OWNER,
     });
     await db.pool.query(`UPDATE host_threads SET vendor_session_id = 'vendor-task' WHERE id = $1`, [taskThread.id]);
 
-    expect(await repository.retireLocationSessionForAgentChange(taskThread.id)).toBe(true);
+    expect(await repository.resetLocationSession(taskThread.id)).toBe(true);
     await expect(db.pool.query<{ status: string; vendor_session_id: string | null; retired_vendor_session_ids: string[] }>(
       `SELECT status, vendor_session_id, retired_vendor_session_ids FROM host_threads WHERE id = $1`, [taskThread.id],
     )).resolves.toMatchObject({
@@ -425,9 +455,9 @@ describe("host_threads owner constraints", () => {
     // A Conversation thread is an Agent's own and never changes Agent.
     const conversation = await repository.createForConversationAgent({
       spaceId: SPACE, sessionId: CONVERSATION, agentId: AGENT, executionHostId: HOST, workspaceMode: "location",
-      workspaceLocationId: LOCATION, adapterType: "claude_code", createdByUserId: OWNER,
+      workspaceLocationId: LOCATION, runtimeKey: "claude_code", createdByUserId: OWNER,
     });
-    expect(await repository.retireLocationSessionForAgentChange(conversation.id)).toBe(false);
+    expect(await repository.resetLocationSession(conversation.id)).toBe(false);
   });
 
   it("persists the owner-only member policy and permits a host-bound profile without a provider", async (ctx) => {
@@ -444,7 +474,7 @@ describe("host_threads owner constraints", () => {
 
     const profile = await new PgAgentRepository(db.pool).createRuntimeProfile(SPACE, AGENT, {
       name: "Host Reviewer",
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       executionHostId: HOST,
       workspaceLocationId: LOCATION,
       runtimeInstallation: "own",
@@ -462,10 +492,21 @@ describe("host_threads owner constraints", () => {
     )).rejects.toMatchObject({ code: "23514" });
     await expect(db.pool.query(
       `INSERT INTO agent_runtime_profiles (
-         id, space_id, agent_id, name, adapter_type, execution_host_id,
-         runtime_installation, runtime_config_json, runtime_policy_json,
-         enabled, is_default, created_at, updated_at
-       ) VALUES ($1, $2, $3, 'Partial binding', 'claude_code', $4, 'own', '{}', '{}', true, false, now(), now())`,
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       execution_host_id,
+       runtime_installation,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES ($1, $2, $3, 'Partial binding', 'claude_code', 'runtime_native', $4, 'own', '{}', '{}', true, false, now(), now())`,
       [randomUUID(), SPACE, AGENT, HOST],
     )).rejects.toMatchObject({ code: "23514" });
   });
@@ -479,14 +520,16 @@ describe("host_threads owner constraints", () => {
       expect.objectContaining({
         host_id: HOST,
         host_name: "Test host",
+        // Lifecycle comes from hosts.kind, never from the display label.
+        host_kind: "remote",
         host_online: true,
         locations: [expect.objectContaining({
           id: LOCATION,
           project_folder_id: FOLDER,
           execution_ready: true,
         })],
-        adapters: [expect.objectContaining({
-          adapter_type: "claude_code",
+        runtimes: [expect.objectContaining({
+          runtime_key: "claude_code",
           installations: [expect.objectContaining({ id: "own", logged_in: true })],
         })],
       }),
@@ -503,7 +546,7 @@ describe("host_threads owner constraints", () => {
     await db.pool.query(`UPDATE hosts SET last_heartbeat_at = now() WHERE id = $1`, [HOST]);
     const fresh = await SpaceAssistantService.prepareForRoomCreator(db.pool, loadConfig({}), identity);
     expect(fresh.hostBackends).toEqual(expect.arrayContaining([
-      expect.objectContaining({ hostId: HOST, adapterType: "claude_code", installation: "own" }),
+      expect.objectContaining({ hostId: HOST, runtimeKey: "claude_code", installation: "own" }),
     ]));
     // A stale heartbeat means the host cannot answer a first message; it must
     // not admit the Room only to strand it.
@@ -511,18 +554,17 @@ describe("host_threads owner constraints", () => {
     const stale = await SpaceAssistantService.prepareForRoomCreator(db.pool, loadConfig({}), identity);
     expect(stale.hostBackends.find((backend) => backend.hostId === HOST)).toBeUndefined();
 
-    // The host's configured default CLI leads the auto-provisioned backends;
-    // the built-in preference ordering is only the no-choice tiebreak.
+    // A Host's installation inventory cannot select an Agent runtime; the
+    // registry's stable order is used only for initial presentation.
     await db.pool.query(
       `UPDATE hosts
           SET last_heartbeat_at = now(),
-              default_adapter_type = 'claude_code',
               capabilities_json = '{"installations":{"opencode":[{"id":"own","version":"1.0.0","logged_in":true}],"claude_code":[{"id":"own","version":"1.0.0","logged_in":true}]}}'::jsonb
         WHERE id = $1`,
       [HOST],
     );
     const chosen = await SpaceAssistantService.prepareForRoomCreator(db.pool, loadConfig({}), identity);
-    expect(chosen.hostBackends[0]).toMatchObject({ hostId: HOST, adapterType: "claude_code" });
+    expect(chosen.hostBackends[0]).toMatchObject({ hostId: HOST, runtimeKey: "opencode" });
   });
 
   it("records thread events for a managed direct thread that has no Project", async (ctx) => {
@@ -534,16 +576,16 @@ describe("host_threads owner constraints", () => {
       workspaceMode: "managed",
       agentId: AGENT,
       userId: OWNER,
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       runtimeInstallation: "own",
       createdByUserId: OWNER,
     });
     const runId = randomUUID();
     await db.pool.query(
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-         adapter_type, required_sandbox_level, model_override_json, owner_user_id, created_at, updated_at)
+         model_override_json, owner_user_id, created_at, updated_at, execution_kind)
        VALUES ($1,$2,$3::varchar,(SELECT current_version_id FROM agents WHERE id=$3::varchar),'agent','manual','queued','live',
-         'claude_code','none','{}'::jsonb,$4,now(),now())`,
+         '{}'::jsonb,$4,now(),now(), 'agent')`,
       [runId, SPACE, AGENT, OWNER],
     );
     const events = await new PgHostThreadEventRepository(db.pool).append(thread.id, runId, [
@@ -559,7 +601,7 @@ describe("host_threads owner constraints", () => {
     const repository = new PgAgentRepository(db.pool);
     await expect(repository.createRuntimeProfile(SPACE, AGENT, {
       name: "Wrong owner",
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       executionHostId: HOST,
       workspaceLocationId: LOCATION,
       runtimeInstallation: "own",
@@ -567,10 +609,155 @@ describe("host_threads owner constraints", () => {
     })).rejects.toMatchObject({ statusCode: 403 });
     await expect(repository.createRuntimeProfile(SPACE, AGENT, {
       name: "Unknown installation",
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       executionHostId: HOST,
       workspaceLocationId: LOCATION,
       runtimeInstallation: "managed:9.9.9",
     })).rejects.toMatchObject({ statusCode: 422 });
+  });
+});
+
+
+/**
+ * Task-thread dispatch admission.
+ *
+ * A Task thread has exactly one vendor session, so the control plane decides
+ * at admission who may resume it. `prepareRemoteTaskRun` is where that is
+ * decided, and everything below asserts on the durable result — the Runs the
+ * Task ends up with — rather than on how admission reached it.
+ */
+describe("admitting a Run onto a Task thread", () => {
+  /**
+   * The Profile a remote Task dispatch must select: this Host, this Location,
+   * and an installation the Host reports. Not the Agent's default (an
+   * unbound `opencode` Profile), which admission correctly refuses.
+   */
+  async function seedDispatchableThread(): Promise<string> {
+    await db.pool.query(`UPDATE hosts SET last_heartbeat_at = now() WHERE id = $1`, [HOST]);
+    await db.pool.query(
+      `INSERT INTO agent_runtime_profiles (
+         id, space_id, agent_id, name, runtime_key, backend_mode, execution_host_id,
+         workspace_location_id, workspace_mode, runtime_installation,
+         runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
+       ) VALUES ($1,$2,$3,'Task dispatch','claude_code','runtime_native',$4,$5,'location','own',
+         '{}'::jsonb,'{}'::jsonb,true,false,now(),now())`,
+      [DISPATCH_PROFILE, SPACE, AGENT, HOST, LOCATION],
+    );
+    const thread = await new PgHostThreadRepository(db.pool).create({
+      executionHostId: HOST,
+      workspaceLocationId: LOCATION,
+      taskId: TASK,
+      runtimeKey: "claude_code",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+    });
+    return thread.id;
+  }
+
+  /** A remote Task dispatch onto the seeded thread, as the route admits one. */
+  function dispatch(threadId: string, taskId = TASK) {
+    return new PgTaskRepository(db.pool).createTaskRun({ spaceId: SPACE, userId: OWNER }, taskId, {
+      workspace_location_id: LOCATION,
+      prompt: "go",
+      thread_id: threadId,
+      agent_id: AGENT,
+      runtime_profile_id: DISPATCH_PROFILE,
+    });
+  }
+
+  function runsOnThread(threadId: string) {
+    return db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM runs WHERE host_task_thread_id = $1`,
+      [threadId],
+    ).then((result) => result.rows[0]?.count);
+  }
+
+  it("refuses a second Run while one is in flight on the same thread", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const threadId = await seedDispatchableThread();
+
+    await dispatch(threadId);
+    // Still running. Two Runs on one thread would both resume the same vendor
+    // session — the thread's whole reason to exist — and the second would
+    // corrupt what the first is holding.
+    await expect(dispatch(threadId)).rejects.toMatchObject({ statusCode: 409 });
+
+    expect(await runsOnThread(threadId)).toBe("1");
+  });
+
+  it("does not let one Task borrow another Task's host thread", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const threadId = await seedDispatchableThread();
+    await db.pool.query(
+      `INSERT INTO tasks (id, space_id, project_id, project_folder_id, title, status,
+         created_by_user_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'Another task','ready',$5,now(),now())`,
+      [OTHER_TASK, SPACE, PROJECT, FOLDER, OWNER],
+    );
+
+    // The thread is the other Task's vendor session; a Task that could name it
+    // would resume a conversation about work it does not own. Hidden rather
+    // than refused, like every other cross-owner read.
+    await expect(dispatch(threadId, OTHER_TASK)).rejects.toMatchObject({ statusCode: 404 });
+
+    expect(await runsOnThread(threadId)).toBe("0");
+  });
+
+  it("serializes concurrent admissions for the same Task thread", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const threadId = await seedDispatchableThread();
+
+    const results = await Promise.allSettled([dispatch(threadId), dispatch(threadId)]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(results.find((result) => result.status === "rejected")?.reason).toMatchObject({ statusCode: 409 });
+    expect(await runsOnThread(threadId)).toBe("1");
+  });
+
+  it("does not deadlock a thread whose Run stopped for review", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const threadId = await seedDispatchableThread();
+
+    await dispatch(threadId);
+    // `waiting_for_review` is terminal for this purpose: the Run stopped and
+    // is waiting on a person. A hand-rolled status list here once missed it
+    // and deadlocked the thread forever after any Run that landed in review.
+    // A Run that reached review has started and carries the Profile snapshot
+    // the router stamps on it; `ck_runs_execution_shape` refuses the state
+    // without them, so the fixture writes what production would have.
+    await db.pool.query(
+      `UPDATE runs
+          SET status = 'waiting_for_review',
+              started_at = now(),
+              runtime_profile_id = profile.id,
+              runtime_key = profile.runtime_key,
+              runtime_profile_snapshot_json = jsonb_build_object(
+                'id', profile.id,
+                'runtime_key', profile.runtime_key,
+                'backend_mode', profile.backend_mode,
+                'model_provider_id', profile.model_provider_id,
+                'model_name', profile.model_name,
+                'runtime_config_json', profile.runtime_config_json,
+                'runtime_policy_json', profile.runtime_policy_json)
+         FROM agent_runtime_profiles profile
+        WHERE profile.id = $2 AND runs.host_task_thread_id = $1`,
+      [threadId, DISPATCH_PROFILE],
+    );
+
+    await dispatch(threadId);
+    expect(await runsOnThread(threadId)).toBe("2");
+  });
+
+  it("counts waiting_for_review among the statuses that free a thread's session", () => {
+    // The one list both the admission check above and the session-reset guard
+    // read (`TERMINAL_RUN_STATUSES`), so they cannot disagree about which
+    // Runs still hold the vendor session.
+    for (const status of ["succeeded", "failed", "degraded", "cancelled", "orphaned", "waiting_for_review"]) {
+      expect(isTerminalRunStatus(status), status).toBe(true);
+    }
+    for (const status of ["queued", "running", "cancelling"]) {
+      expect(isTerminalRunStatus(status), status).toBe(false);
+    }
   });
 });

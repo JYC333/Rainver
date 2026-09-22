@@ -4,7 +4,7 @@ import type { SystemActionDefinition, SystemActionId, SystemActionPolicyResource
 import { SystemActionGateway } from "../src/modules/systemActions/gateway.js";
 import { resolveDeclaredResourceId } from "../src/modules/systemActions/systemActionDispatcher.js";
 import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
-import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 
 const context = {
   actor: { type: "agent" as const, space_id: "space-1", agent_id: "agent-1", run_id: "run-1" },
@@ -115,8 +115,8 @@ describe("SystemActionGateway", () => {
   });
 
   it("resolves declarative policy resource ids the same way the four eliminated branches did (D4)", () => {
-    const run = { id: "run-1", project_id: "project-1" } as RunRecord;
-    const runWithoutProject = { id: "run-1", project_id: null } as RunRecord;
+    const run: Pick<AgentRunRecord, "id" | "project_id"> = { id: "run-1", project_id: "project-1" };
+    const runWithoutProject: Pick<AgentRunRecord, "id" | "project_id"> = { id: "run-1", project_id: null };
 
     // authorization.request / agent.wait_for_results shape: no input field, run fallback.
     const runFallback: SystemActionPolicyResource = { resource_id_fallback: "run", check_action_approval_grant: false };

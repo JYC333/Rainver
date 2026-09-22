@@ -109,9 +109,19 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions
-       (id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,
-        context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at)
-     VALUES ($1,$2,$3,'v1','test','{}','{}','{}','{}','[]','{"allowed_tools":[]}','{}',$4)`,
+       (
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     )
+     VALUES ($1, $2, $3, 'v1', 'test', '{}', '{}', '[]', '{"allowed_tools":[]}', $4)`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
   await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
@@ -331,7 +341,7 @@ describe("information digest persistence", () => {
       connect: () => db.pool.connect(),
       async query<Row>(sql: string, params?: readonly unknown[]): Promise<QueryResult<Row>> {
         const result = await db.pool.query(sql, params ? [...params] : undefined);
-        if (sql.includes("SELECT id, generated_by_run_id FROM information_digests") && arrivals < 2) {
+        if (sql.includes("SELECT id, generated_by_automation_run_id FROM information_digests") && arrivals < 2) {
           arrivals += 1;
           if (arrivals === 2) releaseBarrier();
           await barrier;
@@ -566,9 +576,19 @@ describe("information digest Automation provisioning", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_versions
-         (id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,
-          context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at)
-       VALUES ($1,$2,$3,'v1','test','{}','{}','{}','{}','[]','{"allowed_tools":[]}','{}',$4)`,
+         (
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     )
+       VALUES ($1, $2, $3, 'v1', 'test', '{}', '{}', '[]', '{"allowed_tools":[]}', $4)`,
       [MANAGED_ASSISTANT_VERSION, MANAGED_ASSISTANT, SPACE, now],
     );
     await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [MANAGED_ASSISTANT, MANAGED_ASSISTANT_VERSION]);

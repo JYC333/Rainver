@@ -6,7 +6,7 @@ import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContex
 import { introspectIdentity } from "../auth/identity.js";
 import { requireInstanceAdmin } from "../routeUtils/access.js";
 import { AcpRegistryError, fetchAcpRegistry } from "./registry.js";
-import { AcpAgentService, acpAgentAdapterType } from "./service.js";
+import { AcpAgentService, acpAgentRuntimeKey } from "./service.js";
 import type { EnabledAcpAgent } from "./settings.js";
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
@@ -31,7 +31,7 @@ async function resolveIdentity(
 }
 
 function agentOut(agent: EnabledAcpAgent, installedOn: Array<{ host_id: string; name: string }> = []) {
-  return { ...agent, adapter_type: acpAgentAdapterType(agent.id), installed_on: installedOn };
+  return { ...agent, runtime_key: acpAgentRuntimeKey(agent.id), installed_on: installedOn };
 }
 
 function sendError(reply: FastifyReply, error: unknown): FastifyReply {
@@ -43,7 +43,7 @@ function sendError(reply: FastifyReply, error: unknown): FastifyReply {
  * Enabling a registry agent is an instance-wide decision (the adapter
  * catalog is one per deployment) and so is instance-admin gated, like
  * installing a runtime tool. Installing it on a host is the host owner's
- * (`hosts` module, `POST /api/v1/hosts/:hostId/installations/:adapterType`).
+ * (`hosts` module, `POST /api/v1/hosts/:hostId/installations/:runtimeKey`).
  */
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const service = () => {

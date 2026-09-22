@@ -9,7 +9,7 @@ import { PgActivityRepository } from "../activity/repository.js";
 import { PgArtifactRepository } from "../artifacts/repository.js";
 import { PgProposalRepository } from "../proposals/repository.js";
 import { dbPool, page, sendRouteError } from "../routeUtils/common.js";
-import { PgRunRepository, type RunRecord, type VisibleRunRecord } from "./repository.js";
+import { PgRunRepository, type AgentRunRecord, type RunRecord, type VisibleRunRecord } from "./repository.js";
 import { bodyWithheld } from "../access/contentAccessTypes.js";
 import { authorizeRunCommand, authorizeRunResume } from "./runCommandAuthority.js";
 import type { RunOrchestrationService } from "./orchestrationService.js";
@@ -159,7 +159,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   async function runToolRequest(
     request: FastifyRequest,
     reply: FastifyReply,
-  ): Promise<{ run: RunRecord; transport: CliAgentToolTransport } | null> {
+  ): Promise<{ run: AgentRunRecord; transport: CliAgentToolTransport } | null> {
     const runId = params(request).runId ?? "";
     const authorization = request.headers.authorization ?? "";
     const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
@@ -170,7 +170,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return null;
     }
     const run = await PgRunRepository.fromConfig(context.config)
-      .getRun(identity.space_id, runId);
+      .getAgentRun(identity.space_id, runId);
     if (!run || run.space_id !== identity.space_id || run.status !== "running") {
       await reply.code(403).send({ detail: "Run tool identity is no longer active" });
       return null;

@@ -38,11 +38,11 @@ describe("Project Research output protocol", () => {
       execution: { model_provider_id: "provider-1", model_name: "provider/path-to-model" },
     });
     expect(parsed.execution).toEqual({ model_provider_id: "provider-1", model_name: "provider/path-to-model" });
-    expect(parsed.execution).not.toHaveProperty("adapter_type");
+    expect(parsed.execution).not.toHaveProperty("runtime_key");
     expect(parsed.execution).not.toHaveProperty("credential_profile_id");
     expect(ProjectResearchInitialIntakeRequestSchema.safeParse({
       query_strategy_id: "11111111-1111-4111-8111-111111111111",
-      execution: { adapter_type: "opencode" },
+      execution: { runtime_key: "opencode" },
     }).success).toBe(false);
     expect(ProjectResearchInitialIntakeRequestSchema.safeParse({
       query_strategy_id: "11111111-1111-4111-8111-111111111111",

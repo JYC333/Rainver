@@ -11,7 +11,6 @@ import {
 import { parseCodexManagedUsageResponse, probeClaudeOAuthQuotaWithAccessToken, type QuotaResult } from "./subscriptionQuota.js";
 import { ProviderCommandNotFoundError, ProviderCommandValidationError } from "./commands/types.js";
 import { loadManagedOAuthFlow } from "./invocation/piAiChat.js";
-import { SpaceAssistantService } from "../agents/spaceAssistantService.js";
 import type {
   ManagedAuthEvent,
   ManagedAuthInteraction,
@@ -138,7 +137,6 @@ export async function disconnectManagedSubscription(
   } finally {
     client.release();
   }
-  await SpaceAssistantService.reconcileModelApiProfiles(pool, spaceId);
   return subscriptionProviderDto(pool, spaceId, userId, providerId, true);
 }
 
@@ -267,7 +265,6 @@ async function persistSubscription(
   } finally {
     client.release();
   }
-  await SpaceAssistantService.reconcileModelApiProfiles(pool, spaceId);
   return subscriptionProviderDto(pool, spaceId, userId, providerId);
 }
 

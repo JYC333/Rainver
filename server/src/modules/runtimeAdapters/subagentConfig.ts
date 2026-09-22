@@ -17,7 +17,7 @@ export async function ensureRuntimeSubagentsDisabled(
   if (!config) {
     if (spec.subagent_disable_mechanism === "runtime_config") {
       throw new RuntimeSubagentConfigError(
-        `Runtime adapter '${spec.adapter_type}' declares runtime-configurable subagent disablement without a materialization contract.`,
+        `Runtime adapter '${spec.runtime_key}' declares runtime-configurable subagent disablement without a materialization contract.`,
       );
     }
     return;
@@ -48,7 +48,7 @@ export function renderRuntimeSubagentConfig(
   if (!config) {
     if (spec.subagent_disable_mechanism === "runtime_config") {
       throw new RuntimeSubagentConfigError(
-        `Runtime adapter '${spec.adapter_type}' declares runtime-configurable subagent disablement without a materialization contract.`,
+        `Runtime adapter '${spec.runtime_key}' declares runtime-configurable subagent disablement without a materialization contract.`,
       );
     }
     return null;
@@ -69,27 +69,27 @@ export async function assertRuntimeSubagentsDisabled(
   if (!config) {
     if (spec.subagent_disable_mechanism === "runtime_config") {
       throw new RuntimeSubagentConfigError(
-        `Runtime adapter '${spec.adapter_type}' declares runtime-configurable subagent disablement without a materialization contract.`,
+        `Runtime adapter '${spec.runtime_key}' declares runtime-configurable subagent disablement without a materialization contract.`,
       );
     }
     return;
   }
   if (!sandboxCwd) {
     throw new RuntimeSubagentConfigError(
-      `Runtime adapter '${spec.adapter_type}' requires a sandbox to enforce runtime subagent disablement.`,
+      `Runtime adapter '${spec.runtime_key}' requires a sandbox to enforce runtime subagent disablement.`,
     );
   }
   const path = configPath(spec, sandboxCwd);
   const document = await readJsonObject(path);
   if (!matchesRequiredValue(valueAtPath(document, config.deny_path), config.denied_value)) {
     throw new RuntimeSubagentConfigError(
-      `Runtime adapter '${spec.adapter_type}' is missing its declared subagent disable configuration.`,
+      `Runtime adapter '${spec.runtime_key}' is missing its declared subagent disable configuration.`,
     );
   }
   for (const required of config.required_values ?? []) {
     if (!matchesRequiredValue(valueAtPath(document, required.path), required.value, required.value_mode)) {
       throw new RuntimeSubagentConfigError(
-        `Runtime adapter '${spec.adapter_type}' is missing a required tool permission configuration.`,
+        `Runtime adapter '${spec.runtime_key}' is missing a required tool permission configuration.`,
       );
     }
   }

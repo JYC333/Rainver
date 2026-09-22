@@ -459,7 +459,7 @@ describe("runtime context contracts", () => {
       id: "delivery-1",
       invocation_id: "invocation-1",
       delivery_kind: "agent_task",
-      adapter_type: "model_api",
+      runtime_key: "opencode",
       provider_id: "provider-1",
       model: "model-1",
       renderer_version: "v1",

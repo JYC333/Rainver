@@ -12,6 +12,8 @@ import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
 import { JobWorker } from "../src/modules/jobs/worker.js";
 import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
+import { seedServerRuntimeProfile } from "./support/domainSeeds.js";
 import { ProposalApplierRegistry, type ProposalApplyContext } from "../src/modules/proposals/applierRegistry.js";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
@@ -20,6 +22,7 @@ const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const AGENT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const AGENT_VERSION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const SERVER_HOST = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 
 const db = useTestDatabase(import.meta.filename, { max: 4 });
@@ -28,7 +31,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["evaluation_cases", "evolvable_asset_evaluation_runs", "evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "evolution_experiences", "proposals", "jobs", "job_events", "space_memberships", "users", "spaces"],
+    ["evaluation_cases", "evolvable_asset_evaluation_runs", "evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "evolution_experiences", "proposals", "jobs", "job_events", "agent_runtime_profiles", "space_memberships", "hosts", "machines", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -46,22 +49,37 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1, $2, $3, 'v1', 'Test', '{}'::jsonb, '{"adapter_type":"model_api"}'::jsonb,
-       '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'Test',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $4
+     )`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
   await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, AGENT_VERSION]);
-  await db.pool.query(
-    `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, runtime_config_json,
-       runtime_policy_json, enabled, is_default, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'Default', 'model_api', '{"adapter_type":"model_api"}'::jsonb,
-       '{}'::jsonb, true, true, $4, $4)`,
-    [randomUUID(), SPACE, AGENT, now],
-  );
+  await seedServerRuntimeProfile(db.pool, {
+    agent: AGENT,
+    space: SPACE,
+    hostId: SERVER_HOST,
+    now,
+  });
 });
 
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
@@ -143,6 +161,7 @@ async function createApprovedBaseline(): Promise<{ assetId: string; baselineId: 
 
 async function createSuccessfulSourceRun(workflowVersionId: string | null = null, output: Record<string, unknown> = { ok: true }): Promise<string> {
   const run = await new PgRunRepository(db.pool).createQueuedRun({
+    execution_kind: "agent",
     agent_id: AGENT,
     space_id: SPACE,
     user_id: OWNER,
@@ -153,7 +172,10 @@ async function createSuccessfulSourceRun(workflowVersionId: string | null = null
     workflow_version_id: workflowVersionId,
     contract_snapshot: { source: { kind: "direct", id: null }, risk_level: "low" },
   });
+  const runs = new PgRunRepository(db.pool);
+  await new PgRouteDecisionRepository(db.pool).routeRun(run);
   const now = new Date().toISOString();
+  await runs.markRunRunning({ run_id: run.id, space_id: SPACE, started_at: now });
   await db.pool.query(
     `UPDATE runs SET status = 'succeeded', output_json = $2::jsonb, ended_at = $3, updated_at = $3 WHERE id = $1`,
     [run.id, JSON.stringify(output), now],

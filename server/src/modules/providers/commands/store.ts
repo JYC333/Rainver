@@ -30,7 +30,6 @@ import { providerVendor, type VendorDescriptor } from "../vendors.js";
 import { resolveManagedSubscriptionCredential } from "../subscriptionOAuth.js";
 import { resolveNetworkProfileRepository } from "../../networkProfiles/index.js";
 import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
-import { SpaceAssistantService } from "../../agents/spaceAssistantService.js";
 import {
   authorizeCredentialSpend,
   type CredentialSpendAuthorization,
@@ -180,22 +179,6 @@ class PgProviderCommandStore implements ProviderCommandStore {
 
   private async masterKey(): Promise<Buffer> {
     return loadOrCreateModelProviderApiKeyMasterKey(this.config.rainverHome);
-  }
-
-  private async reconcileManagedAssistantProfilesForSpace(spaceId: string): Promise<void> {
-    await SpaceAssistantService.reconcileModelApiProfiles(this.pool, spaceId);
-  }
-
-  private async reconcileManagedAssistantProfilesForProvider(providerId: string): Promise<void> {
-    const grants = await this.pool.query<{ space_id: string }>(
-      `SELECT DISTINCT space_id
-         FROM model_provider_space_grants
-        WHERE provider_id = $1`,
-      [providerId],
-    );
-    for (const grant of grants.rows) {
-      await this.reconcileManagedAssistantProfilesForSpace(grant.space_id);
-    }
   }
 
   private async providerById(spaceId: string, providerId: string): Promise<ProviderRow | null> {
@@ -476,7 +459,6 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
     const row = await this.providerById(spaceId, providerId);
     if (!row) throw new Error("created provider was not readable");
-    await this.reconcileManagedAssistantProfilesForSpace(spaceId);
     return mapProviderRowToDto(row);
   }
 
@@ -589,7 +571,6 @@ class PgProviderCommandStore implements ProviderCommandStore {
       });
     }
     const row = await this.providerById(spaceId, providerId);
-    await this.reconcileManagedAssistantProfilesForProvider(providerId);
     if (!row) return mapProviderRowToDto(updated.rows[0]);
     return mapProviderRowToDto({ ...row, manageable: true });
   }
@@ -610,7 +591,6 @@ class PgProviderCommandStore implements ProviderCommandStore {
         WHERE provider_id = $1`,
       [providerId, new Date()],
     );
-    await this.reconcileManagedAssistantProfilesForProvider(providerId);
   }
 
   private async userSpaceRole(userId: string, spaceId: string): Promise<string | null> {
@@ -723,7 +703,6 @@ class PgProviderCommandStore implements ProviderCommandStore {
         input.network_profile_id !== undefined,
       ],
     );
-    await this.reconcileManagedAssistantProfilesForSpace(targetSpaceId);
     return grantOut(result.rows[0]);
   }
 
@@ -749,7 +728,6 @@ class PgProviderCommandStore implements ProviderCommandStore {
     if (result.rowCount === 0) {
       throw new ProviderCommandNotFoundError(`ModelProvider grant not found`);
     }
-    await this.reconcileManagedAssistantProfilesForSpace(grantSpaceId);
   }
 
   async getInvocationTarget(
@@ -906,6 +884,8 @@ class PgProviderCommandStore implements ProviderCommandStore {
       invocation_snapshot_id: snapshotId,
       usage_source_id: usageSourceId,
       attempt: 1,
+      provider_id: input.provider_id,
+      model: input.model,
     };
     const client = await this.pool.connect();
     try {
@@ -949,6 +929,23 @@ class PgProviderCommandStore implements ProviderCommandStore {
           input_fingerprint: input.input_fingerprint,
         }), now],
       );
+      const runId = await input.on_started?.(client, refs);
+      if (runId) {
+        refs.run_id = runId;
+        const runLink = JSON.stringify({ run_id: runId, source_resource_type: "run", source_resource_id: runId });
+        await client.query(
+          `UPDATE provider_task_controls SET control_json=control_json || $2::jsonb WHERE id=$1`,
+          [controlId, runLink],
+        );
+        await client.query(
+          `UPDATE provider_task_deliveries SET delivery_metadata_json=delivery_metadata_json || $2::jsonb WHERE id=$1`,
+          [deliveryId, runLink],
+        );
+        await client.query(
+          `UPDATE provider_task_snapshots SET safe_snapshot_json=safe_snapshot_json || $2::jsonb WHERE id=$1`,
+          [snapshotId, runLink],
+        );
+      }
       await client.query("COMMIT");
       return refs;
     } catch (error) {

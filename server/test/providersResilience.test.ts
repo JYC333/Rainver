@@ -3,6 +3,7 @@ import { __setNetworkRetryDelayForTests, __setProviderHttpClientForTests, comple
 import { orderPoolMembers, type InvocationTarget, type PoolOutcome, type ProviderCommandStore, type ProviderTaskChainEntry } from "../src/modules/providers/commands/store.js";
 import type { UsageObservation } from "../src/modules/usage/index.js";
 import { anthropicChatResponse, openAiChatResponse } from "./support/piAiHttp.js";
+import { CredentialSpendDeniedError } from "../src/modules/policy/credentialSpend.js";
 
 // Network-error retries add a real delay between attempts (see
 // NETWORK_ERROR_RETRY_DELAY_MS in invocation.ts) — skip it here so tests
@@ -189,6 +190,70 @@ const CHAT = {
 };
 
 describe("provider invocation resilience", () => {
+  it("binds formal ProviderTask Runs to each physical attempt and usage observation", async () => {
+    const usage: UsageObservation[] = [];
+    const lifecycleEvents: string[] = [];
+    let attemptNumber = 0;
+    const store: ProviderCommandStore = {
+      ...makeStore({ p1: target("p1", [{ member: "m1", key: "k1" }]) }, [], {}, usage),
+      async beginProviderTaskAttempt(input) {
+        attemptNumber += 1;
+        const refs = {
+          invocation_id: `invocation-${attemptNumber}`,
+          control_id: `control-${attemptNumber}`,
+          delivery_id: `delivery-${attemptNumber}`,
+          invocation_snapshot_id: `snapshot-${attemptNumber}`,
+          usage_source_id: `usage-${attemptNumber}`,
+          attempt: 1,
+          provider_id: input.provider_id,
+          model: input.model,
+        };
+        const runId = await input.on_started?.({
+          async query<Row>() { return { rows: [] as Row[], rowCount: 0 }; },
+        }, refs);
+        lifecycleEvents.push(`started:${runId}`);
+        return { ...refs, ...(runId ? { run_id: runId } : {}) };
+      },
+      async completeProviderTaskAttempt(_refs, outcome) {
+        lifecycleEvents.push(`ledger:${outcome.status}`);
+      },
+    };
+    scriptedHttp([{
+      status: 200,
+      body: { choices: [{ message: { content: "report" } }], model: "gpt-4o", usage: { prompt_tokens: 1, completion_tokens: 1 } },
+    }]);
+
+    await completeProviderText(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      provider_id: "p1",
+      system: "system",
+      user: "bounded report",
+      task: "daily_report",
+      metering: { subject_user_id: "user-1" },
+      providerTaskRunLifecycle: {
+        async onAttemptStarted(_db, refs) {
+          lifecycleEvents.push(`run-start:${refs.delivery_id}`);
+          return "provider-run-1";
+        },
+        async onAttemptCompleted(refs, outcome) {
+          lifecycleEvents.push(`run-${outcome.status}:${refs.run_id}`);
+        },
+      },
+    });
+
+    expect(lifecycleEvents).toEqual([
+      "run-start:delivery-1",
+      "started:provider-run-1",
+      "ledger:accepted",
+      "run-accepted:provider-run-1",
+    ]);
+    expect(usage[0]).toMatchObject({
+      run_id: "provider-run-1",
+      source_resource_type: "run",
+      source_resource_id: "provider-run-1",
+    });
+  });
+
   it("rejects missing usage attribution before any provider request", async () => {
     const store = makeStore(
       { p1: target("p1", [{ member: "m1", key: "k1" }]) },
@@ -320,6 +385,268 @@ describe("provider invocation resilience", () => {
     expect(attempts[0]).toMatchObject({ key: "k1", model: "explicit-model-for-p1" });
     // The explicit model bound to p1 must not leak onto the fallback provider.
     expect(attempts[1]).toMatchObject({ key: "k2", model: "default-of-p2" });
+  });
+
+  it("never reaches a configured fallback provider when the caller forbids provider fallback", async () => {
+    // `allow_provider_fallback: false` is a contract, not a hint: the caller
+    // (today the Room conversation summarizer) asked for *this* provider and
+    // will take the failure rather than a silently different model's answer.
+    const usage: UsageObservation[] = [];
+    const attributions: Array<Record<string, unknown>> = [];
+    const store: ProviderCommandStore = {
+      ...makeStore(
+        {
+          p1: target("p1", [{ member: "m1", key: "k1" }], { fallback_provider_ids: ["p2"] }),
+          p2: target("p2", [{ member: "m2", key: "k2" }]),
+        },
+        [],
+      ),
+      async recordUsageObservation(observation, attribution) {
+        usage.push(observation);
+        attributions.push(attribution as unknown as Record<string, unknown>);
+      },
+    };
+    // Two scripted responses: the second one is never reached, which is what
+    // the single recorded attempt below proves.
+    const attempts = scriptedHttp([{ status: 402 }, { status: 200 }]);
+
+    await expect(completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      ...CHAT,
+      provider_id: "p1",
+      allow_provider_fallback: false,
+    })).rejects.toBeInstanceOf(ProviderInvocationError);
+
+    expect(attempts.map((attempt) => attempt.key)).toEqual(["k1"]);
+    // The failed attempt is still metered, and against the provider that was
+    // actually called — suppressing fallback must not also suppress the spend
+    // record the caller's Space is charged by.
+    expect(usage).toEqual([expect.objectContaining({
+      space_id: "space-1",
+      provider_id: "p1",
+      event_type: "llm.generation",
+      dimensions: expect.objectContaining({ provider_attempt_status: "failed" }),
+    })]);
+    expect(attributions[0]).toMatchObject({ owner_user_id: "user-1" });
+  });
+
+  it("records usage as unknown when an OpenAI-compatible gateway omits it", async () => {
+    // A gateway that answers 200 with no `usage` block has told us nothing
+    // about tokens. Reporting zero would look like a free call in the Space's
+    // spend view; `unknown` is what the number actually is.
+    const usage: UsageObservation[] = [];
+    const store = makeStore({ p1: target("p1", [{ member: "m1", key: "k1" }]) }, [], {}, usage);
+    scriptedHttp([{
+      status: 200,
+      body: { choices: [{ message: { content: "ok" }, finish_reason: "stop" }], model: "gpt-4o-mini" },
+    }]);
+
+    const result = await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      ...CHAT,
+      provider_id: "p1",
+    });
+
+    expect(result.content).toBe("ok");
+    expect(usage).toEqual([expect.objectContaining({ usage_accuracy: "unknown" })]);
+  });
+
+  it("preserves a raw provider finish reason the vendor SDK would normalize", async () => {
+    // `content_filter` is why the answer is empty. Mapping it onto `stop`
+    // would make a refusal indistinguishable from a complete reply.
+    const store = makeStore({ p1: target("p1", [{ member: "m1", key: "k1" }]) }, []);
+    scriptedHttp([{
+      status: 200,
+      body: {
+        choices: [{ message: { content: "" }, finish_reason: "content_filter" }],
+        model: "gpt-4o-mini",
+        usage: { prompt_tokens: 3, completion_tokens: 0, total_tokens: 3 },
+      },
+    }]);
+
+    const result = await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      ...CHAT,
+      provider_id: "p1",
+    });
+
+    expect(result.finish_reason).toBe("content_filter");
+  });
+
+  it("keeps an Ollama request on the original Chat Completions fields", async () => {
+    // A local server implements the fields the API had when it was written.
+    // Detecting modern OpenAI features from an arbitrary base URL would send
+    // a body it answers 400 to.
+    const store = makeStore({
+      p1: target("p1", [{ member: "m1", key: "k1" }], {
+        provider_type: "ollama",
+        base_url: "http://127.0.0.1:11434/v1",
+        default_model: "llama3",
+      }),
+    }, []);
+    const attempts = scriptedHttp([{
+      status: 200,
+      body: { choices: [{ message: { content: "local reply" }, finish_reason: "stop" }], model: "llama3" },
+    }]);
+
+    const result = await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      ...CHAT,
+      provider_id: "p1",
+      max_tokens: 321,
+    });
+
+    expect(result.content).toBe("local reply");
+    expect(attempts[0]?.body).toMatchObject({ model: "llama3", max_tokens: 321 });
+    expect(attempts[0]?.body.max_completion_tokens).toBeUndefined();
+    expect(attempts[0]?.body.store).toBeUndefined();
+  });
+
+  it("sends a catalog-valid DeepSeek model when the provider configures none", async () => {
+    // With no configured model the request still has to name one the vendor
+    // accepts; the generic OpenAI default would be rejected by DeepSeek.
+    const store = makeStore({
+      p1: target("p1", [{ member: "m1", key: "k1" }], {
+        provider_type: "deepseek",
+        base_url: "https://api.deepseek.test/v1",
+        default_model: null,
+      }),
+    }, []);
+    const attempts = scriptedHttp([{
+      status: 200,
+      body: { choices: [{ message: { content: "deep reply" }, finish_reason: "stop" }], model: "deepseek-v4-flash" },
+    }]);
+
+    const result = await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      ...CHAT,
+      provider_id: "p1",
+    });
+
+    expect(result.content).toBe("deep reply");
+    expect(attempts[0]?.body).toMatchObject({ model: "deepseek-v4-flash" });
+  });
+
+  it("carries Anthropic's 1-hour cache bucket through to the usage observation", async () => {
+    // The two cache-creation buckets are billed differently, and the vendor
+    // reports the 1h one nested inside the total. Losing the nested number
+    // makes every 1h write look like a 5m write in the Space's spend view.
+    const usage: UsageObservation[] = [];
+    const store = makeStore({
+      p1: target("p1", [{ member: "m1", key: "k1" }], {
+        provider_type: "anthropic",
+        base_url: "https://api.anthropic.test/v1",
+        default_model: "claude-test",
+      }),
+    }, [], {}, usage);
+    __setProviderHttpClientForTests({
+      async fetch() {
+        return anthropicChatResponse({
+          content: [{ type: "text", text: "cached reply" }],
+          model: "claude-test",
+          stop_reason: "end_turn",
+          usage: {
+            input_tokens: 3,
+            output_tokens: 2,
+            cache_creation_input_tokens: 40,
+            cache_creation: { ephemeral_1h_input_tokens: 30 },
+          },
+        });
+      },
+    });
+
+    const result = await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      ...CHAT,
+      system: "Be direct.",
+      provider_id: "p1",
+      cache_strategy: "conversation",
+    });
+
+    expect(result.content).toBe("cached reply");
+    expect(usage).toHaveLength(1);
+    expect(usage[0]?.provider_usage).toMatchObject({
+      cache_creation_input_tokens: 40,
+      cache_creation_1h_input_tokens: 30,
+    });
+  });
+
+  it("keeps the vendor protocol authoritative over an advertised compatibility endpoint", async () => {
+    // A provider may advertise an OpenAI-shaped bridge, but the Space
+    // registered it as Anthropic. Following the advertised endpoint would let
+    // the provider choose the wire format its own credential is spent on.
+    const store = makeStore({
+      p1: target("p1", [{ member: "m1", key: "k1" }], {
+        provider_type: "anthropic",
+        base_url: "https://api.example.test/v1",
+        openai_compatible_base_url: "https://api.example.test/openai/v1",
+        default_model: "claude-test",
+      }),
+    }, []);
+    const urls: string[] = [];
+    __setProviderHttpClientForTests({
+      async fetch(url) {
+        urls.push(String(url));
+        return anthropicChatResponse({
+          content: [{ type: "text", text: "vendor reply" }],
+          model: "claude-test",
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        });
+      },
+    });
+
+    const result = await completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      ...CHAT,
+      provider_id: "p1",
+    });
+
+    expect(result.content).toBe("vendor reply");
+    expect(urls).toEqual(["https://api.example.test/v1/messages"]);
+  });
+
+  it("refuses the spend before any provider is reached", async () => {
+    // Ordering, not the decision: a denial that arrives after the request has
+    // gone out has already spent the credential it was refusing.
+    const store: ProviderCommandStore = {
+      ...makeStore({ p1: target("p1", [{ member: "m1", key: "k1" }]) }, []),
+      async authorizeCredentialSpend() {
+        throw new CredentialSpendDeniedError("This Automation has no standing credential grant.");
+      },
+    };
+    const attempts = scriptedHttp([{ status: 200 }]);
+
+    await expect(completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      ...CHAT,
+      provider_id: "p1",
+    })).rejects.toBeInstanceOf(CredentialSpendDeniedError);
+
+    expect(attempts).toEqual([]);
+  });
+
+  it("refuses structured output for a provider type that cannot honour it, before any request", async () => {
+    // The alternative is a request whose schema the provider silently ignores
+    // and a reply the caller then fails to parse, after paying for it.
+    const store = makeStore({
+      p1: target("p1", [{ member: "m1", key: "k1" }], { provider_type: "cohere" }),
+    }, []);
+    const attempts = scriptedHttp([{ status: 200 }]);
+
+    await expect(completeProviderChat(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      ...CHAT,
+      provider_id: "p1",
+      output_format: {
+        type: "json_schema",
+        schema_id: "research.test.v1",
+        schema: { type: "object" },
+        strict: true,
+      },
+    })).rejects.toMatchObject({ code: "structured_output_unsupported" });
+
+    expect(attempts).toEqual([]);
   });
 
   it("treats fetch failures as transient provider network errors and falls back", async () => {
@@ -628,7 +955,7 @@ describe("provider invocation resilience", () => {
     expect(attempts[0].model).toBe("chain-model");
   });
 
-  it("meters provider-backed generation usage with run attribution", async () => {
+  it("meters bounded provider invocation without Agent runtime attribution", async () => {
     const outcomes: Array<{ member: string; outcome: PoolOutcome }> = [];
     const usageObservations: UsageObservation[] = [];
     const store = makeStore(
@@ -655,17 +982,7 @@ describe("provider invocation resilience", () => {
       user: "hello",
       task: "reflector",
       metering: {
-        meter_subject_type: "run",
-        meter_subject_id: "run-1",
-        run_id: "run-1",
-        root_run_id: "root-1",
-        parent_run_id: "parent-1",
-        run_group_id: "group-1",
-        session_id: "session-1",
-        agent_id: "agent-1",
-        project_id: "project-1",
-        project_folder_id: "workspace-1",
-        adapter_type: "ts_agent_host",
+        subject_user_id: "user-1",
         dimensions: { mode: "live" },
       },
     });
@@ -676,17 +993,7 @@ describe("provider invocation resilience", () => {
         event_type: "llm.generation",
         source_type: "local_run",
         execution_channel: "managed_api",
-        meter_subject_type: "run",
-        meter_subject_id: "run-1",
-        run_id: "run-1",
-        root_run_id: "root-1",
-        parent_run_id: "parent-1",
-        run_group_id: "group-1",
-        session_id: "session-1",
-        agent_id: "agent-1",
-        project_id: "project-1",
-        project_folder_id: "workspace-1",
-        adapter_type: "ts_agent_host",
+        subject_user_id: "user-1",
         provider_id: "p1",
         provider_type: "openai",
         provider_name_snapshot: "p1",

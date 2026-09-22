@@ -13,25 +13,23 @@ import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocati
 import { HttpError, dbPool } from "../routeUtils/common.js";
 import { requireInstanceAdmin } from "../routeUtils/access.js";
 import { hostRegisterRateLimited } from "./pairingRateLimit.js";
+import { MIN_HOST_DAEMON_VERSION, hostDaemonMeetsMinimumVersion } from "./daemonCompatibility.js";
 import type { Pool } from "../../db/pool.js";
 import { sharedHostConnectionRegistry, type HostFrameSink } from "./connectionRegistry.js";
 import { parseFolderReadResultFrame } from "./folderReadFrames.js";
 import { parseFolderWriteResultFrame } from "./folderWriteFrames.js";
 import { PgHostThreadRepository } from "./threadRepository.js";
-import {
-  PgHostRuntimeProviderBindingRepository,
-  type HostRuntimeProviderBinding,
-} from "./runtimeProviderBindingRepository.js";
-import { assertProviderUsable } from "./runtimeProviderBindingResolution.js";
 import { hostProviderProxyBaseUrl } from "../runs/hostProviderProxyAddress.js";
-import { resolveProvidersDbPort } from "../providers/dbReader.js";
 import { providerProxyLeases } from "../providers/proxy/lease.js";
 import { assertProjectWriter, assertProjectReadable } from "../projects/access.js";
 import { getDbPool } from "../../db/pool.js";
 import { hasSubscriptionQuota, listHostRuntimeChanges, readHostUsage, recordHostRuntimeChange, refreshHostUsage } from "./usageService.js";
-import { getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
-import { acpRuntimeProbe, acpRuntimeProbes } from "./runtimeProbes.js";
+import { getAgentRuntimeDefinition, getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
+import { SERVER_OPENCODE_RELEASE } from "../runtimeAdapters/opencodeRelease.js";
+import { acpRuntimeProbe, acpRuntimeProbes, type ProbeHostKind } from "./runtimeProbes.js";
 import { hostInstallationAuthMethods, hostInstallationCliLoginAvailable, hostInstallationIds, normalizeHostCapabilities } from "./capabilities.js";
+import { PgRuntimeProvisioningRepository } from "./runtimeProvisioningRepository.js";
+import { serverOpenCodeProvisioningStatus, sharedServerOpenCodeProvisioner } from "./serverOpenCodeProvisioner.js";
 import { sseResponseHeaders } from "../../gateway/sse.js";
 
 function isFailure(value: unknown): value is AuthFailure | HostFailure {
@@ -42,33 +40,23 @@ function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
 }
 
-function bindingToOut(binding: HostRuntimeProviderBinding) {
-  return {
-    host_id: binding.host_id,
-    adapter_type: binding.adapter_type,
-    model_provider_id: binding.model_provider_id,
-    model: binding.model,
-    updated_at: binding.updated_at,
-  };
-}
-
 /** The open login terminal per host × adapter × copy — one at a time, the newest wins. */
 const activeLoginSessions = new Map<string, string>();
-function loginSessionKey(hostId: string, adapterType: string, installation: string): string {
-  return `${hostId}/${adapterType}/${installation}`;
+function loginSessionKey(hostId: string, runtimeKey: string, installation: string): string {
+  return `${hostId}/${runtimeKey}/${installation}`;
 }
 
-function remoteInstallableAdapterTypes(): string[] {
+function remoteInstallableRuntimeKeys(): string[] {
   return listRuntimeAdapterSpecs()
     .filter((spec) =>
       spec.runtime_kind === "local_cli"
       && spec.implementation_status === "implemented"
       && spec.invocation?.protocol === "acp")
-    .map((spec) => spec.adapter_type);
+    .map((spec) => spec.runtime_key);
 }
 
-function isRemoteDispatchEligible(adapterType: string): boolean {
-  const spec = getRuntimeAdapterSpec(adapterType);
+function isRemoteDispatchEligible(runtimeKey: string): boolean {
+  const spec = getRuntimeAdapterSpec(runtimeKey);
   return spec?.runtime_kind === "local_cli"
     && spec.implementation_status === "implemented"
     && spec.invocation?.protocol === "acp"
@@ -98,12 +86,12 @@ function managedVersionOf(installation: string | null): string | null {
 }
 
 /** The managed version a host currently reports for one adapter, for the change record. */
-async function currentManagedVersion(pool: Pool, hostId: string, adapterType: string): Promise<string | null> {
+async function currentManagedVersion(pool: Pool, hostId: string, runtimeKey: string): Promise<string | null> {
   const row = await pool.query<{ capabilities_json: unknown }>(
     "SELECT capabilities_json FROM hosts WHERE id = $1",
     [hostId],
   );
-  const installed = hostInstallationIds(row.rows[0]?.capabilities_json, adapterType);
+  const installed = hostInstallationIds(row.rows[0]?.capabilities_json, runtimeKey);
   return installed.map(managedVersionOf).find((version): version is string => version !== null) ?? null;
 }
 
@@ -328,13 +316,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
 
 
-  // Static catalog of remote runtime adapters and their dispatch eligibility
+  // Static catalog of ACP runtime definitions and their dispatch eligibility
   // (P3, C6):
   // the single source of truth the frontend reads instead of hardcoding the
   // same ACP-only eligibility rule the dispatch endpoint above already
   // enforces. No per-user or per-space data — session-authenticated only for
   // consistency with the rest of this module.
-  app.get("/api/v1/hosts/runtime-adapters", async (request, reply) => {
+  app.get("/api/v1/hosts/runtime-definitions", async (request, reply) => {
     const requestId = resolveRequestId(request);
     reply.header(REQUEST_ID_HEADER, requestId);
     const auth = authRepositoryFromConfig(context.config);
@@ -343,30 +331,37 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
-    const latestManagedVersions = new Map(acpRuntimeProbes().map((probe) => [probe.adapter_type, probe.version]));
+    const latestManagedVersions = new Map(acpRuntimeProbes().map((probe) => [probe.runtime_key, probe.version]));
     const items = listRuntimeAdapterSpecs()
       .filter((spec) => spec.runtime_kind === "local_cli" && spec.executable?.command)
-      .map((spec) => ({
-        adapter_type: spec.adapter_type,
-        display_name: spec.display_name,
-        command: spec.executable!.command!,
-        // ACP runtime replatform P3: what a host's capability probe actually
-        // reports for this adapter, when it differs from `command` (an ACP
-        // adapter's own bundled executable vs. the vendor CLI it drives).
-        capability_probe: spec.invocation?.remote_capability_probe ?? spec.executable!.command!,
-        remote_eligible: isRemoteDispatchEligible(spec.adapter_type),
-        // A builtin adapter's managed copy comes from this ACP registry entry;
-        // the registry picker hides it so the same agent is not offered twice.
-        registry_id: spec.distribution && "registry_id" in spec.distribution ? spec.distribution.registry_id : null,
-        /** Current ACP package version available to install from the registry. */
-        latest_managed_version: latestManagedVersions.get(spec.adapter_type) ?? null,
-        /** Whether this adapter bundles a distinct vendor CLI whose version the host reports. */
-        reports_managed_cli_version: Boolean(spec.managed_runtime_version_command),
-        // Whether a ModelProvider can be bound to it at all; a registry agent
-        // runs on the copy's own login only.
-        provider_binding: !spec.invocation?.remote_host_only,
-        provider_api: spec.model.provider_api ?? null,
-      }));
+      .map((spec) => {
+        const definition = getAgentRuntimeDefinition(spec.runtime_key);
+        return {
+          runtime_key: spec.runtime_key,
+          display_name: spec.display_name,
+          command: spec.executable!.command!,
+          // What a host's capability probe actually reports when it differs
+          // from the registry launch command.
+          capability_probe: spec.invocation?.remote_capability_probe ?? spec.executable!.command!,
+          remote_eligible: isRemoteDispatchEligible(spec.runtime_key),
+          // A built-in runtime's managed copy comes from this ACP registry entry;
+          // the registry picker hides it so the same agent is not offered twice.
+          registry_id: spec.distribution && "registry_id" in spec.distribution ? spec.distribution.registry_id : null,
+          /** Current ACP package version available to install from the registry. */
+          latest_managed_version: latestManagedVersions.get(spec.runtime_key) ?? null,
+          /** Release pin used only by the built-in Server Host lifecycle. */
+          server_supported_version: spec.runtime_key === "opencode" ? SERVER_OPENCODE_RELEASE.version : null,
+          /** Whether this runtime bundles a distinct CLI whose version the host reports. */
+          reports_managed_cli_version: Boolean(spec.managed_runtime_version_command),
+          // Which backend modes the runtime contract supports, read from the
+          // same AgentRuntimeDefinition that Profile admission enforces
+          // (`supportsRuntimeBackendMode`), so the composer cannot offer a mode
+          // the server answers with 422.
+          supports_runtime_native: definition?.supports_runtime_native ?? false,
+          supports_model_provider: definition?.supports_model_provider ?? false,
+          provider_api: spec.model.provider_api ?? null,
+        };
+      });
     return reply.send({ items });
   });
 
@@ -378,31 +373,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   // Plan host-workspace-frontend-registration: the web UI's remote-directory
   // browser and workspace registration. Both are owner-only host actions the
   // daemon answers; the server forwards a request and never opens a path.
-  app.post("/api/v1/hosts/:hostId/default-adapter", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
-    if (!resolved) return reply;
-    const payload = body<{ adapter_type?: string | null }>(request);
-    const adapterType = typeof payload.adapter_type === "string" && payload.adapter_type.trim()
-      ? payload.adapter_type.trim()
-      : null;
-    if (adapterType) {
-      if (!isRemoteDispatchEligible(adapterType)) {
-        return reply.code(422).send({
-          detail: `Runtime adapter '${adapterType}' cannot isolate its login and state by Agent`,
-          code: "runtime_profile_isolation_unsupported",
-        });
-      }
-      const host = await resolved.pool.query<{ capabilities_json: unknown }>(`SELECT capabilities_json FROM hosts WHERE id = $1`, [resolved.hostId]);
-      if (hostInstallationIds(host.rows[0]?.capabilities_json, adapterType).length === 0) {
-        return reply.code(422).send({ detail: `This host reports no installation of '${adapterType}'` });
-      }
-    }
-    const hosts = hostRepositoryFromConfig(context.config);
-    const updated = hosts ? await hosts.setDefaultAdapter(resolved.hostId, adapterType) : false;
-    if (!updated) return reply.code(404).send({ detail: "Host not found" });
-    return reply.send({ host_id: resolved.hostId, default_adapter_type: adapterType });
-  });
-
   app.post("/api/v1/hosts/:hostId/browse-directories", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply);
     if (!resolved) return reply;
@@ -445,29 +415,39 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   // daemon on the owner's request. Any ACP adapter with a distribution
   // qualifies — a builtin CLI as much as a registry agent — and each managed
   // copy keeps its own login state apart from the machine's own install.
-  app.post("/api/v1/hosts/:hostId/installations/:adapterType", async (request, reply) => {
+  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
-    const adapterType = params(request).adapterType ?? "";
-    if (!remoteInstallableAdapterTypes().includes(adapterType)) {
-      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' is not eligible for remote dispatch` });
+    const runtimeKey = params(request).runtimeKey ?? "";
+    if (!remoteInstallableRuntimeKeys().includes(runtimeKey)) {
+      return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' is not eligible for remote dispatch` });
     }
-    const probe = acpRuntimeProbe(adapterType);
-    if (!probe?.distribution) {
-      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' has no distribution to install from` });
+    const targetHost = await resolved.pool.query<{ kind: string }>(
+      "SELECT kind FROM hosts WHERE id = $1 LIMIT 1",
+      [resolved.hostId],
+    );
+    // The probe for *this* machine already resolved which copy it installs —
+    // the release pin for the Server Host, the registry's answer for a paired
+    // one. Deciding that again here is what made two sources of truth.
+    const probe = acpRuntimeProbe(runtimeKey, targetHost.rows[0]?.kind === "server" ? "server" : "remote");
+    const distribution = probe?.distribution;
+    const version = probe?.version;
+    if (!probe || !distribution || !version) {
+      return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' has no distribution to install from` });
     }
-    const before = await currentManagedVersion(resolved.pool, resolved.hostId, adapterType);
+    const before = await currentManagedVersion(resolved.pool, resolved.hostId, runtimeKey);
     const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "install_tool", {
-      adapter_type: adapterType,
-      version: probe.version ?? "latest",
-      distribution: probe.distribution,
+      runtime_key: runtimeKey,
+      version,
+      distribution,
       login: probe.login,
-      runtime_version_command: getRuntimeAdapterSpec(adapterType)?.managed_runtime_version_command ?? null,
+      runtime_version_command: getRuntimeAdapterSpec(runtimeKey)?.managed_runtime_version_command ?? null,
+      health_check_protocol: getRuntimeAdapterSpec(runtimeKey)?.invocation?.protocol === "acp" ? "acp" : null,
     });
     if (result.ok) {
       await recordHostRuntimeChange(resolved.pool, {
         hostId: resolved.hostId,
-        adapterType,
+        runtimeKey,
         action: before ? "upgrade" : "install",
         fromVersion: before,
         toVersion: managedVersionOf(result.installation),
@@ -478,23 +458,70 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     // it a real reason from the host — "Runs are still using claude_code; try
     // again once they finish" — reached the person as "502 Bad Gateway".
     return reply.code(result.ok ? 200 : 502)
-      .send({ host_id: resolved.hostId, adapter_type: adapterType, ...result, ...(result.ok ? {} : { detail: result.error }) });
+      .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
+  });
+
+  app.get("/api/v1/hosts/:hostId/runtime-provisioning/opencode", async (request, reply) => {
+    const identity = await introspectIdentity(context.config, request);
+    if (!identity.ok) {
+      if (identity.reason === "denied") {
+        reply.code(identity.statusCode);
+        reply.header("content-type", "application/json");
+        return reply.send(identity.body);
+      }
+      return reply.code(502).send({ detail: "Identity introspection failed" });
+    }
+    const hostId = params(request).hostId ?? "";
+    const hosts = hostRepositoryFromConfig(context.config);
+    const visible = hosts ? await hosts.listVisibleTo(identity.userId) : [];
+    const host = visible.find((item) => item.id === hostId);
+    if (!host || host.kind !== "server") return reply.code(404).send({ detail: "Host not found" });
+    const state = context.config.databaseUrl
+      ? await new PgRuntimeProvisioningRepository(getDbPool(context.config.databaseUrl)).get(hostId, "opencode")
+      : null;
+    const status = serverOpenCodeProvisioningStatus(hostId, state, host.capabilities_json);
+    return reply.send(status);
+  });
+
+  app.post("/api/v1/hosts/:hostId/runtime-provisioning/opencode/retry", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
+    if (!resolved) return reply;
+    const target = await resolved.pool.query<{ kind: string }>(
+      "SELECT kind FROM hosts WHERE id = $1 LIMIT 1",
+      [resolved.hostId],
+    );
+    if (target.rows[0]?.kind !== "server") return reply.code(404).send({ detail: "Host not found" });
+    const state = await new PgRuntimeProvisioningRepository(resolved.pool)
+      .retry(resolved.hostId, "opencode", SERVER_OPENCODE_RELEASE.version);
+    if (!state) {
+      return reply.code(409).send({ detail: "Only a failed Server OpenCode installation can be retried." });
+    }
+    // Wake the process-wide provisioner rather than building a one-shot one:
+    // only the instance that owns a claim heartbeats it, so a throwaway
+    // instance's install would be failed as interrupted by the scheduler's.
+    void sharedServerOpenCodeProvisioner(resolved.pool).reconcile();
+    return reply.code(202).send({
+      host_id: resolved.hostId,
+      runtime_key: "opencode",
+      state: state.state,
+      desired_version: state.desired_version,
+    });
   });
 
   /**
    * Undoes the last upgrade of a managed copy by promoting the version the
    * host kept behind it; both versions use the adapter's stable managed HOME.
    */
-  app.post("/api/v1/hosts/:hostId/installations/:adapterType/rollback", async (request, reply) => {
+  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/rollback", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
-    const adapterType = params(request).adapterType ?? "";
-    const before = await currentManagedVersion(resolved.pool, resolved.hostId, adapterType);
-    const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "rollback_tool", { adapter_type: adapterType });
+    const runtimeKey = params(request).runtimeKey ?? "";
+    const before = await currentManagedVersion(resolved.pool, resolved.hostId, runtimeKey);
+    const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "rollback_tool", { runtime_key: runtimeKey });
     if (result.ok) {
       await recordHostRuntimeChange(resolved.pool, {
         hostId: resolved.hostId,
-        adapterType,
+        runtimeKey,
         action: "rollback",
         fromVersion: before,
         toVersion: managedVersionOf(result.installation),
@@ -505,7 +532,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     // it a real reason from the host — "Runs are still using claude_code; try
     // again once they finish" — reached the person as "502 Bad Gateway".
     return reply.code(result.ok ? 200 : 502)
-      .send({ host_id: resolved.hostId, adapter_type: adapterType, ...result, ...(result.ok ? {} : { detail: result.error }) });
+      .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
   });
 
   /** What has changed about the hosts this viewer can see, newest first; the Updates page reads it. */
@@ -520,21 +547,21 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send({ items: await listHostRuntimeChanges(getDbPool(context.config.databaseUrl), identity.userId) });
   });
 
-  app.delete("/api/v1/hosts/:hostId/installations/:adapterType/:installation", async (request, reply) => {
+  app.delete("/api/v1/hosts/:hostId/installations/:runtimeKey/:installation", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
-    const { adapterType, installation } = params(request);
-    if (!adapterType || !installation?.startsWith("managed:")) {
+    const { runtimeKey, installation } = params(request);
+    if (!runtimeKey || !installation?.startsWith("managed:")) {
       return reply.code(422).send({ detail: "Only a managed installation can be removed" });
     }
     const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "uninstall_tool", {
-      adapter_type: adapterType,
+      runtime_key: runtimeKey,
       version: installation.slice("managed:".length),
     });
     if (result.ok) {
       await recordHostRuntimeChange(resolved.pool, {
         hostId: resolved.hostId,
-        adapterType,
+        runtimeKey,
         action: "remove",
         fromVersion: installation.slice("managed:".length),
         toVersion: null,
@@ -545,7 +572,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     // it a real reason from the host — "Runs are still using claude_code; try
     // again once they finish" — reached the person as "502 Bad Gateway".
     return reply.code(result.ok ? 200 : 502)
-      .send({ host_id: resolved.hostId, adapter_type: adapterType, ...result, ...(result.ok ? {} : { detail: result.error }) });
+      .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
   });
 
   /**
@@ -562,15 +589,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
   /** Asks one copy now. Host owner only, like every other action on their machine. */
-  app.post("/api/v1/hosts/:hostId/installations/:adapterType/:installation/usage", async (request, reply) => {
+  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/usage", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
-    const { adapterType, installation } = params(request);
-    if (!adapterType || !installation) {
-      return reply.code(400).send({ detail: "adapterType and installation are required" });
+    const { runtimeKey, installation } = params(request);
+    if (!runtimeKey || !installation) {
+      return reply.code(400).send({ detail: "runtimeKey and installation are required" });
     }
-    if (!hasSubscriptionQuota(adapterType)) {
-      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' reports no subscription quota` });
+    if (!hasSubscriptionQuota(runtimeKey)) {
+      return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' reports no subscription quota` });
     }
     // Checked against what the host reports, not taken on trust: an arbitrary
     // string would spend a probe timeout to learn nothing and leave a row
@@ -579,17 +606,17 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       "SELECT capabilities_json FROM hosts WHERE id = $1",
       [resolved.hostId],
     );
-    if (!hostInstallationIds(host.rows[0]?.capabilities_json, adapterType).includes(installation)) {
-      return reply.code(422).send({ detail: `Host does not report installation '${installation}' of '${adapterType}'` });
+    if (!hostInstallationIds(host.rows[0]?.capabilities_json, runtimeKey).includes(installation)) {
+      return reply.code(422).send({ detail: `Host does not report installation '${installation}' of '${runtimeKey}'` });
     }
-    return reply.send(await refreshHostUsage(resolved.pool, resolved.hostId, adapterType, installation));
+    return reply.send(await refreshHostUsage(resolved.pool, resolved.hostId, runtimeKey, installation));
   });
 
   // An interactive login for one copy of a runtime on a host, as a terminal
   // stream: the daemon runs the copy's login command on a PTY and relays it;
   // the person reads it here and types through the input route. Host owner
   // only — it is their machine and their account.
-  app.get("/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream", async (request, reply) => {
+  app.get("/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/login/stream", async (request, reply) => {
     // A GET, because it is a long-lived stream the client reads through a
     // `ReadableStream`; a state change, because `login_action` starts a login
     // or a logout on the machine. `SameSite=Lax` sends the cookie on a
@@ -601,13 +628,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
-    const { adapterType, installation } = params(request);
-    if (!adapterType || !installation) return reply.code(400).send({ detail: "adapterType and installation are required" });
-    if (!remoteInstallableAdapterTypes().includes(adapterType)) {
-      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' is not eligible for remote dispatch` });
+    const { runtimeKey, installation } = params(request);
+    if (!runtimeKey || !installation) return reply.code(400).send({ detail: "runtimeKey and installation are required" });
+    if (!remoteInstallableRuntimeKeys().includes(runtimeKey)) {
+      return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' is not eligible for remote dispatch` });
     }
-    const probe = acpRuntimeProbe(adapterType);
-    if (!probe) return reply.code(422).send({ detail: `Unknown runtime adapter '${adapterType}'` });
+    const probe = acpRuntimeProbe(runtimeKey);
+    if (!probe) return reply.code(422).send({ detail: `Unknown runtime adapter '${runtimeKey}'` });
     const authMethodId = typeof (request.query as Record<string, unknown>).auth_method_id === "string"
       ? String((request.query as Record<string, unknown>).auth_method_id)
       : null;
@@ -620,8 +647,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(400).send({ detail: "Choose either auth_method_id or login_action" });
     }
     const host = await resolved.pool.query<{ capabilities_json: unknown }>(`SELECT capabilities_json FROM hosts WHERE id = $1`, [resolved.hostId]);
-    const authMethods = hostInstallationAuthMethods(host.rows[0]?.capabilities_json, adapterType, installation);
-    const cliLoginAvailable = hostInstallationCliLoginAvailable(host.rows[0]?.capabilities_json, adapterType, installation);
+    const authMethods = hostInstallationAuthMethods(host.rows[0]?.capabilities_json, runtimeKey, installation);
+    const cliLoginAvailable = hostInstallationCliLoginAvailable(host.rows[0]?.capabilities_json, runtimeKey, installation);
     const authMethod = authMethodId ? authMethods.find((candidate) => candidate.id === authMethodId) ?? null : null;
     if (authMethodId && !authMethod) {
       return reply.code(422).send({ detail: `Authentication method '${authMethodId}' is not advertised by this installation` });
@@ -648,12 +675,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const emit = (event: unknown) => {
       if (!reply.raw.destroyed) reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
     };
-    const key = loginSessionKey(resolved.hostId, adapterType, installation);
+    const key = loginSessionKey(resolved.hostId, runtimeKey, installation);
     const previous = activeLoginSessions.get(key);
     if (previous) sharedHostConnectionRegistry.closeLoginSession(resolved.hostId, previous);
     const sessionId = sharedHostConnectionRegistry.openLoginSession(
       resolved.hostId,
-      { adapter_type: adapterType, installation, login: probe.login, argv: probe.argv, auth_method: authMethod, login_action: loginAction },
+      { runtime_key: runtimeKey, installation, login: probe.login, argv: probe.argv, auth_method: authMethod, login_action: loginAction },
       (event) => {
         emit(event);
         if (event.type === "exit") {
@@ -679,88 +706,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply;
   });
 
-  app.post("/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/input", async (request, reply) => {
+  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/login/input", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply, { allowBuiltin: true });
     if (!resolved) return reply;
-    const { adapterType, installation } = params(request);
+    const { runtimeKey, installation } = params(request);
     const data = body<{ data?: unknown }>(request).data;
-    if (!adapterType || !installation || typeof data !== "string") return reply.code(400).send({ detail: "data is required" });
+    if (!runtimeKey || !installation || typeof data !== "string") return reply.code(400).send({ detail: "data is required" });
     if (data.length > LOGIN_INPUT_MAX_CHARS) {
       return reply.code(413).send({ detail: `Login input is limited to ${LOGIN_INPUT_MAX_CHARS} characters per message` });
     }
-    const sessionId = activeLoginSessions.get(loginSessionKey(resolved.hostId, adapterType, installation));
+    const sessionId = activeLoginSessions.get(loginSessionKey(resolved.hostId, runtimeKey, installation));
     if (!sessionId || !sharedHostConnectionRegistry.sendLoginInput(resolved.hostId, sessionId, data)) {
       return reply.code(409).send({ detail: "No login session is open for this installation" });
     }
-    return reply.code(204).send();
-  });
-
-  // Which model backend a host's runtime adapter runs against.
-  // Space-scoped rather than
-  // user-scoped like this module's other host endpoints, because validating a
-  // ModelProvider needs the Space its grant lives in — but host **ownership**
-  // is still the write gate (B63: a host serves only its owner).
-  app.get("/api/v1/hosts/:hostId/runtime-provider-bindings", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
-    if (!resolved) return reply;
-    const bindings = await new PgHostRuntimeProviderBindingRepository(resolved.pool).listForHost(resolved.hostId);
-    return reply.send({ items: bindings.map(bindingToOut) });
-  });
-
-  app.put("/api/v1/hosts/:hostId/runtime-provider-bindings/:adapterType", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
-    if (!resolved) return reply;
-    const adapterType = params(request).adapterType;
-    if (!adapterType) return reply.code(400).send({ detail: "adapterType is required" });
-    const payload = body<{ model_provider_id?: string; model?: string | null }>(request);
-    const providerId = typeof payload.model_provider_id === "string" ? payload.model_provider_id.trim() : "";
-    if (!providerId) return reply.code(422).send({ detail: "model_provider_id is required" });
-    const model = typeof payload.model === "string" && payload.model.trim() ? payload.model.trim() : null;
-
-    if (!remoteInstallableAdapterTypes().includes(adapterType)) {
-      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' is not eligible for remote dispatch` });
-    }
-    // An ACP-registry agent runs on the machine's own login only: nothing
-    // knows how to write a provider into its config.
-    if (getRuntimeAdapterSpec(adapterType)?.invocation?.remote_host_only) {
-      return reply.code(422).send({ detail: `Runtime adapter '${adapterType}' does not accept a ModelProvider` });
-    }
-    try {
-      // Usable *from this Space*. Dispatch re-validates against whichever
-      // Space actually dispatches, which is the authoritative check; this one
-      // stops the UI saving a binding that could never work.
-      await assertProviderUsable({
-        providers: resolveProvidersDbPort(context.config),
-        spaceId: resolved.spaceId,
-        adapterType,
-        providerId,
-        // This route *is* the host default. Without saying so, the failure
-        // tells the operator to choose another backend "for this message"
-        // while they are sitting in the host's settings, where no message
-        // exists.
-        provenance: "host_default",
-      });
-    } catch (error) {
-      if (error instanceof HttpError) return reply.code(error.statusCode).send({ detail: error.message });
-      throw error;
-    }
-    const binding = await new PgHostRuntimeProviderBindingRepository(resolved.pool).upsert({
-      hostId: resolved.hostId,
-      adapterType,
-      modelProviderId: providerId,
-      model,
-      createdByUserId: resolved.userId,
-    });
-    return reply.send(bindingToOut(binding));
-  });
-
-  app.delete("/api/v1/hosts/:hostId/runtime-provider-bindings/:adapterType", async (request, reply) => {
-    const resolved = await resolveOwnedHost(context, request, reply);
-    if (!resolved) return reply;
-    const adapterType = params(request).adapterType;
-    if (!adapterType) return reply.code(400).send({ detail: "adapterType is required" });
-    const cleared = await new PgHostRuntimeProviderBindingRepository(resolved.pool).clear(resolved.hostId, adapterType);
-    if (!cleared) return reply.code(404).send({ detail: "Binding not found" });
     return reply.code(204).send();
   });
 
@@ -977,6 +935,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const upgradeHostId = wsUpgradeHosts.get(request) ?? null;
       let helloCompleted = false;
       let helloInProgress = false;
+      // Which machine this connection is, learned at hello and reused by every
+      // later acknowledgement: the probe list a daemon is told to install from
+      // differs for the built-in Server Host (the release pin) and a paired one
+      // (the ACP registry). A heartbeat cannot arrive before hello, so this is
+      // always the connected host's own kind by the time it is read.
+      let probeHostKind: ProbeHostKind = "remote";
       const hosts = hostRepositoryFromConfig(context.config);
       const frameSink: HostFrameSink = {
         send: (frame) => socket.send(JSON.stringify(frame)),
@@ -1036,10 +1000,25 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 socket.close(1008, "invalid_token");
                 return;
               }
+              // The wire is versioned by the daemon, not per frame: a daemon
+              // older than the floor reads fields this release sends as
+              // absent and fails each Run on its own, which reports the Run
+              // broken rather than the host out of date. Refusing the hello
+              // names the reason once and leaves the host offline.
+              if (!hostDaemonMeetsMinimumVersion(frame.daemon_version)) {
+                await hosts.recordIncompatibleDaemon(host.id, frame.daemon_version || null);
+                frameSink.send({
+                  type: "error",
+                  detail: `daemon_outdated: rainver-host ${frame.daemon_version || "unknown"} is older than the required ${MIN_HOST_DAEMON_VERSION}; update this host before it can execute Runs`,
+                });
+                socket.close(1008, "daemon_outdated");
+                return;
+              }
               helloCompleted = true;
+              probeHostKind = host.kind === "server" ? "server" : "remote";
               await hosts.recordHeartbeat(host.id, daemonHelloInfo(frame));
               sharedHostConnectionRegistry.registerConnection(host.id, frameSink);
-              frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes() });
+              frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes(probeHostKind) });
               void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), host.id)
                 .catch(() => undefined);
             } finally {
@@ -1055,7 +1034,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           switch (frame.type) {
             case "heartbeat": {
               await hosts.recordHeartbeat(upgradeHostId, daemonHelloInfo(frame));
-              frameSink.send({ type: "heartbeat_ack", runtime_probes: acpRuntimeProbes() });
+              frameSink.send({ type: "heartbeat_ack", runtime_probes: acpRuntimeProbes(probeHostKind) });
               void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), hostId)
                 .catch(() => undefined);
               // Standing consent on a Location is what makes a new terminal

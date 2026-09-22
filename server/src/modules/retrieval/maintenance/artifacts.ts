@@ -17,7 +17,7 @@ export const RETRIEVAL_MAINTENANCE_PACKET_PROPOSAL_TYPE = "retrieval_maintenance
 export interface RetrievalMaintenanceReportContext {
   spaceId: string;
   ownerUserId: string;
-  runId?: string | null;
+  automationRunId?: string | null;
   report: MaintenanceReport;
   source: string;
   settingsSnapshot?: Record<string, unknown>;
@@ -40,7 +40,7 @@ export async function persistRetrievalMaintenanceReportArtifact(
     metadata: payload,
     canonicalFormat: "retrieval_maintenance_report.v1",
     visibility: visibilityForReviewScope(input.reviewScope),
-    runId: input.runId ?? null,
+    runId: null,
     createdAt: now,
   });
 }
@@ -66,7 +66,6 @@ export async function createRetrievalMaintenanceProposalPacket(
       "Review this retrieval maintenance packet. Accepting the packet creates child proposals for supported actions; it does not write canonical Knowledge directly.",
     createdByUserId: ownerUserId,
     visibility: visibilityForReviewScope(input.reviewScope),
-    createdByRunId: input.runId ?? null,
   })).id;
 }
 
@@ -129,7 +128,7 @@ function maintenanceReportPayload(
     source: input.source,
     space_id: input.spaceId,
     owner_user_id: ownerUserId,
-    run_id: input.runId ?? null,
+    automation_run_id: input.automationRunId ?? null,
     findings: input.report.findings,
     counts: input.report.counts,
     scanned: input.report.scanned,
@@ -159,7 +158,7 @@ function packetPayload(
     source: input.source,
     space_id: input.spaceId,
     owner_user_id: ownerUserId,
-    run_id: input.runId ?? null,
+    automation_run_id: input.automationRunId ?? null,
     findings: input.report.findings,
     counts: input.report.counts,
     scanned: input.report.scanned,

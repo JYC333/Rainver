@@ -1,22 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { FileCode2, Loader2, MessageSquare, Ban, Power } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi, hostsApi } from '../../api/client'
-import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Host, HostRuntimeAdapterOption, Run, Proposal } from '../../types/api'
+import type { AgentOut, AgentRuntimeProfileOut, AgentVersionOut, Host, HostRuntimeDefinitionOption, Run, Proposal } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
 import { ConfirmDialog } from '../../components/ui/dialog'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Badge, StatusBadge } from '../../components/ui/badge'
 import { Input } from '../../components/ui/input'
+import { Select } from '../../components/ui/select'
 import { Textarea } from '../../components/ui/textarea'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs'
 import { errMsg } from '../../lib/utils'
 import { InputsView, OutputsView, ScheduleView, SafetyView } from './ConfigCards'
-import { modelFields, scheduleSummary } from './policyMap'
+import {
+  isScheduleEditorValueValid,
+  ScheduleEditorFields,
+  scheduleConfigFromEditor,
+  scheduleEditorFromConfig,
+  type ScheduleEditorValue,
+} from './ScheduleEditor'
 import AssistantSettingsPanel from './AssistantSettingsPanel'
 import ProviderSelector from '../providers/ProviderSelector'
 import {
@@ -27,6 +34,7 @@ import {
 } from './RetrievalToolDomainControls'
 import { promptLibraryPath } from '../prompts/paths'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
+import HostExecutionTargetPicker, { type HostExecutionSelection } from '../command_center/HostExecutionTargetPicker'
 
 export default function AgentDetailPage() {
   const { agentId } = useParams()
@@ -186,7 +194,7 @@ export default function AgentDetailPage() {
           {version ? <ScheduleTab agentId={agent.id} version={version} onSaved={reload} /> : <Card><NoVersion /></Card>}
         </TabsContent>
         <TabsContent value="model">
-          {version ? <ModelTab agentId={agent.id} version={version} profiles={runtimeProfiles} hosts={hosts} onSaved={reload} /> : <Card><NoVersion /></Card>}
+          {version ? <ModelTab agentId={agent.id} projectId={agent.project_id} version={version} profiles={runtimeProfiles} hosts={hosts} onSaved={reload} /> : <Card><NoVersion /></Card>}
         </TabsContent>
         <TabsContent value="tools">
           {version ? <ToolsTab agentId={agent.id} version={version} onSaved={reload} /> : <Card><NoVersion /></Card>}
@@ -210,18 +218,18 @@ function ToolsTab({ agentId, version, onSaved }: {
   version: AgentVersionOut
   onSaved: () => Promise<void>
 }) {
-  const [domains, setDomains] = useState<RetrievalToolDomainState>(() => readRetrievalToolDomains(version.runtime_config_json))
+  const [domains, setDomains] = useState<RetrievalToolDomainState>(() => readRetrievalToolDomains(version.tool_policy_json))
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    setDomains(readRetrievalToolDomains(version.runtime_config_json))
-  }, [version.id, version.runtime_config_json])
+    setDomains(readRetrievalToolDomains(version.tool_policy_json))
+  }, [version.id, version.tool_policy_json])
 
   async function save() {
     setSaving(true)
     try {
       await agentsApi.updateConfig(agentId, {
-        runtime_config_json: mergeRetrievalToolDomains(version.runtime_config_json, domains),
+        tool_policy_json: mergeRetrievalToolDomains(version.tool_policy_json, domains),
       })
       toast.success('Retrieval tool settings updated (new version created)')
       await onSaved()
@@ -237,7 +245,7 @@ function ToolsTab({ agentId, version, onSaved }: {
       <div>
         <CardTitle>Managed-run retrieval tools</CardTitle>
         <p className="mt-1 text-xs text-muted-foreground">
-          These settings apply to normal runs that use the agent version default runtime config. Runtime profiles can override them.
+          These Agent permissions are immutable version policy shared by all selected Runtime Profiles. Runtime configuration cannot grant itself additional tools.
         </p>
       </div>
       <RetrievalToolDomainControls value={domains} onChange={setDomains} />
@@ -367,23 +375,19 @@ function OverviewTab({ agent, version, runs, proposals, onSaved }: {
 // ── Schedule (editable) ─────────────────────────────────────────────────────────
 
 function ScheduleTab({ agentId, version, onSaved }: { agentId: string; version: AgentVersionOut; onSaved: () => Promise<void> }) {
-  const current = scheduleSummary(version)
-  const [mode, setMode] = useState<'manual' | 'daily' | 'cron'>(current.kind === 'manual' ? 'manual' : current.kind === 'daily' ? 'daily' : 'cron')
-  const [dailyHour, setDailyHour] = useState(() => {
-    const m = /Daily at (\d{2})/.exec(current.label); return m ? m[1] : '08'
-  })
-  const [cron, setCron] = useState(current.cron ?? '0 8 * * *')
-  const [enabled, setEnabled] = useState(current.enabled)
+  const [schedule, setSchedule] = useState<ScheduleEditorValue>(() =>
+    scheduleEditorFromConfig(version.schedule_config_json),
+  )
   const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setSchedule(scheduleEditorFromConfig(version.schedule_config_json))
+  }, [version])
 
   async function save() {
     setSaving(true)
     try {
-      let schedule: Record<string, unknown>
-      if (mode === 'manual') schedule = { enabled: false, cron: null }
-      else if (mode === 'daily') schedule = { enabled, cron: `0 ${Number(dailyHour)} * * *` }
-      else schedule = { enabled, cron }
-      await agentsApi.updateConfig(agentId, { schedule_config_json: schedule })
+      await agentsApi.updateConfig(agentId, { schedule_config_json: scheduleConfigFromEditor(schedule) })
       toast.success('Schedule updated (new version created)')
       await onSaved()
     } catch (err) { toast.error(errMsg(err)) } finally { setSaving(false) }
@@ -394,33 +398,9 @@ function ScheduleTab({ agentId, version, onSaved }: { agentId: string; version: 
       <ScheduleView version={version} />
       <div className="border-t border-border pt-4 space-y-3">
         <CardTitle>Edit schedule</CardTitle>
-        <div className="space-y-1.5">
-          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Cadence</label>
-          <select value={mode} onChange={e => setMode(e.target.value as typeof mode)} className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm">
-            <option value="manual">Manual only</option>
-            <option value="daily">Daily</option>
-            <option value="cron">Custom cron</option>
-          </select>
-        </div>
-        {mode === 'daily' && (
-          <div className="space-y-1.5">
-            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Hour (UTC)</label>
-            <Input value={dailyHour} onChange={e => setDailyHour(e.target.value)} className="w-24" />
-          </div>
-        )}
-        {mode === 'cron' && (
-          <div className="space-y-1.5">
-            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Cron expression</label>
-            <Input value={cron} onChange={e => setCron(e.target.value)} className="font-mono" />
-          </div>
-        )}
-        {mode !== 'manual' && (
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> Enabled
-          </label>
-        )}
+        <ScheduleEditorFields value={schedule} onChange={setSchedule} />
         <p className="text-xs text-muted-foreground">Stored on the agent version. Actual scheduled execution is wired separately and not driven from here.</p>
-        <Button size="sm" onClick={save} disabled={saving}>{saving ? <Loader2 className="size-4 animate-spin" /> : 'Save schedule'}</Button>
+        <Button size="sm" onClick={save} disabled={saving || !isScheduleEditorValueValid(schedule)}>{saving ? <Loader2 className="size-4 animate-spin" /> : 'Save schedule'}</Button>
       </div>
     </Card>
   )
@@ -430,12 +410,14 @@ function ScheduleTab({ agentId, version, onSaved }: { agentId: string; version: 
 
 function ModelTab({
   agentId,
+  projectId,
   version,
   profiles,
   hosts,
   onSaved,
 }: {
   agentId: string
+  projectId: string | null
   version: AgentVersionOut
   profiles: AgentRuntimeProfileOut[]
   hosts: Host[]
@@ -446,86 +428,115 @@ function ModelTab({
   const selectedProfile = selectedProfileId
     ? profiles.find(profile => profile.id === selectedProfileId) ?? null
     : null
-  const runtimeConfig = (selectedProfile?.runtime_config_json ?? version.runtime_config_json) as Record<string, unknown>
-  const runtimePolicy = (selectedProfile?.runtime_policy_json ?? version.runtime_policy_json) as Record<string, unknown>
-  const fallbackModel = modelFields(version)
+  const [hostExecution, setHostExecution] = useState<HostExecutionSelection | null>(() => hostExecutionSelection(selectedProfile))
+  const runtimeConfig = (selectedProfile?.runtime_config_json ?? {}) as Record<string, unknown>
+  const runtimePolicy = (selectedProfile?.runtime_policy_json ?? {}) as Record<string, unknown>
   const [name, setName] = useState(selectedProfile?.name ?? 'Default')
-  const [adapterType, setAdapterType] = useState(
-    selectedProfile?.adapter_type ||
-      (typeof runtimeConfig.adapter_type === 'string' && runtimeConfig.adapter_type) ||
-      (typeof runtimePolicy.default_adapter_type === 'string' && runtimePolicy.default_adapter_type) ||
-      'model_api',
+  const [runtimeKey, setRuntimeKey] = useState(
+    selectedProfile?.runtime_key ?? 'opencode',
   )
-  const [model, setModel] = useState(
-    selectedProfile?.model?.provider_id ? selectedProfile.model.model ?? fallbackModel.model ?? version.model_name ?? '' : '',
-  )
+  // The Profile's provider binding is its own authority (`provider_binding`),
+  // not something re-derived here from backend_mode plus a model string.
+  const [model, setModel] = useState(selectedProfile?.provider_binding?.model ?? '')
   const [providerSelection, setProviderSelection] = useState<{ provider_id: string; model: string } | null>(
-    selectedProfile?.model?.provider_id
-      ? { provider_id: selectedProfile.model.provider_id, model: selectedProfile.model.model ?? fallbackModel.model ?? '' }
-      : null,
+    providerSelectionFromBinding(selectedProfile),
   )
+  const [backendMode, setBackendMode] = useState<'runtime_native' | 'model_provider'>(selectedProfile?.backend_mode ?? 'runtime_native')
   const [enabled, setEnabled] = useState(selectedProfile?.enabled ?? true)
   const [isDefault, setIsDefault] = useState(selectedProfile?.is_default ?? profiles.length === 0)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [saving, setSaving] = useState(false)
-  // The runtime choice is the live adapter catalog (builtin CLIs and enabled
-  // ACP registry agents alike) plus the server's own API runtime — never a
-  // hand-kept list, which is how OpenCode and every registry agent went
-  // missing here. What a runtime supports (provider binding, which provider
-  // API) is read from the catalog row, not inferred from its name.
-  const [cliAdapters, setCliAdapters] = useState<HostRuntimeAdapterOption[]>([])
-  useEffect(() => {
-    hostsApi.listRuntimeAdapters()
-      .then(result => setCliAdapters(result.items))
-      .catch(() => setCliAdapters([]))
+  // Runtime selection comes only from the ACP catalog. Backend support is
+  // read from each runtime's definition, not inferred from its display name.
+  const [cliAdapters, setCliAdapters] = useState<HostRuntimeDefinitionOption[]>([])
+  // A catalog that failed to load is not a catalog that says "unsupported":
+  // swallowing it hid every backend-mode control while the Profile still
+  // claimed provider mode, leaving no way back.
+  const [catalogError, setCatalogError] = useState<string | null>(null)
+  // An empty catalog and a catalog that has not answered yet are different
+  // facts. Without this flag every open of a `model_provider` Profile flashed
+  // "this runtime does not support a ModelProvider binding" until the first
+  // response landed.
+  const [catalogLoading, setCatalogLoading] = useState(true)
+  const [providerModeNotice, setProviderModeNotice] = useState<string | null>(null)
+  const loadCatalog = useCallback(() => {
+    setCatalogLoading(true)
+    hostsApi.listRuntimeDefinitions()
+      .then(result => { setCliAdapters(result.items); setCatalogError(null) })
+      .catch(error => { setCliAdapters([]); setCatalogError(errMsg(error)) })
+      .finally(() => { setCatalogLoading(false) })
   }, [])
-  const adapter = cliAdapters.find(candidate => candidate.adapter_type === adapterType) ?? null
-  const runtimeOptions = useMemo(() => {
-    const options = [
-      { value: 'model_api', label: 'model_api — call a model provider (no tools)' },
-      ...[...cliAdapters]
-        .sort((a, b) => a.display_name.localeCompare(b.display_name))
-        .map(candidate => ({ value: candidate.adapter_type, label: `${candidate.display_name} (${candidate.adapter_type})` })),
-    ]
-    // A saved profile may name a runtime that is no longer in the catalog (a
-    // disabled registry agent); keep it selectable so the form does not
-    // silently move the profile to another runtime.
-    if (!options.some(option => option.value === adapterType)) {
-      options.push({ value: adapterType, label: `${adapterType} (not in the runtime catalog)` })
-    }
-    return options
-  }, [cliAdapters, adapterType])
-  const supportsProviderSelection = adapterType === 'model_api' || (adapter !== null && adapter.provider_binding !== false)
+  useEffect(() => { loadCatalog() }, [loadCatalog])
+  const adapter = cliAdapters.find(candidate => candidate.runtime_key === runtimeKey) ?? null
+  const supportsModelProvider = adapter?.supports_model_provider === true
+  // Either backend mode is valid on either Host kind: a dispatched Run is
+  // handed a short-lived proxy lease URL, never a key, and the daemon's
+  // bound-run environment filter keeps a paired machine's own vendor keys out
+  // of it (AGENT_RUNTIME_AUTHORITY, "Paired Host path"). What `model_provider`
+  // may not be is *unbound* — the complete execution target below is what
+  // admission actually requires.
+  const canUseModelProvider = supportsModelProvider
+  const supportsProviderSelection = backendMode === 'model_provider' && canUseModelProvider
   const requireClaudeCompatible = adapter?.provider_api === 'claude_compatible'
   const requireOpenAiCompatible = adapter?.provider_api === 'openai_compatible'
-  const [retrievalToolDomains, setRetrievalToolDomains] = useState<RetrievalToolDomainState>(() =>
-    readRetrievalToolDomains(runtimeConfig),
-  )
-
   useEffect(() => {
     setSelectedProfileId(defaultProfile?.id ?? '')
   }, [agentId, defaultProfile?.id])
 
+  // The one place the composer is seeded from. "New profile" only clears the
+  // selection: this effect is keyed on that selection and fires on the very
+  // transition the click causes, so defaults written in the handler were
+  // overwritten here a render later. A new Profile inherits the default
+  // Profile's execution target, which is what a second Profile for the same
+  // Agent almost always wants and is the only complete target the composer
+  // can offer without another round of picking.
   useEffect(() => {
-    const cfg = (selectedProfile?.runtime_config_json ?? version.runtime_config_json) as Record<string, unknown>
-    const policy = (selectedProfile?.runtime_policy_json ?? version.runtime_policy_json) as Record<string, unknown>
-    const nextAdapter =
-      selectedProfile?.adapter_type ||
-      (typeof cfg.adapter_type === 'string' && cfg.adapter_type) ||
-      (typeof policy.default_adapter_type === 'string' && policy.default_adapter_type) ||
-      'model_api'
-    setName(selectedProfile?.name ?? 'Default')
-    setAdapterType(nextAdapter)
-    setModel(selectedProfile?.model?.provider_id ? selectedProfile.model.model ?? fallbackModel.model ?? version.model_name ?? '' : '')
-    setProviderSelection(
-      selectedProfile?.model?.provider_id
-        ? { provider_id: selectedProfile.model.provider_id, model: selectedProfile.model.model ?? '' }
-        : null,
-    )
+    const composingNew = selectedProfile === null && profiles.length > 0
+    const execution = hostExecutionSelection(composingNew ? defaultProfile : selectedProfile)
+    setName(selectedProfile?.name ?? (composingNew ? 'New runtime profile' : 'Default'))
+    setRuntimeKey(selectedProfile?.runtime_key ?? execution?.runtime_key ?? 'opencode')
+    setBackendMode(selectedProfile?.backend_mode ?? 'runtime_native')
+    setModel(selectedProfile?.provider_binding?.model ?? '')
+    setProviderSelection(providerSelectionFromBinding(selectedProfile))
+    setProviderModeNotice(null)
     setEnabled(selectedProfile?.enabled ?? true)
     setIsDefault(selectedProfile?.is_default ?? profiles.length === 0)
-    setRetrievalToolDomains(readRetrievalToolDomains(cfg))
+    setHostExecution(execution)
   }, [selectedProfile?.id, version.id])
+
+  function changeRuntime(nextRuntimeKey: string) {
+    setRuntimeKey(nextRuntimeKey)
+    setHostExecution(current => current ? { ...current, runtime_key: nextRuntimeKey } : current)
+    const nextAdapter = cliAdapters.find(candidate => candidate.runtime_key === nextRuntimeKey)
+    if (nextAdapter && !nextAdapter.supports_model_provider) {
+      resetToRuntimeNative(`${nextAdapter.display_name} runs on its own account; this Profile was switched back to runtime-native mode.`)
+    }
+  }
+
+  /** Undo a provider binding the new target cannot honour, and say so. */
+  function resetToRuntimeNative(reason: string) {
+    if (backendMode === 'runtime_native') return
+    setProviderModeNotice(reason)
+    setBackendMode('runtime_native')
+    setProviderSelection(null)
+    setModel('')
+  }
+
+  function changeExecutionTarget(next: HostExecutionSelection | null) {
+    setHostExecution(next)
+    if (!next) return
+    // Only the runtime can refuse the binding; the Host kind cannot.
+    changeRuntime(next.runtime_key)
+  }
+
+  function changeBackendMode(nextMode: 'runtime_native' | 'model_provider') {
+    setBackendMode(nextMode)
+    setProviderModeNotice(null)
+    if (nextMode === 'runtime_native') {
+      setProviderSelection(null)
+      setModel('')
+    }
+  }
 
   function changeProviderSelection(next: { provider_id: string; model: string } | null) {
     setProviderSelection(next)
@@ -534,24 +545,31 @@ function ModelTab({
   }
 
   async function save() {
+    const selectedModel = providerSelection?.model || model.trim()
+    if (!hostExecution) {
+      toast.error('Choose an available Host, runtime and installation before saving this Profile')
+      return
+    }
+    if (backendMode === 'model_provider' && (!canUseModelProvider || !providerSelection?.provider_id || !selectedModel)) {
+      toast.error('ModelProvider mode requires a runtime that supports it and an explicit ModelProvider and model')
+      return
+    }
     setSaving(true)
     try {
-      const selectedModel = providerSelection?.model || model.trim()
-      // Neither key is written any more: a CLI Agent names an execution host
-      // and a copy on it, so a server credential profile and a server-installed
-      // version have nothing to select. Removed here as well as omitted so a
-      // profile authored by an older release stops carrying them forward.
-      let nextRuntimeConfig: Record<string, unknown> = { ...runtimeConfig, adapter_type: adapterType }
-      delete nextRuntimeConfig.credential_profile_id
-      delete nextRuntimeConfig.runtime_tool_version
-      nextRuntimeConfig = mergeRetrievalToolDomains(nextRuntimeConfig, retrievalToolDomains)
+      // Retired runtime/model keys are refused by the server (B58). Deleting
+      // them here would have turned an authority violation into a silent save.
       const body = {
         name: name.trim() || 'Default',
-        adapter_type: adapterType,
-        runtime_config_json: nextRuntimeConfig,
-        runtime_policy_json: { ...runtimePolicy, default_adapter_type: adapterType },
-        model_provider_id: supportsProviderSelection ? (providerSelection?.provider_id ?? null) : null,
-        model_name: supportsProviderSelection && providerSelection?.provider_id && selectedModel ? selectedModel : null,
+        runtime_key: runtimeKey,
+        runtime_config_json: runtimeConfig,
+        runtime_policy_json: runtimePolicy,
+        backend_mode: backendMode,
+        execution_host_id: hostExecution.host_id,
+        workspace_location_id: hostExecution.workspace_location_id,
+        workspace_mode: hostExecution.workspace_mode,
+        runtime_installation: hostExecution.installation,
+        model_provider_id: backendMode === 'model_provider' ? providerSelection?.provider_id ?? null : null,
+        model_name: backendMode === 'model_provider' ? selectedModel : null,
         enabled,
         is_default: isDefault,
       }
@@ -562,70 +580,117 @@ function ModelTab({
     } catch (err) { toast.error(errMsg(err)) } finally { setSaving(false) }
   }
 
+  /** Clearing the selection is the whole action; the reset effect above seeds the form. */
   function newProfile() {
     setSelectedProfileId('')
-    setName('New runtime profile')
-    setAdapterType('model_api')
-    setModel('')
-    setProviderSelection(null)
-    setEnabled(true)
-    setIsDefault(profiles.length === 0)
-    setRetrievalToolDomains({ memory: false, project_public_summary: false, source: false })
   }
+
+  const selectedHost = selectedProfile?.execution_host_id
+    ? hosts.find(host => host.id === selectedProfile.execution_host_id)
+    : null
 
   return (
     <Card className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <CardTitle>Runtime profiles</CardTitle>
-        {selectedProfile?.execution_host_id ? (
-          <Badge variant="secondary">{selectedProfile.workspace_mode === 'managed' ? 'Managed workspace' : 'Location'} · owner-only</Badge>
-        ) : (
-          <Badge variant="muted">Server / provider runtime</Badge>
-        )}
+        <CardTitle>Runtime Profiles</CardTitle>
+        <Badge variant={selectedHost?.kind === 'remote' ? 'secondary' : 'muted'}>
+          {selectedHost?.kind === 'server' || !selectedProfile?.execution_host_id
+            ? 'Server Runtime'
+            : selectedHost?.name ?? 'Execution Host'}
+          {selectedHost?.kind === 'remote' ? ' · owner-managed' : ''}
+        </Badge>
         <Button size="sm" variant="outline" onClick={newProfile}>New profile</Button>
       </div>
-      {selectedProfile?.execution_host_id && (
+      {selectedProfile?.execution_host_id && selectedHost?.kind === 'remote' && (
         <p className="text-xs text-muted-foreground rounded-md border border-border bg-muted/20 px-3 py-2">
           Runs in {selectedProfile.workspace_mode === 'managed' ? 'a managed workspace' : <>Location <span className="font-mono">{selectedProfile.workspace_location_id}</span></>} on host{' '}
-          <span className="font-mono">{hosts.find(host => host.id === selectedProfile.execution_host_id)?.name ?? selectedProfile.execution_host_id}</span> using installation{' '}
+          <span className="font-mono">{selectedHost.name}</span> using installation{' '}
           <span className="font-mono">{selectedProfile.runtime_installation}</span>. Only the host owner can trigger this specialist from a Room.
+        </p>
+      )}
+      {selectedHost?.kind === 'server' && (
+        <p className="text-xs text-muted-foreground rounded-md border border-border bg-muted/20 px-3 py-2">
+          Server Runtime is provisioned and health-checked by Rainver. Its native account is instance-wide and shared by people authorized to execute Agents there.
         </p>
       )}
       {profiles.length > 0 && (
         <div className="space-y-1.5">
           <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Profile</label>
-          <select
+          <Select
+            ariaLabel="Profile"
             value={selectedProfile?.id ?? ''}
-            onChange={e => setSelectedProfileId(e.target.value)}
-            className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
-          >
-            {profiles.map(profile => (
-              <option key={profile.id} value={profile.id}>
-                {profile.name}{profile.is_default ? ' · default' : ''}{profile.enabled ? '' : ' · disabled'} · {profile.adapter_type}
-              </option>
-            ))}
-          </select>
+            onChange={setSelectedProfileId}
+            options={profiles.map(profile => ({
+              value: profile.id,
+              label: `${profile.name}${profile.is_default ? ' · default' : ''}${profile.enabled ? '' : ' · disabled'} · ${profile.runtime_key}`,
+            }))}
+          />
         </div>
       )}
-      <div className="grid gap-3 md:grid-cols-2">
-        <div className="space-y-1.5">
-          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Name</label>
-          <Input value={name} onChange={e => setName(e.target.value)} placeholder="API default" />
-        </div>
-        <div className="space-y-1.5">
-          <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Runtime</label>
-          <select
-            aria-label="Runtime"
-            value={adapterType}
-            onChange={e => setAdapterType(e.target.value)}
-            className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
-          >
-            {runtimeOptions.map(option => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-        </div>
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Name</label>
+        <Input value={name} onChange={e => setName(e.target.value)} placeholder="Default" />
       </div>
+      <div className="space-y-2">
+        <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Execution target</p>
+        <HostExecutionTargetPicker
+          // Remounted per Profile so a parent-driven clear is unambiguous: the
+          // picker's own sync effect ignores a null value (that is what it
+          // emits for an incomplete selection of its own), so without a fresh
+          // mount it would keep showing the previous Profile's Host.
+          key={selectedProfileId || 'new'}
+          projectId={projectId}
+          backendMode={backendMode}
+          value={hostExecution}
+          onChange={changeExecutionTarget}
+          onRuntimeChange={changeRuntime}
+          disabled={saving}
+        />
+      </div>
+      {catalogError && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs">
+          <span>The runtime catalog could not be loaded, so backend-mode support is unknown: {catalogError}</span>
+          <Button size="sm" variant="outline" onClick={loadCatalog}>Retry catalog</Button>
+        </div>
+      )}
+      {providerModeNotice && (
+        <p role="status" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">{providerModeNotice}</p>
+      )}
+      {/* Kept on screen whenever the Profile still claims provider mode, even
+          when the runtime or Host cannot support it — otherwise the only
+          control that can undo that claim disappears with it. */}
+      {(supportsModelProvider || backendMode === 'model_provider') && (
+        <label className="block space-y-1.5">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Backend mode</span>
+          <Select
+            ariaLabel="Backend mode"
+            value={backendMode}
+            onChange={value => changeBackendMode(value as 'runtime_native' | 'model_provider')}
+            options={[
+              { value: 'runtime_native', label: 'Runtime native account' },
+              { value: 'model_provider', label: 'Rainver ModelProvider proxy', disabled: !catalogLoading && !canUseModelProvider },
+            ]}
+          />
+          <p className="text-xs text-muted-foreground">
+            Native mode uses the selected runtime copy&apos;s own login. Provider mode sends requests through Rainver&apos;s short-lived proxy lease; the upstream key never reaches the runtime process.
+          </p>
+          {backendMode === 'model_provider' && !canUseModelProvider && !catalogLoading && (
+            <p role="alert" className="text-xs text-destructive">
+              {catalogError
+                ? 'Backend-mode support cannot be confirmed while the runtime catalog is unavailable.'
+                : `${adapter?.display_name ?? runtimeKey} does not support a Rainver ModelProvider binding.`}
+              {' '}Switch this Profile back to the runtime native account to save it.
+            </p>
+          )}
+        </label>
+      )}
+      {selectedProfile && (
+        <p className="text-xs text-muted-foreground">
+          Saved provider binding: {selectedProfile.provider_binding?.state === 'bound'
+            ? `${selectedProfile.provider_binding.provider_id ?? 'provider'} · ${selectedProfile.provider_binding.model ?? 'provider default'}`
+            : 'none — this Profile uses the runtime\u2019s own account.'}
+        </p>
+      )}
       {supportsProviderSelection && (
         <ProviderSelector
           value={providerSelection}
@@ -636,7 +701,7 @@ function ModelTab({
           emptyLabel={adapter ? `${adapter.display_name} default` : 'Agent/space default provider'}
         />
       )}
-      <div className="space-y-1.5">
+      {backendMode === 'model_provider' && <div className="space-y-1.5">
         <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Model</label>
         <Input
           value={model}
@@ -645,12 +710,7 @@ function ModelTab({
           className="font-mono"
           disabled={supportsProviderSelection && !providerSelection?.provider_id}
         />
-      </div>
-      <RetrievalToolDomainControls
-        value={retrievalToolDomains}
-        onChange={setRetrievalToolDomains}
-        compact
-      />
+      </div>}
       <div>
         <button type="button" onClick={() => setShowAdvanced(s => !s)} className="text-xs text-muted-foreground underline">
           {showAdvanced ? 'Hide' : 'Show'} advanced (raw JSON)
@@ -673,6 +733,25 @@ function ModelTab({
       <Button size="sm" onClick={save} disabled={saving}>{saving ? <Loader2 className="size-4 animate-spin" /> : 'Save runtime profile'}</Button>
     </Card>
   )
+}
+
+/** A Profile's provider binding is the authority for what it is bound to. */
+function providerSelectionFromBinding(profile: AgentRuntimeProfileOut | null): { provider_id: string; model: string } | null {
+  const binding = profile?.provider_binding
+  if (!binding || binding.state !== 'bound' || !binding.provider_id) return null
+  return { provider_id: binding.provider_id, model: binding.model ?? '' }
+}
+
+function hostExecutionSelection(profile: AgentRuntimeProfileOut | null): HostExecutionSelection | null {
+  if (!profile?.execution_host_id || !profile.workspace_mode || !profile.runtime_installation) return null
+  if (profile.workspace_mode === 'location' && !profile.workspace_location_id) return null
+  return {
+    host_id: profile.execution_host_id,
+    workspace_location_id: profile.workspace_mode === 'managed' ? null : profile.workspace_location_id,
+    workspace_mode: profile.workspace_mode,
+    runtime_key: profile.runtime_key,
+    installation: profile.runtime_installation,
+  }
 }
 
 // ── Versions ────────────────────────────────────────────────────────────────────
@@ -720,7 +799,6 @@ function VersionsTab({ agentId, versions, currentId, onSaved }: {
             <pre className="mt-3 text-xs bg-muted rounded-md p-3 overflow-auto max-h-80">{JSON.stringify({
               system_prompt: v.system_prompt,
               prompt_provenance_json: v.prompt_provenance_json,
-              model_config_json: v.model_config_json,
               context_policy_json: v.context_policy_json,
               memory_policy_json: v.memory_policy_json,
               output_policy_json: v.output_policy_json,

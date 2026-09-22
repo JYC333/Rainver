@@ -116,7 +116,7 @@ Key distinctions:
 | NormalizedSkill | Internal intermediate representation produced from imported skill content. |
 | CapabilityDefinition | Rainver canonical ability object and source of truth. |
 | CapabilityPack | Grouping of related capabilities, artifact types, docs/tests/examples. |
-| Runtime Skill | Generated Claude/Codex/model_api adapter content; not source of truth. |
+| Runtime Skill | Generated Claude/Codex/OpenCode ACP content; not source of truth. |
 | Product Plugin | Optional product feature package; separate from capabilities. |
 
 Open Skill import must not execute scripts, install dependencies, load
@@ -132,13 +132,16 @@ Rainver capability candidates.
 
 ## Execution
 
-Capability execution is not active today. `adapter_type="capability"` remains a
-planned runtime adapter type and is disabled by default. Current server routes expose
+Capability execution is not active today. The registry entry is
+`runtime_key="capability"` (`runtimeAdapters/specs.ts`), still
+`implementation_status: "planned"` and not enabled by default; it is not a
+selectable ACP Agent runtime. Current server routes expose
 capability manifest metadata for catalog and UI use.
 
-Runtime-specific Claude Code, Codex, and `model_api` skill files are generated
-render targets. Rainver capability definitions and profiles remain the
-source of truth.
+Claude Code and Codex receive generated skill files; OpenCode receives a
+generated prompt block through ACP Runtime Context Delivery. These are render
+targets, not authorities. Rainver capability definitions and approved skill
+snapshots remain the source of truth.
 
 ## Related code
 

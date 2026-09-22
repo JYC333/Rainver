@@ -945,7 +945,7 @@ describe("AutomationService policy preflight", () => {
 
     await expect(service.scanAndFire()).resolves.toBe(0);
     expect(fakePool.advanceScheduleCalls).toBe(1);
-    expect(fakePool.terminalStatuses).toEqual(["failed"]);
+    expect(fakePool.nativeTerminalStatuses).toEqual(["failed"]);
     expect(repo.advanceScheduleCalls).toBe(0);
   });
 
@@ -971,7 +971,7 @@ describe("AutomationService policy preflight", () => {
     const fakePool = new AgentAutomationFireFakePool();
     dbPoolMock.current = fakePool;
     const repo = new FakeAutomationRepository(
-      sampleAutomation(),
+      sampleAutomation({ project_folder_id: "project-folder-1" }),
       "owner",
       [],
       { status: "active", current_version_id: "agent-version-1", version_id: "agent-version-1" },
@@ -1008,7 +1008,10 @@ describe("AutomationService policy preflight", () => {
     const fakePool = new AgentAutomationFireFakePool();
     dbPoolMock.current = fakePool;
     const withoutGrant = () => new FakeAutomationRepository(
-      sampleAutomation({ config_json: { target_type: "agent_run", prompt: "Configured" } }),
+      sampleAutomation({
+        project_folder_id: "project-folder-1",
+        config_json: { target_type: "agent_run", prompt: "Configured" },
+      }),
       "owner",
       [],
       { status: "active", current_version_id: "agent-version-1", version_id: "agent-version-1" },
@@ -1041,6 +1044,7 @@ describe("AutomationService policy preflight", () => {
     dbPoolMock.current = fakePool;
     const automation = sampleAutomation({
       trigger_type: "schedule",
+      project_folder_id: "project-folder-1",
       config_json: {
         target_type: "agent_run",
         prompt: "Analyze the newly collected papers.",
@@ -1063,6 +1067,30 @@ describe("AutomationService policy preflight", () => {
     });
 
     expect(fakePool.runPrompts).toEqual(["Analyze the newly collected papers."]);
+  });
+
+  it("does not fall back to AgentVersion when every Runtime Profile is disabled", async () => {
+    vi.mocked(enforce).mockResolvedValue({ status: "allow" });
+    const fakePool = new AgentAutomationFireFakePool("disabled_only");
+    dbPoolMock.current = fakePool;
+    const repo = new FakeAutomationRepository(
+      sampleAutomation({ project_folder_id: "project-folder-1" }),
+      "owner",
+      [],
+      { status: "active", current_version_id: "agent-version-1", version_id: "agent-version-1" },
+      true,
+    );
+
+    await expect(new AutomationService(config, repo).fire({
+      spaceId: "space-1",
+      automationId: "auto-1",
+      actorUserId: "owner-1",
+      prompt: "Run now",
+    })).rejects.toMatchObject({
+      statusCode: 422,
+      message: expect.stringContaining("Unknown or non-ACP runtime '(missing)'")
+    });
+    expect(fakePool.runPrompts).toEqual([]);
   });
 
 });
@@ -1213,6 +1241,10 @@ class FakeAutomationRepository {
     return "automation-run-1";
   }
 
+  async completeNativeAutomationRun(): Promise<void> {
+    return;
+  }
+
   async listDue(): Promise<AutomationRow[]> {
     return this.dueAutomations;
   }
@@ -1240,7 +1272,7 @@ class FakeAutomationRepository {
 
 class MaintenanceAutomationFakePool implements Queryable {
   advanceScheduleCalls = 0;
-  terminalStatuses: string[] = [];
+  nativeTerminalStatuses: string[] = [];
   private schedulerTask: Record<string, unknown> | null = null;
 
   async connect(): Promise<Queryable & { release(): void }> {
@@ -1272,23 +1304,6 @@ class MaintenanceAutomationFakePool implements Queryable {
     if (sql.includes("SELECT id FROM automations") && sql.includes("FOR UPDATE")) {
       return { rowCount: 1, rows: [{ id: "auto-1" }] as Row[] };
     }
-    if (sql.includes("INSERT INTO runs")) {
-      return {
-        rowCount: 1,
-        rows: [
-          {
-            id: "run-1",
-            space_id: "space-1",
-            agent_id: "agent-1",
-            agent_version_id: "agent-version-1",
-            status: "running",
-          },
-        ] as Row[],
-      };
-    }
-    if (sql.includes("INSERT INTO run_attempts")) {
-      return { rowCount: 1, rows: [] };
-    }
     if (sql.includes("INSERT INTO automation_runs")) {
       return { rowCount: 1, rows: [] };
     }
@@ -1304,12 +1319,9 @@ class MaintenanceAutomationFakePool implements Queryable {
     if (sql.includes("WITH linked_tasks AS") && sql.includes("UPDATE tasks t")) {
       return { rowCount: 0, rows: [] };
     }
-    if (sql.includes("UPDATE runs")) {
-      this.terminalStatuses.push(String(params[2]));
-      return {
-        rowCount: 1,
-        rows: [{ id: "run-1", status: params[2] }] as Row[],
-      };
+    if (sql.includes("UPDATE automation_runs")) {
+      this.nativeTerminalStatuses.push(String(params[1]));
+      return { rowCount: 1, rows: [] };
     }
     if (sql.includes("FROM scheduler_tasks")) {
       return this.schedulerTask
@@ -1344,6 +1356,8 @@ class AgentAutomationFireFakePool implements Queryable {
   runInstructions: Array<unknown> = [];
   automationRunTriggerContexts: Array<unknown> = [];
 
+  constructor(private readonly profileMode: "enabled" | "disabled_only" = "enabled") {}
+
   async connect(): Promise<Queryable & { release(): void }> {
     return {
       query: this.query.bind(this),
@@ -1361,6 +1375,9 @@ class AgentAutomationFireFakePool implements Queryable {
     if (trimmed === "BEGIN" || trimmed === "COMMIT" || trimmed === "ROLLBACK") {
       return { rowCount: 0, rows: [] };
     }
+    if (sql.includes("FROM project_folders")) {
+      return { rowCount: 1, rows: [{ id: "project-folder-1" }] as Row[] };
+    }
     if (sql.includes("FROM agents")) {
       return {
         rowCount: 1,
@@ -1370,22 +1387,12 @@ class AgentAutomationFireFakePool implements Queryable {
             status: "active",
             current_version_id: "agent-version-1",
             version_id: "agent-version-1",
-            runtime_config_json: { adapter_type: "model_api" },
-            runtime_policy_json: { risk_level: "medium" },
-            model_provider_id: "provider-1",
-          },
-        ] as Row[],
-      };
-    }
-    if (sql.includes("SELECT runtime_config_json") && sql.includes("FROM agent_versions")) {
-      return {
-        rowCount: 1,
-        rows: [
-          {
-            runtime_config_json: { adapter_type: "model_api" },
-            runtime_policy_json: { risk_level: "medium" },
-            model_provider_id: "provider-1",
-            model_name: "gpt-4o-mini",
+            version_risk_level: "medium",
+            max_run_time_seconds: 300,
+            runtime_profiles_exist: true,
+            runtime_profile_id: this.profileMode === "enabled" ? "runtime-profile-1" : null,
+            profile_runtime_key: this.profileMode === "enabled" ? "opencode" : null,
+            profile_model_provider_id: this.profileMode === "enabled" ? "provider-1" : null,
           },
         ] as Row[],
       };
@@ -1405,7 +1412,7 @@ class AgentAutomationFireFakePool implements Queryable {
             space_id: "space-1",
             agent_id: "agent-1",
             name: "Default",
-            adapter_type: "model_api",
+            runtime_key: "opencode",
             model_provider_id: "provider-1",
             model_name: "gpt-4o-mini",
             runtime_config_json: {},

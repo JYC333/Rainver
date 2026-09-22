@@ -14,7 +14,7 @@ export interface ManagedDeliveryRenderInput {
   control: ExecutionControlSnapshot;
   invocationId: string;
   attempt: number;
-  adapterType: string;
+  runtimeKey: string;
   providerId: string | null;
   model: string | null;
   mode?: "full" | "delta";
@@ -55,7 +55,7 @@ export async function renderManagedDelivery(input: ManagedDeliveryRenderInput): 
     throw new Error("Non-provider Runtime Context Delivery cannot select a model provider");
   }
   if (control.egress.destination_type === "local_cli"
-    && control.egress.destination_id !== input.adapterType) {
+    && control.egress.destination_id !== input.runtimeKey) {
     throw new Error("Runtime Context Delivery CLI adapter is not authorized by execution controls");
   }
   if (input.model !== null && input.model !== envelope.window_plan.model) {
@@ -72,7 +72,7 @@ export async function renderManagedDelivery(input: ManagedDeliveryRenderInput): 
     id: deliveryId,
     invocation_id: input.invocationId,
     delivery_kind: "agent_task",
-    adapter_type: input.adapterType,
+    runtime_key: input.runtimeKey,
     provider_id: input.providerId,
     model: envelope.window_plan.model,
     renderer_version: MANAGED_RENDERER_VERSION,

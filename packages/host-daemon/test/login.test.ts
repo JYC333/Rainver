@@ -24,7 +24,7 @@ const hasScript = platform() !== "win32" && spawnSync("script", ["--version"], {
 
 describe("login sessions", () => {
   it("logs the machine's own copy in as the machine, and a managed copy inside its own HOME", async () => {
-    const own = resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "own", login: LOGIN });
+    const own = resolveLoginCommand({ session_id: "s", runtime_key: "acp_goose", installation: "own", login: LOGIN });
     expect(own.command).toEqual(["goose", "login"]);
     expect(own.env.HOME).toBe(process.env.HOME);
 
@@ -33,10 +33,10 @@ describe("login sessions", () => {
     await mkdir(dir, { recursive: true });
     await mkdir(home, { recursive: true });
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "acp_goose", version: "1.2.3", command: "/opt/goose", args: [], env: { GOOSE_X: "1" }, home,
+      runtime_key: "acp_goose", version: "1.2.3", command: "/opt/goose", args: [], env: { GOOSE_X: "1" }, home,
       login_command: ["/opt/goose", "login"], login: LOGIN, installed_at: "",
     }));
-    const managed = resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "managed:1.2.3", login: null });
+    const managed = resolveLoginCommand({ session_id: "s", runtime_key: "acp_goose", installation: "managed:1.2.3", login: null });
     expect(managed.command).toEqual(["/opt/goose", "login"]);
     expect(managed.env).toMatchObject({ HOME: home, GOOSE_X: "1" });
     expect(managed.login).toEqual(LOGIN);
@@ -44,12 +44,12 @@ describe("login sessions", () => {
     // No declared method must fail closed: a login endpoint is never a remote
     // shell on the host, even inside a managed copy's HOME.
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "acp_goose", version: "1.2.3", command: "/opt/goose", args: [], env: {}, home,
+      runtime_key: "acp_goose", version: "1.2.3", command: "/opt/goose", args: [], env: {}, home,
       login_command: null, login: null, installed_at: "",
     }));
-    expect(() => resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "managed:1.2.3", login: null })).toThrow(/does not declare/);
-    expect(() => resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "own", login: null })).toThrow(/does not declare/);
-    expect(() => resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "managed:9", login: null })).toThrow(/not have/);
+    expect(() => resolveLoginCommand({ session_id: "s", runtime_key: "acp_goose", installation: "managed:1.2.3", login: null })).toThrow(/does not declare/);
+    expect(() => resolveLoginCommand({ session_id: "s", runtime_key: "acp_goose", installation: "own", login: null })).toThrow(/does not declare/);
+    expect(() => resolveLoginCommand({ session_id: "s", runtime_key: "acp_goose", installation: "managed:9", login: null })).toThrow(/not have/);
   });
 
   it("drops leftover vendor credential variables so login cannot bill an API account", () => {
@@ -60,7 +60,7 @@ describe("login sessions", () => {
     try {
       const own = resolveLoginCommand({
         session_id: "s",
-        adapter_type: "claude_code",
+        runtime_key: "claude_code",
         installation: "own",
         login: { command: ["claude", "auth", "login"], home_subdir: ".claude", credential_file: ".credentials.json" },
       });
@@ -81,25 +81,25 @@ describe("login sessions", () => {
     await mkdir(dir, { recursive: true });
     await mkdir(home, { recursive: true });
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "registry_agent", version: "2.0.0", command: "/opt/agent", args: ["acp"], env: { BASE: "yes" }, home,
+      runtime_key: "registry_agent", version: "2.0.0", command: "/opt/agent", args: ["acp"], env: { BASE: "yes" }, home,
       login_command: null, login: null, installed_at: "",
     }));
     const resolved = resolveLoginCommand({
-      session_id: "terminal", adapter_type: "registry_agent", installation: "managed:2.0.0", login: null,
+      session_id: "terminal", runtime_key: "registry_agent", installation: "managed:2.0.0", login: null,
       auth_method: { id: "device", name: "Device", description: null, type: "terminal", args: ["login", "--device"], env: { AUTH: "1" } },
     });
     expect(resolved.command).toEqual(["/opt/agent", "acp", "login", "--device"]);
     expect(resolved.env).toMatchObject({ BASE: "yes", AUTH: "1", HOME: home });
 
     const own = resolveLoginCommand({
-      session_id: "own-terminal", adapter_type: "registry_agent", installation: "own", login: null, argv: ["git", "status"],
+      session_id: "own-terminal", runtime_key: "registry_agent", installation: "own", login: null, argv: ["git", "status"],
       auth_method: { id: "device", name: "Device", description: null, type: "terminal", args: ["login"], env: { AUTH: "own" } },
     });
     expect(own.command).toEqual(["git", "status", "login"]);
     expect(own.env).toMatchObject({ AUTH: "own", HOME: process.env.HOME });
 
     const fixed = resolveLoginCommand({
-      session_id: "fixed", adapter_type: "registry_agent", installation: "managed:2.0.0", login: null,
+      session_id: "fixed", runtime_key: "registry_agent", installation: "managed:2.0.0", login: null,
       // This action carries no remotely programmable argv or environment;
       // the daemon reconstructs the fixed command from its local manifest.
       login_action: "cli",
@@ -118,12 +118,12 @@ describe("login sessions", () => {
     const initialized = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [{ id: "browser", name: "Browser login" }] } });
     const authenticated = JSON.stringify({ jsonrpc: "2.0", id: 2, result: {} });
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "registry_agent", version: "3.0.0", command: "/bin/sh",
+      runtime_key: "registry_agent", version: "3.0.0", command: "/bin/sh",
       args: ["-c", `printf '%s\\n' '${initialized}'; sleep 0.1; printf '%s\\n' '${authenticated}'; sleep 10`], env: {}, home,
       login_command: null, login: null, installed_at: "",
     }));
     openLoginSession({
-      session_id: "agent", adapter_type: "registry_agent", installation: "managed:3.0.0", login: null,
+      session_id: "agent", runtime_key: "registry_agent", installation: "managed:3.0.0", login: null,
       auth_method: { id: "browser", name: "Browser login", description: null, type: "agent", args: [], env: {} },
     }, frame => frames.push(frame), line => logs.push(line));
     await waitFor(() => frames.some(frame => frame.type === "login_exit"));
@@ -142,7 +142,7 @@ describe("login sessions", () => {
     const saved = process.env.HOME;
     process.env.HOME = home;
     try {
-      const session = openLoginSession({ session_id: "s1", adapter_type: "fake", installation: "own", login }, (frame) => frames.push(frame), () => {});
+      const session = openLoginSession({ session_id: "s1", runtime_key: "fake", installation: "own", login }, (frame) => frames.push(frame), () => {});
       await waitFor(() => frames.some((frame) => frame.type === "login_output" && String(frame.data).includes("code?")));
       session.write("abc\n");
       await waitFor(() => frames.some((frame) => frame.type === "login_exit"));
@@ -171,7 +171,7 @@ describe("logout", () => {
   };
 
   it("runs the vendor's logout for the machine's own copy and, inside its tree, for a managed copy", async () => {
-    const own = resolveLoginCommand({ session_id: "s", adapter_type: "opencode", installation: "own", login: SPEC, login_action: "logout" });
+    const own = resolveLoginCommand({ session_id: "s", runtime_key: "opencode", installation: "own", login: SPEC, login_action: "logout" });
     expect(own.command).toEqual(["opencode", "auth", "logout"]);
     expect(own.env.HOME).toBe(process.env.HOME);
 
@@ -179,10 +179,10 @@ describe("logout", () => {
     const home = managedToolHome("opencode");
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "opencode", version: "1.0.0", command: join(dir, "opencode"), args: ["acp"], env: {}, home,
+      runtime_key: "opencode", version: "1.0.0", command: join(dir, "opencode"), args: ["acp"], env: {}, home,
       login_command: [join(dir, "opencode"), "auth", "login"], login: SPEC, installed_at: "",
     }));
-    const managed = resolveLoginCommand({ session_id: "s", adapter_type: "opencode", installation: "managed:1.0.0", login: null, login_action: "logout" });
+    const managed = resolveLoginCommand({ session_id: "s", runtime_key: "opencode", installation: "managed:1.0.0", login: null, login_action: "logout" });
     expect(managed.command).toEqual([join(dir, "opencode"), "auth", "logout"]);
     expect(managed.env.HOME).toBe(home);
   });
@@ -192,16 +192,16 @@ describe("logout", () => {
     const home = managedToolHome("acp_cursor");
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "manifest.json"), JSON.stringify({
-      adapter_type: "acp_cursor", version: "latest", command: join(dir, "cursor-agent"), args: ["acp"], entry_args: [], env: {}, home,
+      runtime_key: "acp_cursor", version: "latest", command: join(dir, "cursor-agent"), args: ["acp"], entry_args: [], env: {}, home,
       login_command: null, login: null, installed_at: "",
     }));
-    const registry = resolveLoginCommand({ session_id: "s", adapter_type: "acp_cursor", installation: "managed:latest", login: null, login_action: "logout" });
+    const registry = resolveLoginCommand({ session_id: "s", runtime_key: "acp_cursor", installation: "managed:latest", login: null, login_action: "logout" });
     expect(registry.command).toEqual([join(dir, "cursor-agent"), "logout"]);
 
     // A spec without a logout command fails closed rather than guessing one.
     const noLogout = { command: ["goose", "login"], home_subdir: ".goose", credential_file: "auth.json" };
-    expect(() => resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "own", login: noLogout, login_action: "logout" })).toThrow(/logout command/);
-    expect(() => resolveLoginCommand({ session_id: "s", adapter_type: "acp_goose", installation: "managed:9", login: null, login_action: "logout" })).toThrow(/not have/);
+    expect(() => resolveLoginCommand({ session_id: "s", runtime_key: "acp_goose", installation: "own", login: noLogout, login_action: "logout" })).toThrow(/logout command/);
+    expect(() => resolveLoginCommand({ session_id: "s", runtime_key: "acp_goose", installation: "managed:9", login: null, login_action: "logout" })).toThrow(/not have/);
   });
 });
 

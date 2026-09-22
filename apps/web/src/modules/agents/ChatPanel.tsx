@@ -21,6 +21,7 @@ import { decidableByViewer } from '../conversation/ConversationSurface'
 import { errMsg } from '../../lib/utils'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
+import { Select } from '../../components/ui/select'
 import { ConfirmDialog } from '../../components/ui/dialog'
 import type { ConversationInputPart } from '@rainver/protocol'
 import { ConversationGitContext } from '../conversation/ConversationGitContext'
@@ -532,32 +533,39 @@ export default function ChatPanel({
         onConfirm={() => void resetContext()}
       />
       <div className="mb-2 flex items-center justify-between gap-3">
-        <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+        {/* Not a <label>: the shared Select renders a <button>, which is not a
+            labelable element, so the wrapper gave the control no accessible
+            name. `ariaLabel` is what names it. */}
+        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
           <span className="shrink-0">Backend</span>
-          <select
-            aria-label="Conversation backend"
+          <Select
+            ariaLabel="Conversation backend"
+            size="sm"
+            className="min-w-0 max-w-[22rem]"
             value={selectedBackendKey}
             disabled={loadingBackends || sending || backendChoices.length === 0}
-            onChange={event => {
-              const selected = backendChoices.find(choice => choice.key === event.target.value)
+            onChange={nextKey => {
+              const selected = backendChoices.find(choice => choice.key === nextKey)
               if (selected) {
                 setBackend(selected.backend)
                 const option = backendOptions.find(candidate => candidate.runtime_profile_id === selected.backend.runtime_profile_id)
                 setSessionConfig(mergeSessionConfig(option?.session_config_options ?? [], []))
               }
             }}
-            className="h-8 min-w-0 max-w-[22rem] rounded-md border border-border bg-input px-2 text-xs text-foreground"
-          >
-            {loadingBackends && <option value="">Loading backends…</option>}
-            {!loadingBackends && backendChoices.length === 0 && <option value="">No eligible backend</option>}
-            {!loadingBackends && backendChoices.length > 0 && !backend && (
-              <option value="" disabled>Select backend…</option>
-            )}
-            {backendChoices.map(choice => (
-                <option key={choice.key} value={choice.key} disabled={!choice.usable}>{choice.label}{choice.usable ? '' : ' · unavailable'}</option>
-              ))}
-          </select>
-        </label>
+            options={[
+              ...(loadingBackends ? [{ value: '', label: 'Loading backends…' }] : []),
+              ...(!loadingBackends && backendChoices.length === 0 ? [{ value: '', label: 'No eligible backend' }] : []),
+              ...(!loadingBackends && backendChoices.length > 0 && !backend
+                ? [{ value: '', label: 'Select backend…', disabled: true }]
+                : []),
+              ...backendChoices.map(choice => ({
+                value: choice.key,
+                label: `${choice.label}${choice.usable ? '' : ' · unavailable'}`,
+                disabled: !choice.usable,
+              })),
+            ]}
+          />
+        </div>
         {sessionId && (
           <Link to={`/sessions?open=${sessionId}`} className="text-[12px] text-muted-foreground hover:text-foreground underline-offset-4 hover:underline">
             Chat history
@@ -669,11 +677,11 @@ function flattenBackendChoices(options: ConversationBackendOption[]): BackendCho
   return options.map<BackendChoice>(option => {
     const backend: ConversationBackendBinding = {
       runtime_profile_id: option.runtime_profile_id,
-      adapter_type: option.adapter_type,
+      runtime_key: option.runtime_key,
     }
     return {
       key: backendKey(backend),
-      label: `${option.name} · ${option.model_name ?? option.adapter_type}`,
+      label: `${option.name} · ${option.model_name ?? option.runtime_key}`,
       backend,
       usable: option.usable !== false,
       reason: option.reason,

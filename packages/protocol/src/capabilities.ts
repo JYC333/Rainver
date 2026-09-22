@@ -7,6 +7,7 @@
 
 import { z } from "zod";
 import { IdSchema } from "./common.js";
+import { RuntimeKeySchema } from "./runtimeAuthority.js";
 
 export const JsonObjectSchema = z.record(z.unknown());
 
@@ -41,7 +42,7 @@ export const CapabilityRuntimeBindingSchema = z
   .object({
     id: IdSchema,
     capability_id: z.string().min(1),
-    runtime_adapter_type: z.string().min(1),
+    runtime_key: RuntimeKeySchema,
     render_mode: RuntimeRenderModeSchema,
     binding_json: JsonObjectSchema,
     enabled: z.boolean(),

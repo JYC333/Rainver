@@ -303,7 +303,7 @@ export function ConversationExecutionPreflight({
       const runtime: ConversationRuntimeChoice = {
         agent_id: selectedProfile.agent_id,
         runtime_profile_id: selectedProfile.runtime_profile_id,
-        adapter_type: selectedProfile.adapter_type,
+        runtime_key: selectedProfile.runtime_key,
         runtime_installation: selectedProfile.runtime_installation!,
       }
       const additional_runtimes = participantChoices
@@ -311,7 +311,7 @@ export function ConversationExecutionPreflight({
         .map(choice => ({
           agent_id: choice.selected!.agent_id,
           runtime_profile_id: choice.selected!.runtime_profile_id,
-          adapter_type: choice.selected!.adapter_type,
+          runtime_key: choice.selected!.runtime_key,
           runtime_installation: choice.selected!.runtime_installation!,
         }))
       await sessionsApi.initializeExecution(sessionId, additional_runtimes.length > 0
@@ -472,7 +472,7 @@ export function ConversationExecutionPreflight({
               onChange={value => member.role === 'manager'
                 ? setRuntimeProfileId(value)
                 : setParticipantRuntimeProfileIds(current => ({ ...current, [member.agent_id]: value }))}
-              options={options.map(profile => ({ value: runtimeCandidateKey(profile), label: `${profile.agent_name} · ${profile.adapter_type} · ${profile.runtime_installation}${profile.runtime_profile_id ? '' : ' · detected on Host'}` }))}
+              options={options.map(profile => ({ value: runtimeCandidateKey(profile), label: `${profile.agent_name} · ${profile.runtime_key} · ${profile.runtime_installation}${profile.runtime_profile_id ? '' : ' · detected on Host'}` }))}
               placeholder="Choose a CLI installation"
               disabled={!hostId || !selectedPrimary}
             />
@@ -536,7 +536,7 @@ function InitializedSummary({ summary, profiles, participants }: {
           label={participants.find(participant => participant.agent_id === pinned.agent_id)?.agent_name
             ?? profiles.find(profile => profile.runtime_profile_id === pinned.runtime_profile_id)?.agent_name
             ?? 'Unknown Agent'}
-          value={`${pinned.adapter_type} · ${pinned.runtime_installation}`}
+          value={`${pinned.runtime_key} · ${pinned.runtime_installation}`}
         />
       )) : <SummaryRow label="Agent / CLI" value="Unavailable" />}
     </div>
@@ -614,7 +614,7 @@ function runtimeCandidateKey(profile: ConversationExecutionRuntimeProfile): stri
     profile.execution_host_id ?? '',
     profile.workspace_mode ?? '',
     profile.workspace_location_id ?? '',
-    profile.adapter_type,
+    profile.runtime_key,
     profile.runtime_installation ?? '',
   ])
 }

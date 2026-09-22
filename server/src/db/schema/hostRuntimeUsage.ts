@@ -17,14 +17,14 @@ import { hosts } from "./hosts.js";
  */
 export const hostRuntimeUsage = pgTable("host_runtime_usage", {
 	hostId: varchar("host_id", { length: 36 }).notNull(),
-	adapterType: varchar("adapter_type", { length: 64 }).notNull(),
+	runtimeKey: varchar("runtime_key", { length: 64 }).notNull(),
 	/** `own` or `managed:<version>` — the copy, not the runtime (B68). */
 	installation: varchar({ length: 64 }).notNull(),
 	/** The wire's `HostUsageQuota`: percentages, reset text, and a reason when unavailable. Never a credential. */
 	quotaJson: jsonb("quota_json").notNull(),
 	checkedAt: timestamp("checked_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
-	primaryKey({ columns: [table.hostId, table.adapterType, table.installation], name: "host_runtime_usage_pkey" }),
+	primaryKey({ columns: [table.hostId, table.runtimeKey, table.installation], name: "host_runtime_usage_pkey" }),
 	foreignKey({
 			columns: [table.hostId],
 			foreignColumns: [hosts.id],

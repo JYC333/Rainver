@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { CliAgentToolTransport } from "../src/modules/runs/cliToolTransport.js";
-import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 import type { RetrievalToolService } from "../src/modules/retrieval/tool/service.js";
 
-function run(overrides: Partial<RunRecord> = {}): RunRecord {
+function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   return {
     id: "run-cli-1",
     space_id: "space-1",
     agent_id: "agent-cli",
     agent_version_id: "version-cli",
+    execution_kind: "agent",
     runtime_profile_id: "profile-cli",
     run_type: "agent",
     status: "running",
@@ -24,7 +25,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     delegation_id: null,
     project_id: null,
     scheduled_at: null,
-    adapter_type: "codex_cli",
+    runtime_key: "codex_cli",
     capability_id: null,
     capabilities_json: [],
     model_provider_id: "provider-1",
@@ -43,7 +44,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     updated_at: "2026-08-23T00:00:00.000Z",
     visibility: "space_shared",
     ...overrides,
-  } as RunRecord;
+  } as AgentRunRecord;
 }
 
 describe("CliAgentToolTransport", () => {
@@ -98,11 +99,11 @@ describe("CliAgentToolTransport", () => {
     };
   }
 
-  it("dispatches a granted call to the same domain handler the managed loop reaches", async () => {
+  it("dispatches a granted ACP tool call to its registered domain handler", async () => {
     const spawnCalls: unknown[] = [];
     const cliRun = run({
       permission_snapshot_json: { tool_grants: [{ action_id: "agent.delegate" }] },
-    } as Partial<RunRecord>);
+    } as Partial<AgentRunRecord>);
     const transport = new CliAgentToolTransport(config, delegationDeps(spawnCalls));
 
     const result = await transport.call(cliRun, {
@@ -123,7 +124,7 @@ describe("CliAgentToolTransport", () => {
     const spawnCalls: unknown[] = [];
     const cliRun = run({
       permission_snapshot_json: { tool_grants: [] },
-    } as Partial<RunRecord>);
+    } as Partial<AgentRunRecord>);
     const transport = new CliAgentToolTransport(config, delegationDeps(spawnCalls));
 
     const result = await transport.call(cliRun, {
@@ -139,7 +140,7 @@ describe("CliAgentToolTransport", () => {
   it("lists only granted, permitted definitions", async () => {
     const cliRun = run({
       permission_snapshot_json: { tool_grants: [{ action_id: "agent.delegate" }] },
-    } as Partial<RunRecord>);
+    } as Partial<AgentRunRecord>);
     const transport = new CliAgentToolTransport(config, delegationDeps([]));
 
     const definitions = await transport.list(cliRun);
@@ -147,11 +148,7 @@ describe("CliAgentToolTransport", () => {
     expect(definitions.map((tool) => tool.name)).toEqual(["agent.delegate"]);
   });
 
-  it("excludes retrieval definitions from tools/list in a preflight retrieval mode, matching the managed loop", async () => {
-    // In `preflight_search`/`preflight_brief` the system performs one governed
-    // retrieval step itself instead of offering the tool for direct call
-    // (`retrievalToolContribution`, managedRetrievalTools.ts). The managed loop
-    // never puts the tool in `request.tools`; CLI's `tools/list` must agree.
+  it("keeps retrieval tools off when the Runtime Profile disables them", async () => {
     const retrievalToolService = {
       async toolBrief() {
         throw new Error("retrieval must not be invoked while listing tools");
@@ -161,8 +158,8 @@ describe("CliAgentToolTransport", () => {
       permission_snapshot_json: {
         tool_grants: [{ action_id: "retrieval.brief" }, { action_id: "agent.delegate" }],
       },
-      runtime_config_json: { retrieval_tool_mode: "preflight_brief" },
-    } as Partial<RunRecord>);
+      runtime_config_json: { retrieval_tool_mode: "off" },
+    } as Partial<AgentRunRecord>);
     const transport = new CliAgentToolTransport(config, {
       retrievalToolService,
       ...delegationDeps([]),

@@ -78,7 +78,7 @@ interface PendingRecord {
   tool_status: string | null;
   tool_input: string | null;
   session_title: string | null;
-  adapter_type: string;
+  runtime_key: string;
   vendor_updated_at: string | null;
 }
 
@@ -259,7 +259,7 @@ export class ImportedHistoryExtractionService {
          FROM batch, imported_sessions s
         WHERE r.id = batch.id AND s.id = r.imported_session_id
        RETURNING r.id, r.imported_session_id, r.kind, r.sequence, r.text, r.tool_name,
-                 r.tool_status, r.tool_input, s.title AS session_title, s.adapter_type,
+                 r.tool_status, r.tool_input, s.title AS session_title, s.runtime_key,
                  to_char(s.vendor_updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS vendor_updated_at`,
       [spaceId, projectId, MAX_RECORDS_PER_EXTRACTION, `claim:${checkpointId}`, workspaceLocationId ?? null],
     );
@@ -340,7 +340,7 @@ export class ImportedHistoryExtractionService {
     const material = records.map((record) => ({
       canonical_ref: { type: "imported_session_record", id: record.id },
       session: record.session_title ?? record.imported_session_id,
-      runtime: record.adapter_type,
+      runtime: record.runtime_key,
       kind: record.kind,
       text: record.text,
       tool: record.tool_name ? { name: record.tool_name, status: record.tool_status, input: record.tool_input } : null,
@@ -354,7 +354,7 @@ export class ImportedHistoryExtractionService {
         coverage: {
           sessions: new Set(records.map((record) => record.imported_session_id)).size,
           records: records.length,
-          runtimes: [...new Set(records.map((record) => record.adapter_type))],
+          runtimes: [...new Set(records.map((record) => record.runtime_key))],
           from: dates[0] ?? null,
           to: dates[dates.length - 1] ?? null,
         },

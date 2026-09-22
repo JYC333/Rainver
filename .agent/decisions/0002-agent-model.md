@@ -4,7 +4,11 @@ Date: 2026-05 (original)
 
 ## Status
 
-Accepted.
+Accepted. Amended by
+[ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md): the
+`allowed_adapter_types` runtime-policy statements below are superseded —
+AgentVersion selects no runtime, and runtime deployment is the
+`AgentRuntimeProfile`'s authority. Everything else here stands.
 
 ## Context
 

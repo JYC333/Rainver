@@ -1,5 +1,4 @@
 export type RuntimeInvocationClass =
-  | "agent_task_gateway"
   | "agent_task_renderer"
   | "agent_task_transport"
   | "bounded_cli_task"
@@ -43,7 +42,10 @@ export const MANAGED_CONVERSATION_ENTRYPOINT_INVENTORY = [
  * compare source imports to this registry so a new bypass cannot land unseen.
  */
 export const RUNTIME_INVOCATION_INVENTORY = [
-  providerCall("dailyReports/service.ts", "completeProviderText", 1, "bounded_provider_task", "dailyReports", "provider_task"),
+  // Bounded ProviderTask Runs go through the one shared wrapper: one bounded
+  // task is one Run, whatever the key pool does behind it (ADR 0022 §2/§3).
+  // Daily Reports and Project Research each used to own a copy of it.
+  providerCall("runs/boundedProviderTaskRun.ts", "completeProviderMessages", 1, "bounded_provider_task", "runs", "provider_task"),
   // A bounded one-shot over imported CLI history, owned by its module: it
   // reads records the person already imported and produces proposals, and it
   // is not an Agent task-context entrypoint (ADR 0014 decision 1).
@@ -68,18 +70,12 @@ export const RUNTIME_INVOCATION_INVENTORY = [
   providerCall("providers/commands/routes.ts", "completeProviderRerank", 1, "bounded_provider_task", "providers", "provider_task"),
   providerCall("providers/commands/routes.ts", "completeProviderChat", 1, "bounded_provider_task", "providers", "provider_task"),
   entry("providers/index.ts", "provider_facade", "providers", "provider_task"),
-  providerCall("runtimeHost/service.ts", "completeProviderMessages", 1, "agent_task_gateway", "runtimeHost", "runtime_context_gateway"),
-  entry("runs/managedApiAdapter.ts", "agent_task_renderer", "runs", "delivery_renderer"),
-  invocationCall("runs/managedApiAdapter.ts", "executeRuntimeHost", 1, "agent_task_renderer", "runs", "delivery_renderer"),
   // The CLI renderer is the remote-host adapter now: every `local_cli` run is
   // dispatched to a host daemon, and the server spawns no vendor CLI of its own.
   entry("runs/remoteHostCliAdapter.ts", "agent_task_renderer", "runs", "delivery_renderer"),
   // A renderer, not a Gateway invoker: a run handed to a host daemon gets no
   // server-brokered Runtime Context and pulls through its own work surface.
   invocationCall("runs/orchestrationService.ts", "executeRemoteHostCliAdapter", 1, "agent_task_renderer", "runs", "delivery_renderer"),
-  // The conformance probe asks the host that holds the copy rather than
-  // spawning locally; its command site is the server-owned duplex executor.
-  invocationCall("runs/orchestrationService.ts", "executeManagedApiNoToolAdapter", 1, "agent_task_gateway", "runs", "runtime_context_gateway"),
   entry("providers/invocation/invocation.ts", "provider_transport", "providers", "provider_task"),
   entry("providers/proxy/server.ts", "provider_transport", "providers", "delivery_renderer"),
 ] as const satisfies readonly RuntimeInvocationEntry[];

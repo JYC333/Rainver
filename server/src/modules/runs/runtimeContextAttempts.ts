@@ -3,7 +3,7 @@ import type {
   ExecutionControlSnapshot,
   InvocationDelivery,
   InvocationSnapshotSafe,
-  RuntimeHostExecuteResponse,
+  RunAdapterResultEnvelope,
   TurnContextRequest,
 } from "@rainver/protocol";
 import type {
@@ -14,11 +14,7 @@ import type { RunRecord } from "./repository.js";
 
 export interface RunInvocationAttemptLifecycle {
   prepare(): Promise<InvocationDelivery>;
-  acknowledge(delivery: InvocationDelivery, response: RuntimeHostExecuteResponse | {
-    success: boolean;
-    usage?: { input_tokens?: number } | null;
-    error_code?: string | null;
-  }): Promise<InvocationSnapshotSafe>;
+  acknowledge(delivery: InvocationDelivery, response: RunAdapterResultEnvelope): Promise<InvocationSnapshotSafe>;
   finalize(delivery: InvocationDelivery, errorCode?: string | null): Promise<InvocationSnapshotSafe>;
   acknowledgeContext?(delivery: InvocationDelivery, vendorSessionId: string): Promise<void>;
 }
@@ -40,7 +36,7 @@ export function createRunInvocationAttemptLifecycle(input: {
       turn: input.turn,
       invocationId: input.run.id,
       executionControlSnapshotId: input.control.id,
-      adapterType: input.run.adapter_type ?? "unknown",
+      runtimeKey: input.run.runtime_key ?? "unknown",
       providerId: input.run.model_provider_id,
       model: input.model,
       usageSourceId: `runtime-context:${input.run.id}:${randomUUID()}`,

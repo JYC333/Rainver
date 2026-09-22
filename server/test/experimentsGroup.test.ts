@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { seedServerHost, seedMainlineRoomsForAllProjects, seedServerRuntimeProfile } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { normalizeExecutorConfig } from "../src/modules/experiments/common.js";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService.js";
@@ -7,6 +7,8 @@ import { ExperimentInterpretationService } from "../src/modules/experiments/inte
 import { ExperimentRunService } from "../src/modules/experiments/runService.js";
 import { InquirySignalService } from "../src/modules/inquiry/signalService.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -101,12 +103,28 @@ describe("experimentsDb", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_versions (
-         id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,
-         context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at
-       ) VALUES ($1,$2,$3,'v1','Execute governed experiments.','{}','{}','{}','{}','[]','{}','{}',$4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES ($1, $2, $3, 'v1', 'Execute governed experiments.', '{}', '{}', '[]', '{}', $4)`,
       [AGENT_VERSION, AGENT, SPACE, now],
     );
     await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
+    await seedServerRuntimeProfile(db.pool, {
+      agent: AGENT,
+      space: SPACE,
+      hostId: HOST,
+      runtimeKey: "claude_code",
+      runtimeInstallation: "managed:1.0.0",
+      now,
+    });
   });
 
   async function createCorpusItem(): Promise<string> {
@@ -296,10 +314,19 @@ describe("experimentsDb", () => {
         `SELECT count(*)::int AS count FROM jobs WHERE job_type='agent_run' AND payload_json->>'run_id'=$1`,
         [managedRunId],
       )).rows[0]?.count).toBe(1);
-      await db.pool.query(
-        `UPDATE runs SET status='succeeded',output_json=$3::jsonb,ended_at=$4,updated_at=$4 WHERE id=$1 AND space_id=$2`,
-        [managedRunId, SPACE, JSON.stringify({ experiment_metrics: { accuracy: 0.91, notes: "stable" } }), new Date().toISOString()],
-      );
+      const runRepository = new PgRunRepository(db.pool);
+      const run = await runRepository.getAgentRun(SPACE, managedRunId);
+      if (!run) throw new Error("Managed Experiment Run disappeared before dispatch");
+      await new PgRouteDecisionRepository(db.pool).routeRun(run);
+      const startedAt = new Date().toISOString();
+      await runRepository.markRunRunning({ run_id: managedRunId, space_id: SPACE, started_at: startedAt });
+      await runRepository.markRunTerminal({
+        run_id: managedRunId,
+        space_id: SPACE,
+        status: "succeeded",
+        output_json: { experiment_metrics: { accuracy: 0.91, notes: "stable" } },
+        completed_at: new Date().toISOString(),
+      });
       await expect(runs.reconcileManagedRun(SPACE, managedRunId)).resolves.toBe(true);
       await expect(runs.reconcileManagedRun(SPACE, managedRunId)).resolves.toBe(false);
       expect((await runs.listRuns(identity, PROJECT, definition.id as string))

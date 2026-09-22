@@ -4,7 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
 import { isStale } from "../hosts/repository.js";
-import type { AmbientSessionCount, HostExecutionTarget, HostExecutionTargetAdapter } from "@rainver/protocol";
+import type { AmbientSessionCount, HostExecutionTarget, HostExecutionTargetRuntime } from "@rainver/protocol";
 import { isGitRepo, runGit } from "@rainver/folder-read";
 import { normalizeHostCapabilities } from "../hosts/capabilities.js";
 import { getLocalCliRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
@@ -142,18 +142,19 @@ export class PgWorkspaceLocationRepository {
     const result = await this.db.query<{
       host_id: string;
       host_name: string;
+      host_kind: "server" | "remote";
       host_status: string;
       last_heartbeat_at: string | null;
       capabilities_json: unknown;
-      default_adapter_type: string | null;
       location_id: string | null;
       project_folder_id: string | null;
       folder_name: string | null;
       display_path: string | null;
       execution_ready: boolean | null;
     }>(
-      `SELECT host.id AS host_id, host.name AS host_name, host.status AS host_status,
-              host.last_heartbeat_at, host.capabilities_json, host.default_adapter_type,
+      `SELECT host.id AS host_id, host.name AS host_name, host.kind AS host_kind,
+              host.status AS host_status,
+              host.last_heartbeat_at, host.capabilities_json,
               location.id AS location_id, location.project_folder_id,
               folder.name AS folder_name, location.display_path,
               location.execution_ready
@@ -172,19 +173,19 @@ export class PgWorkspaceLocationRepository {
         ORDER BY (host.kind = 'server') DESC, host.name ASC, folder.name ASC NULLS LAST, location.created_at ASC NULLS LAST`,
       [userId, spaceId, projectId],
     );
-    const grouped = new Map<string, HostExecutionTarget & { capabilities_json: unknown; default_adapter_type: string | null }>();
+    const grouped = new Map<string, HostExecutionTarget & { capabilities_json: unknown }>();
     for (const row of result.rows) {
       let target = grouped.get(row.host_id);
       if (!target) {
         const created = {
           host_id: row.host_id,
-          host_name: row.host_name,
+          host_name: row.host_kind === "server" ? "Server Runtime" : row.host_name,
+          host_kind: row.host_kind === "server" ? "server" as const : "remote" as const,
           host_online: row.host_status === "online" && !isStale(row.last_heartbeat_at),
           locations: [],
-          adapters: [],
+          runtimes: [],
           managed_workspace_available: true,
           capabilities_json: row.capabilities_json,
-          default_adapter_type: row.default_adapter_type,
         };
         grouped.set(row.host_id, created);
         target = created;
@@ -200,26 +201,24 @@ export class PgWorkspaceLocationRepository {
       }
     }
     const adapters = listRuntimeAdapterSpecs()
-      .map((spec) => getLocalCliRuntimeAdapterSpec(spec.adapter_type))
+      .map((spec) => getLocalCliRuntimeAdapterSpec(spec.runtime_key))
       .filter((spec): spec is NonNullable<typeof spec> => Boolean(spec))
       .filter((spec) => spec.implementation_status === "implemented" && spec.invocation.protocol === "acp");
     for (const target of grouped.values()) {
       const capabilities = normalizeHostCapabilities(target.capabilities_json);
-      target.adapters = adapters.flatMap<HostExecutionTargetAdapter>((spec) => {
-        const installations = capabilities.installations[spec.adapter_type];
+      target.runtimes = adapters.flatMap<HostExecutionTargetRuntime>((spec) => {
+        const installations = capabilities.installations[spec.runtime_key];
         if (!installations?.length) return [];
         return [{
-          adapter_type: spec.adapter_type,
+          runtime_key: spec.runtime_key,
           display_name: spec.display_name,
           installations: installations.map(({ id, version, logged_in }) => ({ id, version, logged_in })),
         }];
-      // The host's configured default CLI leads the list, so pickers that take
-      // the first adapter follow the owner's choice.
-      }).sort((a, b) => Number(b.adapter_type === target.default_adapter_type) - Number(a.adapter_type === target.default_adapter_type));
+      }).sort((a, b) => a.display_name.localeCompare(b.display_name) || a.runtime_key.localeCompare(b.runtime_key));
     }
     return [...grouped.values()]
-      .filter((target) => target.host_online)
-      .map(({ capabilities_json: _capabilities, default_adapter_type: _defaultAdapter, ...target }) => target);
+      .filter((target) => target.host_online || target.host_kind === "server")
+      .map(({ capabilities_json: _capabilities, ...target }) => target);
   }
 
   async get(identity: SpaceUserIdentity, folderId: string, locationId: string): Promise<WorkspaceLocationOut | null> {

@@ -118,11 +118,17 @@ describe('ExperimentAreaPage', () => {
       total: 1, limit: 100, offset: 0,
     })
     vi.mocked(agentsApi.list).mockResolvedValue([
-      { id: 'agent-1', name: 'Data analyst', status: 'active', current_version_id: 'version-1', adapter_type: 'opencode_cli' } as never,
+      { id: 'agent-1', name: 'Data analyst', status: 'active', current_version_id: 'version-1', runtime_key: 'opencode_cli' } as never,
     ])
     renderPage()
 
-    expect(await screen.findByRole('option', { name: 'Analysis repo (primary)' })).toBeInTheDocument()
+    // The shared `Select` reveals its options on open, so each list is opened
+    // in turn; the assertion is still that the names are the user-facing ones.
+    fireEvent.click(await screen.findByRole('button', { name: 'Execution folder' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Analysis repo (primary)' }))
+    expect(screen.getByRole('button', { name: 'Execution folder' })).toHaveTextContent('Analysis repo (primary)')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Execution agent' }))
     expect(screen.getByRole('option', { name: /Data analyst · opencode cli/ })).toBeInTheDocument()
     expect(screen.queryByPlaceholderText(/Folder ID|Agent ID/i)).not.toBeInTheDocument()
   })

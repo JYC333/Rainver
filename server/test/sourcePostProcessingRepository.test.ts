@@ -61,20 +61,20 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1,$2,$3,'v1','Summarize source','{}'::jsonb,'{"adapter_type":"model_api"}'::jsonb,
-       '{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb,$4)`,
+       id, agent_id, space_id, version_label, system_prompt,
+       context_policy_json, memory_policy_json, capabilities_json,
+       tool_permissions_json, created_at
+     ) VALUES ($1,$2,$3,'v1','Summarize source','{}'::jsonb,
+       '{}'::jsonb,'[]'::jsonb,'{}'::jsonb,$4)`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
   await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, AGENT_VERSION]);
   await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, model_provider_id, model_name,
+       id, space_id, agent_id, name, runtime_key, backend_mode, model_provider_id, model_name,
        runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
-     ) VALUES ($1,$2,$3,'Default','model_api',NULL,NULL,
-       '{"adapter_type":"model_api"}'::jsonb,'{"default_adapter_type":"model_api"}'::jsonb,true,true,$4,$4)`,
+     ) VALUES ($1,$2,$3,'Default','opencode','runtime_native',NULL,NULL,
+       '{}'::jsonb,'{}'::jsonb,true,true,$4,$4)`,
     [randomUUID(), SPACE, AGENT, now],
   );
   await db.pool.query(

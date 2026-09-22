@@ -231,7 +231,7 @@ function RuntimeStatusCard({ status }: { status: HomeRuntimeStatusSection }) {
     <div className="bg-card border border-border rounded-lg p-4 flex flex-col gap-3">
       <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">Runtime</span>
       <div className="text-[12px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{n} real adapter{n !== 1 ? 's' : ''} configured</div>
-      {status.configured_adapter_types.length > 0 && <div className="text-[11px] text-muted-foreground break-words">{status.configured_adapter_types.join(', ')}</div>}
+      {status.configured_runtime_keys.length > 0 && <div className="text-[11px] text-muted-foreground break-words">{status.configured_runtime_keys.join(', ')}</div>}
     </div>
   )
 }
@@ -295,7 +295,7 @@ function emptyHomeSummary(): HomeSummaryOut {
     active_tasks: [], activity_summary: { recent_count: 0, raw_count: 0, today_count: 0 },
     run_stats_today: { created: 0, queued: 0, running: 0, succeeded: 0, failed: 0, cancelled: 0, dry_run_count: 0 },
     job_queue_status: { queued: 0, running: 0, failed: 0, retryable: 0, recent_error_preview: null },
-    runtime_status: { real_adapters_configured_count: 0, configured_adapter_types: [], message: '' },
+    runtime_status: { real_adapters_configured_count: 0, configured_runtime_keys: [], message: '' },
     model_provider_status: { model_providers_count: 0, enabled_model_providers_count: 0, missing_model_provider_config: true, message: '' },
     suggested_actions: [],
     operations_in_progress: [],

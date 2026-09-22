@@ -29,6 +29,8 @@ import type {
   AgentRuntimeProfileCreateBody,
   AgentRuntimeProfileOut,
   AgentRuntimeProfileUpdateBody,
+  SpaceAgentRuntimeDefaultOut,
+  SpaceAgentRuntimeDefaultWrite,
   AgentTemplateOut,
   AgentTemplateVersionOut,
   AgentUpdateBody,
@@ -154,11 +156,11 @@ import type {
   FileNode,
   GitStatus,
   Host,
+  HostRuntimeProvisioningStatus,
   HostPairingCode,
-  HostRuntimeAdapterOption,
+  HostRuntimeDefinitionOption,
   HostRuntimeChange,
   HostRuntimeUsage,
-  HostRuntimeProviderBinding,
   HostExecutionTargetsResponse,
   WorkspaceLocation,
   HomeSummaryOut,
@@ -1274,7 +1276,7 @@ export const tasksApi = {
     get<Page<TaskArtifact>>(`/tasks/${taskId}/artifacts?` + new URLSearchParams(params)),
   proposals: (taskId: string, params: Record<string, string> = {}) =>
     get<Page<TaskProposal>>(`/tasks/${taskId}/proposals?` + new URLSearchParams(params)),
-  requestPlan: (taskId: string, body: { agent_id?: string; prompt?: string; instruction?: string; reference_workflow_version_id?: string | null; budget_sources?: PlanBudgetSource[] } = {}) =>
+  requestPlan: (taskId: string, body: { agent_id?: string; runtime_profile_id?: string; prompt?: string; instruction?: string; reference_workflow_version_id?: string | null; budget_sources?: PlanBudgetSource[] } = {}) =>
     post<Run>(`/tasks/${encodeURIComponent(taskId)}/plan-requests`, body),
   plan: (taskId: string) => get<PlanDetail | null>(`/tasks/${encodeURIComponent(taskId)}/plan`),
 }
@@ -1873,13 +1875,16 @@ export const agentsApi = {
     post<AgentOut>(`/agents/${agentId}/config`, data),
   listRuntimeProfiles: (agentId: string) =>
     get<AgentRuntimeProfileOut[]>(`/agents/${agentId}/runtime-profiles`),
+  getSpaceRuntimeDefault: () => get<SpaceAgentRuntimeDefaultOut | null>('/agents/runtime-default'),
+  setSpaceRuntimeDefault: (data: SpaceAgentRuntimeDefaultWrite) =>
+    put<SpaceAgentRuntimeDefaultOut>('/agents/runtime-default', data),
   createRuntimeProfile: (agentId: string, data: AgentRuntimeProfileCreateBody) =>
     post<AgentRuntimeProfileOut>(`/agents/${agentId}/runtime-profiles`, data),
   resolveHostRuntimeProfile: (agentId: string, data: {
     execution_host_id: string
     workspace_location_id: string | null
     workspace_mode: 'location' | 'managed'
-    adapter_type: string
+    runtime_key: string
     runtime_installation: string
   }) => post<AgentRuntimeProfileOut>(`/agents/${agentId}/runtime-profiles/resolve-host-target`, data),
   updateRuntimeProfile: (agentId: string, profileId: string, data: AgentRuntimeProfileUpdateBody) =>
@@ -2063,7 +2068,7 @@ export const ambientSessionsApi = {
     get<{ policy: AmbientImportPolicy; counts: AmbientSessionCount[] }>(
       `/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/offer`,
     ),
-  setPolicy: (locationId: string, body: { adapter_type: string; installation?: string; sync: boolean; default_visibility?: 'private' | 'space_shared'; auto_extract?: boolean }) =>
+  setPolicy: (locationId: string, body: { runtime_key: string; installation?: string; sync: boolean; default_visibility?: 'private' | 'space_shared'; auto_extract?: boolean }) =>
     put<AmbientImportPolicy>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/policy`, body),
   dismiss: (locationId: string) =>
     post<AmbientImportPolicy>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/dismiss`, {}),
@@ -2072,7 +2077,7 @@ export const ambientSessionsApi = {
   /** Everything in the Project this viewer may read, gated by the content predicate rather than host ownership. */
   listForProject: (projectId: string) =>
     get<{ sessions: ImportedSession[] }>(`/projects/${encodeURIComponent(projectId)}/imported-sessions`),
-  sync: (locationId: string, body: { adapter_type: string; installation?: string; session_ids?: string[] | null; visibility?: 'private' | 'space_shared' }) =>
+  sync: (locationId: string, body: { runtime_key: string; installation?: string; session_ids?: string[] | null; visibility?: 'private' | 'space_shared' }) =>
     post<AmbientSyncReport>(`/workspace-locations/${encodeURIComponent(locationId)}/ambient-sessions/sync`, body),
   records: (sessionId: string) =>
     get<{ session: ImportedSession; records: ImportedSessionRecord[]; truncated: boolean }>(`/imported-sessions/${encodeURIComponent(sessionId)}`),
@@ -2095,10 +2100,14 @@ export const hostsApi = {
     get<HostExecutionTargetsResponse>(`/hosts/execution-targets${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
   pairingCode: (name: string) => post<HostPairingCode>('/hosts/pairing-codes', { name }),
   revoke: (hostId: string) => post<null>(`/hosts/${hostId}/revoke`),
-  /** The owner's preferred CLI on this machine; null restores the built-in ordering. */
-  setDefaultAdapter: (hostId: string, adapterType: string | null) =>
-    post<{ host_id: string; default_adapter_type: string | null }>(`/hosts/${encodeURIComponent(hostId)}/default-adapter`, { adapter_type: adapterType }),
-  listRuntimeAdapters: () => get<{ items: HostRuntimeAdapterOption[] }>('/hosts/runtime-adapters'),
+  listRuntimeDefinitions: () => get<{ items: HostRuntimeDefinitionOption[] }>('/hosts/runtime-definitions'),
+  /** Pinned Server OpenCode provisioning and ACP health state. */
+  serverRuntimeProvisioning: (hostId: string) =>
+    get<HostRuntimeProvisioningStatus>(`/hosts/${encodeURIComponent(hostId)}/runtime-provisioning/opencode`),
+  /** Requeues a failed Server OpenCode install/health check; admins only. */
+  retryServerRuntimeProvisioning: (hostId: string) =>
+    post<{ host_id: string; runtime_key: 'opencode'; state: 'queued' | 'installing'; desired_version: string }>(
+      `/hosts/${encodeURIComponent(hostId)}/runtime-provisioning/opencode/retry`, {}),
   /** One level of subdirectory names on an owned host — the daemon answers; lazy and bounded. */
   browseDirectories: (hostId: string, path?: string | null) =>
     post<{ path: string | null; parent: string | null; dirs: string[]; truncated: boolean }>(
@@ -2108,21 +2117,21 @@ export const hostsApi = {
     post<{ workspace_id: string | null; display_path: string | null }>(
       `/hosts/${encodeURIComponent(hostId)}/workspaces`, body),
   /** Asks the host's daemon to install a managed copy of a runtime (any ACP adapter with a distribution). */
-  installRuntime: (hostId: string, adapterType: string) =>
-    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}`),
-  uninstallRuntime: (hostId: string, adapterType: string, installation: string) =>
-    del<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}`),
+  installRuntime: (hostId: string, runtimeKey: string) =>
+    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}`),
+  uninstallRuntime: (hostId: string, runtimeKey: string, installation: string) =>
+    del<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}`),
   /** Undoes the last upgrade of a managed copy, promoting the version the host kept behind it. */
-  rollbackRuntime: (hostId: string, adapterType: string) =>
-    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/rollback`),
+  rollbackRuntime: (hostId: string, runtimeKey: string) =>
+    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/rollback`),
   /** What has changed about every host's runtimes, newest first. */
   runtimeChanges: () => get<{ items: HostRuntimeChange[] }>('/hosts/runtime-changes'),
   /** The cached subscription quota for each copy on a host; a read, never a probe. */
   usage: (hostId: string) => get<{ items: HostRuntimeUsage[] }>(`/hosts/${encodeURIComponent(hostId)}/usage`),
   /** Asks one copy now, on the host that holds its login. */
-  refreshUsage: (hostId: string, adapterType: string, installation: string) =>
+  refreshUsage: (hostId: string, runtimeKey: string, installation: string) =>
     post<HostRuntimeUsage>(
-      `/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}/usage`),
+      `/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/usage`),
   /**
    * The login terminal for one copy of a runtime on a host: the daemon runs
    * the copy's login command on a PTY and this relays it, frame by frame,
@@ -2134,12 +2143,12 @@ export const hostsApi = {
    * login session, so an abandoned panel does not leave a login program
    * waiting on the host.
    */
-  async *loginStream(hostId: string, adapterType: string, installation: string, target?: HostLoginTarget | null, signal?: AbortSignal): AsyncGenerator<RuntimeLoginEvent> {
+  async *loginStream(hostId: string, runtimeKey: string, installation: string, target?: HostLoginTarget | null, signal?: AbortSignal): AsyncGenerator<RuntimeLoginEvent> {
     const query = target?.kind === 'acp'
       ? `?auth_method_id=${encodeURIComponent(target.methodId)}`
       : target?.kind === 'cli' ? '?login_action=cli'
       : target?.kind === 'logout' ? '?login_action=logout' : ''
-    const url = `${BASE}/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}/login/stream${query}`
+    const url = `${BASE}/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/login/stream${query}`
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
     headers['X-Rainver-Space-Id'] = _spaceId
@@ -2170,18 +2179,8 @@ export const hostsApi = {
       void reader.cancel().catch(() => undefined)
     }
   },
-  loginInput: (hostId: string, adapterType: string, installation: string, data: string) =>
-    post<null>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(adapterType)}/${encodeURIComponent(installation)}/login/input`, { data }),
-  listProviderBindings: (hostId: string) =>
-    get<{ items: HostRuntimeProviderBinding[] }>(`/hosts/${encodeURIComponent(hostId)}/runtime-provider-bindings`),
-  setProviderBinding: (hostId: string, adapterType: string, modelProviderId: string, model: string | null = null) =>
-    put<HostRuntimeProviderBinding>(
-      `/hosts/${encodeURIComponent(hostId)}/runtime-provider-bindings/${encodeURIComponent(adapterType)}`,
-      { model_provider_id: modelProviderId, model },
-    ),
-  /** Clearing returns that host×adapter to the machine's own login state. */
-  clearProviderBinding: (hostId: string, adapterType: string) =>
-    del<null>(`/hosts/${encodeURIComponent(hostId)}/runtime-provider-bindings/${encodeURIComponent(adapterType)}`),
+  loginInput: (hostId: string, runtimeKey: string, installation: string, data: string) =>
+    post<null>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}/login/input`, { data }),
   /** Empty string clears the override and returns this host to the derived address. */
   setProviderProxyUrl: (hostId: string, baseUrl: string) =>
     put<{ host_id: string; provider_proxy_base_url: string | null }>(
@@ -2333,7 +2332,7 @@ export interface AcpRegistryEntry {
 export interface AcpAgentOut extends AcpRegistryEntry {
   enabled_at: string
   enabled_by_user_id: string | null
-  adapter_type: string
+  runtime_key: string
   /** Hosts that still carry a managed copy; disabling is refused while any do. */
   installed_on: Array<{ host_id: string; name: string }>
 }
@@ -2360,7 +2359,7 @@ export type HostLoginTarget =
 /** The daemon's report for one install/uninstall of a managed runtime copy. */
 export interface RuntimeInstallResult {
   host_id: string
-  adapter_type: string
+  runtime_key: string
   ok: boolean
   error: string | null
   installation: string | null
@@ -3284,6 +3283,10 @@ export const projectResearchApi = {
   // `section_key` is a legacy field name accepted for backward compatibility
   // (see areaService.ts askAi): a known starter-note key maps to its
   // title; any other value is used as a literal note title.
+  // Enqueues a bounded `provider_task` Run and answers 201 `queued`. The note is
+  // NOT updated when this resolves: a `provider_task_run` job applies the block
+  // ops and then marks the Run terminal, so a caller may only report that the
+  // work was queued.
   askAi: (projectId: string, body: { prompt: string; section_key: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) => post<{ run_id: string; job_id: string; status: string; daily_limit: number; daily_used: number }>(`/projects/${encodeURIComponent(projectId)}/research/ask-ai`, body),
   generateReportSnapshot: (projectId: string) => post<ProjectOperation>(`/projects/${encodeURIComponent(projectId)}/research/reports`, {}),
   refineQuestion: (projectId: string, body: {
@@ -3606,7 +3609,6 @@ export interface ProviderVendorOut {
   display_name: string
   protocol: string
   supports_chat: boolean
-  supports_runtime_tools: boolean
   supports_structured_output: boolean
   supports_embedding: boolean
   supports_rerank: boolean

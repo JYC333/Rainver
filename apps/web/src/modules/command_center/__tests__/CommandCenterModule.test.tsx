@@ -14,15 +14,14 @@ vi.mock('../../../contexts/SpaceContext', () => ({
 vi.mock('../../../api/client', () => ({
   hostsApi: {
     list: vi.fn(),
-    listRuntimeAdapters: vi.fn(),
-    listProviderBindings: vi.fn().mockResolvedValue({ items: [] }),
+    listRuntimeDefinitions: vi.fn(),
   },
   providersApi: { list: vi.fn().mockResolvedValue([]) },
 }))
 
 beforeEach(() => {
   vi.mocked(hostsApi.list).mockResolvedValue({ items: [] })
-  vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [] })
+  vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [] })
 })
 
 describe('CommandCenterModule', () => {

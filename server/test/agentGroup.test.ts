@@ -3,7 +3,7 @@ import { AgentGroupRuntimeDelegationMaterializer } from "../src/modules/agentGro
 import { type AgentRunGroupRecord, PgAgentGroupRepository, type RunDelegationRecord } from "../src/modules/agentGroups/repository.js";
 import { PgAgentChatRepository, PgAgentRepository } from "../src/modules/agents/repository.js";
 import type { Queryable, QueryResult } from "../src/modules/routeUtils/common.js";
-import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 import type { RunEventInput } from "../src/modules/runs/runRepositoryTypes.js";
 
 describe("agentAssistantSettingsRepository", () => {
@@ -24,8 +24,8 @@ describe("agentAssistantSettingsRepository", () => {
       provider_name: null,
       provider_type: null,
       system_prompt: "You are the space assistant.",
-      runtime_adapter_type: "model_api",
-      runtime_policy_json: { default_adapter_type: "model_api" },
+      runtime_key: "opencode",
+      runtime_policy_json: {},
       created_at: "2026-06-26T00:00:00.000Z",
       updated_at: "2026-06-26T00:00:00.000Z",
     };
@@ -284,7 +284,7 @@ describe("agentGroupsRepositorySqlShape", () => {
 });
 
 describe("agentGroupsRuntimeDelegationMaterializer", () => {
-  function run(overrides: Partial<RunRecord> = {}): RunRecord {
+  function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
     return {
       id: "run-parent",
       space_id: "space-1",
@@ -297,7 +297,7 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
       project_folder_id: null,
       session_id: null,
       project_id: null,
-      adapter_type: "model_api",
+      runtime_key: "opencode",
       model_provider_id: null,
       required_sandbox_level: "none",
       trigger_origin: "manual",
@@ -311,8 +311,9 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
       // `agent.delegate` here is what most of these tests exercise; the
       // "not granted" test below overrides this to an empty grant list.
       permission_snapshot_json: { tool_grants: [{ action_id: "agent.delegate" }] },
+      execution_kind: "agent",
       ...overrides,
-    } as RunRecord;
+    } as AgentRunRecord;
   }
 
   function recordingRunEvents(): { events: RunEventInput[]; appendRunEvent: (input: RunEventInput) => Promise<never> } {

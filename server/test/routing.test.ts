@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DeterministicRouteSelector, mergeRouteHints } from "../src/modules/routing/router.js";
+import { candidateForPersistedDecision, DeterministicRouteSelector, mergeRouteHints } from "../src/modules/routing/router.js";
 import { runtimeRequiredCapabilities } from "../src/modules/routing/repository.js";
 import type { RouteCandidate } from "../src/modules/routing/types.js";
 
@@ -7,7 +7,8 @@ function candidate(overrides: Partial<RouteCandidate> = {}): RouteCandidate {
   return {
     runtime_profile_id: "profile-1",
     profile_name: "Primary",
-    adapter_type: "model_api",
+    runtime_key: "opencode",
+    backend_mode: "model_provider",
     model_provider_id: "provider-1",
     model_name: "model-1",
     runtime_config_json: {},
@@ -35,6 +36,22 @@ function candidate(overrides: Partial<RouteCandidate> = {}): RouteCandidate {
 }
 
 describe("deterministic route selector", () => {
+  it("does not revive a persisted Profile that failed current hard filters", () => {
+    const selector = new DeterministicRouteSelector();
+    const decision = selector.select({
+      required_sandbox_level: "none",
+      execution_mode: "live",
+      risk_level: "low",
+      workspace_available: true,
+    }, [
+      candidate({ runtime_profile_id: "legacy-model-api", enabled: false }),
+      candidate({ runtime_profile_id: "current-acp", runtime_key: "opencode" }),
+    ]);
+
+    expect(candidateForPersistedDecision(decision, "legacy-model-api")).toBeNull();
+    expect(candidateForPersistedDecision(decision, "current-acp")?.runtime_key).toBe("opencode");
+  });
+
   it("does not treat server-owned Room actions as runtime capabilities", async () => {
     await expect(runtimeRequiredCapabilities([
       "inquiry.record_conclusion",
@@ -78,7 +95,7 @@ describe("deterministic route selector", () => {
     ]));
   });
 
-  it("filters critical local CLI candidates by Docker capability even when the initial adapter is managed API", () => {
+  it("filters critical local CLI candidates by Docker capability with OpenCode as the initial runtime", () => {
     const result = new DeterministicRouteSelector().select({
       required_sandbox_level: "none",
       execution_mode: "live",
@@ -87,16 +104,20 @@ describe("deterministic route selector", () => {
     }, [
       candidate({
         runtime_profile_id: "local-unsafe",
-        adapter_type: "codex_cli", requires_file_access: true,
+        runtime_key: "codex_cli", requires_file_access: true,
         minimum_sandbox_level: "worktree",
         supports_workspace: true,
         supports_one_shot_docker: false,
         baseline_trust_level: "high",
         effective_trust_level: "high",
       }),
-      candidate({ runtime_profile_id: "managed-safe", adapter_type: "model_api" }),
+      candidate({
+        runtime_profile_id: "opencode-safe",
+        runtime_key: "opencode",
+        supports_one_shot_docker: true,
+      }),
     ]);
-    expect(result.selected?.candidate.runtime_profile_id).toBe("managed-safe");
+    expect(result.selected?.candidate.runtime_profile_id).toBe("opencode-safe");
     expect(result.rejected).toEqual(expect.arrayContaining([
       expect.objectContaining({
         runtime_profile_id: "local-unsafe",
@@ -111,16 +132,16 @@ describe("deterministic route selector", () => {
       execution_mode: "live",
       risk_level: "low",
       workspace_available: true,
-      hints: { ...mergeRouteHints([{ source: "task_contract", value: { preferred_adapters: ["claude_code"] } }]) },
+      hints: mergeRouteHints([{ source: "task_contract", value: { preferred_runtime_keys: ["claude_code"] } }]),
     }, [
-      candidate({ runtime_profile_id: "model", profile_name: "Model", adapter_type: "model_api", minimum_sandbox_level: "worktree", supports_workspace: true, is_default: true }),
-      candidate({ runtime_profile_id: "claude", profile_name: "Claude", adapter_type: "claude_code", requires_file_access: true, minimum_sandbox_level: "worktree", supports_workspace: true, is_default: false, historical_verification_pass_rate: 0.8 }),
+      candidate({ runtime_profile_id: "opencode", profile_name: "OpenCode", runtime_key: "opencode", minimum_sandbox_level: "worktree", supports_workspace: true, is_default: true }),
+      candidate({ runtime_profile_id: "claude", profile_name: "Claude", runtime_key: "claude_code", requires_file_access: true, minimum_sandbox_level: "worktree", supports_workspace: true, is_default: false, historical_verification_pass_rate: 0.8 }),
     ]);
     expect(result.selected?.candidate.runtime_profile_id).toBe("claude");
-    expect(result.fallback_chain).toEqual(["claude", "model"]);
+    expect(result.fallback_chain).toEqual(["claude", "opencode"]);
   });
 
-  it("defaults conversational and structured generation to Managed API", () => {
+  it("uses the selected default Profile for conversational and structured generation", () => {
     for (const executionShape of ["conversational", "structured_generation"] as const) {
       const result = new DeterministicRouteSelector().select({
         required_sandbox_level: "none",
@@ -129,18 +150,41 @@ describe("deterministic route selector", () => {
         workspace_available: false,
         hints: mergeRouteHints([{ source: "contract", value: { execution_shape: executionShape } }]),
       }, [
-        candidate({ runtime_profile_id: "managed", adapter_type: "model_api", is_default: false }),
+        candidate({ runtime_profile_id: "alternate", runtime_key: "claude_code", is_default: false }),
         candidate({
           runtime_profile_id: "open",
-          adapter_type: "opencode", requires_file_access: true,
+          runtime_key: "opencode", requires_file_access: true,
           is_default: true,
           minimum_sandbox_level: "worktree",
           supports_workspace: true,
           effective_trust_level: "low",
         }),
       ]);
-      expect(result.selected?.candidate.runtime_profile_id).toBe("managed");
+      expect(result.selected?.candidate.runtime_profile_id).toBe("open");
     }
+  });
+
+  it("lets an explicitly preferred Profile outrank the default on conversational work", () => {
+    // Scoring terms are named for what they measure (B61). A shape-named term
+    // that was really a ten-fold copy of `default_profile` could outscore the
+    // Profile the caller asked for; the default's own weight must not.
+    const result = new DeterministicRouteSelector().select({
+      required_sandbox_level: "none",
+      execution_mode: "live",
+      risk_level: "low",
+      workspace_available: false,
+      hints: mergeRouteHints([{
+        source: "contract",
+        value: { execution_shape: "conversational", preferred_runtime_profile_id: "preferred" },
+      }]),
+    }, [
+      candidate({ runtime_profile_id: "preferred", is_default: false }),
+      candidate({ runtime_profile_id: "space-default", is_default: true }),
+    ]);
+
+    expect(result.selected?.candidate.runtime_profile_id).toBe("preferred");
+    expect(result.selected?.score_trace).not.toHaveProperty("execution_shape_default");
+    expect(result.selected?.score_trace.profile_preference).toBe(25);
   });
 
   it("defaults file and code shapes to conformant OpenCode", () => {
@@ -152,10 +196,10 @@ describe("deterministic route selector", () => {
         workspace_available: true,
         hints: mergeRouteHints([{ source: "contract", value: { execution_shape: executionShape } }]),
       }, [
-        candidate({ runtime_profile_id: "managed", adapter_type: "model_api" }),
+        candidate({ runtime_profile_id: "opencode", runtime_key: "opencode" }),
         candidate({
           runtime_profile_id: "open",
-          adapter_type: "opencode", requires_file_access: true,
+          runtime_key: "opencode", requires_file_access: true,
           is_default: false,
           minimum_sandbox_level: "worktree",
           supports_workspace: true,
@@ -165,7 +209,7 @@ describe("deterministic route selector", () => {
       expect(result.selected?.candidate.runtime_profile_id).toBe("open");
       expect(result.rejected).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          runtime_profile_id: "managed",
+          runtime_profile_id: "opencode",
           reasons: expect.arrayContaining(["execution_shape_incompatible"]),
         }),
       ]));
@@ -185,7 +229,7 @@ describe("deterministic route selector", () => {
     }, [
       candidate({
         runtime_profile_id: "future",
-        adapter_type: "some_future_cli",
+        runtime_key: "some_future_cli",
         requires_file_access: true,
         minimum_sandbox_level: "worktree",
         supports_workspace: true,
@@ -195,17 +239,15 @@ describe("deterministic route selector", () => {
     expect(result.rejected).toEqual([]);
   });
 
-  it("rejects every no-file-access adapter from file work, not only Managed API", () => {
-    // ts_agent_host and capability declare the same noFiles sandbox as
-    // model_api. The name-based form rejected only model_api.
-    for (const adapterType of ["model_api", "ts_agent_host", "capability"]) {
+  it("rejects registered runtimes without file access from file work", () => {
+    for (const runtimeKey of ["opencode", "claude_code", "codex_cli"]) {
       const result = new DeterministicRouteSelector().select({
         required_sandbox_level: "none",
         execution_mode: "live",
         risk_level: "low",
         workspace_available: true,
         hints: mergeRouteHints([{ source: "contract", value: { execution_shape: "code_execution" } }]),
-      }, [candidate({ runtime_profile_id: "no-files", adapter_type: adapterType })]);
+      }, [candidate({ runtime_profile_id: "no-files", runtime_key: runtimeKey })]);
       expect(result.selected).toBeNull();
       expect(result.rejected).toEqual(expect.arrayContaining([
         expect.objectContaining({ reasons: expect.arrayContaining(["execution_shape_incompatible"]) }),
@@ -222,10 +264,10 @@ describe("deterministic route selector", () => {
       required_tools: ["shell"],
       hints: mergeRouteHints([{ source: "contract", value: { execution_shape: "agentic_files" } }]),
     }, [
-      candidate({ runtime_profile_id: "managed", adapter_type: "model_api", tools: [] }),
+      candidate({ runtime_profile_id: "opencode", runtime_key: "opencode", tools: [] }),
       candidate({
         runtime_profile_id: "open",
-        adapter_type: "opencode", requires_file_access: true,
+        runtime_key: "opencode", requires_file_access: true,
         tools: ["shell"],
         minimum_sandbox_level: "worktree",
         supports_workspace: true,
@@ -239,7 +281,7 @@ describe("deterministic route selector", () => {
     expect(result.selected?.candidate.runtime_profile_id).toBe("open");
     expect(result.rejected).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        runtime_profile_id: "managed",
+        runtime_profile_id: "opencode",
         reasons: expect.arrayContaining(["required_tool_missing", "execution_shape_incompatible"]),
       }),
     ]));
@@ -248,13 +290,13 @@ describe("deterministic route selector", () => {
   it("merges task, workflow, and evolution hints with source trace", () => {
     const hints = mergeRouteHints([
       { source: "task_contract", value: { required_capabilities: ["research"], cost_budget_usd: 2 } },
-      { source: "workflow_node", value: { required_tools: ["browser"], preferred_adapter_types: ["model_api"] } },
+      { source: "workflow_node", value: { required_tools: ["browser"], preferred_runtime_keys: ["opencode"] } },
       { source: "evolution_strategy", value: { minimum_trust_level: "high", latency_budget_ms: 1000 } },
     ]);
     expect(hints).toMatchObject({
       required_capabilities: ["research"],
       required_tools: ["browser"],
-      preferred_adapter_types: ["model_api"],
+      preferred_runtime_keys: ["opencode"],
       minimum_trust_level: "high",
       cost_budget_usd: 2,
       latency_budget_ms: 1000,
@@ -326,13 +368,13 @@ describe("deterministic route selector", () => {
       risk_level: "low",
       workspace_available: false,
     }, [candidate({
-      adapter_type: "opencode", requires_file_access: true,
+      runtime_key: "opencode", requires_file_access: true,
       minimum_sandbox_level: "worktree",
       requires_workspace_for_execution: false,
       supports_workspace: true,
       effective_trust_level: "low",
     })]);
-    expect(result.selected?.candidate.adapter_type).toBe("opencode");
+    expect(result.selected?.candidate.runtime_key).toBe("opencode");
   });
 
   it("requires a persistent workspace for high-risk file-access CLI work", () => {
@@ -342,7 +384,7 @@ describe("deterministic route selector", () => {
       risk_level: "high",
       workspace_available: false,
     }, [candidate({
-      adapter_type: "opencode", requires_file_access: true,
+      runtime_key: "opencode", requires_file_access: true,
       minimum_sandbox_level: "worktree",
       requires_workspace_for_execution: false,
       supports_workspace: true,

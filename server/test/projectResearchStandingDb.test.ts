@@ -14,7 +14,7 @@ import { syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRe
 import { ProjectResearchRepository } from "../src/modules/projectResearch/repository.js";
 import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaService.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // R5's standing service deliberately has no Workflow or Inquiry Thread
 // prerequisite. These tests keep PostgreSQL, Project ACLs, durable Jobs, Run
@@ -69,12 +69,21 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,
-       context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at
-     ) VALUES ($1,$2,$3,'v1','Test','{}','{}','{}','{}','[]','{}','{}',$4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES ($1, $2, $3, 'v1', 'Test', '{}', '{}', '[]', '{}', $4)`,
     [VERSION, AGENT, SPACE, now],
   );
   await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
+  await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT, space: SPACE, now });
 });
 
 async function seedBaseline(): Promise<void> {
@@ -117,12 +126,7 @@ async function seedRun(input: { status: string; output?: unknown; createdAt?: Da
   const id = randomUUID();
   const now = (input.createdAt ?? new Date()).toISOString();
   await db.pool.query(
-    `INSERT INTO runs (
-       id,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,adapter_type,
-       instructed_by_user_id,owner_user_id,project_id,capability_id,contract_snapshot_json,output_json,
-       created_at,updated_at,started_at,ended_at
-     ) VALUES ($1,$2,$3,$4,'agent','system',$5,'live','model_api',$6,$6,$7,
-       'research.monitor_compare',$8::jsonb,$9::jsonb,$10,$10,$10,$10)`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, instructed_by_user_id, owner_user_id, project_id, capability_id, contract_snapshot_json, output_json, created_at, updated_at, started_at, ended_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'system', $5, 'live', $6, $6, $7, 'research.monitor_compare', $8::jsonb, $9::jsonb, $10, $10, $10, $10, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [id, SPACE, AGENT, VERSION, input.status, USER, PROJECT,
       JSON.stringify({ workflow_input_json: { project_research_standing: { test: true } } }),
       JSON.stringify(input.output ?? null), now],

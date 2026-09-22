@@ -37,14 +37,14 @@ export function assertConversationInputCapabilities(
  * the descriptor or call the canonical dispatcher safely. */
 export function assertConversationInputResourceTools(
   parts: readonly { kind: "image" | "file_reference" | "input_resource" }[],
-  adapterType: string | null | undefined,
+  runtimeKey: string | null | undefined,
 ): void {
   if (!parts.some((part) => part.kind === "input_resource")) return;
-  const executorFamily = getRuntimeAdapterSpec(adapterType ?? "")?.executor_family;
-  if (executorFamily !== "managed_api" && executorFamily !== "local_cli") {
+  const executorFamily = getRuntimeAdapterSpec(runtimeKey ?? "")?.executor_family;
+  if (executorFamily !== "local_cli") {
     throw new ConversationInputCapabilityError(
       422,
-      "This Agent runtime cannot lazily read attached resources; choose a managed API or supported CLI backend before sending",
+      "This Agent runtime cannot lazily read attached resources; choose a supported ACP runtime before sending",
     );
   }
 }

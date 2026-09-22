@@ -5,12 +5,22 @@ append-only chain the server migration runner applies, and at the same time
 the drizzle-kit output directory: `NNNN_<name>.sql` files in order, plus
 `meta/` with the Drizzle journal and the snapshot each file was diffed from.
 
-**`0000_baseline.sql` is frozen** (since 2026-09-06, when the first deployment
-started carrying data). Every schema change after it is a new numbered file.
-A file that any database has applied is never edited: the runner records each
-file's checksum in `public.server_schema_migrations` and refuses to start
-against a changed one. `server/test/baselineSchema.test.ts` pins the
-baseline's hash and the chain shape so this fails in CI, not on an instance.
+**`0000_baseline.sql` starts the 2026-09-21 ACP runtime-authority schema epoch.**
+It is drizzle-kit output, generated from `src/db/schema/` against an empty
+chain, so every object in it has a Drizzle definition `schema:check` can see.
+Its one hand-added line is the `CREATE EXTENSION` at the top, which drizzle-kit
+does not model and the `vector` columns need first. Never regenerate it from a
+`pg_dump` of a migrated database: a dump carries catalog names — renamed
+columns' NOT NULL constraints, for one — that no Drizzle definition mentions,
+and every new instance would then be created carrying them.
+Databases from the prior epoch cannot be upgraded or restored into this epoch;
+they must be recreated from this baseline. The reset intentionally does not
+preserve or transform prior-epoch rows. After release, this baseline is frozen
+and every later schema change is a new numbered file. A file that a database
+has applied is never edited: the runner records each file's checksum in
+`public.server_schema_migrations` and refuses to start against a changed one.
+`server/test/baselineSchema.test.ts` pins the baseline hash and new-epoch chain
+shape so accidental drift fails in CI, not on an instance.
 
 ## Changing the schema
 
@@ -50,10 +60,11 @@ drizzle-kit exits 0 on a failed snapshot read.
 Migrations are explicit ops commands, never a server-startup side effect.
 `ops/scripts/start.sh` runs `ops/scripts/db/migrate.sh` before the app
 services come up; `--mode prod` always takes a `pg_dump` first. See
-`.agent/COMMANDS.md`. An instance on an older migration is brought forward by
-the normal migrate step, so a backup taken on an older build restores into a
-newer one; `ops/scripts/system/restore.sh` checks during preflight that this
-build carries the backup's last migration with the same checksum.
+`.agent/COMMANDS.md`. Within this schema epoch, an older build's database can
+be brought forward by the normal migration step. A pre-epoch backup is not
+compatible: restore preflight rejects its migration identity/checksum, and
+forcing that check does not make the old schema startable. Recreate the
+instance from this epoch's baseline instead.
 
 Plugin-owned tables keep their own chains under
 `plugins/official/<id>/migrations/`, run by the plugin installer.

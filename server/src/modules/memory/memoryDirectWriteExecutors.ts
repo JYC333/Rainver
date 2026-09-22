@@ -7,7 +7,7 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import type { SystemActionExecutor } from "../systemActions/gateway.js";
-import type { RunRecord } from "../runs/repository.js";
+import type { AgentRunRecord } from "../runs/repository.js";
 import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
 import {
   AGENT_SCOPE_MEMORY_TYPES,
@@ -40,7 +40,7 @@ import { PgMemoryProposalRepository } from "./proposalRepository.js";
 export function registerMemoryDirectWriteExecutors(
   executors: Map<SystemActionId, SystemActionExecutor>,
   config: ServerConfig,
-  run: RunRecord,
+  run: AgentRunRecord,
 ): void {
   const db = getDbPool(config.databaseUrl!);
   // Null on an unattended Run. Everything about a person needs one — a
@@ -255,7 +255,7 @@ export function registerMemoryDirectWriteExecutors(
   };
 
   /** A second active persona is refused readably rather than by a unique index. */
-  const hasActivePersona = async (queryable: Queryable, record: RunRecord): Promise<boolean> => {
+  const hasActivePersona = async (queryable: Queryable, record: AgentRunRecord): Promise<boolean> => {
     const row = await queryable.query<{ id: string }>(
       `SELECT id FROM memory_entries
         WHERE space_id = $1 AND agent_id = $2 AND scope_type = 'agent'
@@ -447,7 +447,7 @@ export function registerMemoryDirectWriteExecutors(
 async function assertSessionNotLooping(
   db: Queryable,
   config: ServerConfig,
-  run: RunRecord,
+  run: AgentRunRecord,
   /**
    * Who the count is attributed to. The person in the turn for a user-scope
    * write, and the **Agent's owner** for an agent-scope one: the owner is who

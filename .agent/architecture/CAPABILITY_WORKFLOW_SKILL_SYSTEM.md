@@ -13,10 +13,11 @@ trust review, requested and granted policy, scope/Agent binding, pinned version,
 runtime compatibility, Runtime Context Delivery authorization, and audit. It
 does not own a canonical re-representation of imported skill content.
 
-Claude Code, Codex, Cursor, OpenCode, Gemini CLI, `model_api`, and future
-runtimes are adapters. Runtime-specific files or prompt blocks are generated
-adapter artifacts, not content authorities. Skill content is model-visible
-durable context and reaches a Run only through Runtime Context Delivery.
+Implemented and planned ACP runtimes are execution adapters. Runtime-specific
+files or prompt projections are generated adapter artifacts, not content
+authorities. Skill content is model-visible durable context and reaches an
+Agent Run only through Runtime Context Delivery; bounded provider calls remain
+ProviderTask operations, not another Agent runtime.
 
 A Skill is a procedure for a model. A System Action / Tool is an
 rainver-owned callable operation exposed through the policy-enforced
@@ -200,8 +201,7 @@ still map capability versions to these runtime-specific forms:
 
 - Claude Code skill layout
 - Codex skill layout
-- generic prompt block for `model_api`
-- future native executor config
+- future ACP runtime projections
 - future MCP tool binding
 
 Runtime skill files are generated adapter files. They are not source of truth.
@@ -227,12 +227,10 @@ MVP renderers are pure functions that produce deterministic:
 - Claude Code generated skill directory suggestions with `SKILL.md`
 - Codex generated skill directory suggestions with `SKILL.md` and optional
   `agents/openai.yaml`
-- generic prompt blocks for `model_api`
 
 Runtime Context turns selected Claude/Codex skill renderings into typed,
 mandatory delegated-instruction items and persists them through the Gateway as
 ordered Delivery message blocks. No vendor instruction file is written.
-`model_api` bindings use the same path with their inline prompt block.
 
 Run creation persists `capabilities_json` as run-scoped execution context.
 Context preparation prefers a non-empty run-level capability list and falls

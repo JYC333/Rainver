@@ -14,13 +14,14 @@ import {
 } from "../providers/eligibility.js";
 import { isStale } from "../hosts/repository.js";
 import { hostInstallationIds, hostInstallationOptions, hostInstallationPromptCapabilities } from "../hosts/capabilities.js";
-import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
+import { loadRuntimeProfileSnapshot, projectRuntimeProfileSnapshot } from "./runtimeProfileSnapshot.js";
 
 interface BackendRow {
   agent_kind: string;
   runtime_profile_id: string;
   name: string;
-  adapter_type: string;
+  runtime_key: string;
   model_name: string | null;
   model_provider_id: string | null;
   provider_type: string | null;
@@ -55,6 +56,8 @@ interface BindingRow {
   agent_kind: string;
   binding_id: string;
   runtime_profile_id: string;
+  runtime_key: string;
+  backend_mode: "runtime_native" | "model_provider";
   runtime_state_key: string;
   runtime_session_id: string | null;
   runtime_context_fingerprint: string | null;
@@ -95,7 +98,7 @@ export interface ResolvedConversationBackend extends ConversationBackendBinding 
 function effectivePromptCapabilities(profile: BackendRow): RuntimePromptCapabilities | null {
   const hostBound = Boolean(profile.execution_host_id && profile.workspace_mode && profile.runtime_installation);
   const runtime = hostBound
-    ? hostInstallationPromptCapabilities(profile.host_capabilities_json, profile.adapter_type, profile.runtime_installation!)
+    ? hostInstallationPromptCapabilities(profile.host_capabilities_json, profile.runtime_key, profile.runtime_installation!)
     : null;
   return {
     image: effectiveImageCapability(profile, hostBound, runtime),
@@ -113,7 +116,7 @@ function effectiveImageCapability(
   runtime: RuntimePromptCapabilities | null,
 ): boolean | null {
   const hostOwnsAcpModel = hostBound
-    && isAcpRuntimeAdapter(profile.adapter_type)
+    && isAcpRuntimeAdapter(profile.runtime_key)
     && profile.model_provider_id === null;
   if (hostOwnsAcpModel) {
     // An unbound ACP installation owns both the login and the model selected
@@ -183,7 +186,7 @@ export class PgConversationBackendRepository {
     const profiles = await this.db.query<BackendRow>(
         `SELECT agent.agent_kind,
                 profile.id AS runtime_profile_id, profile.name,
-                profile.adapter_type, profile.model_name,
+                profile.runtime_key, profile.model_name,
                 profile.model_provider_id,
                 provider.provider_type,
                 provider.enabled AS provider_enabled,
@@ -242,24 +245,17 @@ export class PgConversationBackendRepository {
     );
 
     return profiles.rows.flatMap((profile) => {
-      const spec = getRuntimeAdapterSpec(profile.adapter_type);
+      const spec = getRuntimeAdapterSpec(profile.runtime_key);
       if (!spec || spec.implementation_status !== "implemented") return [];
       const hostBound = Boolean(
         profile.execution_host_id && profile.workspace_mode && profile.runtime_installation,
       );
       // A CLI profile that names no execution host runs nowhere: since ADR
       // 0016 there is no server-side copy of a vendor CLI to fall back to.
-      if (!hostBound && isLocalCliRuntimeAdapter(profile.adapter_type)) return [];
+      if (!hostBound && isLocalCliRuntimeAdapter(profile.runtime_key)) return [];
       const providerAvailable =
         profile.model_provider_id !== null &&
         isProviderEligibleForUser(profile, userId);
-      if (
-        !hostBound &&
-        spec.credentials.credential_mode === "model_provider_api_key" &&
-        !providerAvailable
-      ) {
-        return [];
-      }
       if (
         !hostBound &&
         spec.credentials.credential_mode === "cli_profile_or_model_provider" &&
@@ -282,7 +278,7 @@ export class PgConversationBackendRepository {
       const locationMatchesAgentProject = hostBound && profile.workspace_mode === "location"
         && profile.location_project_id === profile.agent_project_id;
       const installationAvailable = hostBound
-        && hostInstallationIds(profile.host_capabilities_json, profile.adapter_type).includes(
+        && hostInstallationIds(profile.host_capabilities_json, profile.runtime_key).includes(
           profile.runtime_installation!,
         );
       let usable = true;
@@ -309,7 +305,7 @@ export class PgConversationBackendRepository {
       return [{
         runtime_profile_id: profile.runtime_profile_id,
         name: profile.name,
-        adapter_type: profile.adapter_type,
+        runtime_key: profile.runtime_key,
         model_name: profile.model_name,
         usable,
         reason,
@@ -325,7 +321,7 @@ export class PgConversationBackendRepository {
         session_config_options: hostBound && profile.runtime_installation
           ? hostInstallationOptions(
               profile.host_capabilities_json,
-              profile.adapter_type,
+              profile.runtime_key,
               profile.runtime_installation,
             ).filter((option) => !(profile.model_provider_id && option.category === "model"))
           : [],
@@ -431,7 +427,7 @@ export class PgConversationBackendRepository {
     }
     const binding: ConversationBackendBinding = {
       runtime_profile_id: option.runtime_profile_id,
-      adapter_type: option.adapter_type,
+      runtime_key: option.runtime_key,
     };
     const resolved = await this.upsertBinding(input, binding, existing?.runtime_state_key ?? null);
     return { ...resolved, session_config_options: option.session_config_options ?? [], prompt_capabilities: option.prompt_capabilities ?? null };
@@ -445,7 +441,7 @@ export class PgConversationBackendRepository {
   ): Promise<ConversationBackendBinding | null> {
     const binding = await this.findResolvedBinding(spaceId, userId, sessionId, agentId);
     return binding
-      ? { runtime_profile_id: binding.runtime_profile_id, adapter_type: binding.adapter_type }
+      ? { runtime_profile_id: binding.runtime_profile_id, runtime_key: binding.runtime_key }
       : null;
   }
 
@@ -454,16 +450,20 @@ export class PgConversationBackendRepository {
     userId: string,
     sessionId: string,
     agentId: string,
+    db: Queryable = this.db,
   ): Promise<ResolvedConversationBackend | null> {
-    const result = await this.db.query<BindingRow & { adapter_type: string }>(
+    const result = await db.query<BindingRow>(
       `SELECT agent.agent_kind,
               binding.id AS binding_id,
               binding.runtime_profile_id,
+              binding.runtime_key_snapshot AS runtime_key,
+              binding.backend_mode_snapshot AS backend_mode,
               binding.runtime_state_key, binding.runtime_session_id,
               binding.runtime_context_fingerprint, binding.runtime_message_cursor_id,
-              profile.adapter_type, profile.model_name,
-              profile.model_provider_id, profile.runtime_config_json,
-              profile.runtime_policy_json,
+              binding.model_name_snapshot AS model_name,
+              binding.model_provider_id_snapshot AS model_provider_id,
+              binding.runtime_config_snapshot_json AS runtime_config_json,
+              binding.runtime_policy_snapshot_json AS runtime_policy_json,
               profile.execution_host_id, profile.workspace_location_id,
               profile.workspace_mode,
               profile.runtime_installation
@@ -483,21 +483,25 @@ export class PgConversationBackendRepository {
       [spaceId, userId, sessionId, agentId],
     );
     const row = result.rows[0];
-    return row ? { ...row, retired_runtime_state_key: null } : null;
+    return row
+      ? { ...projectRuntimeProfileSnapshot(row), retired_runtime_state_key: null }
+      : null;
   }
 
   private async findConversationResolvedBinding(
     spaceId: string,
     sessionId: string,
     agentId: string,
+    db: Queryable = this.db,
   ): Promise<ResolvedConversationBackend | null> {
-    const result = await this.db.query<BindingRow & { adapter_type: string }>(
+    const result = await db.query<BindingRow>(
       `SELECT agent.agent_kind,
               binding.id AS binding_id,
               binding.runtime_profile_id,
+              binding.runtime_key_snapshot AS runtime_key,
+              binding.backend_mode_snapshot AS backend_mode,
               binding.runtime_state_key, binding.runtime_session_id,
               binding.runtime_context_fingerprint, binding.runtime_message_cursor_id,
-              profile.adapter_type,
               binding.model_name_snapshot AS model_name,
               binding.model_provider_id_snapshot AS model_provider_id,
               binding.runtime_config_snapshot_json AS runtime_config_json,
@@ -538,7 +542,7 @@ export class PgConversationBackendRepository {
           AND thread.execution_host_id = profile.execution_host_id
           AND thread.workspace_mode = profile.workspace_mode
           AND thread.workspace_location_id IS NOT DISTINCT FROM profile.workspace_location_id
-          AND thread.adapter_type = profile.adapter_type
+          AND thread.runtime_key = binding.runtime_key_snapshot
           AND thread.runtime_installation = profile.runtime_installation
          JOIN agents agent
            ON agent.id = binding.agent_id
@@ -552,7 +556,9 @@ export class PgConversationBackendRepository {
       [spaceId, sessionId, agentId],
     );
     const row = result.rows[0];
-    return row ? { ...row, retired_runtime_state_key: null } : null;
+    return row
+      ? { ...projectRuntimeProfileSnapshot(row), retired_runtime_state_key: null }
+      : null;
   }
 
   private async upsertBinding(
@@ -567,79 +573,95 @@ export class PgConversationBackendRepository {
   ): Promise<ResolvedConversationBackend> {
     const now = new Date().toISOString();
     const runtimeStateKey = randomUUID();
-    const result = await this.db.query<{ binding_id: string }>(
-      `INSERT INTO session_conversation_backends (
-          id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
-          model_name_snapshot, model_provider_id_snapshot,
-          runtime_config_snapshot_json, runtime_policy_snapshot_json,
-          runtime_state_key, created_at, updated_at
-       ) SELECT $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::varchar, profile.id,
-                profile.model_name, profile.model_provider_id,
-                profile.runtime_config_json, profile.runtime_policy_json,
-                $7::varchar, $8::timestamptz, $8::timestamptz
-           FROM agent_runtime_profiles profile
-          WHERE profile.id = $6 AND profile.space_id = $2 AND profile.agent_id = $5
-       ON CONFLICT ON CONSTRAINT uq_session_conversation_backends_session_agent
-       DO UPDATE SET
-         runtime_profile_id = EXCLUDED.runtime_profile_id,
-         model_name_snapshot = EXCLUDED.model_name_snapshot,
-         model_provider_id_snapshot = EXCLUDED.model_provider_id_snapshot,
-         runtime_config_snapshot_json = EXCLUDED.runtime_config_snapshot_json,
-         runtime_policy_snapshot_json = EXCLUDED.runtime_policy_snapshot_json,
-         runtime_state_key = CASE
-           WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
-           THEN session_conversation_backends.runtime_state_key
-           ELSE EXCLUDED.runtime_state_key
-         END,
-         runtime_session_id = CASE
-           WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
-           THEN session_conversation_backends.runtime_session_id
-           ELSE NULL
-         END,
-         runtime_context_fingerprint = CASE
-           WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
-           THEN session_conversation_backends.runtime_context_fingerprint
-           ELSE NULL
-         END,
-         runtime_message_cursor_id = CASE
-           WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
-           THEN session_conversation_backends.runtime_message_cursor_id
-           ELSE NULL
-         END,
-         runtime_session_updated_at = CASE
-           WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
-           THEN session_conversation_backends.runtime_session_updated_at
-           ELSE NULL
-         END,
-         updated_at = EXCLUDED.updated_at
-       RETURNING id AS binding_id`,
-      [
-        randomUUID(),
+    return withQueryableTransaction(this.db, async (db) => {
+      const profile = await loadRuntimeProfileSnapshot(db, {
+        spaceId: input.space_id,
+        agentId: input.agent_id,
+        profileId: binding.runtime_profile_id,
+      });
+      if (!profile) throw new Error("conversation runtime profile was not found");
+
+      const result = await db.query<{ binding_id: string }>(
+        `INSERT INTO session_conversation_backends (
+            id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
+            runtime_key_snapshot, backend_mode_snapshot,
+            model_name_snapshot, model_provider_id_snapshot,
+            runtime_config_snapshot_json, runtime_policy_snapshot_json,
+            runtime_state_key, created_at, updated_at
+         ) VALUES (
+            $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::varchar, $6::varchar,
+            $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::varchar, $14::timestamptz, $14::timestamptz
+         )
+         ON CONFLICT ON CONSTRAINT uq_session_conversation_backends_session_agent
+         DO UPDATE SET
+           runtime_profile_id = EXCLUDED.runtime_profile_id,
+           runtime_key_snapshot = EXCLUDED.runtime_key_snapshot,
+           backend_mode_snapshot = EXCLUDED.backend_mode_snapshot,
+           model_name_snapshot = EXCLUDED.model_name_snapshot,
+           model_provider_id_snapshot = EXCLUDED.model_provider_id_snapshot,
+           runtime_config_snapshot_json = EXCLUDED.runtime_config_snapshot_json,
+           runtime_policy_snapshot_json = EXCLUDED.runtime_policy_snapshot_json,
+           runtime_state_key = CASE
+             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+             THEN session_conversation_backends.runtime_state_key
+             ELSE EXCLUDED.runtime_state_key
+           END,
+           runtime_session_id = CASE
+             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+             THEN session_conversation_backends.runtime_session_id
+             ELSE NULL
+           END,
+           runtime_context_fingerprint = CASE
+             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+             THEN session_conversation_backends.runtime_context_fingerprint
+             ELSE NULL
+           END,
+           runtime_message_cursor_id = CASE
+             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+             THEN session_conversation_backends.runtime_message_cursor_id
+             ELSE NULL
+           END,
+           runtime_session_updated_at = CASE
+             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+             THEN session_conversation_backends.runtime_session_updated_at
+             ELSE NULL
+           END,
+           updated_at = EXCLUDED.updated_at
+         RETURNING id AS binding_id`,
+        [
+          randomUUID(),
+          input.space_id,
+          input.session_id,
+          input.user_id,
+          input.agent_id,
+          binding.runtime_profile_id,
+          profile.runtime_key,
+          profile.backend_mode,
+          profile.model_name,
+          profile.model_provider_id,
+          JSON.stringify(profile.runtime_config_json),
+          JSON.stringify(profile.runtime_policy_json),
+          runtimeStateKey,
+          now,
+        ],
+      );
+      if (!result.rows[0]) throw new Error("conversation backend binding was not persisted");
+      const resolved = await this.findResolvedBinding(
         input.space_id,
-        input.session_id,
         input.user_id,
+        input.session_id,
         input.agent_id,
-        binding.runtime_profile_id,
-        runtimeStateKey,
-        now,
-      ],
-    );
-    const row = result.rows[0];
-    if (!row) throw new Error("conversation backend binding was not persisted");
-    const resolved = await this.findResolvedBinding(
-      input.space_id,
-      input.user_id,
-      input.session_id,
-      input.agent_id,
-    );
-    if (!resolved) throw new Error("conversation backend binding was not found after persistence");
-    return {
-      ...resolved,
-      retired_runtime_state_key:
-        previousStateKey && previousStateKey !== resolved.runtime_state_key
-          ? previousStateKey
-          : null,
-    };
+        db,
+      );
+      if (!resolved) throw new Error("conversation backend binding was not found after persistence");
+      return {
+        ...resolved,
+        retired_runtime_state_key:
+          previousStateKey && previousStateKey !== resolved.runtime_state_key
+            ? previousStateKey
+            : null,
+      };
+    });
   }
 }
 

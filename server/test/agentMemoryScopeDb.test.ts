@@ -21,8 +21,8 @@ import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import {
   MemoryProposalCreateCommandSchema,
   MemoryProposalUpdateCommandSchema,
-  type RuntimeHostExecuteRequest,
 } from "@rainver/protocol";
+import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
 
 /**
  * The `agent` Memory scope: what an Agent knows about itself and about a Room
@@ -72,12 +72,23 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions
-       (id, agent_id, space_id, version_label, system_prompt, model_config_json, runtime_config_json,
-        context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, runtime_policy_json, created_at)
-     VALUES ($1,$2,$3,'v1','Test','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb,$4)`,
+       (
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     )
+     VALUES ($1, $2, $3, 'v1', 'Test', '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, $4)`,
     [AGENT_VERSION_ID, AGENT_ID, SPACE, now],
   );
   await db.pool.query("UPDATE agents SET current_version_id = $2 WHERE id = $1", [AGENT_ID, AGENT_VERSION_ID]);
+  await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT_ID, space: SPACE, now });
   PROJECT = (await new PgProjectRepository(db.pool).create({ spaceId: SPACE, userId: OWNER }, { name: "Agent Memory" })).id as string;
   MAINLINE = (await db.pool.query<{ id: string }>(
     `SELECT id FROM rooms WHERE space_id = $1 AND project_id = $2 AND is_mainline = true LIMIT 1`, [SPACE, PROJECT],
@@ -93,9 +104,8 @@ beforeEach(async () => {
     [SESSION_ID, SPACE, PROJECT, MAINLINE, now],
   );
   await db.pool.query(
-    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-                       created_at, updated_at, owner_user_id, visibility, instructed_by_user_id, project_id, session_id)
-     VALUES ($1,$2,$3,$4,'agent','manual','running','live',$5,$5,$6,'private',$6,$7,$8)`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, instructed_by_user_id, project_id, session_id, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+     VALUES ($1, $2, $3, $4, 'agent', 'manual', 'running', 'live', $5, $5, $6, 'private', $6, $7, $8, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [RUN_ID, SPACE, AGENT_ID, AGENT_VERSION_ID, now, OWNER, PROJECT, SESSION_ID],
   );
   await db.pool.query(
@@ -139,12 +149,11 @@ async function makeRoom(title: string, userIds: readonly string[]): Promise<stri
 const ownerIdentity = () => ({ spaceId: SPACE, userId: OWNER });
 
 async function dispatcher(overrides: Record<string, unknown> = {}) {
-  const run = await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID);
+  const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
   if (!run) throw new Error("Test Run was not created");
   return SystemActionDispatcher.create(
     loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_MEMORY_DIRECT_WRITES_PER_SESSION: "3" }),
-    { ...run, ...overrides },
-    {} as RuntimeHostExecuteRequest,
+    { ...run, ...overrides }
   );
 }
 
@@ -526,10 +535,8 @@ describe("revising what the Agent already knows", () => {
     // A later, unattended Run — the accept was its own Run's persona write.
     const laterRun = randomUUID();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-                         created_at, updated_at, owner_user_id, visibility, instructed_by_user_id, project_id,
-                         permission_snapshot_json)
-       VALUES ($1,$2,$3,$4,'agent','autonomous','running','live',now(),now(),$5,'private',$5,$6,$7::jsonb)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, instructed_by_user_id, project_id, permission_snapshot_json, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'autonomous', 'running', 'live', now(), now(), $5, 'private', $5, $6, $7::jsonb, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [laterRun, SPACE, AGENT_ID, AGENT_VERSION_ID, OWNER, PROJECT,
         JSON.stringify({ tool_grants: [{ action_id: "memory.remember" }, { action_id: "memory.revise" }] })],
     );
@@ -617,12 +624,23 @@ describe("one Agent's memory is not another's, even under the same owner", () =>
     );
     await db.pool.query(
       `INSERT INTO agent_versions
-         (id, agent_id, space_id, version_label, system_prompt, model_config_json, runtime_config_json,
-          context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, runtime_policy_json, created_at)
-       VALUES ($1,$2,$3,'v1','Test','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb,$4)`,
+         (
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     )
+       VALUES ($1, $2, $3, 'v1', 'Test', '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, $4)`,
       [OTHER_VERSION, OTHER_AGENT, SPACE, now],
     );
     await db.pool.query("UPDATE agents SET current_version_id = $2 WHERE id = $1", [OTHER_AGENT, OTHER_VERSION]);
+    await ensureDefaultRuntimeProfile(db.pool, { agent: OTHER_AGENT, space: SPACE });
   }
 
   async function seedPersona(agentId: string, content: string): Promise<string> {
@@ -839,10 +857,8 @@ describe("the boundaries around an Agent's own memory", () => {
     // by asking one Agent to ask another.
     const delegated = randomUUID();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-                         created_at, updated_at, owner_user_id, visibility, project_id, root_run_id,
-                         instructed_by_user_id, permission_snapshot_json)
-       VALUES ($1,$2,$3,$4,'agent','delegation','running','live',now(),now(),$5,'private',$6,$7,$5,$8::jsonb)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, project_id, root_run_id, instructed_by_user_id, permission_snapshot_json, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'delegation', 'running', 'live', now(), now(), $5, 'private', $6, $7, $5, $8::jsonb, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [delegated, SPACE, AGENT_ID, AGENT_VERSION_ID, OWNER, PROJECT, RUN_ID,
         JSON.stringify({ tool_grants: [{ action_id: "memory.remember" }, { action_id: "memory.revise" }] })],
     );

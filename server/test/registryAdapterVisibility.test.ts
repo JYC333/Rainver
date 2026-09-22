@@ -2,14 +2,15 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dynamicSpecs.js";
-import { acpAgentAdapterType, acpAgentRuntimeAdapterSpec } from "../src/modules/acpAgents/service.js";
+import { acpAgentRuntimeKey, acpAgentRuntimeAdapterSpec } from "../src/modules/acpAgents/service.js";
 import { getRuntimeAdapterSpec } from "../src/modules/runtimeAdapters/specs.js";
+import { acpRuntimeProbes } from "../src/modules/hosts/runtimeProbes.js";
 
 /**
  * An ACP agent enabled from the registry is a runtime adapter like any other,
  * but it is never in `BUILTIN_RUNTIME_ADAPTER_SPECS` — it is published into
  * the dynamic catalog at boot. Reading the builtin table directly therefore
- * makes it invisible, which is how "Unknown adapter_type" came back for a
+ * makes it invisible, which is how "Unknown runtime_key" came back for a
  * Cursor agent the operator had enabled and installed on a host.
  */
 const CURSOR = {
@@ -29,7 +30,7 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
   afterEach(() => setDynamicRuntimeAdapterSpecs([]));
 
   it("resolves through the accessor once published", () => {
-    expect(getRuntimeAdapterSpec(acpAgentAdapterType("cursor"))).toBeNull();
+    expect(getRuntimeAdapterSpec(acpAgentRuntimeKey("cursor"))).toBeNull();
     setDynamicRuntimeAdapterSpecs([acpAgentRuntimeAdapterSpec(CURSOR)]);
     expect(getRuntimeAdapterSpec("acp_cursor")?.runtime_kind).toBe("local_cli");
   });
@@ -47,5 +48,12 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
     };
     walk(join(import.meta.dirname, "..", "src"));
     expect(offenders).toEqual([]);
+  });
+
+  it("names every probe by runtime_key alone", () => {
+    const probes = acpRuntimeProbes();
+    expect(probes.length).toBeGreaterThan(0);
+    expect(probes.every((probe) => typeof probe.runtime_key === "string" && probe.runtime_key.length > 0)).toBe(true);
+    expect(probes.some((probe) => "adapter_type" in probe)).toBe(false);
   });
 });

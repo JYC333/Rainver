@@ -17,6 +17,7 @@ import {
   resolveAcpEntrypoint,
   resolveAcpLaunch,
   resolveInputResourcePaths,
+  runDirForTests,
   setEgressProxy,
   substituteAcpInput,
   substituteStructuredInputResources,
@@ -229,6 +230,21 @@ describe("handleLaunch", () => {
     const done = await complete();
     expect(done).toMatchObject({ type: "complete", run_id: "run-3", exit_code: 1, timed_out: false });
     expect(String(done.error)).toMatch(/no local path registered/);
+  });
+
+  it("runs without a Location in a private Run-scoped working directory", async () => {
+    const { frames, send, complete } = collectSend();
+    await handleLaunch(
+      { run_id: "run-no-location", launch_id: "launch-no-location", argv: ["/bin/pwd"] },
+      send,
+      () => {},
+    );
+    const done = await complete();
+    expect(done).toMatchObject({ exit_code: 0, error: null });
+    expect(frames.filter((frame) => frame.type === "output").map((frame) => frame.chunk).join("").trim())
+      .toBe(join(runDirForTests("run-no-location"), "workspace"));
+    // The normal completion cleanup owns this transient directory.
+    expect(existsSync(runDirForTests("run-no-location"))).toBe(false);
   });
 
   it("writes provided stdin to the child process", async () => {
@@ -591,7 +607,7 @@ describe("handleLaunch with a provider binding", () => {
           run_id: "run-registry",
           launch_id: "launch-23",
           workspace_location_id: "folder-1",
-          adapter_type: "acp_registry_agent",
+          runtime_key: "acp_registry_agent",
           argv: ["sh", "-c", "printf '%s|%s|%s\n' \"$HOME\" \"${XDG_DATA_HOME:-none}\" \"${GEMINI_API_KEY:-none}\""],
           provider_binding: {
             profile_key: profileKey,

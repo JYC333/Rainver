@@ -1,6 +1,6 @@
 {
   "name": "@rainver/host-daemon",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Thin execution-host bridge for ADR 0016: registers a personal machine with an Rainver control plane, registers pre-existing directories as trusted-host workspaces, and holds an outbound heartbeat connection. No planner, no memory, no business logic \u2014 see .agent/decisions/0016-control-plane-execution-hosts.md.",
   "private": true,
   "type": "module",
@@ -17,8 +17,11 @@
     "dist"
   ],
   "scripts": {
+    "build:workspace-deps": "pnpm --filter @rainver/protocol --filter @rainver/outbound-guard --filter @rainver/folder-read --filter @rainver/agent-cli build",
+    "pretypecheck": "pnpm run build:workspace-deps",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
+    "pretest": "pnpm run build:workspace-deps",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -30,7 +33,7 @@
   },
   "devDependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.70.0",
-    "@agentclientprotocol/codex-acp": "1.6.2",
+    "@agentclientprotocol/codex-acp": "1.12.0",
     "@types/node": "^22.0.0",
     "typescript": "^7.0.0",
     "vitest": "^4.1.11"

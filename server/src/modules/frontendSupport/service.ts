@@ -540,20 +540,20 @@ export class PgFrontendSupportService {
     // `runtime_tool_bindings` table, which described server-installed CLIs;
     // since ADR 0016 a runtime is configured by an Agent profile naming an
     // execution host and a copy on it.
-    const result = await this.db.query<{ adapter_type: string }>(
-      `SELECT DISTINCT profile.adapter_type
+    const result = await this.db.query<{ runtime_key: string }>(
+      `SELECT DISTINCT profile.runtime_key
          FROM agent_runtime_profiles profile
          JOIN hosts host ON host.id = profile.execution_host_id
         WHERE profile.space_id = $1
           AND profile.enabled = true
           AND host.status <> 'revoked'
-        ORDER BY profile.adapter_type ASC`,
+        ORDER BY profile.runtime_key ASC`,
       [spaceId],
     );
-    const types = result.rows.map((row) => row.adapter_type);
+    const types = result.rows.map((row) => row.runtime_key);
     return {
       real_adapters_configured_count: types.length,
-      configured_adapter_types: types,
+      configured_runtime_keys: types,
       message: types.length > 0 ? "Runtime adapters configured." : "No runtime adapters configured.",
     };
   }

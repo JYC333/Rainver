@@ -157,7 +157,7 @@ export default function ImportedSessionView() {
           </Link>
           <h1 className="mt-1 truncate text-xl font-semibold tracking-tight">{session.title ?? 'Imported session'}</h1>
           <p className="text-sm text-muted-foreground">
-            Imported from {session.adapter_type}
+            Imported from {session.runtime_key}
             {session.cwd && ` · ${session.cwd}`}
             {session.last_record_at && ` · ${new Date(session.last_record_at).toLocaleString()}`}
           </p>

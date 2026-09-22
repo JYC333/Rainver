@@ -25,6 +25,7 @@ function run(overrides: Partial<Run> = {}): Run {
     space_id: 'space-1',
     agent_id: 'agent-1',
     agent_version_id: 'agent-version-1',
+    execution_kind: 'agent',
     run_role: 'execution',
     project_folder_id: null,
     session_id: 'session-1',

@@ -83,10 +83,10 @@ export function assertPersonStartedRunRequest(body: Record<string, unknown>): vo
  * the floor, not a ceiling.
  */
 export function requiredSandboxLevelForRun(
-  adapterType: string | null | undefined,
+  runtimeKey: string | null | undefined,
   projectFolderId: string | null | undefined,
 ): string {
-  if (!isVendorCliAdapter(adapterType)) return "none";
+  if (!isVendorCliAdapter(runtimeKey)) return "none";
   return projectFolderId ? "worktree" : "ephemeral";
 }
 
@@ -97,26 +97,26 @@ export function requiredSandboxLevelForRun(
  * into a run-scope ephemeral directory or a workspace worktree.
  */
 export function resolveSandboxLevelForRuntime(input: {
-  adapterType: string | null | undefined;
+  runtimeKey: string | null | undefined;
   configuredLevel: string | null | undefined;
   riskLevel: string | null | undefined;
   projectFolderId: string | null | undefined;
 }): string | null {
   if (
-    isVendorCliAdapter(input.adapterType) &&
+    isVendorCliAdapter(input.runtimeKey) &&
     typeof input.riskLevel === "string" &&
     input.riskLevel.trim().toLowerCase() === "critical"
   ) {
     return "one_shot_docker";
   }
-  if (isVendorCliAdapter(input.adapterType)) {
+  if (isVendorCliAdapter(input.runtimeKey)) {
     const configured = typeof input.configuredLevel === "string" ? input.configuredLevel.trim() : "";
     const risk = typeof input.riskLevel === "string"
       ? input.riskLevel.trim().toLowerCase()
       : "";
     const baseline = risk === "high"
       ? "worktree"
-      : requiredSandboxLevelForRun(input.adapterType, input.projectFolderId);
+      : requiredSandboxLevelForRun(input.runtimeKey, input.projectFolderId);
     return sandboxRank(configured) > sandboxRank(baseline)
       ? configured
       : baseline;

@@ -54,9 +54,9 @@ function pct(value: number): number {
 }
 
 /** Where this copy keeps its login: machine HOME for `own`, stable managed HOME otherwise. */
-function copyHome(adapterType: string, installation: string): { home: string; manifest: ToolManifest | null } | null {
+function copyHome(runtimeKey: string, installation: string): { home: string; manifest: ToolManifest | null } | null {
   if (installation === OWN_INSTALLATION) return { home: homedir(), manifest: null };
-  const manifest = readToolManifestSync(adapterType, installation);
+  const manifest = readToolManifestSync(runtimeKey, installation);
   return manifest ? { home: manifest.home, manifest } : null;
 }
 
@@ -409,20 +409,20 @@ function probeCodex(home: string, manifest: ToolManifest | null, timeoutSeconds:
 // --- Entry point -----------------------------------------------------------
 
 export type UsageProbeFrame = {
-  adapter_type: string;
+  runtime_key: string;
   installation: string;
   login: RuntimeLoginSpec | null;
   timeout_seconds: number;
 };
 
 export async function probeUsage(frame: UsageProbeFrame): Promise<HostUsageQuota> {
-  const copy = copyHome(frame.adapter_type, frame.installation);
-  if (!copy) return failed(`This host does not have ${frame.adapter_type} ${frame.installation} installed.`);
-  if (frame.adapter_type === "claude_code") return probeClaude(copy.home, frame.login ?? copy.manifest?.login ?? null, frame.timeout_seconds);
-  if (frame.adapter_type === "codex_cli") return probeCodex(copy.home, copy.manifest, frame.timeout_seconds);
+  const copy = copyHome(frame.runtime_key, frame.installation);
+  if (!copy) return failed(`This host does not have ${frame.runtime_key} ${frame.installation} installed.`);
+  if (frame.runtime_key === "claude_code") return probeClaude(copy.home, frame.login ?? copy.manifest?.login ?? null, frame.timeout_seconds);
+  if (frame.runtime_key === "codex_cli") return probeCodex(copy.home, copy.manifest, frame.timeout_seconds);
   // OpenCode bills through whichever provider it is pointed at, and a registry
   // Agent's limits are its own product's business. Neither has a subscription
   // quota this host could read; saying so beats an empty panel that reads as a
   // failure.
-  return { ...emptyQuota(), error: `${frame.adapter_type} reports no subscription quota.` };
+  return { ...emptyQuota(), error: `${frame.runtime_key} reports no subscription quota.` };
 }

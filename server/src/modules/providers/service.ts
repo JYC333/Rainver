@@ -144,7 +144,6 @@ export async function listProviderVendorCatalog(
       display_name: vendor.displayName,
       protocol: vendor.protocol,
       supports_chat: vendor.supportsChat,
-      supports_runtime_tools: vendor.supportsRuntimeTools,
       supports_structured_output: vendor.supportsStructuredOutput,
       supports_embedding: vendor.supportsEmbedding,
       supports_rerank: vendor.supportsRerank,

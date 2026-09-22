@@ -7,9 +7,6 @@ description: >
   crawling by default. Source-to-item links include evidence/locator when
   available. Durable knowledge changes are proposal-only.
 
-model_config:
-  max_tokens: 8192
-
 context_policy:
   allowed_input_contexts:
     - selected_sources
@@ -38,12 +35,9 @@ tool_policy:
   web_search: false
   crawl: false
 
-runtime_policy:
+execution_constraints:
   risk_level: low
   max_run_time_seconds: 300
-  allowed_adapter_types:
-    - model_api
-  default_adapter_type: model_api
 
 output_policy:
   proposal_only: true

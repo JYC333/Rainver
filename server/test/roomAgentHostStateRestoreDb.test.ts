@@ -34,7 +34,7 @@ async function closedConversationThread(workspaceMode: "managed" | "location"): 
   await db.pool.query(
     `INSERT INTO host_threads (
        id, space_id, execution_host_id, workspace_mode, session_id, agent_id, container_kind,
-       adapter_type, runtime_installation, status, created_by_user_id, created_at, updated_at
+       runtime_key, runtime_installation, status, created_by_user_id, created_at, updated_at
        , workspace_location_id
      ) VALUES ($1, $2, $3, $4, $5, $6, 'conversation', 'claude_code', 'own', 'closed', $7, now(), now(), $8)`,
     [randomUUID(), SPACE, HOST, workspaceMode, CONVERSATION, AGENT, OWNER,
@@ -148,7 +148,7 @@ describe("finding what a re-added Agent restores", () => {
       spaceId: SPACE,
       sessionId: CONVERSATION,
       agentId: AGENT,
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       runtimeInstallation: "own",
       createdByUserId: OWNER,
     });

@@ -32,8 +32,6 @@ export interface VendorDescriptor {
   protocol: ProviderProtocol;
   /** Whether a chat completion may be requested from this vendor at all. */
   supportsChat: boolean;
-  /** Whether runtime-host tool calls may be offered. */
-  supportsRuntimeTools: boolean;
   /** Whether a structured-output request may be made. */
   supportsStructuredOutput: boolean;
   /** Whether the vendor can serve retrieval embeddings. */
@@ -63,7 +61,6 @@ const VENDORS: readonly VendorDescriptor[] = [
     displayName: "OpenAI",
     protocol: "openai_completions",
     supportsChat: true,
-    supportsRuntimeTools: true,
     supportsStructuredOutput: true,
     supportsEmbedding: true,
     supportsRerank: false,
@@ -76,7 +73,6 @@ const VENDORS: readonly VendorDescriptor[] = [
     displayName: "OpenAI Codex (ChatGPT subscription)",
     protocol: "openai_codex_responses",
     supportsChat: true,
-    supportsRuntimeTools: true,
     supportsStructuredOutput: true,
     supportsEmbedding: false,
     supportsRerank: false,
@@ -89,7 +85,6 @@ const VENDORS: readonly VendorDescriptor[] = [
     displayName: "Anthropic",
     protocol: "anthropic_messages",
     supportsChat: true,
-    supportsRuntimeTools: true,
     supportsStructuredOutput: true,
     supportsEmbedding: false,
     supportsRerank: false,
@@ -106,7 +101,6 @@ const VENDORS: readonly VendorDescriptor[] = [
     // arrive corrupted, which `structuredOutputCapabilities` still guards.
     protocol: "anthropic_messages",
     supportsChat: true,
-    supportsRuntimeTools: true,
     supportsStructuredOutput: true,
     supportsEmbedding: false,
     supportsRerank: false,
@@ -119,7 +113,6 @@ const VENDORS: readonly VendorDescriptor[] = [
     displayName: "OpenRouter",
     protocol: "openai_completions",
     supportsChat: true,
-    supportsRuntimeTools: true,
     supportsStructuredOutput: true,
     supportsEmbedding: true,
     supportsRerank: false,
@@ -132,7 +125,6 @@ const VENDORS: readonly VendorDescriptor[] = [
     displayName: "DeepSeek",
     protocol: "openai_completions",
     supportsChat: true,
-    supportsRuntimeTools: true,
     supportsStructuredOutput: true,
     supportsEmbedding: false,
     supportsRerank: false,
@@ -147,7 +139,6 @@ const VENDORS: readonly VendorDescriptor[] = [
     // serve local and hosted chat without retaining a bespoke adapter.
     protocol: "openai_completions",
     supportsChat: true,
-    supportsRuntimeTools: false,
     supportsStructuredOutput: true,
     supportsEmbedding: true,
     supportsRerank: false,
@@ -162,7 +153,6 @@ const VENDORS: readonly VendorDescriptor[] = [
     // the protocol is the only thing that can be recorded about it.
     protocol: "openai_completions",
     supportsChat: true,
-    supportsRuntimeTools: true,
     supportsStructuredOutput: true,
     supportsEmbedding: true,
     supportsRerank: false,
@@ -175,7 +165,6 @@ const VENDORS: readonly VendorDescriptor[] = [
     displayName: "Cohere",
     protocol: "cohere_v2",
     supportsChat: false,
-    supportsRuntimeTools: false,
     supportsStructuredOutput: false,
     supportsEmbedding: true,
     supportsRerank: true,
@@ -188,7 +177,6 @@ const VENDORS: readonly VendorDescriptor[] = [
     displayName: "ZeroEntropy",
     protocol: "zeroentropy",
     supportsChat: false,
-    supportsRuntimeTools: false,
     supportsStructuredOutput: false,
     supportsEmbedding: true,
     supportsRerank: true,

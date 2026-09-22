@@ -1,17 +1,13 @@
 import { CircleArrowUp, Loader2, RefreshCw } from 'lucide-react'
-import type { ModelProviderOut } from '../../api/client'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
-import { Select } from '../../components/ui/select'
 import type {
   Host,
   HostRuntimeUsage,
-  HostRuntimeAdapterOption,
-  HostRuntimeProviderBinding,
+  HostRuntimeDefinitionOption,
   RuntimeAuthMethod,
   RuntimeInstallation,
 } from '../../types/api'
-import { AMBIENT_BACKEND, eligibleProviders } from './backendChoice'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../../components/ui/tooltip'
 
 export type HostAgentLoginTarget =
@@ -20,14 +16,6 @@ export type HostAgentLoginTarget =
   | { kind: 'cli' }
   | { kind: 'logout' }
 
-/** "Agent-managed account", or how many the Agent's own credential store holds when it can hold several. */
-function ambientLabel(copies: RuntimeInstallation[]): string {
-  const held = copies.flatMap(copy => copy.accounts ?? [])
-  const declares = copies.some(copy => copy.accounts !== undefined)
-  if (!declares) return 'Agent-managed account'
-  return held.length === 0 ? 'Agent-managed (no accounts yet)' : `Agent-managed (${held.length} account${held.length === 1 ? '' : 's'})`
-}
-
 /** Version probes often repeat the CLI name; the row already names the Agent. */
 function versionLabel(version: string | null): string {
   if (!version) return 'unknown version'
@@ -35,7 +23,7 @@ function versionLabel(version: string | null): string {
   return numeric?.replace(/^v/, '') ?? version
 }
 
-function installationVersionLabel(entry: RuntimeInstallation, adapter: HostRuntimeAdapterOption): string {
+function installationVersionLabel(entry: RuntimeInstallation, adapter: HostRuntimeDefinitionOption): string {
   if (entry.id === 'own') return `own · ${versionLabel(entry.version)}`
   if (entry.runtime_version) return `managed · ${versionLabel(entry.runtime_version)}`
   return adapter.reports_managed_cli_version
@@ -77,20 +65,12 @@ function authMethodAria(method: RuntimeAuthMethod, loggedIn: boolean | null, ent
   return `${authMethodLabel(method, loggedIn)} for ${entryId} of ${agentName} on ${hostName}`
 }
 
-export function agentAcceptsProviderBinding(adapter: HostRuntimeAdapterOption): boolean {
-  return adapter.provider_binding !== false && Boolean(adapter.provider_api)
-}
-
 export default function HostAgentRow({
   host,
   adapter,
   copies,
-  providers,
-  binding,
   installBusy,
-  providerBusy,
   manageable,
-  providerBindingSupported,
   usage,
   usageBusy,
   onInstall,
@@ -98,25 +78,30 @@ export default function HostAgentRow({
   onLogin,
   onRefreshUsage,
   onRollback,
-  onChooseProvider,
+  rainverPinned = false,
+  provisioningFailed = false,
 }: {
   host: Host
-  adapter: HostRuntimeAdapterOption
+  adapter: HostRuntimeDefinitionOption
   copies: RuntimeInstallation[]
-  providers: ModelProviderOut[]
-  binding: HostRuntimeProviderBinding | null
   installBusy: ReadonlySet<string>
-  providerBusy: boolean
   /**
    * Whether this viewer may change what is installed here. False for a member
    * looking at the built-in host: installing a runtime, logging a copy in or
-   * out, and choosing its model source are instance-admin work, while which
+   * out are instance-admin work, while which
    * copies exist and whether they are logged in is what everyone needs to see
    * to know whether their Run can run at all.
    */
   manageable: boolean
-  /** Whether this host has a host×adapter model source at all; false for the built-in host, whose Runs are not provider-bound. */
-  providerBindingSupported: boolean
+  /**
+   * Rainver owns this copy's lifecycle (the Server Runtime's pinned OpenCode):
+   * install, upgrade, rollback and remove are the provisioner's, not a
+   * person's. Login and usage stay available — that account is still a login
+   * someone has to do.
+   */
+  rainverPinned?: boolean
+  /** Whether the Rainver-managed install is in its `failed` state, i.e. whether a Retry is on screen at all. */
+  provisioningFailed?: boolean
   /** The cached subscription quota per installation id; absent for a runtime that has none to report. */
   usage: ReadonlyMap<string, HostRuntimeUsage>
   usageBusy: ReadonlySet<string>
@@ -125,14 +110,9 @@ export default function HostAgentRow({
   onLogin: (installation: string, target: HostAgentLoginTarget) => void
   onRefreshUsage: (installation: string) => void
   onRollback: () => void
-  onChooseProvider: (providerId: string) => void
 }) {
-  const providerBindingAvailable = providerBindingSupported && agentAcceptsProviderBinding(adapter)
-  const providerOptions = providerBindingAvailable ? eligibleProviders(providers, adapter) : []
-  const staleBinding = binding && !providerOptions.some(provider => provider.id === binding.model_provider_id)
-
   return (
-    <li className="flex min-w-0 items-center gap-2 overflow-x-auto rounded-md border border-border px-2 py-1.5 text-xs" data-testid={`host-agent-${host.id}-${adapter.adapter_type}`}>
+    <li className="flex min-w-0 items-center gap-2 overflow-x-auto rounded-md border border-border px-2 py-1.5 text-xs" data-testid={`host-agent-${host.id}-${adapter.runtime_key}`}>
       <span className="w-28 shrink-0 truncate font-medium" title={adapter.display_name}>{adapter.display_name}</span>
       <span className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {copies.map(entry => {
@@ -191,17 +171,17 @@ export default function HostAgentRow({
                   {usageBusy.has(entry.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
                 </Button>
               )}
-              {manageable && entry.id !== 'own' && adapter.latest_managed_version && adapter.latest_managed_version !== entry.version && (
+              {manageable && !rainverPinned && entry.id !== 'own' && adapter.latest_managed_version && adapter.latest_managed_version !== entry.version && (
                 <Button
                   size="sm"
                   variant="ghost"
                   className="h-7 w-7 p-0"
                   aria-label={`Upgrade ${adapter.display_name} on ${host.name}`}
                   title={`Upgrade ${adapter.display_name}`}
-                  disabled={host.status !== 'online' || installBusy.has(adapter.adapter_type)}
+                  disabled={host.status !== 'online' || installBusy.has(adapter.runtime_key)}
                   onClick={onInstall}
                 >
-                  {installBusy.has(adapter.adapter_type)
+                  {installBusy.has(adapter.runtime_key)
                     ? <Loader2 className="h-3 w-3 animate-spin" />
                     : <CircleArrowUp className="h-3 w-3" />}
                 </Button>
@@ -252,7 +232,7 @@ export default function HostAgentRow({
                   {multiAccount ? 'Remove account' : 'Log out'}
                 </Button>
               )}
-              {manageable && entry.rollback_version && (
+              {manageable && !rainverPinned && entry.rollback_version && (
                 // The previous binaries are still on the host and reuse the
                 // adapter's stable managed HOME after rollback.
                 <Button
@@ -260,20 +240,20 @@ export default function HostAgentRow({
                   variant="ghost"
                   aria-label={`Roll ${adapter.display_name} on ${host.name} back to ${entry.rollback_version}`}
                   title={`Roll back to ${entry.rollback_version}`}
-                  disabled={host.status !== 'online' || installBusy.has(`${adapter.adapter_type}:rollback`)}
+                  disabled={host.status !== 'online' || installBusy.has(`${adapter.runtime_key}:rollback`)}
                   onClick={onRollback}
                 >
-                  {installBusy.has(`${adapter.adapter_type}:rollback`)
+                  {installBusy.has(`${adapter.runtime_key}:rollback`)
                     ? <Loader2 className="h-3 w-3 animate-spin" />
                     : `Roll back to ${entry.rollback_version}`}
                 </Button>
               )}
-              {manageable && entry.id !== 'own' && (
+              {manageable && !rainverPinned && entry.id !== 'own' && (
                 <Button
                   size="sm"
                   variant="ghost"
                   aria-label={`Remove ${entry.id} of ${adapter.display_name} from ${host.name}`}
-                  disabled={host.status !== 'online' || installBusy.has(`${adapter.adapter_type}:${entry.id}`)}
+                  disabled={host.status !== 'online' || installBusy.has(`${adapter.runtime_key}:${entry.id}`)}
                   onClick={() => onUninstall(entry)}
                 >
                   Remove
@@ -281,57 +261,26 @@ export default function HostAgentRow({
               )}
           </span>
         })}
-        {manageable && !copies.some(entry => entry.id !== 'own') && (
+        {rainverPinned && (
+          // The Retry lives in the provisioning panel and only exists for an
+          // instance admin looking at a failed install, so only that viewer is
+          // pointed at it; everyone else is just told who owns this copy.
+          <span className="shrink-0 text-muted-foreground">
+            Managed by Rainver{manageable && provisioningFailed ? ' — use Retry above' : ''}
+          </span>
+        )}
+        {manageable && !rainverPinned && !copies.some(entry => entry.id !== 'own') && (
           <Button
             size="sm"
             variant="ghost"
             aria-label={`Add a managed copy of ${adapter.display_name} on ${host.name}`}
-            disabled={host.status !== 'online' || installBusy.has(adapter.adapter_type)}
+            disabled={host.status !== 'online' || installBusy.has(adapter.runtime_key)}
             onClick={onInstall}
           >
-            {installBusy.has(adapter.adapter_type) ? <Loader2 className="size-3 animate-spin" /> : '+ managed copy'}
+            {installBusy.has(adapter.runtime_key) ? <Loader2 className="size-3 animate-spin" /> : '+ managed copy'}
           </Button>
         )}
       </span>
-      <div className="ml-auto grid w-[22rem] shrink-0 grid-cols-[5rem_1fr] items-center gap-2">
-        <span className="flex h-7 items-center justify-end whitespace-nowrap text-xs text-muted-foreground">
-          Model source
-        </span>
-        {providerBindingAvailable ? (
-          <div className="min-w-0">
-            <Select
-              ariaLabel={`Model source for ${adapter.display_name} on ${host.name}`}
-              size="sm"
-              value={binding?.model_provider_id ?? AMBIENT_BACKEND}
-              disabled={providerBusy}
-              onChange={onChooseProvider}
-              options={[
-                { value: AMBIENT_BACKEND, label: ambientLabel(copies) },
-                ...providerOptions.map(provider => ({
-                  value: provider.id,
-                  label: provider.default_model ? `${provider.name} · ${provider.default_model}` : provider.name,
-                })),
-                ...(staleBinding ? [{ value: binding.model_provider_id, label: 'Unavailable provider — pick another' }] : []),
-              ]}
-            />
-          </div>
-        ) : !providerBindingSupported ? (
-          // A different reason from the one below, and saying the wrong one
-          // would send an admin looking for a setting that does not exist:
-          // this host's Runs use the copy's own login, whatever the Agent
-          // would otherwise support.
-          <span className="flex h-7 items-center whitespace-nowrap text-muted-foreground">
-            {ambientLabel(copies)}
-          </span>
-        ) : (
-          <span
-            className="flex h-7 items-center whitespace-nowrap text-muted-foreground"
-            title="This Agent may support its own provider settings, but it does not provide a generic way for Rainver to inject a ModelProvider."
-          >
-            Agent-managed · no Rainver override
-          </span>
-        )}
-      </div>
     </li>
   )
 }

@@ -41,6 +41,7 @@ export * from "./conversationExecution.js";
 
 // Agent runtime profile contracts
 export * from "./agents.js";
+export * from "./runtimeAuthority.js";
 
 // Ambient CLI session import contracts
 export * from "./ambientSessions.js";
@@ -53,9 +54,6 @@ export * from "./providersDb.js";
 
 // Provider and credential runtime boundary contracts
 export * from "./providerCredentialsRuntime.js";
-
-// Runtime-host boundary contracts
-export * from "./runtimeHost.js";
 
 // Token usage metering contracts
 export * from "./usage.js";

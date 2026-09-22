@@ -360,7 +360,7 @@ function ImportedSection({ items, projectId }: { items: ImportedSession[]; proje
                   )}
                 </div>
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  Imported from {session.adapter_type}
+                  Imported from {session.runtime_key}
                   {session.cwd && ` · ${session.cwd}`}
                 </p>
               </div>

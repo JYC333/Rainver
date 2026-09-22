@@ -214,6 +214,7 @@ export class SourceAnnotationService {
     const instruction = renderAnnotationInstruction(items);
     const runs = new PgRunRepository(pool);
     const run = await runs.createQueuedRun({
+      execution_kind: "agent",
       space_id: spaceId,
       user_id: await resolveSystemActorUserId(pool, spaceId),
       agent_id: agentId,

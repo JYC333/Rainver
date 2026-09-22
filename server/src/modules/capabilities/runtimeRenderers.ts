@@ -11,7 +11,7 @@ export function renderClaudeSkill(input: {
 }): RuntimeRenderedSkill {
   const slug = slugify(input.capability.id);
   return {
-    runtime_adapter_type: "claude_code",
+    runtime_key: "claude_code",
     render_mode: "render_skill",
     root_path: `.rainver/generated-skills/claude/${slug}`,
     files: [
@@ -31,7 +31,7 @@ export function renderCodexSkill(input: {
 }): RuntimeRenderedSkill {
   const slug = slugify(input.capability.id);
   return {
-    runtime_adapter_type: "codex_cli",
+    runtime_key: "codex_cli",
     render_mode: "render_skill",
     root_path: `.rainver/generated-skills/codex/${slug}`,
     files: [
@@ -61,11 +61,11 @@ export function renderGenericPromptSkill(input: {
   profile?: Record<string, unknown> | null;
 }): RuntimeRenderedSkill {
   return {
-    runtime_adapter_type: "model_api",
+    runtime_key: "opencode",
     render_mode: "inline_prompt",
     root_path: null,
     files: [],
-    prompt_block: renderSkillMarkdown(input, "Generic model_api"),
+    prompt_block: renderSkillMarkdown(input, "OpenCode / ACP runtime"),
   };
 }
 
@@ -139,4 +139,3 @@ function sortJson(value: unknown): unknown {
 function slugify(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "skill";
 }
-

@@ -10,7 +10,8 @@ import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orch
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
-import { seedAgentWithVersion, seedSpaceOwnerProject, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
+import { seedAgentWithVersion, seedSpaceOwnerProject, seedMainlineRoomsForAllProjects, seedServerRuntimeProfile } from "./support/domainSeeds.js";
 import { createQuestionThreadScope, seedArxivSourceChain, seedPendingScreeningGate, seedRelevantCorpusItem, seedResearchOperation } from "./support/researchSeeds.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 import { resetTables } from "./support/resetTables.js";
@@ -31,6 +32,7 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
   const AGENT = "99999999-9999-4999-8999-999999999999";
   const VERSION = "84444444-4444-4444-8444-444444444444";
   const RUNTIME_PROFILE = "83333333-3333-4333-8333-333333333333";
+  const SERVER_HOST = "82222222-2222-4222-8222-222222222222";
   const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 
@@ -74,18 +76,29 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
         agent_id: AGENT, runtime_profile_id: RUNTIME_PROFILE, question_refine_skipped: true,
       }, now,
     });
-    await seedAgentWithVersion(db.pool, { agent: AGENT, version: VERSION, space: SPACE, owner: OWNER, systemPrompt: "Test agent.", now });
-    await db.pool.query(
-      `INSERT INTO agent_runtime_profiles (
-         id,space_id,agent_id,name,adapter_type,runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
-       ) VALUES ($1,$2,$3,'Research','model_api','{}'::jsonb,'{}'::jsonb,true,true,$4,$4)`,
-      [RUNTIME_PROFILE, SPACE, AGENT, now],
-    );
+    await seedAgentWithVersion(db.pool, { agent: AGENT, version: VERSION, space: SPACE, owner: OWNER, systemPrompt: "Test agent.", seedDefaultRuntimeProfile: false, now });
+    await db.pool.query(`UPDATE agent_versions SET risk_level='low' WHERE id=$1 AND space_id=$2`, [VERSION, SPACE]);
+    await seedServerRuntimeProfile(db.pool, {
+      profileId: RUNTIME_PROFILE,
+      agent: AGENT,
+      space: SPACE,
+      hostId: SERVER_HOST,
+      now,
+    });
     // TRUNCATE ... spaces CASCADE above also empties evolvable_assets (it has
     // a nullable FK to spaces), which wipes the system-scoped builtin prompt
     // catalog synced in beforeAll — re-sync every test, not just once.
     await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
   });
+
+  async function dispatchSynthesisRun(runId: string, startedAt: string): Promise<PgRunRepository> {
+    const runs = new PgRunRepository(db.pool);
+    const run = await runs.getAgentRun(SPACE, runId);
+    if (!run) throw new Error(`Synthesis Run '${runId}' disappeared before dispatch`);
+    await new PgRouteDecisionRepository(db.pool).routeRun(run);
+    await runs.markRunRunning({ run_id: runId, space_id: SPACE, started_at: startedAt });
+    return runs;
+  }
 
   const validReport = {
     schema_version: "research_report.v1",
@@ -157,8 +170,7 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
            true,'["json"]'::jsonb,'json',false,$6,$6,'space_shared',$7,'high')`,
         [archiveArtifactId, SPACE, synthesizeRun, PROJECT, JSON.stringify(validReport), now, OWNER],
       );
-      const runs = new PgRunRepository(db.pool);
-      await runs.markRunRunning({ run_id: synthesizeRun, space_id: SPACE, started_at: now });
+      const runs = await dispatchSynthesisRun(synthesizeRun, now);
       await runs.markRunTerminal({
         run_id: synthesizeRun, space_id: SPACE, status: "succeeded",
         output_json: { status: "succeeded", artifacts: [{ title: "Draft", artifact_type: "research_report.archive.v1", mime_type: "application/json", content: validReport }] },
@@ -238,8 +250,7 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
         [executionId],
       )).rows[0]!.run_id;
       const now = new Date().toISOString();
-      const runs = new PgRunRepository(db.pool);
-      await runs.markRunRunning({ run_id: synthesizeRun, space_id: SPACE, started_at: now });
+      const runs = await dispatchSynthesisRun(synthesizeRun, now);
       await runs.markRunTerminal({ run_id: synthesizeRun, space_id: SPACE, status: "failed", error_json: { error_code: "provider_error" }, completed_at: now });
       await new WorkflowExecutionService(config).reconcileForRun(db.pool, SPACE, synthesizeRun, OWNER);
 
@@ -425,13 +436,28 @@ describe("projectResearchSynthesisRetryDb", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_versions (
-         id, agent_id, space_id, version_label, system_prompt,
-         model_config_json, runtime_config_json, context_policy_json,
-         memory_policy_json, capabilities_json, tool_permissions_json,
-         runtime_policy_json, created_at
-       ) VALUES ($1, $2, $3, 'v1', 'Test agent.',
-                 '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-                 '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'Test agent.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $4
+     )`,
       [VERSION, AGENT, SPACE, now],
     );
     await db.pool.query(`UPDATE agents SET current_version_id=$1 WHERE id=$2`, [VERSION, AGENT]);
@@ -703,11 +729,7 @@ describe("projectResearchSynthesisStageGuardDb", () => {
     // The synthesis run the operation points at is still executing — reconcile
     // must report on it, not clobber the operation back to screening.
     await db.pool.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-         adapter_type, instructed_by_user_id, owner_user_id, project_id,
-         contract_snapshot_json, created_at, updated_at, started_at
-       ) VALUES ($1,$2,$3,$4,'agent','system','running','live','model_api',$5,$5,$6,'{}'::jsonb,$7,$7,$7)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, instructed_by_user_id, owner_user_id, project_id, contract_snapshot_json, created_at, updated_at, started_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'system', 'running', 'live', $5, $5, $6, '{}'::jsonb, $7, $7, $7, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       ["run-already-queued", SPACE, AGENT, versionId, OWNER, PROJECT, now],
     );
   });

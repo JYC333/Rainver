@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Loader2, LogIn, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { hostsApi } from '../../api/client'
-import type { HostExecutionTarget, HostRuntimeAdapterOption } from '../../types/api'
+import type { HostExecutionTarget, HostRuntimeDefinitionOption, HostRuntimeProvisioningStatus } from '../../types/api'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Select } from '../../components/ui/select'
@@ -10,13 +10,34 @@ import { Input } from '../../components/ui/input'
 import HostDirectoryBrowser from './HostDirectoryBrowser'
 import { errMsg } from '../../lib/utils'
 import RuntimeLoginTerminal from './RuntimeLoginTerminal'
+import { SpaceLink } from '../../core/spaceNav'
 
 export interface HostExecutionSelection {
   host_id: string
   workspace_location_id: string | null
   workspace_mode: 'location' | 'managed'
-  adapter_type: string
+  runtime_key: string
   installation: string
+}
+
+/**
+ * What Rainver's own provisioner is doing to the Server Runtime's pinned copy.
+ *
+ * Plan "Default path" §3: an Agent surface says installing, failed/retry or
+ * incompatible — never "login required" — while the copy is not yet usable.
+ * Returns null once the installed copy is the pinned one and healthy.
+ */
+function serverProvisioningNote(
+  installation: HostRuntimeProvisioningStatus['installation'],
+): string | null {
+  if (installation.state === 'failed') return 'Rainver could not provision the Server Runtime\u2019s OpenCode copy.'
+  if (installation.state === 'queued' || installation.state === 'installing') {
+    return `Rainver is installing the Server Runtime\u2019s OpenCode copy (${installation.desired_version}). Agents here can be saved now and will run once it reports ready.`
+  }
+  if (installation.active_version !== installation.desired_version) {
+    return `The Server Runtime is running ${installation.active_version ?? 'an unreported version'} while Rainver pins ${installation.desired_version}.`
+  }
+  return null
 }
 
 /**
@@ -28,30 +49,36 @@ export default function HostExecutionTargetPicker({
   projectId,
   value,
   onChange,
+  onRuntimeChange,
   disabled = false,
   managedOnly = false,
+  backendMode = 'runtime_native',
 }: {
   projectId?: string | null
   value: HostExecutionSelection | null
   onChange: (value: HostExecutionSelection | null) => void
+  onRuntimeChange?: (runtimeKey: string) => void
   disabled?: boolean
+  /** Provider mode uses Rainver's proxy and does not require the runtime's native login. */
+  backendMode?: 'runtime_native' | 'model_provider'
   /** Offer only managed workspaces when a caller explicitly needs a private, Location-independent directory. */
   managedOnly?: boolean
 }) {
   const [targets, setTargets] = useState<HostExecutionTarget[]>([])
-  const [adapterCatalog, setAdapterCatalog] = useState<HostRuntimeAdapterOption[]>([])
+  const [adapterCatalog, setAdapterCatalog] = useState<HostRuntimeDefinitionOption[]>([])
   const [loading, setLoading] = useState(Boolean(projectId))
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState<string | null>(null)
-  const [login, setLogin] = useState<{ hostId: string; adapterType: string; installation: string } | null>(null)
+  const [login, setLogin] = useState<{ hostId: string; runtimeKey: string; installation: string } | null>(null)
   const [registerOpen, setRegisterOpen] = useState(false)
   const [registerPath, setRegisterPath] = useState<string | null>(null)
   const [registerName, setRegisterName] = useState('')
   const [registering, setRegistering] = useState(false)
   const [draftHostId, setDraftHostId] = useState(value?.host_id ?? '')
   const [draftLocationId, setDraftLocationId] = useState(value?.workspace_location_id ?? '')
-  const [draftAdapterType, setDraftAdapterType] = useState(value?.adapter_type ?? '')
+  const [draftRuntimeKey, setDraftRuntimeKey] = useState(value?.runtime_key ?? '')
   const [draftMode, setDraftMode] = useState<'location' | 'managed'>(value?.workspace_mode ?? 'location')
+  const [serverProvisioning, setServerProvisioning] = useState<HostRuntimeProvisioningStatus | null>(null)
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -59,7 +86,7 @@ export default function HostExecutionTargetPicker({
     try {
       const [targetResponse, adapterResponse] = await Promise.all([
         hostsApi.executionTargets(projectId || null),
-        hostsApi.listRuntimeAdapters(),
+        hostsApi.listRuntimeDefinitions(),
       ])
       setTargets(targetResponse.targets)
       setAdapterCatalog(adapterResponse.items)
@@ -73,37 +100,79 @@ export default function HostExecutionTargetPicker({
   useEffect(() => { void reload() }, [reload])
 
   useEffect(() => {
-    setDraftHostId(value?.host_id ?? '')
-    setDraftLocationId(value?.workspace_location_id ?? '')
-    setDraftAdapterType(value?.adapter_type ?? '')
-    setDraftMode(value?.workspace_mode ?? 'location')
-  }, [value?.host_id, value?.workspace_location_id, value?.workspace_mode, value?.adapter_type])
+    // Only a *bound* value re-seeds the drafts. A null value is what this
+    // picker itself emits for an incomplete selection — the host the person
+    // just chose has no installed copy yet — and clearing the drafts from it
+    // discarded that choice, unmounting the "No copy installed"/Install block
+    // and snapping the host select back to the Server Runtime.
+    if (!value) return
+    setDraftHostId(value.host_id)
+    setDraftLocationId(value.workspace_location_id ?? '')
+    setDraftRuntimeKey(value.runtime_key)
+    setDraftMode(value.workspace_mode)
+  }, [value?.host_id, value?.workspace_location_id, value?.workspace_mode, value?.runtime_key])
 
   const target = targets.find(item => item.host_id === (value?.host_id ?? draftHostId)) ?? null
   const hostId = value?.host_id ?? draftHostId
   const locationId = value?.workspace_location_id ?? draftLocationId
   const workspaceMode = value?.workspace_mode ?? draftMode
-  const adapterType = value?.adapter_type ?? draftAdapterType
+  const runtimeKey = value?.runtime_key ?? draftRuntimeKey
   const locations = managedOnly ? [] : target?.locations ?? []
   const adapters = useMemo(() => {
-    const fromTarget = target?.adapters ?? []
-    const byType = new Map(fromTarget.map(adapter => [adapter.adapter_type, adapter]))
+    const fromTarget = target?.runtimes ?? []
+    const byType = new Map(fromTarget.map(adapter => [adapter.runtime_key, adapter]))
     for (const adapter of adapterCatalog) {
-      if (adapter.remote_eligible === false || byType.has(adapter.adapter_type)) continue
-      byType.set(adapter.adapter_type, {
-        adapter_type: adapter.adapter_type,
+      if (adapter.remote_eligible === false || byType.has(adapter.runtime_key)) continue
+      byType.set(adapter.runtime_key, {
+        runtime_key: adapter.runtime_key,
         display_name: adapter.display_name,
         installations: [],
       })
     }
+    if (runtimeKey && !byType.has(runtimeKey)) {
+      byType.set(runtimeKey, {
+        runtime_key: runtimeKey,
+        display_name: `${runtimeKey} (not in runtime catalog)`,
+        installations: [],
+      })
+    }
     return [...byType.values()]
-  }, [adapterCatalog, target])
-  const selectedAdapter = adapters.find(item => item.adapter_type === adapterType) ?? null
+  }, [adapterCatalog, runtimeKey, target])
+  const selectedAdapter = adapters.find(item => item.runtime_key === runtimeKey) ?? null
   const installations = selectedAdapter?.installations ?? []
   const selectedInstallation = installations.find(item => item.id === value?.installation) ?? null
+  // Lifecycle, not label: a Server Runtime target is `hosts.kind === 'server'`.
+  const isServerTarget = target?.host_kind === 'server'
+  const selectedInstallationUnreported = Boolean(
+    isServerTarget && value?.host_id === hostId && value.installation && !selectedInstallation,
+  )
 
-  function emitSelection(mode: 'location' | 'managed', nextLocationId: string | null, nextAdapterType: string, nextInstallationId: string) {
-    if (!hostId || !nextAdapterType || !nextInstallationId || (mode === 'location' && !nextLocationId)) {
+  // Presentational and cheap: read once when the chosen target becomes a
+  // Server Runtime, never polled. The Hosts page owns the refresh loop and the
+  // retry; this only stops the composer from claiming a copy is ready.
+  const serverProvisioningHostId = isServerTarget ? target?.host_id ?? null : null
+  useEffect(() => {
+    if (!serverProvisioningHostId) {
+      setServerProvisioning(null)
+      return undefined
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const status = await hostsApi.serverRuntimeProvisioning(serverProvisioningHostId)
+        if (!cancelled) setServerProvisioning(status)
+      } catch {
+        if (!cancelled) setServerProvisioning(null)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [serverProvisioningHostId])
+  const provisioningNote = isServerTarget && serverProvisioning
+    ? serverProvisioningNote(serverProvisioning.installation)
+    : null
+
+  function emitSelection(mode: 'location' | 'managed', nextLocationId: string | null, nextRuntimeKey: string, nextInstallationId: string) {
+    if (!hostId || !nextRuntimeKey || !nextInstallationId || (mode === 'location' && !nextLocationId)) {
       onChange(null)
       return
     }
@@ -111,41 +180,32 @@ export default function HostExecutionTargetPicker({
       host_id: hostId,
       workspace_location_id: mode === 'managed' ? null : nextLocationId,
       workspace_mode: mode,
-      adapter_type: nextAdapterType,
+      runtime_key: nextRuntimeKey,
       installation: nextInstallationId,
     })
   }
 
-  function selectServer() {
-    setDraftHostId('')
-    setDraftLocationId('')
-    setDraftAdapterType('')
-    setDraftMode('location')
-    setLogin(null)
-    onChange(null)
-  }
-
   function selectHost(nextHostId: string) {
-    if (nextHostId === 'server') {
-      selectServer()
-      return
-    }
     const nextTarget = targets.find(item => item.host_id === nextHostId)
     const nextLocation = nextTarget?.locations.find(location => location.execution_ready) ?? nextTarget?.locations[0]
-    const nextAdapter = nextTarget?.adapters[0] ?? adapters[0]
+    const nextInstalledRuntime = nextTarget?.runtimes[0]
+    const nextRuntimeKey = nextInstalledRuntime?.runtime_key
+      ?? adapterCatalog.find(adapter => adapter.runtime_key === 'opencode')?.runtime_key
+      ?? adapterCatalog[0]?.runtime_key
     const nextMode: 'location' | 'managed' = nextLocation ? 'location' : nextTarget?.managed_workspace_available ? 'managed' : 'location'
     setDraftHostId(nextHostId)
     setDraftLocationId(nextLocation?.id ?? '')
-    setDraftAdapterType(nextAdapter?.adapter_type ?? '')
+    setDraftRuntimeKey(nextRuntimeKey ?? '')
     setDraftMode(nextMode)
     setLogin(null)
-    const nextInstallation = nextAdapter?.installations[0]
-    if (!nextAdapter || !nextInstallation) onChange(null)
+    if (nextRuntimeKey) onRuntimeChange?.(nextRuntimeKey)
+    const nextInstallation = nextInstalledRuntime?.installations[0]
+    if (!nextRuntimeKey || !nextInstallation) onChange(null)
     else onChange({
       host_id: nextHostId,
       workspace_location_id: nextMode === 'managed' ? null : nextLocation?.id ?? null,
       workspace_mode: nextMode,
-      adapter_type: nextAdapter.adapter_type,
+      runtime_key: nextRuntimeKey,
       installation: nextInstallation.id,
     })
   }
@@ -154,26 +214,27 @@ export default function HostExecutionTargetPicker({
     setDraftMode(nextMode)
     const nextLocationId = nextMode === 'managed' ? null : locations.find(location => location.execution_ready)?.id ?? locations[0]?.id ?? null
     setDraftLocationId(nextLocationId ?? '')
-    if (selectedAdapter && installations[0]) emitSelection(nextMode, nextLocationId, adapterType, value?.installation ?? installations[0].id)
+    if (selectedAdapter && installations[0]) emitSelection(nextMode, nextLocationId, runtimeKey, value?.installation ?? installations[0].id)
   }
 
   function selectLocation(nextLocationId: string) {
     setDraftLocationId(nextLocationId)
-    if (selectedAdapter && installations[0]) emitSelection('location', nextLocationId, adapterType, value?.installation ?? installations[0].id)
+    if (selectedAdapter && installations[0]) emitSelection('location', nextLocationId, runtimeKey, value?.installation ?? installations[0].id)
   }
 
-  function selectAdapter(nextAdapterType: string) {
-    setDraftAdapterType(nextAdapterType)
+  function selectAdapter(nextRuntimeKey: string) {
+    setDraftRuntimeKey(nextRuntimeKey)
     setLogin(null)
-    const nextAdapter = adapters.find(item => item.adapter_type === nextAdapterType)
+    onRuntimeChange?.(nextRuntimeKey)
+    const nextAdapter = adapters.find(item => item.runtime_key === nextRuntimeKey)
     const nextInstallation = nextAdapter?.installations[0]
-    if (nextInstallation) emitSelection(workspaceMode, workspaceMode === 'managed' ? null : locationId, nextAdapterType, nextInstallation.id)
+    if (nextInstallation) emitSelection(workspaceMode, workspaceMode === 'managed' ? null : locationId, nextRuntimeKey, nextInstallation.id)
     else onChange(null)
   }
 
   function selectInstallation(nextInstallationId: string) {
-    if (!hostId || !adapterType || !nextInstallationId) return
-    emitSelection(workspaceMode, workspaceMode === 'managed' ? null : locationId, adapterType, nextInstallationId)
+    if (!hostId || !runtimeKey || !nextInstallationId) return
+    emitSelection(workspaceMode, workspaceMode === 'managed' ? null : locationId, runtimeKey, nextInstallationId)
   }
 
   async function registerDirectory() {
@@ -193,14 +254,14 @@ export default function HostExecutionTargetPicker({
   }
 
   async function install() {
-    if (!hostId || !adapterType) return
-    setInstalling(adapterType)
+    if (!hostId || !runtimeKey) return
+    setInstalling(runtimeKey)
     try {
-      const result = await hostsApi.installRuntime(hostId, adapterType)
+      const result = await hostsApi.installRuntime(hostId, runtimeKey)
       if (!result.ok) throw new Error(result.error ?? 'Runtime installation failed')
       await reload()
-      if (result.installation) emitSelection(workspaceMode, workspaceMode === 'managed' ? null : locationId, adapterType, result.installation)
-      toast.success(`${selectedAdapter?.display_name ?? adapterType} installed`)
+      if (result.installation) emitSelection(workspaceMode, workspaceMode === 'managed' ? null : locationId, runtimeKey, result.installation)
+      toast.success(`${selectedAdapter?.display_name ?? runtimeKey} installed`)
     } catch (caught) {
       toast.error(errMsg(caught))
     } finally {
@@ -208,11 +269,20 @@ export default function HostExecutionTargetPicker({
     }
   }
 
+  const serverTarget = targets.find(item => item.host_kind === 'server')
   const hostOptions = [
-    { value: 'server', label: 'Server (default)' },
+    // The Server Runtime is a real Host row, so it is offered only when the
+    // server actually returned it. Until then it is shown disabled with the
+    // reason rather than as a choice whose selection resolves to nothing.
+    ...(serverTarget
+      ? []
+      : [{ value: 'server', label: 'Server Runtime · not available yet', disabled: true }]),
+    ...(value?.host_id && !targets.some(item => item.host_id === value.host_id)
+      ? [{ value: value.host_id, label: `${value.host_id} · unavailable`, disabled: true }]
+      : []),
     ...targets.map(item => ({ value: item.host_id, label: `${item.host_name} · ${item.host_online === false ? 'offline' : 'online'}` })),
   ]
-  const selectedHostValue = hostId || 'server'
+  const selectedHostValue = hostId || serverTarget?.host_id || 'server'
 
   return (
     <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3" data-testid="host-execution-target-picker">
@@ -224,7 +294,7 @@ export default function HostExecutionTargetPicker({
               ? 'Choose a host for a Space-level managed workspace, or select a Project Location when a Project is available.'
               : !loading && targets.length === 0
                 ? 'None of your online hosts has a directory registered for this Project. Run `rainver-host workspace add <path>` there, then reload.'
-                : 'Server is the default. A host choice uses its own logged-in runtime.'}
+                : 'Server Runtime is provisioned by Rainver. A paired Host uses its owner-managed runtime installation.'}
           </p>
         </div>
         {loading && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
@@ -236,6 +306,17 @@ export default function HostExecutionTargetPicker({
         options={hostOptions}
         disabled={disabled || loading}
       />
+      {/* Effective trust is a property of the execution target, not of the
+          runtime (ROUTING.md, "Effective trust"). A paired Host reaches
+          `medium` only for the Run its own owner is responsible for, and
+          nothing reaches `high`, so a Profile bound here can still save and
+          then die `route_no_candidate` for another member or for a
+          high/critical-risk Agent. */}
+      {target?.host_kind === 'remote' && (
+        <p className="text-[11px] text-muted-foreground">
+          On a paired Host only its owner's own Runs route, up to medium risk; another member's Run and any high or critical risk Agent will not route here — use the Server Runtime for those.
+        </p>
+      )}
       {error && (
         <div className="flex items-center justify-between gap-2 text-xs text-destructive">
           <span>{error}</span>
@@ -291,40 +372,68 @@ export default function HostExecutionTargetPicker({
             </div>
           )}
           <Select
-            ariaLabel="Execution adapter"
-            value={adapterType}
+            ariaLabel="Runtime"
+            value={runtimeKey}
             onChange={selectAdapter}
-            options={adapters.map(adapter => ({ value: adapter.adapter_type, label: adapter.display_name }))}
+            options={adapters.map(adapter => ({ value: adapter.runtime_key, label: adapter.display_name }))}
             disabled={disabled || adapters.length === 0}
           />
-          {selectedAdapter && installations.length > 0 ? (
+          {selectedAdapter && (installations.length > 0 || selectedInstallationUnreported) ? (
             <Select
               ariaLabel="Runtime installation"
-              value={value?.installation ?? installations[0]!.id}
+              value={value?.installation ?? installations[0]?.id ?? ''}
               onChange={selectInstallation}
-              options={installations.map(installation => ({
-                value: installation.id,
-                label: `${installation.id}${installation.version ? ` · ${installation.version}` : ''}${installation.logged_in === false ? ' · login required' : installation.logged_in === true ? ' · logged in' : ''}`,
-              }))}
+              options={[
+                ...(selectedInstallationUnreported && value?.installation
+                  ? [{ value: value.installation, label: `${value.installation} · not currently reported`, disabled: true }]
+                  : []),
+                ...installations.map(installation => ({
+                  value: installation.id,
+                  label: `${installation.id}${installation.version ? ` · ${installation.version}` : ''}${backendMode === 'runtime_native' && installation.logged_in === false ? ' · login required' : backendMode === 'runtime_native' && installation.logged_in === true ? ' · logged in' : ''}`,
+                })),
+              ]}
               disabled={disabled}
             />
           ) : (
             <div className="flex items-center justify-between gap-2 rounded border border-dashed border-border px-2 py-1.5 text-xs">
-              <span className="text-muted-foreground">No copy of this runtime is installed on this host.</span>
-              <Button type="button" size="sm" variant="outline" disabled={disabled || Boolean(installing)} onClick={() => void install()}>
-                {installing ? <Loader2 className="size-3 animate-spin" /> : 'Install'}
-              </Button>
+              {isServerTarget
+                ? <span className="text-muted-foreground">Server Runtime installation is managed by Rainver.</span>
+                : <>
+                  <span className="text-muted-foreground">No copy of this runtime is installed on this host.</span>
+                  <Button type="button" size="sm" variant="outline" disabled={disabled || Boolean(installing)} onClick={() => void install()}>
+                    {installing ? <Loader2 className="size-3 animate-spin" /> : 'Install'}
+                  </Button>
+                </>}
             </div>
           )}
-          {value && selectedInstallation?.logged_in === false && (
+          {provisioningNote && serverProvisioning && (
+            <div
+              className="space-y-1 rounded border border-dashed border-border px-2 py-1.5 text-xs"
+              data-testid="server-runtime-provisioning"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={serverProvisioning.installation.state === 'failed' ? 'destructive' : 'warning'}>
+                  {serverProvisioning.installation.state}
+                </Badge>
+                <span className="text-muted-foreground">{provisioningNote}</span>
+              </div>
+              {serverProvisioning.installation.error && (
+                <p className="text-destructive">{serverProvisioning.installation.error}</p>
+              )}
+              <SpaceLink to="/command-center" className="underline underline-offset-2">
+                Open Command Center to retry provisioning
+              </SpaceLink>
+            </div>
+          )}
+          {backendMode === 'runtime_native' && value && selectedInstallation?.logged_in === false && (
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2 text-xs">
                 <Badge variant="warning">Login required</Badge>
-                <Button type="button" size="sm" variant="outline" onClick={() => setLogin({ hostId: value.host_id, adapterType: value.adapter_type, installation: value.installation })}>
+                <Button type="button" size="sm" variant="outline" onClick={() => setLogin({ hostId: value.host_id, runtimeKey: value.runtime_key, installation: value.installation })}>
                   <LogIn className="mr-1 size-3.5" />Login
                 </Button>
               </div>
-              {login && <RuntimeLoginTerminal key={`${login.hostId}:${login.adapterType}:${login.installation}`} {...login} onDone={() => { void reload(); setLogin(null) }} />}
+              {login && <RuntimeLoginTerminal key={`${login.hostId}:${login.runtimeKey}:${login.installation}`} {...login} onDone={() => { void reload(); setLogin(null) }} />}
             </div>
           )}
         </>

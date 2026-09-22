@@ -62,7 +62,13 @@ evidence with a Run's lifetime, and Project advancement outlives every Run that
 produced it.
 
 Envelope: `event_kind · subject_type/subject_id · actor_id · occurred_at ·
-correlation_id · causation_id · idempotency_key · data_json`.
+seq · correlation_id · causation_id · idempotency_key · data_json`.
+
+`seq` is the stream's insert sequence and the only ordering tie-break. One
+advancement chain writes several events in one transaction, so they share a
+millisecond; ordering `(occurred_at, id)` broke those ties on a random v4 UUID,
+which made "the latest event" a coin flip for the board, the Task work view and
+the Updates feed alike. Every reader orders `(occurred_at, seq)`.
 
 - **Actor-neutral from the start.** `actor_id` is an `actors` FK, which already
   spans user, agent, system, automation, connector, integration, service and
@@ -343,12 +349,13 @@ with no way afterwards to say which was right. An update whose subject Task the
 reader cannot see contributes no row — the title is the part worth reading, so
 dropping the row is the only honest option.
 
-Its cursor carries **both** ordering columns (`occurred_at|id`), because
-`project_work_events.id` is a v4 UUID with no time component: a keyset
-predicate on the id alone cuts the stream at a random point, returning half of
-the page just read and making everything below the cut unreachable. A cursor
-the endpoint did not issue is refused with 422 rather than silently restarting,
-which would loop "load more" over page one forever.
+Its cursor carries **both** ordering columns (`occurred_at|seq`), because
+neither alone is a key: a keyset predicate on time alone re-serves or skips
+every row inside the same millisecond, and the row id is a v4 UUID with no time
+component, so a predicate on it cuts the stream at a random point, returning
+half of the page just read and making everything below the cut unreachable. A
+cursor the endpoint did not issue is refused with 422 rather than silently
+restarting, which would loop "load more" over page one forever.
 
 The response carries `viewer_can_write`, because reading the account and adding
 to it are different permissions: `GET` needs Project read, `POST

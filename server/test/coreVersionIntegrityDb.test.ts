@@ -14,6 +14,10 @@ const USER = "version-integrity-user";
 const AGENT = "version-integrity-agent";
 const VERSION = "version-integrity-v1";
 const PROVIDER = "version-integrity-provider";
+const PAIRED_MACHINE = "version-integrity-machine";
+const PAIRED_HOST = "version-integrity-paired-host";
+const FOREIGN_SPACE = "version-integrity-foreign-space";
+const FOREIGN_PROVIDER = "version-integrity-foreign-provider";
 const CAPABILITY_KEY = "research.search";
 
 
@@ -23,7 +27,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["capability_versions", "runs", "workflow_executions", "plan_versions", "evolvable_asset_versions", "evolvable_assets", "agent_versions", "agents", "model_provider_space_grants", "model_providers", "space_memberships", "users", "spaces"],
+    ["capability_versions", "runs", "workflow_executions", "plan_versions", "evolvable_asset_versions", "evolvable_assets", "agent_runtime_profiles", "agent_versions", "agents", "hosts", "machines", "model_provider_space_grants", "model_providers", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -58,6 +62,42 @@ beforeEach(async () => {
      ) VALUES ('version-provider-grant', $1, $2, $3, $3, true, true, $4, $4)`,
     [PROVIDER, SPACE, USER, now],
   );
+  // A paired (kind='remote') execution Host with an OpenCode copy of its own,
+  // and a Provider in another Space that was never granted to this one.
+  await db.pool.query(
+    `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+     VALUES ($1, $2, 'Paired laptop', 'desktop', $3, $3)`,
+    [PAIRED_MACHINE, USER, now],
+  );
+  await db.pool.query(
+    `INSERT INTO hosts (
+       id, owner_user_id, machine_id, name, kind, environment_kind, status,
+       capabilities_json, created_at, updated_at
+     ) VALUES ($1, $2, $3, 'Paired laptop', 'remote', 'linux_native', 'online',
+               '{"installations":{"opencode":[{"id":"own","version":"1.0.0","logged_in":true}]}}'::jsonb,
+               $4, $4)`,
+    [PAIRED_HOST, USER, PAIRED_MACHINE, now],
+  );
+  await db.pool.query(
+    `INSERT INTO spaces (id, name, type, created_at, updated_at)
+     VALUES ($1, 'Foreign', 'personal', $2, $2)`,
+    [FOREIGN_SPACE, now],
+  );
+  await db.pool.query(
+    `INSERT INTO model_providers (
+       id, space_id, owner_user_id, name, provider_type, default_model,
+       enabled, capabilities_json, config_json, created_at, updated_at
+     ) VALUES ($1, $2, $3, 'Foreign provider', 'openai', 'test-model',
+               true, '{}'::jsonb, '{}'::jsonb, $4, $4)`,
+    [FOREIGN_PROVIDER, FOREIGN_SPACE, USER, now],
+  );
+  await db.pool.query(
+    `INSERT INTO model_provider_space_grants (
+       id, provider_id, space_id, owner_user_id, granted_by_user_id,
+       enabled, is_default, created_at, updated_at
+     ) VALUES ('foreign-provider-grant', $1, $2, $3, $3, true, true, $4, $4)`,
+    [FOREIGN_PROVIDER, FOREIGN_SPACE, USER, now],
+  );
   await db.pool.query(
     `INSERT INTO agents (
        id, space_id, owner_user_id, name, status, agent_kind,
@@ -69,16 +109,16 @@ beforeEach(async () => {
   await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt,
-       model_provider_id, model_name, model_config_json, runtime_config_json, context_policy_json,
+       context_policy_json,
        memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, tool_policy_json, output_policy_json,
+       tool_policy_json, output_policy_json,
        schedule_config_json, output_schema_json, created_at
      ) VALUES (
-       $1, $2, $3, 'v1', 'old prompt', $5, 'test-model', '{}'::jsonb, '{}'::jsonb,
-       '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb,
+       $1, $2, $3, 'v1', 'old prompt',
+       '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb,
        '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, $4
      )`,
-    [VERSION, AGENT, SPACE, now, PROVIDER],
+    [VERSION, AGENT, SPACE, now],
   );
   await db.pool.query(
     `UPDATE agents SET current_version_id = $2 WHERE id = $1`,
@@ -87,6 +127,434 @@ beforeEach(async () => {
 });
 
 describe("core version integrity", () => {
+  it("provisions a stable default ACP Profile and keeps model/runtime selection off new versions", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+    const created = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Default ACP Agent",
+      systemPrompt: "Use the selected runtime profile.",
+    }));
+    const profiles = await repository.listRuntimeProfiles(SPACE, created.id);
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]).toMatchObject({
+      runtime_key: "opencode",
+      backend_mode: "runtime_native",
+      enabled: true,
+      is_default: true,
+      workspace_mode: "managed",
+      runtime_installation: "managed:pending",
+    });
+    expect(profiles[0]?.execution_host_id).toBeTruthy();
+
+    const profileId = profiles[0]!.id;
+    await repository.updateConfig(SPACE, created.id, {
+      userId: USER,
+      systemPrompt: "A new version, same deployment.",
+    });
+    expect(await repository.listRuntimeProfiles(SPACE, created.id)).toMatchObject([
+      { id: profileId, runtime_key: "opencode", backend_mode: "runtime_native", is_default: true },
+    ]);
+
+    const versions = await db.pool.query<Record<string, unknown>>(
+      `SELECT *
+         FROM agent_versions WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [created.id],
+    );
+    expect(versions.rows[0]).not.toHaveProperty("model_provider_id");
+    expect(versions.rows[0]).not.toHaveProperty("model_name");
+    expect(versions.rows[0]).not.toHaveProperty("model_config_json");
+    expect(versions.rows[0]).not.toHaveProperty("runtime_config_json");
+    expect(versions.rows[0]).not.toHaveProperty("runtime_policy_json");
+  });
+
+  it("moves model selection updates to the stable default Profile without creating a new version", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+    const created = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Config update Agent",
+      systemPrompt: "Use the selected runtime profile.",
+    }));
+    const [initialProfile] = await repository.listRuntimeProfiles(SPACE, created.id);
+    expect(initialProfile?.is_default).toBe(true);
+
+    await repository.updateRuntimeProfile(SPACE, created.id, initialProfile!.id, {
+      backendMode: "model_provider",
+      modelProviderId: PROVIDER,
+      modelName: "test-model",
+    });
+
+    const [updatedProfile] = await repository.listRuntimeProfiles(SPACE, created.id);
+    expect(updatedProfile).toMatchObject({
+      id: initialProfile?.id,
+      is_default: true,
+      enabled: true,
+      backend_mode: "model_provider",
+      model: { provider_id: PROVIDER, model: "test-model" },
+    });
+    const version = await db.pool.query<Record<string, unknown>>(
+      `SELECT *
+         FROM agent_versions WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [created.id],
+    );
+    expect(version.rows[0]).not.toHaveProperty("model_provider_id");
+    expect(version.rows[0]).not.toHaveProperty("model_name");
+  });
+
+  it("does not allow the enabled default Profile to be disabled or unset", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+    const created = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Protected default Agent",
+      systemPrompt: "Keep one enabled default.",
+    }));
+    const [profile] = await repository.listRuntimeProfiles(SPACE, created.id);
+    expect(profile).toBeTruthy();
+
+    await expect(repository.updateRuntimeProfile(SPACE, created.id, profile!.id, {
+      enabled: false,
+    })).rejects.toMatchObject({ statusCode: 422 });
+    await expect(repository.updateRuntimeProfile(SPACE, created.id, profile!.id, {
+      isDefault: false,
+    })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("does not let concurrent profile edits restore a former default", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+    const created = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Concurrent Profile Agent",
+      systemPrompt: "Keep a single current default.",
+    }));
+    const profiles = await repository.listRuntimeProfiles(SPACE, created.id);
+    const currentDefault = profiles.find((candidate) => candidate.is_default);
+    expect(currentDefault).toBeTruthy();
+    const alternate = await repository.createRuntimeProfile(SPACE, created.id, {
+      name: "Alternate",
+      runtimeKey: "opencode",
+      backendMode: "runtime_native",
+      executionHostId: currentDefault!.execution_host_id,
+      workspaceMode: "managed",
+      runtimeInstallation: "managed:pending",
+      allowPendingServerInstallation: true,
+      actorUserId: USER,
+    });
+
+    let formerDefault = currentDefault!;
+    let nextDefault = alternate;
+    for (let index = 0; index < 8; index += 1) {
+      await Promise.all([
+        repository.updateRuntimeProfile(SPACE, created.id, nextDefault.id, { isDefault: true }),
+        repository.updateRuntimeProfile(SPACE, created.id, formerDefault.id, {
+          name: `Former default ${index}`,
+        }),
+      ]);
+
+      const after = await repository.listRuntimeProfiles(SPACE, created.id);
+      expect(after.find((candidate) => candidate.id === nextDefault.id)?.is_default).toBe(true);
+      expect(after.find((candidate) => candidate.id === formerDefault.id)).toMatchObject({
+        name: `Former default ${index}`,
+        is_default: false,
+      });
+      expect(after.filter((candidate) => candidate.is_default)).toHaveLength(1);
+      [formerDefault, nextDefault] = [nextDefault, formerDefault];
+    }
+  });
+
+  it("copies an explicit Space Provider template into a new Server Profile", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+    await repository.setSpaceAgentRuntimeDefault(SPACE, {
+      runtimeKey: "opencode",
+      backendMode: "model_provider",
+      modelProviderId: PROVIDER,
+      modelName: "test-model",
+    });
+    const created = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Provider ACP Agent",
+      systemPrompt: "Use the provider proxy.",
+    }));
+    const profiles = await repository.listRuntimeProfiles(SPACE, created.id);
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]).toMatchObject({
+      runtime_key: "opencode",
+      backend_mode: "model_provider",
+      model: { provider_id: PROVIDER, model: "test-model" },
+      is_default: true,
+    });
+    expect(profiles[0]?.execution_host_id).toBeTruthy();
+  });
+
+  it("rejects unsupported Space-template backend modes before persisting them", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+
+    await expect(repository.setSpaceAgentRuntimeDefault(SPACE, {
+      runtimeKey: "claude_code",
+      backendMode: "model_provider",
+      modelProviderId: PROVIDER,
+      modelName: "test-model",
+    })).rejects.toMatchObject({ statusCode: 422 });
+    await expect(repository.setSpaceAgentRuntimeDefault(SPACE, {
+      runtimeKey: "opencode",
+      backendMode: "runtime_native",
+      runtimeConfigJson: { provider: [{ apiKey: "must-not-persist" }] },
+    })).rejects.toMatchObject({ statusCode: 422 });
+
+    const stored = await db.pool.query(
+      `SELECT runtime_key, backend_mode FROM space_agent_runtime_defaults WHERE space_id = $1`,
+      [SPACE],
+    );
+    expect(stored.rows).toEqual([]);
+  });
+
+  it("rejects unsupported backend modes on Profile create and update", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+    const created = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Mode-admission Agent",
+      systemPrompt: "Only registered backend modes may be persisted.",
+    }));
+    const [defaultProfile] = await repository.listRuntimeProfiles(SPACE, created.id);
+    expect(defaultProfile).toBeTruthy();
+
+    await expect(repository.createRuntimeProfile(SPACE, created.id, {
+      name: "Unsupported Claude Provider",
+      runtimeKey: "claude_code",
+      backendMode: "model_provider",
+      modelProviderId: PROVIDER,
+      modelName: "test-model",
+    })).rejects.toMatchObject({ statusCode: 422 });
+    await expect(repository.updateRuntimeProfile(SPACE, created.id, defaultProfile!.id, {
+      runtimeKey: "claude_code",
+      backendMode: "model_provider",
+      modelProviderId: PROVIDER,
+      modelName: "test-model",
+    })).rejects.toMatchObject({ statusCode: 422 });
+
+    const after = await repository.listRuntimeProfiles(SPACE, created.id);
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({
+      id: defaultProfile!.id,
+      runtime_key: "opencode",
+      backend_mode: "runtime_native",
+      is_default: true,
+    });
+  });
+
+  it("binds a ModelProvider Profile to a paired Host through the Space proxy lease", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+    const created = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Paired provider Agent",
+      systemPrompt: "Run OpenCode on my own machine against a Space Provider.",
+    }));
+
+    // ADR 0022 §1 puts no Host-kind restriction on provider mode, and the
+    // remote path implements it: `hostProviderProxyBaseUrl` derives a lease
+    // address for `kind = 'remote'`, and the daemon's bound-run environment
+    // filter exists for exactly this case.
+    const profile = await repository.createRuntimeProfile(SPACE, created.id, {
+      name: "Paired provider",
+      runtimeKey: "opencode",
+      backendMode: "model_provider",
+      modelProviderId: PROVIDER,
+      modelName: "test-model",
+      executionHostId: PAIRED_HOST,
+      workspaceMode: "managed",
+      runtimeInstallation: "own",
+      actorUserId: USER,
+    });
+    expect(profile).toMatchObject({
+      backend_mode: "model_provider",
+      execution_host_id: PAIRED_HOST,
+      runtime_installation: "own",
+      provider_binding: { state: "bound", provider_id: PROVIDER, model: "test-model" },
+    });
+
+    // What provider mode still may not be is unbound: with no Host there is
+    // nothing to hand the lease to.
+    await expect(repository.createRuntimeProfile(SPACE, created.id, {
+      name: "Hostless provider",
+      runtimeKey: "opencode",
+      backendMode: "model_provider",
+      modelProviderId: PROVIDER,
+      modelName: "test-model",
+      actorUserId: USER,
+    })).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it("admits a foreign-Space Provider only through an explicit Space grant", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+    const created = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Cross-space provider Agent",
+      systemPrompt: "Only granted Providers are selectable.",
+    }));
+    const [defaultProfile] = await repository.listRuntimeProfiles(SPACE, created.id);
+
+    const foreignSelection = {
+      backendMode: "model_provider" as const,
+      modelProviderId: FOREIGN_PROVIDER,
+      modelName: "test-model",
+    };
+    await expect(repository.createRuntimeProfile(SPACE, created.id, {
+      name: "Foreign provider",
+      runtimeKey: "opencode",
+      executionHostId: PAIRED_HOST,
+      workspaceMode: "managed",
+      runtimeInstallation: "own",
+      actorUserId: USER,
+      ...foreignSelection,
+    })).rejects.toMatchObject({ statusCode: 400 });
+    await expect(repository.updateRuntimeProfile(SPACE, created.id, defaultProfile!.id, foreignSelection))
+      .rejects.toMatchObject({ statusCode: 400 });
+    await expect(repository.setSpaceAgentRuntimeDefault(SPACE, {
+      runtimeKey: "opencode",
+      ...foreignSelection,
+    })).rejects.toMatchObject({ statusCode: 400 });
+
+    // Nothing was written by any of the three refusals.
+    expect(await repository.listRuntimeProfiles(SPACE, created.id)).toMatchObject([
+      { id: defaultProfile!.id, backend_mode: "runtime_native" },
+    ]);
+    expect(await repository.getSpaceAgentRuntimeDefault(SPACE)).toBeNull();
+
+    // The grant is the whole mechanism: add it and the same selection admits.
+    await db.pool.query(
+      `INSERT INTO model_provider_space_grants (
+         id, provider_id, space_id, owner_user_id, granted_by_user_id,
+         enabled, is_default, created_at, updated_at
+       ) VALUES ('foreign-provider-shared-grant', $1, $2, $3, $3, true, false, now(), now())`,
+      [FOREIGN_PROVIDER, SPACE, USER],
+    );
+    const updated = await repository.updateRuntimeProfile(SPACE, created.id, defaultProfile!.id, foreignSelection);
+    expect(updated).toMatchObject({ provider_binding: { state: "bound", provider_id: FOREIGN_PROVIDER } });
+  });
+
+  it("fails Agent creation with a repairable Space-template error and reports the state", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+    await repository.setSpaceAgentRuntimeDefault(SPACE, {
+      runtimeKey: "opencode",
+      backendMode: "model_provider",
+      modelProviderId: PROVIDER,
+      modelName: "test-model",
+    });
+    expect(await repository.getSpaceAgentRuntimeDefault(SPACE)).toMatchObject({
+      state: "ready",
+      state_reason: null,
+    });
+
+    // Disabling the Provider must not rewrite the template or any Profile; it
+    // makes future provisioning fail visibly.
+    await db.pool.query(`UPDATE model_providers SET enabled = false WHERE id = $1`, [PROVIDER]);
+
+    expect(await repository.getSpaceAgentRuntimeDefault(SPACE)).toMatchObject({
+      backend_mode: "model_provider",
+      model_provider_id: PROVIDER,
+      state: "needs_repair",
+    });
+
+    const rejection = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Blocked Agent",
+      systemPrompt: "Cannot be provisioned from a broken template.",
+    })).catch((error: unknown) => error);
+    expect(rejection).toMatchObject({
+      statusCode: 409,
+      responseBody: { code: "space_runtime_default_needs_repair" },
+    });
+    expect(String((rejection as Error).message)).toContain("runtime default for new Agents");
+
+    // The documented repair: put the template back on the native account.
+    // Absence of a provider selection is the product default, so this is the
+    // reset path and no second endpoint is needed for it.
+    await repository.setSpaceAgentRuntimeDefault(SPACE, {
+      runtimeKey: "opencode",
+      backendMode: "runtime_native",
+    });
+    expect(await repository.getSpaceAgentRuntimeDefault(SPACE)).toMatchObject({
+      backend_mode: "runtime_native",
+      model_provider_id: null,
+      state: "ready",
+    });
+    const repaired = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Repaired Agent",
+      systemPrompt: "Provisioned after the repair.",
+    }));
+    expect(await repository.listRuntimeProfiles(SPACE, repaired.id)).toMatchObject([
+      { backend_mode: "runtime_native", is_default: true },
+    ]);
+  });
+
+  it("rejects nested secret config writes and redacts legacy secrets from Profile reads", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgAgentRepository(db.pool);
+    const created = await withTransaction(db.pool, (client) => repository.createInTransaction(client, {
+      spaceId: SPACE,
+      userId: USER,
+      name: "Secret-free ACP Agent",
+      systemPrompt: "Keep credentials outside runtime configuration.",
+    }));
+    const [profile] = await repository.listRuntimeProfiles(SPACE, created.id);
+    expect(profile).toBeTruthy();
+
+    await expect(repository.updateRuntimeProfile(SPACE, created.id, profile!.id, {
+      runtimeConfigJson: { provider: [{ apiKey: "must-not-persist" }] },
+    })).rejects.toMatchObject({ statusCode: 422 });
+
+    await db.pool.query(
+      `UPDATE agent_runtime_profiles
+          SET runtime_config_json = $3::jsonb,
+              runtime_policy_json = $4::jsonb
+        WHERE space_id = $1 AND agent_id = $2`,
+      [
+        SPACE,
+        created.id,
+        JSON.stringify({ effort: "medium", provider: [{ api_key: "legacy-secret", keep: true }] }),
+        JSON.stringify({ nested: { credential_profile_id: "legacy-credential", keep: true } }),
+      ],
+    );
+    const [readProfile] = await repository.listRuntimeProfiles(SPACE, created.id);
+    expect(readProfile?.runtime_config_json).toEqual({ effort: "medium", provider: [{ keep: true }] });
+    expect(readProfile?.runtime_policy_json).toEqual({ nested: { keep: true } });
+
+    await repository.updateRuntimeProfile(SPACE, created.id, profile!.id, { name: "Cleaned legacy Profile" });
+    const stored = await db.pool.query<{ runtime_config_json: Record<string, unknown>; runtime_policy_json: Record<string, unknown> }>(
+      `SELECT runtime_config_json, runtime_policy_json
+         FROM agent_runtime_profiles WHERE space_id = $1 AND agent_id = $2`,
+      [SPACE, created.id],
+    );
+    expect(stored.rows[0]?.runtime_config_json).toEqual({ effort: "medium", provider: [{ keep: true }] });
+    expect(stored.rows[0]?.runtime_policy_json).toEqual({ nested: { keep: true } });
+    expect(stored.rows[0]?.runtime_policy_json.nested).not.toHaveProperty("credential_profile_id");
+    const version = await db.pool.query<{ max_run_time_seconds: number; risk_level: string }>(
+      `SELECT max_run_time_seconds, risk_level FROM agent_versions
+        WHERE agent_id = $1 AND space_id = $2 ORDER BY created_at DESC LIMIT 1`,
+      [created.id, SPACE],
+    );
+    expect(version.rows[0]).toEqual({ max_run_time_seconds: 300, risk_level: "medium" });
+  });
+
   it("publishes a new AgentVersion and leaves the historical version unchanged", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const repository = new PgAgentRepository(db.pool);

@@ -1,4 +1,4 @@
-import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, boolean, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { activityRecords } from "./activity.js";
 import { users } from "./auth.js";
@@ -40,7 +40,6 @@ export const agents = pgTable("agents", {
 	uniqueIndex("uq_agents_system_source_post_processor_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_source_post_processor'::text) AND ((status)::text = 'active'::text))`),
 	uniqueIndex("uq_agents_system_source_annotator_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_source_annotator'::text) AND ((status)::text = 'active'::text))`),
 	uniqueIndex("uq_agents_system_research_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_research'::text) AND ((status)::text = 'active'::text))`),
-	uniqueIndex("uq_agents_system_daily_reporter_per_space").using("btree", table.spaceId.asc().nullsLast()).where(sql`(((agent_kind)::text = 'system_daily_reporter'::text) AND ((status)::text = 'active'::text))`),
 	foreignKey({
 			columns: [table.ownerUserId],
 			foreignColumns: [users.id],
@@ -62,7 +61,7 @@ export const agents = pgTable("agents", {
 			name: "fk_agents_current_version_id_agent_versions"
 		}),
 	unique("uq_agents_space_id_id").on(table.id, table.spaceId),
-	check("ck_agents_agent_kind", sql`(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text, ('system_daily_reporter'::character varying)::text])`),
+	check("ck_agents_agent_kind", sql`(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text])`),
 	check("ck_agents_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('inactive'::character varying)::text, ('archived'::character varying)::text, ('disabled'::character varying)::text])`),
 	check("ck_agents_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),
 	check("ck_agents_access_level", sql`access_level IN ('full', 'summary')`),
@@ -118,17 +117,14 @@ export const agentVersions = pgTable("agent_versions", {
 	agentId: varchar("agent_id", { length: 36 }).notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	versionLabel: varchar("version_label", { length: 64 }).notNull(),
-	modelProviderId: varchar("model_provider_id", { length: 36 }),
-	modelName: varchar("model_name", { length: 256 }),
 	systemPrompt: text("system_prompt"),
 	promptProvenanceJson: jsonb("prompt_provenance_json"),
-	modelConfigJson: jsonb("model_config_json").notNull(),
-	runtimeConfigJson: jsonb("runtime_config_json").notNull(),
+	riskLevel: varchar("risk_level", { length: 16 }).default('medium').notNull(),
+	maxRunTimeSeconds: integer("max_run_time_seconds").default(300).notNull(),
 	contextPolicyJson: jsonb("context_policy_json").notNull(),
 	memoryPolicyJson: jsonb("memory_policy_json").notNull(),
 	capabilitiesJson: jsonb("capabilities_json").notNull(),
 	toolPermissionsJson: jsonb("tool_permissions_json").notNull(),
-	runtimePolicyJson: jsonb("runtime_policy_json").notNull(),
 	toolPolicyJson: jsonb("tool_policy_json").default({}).notNull(),
 	outputPolicyJson: jsonb("output_policy_json").default({}).notNull(),
 	scheduleConfigJson: jsonb("schedule_config_json").default({}).notNull(),
@@ -148,7 +144,6 @@ export const agentVersions = pgTable("agent_versions", {
 	archivedAt: timestamp("archived_at", { withTimezone: true, mode: 'string' }),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_agent_versions_agent_id").using("btree", table.agentId.asc().nullsLast()),
-	index("ix_agent_versions_model_provider_id").using("btree", table.modelProviderId.asc().nullsLast()),
 	index("ix_agent_versions_source_activity_id").using("btree", table.sourceActivityId.asc().nullsLast()),
 	index("ix_agent_versions_source_proposal_id").using("btree", table.sourceProposalId.asc().nullsLast()),
 	index("ix_agent_versions_space_id").using("btree", table.spaceId.asc().nullsLast()),
@@ -156,11 +151,6 @@ export const agentVersions = pgTable("agent_versions", {
 			columns: [table.agentId],
 			foreignColumns: [agents.id],
 			name: "agent_versions_agent_id_fkey"
-		}),
-	foreignKey({
-			columns: [table.modelProviderId],
-			foreignColumns: [modelProviders.id],
-			name: "agent_versions_model_provider_id_fkey"
 		}),
 	foreignKey({
 			columns: [table.spaceId],
@@ -179,6 +169,8 @@ export const agentVersions = pgTable("agent_versions", {
 		}).onDelete("set null"),
 	unique("uq_agent_versions_id_agent_space").on(table.id, table.agentId, table.spaceId),
 	unique("uq_agent_versions_agent_label").on(table.agentId, table.versionLabel),
+	check("ck_agent_versions_risk_level", sql`risk_level IN ('low', 'medium', 'high', 'critical')`),
+	check("ck_agent_versions_max_run_time_seconds", sql`max_run_time_seconds BETWEEN 1 AND 3600`),
 ]);
 
 export const agentRuntimeProfiles = pgTable("agent_runtime_profiles", {
@@ -190,7 +182,8 @@ export const agentRuntimeProfiles = pgTable("agent_runtime_profiles", {
 	workspaceMode: varchar("workspace_mode", { length: 16 }),
 	runtimeInstallation: varchar("runtime_installation", { length: 64 }),
 	name: varchar({ length: 128 }).notNull(),
-	adapterType: varchar("adapter_type", { length: 64 }).notNull(),
+	runtimeKey: varchar("runtime_key", { length: 64 }).notNull(),
+	backendMode: varchar("backend_mode", { length: 32 }).notNull(),
 	modelProviderId: varchar("model_provider_id", { length: 36 }),
 	modelName: varchar("model_name", { length: 256 }),
 	runtimeConfigJson: jsonb("runtime_config_json").default({}).notNull(),
@@ -232,6 +225,10 @@ export const agentRuntimeProfiles = pgTable("agent_runtime_profiles", {
 	unique("uq_agent_runtime_profiles_id_space_agent").on(table.id, table.spaceId, table.agentId),
 	unique("uq_agent_runtime_profiles_agent_name").on(table.agentId, table.name),
 	check("ck_agent_runtime_profiles_workspace_mode", sql`workspace_mode IS NULL OR workspace_mode IN ('location', 'managed')`),
+	check("ck_agent_runtime_profiles_runtime_key", sql`length(btrim(runtime_key)) > 0`),
+	check("ck_agent_runtime_profiles_backend_mode", sql`backend_mode IN ('runtime_native', 'model_provider')`),
+	check("ck_agent_runtime_profiles_backend_binding", sql`(backend_mode = 'runtime_native' AND model_provider_id IS NULL AND model_name IS NULL) OR (backend_mode = 'model_provider' AND model_provider_id IS NOT NULL AND model_name IS NOT NULL AND length(btrim(model_name)) > 0 AND execution_host_id IS NOT NULL)`),
+	check("ck_agent_runtime_profiles_default_enabled", sql`NOT is_default OR enabled`),
 	check("ck_agent_runtime_profiles_host_binding", sql`
 		(execution_host_id IS NULL) = (runtime_installation IS NULL)
 		AND (execution_host_id IS NULL) = (workspace_mode IS NULL)

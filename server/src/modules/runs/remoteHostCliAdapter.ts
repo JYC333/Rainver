@@ -1,20 +1,21 @@
-import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
+import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
 import type { ContentBlock } from "./cliConversationProtocol.js";
 import type { CredentialSpendDeps } from "../policy/credentialSpend.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
-import type { RunRecord } from "./repository.js";
+import { AcpRuntimeAdapter } from "../runtimeAdapters/acpRuntimeAdapter.js";
+import type { AgentRunRecord } from "./repository.js";
 import { buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
+import { acpRuntimeContextPromptBlocks } from "./acpRuntimeContextPrompt.js";
 import { stallTimeoutSeconds } from "./stallTimeout.js";
 import { workSkillPromptPointer } from "../capabilities/workSkill.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
 import { CliRenderError, renderCliCommand } from "./cliCommandRendering.js";
 import type { CliCommandExecutor, CliExecutionResult, CliProcessRegistry, CliStdioController } from "./localCliExecution.js";
-import type { VendorCliAdapterType } from "../runtimeAdapters/specs.js";
+import type { VendorCliRuntimeKey } from "../runtimeAdapters/specs.js";
 import {
   acpSessionConfigFromRunOverride,
   withStrictHostSelections,
-  createCliConversationController,
   withAcpModelSelection,
 } from "./cliConversationProtocol.js";
 import { createVendorEventNormalizer } from "./runtimeEventNormalization.js";
@@ -45,17 +46,18 @@ import {
  * deliberately a separate, much smaller function rather than a branch
  * inside it. `executeVendorCliAdapter` is credential- and provider-coupled
  * throughout (grant → sandbox config → provider binding, each with its own
- * cleanup-on-failure path); a trusted remote host gets none of that (D1: no
- * server-brokered credentials, no Runtime Context Delivery — it uses whatever
- * the machine is already logged into). What the two *do* share is the tool
+ * cleanup-on-failure path); a trusted remote host gets no server-brokered
+ * credential for native login. The canonical Runtime Context Delivery is
+ * still prepared by the control plane and sent through ACP. What the two *do* share is the tool
  * surface: both stage the same `rainver` command and Skill and issue the same
  * Run-scoped identity, by design, since a dispatched agent must report back
  * the same way wherever it runs.
  * Forking that function's internals would risk the credential-sensitive
  * server-host path for a feature that shares almost none of its logic. The
  * two functions share only genuinely pure pieces: spec lookup and argv
- * rendering. ACP protocol events are consumed by the conversation controller
- * on both paths; they are not vendor stdout text to parse.
+ * rendering. Canonical Runtime Context Delivery is projected into the one
+ * ACP prompt channel; ACP protocol events are consumed by the conversation
+ * controller on both paths, not parsed from vendor stdout.
  *
  * Remote-eligible adapters: the `acp` protocol (`claude_code`, `opencode`,
  * `codex_cli`) — driven via
@@ -81,8 +83,9 @@ import {
 export const REMOTE_HOST_ACP_CWD_PLACEHOLDER = REMOTE_CWD_PLACEHOLDER;
 
 export interface RemoteHostCliAdapterInput {
-  run: RunRecord;
+  run: AgentRunRecord;
   prompt: string | null;
+  invocation_delivery?: InvocationDelivery;
   model: string | null;
   resume_session_id: string | null;
   timeout_seconds?: number | null;
@@ -254,10 +257,10 @@ export interface RemoteHostCliAdapterDeps {
 }
 
 export interface RemoteBindingPort {
-  resolve(run: RunRecord, hostId: string, adapterType: string): Promise<ResolvedRemoteBinding | null>;
+  resolve(run: AgentRunRecord): Promise<ResolvedRemoteBinding | null>;
   record(runId: string, used: { provider_id: string; model: string | null } | null, spaceId: string): Promise<void>;
   /** Which Agent × container this run's CLI profile belongs to; never null — every host-bound run has one. */
-  profileScope(run: RunRecord, workspaceLocationId: string | null): Promise<RuntimeProfileScope>;
+  profileScope(run: AgentRunRecord, workspaceLocationId: string | null): Promise<RuntimeProfileScope>;
 }
 
 /**
@@ -277,12 +280,7 @@ export const NO_PROVIDER_BINDINGS: RemoteBindingPort = {
   async resolve() { return null; },
   async record() {},
   async profileScope(run, workspaceLocationId) {
-    if (!workspaceLocationId) {
-      throw new RemoteProviderBindingError(
-        "runtime_profile_scope_unresolved",
-        "This run has no WorkspaceLocation, so its runtime profile has no container.",
-      );
-    }
+    if (!workspaceLocationId) return { agent_id: run.agent_id, container_kind: "agent", container_id: run.agent_id };
     return { agent_id: run.agent_id, container_kind: "location", container_id: workspaceLocationId };
   },
 };
@@ -291,7 +289,7 @@ function databaseBindingPort(config: ServerConfig): RemoteBindingPort | null {
   if (!config.databaseUrl) return null;
   const db = getDbPool(config.databaseUrl);
   return {
-    resolve: (run, hostId, adapterType) => resolveRemoteRunBinding(db, run, hostId, adapterType),
+    resolve: (run) => resolveRemoteRunBinding(db, run),
     record: (runId, used, spaceId) => recordRemoteRunBackend(db, runId, used, spaceId),
     profileScope: (run, workspaceLocationId) => resolveRuntimeProfileScope(db, run, workspaceLocationId),
   };
@@ -338,13 +336,13 @@ async function runRemoteHostCliAdapter(
   leases: Array<() => void>,
 ): Promise<RunAdapterResultEnvelope> {
   const startedAt = new Date().toISOString();
-  const adapterType = input.run.adapter_type;
-  const spec = getLocalCliRuntimeAdapterSpec(adapterType);
+  const runtimeKey = input.run.runtime_key;
+  const spec = getLocalCliRuntimeAdapterSpec(runtimeKey);
   if (!spec) {
-    return remoteFailureWithEvent(input, adapterType ?? "unknown", "runtime_adapter_not_found", "Runtime adapter is not registered.", startedAt);
+    return remoteFailureWithEvent(input, runtimeKey ?? "unknown", "runtime_adapter_not_found", "Runtime adapter is not registered.", startedAt);
   }
   if (spec.implementation_status !== "implemented") {
-    return remoteFailureWithEvent(input, spec.adapter_type, "runtime_adapter_not_implemented", `Runtime adapter '${adapterType}' is not executable.`, startedAt);
+    return remoteFailureWithEvent(input, spec.runtime_key, "runtime_adapter_not_implemented", `Runtime adapter '${runtimeKey}' is not executable.`, startedAt);
   }
   // Every currently-implemented local_cli adapter is ACP; this defends only
   // against a hypothetical future non-ACP adapter slipping past routes.ts's
@@ -352,9 +350,9 @@ async function runRemoteHostCliAdapter(
   if (spec.invocation.protocol !== "acp") {
     return remoteFailureWithEvent(
       input,
-      spec.adapter_type,
+      spec.runtime_key,
       "remote_execution_protocol_not_supported",
-      `Runtime adapter '${spec.adapter_type}' requires a bidirectional session protocol and cannot run on a remote execution host yet.`,
+      `Runtime adapter '${spec.runtime_key}' requires a bidirectional session protocol and cannot run on a remote execution host yet.`,
       startedAt,
     );
   }
@@ -373,6 +371,7 @@ async function runRemoteHostCliAdapter(
   // changes, is a real open design question logged in
   // `tasks/deferred-register.md`, not decided here).
   let prompt = input.prompt ?? input.run.prompt ?? "";
+  const supplementalInstructions: string[] = [];
 
   let rendered;
   try {
@@ -408,7 +407,7 @@ async function runRemoteHostCliAdapter(
   } catch (error) {
     return remoteFailureWithEvent(
       input,
-      spec.adapter_type,
+      spec.runtime_key,
       error instanceof CliRenderError ? error.code : "cli_command_render_failed",
       error instanceof Error ? error.message : "CLI command render failed.",
       startedAt,
@@ -426,7 +425,7 @@ async function runRemoteHostCliAdapter(
 
   const registry = deps.connectionRegistry ?? sharedHostConnectionRegistry;
   const threadEvents = createThreadEventNormalizer();
-  const runtimeEvents = createVendorEventNormalizer(spec.adapter_type);
+  const runtimeEvents = createVendorEventNormalizer(spec.runtime_key);
   const timeoutSeconds = resolveTimeoutSeconds(input, spec.limits.default_timeout_seconds, spec.limits.max_timeout_seconds);
 
   // The control plane's choice of model backend for this run, if it made one.
@@ -440,7 +439,6 @@ async function runRemoteHostCliAdapter(
   // so it reads its own login and its own vendor auto-memory rather than the
   // machine's `~/.claude`.
   let profileFrame: RemoteProviderBindingFrame | null = null;
-  let unusableHostDefault: string | null = null;
   const config = deps.config;
   const bindings = deps.bindings ?? (config ? databaseBindingPort(config) : null);
   {
@@ -451,7 +449,7 @@ async function runRemoteHostCliAdapter(
           "Cannot determine this run's model backend: no binding port and no database connection.",
         );
       }
-      const bound = await bindings.resolve(input.run, hostId, spec.adapter_type);
+      const bound = await bindings.resolve(input.run);
       const scope = await bindings.profileScope(input.run, workspaceLocationId);
       if (bound) {
         if (!config) {
@@ -460,12 +458,11 @@ async function runRemoteHostCliAdapter(
             "This run is bound to a ModelProvider, but no server configuration was available to reach it.",
           );
         }
-        try {
-          providerBinding = await buildRemoteProviderBinding({
+        providerBinding = await buildRemoteProviderBinding({
             config,
             run: input.run,
             hostId,
-            adapterType: spec.adapter_type,
+            runtimeKey: spec.runtime_key,
             binding: bound,
             scope,
             // Outlive the run itself, the way the server-host path does, so a
@@ -478,44 +475,13 @@ async function runRemoteHostCliAdapter(
             // a test-supplied port must say which database it means.
             db: deps.db ?? getDbPool(config.databaseUrl!),
             enforcer: deps.policyEnforcer,
-          });
-          leases.push(providerBinding.revoke);
-        } catch (error) {
-          // A Host default that cannot be used *here* is not this run's
-          // error: a Host is user-scoped and can back Locations in several
-          // Spaces, so its default may name a provider granted in a different
-          // one. Before this existed such a run used the machine's own login
-          // and succeeded; failing it now would be a regression nobody asked
-          // for. A binding the dispatch explicitly asked for still fails.
-          if (bound.origin !== "host_default") throw error;
-          unusableHostDefault = error instanceof Error ? error.message : String(error);
-          providerBinding = null;
-        }
-      }
-      // Not an else: a Host default that turned out to be unusable falls back
-      // to the machine's own login, and that fallback needs a profile for the
-      // same reason an intentionally unbound run does. A runtime without a
-      // login/state-root contract fails closed here instead of sharing its
-      // managed installation's session and auto-memory across Agents.
-      profileFrame = providerBinding?.frame
-        ?? buildUnboundRuntimeProfile(spec.adapter_type, scope);
-      if (unusableHostDefault) {
-        const text = "This host's default model backend is not usable for this run, "
-          + `so it ran on this machine's own login instead: ${unusableHostDefault}`;
-        // Through `runtime_event_sink`, not the thread sink: the degradation
-        // only happens to a run with **no** thread — a thread always has a
-        // dispatched message, and a dispatched message always carries a
-        // resolved binding — so a thread-only diagnostic would be silent for
-        // this branch's entire real population.
-        void input.runtime_event_sink?.({
-          schema_version: "runtime_event.v1",
-          type: "warning",
-          occurred_at: new Date().toISOString(),
-          summary: text,
-          metadata_json: { reason: "host_default_binding_unusable" },
         });
-        void input.thread_event_sink?.([{ event_type: "diagnostic", text }]);
+        leases.push(providerBinding.revoke);
       }
+      // An unbound Profile uses the runtime's own login, with a separate
+      // profile directory for the Agent × container boundary.
+      profileFrame = providerBinding?.frame
+        ?? buildUnboundRuntimeProfile(spec.runtime_key, scope);
       // Make the Run row say what this run actually executes against — the
       // router may have predicted a different provider at run start, and usage
       // attributes to the one the lease names, not the one the row does.
@@ -533,7 +499,7 @@ async function runRemoteHostCliAdapter(
       // be used (B67).
       return remoteFailureWithEvent(
         input,
-        spec.adapter_type,
+        spec.runtime_key,
         error instanceof RemoteProviderBindingError ? error.code : "provider_binding_failed",
         error instanceof Error ? error.message : "Could not prepare the selected model backend.",
         startedAt,
@@ -563,7 +529,7 @@ async function runRemoteHostCliAdapter(
     } catch (error) {
       return remoteFailureWithEvent(
         input,
-        spec.adapter_type,
+        spec.runtime_key,
         "work_surface_unavailable",
         `Could not prepare this run's Rainver work surface: ${error instanceof Error ? error.message : String(error)}`,
         startedAt,
@@ -576,7 +542,11 @@ async function runRemoteHostCliAdapter(
     // The daemon substitutes the placeholder with the file's absolute path on
     // that machine (only it knows one); an unexpanded `$RAINVER_SKILL_PATH`
     // is a path a read_file tool cannot open.
-    if (prompt) prompt = `${prompt}\n\n${workSkillPromptPointer(WORK_SKILL_PATH_PLACEHOLDER, workSurface.options)}`;
+    if (prompt) {
+      const pointer = workSkillPromptPointer(WORK_SKILL_PATH_PLACEHOLDER, workSurface.options);
+      if (input.invocation_delivery) supplementalInstructions.push(pointer);
+      else prompt = `${prompt}\n\n${pointer}`;
+    }
   } else if (assembleRunInputEnvelope(input.run).tool_grants.length > 0) {
     // Granted tools with no way to reach them. It is not worth failing the Run
     // — the work may still be worth doing — but it must not be silent: the
@@ -590,6 +560,7 @@ async function runRemoteHostCliAdapter(
   }
 
   let promptBlocks: ContentBlock[][] | undefined;
+  let hydratedBlocks: ContentBlock[] = [];
   let inputResources: Array<{
     input_id: string;
     workspace_location_id: string;
@@ -604,7 +575,7 @@ async function runRemoteHostCliAdapter(
     if (!config?.databaseUrl) {
       return remoteFailureWithEvent(
         input,
-        spec.adapter_type,
+        spec.runtime_key,
         "conversation_input_unavailable",
         "This run contains structured conversation input, but the server database is unavailable to hydrate it.",
         startedAt,
@@ -621,6 +592,7 @@ async function runRemoteHostCliAdapter(
         useImmutableSnapshot: chatTurnRetryOfRunId(input.run.model_override_json) !== null,
         executionHostId: hostId,
       });
+      hydratedBlocks = hydrated.blocks as ContentBlock[];
       if (hydrated.blocks.length > 0) {
         promptBlocks = [[
           ...(prompt ? [{ type: "text", text: prompt } as ContentBlock] : []),
@@ -631,12 +603,20 @@ async function runRemoteHostCliAdapter(
     } catch (error) {
       return remoteFailureWithEvent(
         input,
-        spec.adapter_type,
+        spec.runtime_key,
         "conversation_input_unavailable",
         error instanceof Error ? error.message : "Conversation input could not be prepared.",
         startedAt,
       );
     }
+  }
+
+  if (input.invocation_delivery) {
+    promptBlocks = [acpRuntimeContextPromptBlocks(
+      input.invocation_delivery,
+      hydratedBlocks,
+      supplementalInstructions,
+    )];
   }
 
   // Named here because the result envelope reports it too, and both must be
@@ -652,7 +632,7 @@ async function runRemoteHostCliAdapter(
     registry,
     profileFrame,
     installation,
-    spec.adapter_type,
+    spec.runtime_key,
     workSurface?.frame ?? null,
     launchWorkspace(input.workspace, workspaceLocationId, input.workspace_relative_path ?? null),
     input.workspace_access ?? [],
@@ -674,11 +654,12 @@ async function runRemoteHostCliAdapter(
     strictHost ? spec.strict_session_config : undefined,
   );
   const runtimeModel = providerBinding
-    ? boundAcpModelId(spec.adapter_type as VendorCliAdapterType, requestedModel)
+    ? boundAcpModelId(spec.runtime_key as VendorCliRuntimeKey, requestedModel)
     : null;
-  const stdioController = createCliConversationController({
-    adapter_type: spec.adapter_type as VendorCliAdapterType,
-    prompt,
+  const stdioController = new AcpRuntimeAdapter(spec.runtime_key).createController({
+    // A Delivery already contains the authoritative current input. Retaining
+    // the pre-Gateway prompt as a fallback here would send it twice.
+    prompt: input.invocation_delivery ? "" : prompt,
     cwd: REMOTE_HOST_ACP_CWD_PLACEHOLDER,
     // The backend the binding actually resolved, in this runtime's identifier
     // space — not `input.model`, which is the router's idea of a model and can
@@ -801,7 +782,7 @@ async function runRemoteHostCliAdapter(
       { event_type: "status", status: "run_timeout" },
     ]);
     return remoteFailure(
-      spec.adapter_type,
+      spec.runtime_key,
       stalled ? "runtime_stall_timeout" : "runtime_timeout",
       detail,
       startedAt,
@@ -811,16 +792,16 @@ async function runRemoteHostCliAdapter(
   const success = result.returncode === 0 && (!protocolResult || (protocolResult.completed && !protocolResult.error));
   await input.thread_event_sink?.([{ event_type: "status", status: success ? "run_succeeded" : "run_failed" }]);
   return {
-    adapter_type: spec.adapter_type,
+    runtime_key: spec.runtime_key,
     adapter_kind: "local_cli",
     success,
     output_text: protocolResult?.text ?? stdoutText,
     output_json: {
-      adapter_type: spec.adapter_type,
+      runtime_key: spec.runtime_key,
       external_session_id: measurement.external_session_id,
     },
     metadata_json: {
-      adapter_type: spec.adapter_type,
+      runtime_key: spec.runtime_key,
       external_session_id: measurement.external_session_id,
       // Which copy on the host actually ran it. The usage ledger records it as
       // the runtime's version, and the quota a Run carries back is folded into
@@ -919,28 +900,28 @@ async function hostIsStrict(databaseUrl: string | null | undefined, hostId: stri
 
 async function remoteFailureWithEvent(
   input: RemoteHostCliAdapterInput,
-  adapterType: string,
+  runtimeKey: string,
   errorCode: string,
   message: string,
   startedAt: string,
 ): Promise<RunAdapterResultEnvelope> {
   await input.thread_event_sink?.([{ event_type: "status", status: "run_failed" }]);
-  return remoteFailure(adapterType, errorCode, message, startedAt);
+  return remoteFailure(runtimeKey, errorCode, message, startedAt);
 }
 
 function remoteFailure(
-  adapterType: string,
+  runtimeKey: string,
   errorCode: string,
   message: string,
   startedAt: string,
   completedAt: string = new Date().toISOString(),
 ): RunAdapterResultEnvelope {
   return {
-    adapter_type: adapterType,
+    runtime_key: runtimeKey,
     adapter_kind: "local_cli",
     success: false,
     output_text: "",
-    output_json: { adapter_type: adapterType },
+    output_json: { runtime_key: runtimeKey },
     exit_code: 1,
     error_code: errorCode,
     error_message: message,
@@ -968,7 +949,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     /** Which copy of the runtime on the host: `own` or `managed:<version>`. */
     private readonly installation: string = "own",
     /** The adapter the copy belongs to — managed copies are keyed by it, not by the command name. */
-    private readonly adapterType: string | null = null,
+    private readonly runtimeKey: string | null = null,
   /** Null when this Run was granted no tool and needs no way to call back. */
   private readonly workSurface: RunWorkSurfaceFrame | null = null,
     private readonly workspace?: LaunchWorkspace,
@@ -1064,7 +1045,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         keep_stdin_open: Boolean(controller),
         provider_binding: this.providerBinding ?? undefined,
         installation: this.installation,
-        adapter_type: this.adapterType ?? undefined,
+        runtime_key: this.runtimeKey ?? undefined,
         work_surface: this.workSurface ?? undefined,
         workspace: this.workspace,
         workspace_access: this.workspaceAccess,

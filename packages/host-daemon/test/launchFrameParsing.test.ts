@@ -24,7 +24,7 @@ describe("the launch frame across the wire", () => {
     timeout_seconds: 120,
     keep_stdin_open: true,
     installation: "managed:1.2.3",
-    adapter_type: "claude_code",
+    runtime_key: "claude_code",
     provider_binding: {
       profile_key: "agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/conversation/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/claude_code/provider-1",
       env: { ANTHROPIC_BASE_URL: "http://control-plane:8021/anthropic/l1" },
@@ -56,7 +56,7 @@ describe("the launch frame across the wire", () => {
       timeout_seconds: 120,
       keep_stdin_open: true,
       installation: "managed:1.2.3",
-      adapter_type: "claude_code",
+      runtime_key: "claude_code",
       provider_binding: wire.provider_binding,
       work_surface: wire.work_surface,
       isolation: wire.isolation,

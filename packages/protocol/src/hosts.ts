@@ -4,8 +4,8 @@
  *
  * The daemon's heartbeat is normalized by the server into `HostCapabilities`
  * before it is stored, so this is the one shape the server, the web, and any
- * other reader agree on — a runtime on a host has one identity, adapter type
- * × copy, and everything about a copy lives on the copy.
+ * other reader agree on — a runtime definition and its installation copy
+ * have distinct identities, and everything about a copy lives on the copy.
  */
 
 import { z } from "zod";
@@ -133,6 +133,8 @@ export const RuntimeInstallationSchema = z.object({
   version: z.string().nullable(),
   /** Vendor CLI version; distinct from the managed ACP package version above. */
   runtime_version: z.string().nullable().optional(),
+  /** The lifecycle health handshake this managed copy passed before activation. */
+  health_check_protocol: z.enum(["acp"]).nullable().optional(),
   /** Whether its login state exists; ACP session setup is the generic fallback signal. */
   logged_in: z.boolean().nullable(),
   /** Null when the copy could not be asked and has no configured model either. */
@@ -174,19 +176,26 @@ export const HostExecutionTargetLocationSchema = z.object({
 }).strict();
 export type HostExecutionTargetLocation = z.infer<typeof HostExecutionTargetLocationSchema>;
 
-export const HostExecutionTargetAdapterSchema = z.object({
-  adapter_type: z.string().trim().min(1),
+export const HostExecutionTargetRuntimeSchema = z.object({
+  runtime_key: z.string().trim().min(1),
   display_name: z.string().trim().min(1),
   installations: z.array(RuntimeInstallationSchema.pick({ id: true, version: true, logged_in: true })),
 }).strict();
-export type HostExecutionTargetAdapter = z.infer<typeof HostExecutionTargetAdapterSchema>;
+export type HostExecutionTargetRuntime = z.infer<typeof HostExecutionTargetRuntimeSchema>;
 
 export const HostExecutionTargetSchema = z.object({
   host_id: IdSchema,
   host_name: z.string().trim().min(1),
+  /**
+   * The lifecycle distinction the composer needs: a `server` target is the
+   * built-in Server Runtime, provisioned and pinned by Rainver; a `remote`
+   * one is its owner's machine. It is `hosts.kind`, never the display label —
+   * the label is presentation and must not be parsed back into authority.
+   */
+  host_kind: z.enum(["server", "remote"]),
   host_online: z.boolean(),
   locations: z.array(HostExecutionTargetLocationSchema),
-  adapters: z.array(HostExecutionTargetAdapterSchema),
+  runtimes: z.array(HostExecutionTargetRuntimeSchema),
   managed_workspace_available: z.boolean(),
 }).strict();
 export type HostExecutionTarget = z.infer<typeof HostExecutionTargetSchema>;
@@ -256,7 +265,7 @@ export type ManagedWorkspaceHeartbeat = z.infer<typeof ManagedWorkspaceHeartbeat
  */
 export const HostRuntimeUsageSchema = z.object({
   host_id: IdSchema,
-  adapter_type: z.string().min(1),
+  runtime_key: z.string().min(1),
   installation: z.string().min(1),
   quota: z.object({
     available: z.boolean(),
@@ -275,7 +284,7 @@ export const HostRuntimeChangeSchema = z.object({
   id: IdSchema,
   host_id: IdSchema,
   host_name: z.string(),
-  adapter_type: z.string().min(1),
+  runtime_key: z.string().min(1),
   action: z.enum(["install", "upgrade", "rollback", "remove"]),
   from_version: z.string().nullable(),
   to_version: z.string().nullable(),
@@ -283,3 +292,23 @@ export const HostRuntimeChangeSchema = z.object({
   created_at: ISODateTimeSchema,
 });
 export type HostRuntimeChange = z.infer<typeof HostRuntimeChangeSchema>;
+
+/** Separate Server OpenCode package state from its host-local account state. */
+export const HostRuntimeProvisioningStatusSchema = z.object({
+  host_id: IdSchema,
+  runtime_key: z.literal("opencode"),
+  installation: z.object({
+    state: z.enum(["queued", "installing", "ready", "failed"]),
+    desired_version: z.string(),
+    installed_version: z.string().nullable(),
+    active_version: z.string().nullable(),
+    error: z.string().nullable(),
+    attempts: z.number().int().nonnegative(),
+  }).strict(),
+  native_account: z.object({
+    installation_id: z.string().nullable(),
+    logged_in: z.boolean().nullable(),
+    accounts: z.array(RuntimeAccountSchema).nullable(),
+  }).strict(),
+}).strict();
+export type HostRuntimeProvisioningStatus = z.infer<typeof HostRuntimeProvisioningStatusSchema>;

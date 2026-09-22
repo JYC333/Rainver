@@ -1,15 +1,12 @@
 import type {
   CanonicalToolDefinition,
-  RuntimeHostExecuteRequest,
-  RunTriggerOrigin,
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import {
   SystemActionDispatcher,
   type SystemActionDispatcherDeps,
 } from "../systemActions/systemActionDispatcher.js";
-import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
-import type { RunRecord } from "./repository.js";
+import type { AgentRunRecord } from "./repository.js";
 
 export class CliAgentToolTransport {
   constructor(
@@ -17,18 +14,18 @@ export class CliAgentToolTransport {
     private readonly deps: SystemActionDispatcherDeps = {},
   ) {}
 
-  async list(run: RunRecord): Promise<CanonicalToolDefinition[]> {
+  async list(run: AgentRunRecord): Promise<CanonicalToolDefinition[]> {
     this.assertActive(run);
-    const dispatcher = await SystemActionDispatcher.create(this.config, run, transportRequest(run), this.deps);
+    const dispatcher = await SystemActionDispatcher.create(this.config, run, this.deps);
     return dispatcher.listGrantedDefinitions();
   }
 
   async call(
-    run: RunRecord,
+    run: AgentRunRecord,
     call: { id: string; name: string; arguments: unknown },
   ): Promise<unknown> {
     this.assertActive(run);
-    const dispatcher = await SystemActionDispatcher.create(this.config, run, transportRequest(run), this.deps);
+    const dispatcher = await SystemActionDispatcher.create(this.config, run, this.deps);
     const result = await dispatcher.dispatch({
       id: call.id,
       name: call.name,
@@ -37,35 +34,9 @@ export class CliAgentToolTransport {
     return result.modelResult;
   }
 
-  private assertActive(run: RunRecord): void {
+  private assertActive(run: AgentRunRecord): void {
     if (run.status !== "running") {
       throw new Error(`CLI tool transport requires a running Run (received '${run.status}').`);
     }
   }
-}
-
-function transportRequest(run: RunRecord): RuntimeHostExecuteRequest {
-  return {
-    run_input: assembleRunInputEnvelope(run),
-    run_id: run.id,
-    space_id: run.space_id,
-    model_provider_id: run.model_provider_id ?? run.id,
-    model: null,
-    system_prompt: null,
-    prompt: "",
-    mode: run.mode,
-    instruction: run.instruction,
-    session_id: run.session_id,
-    parent_run_id: run.parent_run_id ?? null,
-    root_run_id: run.root_run_id ?? null,
-    run_group_id: run.run_group_id ?? null,
-    agent_id: run.agent_id,
-    project_id: run.project_id,
-    project_folder_id: run.project_folder_id,
-    trigger_origin: run.trigger_origin as RunTriggerOrigin,
-    capability_id: run.capability_id ?? null,
-    output_format: null,
-    tool_mode: "disabled",
-    tool_bindings: [],
-  };
 }

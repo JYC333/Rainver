@@ -1,4 +1,4 @@
-import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, unique, uniqueIndex, check, foreignKey, varchar, bigint, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { actors } from "./agents.js";
 import { spaces } from "./spaces.js";
@@ -35,9 +35,30 @@ export const projectWorkEvents = pgTable("project_work_events", {
 	idempotencyKey: varchar("idempotency_key", { length: 256 }),
 	dataJson: jsonb("data_json").default({}).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+	// The tiebreak. `occurred_at` is a millisecond timestamp and two events of
+	// one advancement chain are written in the same transaction, so ordering
+	// `(occurred_at, id)` breaks ties on a random v4 UUID: the board could show
+	// the earlier of two same-millisecond events as the latest one. A sequence
+	// is monotonic in insert order within the stream, so `(occurred_at, seq)`
+	// is total. `byDefault` rather than `always` so a fixture that restores a
+	// stream can write its own values.
+	// `bigint`, not `number`: the column is 64-bit and a JS number loses
+	// precision past 2^53, which is why the Updates cursor keeps `seq` as a
+	// decimal string end to end.
+	seq: bigint("seq", { mode: "bigint" }).generatedByDefaultAsIdentity().notNull(),
 }, (table): PgTableExtraConfigValue[] => [
-	index("ix_project_work_events_project_occurred").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.occurredAt.desc().nullsLast()),
-	index("ix_project_work_events_subject").using("btree", table.spaceId.asc().nullsLast(), table.subjectType.asc().nullsLast(), table.subjectId.asc().nullsLast(), table.occurredAt.desc().nullsLast()),
+	// Both readers page the stream by `ORDER BY occurred_at DESC, seq DESC`, so
+	// each index carries the whole ordering key, and `nullsFirst()` on the two
+	// descending columns is load-bearing: `ORDER BY ... DESC` is NULLS FIRST in
+	// Postgres, `DESC NULLS LAST` is a different ordering the planner cannot
+	// match to it, and Drizzle writes NULLS LAST unless told otherwise. With
+	// the mismatch the planner sorted the whole filtered set on every page
+	// (measured on 200k rows: Bitmap Index Scan + Sort; a plain Index Scan
+	// under the LIMIT once the nulls ordering matches). A separate
+	// `(space_id, subject_type, subject_id, seq)` index served no query — no
+	// reader orders by `seq` alone — and is not replaced.
+	index("ix_project_work_events_project_occurred").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.occurredAt.desc().nullsFirst(), table.seq.desc().nullsFirst()),
+	index("ix_project_work_events_subject").using("btree", table.spaceId.asc().nullsLast(), table.subjectType.asc().nullsLast(), table.subjectId.asc().nullsLast(), table.occurredAt.desc().nullsFirst(), table.seq.desc().nullsFirst()),
 	index("ix_project_work_events_kind").using("btree", table.spaceId.asc().nullsLast(), table.eventKind.asc().nullsLast(), table.occurredAt.desc().nullsLast()),
 	index("ix_project_work_events_correlation").using("btree", table.correlationId.asc().nullsLast()).where(sql`correlation_id IS NOT NULL`),
 	// Every Updates page asks, per row, whether something reversed it — a

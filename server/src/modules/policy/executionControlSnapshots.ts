@@ -14,8 +14,8 @@ import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 export interface ExecutionControlSnapshotInputs {
   runtimeInstallation?: string | null;
   policyDecisionRecordIds?: readonly string[];
-  /** A remote run's provider is resolved at execution, not predicted here. */
-  executesRemotely?: boolean;
+  /** A Host-daemon run resolves its backend when the execution Host dispatches it. */
+  dispatchesToHostDaemon?: boolean;
 }
 
 export interface EffectiveRunContextBindings {
@@ -40,20 +40,27 @@ export class ExecutionControlSnapshotRepository {
   ): Promise<ExecutionControlSnapshot> {
     const id = randomUUID();
     const createdAt = new Date().toISOString();
-    const providerRequired = run.adapter_type === "model_api" || run.adapter_type === "ts_agent_host";
-    // For a run that executes on a remote host, `runs.model_provider_id` at
-    // this point is the router's *prediction*: the remote path resolves its
-    // own binding later, from the dispatch message or the Host default, and
-    // writes back what it actually used. Treating the prediction as this
-    // run's destination would deny egress for, or fail preflight on, a
-    // provider the run never touches — and would record a destination that is
-    // not the one traffic went to.
-    const providerId = inputs.executesRemotely ? null : run.model_provider_id;
+    const profileSnapshot = recordValue(run.runtime_profile_snapshot_json);
+    const profileBackendMode = profileSnapshot.backend_mode;
+    const profileProviderId = profileBackendMode === "model_provider"
+      ? stringValue(profileSnapshot.model_provider_id)
+      : null;
+    const providerRequired = run.execution_kind === "provider_task"
+      || profileBackendMode === "model_provider";
+    // Agent backend authority is the immutable Runtime Profile snapshot. A
+    // remote dispatch still resolves/leases that selected Provider on the
+    // Host path, so it is not an egress destination for this Server-side
+    // snapshot; the run must nevertheless carry a valid Profile binding.
+    // Formal ProviderTask Runs use their own selected provider column.
+    const selectedProviderId = run.execution_kind === "provider_task"
+      ? run.model_provider_id
+      : profileProviderId;
+    const providerId = inputs.dispatchesToHostDaemon ? null : selectedProviderId;
     const providerDestination = providerId !== null;
     const localCliDestination = !providerDestination
-      && isVendorCliAdapter(run.adapter_type);
-    if (providerRequired && !providerId) {
-      throw new Error("Execution preflight requires a resolved model provider");
+      && isVendorCliAdapter(run.runtime_key);
+    if (providerRequired && !selectedProviderId) {
+      throw new Error("Execution preflight requires a provider selected by the execution authority");
     }
     const constraints = resolvedPolicy.policy.constraints;
     const permissionSnapshot = recordValue(run.permission_snapshot_json);
@@ -67,7 +74,7 @@ export class ExecutionControlSnapshotRepository {
     const bindings = effectiveBindings ?? await this.resolveEffectiveBindingsForRun(run);
     const projectContextRefs = await this.resolveProjectContextRefs(run.space_id, bindings, resolvedPolicy);
     const egress = providerId
-      ? await this.providerEgress(run.space_id, providerId, run.adapter_type)
+      ? await this.providerEgress(run.space_id, providerId, run.runtime_key ?? null)
       : null;
     if (providerId && !egress!.allowed) {
       throw new Error("Execution preflight denied external model egress for this Space");
@@ -158,14 +165,14 @@ export class ExecutionControlSnapshotRepository {
         : localCliDestination
           ? {
               destination_type: "local_cli",
-              destination_id: run.adapter_type,
+              destination_id: run.runtime_key,
               sensitivity_ceiling: "highly_restricted",
               external_egress_allowed: true,
               allowed_provider_ids: [],
             }
           : {
             destination_type: "local_runtime",
-            destination_id: run.adapter_type ?? "local_runtime",
+            destination_id: run.runtime_key ?? "local_runtime",
             sensitivity_ceiling: "highly_restricted",
             external_egress_allowed: false,
             allowed_provider_ids: [],
@@ -371,7 +378,7 @@ export class ExecutionControlSnapshotRepository {
   private async providerEgress(
     spaceId: string,
     providerId: string,
-    adapterType: string | null,
+    runtimeKey: string | null,
   ): Promise<{ external: boolean; allowed: boolean }> {
     const result = await this.db.query<{
       provider_type: string;
@@ -390,7 +397,7 @@ export class ExecutionControlSnapshotRepository {
     );
     const provider = result.rows[0];
     if (!provider) throw new Error("Execution preflight requires an enabled provider grant");
-    const destination = runtimeProviderEgressDestination(adapterType, provider);
+    const destination = runtimeProviderEgressDestination(runtimeKey, provider);
     if (destination === "local_provider") return { external: false, allowed: true };
     const settings = await readSpaceRetrievalSettings(this.db, spaceId);
     return { external: settings.externalEgressEnabled, allowed: settings.externalEgressEnabled };
@@ -410,6 +417,10 @@ function recordValue(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function refsFromRecords(

@@ -7,7 +7,7 @@ import type { RunInputEnvelope } from "@rainver/protocol";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository.js";
 import { contractRecord, createRunContractSnapshot } from "../src/modules/runs/contractSnapshot.js";
-import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord, RunRecord } from "../src/modules/runs/repository.js";
 import { isRetryableRunErrorCode } from "../src/modules/runs/retryPolicy.js";
 import { type RunExchangeHandle, RunExchangeManager } from "../src/modules/runs/runExchange.js";
 import { assembleRunInputEnvelope, logicalRunInput } from "../src/modules/runs/runInputEnvelope.js";
@@ -22,6 +22,7 @@ import {
   verificationResultToOut,
 } from "../src/modules/runs/runReadModel.js";
 import { resetTables } from "./support/resetTables.js";
+import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("runContractSnapshot", () => {
@@ -106,6 +107,35 @@ describe("runContractSnapshot", () => {
       expect(snapshot.budget_resolution.mode).toBe("strictest_of_all");
     });
 
+    it("keeps AgentVersion risk and duration constraints stricter than caller precedence", () => {
+      const snapshot = createRunContractSnapshot({
+        source: { kind: "automation", id: "automation-1" },
+        risk_level: "low",
+        budget_sources: [
+          { source: { kind: "space", id: "space-1" }, precedence: 10, max_duration_seconds: 1200 },
+          { source: { kind: "automation", id: "automation-1" }, precedence: 20, max_duration_seconds: 900 },
+        ],
+        agent_constraints: {
+          agent_version_id: "agent-version-1",
+          risk_level: "high",
+          max_run_time_seconds: 240,
+        },
+      }, "2026-09-21T00:00:00.000Z");
+
+      expect(snapshot.risk_level).toBe("high");
+      expect(snapshot.agent_constraints).toEqual({
+        agent_version_id: "agent-version-1",
+        risk_level: "high",
+        max_run_time_seconds: 240,
+      });
+      expect(snapshot.max_duration_seconds).toBe(240);
+      expect(snapshot.budget_resolution.mode).toBe("explicit_precedence");
+      expect(snapshot.budget_resolution.selected_source_by_dimension.max_duration_seconds).toEqual({
+        kind: "agent_version",
+        id: "agent-version-1",
+      });
+    });
+
     it("deep-copies source criteria so the persisted snapshot is immutable in memory", () => {
       const acceptance = { checks: [{ command: "npm test" }] };
       const snapshot = createRunContractSnapshot(
@@ -146,6 +176,7 @@ describe("runContractSnapshot", () => {
         space_id: "space-1",
         agent_id: "agent-1",
         agent_version_id: "version-1",
+        execution_kind: "agent",
         status: "queued",
         mode: "live",
         prompt: "prompt",
@@ -159,7 +190,7 @@ describe("runContractSnapshot", () => {
           project_id: "project-1",
         },
         workflow_version_id: "workflow-version-1",
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         model_provider_id: null,
         required_sandbox_level: "none",
         trigger_origin: "automation",
@@ -226,20 +257,38 @@ describe("runDelegationIdempotencyDb", () => {
       const versionId = randomUUID();
       await db.pool.query(
         `INSERT INTO agent_versions (
-           id, agent_id, space_id, version_label, system_prompt, model_config_json,
-           runtime_config_json, context_policy_json, memory_policy_json,
-           capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-         ) VALUES ($1,$2,$3,'v1','You are a test agent.','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,
-           '{}'::jsonb,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb,$4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'You are a test agent.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $4
+     )`,
         [versionId, agentId, SPACE, now],
       );
       await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [agentId, versionId]);
+      await ensureDefaultRuntimeProfile(db.pool, { agent: agentId, space: SPACE, now });
       if (agentId === MANAGER_AGENT) managerVersionId = versionId;
     }
     parentRunId = randomUUID();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, adapter_type, required_sandbox_level, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'agent','manual','running','live','model_api','none',$5,$5)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, required_sandbox_level, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'running', 'live', 'none', $5, $5, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [parentRunId, SPACE, MANAGER_AGENT, managerVersionId, now],
     );
     await db.pool.query(
@@ -522,12 +571,13 @@ describe("runExchange", () => {
 });
 
 describe("runInputEnvelope", () => {
-  function run(overrides: Partial<RunRecord> = {}): RunRecord {
+  function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
     return {
       id: "run-1",
       space_id: "space-1",
       agent_id: "agent-1",
       agent_version_id: "agent-version-1",
+      execution_kind: "agent",
       status: "queued",
       mode: "live",
       prompt: "Produce the report",
@@ -535,7 +585,7 @@ describe("runInputEnvelope", () => {
       project_folder_id: "folder-1",
       project_id: "project-1",
       session_id: null,
-      adapter_type: "opencode",
+      runtime_key: "opencode",
       model_provider_id: null,
       required_sandbox_level: "worktree",
       trigger_origin: "workflow",

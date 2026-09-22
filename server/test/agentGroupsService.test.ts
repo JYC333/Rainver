@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { AgentGroupRunService, assertConversationGitBaseline } from "../src/modules/agentGroups/service.js";
 import type { QueryResult } from "../src/modules/routeUtils/common.js";
-import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 
 class AgentGroupServiceDb {
   readonly calls: Array<{ sql: string; params: readonly unknown[] }> = [];
   private readonly members = new Set<string>(["agent-manager", "agent-reviewer"]);
-  private readonly insertedRuns = new Map<string, RunRecord>();
+  private readonly insertedRuns = new Map<string, AgentRunRecord>();
 
   constructor(
     private rootRunId: string | null = "run-root",
@@ -204,7 +204,7 @@ class AgentGroupServiceDb {
           space_id: "space-1",
           agent_id: agentId,
           name: "Model API",
-          adapter_type: "model_api",
+          runtime_key: "opencode",
           model_provider_id: "provider-1",
           model_name: "gpt-4o-mini",
           runtime_config_json: {},
@@ -333,12 +333,13 @@ class FakePool {
   }
 }
 
-function runRecord(id: string, overrides: Partial<RunRecord> = {}): RunRecord {
+function runRecord(id: string, overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   return {
     id,
     space_id: "space-1",
     agent_id: "agent-manager",
     agent_version_id: "version-manager",
+    execution_kind: "agent",
     runtime_profile_id: "profile-manager",
     run_type: "agent",
     status: "queued",
@@ -353,7 +354,7 @@ function runRecord(id: string, overrides: Partial<RunRecord> = {}): RunRecord {
     delegation_id: null,
     project_id: null,
     scheduled_at: null,
-    adapter_type: "model_api",
+    runtime_key: "opencode",
     capability_id: null,
     capabilities_json: [],
     model_provider_id: "provider-1",

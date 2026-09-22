@@ -159,18 +159,19 @@ export function RoomRosterPanel({
 
   async function addPreset(presetId: string) {
     const idempotencyKey = newIdempotencyKey()
-    const locationExecution = presetExecution?.workspace_mode === 'location' && presetExecution.workspace_location_id
+    const selectedExecution = presetExecution
       ? {
           host_id: presetExecution.host_id,
           workspace_location_id: presetExecution.workspace_location_id,
-          adapter_type: presetExecution.adapter_type,
+          workspace_mode: presetExecution.workspace_mode,
+          runtime_key: presetExecution.runtime_key,
           installation: presetExecution.installation,
         }
       : undefined
     try {
       await mutate(() => roomsApi.addAgentPreset(
         detail.room.id,
-        { preset_id: presetId, confirm_room_share: false, ...(locationExecution ? { execution: locationExecution } : {}) },
+        { preset_id: presetId, confirm_room_share: false, ...(selectedExecution ? { execution: selectedExecution } : {}) },
         idempotencyKey,
       ), { notify: false, rethrow: true })
     } catch (error) {
@@ -183,7 +184,7 @@ export function RoomRosterPanel({
         })) return
         await mutate(() => roomsApi.addAgentPreset(
           detail.room.id,
-          { preset_id: presetId, confirm_room_share: true, ...(locationExecution ? { execution: locationExecution } : {}) },
+          { preset_id: presetId, confirm_room_share: true, ...(selectedExecution ? { execution: selectedExecution } : {}) },
           idempotencyKey,
         ))
       } else {
@@ -282,17 +283,6 @@ export function RoomRosterPanel({
   const specialists = detail.agent_members.filter(member => member.role !== 'manager')
   const newAgentHref = (() => {
     const params = new URLSearchParams({ project: detail.room.project_id })
-    if (presetExecution?.workspace_mode === 'location' && presetExecution.workspace_location_id) {
-      params.set('host', presetExecution.host_id)
-      params.set('location', presetExecution.workspace_location_id)
-      params.set('adapter', presetExecution.adapter_type)
-      params.set('installation', presetExecution.installation)
-    } else if (presetExecution?.workspace_mode === 'managed') {
-      params.set('host', presetExecution.host_id)
-      params.set('mode', 'managed')
-      params.set('adapter', presetExecution.adapter_type)
-      params.set('installation', presetExecution.installation)
-    }
     return `/agents/new?${params.toString()}`
   })()
   const availableAgents = candidates.filter(candidate => !candidate.in_room || candidate.member_status === 'removed')
@@ -368,10 +358,10 @@ export function RoomRosterPanel({
           />
           <p className="text-xs text-muted-foreground">
             {presetExecution?.workspace_mode === 'location'
-              ? 'Pick a preset to create it on that host now, or open the full form with the host already chosen.'
+              ? 'Pick a preset to create it with this explicit Host Profile. The full Agent form starts with the Server Runtime default.'
               : presetExecution?.workspace_mode === 'managed'
-                ? 'Managed workspaces can be assigned from the full Agent form; presets use the server unless a Project Location is selected.'
-                : 'Pick a preset to create it on the server, or open the full form.'}
+                ? 'Pick a preset to create it with this explicit managed Host Profile. The full Agent form starts with the Server Runtime default.'
+                : 'Presets and new Agents use the Server Runtime default unless you explicitly choose a Host Profile.'}
           </p>
           {presets.map(preset => (
             <Button key={preset.preset_id} variant="ghost" size="sm" className="w-full justify-start" disabled={busy} title={preset.description} onClick={() => void addPreset(preset.preset_id)}>
@@ -379,7 +369,7 @@ export function RoomRosterPanel({
             </Button>
           ))}
           <Button asChild variant="outline" size="sm" className="w-full justify-start">
-            <Link to={newAgentHref}><Plus className="size-3.5 mr-1" />{presetExecution ? 'Create a new Agent on that host…' : 'Create a new Agent…'}</Link>
+            <Link to={newAgentHref}><Plus className="size-3.5 mr-1" />Create a new Agent…</Link>
           </Button>
         </div>
       )}

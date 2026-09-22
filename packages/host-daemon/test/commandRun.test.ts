@@ -74,7 +74,7 @@ describe("running a server-defined command on this host", () => {
     const result = await runHostCommand({
       request_id: "req-5",
       scratch_workspace: true,
-      adapter_type: "opencode",
+      runtime_key: "opencode",
       // An installation id the daemon can parse but has not installed. A bare
       // version string used to arrive here from the conformance route and fail
       // the same way, which made every C3 check fail to launch.
@@ -92,13 +92,13 @@ describe("running a server-defined command on this host", () => {
     await mkdir(tree, { recursive: true });
     await mkdir(home, { recursive: true });
     await writeFile(join(tree, "manifest.json"), JSON.stringify({
-      adapter_type: "codex_cli", version: "1.11.0", command: "/bin/false", args: [], env: {}, home,
+      runtime_key: "codex_cli", version: "1.11.0", command: "/bin/false", args: [], env: {}, home,
       login_command: null, login: null, installed_at: "",
     }));
     const result = await runHostCommand({
       request_id: "req-runtime-binding",
       scratch_workspace: true,
-      runtime_adapter_type: "codex_cli",
+      runtime_tree_key: "codex_cli",
       runtime_installation: "managed:1.11.0",
       command: ["/bin/sh", "-c", "printf verification-command"],
       timeout_seconds: 30,

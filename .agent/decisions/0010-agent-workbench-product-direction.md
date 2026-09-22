@@ -4,7 +4,11 @@ Date: 2026-07-11
 
 ## Status
 
-Accepted.
+Accepted. Amended by
+[ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md): the
+`model_api` / `ts_agent_host` runtimes named below no longer exist — bounded
+managed API work is a `provider_task` Run in the Provider subsystem, and every
+Agent runtime is ACP. Everything else here stands.
 
 ## Decision
 

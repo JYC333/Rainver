@@ -5,50 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1788701094075,
+      "when": 1790011982354,
       "tag": "0000_baseline",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1788800906436,
-      "tag": "0001_deployment_jobs",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1788832385185,
-      "tag": "0002_retire_server_cli_credentials",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1788833810727,
-      "tag": "0003_host_runtime_usage_and_changes",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1789162984741,
-      "tag": "0004_system_daily_reporter_agent",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1789245322115,
-      "tag": "0005_conversation_development_usability",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1789659867072,
-      "tag": "0006_file_drafts_and_input_resources",
       "breakpoints": true
     }
   ]

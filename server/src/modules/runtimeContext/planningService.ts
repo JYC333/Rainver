@@ -16,7 +16,7 @@ export interface RuntimeContextExecutionPlanningRequest extends RuntimeContextPl
 export interface AcquiredRuntimeContext {
   executionControlSnapshotId: string;
   setupRef: { type: string; id: string; version?: string | null } | null;
-  model: string;
+  model: string | null;
   outputReserveTokens?: number | null;
   modelWindowOverride?: ModelWindowOverride | null;
   directItems: ContextItem[];

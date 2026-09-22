@@ -15,7 +15,7 @@ export type ManagedWorkspaceContainerKind = "direct" | "conversation";
  * WorkspaceLocation the user owns, and that Location is what their vendor
  * session already belongs to.
  */
-export type RuntimeProfileContainerKind = ManagedWorkspaceContainerKind | "location";
+export type RuntimeProfileContainerKind = ManagedWorkspaceContainerKind | "location" | "agent";
 
 export interface ManagedWorkspaceContainer {
   kind: ManagedWorkspaceContainerKind;
@@ -64,9 +64,9 @@ function archivePrefix(containerId: string): string {
  * Every runtime profile this Agent has in this container, as a directory.
  *
  * The profile tree mirrors the profile key the control plane sends
- * (`agents/<agent_id>/<container_kind>/<container_id>/<adapter>/<provider>`),
+ * (`agents/<agent_id>/<container_kind>/<container_id>/<runtime_key>/<provider>`),
  * so archiving a container means moving the `<container_id>` level: one move
- * takes every adapter × backend the Agent used in that Room or that direct
+ * takes every runtime × backend the Agent used in that Room or that direct
  * chat, which is what "clear what this Agent remembers here" means.
  */
 export function runtimeProfileContainerPath(

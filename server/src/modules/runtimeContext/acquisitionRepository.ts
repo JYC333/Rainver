@@ -63,7 +63,9 @@ export interface RunContextRecord {
   owner_user_id: string | null;
   capability_id: string | null;
   trigger_origin: string | null;
-  adapter_type?: string | null;
+  runtime_key?: string | null;
+  runtime_profile_snapshot_json?: unknown;
+  execution_kind?: "agent" | "provider_task";
   data_exposure_level: string | null;
   trust_level: string | null;
   visibility: string;
@@ -73,7 +75,6 @@ export interface RunContextRecord {
   system_prompt: string | null;
   capabilities_json: unknown;
   memory_policy_json: unknown;
-  model_config_json: unknown;
   model_override_json?: unknown;
 }
 
@@ -109,13 +110,14 @@ export class PgRuntimeContextAcquisitionRepository {
                   AND execution.root_run_id = COALESCE(r.root_run_id, r.id)
                 ORDER BY execution.created_at DESC, execution.id DESC
                 LIMIT 1) AS workflow_execution_id,
-              r.instructed_by_user_id, r.owner_user_id, r.capability_id, r.trigger_origin, r.adapter_type,
+              r.instructed_by_user_id, r.owner_user_id, r.capability_id, r.trigger_origin, r.runtime_key,
+              r.execution_kind, r.runtime_profile_snapshot_json,
               r.data_exposure_level, r.trust_level, r.visibility,
               r.has_context_taint, r.context_taint_json,
               r.contract_snapshot_json,
               av.system_prompt,
               COALESCE(NULLIF(r.capabilities_json, '[]'::jsonb), av.capabilities_json) AS capabilities_json,
-              av.memory_policy_json, av.model_config_json, r.model_override_json
+              av.memory_policy_json, r.model_override_json
          FROM runs r
          LEFT JOIN agent_versions av
            ON av.id = r.agent_version_id

@@ -1,6 +1,7 @@
 import type { ProviderFailureClass } from "../invocation/resilience.js";
 import type { CredentialSpendAuthorization, CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import type { UsageAttribution, UsageObservation } from "../../usage/index.js";
+import type { Queryable } from "../../routeUtils/common.js";
 
 export type RotationStrategy = "fill_first" | "round_robin" | "least_used" | "random";
 
@@ -117,6 +118,17 @@ export interface ProviderTaskAttemptRefs {
   invocation_snapshot_id: string;
   usage_source_id: string;
   attempt: number;
+  provider_id: string;
+  model: string | null;
+  run_id?: string;
+}
+
+export interface ProviderTaskRunLifecycle {
+  onAttemptStarted(db: Queryable, refs: ProviderTaskAttemptRefs): Promise<string | null | void>;
+  onAttemptCompleted(
+    refs: ProviderTaskAttemptRefs,
+    result: { status: "accepted" | "failed"; error_code: string | null },
+  ): Promise<void>;
 }
 
 export interface ProviderTaskAttemptStart {
@@ -127,6 +139,7 @@ export interface ProviderTaskAttemptStart {
   model: string | null;
   input_fingerprint: string;
   metering: UsageObservation;
+  on_started?: (db: Queryable, refs: ProviderTaskAttemptRefs) => Promise<string | null | void>;
 }
 
 export interface ProviderSpaceGrantInput {

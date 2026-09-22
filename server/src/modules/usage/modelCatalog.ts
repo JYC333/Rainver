@@ -1,7 +1,7 @@
 import { modelSpec } from "../providers/modelSpecs.js";
 
 export interface ModelWindowSpec {
-  model: string;
+  model: string | null;
   contextWindowTokens: number;
   defaultOutputReserveTokens: number;
   providerOverheadTokens: number;
@@ -29,10 +29,9 @@ const GENERIC_MODEL_WINDOW = {
   providerOverheadTokens: 512,
 } as const;
 
-export function resolveModelWindow(model: string, override?: ModelWindowOverride | null): ModelWindowSpec {
-  const normalized = model.trim();
-  if (!normalized) throw new Error("A model is required for context-window planning");
-  const matched = modelSpec(normalized) ?? GENERIC_MODEL_WINDOW;
+export function resolveModelWindow(model: string | null, override?: ModelWindowOverride | null): ModelWindowSpec {
+  const normalized = model?.trim() || null;
+  const matched = normalized ? modelSpec(normalized) ?? GENERIC_MODEL_WINDOW : GENERIC_MODEL_WINDOW;
   const resolved = override ?? {
     contextWindowTokens: matched.contextWindowTokens,
     defaultOutputReserveTokens: matched.defaultOutputReserveTokens,

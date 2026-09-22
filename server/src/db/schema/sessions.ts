@@ -97,6 +97,8 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 	boundByUserId: varchar("bound_by_user_id", { length: 36 }).notNull(),
 	agentId: varchar("agent_id", { length: 36 }).notNull(),
 	runtimeProfileId: varchar("runtime_profile_id", { length: 36 }).notNull(),
+	runtimeKeySnapshot: varchar("runtime_key_snapshot", { length: 64 }).notNull(),
+	backendModeSnapshot: varchar("backend_mode_snapshot", { length: 32 }).notNull(),
 	modelNameSnapshot: varchar("model_name_snapshot", { length: 255 }),
 	modelProviderIdSnapshot: varchar("model_provider_id_snapshot", { length: 36 }),
 	runtimeConfigSnapshotJson: jsonb("runtime_config_snapshot_json").default({}).notNull(),
@@ -133,6 +135,13 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 		foreignColumns: [agentRuntimeProfiles.id, agentRuntimeProfiles.spaceId, agentRuntimeProfiles.agentId],
 		name: "session_conversation_backends_runtime_scope_fkey",
 	}).onDelete("cascade"),
+	// The snapshot is what routing applies over the Profile, so it has to be a
+	// shape routing can answer the credential question for. These mirror
+	// `ck_agent_runtime_profiles_backend_mode` / `_backend_binding` on the
+	// columns the binding freezes; the Profile's `execution_host_id IS NOT NULL`
+	// arm stays on the Profile, which is where the execution target lives.
+	check("ck_session_conversation_backends_backend_mode", sql`backend_mode_snapshot IN ('runtime_native', 'model_provider')`),
+	check("ck_session_conversation_backends_backend_binding", sql`(backend_mode_snapshot = 'runtime_native' AND model_provider_id_snapshot IS NULL AND model_name_snapshot IS NULL) OR (backend_mode_snapshot = 'model_provider' AND model_provider_id_snapshot IS NOT NULL AND model_name_snapshot IS NOT NULL AND length(btrim(model_name_snapshot)) > 0)`),
 ]);
 
 export const messages = pgTable("messages", {

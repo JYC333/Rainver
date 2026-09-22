@@ -17,7 +17,7 @@ import { users } from "./auth.js";
 export const hostRuntimeChanges = pgTable("host_runtime_changes", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	hostId: varchar("host_id", { length: 36 }).notNull(),
-	adapterType: varchar("adapter_type", { length: 64 }).notNull(),
+	runtimeKey: varchar("runtime_key", { length: 64 }).notNull(),
 	/** `install`, `upgrade`, `rollback` or `remove`. */
 	action: varchar({ length: 16 }).notNull(),
 	/** The version in place before the change, when there was one. */

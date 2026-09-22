@@ -5,7 +5,6 @@ import {
   type RetrievalEgressDestination,
 } from "../retrieval/egress/egressPolicy.js";
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
-import { getRuntimeAdapterSpec } from "../runtimeAdapters/specs.js";
 import { normalizeSourceConnectionReadGovernance } from "./sourceConsent.js";
 import type { SourceConnectionRow } from "./sourceRepositoryRows.js";
 
@@ -66,17 +65,15 @@ export async function resolveAgentPromptEgressDestination(
   agentId: string,
 ): Promise<RetrievalEgressDestination> {
   const result = await db.query<{
-    adapter_type: string | null;
+    runtime_key: string;
+    backend_mode: "runtime_native" | "model_provider";
     model_provider_id: string | null;
-    runtime_config_json: unknown;
-    runtime_policy_json: unknown;
     provider_type: string | null;
     base_url: string | null;
   }>(
-    `SELECT arp.adapter_type,
+    `SELECT arp.runtime_key,
+            arp.backend_mode,
             arp.model_provider_id,
-            arp.runtime_config_json,
-            arp.runtime_policy_json,
             p.provider_type,
             p.base_url
        FROM agent_runtime_profiles arp
@@ -96,14 +93,10 @@ export async function resolveAgentPromptEgressDestination(
   );
   const profile = result.rows[0];
   if (!profile) throw new HttpError(409, "Selected agent has no enabled runtime profile.");
-  const runtimeConfig = recordValue(profile.runtime_config_json);
-  const runtimePolicy = recordValue(profile.runtime_policy_json);
-  const adapterType = stringValue(profile.adapter_type) ||
-    stringValue(runtimeConfig.adapter_type) ||
-    stringValue(runtimePolicy.default_adapter_type) ||
-    "model_api";
-  const mode = getRuntimeAdapterSpec(adapterType)?.model.model_provider_mode ?? "none";
-  if (profile.model_provider_id) {
+  if (profile.backend_mode === "model_provider") {
+    if (!profile.model_provider_id) {
+      throw new HttpError(409, "Selected agent Runtime Profile has no ModelProvider binding.");
+    }
     if (!profile.provider_type) {
       throw new HttpError(409, "Selected agent model provider is not available in this space.");
     }
@@ -112,65 +105,10 @@ export async function resolveAgentPromptEgressDestination(
       base_url: profile.base_url,
     });
   }
-  if (mode === "required") {
-    const fallback = await resolveDefaultProviderForEgress(db, spaceId, adapterType);
-    if (!fallback) {
-      throw new HttpError(
-        409,
-        `adapter_type ${JSON.stringify(adapterType)} requires a model provider; set default_model_provider_id.`,
-      );
-    }
-    return retrievalProviderEgressDestination(fallback);
+  if (profile.model_provider_id) {
+    throw new HttpError(409, "Runtime-native Agent Profiles cannot carry a ModelProvider binding.");
   }
-  return adapterType === "ts_agent_host" ? "internal_process" : "external_provider";
-}
-
-async function resolveDefaultProviderForEgress(
-  db: Queryable,
-  spaceId: string,
-  adapterType: string,
-): Promise<{ provider_type: string; base_url: string | null } | null> {
-  const result = await db.query<{
-    provider_type: string;
-    base_url: string | null;
-    config_json: unknown;
-  }>(
-    `SELECT p.provider_type,
-            p.base_url,
-            jsonb_set(
-              COALESCE(p.config_json, '{}'::jsonb),
-              '{is_default}',
-              to_jsonb(g.is_default),
-              true
-            ) AS config_json
-       FROM model_provider_space_grants g
-       JOIN model_providers p ON p.id = g.provider_id
-      WHERE g.space_id = $1
-        AND g.enabled = TRUE
-        AND p.enabled = TRUE`,
-    [spaceId],
-  );
-  let spaceDefault: { provider_type: string; base_url: string | null } | null = null;
-  for (const row of result.rows) {
-    const cfg = recordValue(row.config_json);
-    const provider = { provider_type: row.provider_type, base_url: row.base_url };
-    if (cfg.runtime_default_for === adapterType) return provider;
-    if (cfg.runtime_default_adapter_type === adapterType) return provider;
-    const types = cfg.runtime_default_adapter_types;
-    if (Array.isArray(types) && types.includes(adapterType)) return provider;
-    const defaults = cfg.runtime_defaults;
-    if (defaults && typeof defaults === "object" && (defaults as Record<string, unknown>)[adapterType] === true) {
-      return provider;
-    }
-    if (spaceDefault === null && cfg.is_default === true) spaceDefault = provider;
-  }
-  return spaceDefault;
-}
-
-function recordValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim() : "";
+  // Native runtime egress is conservatively treated as external. The server
+  // cannot infer which account or endpoint the runtime owner configured.
+  return "external_provider";
 }

@@ -10,7 +10,7 @@ import {
 } from "../src/modules/sources/sourceConnectionFetch.js";
 import { fetchBackfillPageWithNarrowing, pageSizeLadder, PAGE_SIZE_FLOOR } from "../src/modules/sources/sourceBackfillPageFetch.js";
 import type { SourceConnectorHandler } from "../src/modules/sources/catalog/sourceConnectorRegistry.js";
-import { fixtureServerGuard } from "./support/outboundGuard.js";
+import { fixtureServerGuard, publicAddressGuard } from "./support/outboundGuard.js";
 
 const handler = { prepareRequest: undefined } as unknown as SourceConnectorHandler;
 const provider = { providerKey: "arxiv", providerDisplayName: "arXiv", connectorKey: "arxiv_api" };
@@ -240,6 +240,7 @@ describe("fetchSourceConnection with a stubbed fetch", () => {
       maxDownloadBytes: 1024,
       backfill: true,
       provider: stubProvider,
+      guard: publicAddressGuard,
     }).catch(error => error);
 
     expect(failure).toBeInstanceOf(SourceFetchFailure);
@@ -266,6 +267,7 @@ describe("fetchSourceConnection with a stubbed fetch", () => {
       maxDownloadBytes: 1024,
       backfill: true,
       provider: stubProvider,
+      guard: publicAddressGuard,
     }).catch(error => error);
 
     expect(failure).toMatchObject({

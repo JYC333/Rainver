@@ -117,9 +117,9 @@ const HOST_LOGIN_DROPPED_KEYS = new Set([
   "XDG_CACHE_HOME",
 ]);
 
-export function clearStateRootEnv(ambient: NodeJS.ProcessEnv, adapterType: string): Record<string, string> {
+export function clearStateRootEnv(ambient: NodeJS.ProcessEnv, runtimeKey: string): Record<string, string> {
   const kept: Record<string, string> = {};
-  for (const [key, value] of Object.entries(clearVendorCredentialEnv(ambient, adapterType))) {
+  for (const [key, value] of Object.entries(clearVendorCredentialEnv(ambient, runtimeKey))) {
     if (HOST_LOGIN_DROPPED_KEYS.has(key.toUpperCase())) continue;
     kept[key] = value;
   }
@@ -133,8 +133,8 @@ export function clearStateRootEnv(ambient: NodeJS.ProcessEnv, adapterType: strin
  * tree — this is all an unbound run drops; its `HOME` and the XDG roots stay
  * exactly as they were at login, because that is where its login state is.
  */
-export function clearVendorCredentialEnv(ambient: NodeJS.ProcessEnv, adapterType: string): Record<string, string> {
-  const prefixes = HOST_LOGIN_DROPPED_PREFIXES_BY_RUNTIME[adapterType] ?? ALL_VENDOR_CREDENTIAL_PREFIXES;
+export function clearVendorCredentialEnv(ambient: NodeJS.ProcessEnv, runtimeKey: string): Record<string, string> {
+  const prefixes = HOST_LOGIN_DROPPED_PREFIXES_BY_RUNTIME[runtimeKey] ?? ALL_VENDOR_CREDENTIAL_PREFIXES;
   const kept: Record<string, string> = {};
   for (const [key, value] of Object.entries(ambient)) {
     if (value === undefined) continue;
@@ -159,15 +159,15 @@ export function clearVendorCredentialEnv(ambient: NodeJS.ProcessEnv, adapterType
  * Each of these used to spread `process.env` whole, or delete two named keys
  * beside it. One builder rather than a hand-written subset per call site.
  *
- * @param adapterType the runtime this helper serves, or `""` for one that
+ * @param runtimeKey the runtime this helper serves, or `""` for one that
  * serves none (an installer), which drops every vendor prefix.
  */
 export function helperProcessEnv(
   ambient: NodeJS.ProcessEnv,
-  adapterType = "",
+  runtimeKey = "",
   options: { keepStateRoots?: boolean } = {},
 ): Record<string, string> {
-  const cleared = clearVendorCredentialEnv(ambient, adapterType);
+  const cleared = clearVendorCredentialEnv(ambient, runtimeKey);
   if (!options.keepStateRoots) return cleared;
   // A helper that reads the machine's *own* history needs to be pointed at
   // where that history is. The prefixes above are credential prefixes, but a
@@ -230,7 +230,7 @@ export function filterAmbientEnv(ambient: NodeJS.ProcessEnv): Record<string, str
  *   token is revoked when the run ends, so what remains on disk is a dead
  *   credential in a 0700 directory on the user's own machine. The provider's
  *   real API key is never here — it stays inside the server process.
- * - Two runs of the same Agent, in the same container, on the same adapter and
+ * - Two runs of the same Agent, in the same container, on the same runtime and
  *   backend share this directory, so the second to start rewrites the first's
  *   config. Both name the same upstream, so a run can only end up using a
  *   *sibling* run's lease; usage then attributes to that run rather than to

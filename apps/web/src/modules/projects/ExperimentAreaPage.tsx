@@ -18,6 +18,7 @@ import type {
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card } from '../../components/ui/card'
+import { Select } from '../../components/ui/select'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
@@ -284,10 +285,16 @@ export default function ExperimentAreaPage({ embedded = false }: { embedded?: bo
             <div><Label>Objective</Label><Textarea value={objective} onChange={event => setObjective(event.target.value)} /></div>
             <div>
               <Label>Primary hypothesis</Label>
-              <select className="mt-1 w-full rounded-md border bg-background p-2 text-sm" value={hypothesisThreadId} onChange={event => setHypothesisThreadId(event.target.value)}>
-                <option value="">Link later</option>
-                {threads.map(thread => <option key={thread.id} value={thread.id}>{thread.statement}</option>)}
-              </select>
+              <Select
+                ariaLabel="Primary hypothesis"
+                className="mt-1 w-full"
+                value={hypothesisThreadId}
+                onChange={setHypothesisThreadId}
+                options={[
+                  { value: '', label: 'Link later' },
+                  ...threads.map(thread => ({ value: thread.id, label: thread.statement })),
+                ]}
+              />
               {threads.length === 0 && (
                 <Link
                   to={`/projects/${projectId}/inquiry?new=hypothesis`}
@@ -323,19 +330,33 @@ export default function ExperimentAreaPage({ embedded = false }: { embedded?: bo
                 <Button disabled={busy || approvedManualVersions.length === 0 || !definition.primary_hypothesis_thread_id} onClick={createManualRun}>Create manual run</Button>
               </div>
               <div className="grid gap-2 border-t pt-3 md:grid-cols-2">
-                <select aria-label="Execution folder" className="rounded-md border bg-background p-2 text-sm" value={managedFolderId} onChange={event => setManagedFolderId(event.target.value)}>
-                  <option value="">{folders.length ? 'Select an execution-enabled Folder' : 'No execution-enabled Folder available'}</option>
-                  {folders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}{folder.is_primary ? ' (primary)' : ''}</option>)}
-                </select>
+                <Select
+                  ariaLabel="Execution folder"
+                  value={managedFolderId}
+                  onChange={setManagedFolderId}
+                  options={[
+                    { value: '', label: folders.length ? 'Select an execution-enabled Folder' : 'No execution-enabled Folder available' },
+                    ...folders.map(folder => ({ value: folder.id, label: `${folder.name}${folder.is_primary ? ' (primary)' : ''}` })),
+                  ]}
+                />
                 <Input value={managedCommand} onChange={event => setManagedCommand(event.target.value)} placeholder="Run command" />
                 <Input value={editableScope} onChange={event => setEditableScope(event.target.value)} placeholder="Editable paths, comma separated" />
                 <Input value={protectedScope} onChange={event => setProtectedScope(event.target.value)} placeholder="Protected paths, comma separated" />
                 <Button variant="outline" disabled={busy || !managedFolderId.trim() || !managedCommand.trim()} onClick={createManagedVersion}>New managed Version</Button>
                 <div className="flex gap-2">
-                  <select aria-label="Execution agent" className="min-w-0 flex-1 rounded-md border bg-background p-2 text-sm" value={managedAgentId} onChange={event => setManagedAgentId(event.target.value)}>
-                    <option value="">{agents.length ? 'Select an execution Agent' : 'No active Agent available'}</option>
-                    {agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}{agent.adapter_type ? ` · ${agent.adapter_type.replace(/_/g, ' ')}` : ''}</option>)}
-                  </select>
+                  <Select
+                    ariaLabel="Execution agent"
+                    className="min-w-0 flex-1"
+                    value={managedAgentId}
+                    onChange={setManagedAgentId}
+                    options={[
+                      { value: '', label: agents.length ? 'Select an execution Agent' : 'No active Agent available' },
+                      ...agents.map(agent => ({
+                        value: agent.id,
+                        label: `${agent.name}${agent.runtime_key ? ` \u00b7 ${agent.runtime_key.replace(/_/g, ' ')}` : ''}`,
+                      })),
+                    ]}
+                  />
                   <Button disabled={busy || !managedAgentId || approvedManagedVersions.length === 0 || !definition.primary_hypothesis_thread_id} onClick={launchManagedRun}>Launch</Button>
                 </div>
               </div>
@@ -362,10 +383,16 @@ export default function ExperimentAreaPage({ embedded = false }: { embedded?: bo
                 threads.length > 0
                   ? (
                     <div className="flex max-w-xl gap-2 pt-2">
-                      <select className="min-w-0 flex-1 rounded-md border bg-background p-2 text-sm" value={linkThreadId} onChange={event => setLinkThreadId(event.target.value)}>
-                        <option value="">Select a Hypothesis Thread</option>
-                        {threads.map(thread => <option key={thread.id} value={thread.id}>{thread.statement}</option>)}
-                      </select>
+                      <Select
+                        ariaLabel="Hypothesis Thread to link"
+                        className="min-w-0 flex-1"
+                        value={linkThreadId}
+                        onChange={setLinkThreadId}
+                        options={[
+                          { value: '', label: 'Select a Hypothesis Thread' },
+                          ...threads.map(thread => ({ value: thread.id, label: thread.statement })),
+                        ]}
+                      />
                       <Button variant="outline" disabled={busy || !linkThreadId} onClick={linkPrimaryHypothesis}>Link hypothesis</Button>
                     </div>
                   )
@@ -405,11 +432,16 @@ export default function ExperimentAreaPage({ embedded = false }: { embedded?: bo
                 <p className="text-xs text-amber-700 dark:text-amber-300">Link a primary Hypothesis Thread before converting a reviewed Interpretation.</p>
               )}
               <div className="grid gap-2 sm:grid-cols-[180px_1fr_auto]">
-                <select className="rounded-md border bg-background p-2 text-sm" value={verdict} onChange={event => setVerdict(event.target.value as typeof verdict)}>
-                  <option value="supports">Supports</option>
-                  <option value="contradicts">Contradicts</option>
-                  <option value="inconclusive">Inconclusive</option>
-                </select>
+                <Select
+                  ariaLabel="Interpretation verdict"
+                  value={verdict}
+                  onChange={next => setVerdict(next as typeof verdict)}
+                  options={[
+                    { value: 'supports', label: 'Supports' },
+                    { value: 'contradicts', label: 'Contradicts' },
+                    { value: 'inconclusive', label: 'Inconclusive' },
+                  ]}
+                />
                 <Input value={conclusion} onChange={event => setConclusion(event.target.value)} placeholder="Conclusion" />
                 <Button disabled={busy || terminalRuns.length === 0} onClick={createInterpretation}>Draft</Button>
               </div>

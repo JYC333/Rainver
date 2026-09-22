@@ -33,7 +33,7 @@ export class HostCommandVerificationExecutor implements VerificationCommandExecu
     const outcome = await sharedHostConnectionRegistry.runHostCommand(input.target.host_id, {
       ...(input.target.workspace ? { workspace: input.target.workspace } : {}),
       ...(input.target.workspace_location_id ? { workspace_location_id: input.target.workspace_location_id } : {}),
-      ...(input.target.adapter_type ? { runtime_adapter_type: input.target.adapter_type } : {}),
+      ...(input.target.runtime_tree_key ? { runtime_tree_key: input.target.runtime_tree_key } : {}),
       ...(input.target.installation ? { runtime_installation: input.target.installation } : {}),
       run_id: input.runId,
       command: input.command,

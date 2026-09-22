@@ -16,9 +16,10 @@ path the control plane knows (BOUNDARIES B64). `instance/secrets/cli-credentials
 is retired and unread; see [modules/credentials.md](../modules/credentials.md).
 
 This doc covers the **ModelProvider API key** and **managed subscription OAuth**
-channels used by the `model_api` runtime adapter and bounded server-owned
-Provider tasks. There is no public Provider Chat execution route; agent-facing
-model calls enter through Runtime Context Delivery.
+channels used by bounded server-owned ProviderTask calls and the authorized
+ACP ModelProvider proxy path. Agent Runs do not execute through a Provider
+adapter in the Server. There is no public Provider Chat execution route;
+Agent-facing context reaches ACP through Runtime Context Delivery.
 The **Custom Source fetch credential** channel reuses this channel's DB table and master key
 (`server/src/modules/sources/customSources/customSourceCredentialCrypto.ts`,
 `server/src/modules/sources/customSources/customSourceCredentialService.ts`) but is functionally distinct: it

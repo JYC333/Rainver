@@ -10,7 +10,7 @@ const { enable, disable, goose, enabledGoose } = vi.hoisted(() => {
   }
   return {
     enable: vi.fn(), disable: vi.fn(), goose,
-    enabledGoose: { ...goose, enabled_at: '', enabled_by_user_id: null, adapter_type: 'acp_goose', installed_on: [{ host_id: 'h1', name: 'Laptop' }] },
+    enabledGoose: { ...goose, enabled_at: '', enabled_by_user_id: null, runtime_key: 'acp_goose', installed_on: [{ host_id: 'h1', name: 'Laptop' }] },
   }
 })
 
@@ -21,14 +21,14 @@ vi.mock('../../../api/client', async importOriginal => {
     ...original,
     acpAgentsApi: {
       registry: vi.fn(async () => ({ items: [goose, { ...goose, id: 'kilo', name: 'Kilo' }, { ...goose, id: 'opencode', name: 'OpenCode' }] })),
-      list: vi.fn(async () => ({ items: [enabledGoose, { ...enabledGoose, id: 'crow', name: 'crow', adapter_type: 'acp_crow', installed_on: [] }] })),
-      enable: enable.mockImplementation(async (id: string) => ({ ...enabledGoose, id, name: 'Kilo', adapter_type: `acp_${id}`, installed_on: [] })),
+      list: vi.fn(async () => ({ items: [enabledGoose, { ...enabledGoose, id: 'crow', name: 'crow', runtime_key: 'acp_crow', installed_on: [] }] })),
+      enable: enable.mockImplementation(async (id: string) => ({ ...enabledGoose, id, name: 'Kilo', runtime_key: `acp_${id}`, installed_on: [] })),
       disable: disable.mockResolvedValue(null),
     },
     hostsApi: {
       ...original.hostsApi,
-      listRuntimeAdapters: vi.fn(async () => ({ items: [
-        { adapter_type: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true, registry_id: 'opencode' },
+      listRuntimeDefinitions: vi.fn(async () => ({ items: [
+        { runtime_key: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true, registry_id: 'opencode' },
       ] })),
     },
   }

@@ -222,24 +222,6 @@ describe("openai-compatible structured output forced-tool fallback", () => {
     expect(failure.responseText).toContain("I'll call the tool now.");
   });
 
-  it("does not force the schema tool when the request carries its own runtime tools", async () => {
-    const store = makeStore({ p1: target("p1") });
-    const attempts = scriptedHttp([
-      { status: 200, body: { choices: [{ message: { content: '{"answer":"ok"}' } }], model: "test-model", usage: {} } },
-    ]);
-
-    await completeProviderChat(store, "space-1", {
-      spend: { kind: "person", user_id: "user-1" },
-      ...CHAT,
-      output_format: OUTPUT_FORMAT,
-      tools: [{ name: "runtime_tool", description: "a runtime tool", input_schema: { type: "object", properties: {} } }],
-    });
-
-    const request = attempts[0]!.body;
-    expect(request.tool_choice).toBeUndefined();
-    expect((request.tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name)).toEqual(["runtime_tool"]);
-  });
-
   it("keeps requests without output_format unchanged (no tools, no response_format)", async () => {
     const store = makeStore({ p1: target("p1") });
     const attempts = scriptedHttp([

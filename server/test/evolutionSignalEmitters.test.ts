@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { QueryResult, Queryable, RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord, QueryResult, Queryable } from "../src/modules/runs/repository.js";
 import {
   buildRunFinalizationRules,
   EvolutionSignalEmitter,
@@ -169,12 +169,13 @@ describe("EvolutionSignalEmitter", () => {
   });
 });
 
-function run(overrides: Partial<RunRecord> = {}): RunRecord {
+function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   return {
     id: "run-1",
     space_id: "space-1",
     agent_id: "agent-1",
     agent_version_id: "agent-version-1",
+    execution_kind: "agent",
     status: "succeeded",
     mode: "execute",
     prompt: "prompt",
@@ -182,7 +183,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     project_folder_id: null,
     session_id: null,
     project_id: null,
-    adapter_type: "model_api",
+    runtime_key: "opencode",
     model_provider_id: null,
     required_sandbox_level: "none",
     trigger_origin: "http",

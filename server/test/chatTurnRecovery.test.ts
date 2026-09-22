@@ -13,6 +13,7 @@ describe("terminal Chat Run reconciliation", () => {
     const run: RunRecord = {
       id: "run-orphaned",
       space_id: "space-1",
+      execution_kind: "agent",
       agent_id: "agent-1",
       agent_version_id: "version-1",
       status: "orphaned",
@@ -22,7 +23,7 @@ describe("terminal Chat Run reconciliation", () => {
       project_folder_id: null,
       session_id: "session-1",
       project_id: null,
-      adapter_type: "model_api",
+      runtime_key: "opencode",
       model_provider_id: null,
       model_override_json: {
         chat_turn: {
@@ -108,6 +109,7 @@ describe("terminal Chat Run reconciliation", () => {
     const run: RunRecord = {
       id: "run-routing-failed",
       space_id: "space-1",
+      execution_kind: "agent",
       agent_id: "agent-1",
       agent_version_id: "version-1",
       status: "failed",
@@ -117,7 +119,7 @@ describe("terminal Chat Run reconciliation", () => {
       project_folder_id: null,
       session_id: "session-1",
       project_id: null,
-      adapter_type: "claude_code",
+      runtime_key: "claude_code",
       model_provider_id: null,
       model_override_json: {
         chat_turn: {
@@ -251,6 +253,7 @@ describe("terminal Chat Run reconciliation", () => {
     const run = {
       id: "run-waiting",
       space_id: "space-1",
+      execution_kind: "agent",
       agent_id: "agent-1",
       agent_version_id: "version-1",
       run_group_id: "group-1",

@@ -152,7 +152,6 @@ export const ProviderVendorDTOSchema = z
     display_name: z.string().min(1),
     protocol: z.string().min(1),
     supports_chat: z.boolean(),
-    supports_runtime_tools: z.boolean(),
     supports_structured_output: z.boolean(),
     supports_embedding: z.boolean(),
     supports_rerank: z.boolean(),

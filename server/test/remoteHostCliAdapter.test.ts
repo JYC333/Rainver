@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { RunRecord } from "../src/modules/runs/repository.js";
-import type { RuntimeSemanticEvent } from "@rainver/protocol";
+import type { AgentRunRecord } from "../src/modules/runs/repository.js";
+import type { InvocationDelivery, RuntimeSemanticEvent } from "@rainver/protocol";
 import { executeRemoteHostCliAdapter } from "../src/modules/runs/remoteHostCliAdapter.js";
 import { stallTimeoutSeconds } from "../src/modules/runs/stallTimeout.js";
 import { loadConfig } from "../src/config.js";
@@ -25,12 +25,13 @@ const allowCredentialSpend = async () => ({ status: "allow" as const, policy_dec
 // to guess: a run whose binding it cannot determine fails rather than quietly
 // executing on the machine's own login.
 
-function run(overrides: Partial<RunRecord> = {}): RunRecord {
+function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   return {
     id: "run-1",
     space_id: "space-1",
     agent_id: "agent-1",
     agent_version_id: "agent-version-1",
+    execution_kind: "agent",
     status: "queued",
     mode: "live",
     prompt: "fix the failing test",
@@ -38,7 +39,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     project_folder_id: "folder-1",
     session_id: null,
     project_id: null,
-    adapter_type: "claude_code",
+    runtime_key: "claude_code",
     model_provider_id: null,
     required_sandbox_level: "none",
     trigger_origin: "manual",
@@ -47,7 +48,35 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     started_at: null,
     ended_at: null,
     ...overrides,
-  } as RunRecord;
+  } as AgentRunRecord;
+}
+
+function runtimeContextDelivery(prompt: string): InvocationDelivery {
+  return {
+    id: "40000000-0000-4000-8000-000000000001",
+    invocation_id: "40000000-0000-4000-8000-000000000002",
+    delivery_kind: "agent_task",
+    runtime_key: "opencode",
+    provider_id: null,
+    model: null,
+    renderer_version: "managed-semantic.v1",
+    mode: "full",
+    planned_items: [{ item_id: "current", semantic_role: "user_input", required: true }],
+    message_blocks: [{ semantic_role: "user_input", content: prompt, source_item_ids: ["current"] }],
+    control_ref: { type: "execution_control_snapshot", id: "40000000-0000-4000-8000-000000000003" },
+    sandbox_ref: null,
+    tool_grant_refs: [],
+    output_contract_ref: null,
+    expected_prompt_tokens: 64,
+    max_output_tokens: null,
+    snapshot_draft_ref: { type: "invocation_snapshot", id: "40000000-0000-4000-8000-000000000004" },
+    audit_refs: {
+      delivery_id: "40000000-0000-4000-8000-000000000001",
+      invocation_snapshot_id: "40000000-0000-4000-8000-000000000004",
+      execution_control_snapshot_id: "40000000-0000-4000-8000-000000000003",
+      usage_source_id: "runtime-context:test",
+    },
+  };
 }
 
 /** Captures every frame the adapter sends to "the daemon" and lets a test script replies back through the same registry, exactly as the real WS route handler would on a real connection. */
@@ -89,7 +118,7 @@ describe("executeRemoteHostCliAdapter", () => {
     // "planned") is the adapter that exercises this particular early return.
     const threadEventSink = vi.fn().mockResolvedValue(undefined);
     const result = await executeRemoteHostCliAdapter(
-      { run: run({ adapter_type: "gemini_cli" }), prompt: "hi", model: null, resume_session_id: null, thread_event_sink: threadEventSink },
+      { run: run({ runtime_key: "gemini_cli" }), prompt: "hi", model: null, resume_session_id: null, thread_event_sink: threadEventSink },
       "host-1",
       "folder-1",
       { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
@@ -108,8 +137,9 @@ describe("executeRemoteHostCliAdapter", () => {
 
     const executePromise = executeRemoteHostCliAdapter(
       {
-        run: run({ adapter_type: "opencode", prompt: "add a test" }),
+        run: run({ runtime_key: "opencode", prompt: "add a test" }),
         prompt: "add a test",
+        invocation_delivery: runtimeContextDelivery("Use the authorized current request only."),
         model: null,
         resume_session_id: null,
         runtime_event_sink: (event) => { runtimeEvents.push(event); },
@@ -150,10 +180,20 @@ describe("executeRemoteHostCliAdapter", () => {
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
-    expect(JSON.parse((sink.sent[3] as { value: string }).value)).toMatchObject({
+    const promptRequest = JSON.parse((sink.sent[3] as { value: string }).value) as {
+      method: string;
+      params: { sessionId: string; prompt: Array<{ type: string; text?: string }> };
+    };
+    expect(promptRequest).toMatchObject({
       method: "session/prompt",
       params: { sessionId: "session-1" },
     });
+    const promptText = promptRequest.params.prompt
+      .flatMap((block) => block.type === "text" && block.text ? [block.text] : [])
+      .join("\n");
+    expect(promptText).toContain("Use the authorized current request only.");
+    expect(promptText).toContain("## Current user input");
+    expect(promptText).not.toContain("add a test");
 
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({
       jsonrpc: "2.0",
@@ -178,7 +218,7 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(result).toMatchObject({
       success: true,
       exit_code: 0,
-      adapter_type: "opencode",
+      runtime_key: "opencode",
       output_text: "done\n",
     });
     // Text arrives via the coalesced thread draft, not a duplicate from the
@@ -191,6 +231,60 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(runtimeEvents).toEqual([]);
   });
 
+  it("dispatches a native Server Agent Run without a Host thread or Location using stable Agent-scoped state", async () => {
+    const registry = new HostConnectionRegistry();
+    const sink = new FakeSink();
+    registry.registerConnection("server-host", sink);
+    const agentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const execution = executeRemoteHostCliAdapter(
+      {
+        run: run({
+          agent_id: agentId,
+          runtime_key: "opencode",
+          project_folder_id: null,
+          runtime_profile_snapshot_json: { runtime_installation: "managed:1.18.31" },
+        }),
+        prompt: "summarize the request",
+        model: null,
+        resume_session_id: null,
+      },
+      "server-host",
+      null,
+      { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
+    );
+
+    await vi.waitUntil(() => sink.sent.some((frame) => frame.type === "launch"));
+    const launch = sink.sent.find((frame) => frame.type === "launch") as Record<string, unknown>;
+    expect(launch.workspace_location_id).toBeUndefined();
+    expect(launch.workspace).toBeUndefined();
+    expect(launch.installation).toBe("managed:1.18.31");
+    expect(launch.provider_binding).toMatchObject({
+      profile_key: `agents/${agentId}/agent/${agentId}/opencode/ambient`,
+      credential_source: "host_login",
+      env: {},
+      files: [],
+    });
+
+    const launchId = launchIdOf(sink);
+    registry.receiveLaunched("server-host", "run-1", launchId);
+    await vi.waitUntil(() => sink.sent.some((frame) => frame.type === "stdin"));
+    registry.receiveOutput("server-host", "run-1", `${JSON.stringify({
+      jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 },
+    })}\n`, launchId);
+    await vi.waitUntil(() => sink.sent.some((frame) =>
+      frame.type === "stdin" && JSON.parse(String(frame.value)).method === "session/new"));
+    registry.receiveOutput("server-host", "run-1", `${JSON.stringify({
+      jsonrpc: "2.0", id: 2, result: { sessionId: "server-run-session" },
+    })}\n`, launchId);
+    await vi.waitUntil(() => sink.sent.some((frame) =>
+      frame.type === "stdin" && JSON.parse(String(frame.value)).method === "session/prompt"));
+    registry.receiveOutput("server-host", "run-1", `${JSON.stringify({
+      jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" },
+    })}\n`, launchId);
+    registry.receiveComplete("server-host", "run-1", { exit_code: 0, timed_out: false, error: null }, launchId);
+    await expect(execution).resolves.toMatchObject({ success: true, exit_code: 0 });
+  });
+
   it("records a permission pre-authorization as a human-readable diagnostic thread event (P0.4/D7)", async () => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();
@@ -199,7 +293,7 @@ describe("executeRemoteHostCliAdapter", () => {
 
     const executePromise = executeRemoteHostCliAdapter(
       {
-        run: run({ adapter_type: "opencode", prompt: "add a test" }),
+        run: run({ runtime_key: "opencode", prompt: "add a test" }),
         prompt: "add a test",
         model: null,
         resume_session_id: null,
@@ -348,7 +442,7 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(result).toMatchObject({
       success: true,
       exit_code: 0,
-      adapter_type: "claude_code",
+      runtime_key: "claude_code",
       output_text: "done",
       metadata_json: {
         subscription_quota: {
@@ -548,7 +642,7 @@ describe("which runs get a runtime profile at all", () => {
   it("fails closed when a runtime cannot isolate its login and state", () => {
     setDynamicRuntimeAdapterSpecs([{
       ...getRuntimeAdapterSpec("claude_code")!,
-      adapter_type: "acp_registry_agent",
+      runtime_key: "acp_registry_agent",
       credentials: { credential_mode: "cli_profile", credential_runtime_name: "acp_registry_agent", supports_oauth_login_state: false },
     }]);
     try {
@@ -575,28 +669,22 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
   // The other end of the path that shipped inert: what the server actually
   // puts on the wire, and whether the lease it issued stops working when the
   // run ends.
-  it("runs on the machine's own login when a host default is unusable here, but fails a dispatch that asked for one", async () => {
+  it("fails closed when the selected Runtime Profile provider is no longer available", async () => {
     setProviderProxyBaseUrlForProcess("http://server:8021", "http://control-plane:8021");
-    // A Host is user-scoped and can back Locations in several Spaces, so its
-    // default may name a provider granted in a different one. Before bindings
-    // existed such a run used the machine's own login and succeeded; failing
-    // it now would be a regression nobody asked for.
+    // A removed Profile provider must not silently substitute the host's
+    // ambient login; the immutable Profile snapshot is authoritative.
     __setProvidersDbPortForTests({ async getProvider() { return null; } } as never);
     try {
       const registry = new HostConnectionRegistry();
       const sink = new FakeSink();
       registry.registerConnection("host-1", sink);
-      const recorded: Array<{ provider_id: string } | null> = [];
-      const warnings: RuntimeSemanticEvent[] = [];
+      const threadEvents: unknown[] = [];
 
       const execution = executeRemoteHostCliAdapter(
         {
-          run: run({ adapter_type: "claude_code" }),
+          run: run({ runtime_key: "claude_code" }),
           prompt: "hi", model: null, resume_session_id: null,
-          // Deliberately no `thread_event_sink`: this branch is only reachable
-          // for a run with no dispatch message, and a run with no message has
-          // no thread — so the warning has to reach the channel every run has.
-          runtime_event_sink: (event) => { warnings.push(event); },
+          thread_event_sink: (events) => { threadEvents.push(...events); },
         },
         "host-1",
         "folder-1",
@@ -604,50 +692,15 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           connectionRegistry: registry,
           config: loadConfig({}),
           bindings: {
-            resolve: async () => ({ provider_id: "prov-gone", model: null, origin: "host_default" as const }),
-            record: async (_runId, used) => { recorded.push(used); },
-            profileScope: NO_PROVIDER_BINDINGS.profileScope,
-          },
-        },
-      );
-      await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-      const launch = sink.sent.find((f) => f.type === "launch") as Record<string, unknown>;
-      // Unbound, but not profile-less: the run still gets its own state root,
-      // pointed at the `ambient` profile rather than at this machine's own
-      // `~/.claude`. What is absent is the lease.
-      const fallback = launch.provider_binding as { profile_key: string; env: Record<string, string>; files: unknown[] };
-      expect(fallback.profile_key).toMatch(/\/claude_code\/ambient$/);
-      expect(fallback.env).toEqual({});
-      expect(fallback.files).toEqual([]);
-      // Recorded as unbound, and said out loud rather than silently.
-      expect(recorded).toEqual([null]);
-      expect(warnings).toContainEqual(expect.objectContaining({
-        type: "warning",
-        metadata_json: { reason: "host_default_binding_unusable" },
-      }));
-
-      registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
-      // The run reaches the daemon and completes on its own terms; what
-      // matters here is that it was not failed *for the binding*.
-      const result = await execution;
-      expect(result.error_code).not.toBe("model_provider_not_found");
-
-      // The same unusable provider, asked for by the dispatch, still fails.
-      const dispatched = await executeRemoteHostCliAdapter(
-        { run: run({ adapter_type: "claude_code" }), prompt: "hi", model: null, resume_session_id: null },
-        "host-1",
-        "folder-1",
-        {
-          connectionRegistry: registry,
-          config: loadConfig({}),
-          bindings: {
-            resolve: async () => ({ provider_id: "prov-gone", model: null, origin: "dispatch" as const }),
+            resolve: async () => ({ provider_id: "prov-gone", model: null }),
             record: async () => {},
             profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
         },
       );
-      expect(dispatched).toMatchObject({ success: false, error_code: "model_provider_not_found" });
+      await expect(execution).resolves.toMatchObject({ success: false, error_code: "model_provider_not_found" });
+      expect(sink.sent.some((frame) => frame.type === "launch")).toBe(false);
+      expect(threadEvents).toContainEqual(expect.objectContaining({ event_type: "status", status: "run_failed" }));
     } finally {
       __setProvidersDbPortForTests(null);
     }
@@ -673,7 +726,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
     __setProvidersDbPortForTests(providers as never);
     try {
       const execution = executeRemoteHostCliAdapter(
-        { run: run({ adapter_type: "claude_code" }), prompt: "hi", model: null, resume_session_id: null },
+        { run: run({ runtime_key: "claude_code" }), prompt: "hi", model: null, resume_session_id: null },
         "host-1",
         "folder-1",
         {
@@ -683,7 +736,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           config: loadConfig({ PROVIDER_PROXY_PORT: "8021", FRONTEND_URL: "http://192.168.1.5:3000" }),
           db: hostRow as never,
           bindings: {
-            resolve: async () => ({ provider_id: "prov-1", model: "M2", origin: "dispatch" as const }),
+            resolve: async () => ({ provider_id: "prov-1", model: "M2" }),
             record: async () => {},
             profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
@@ -724,7 +777,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
     try {
       const execution = executeRemoteHostCliAdapter(
         {
-          run: run({ adapter_type: "opencode" }),
+          run: run({ runtime_key: "opencode" }),
           prompt: "hi",
           // The router's idea of a model. It must not be what goes on the wire.
           model: "some-router-model",
@@ -738,7 +791,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           // The lease URL is resolved per host from the hosts row.
           db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, kind: "remote" }], rowCount: 1 }) } as never,
           bindings: {
-            resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3", origin: "dispatch" as const }),
+            resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3" }),
             record: async () => {},
             profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
@@ -795,7 +848,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
     } as never);
     try {
       const execution = executeRemoteHostCliAdapter(
-        { run: run({ adapter_type: "claude_code" }), prompt: "hi", model: null, resume_session_id: null },
+        { run: run({ runtime_key: "claude_code" }), prompt: "hi", model: null, resume_session_id: null },
         "host-1",
         "folder-1",
         {
@@ -803,7 +856,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           config: loadConfig({}),
           db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, kind: "remote" }], rowCount: 1 }) } as never,
           bindings: {
-            resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3", origin: "dispatch" as const }),
+            resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3" }),
             record: async () => {},
             profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
@@ -860,7 +913,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
     } as never);
     try {
       const execution = executeRemoteHostCliAdapter(
-        { run: run({ adapter_type: "claude_code" }), prompt: "hi", model: null, resume_session_id: null },
+        { run: run({ runtime_key: "claude_code" }), prompt: "hi", model: null, resume_session_id: null },
         "host-1",
         "folder-1",
         {
@@ -868,7 +921,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           config: loadConfig({}),
           db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, kind: "remote" }], rowCount: 1 }) } as never,
           bindings: {
-            resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3", origin: "dispatch" as const }),
+            resolve: async () => ({ provider_id: "prov-1", model: "MiniMax-M3" }),
             record: async () => {},
             profileScope: NO_PROVIDER_BINDINGS.profileScope,
           },
@@ -917,7 +970,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
     async function launched(sink: FakeSink, registry: HostConnectionRegistry, timeoutSeconds: number) {
       const execution = executeRemoteHostCliAdapter(
         {
-          run: run({ adapter_type: "opencode" }),
+          run: run({ runtime_key: "opencode" }),
           prompt: "hi",
           model: null,
           resume_session_id: null,
@@ -1008,7 +1061,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
 
     const executePromise = executeRemoteHostCliAdapter(
       {
-        run: run({ adapter_type: "opencode", prompt: "install a package" }),
+        run: run({ runtime_key: "opencode", prompt: "install a package" }),
         prompt: "install a package",
         model: null,
         resume_session_id: null,

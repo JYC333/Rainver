@@ -8,9 +8,6 @@ description: >
   object relations between items, and claim evidence. Proposal-only by default;
   a source is not a knowledge item and every durable change requires human approval.
 
-model_config:
-  max_tokens: 8192
-
 context_policy:
   allowed_input_contexts:
     - activity_records
@@ -37,12 +34,9 @@ tool_policy:
   workspace_write: false
   credential_access: false
 
-runtime_policy:
+execution_constraints:
   risk_level: low
   max_run_time_seconds: 300
-  allowed_adapter_types:
-    - model_api
-  default_adapter_type: model_api
 
 output_policy:
   proposal_only: true

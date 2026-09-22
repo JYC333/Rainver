@@ -13,7 +13,9 @@ import { enforce } from "../policy/index.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { computeDecision } from "../policy/gateway.js";
 import { PgRunRepository } from "../runs/repository.js";
+import { isRuntimeInstallationReady } from "../routing/repository.js";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
+import { getAgentRuntimeDefinition } from "../runtimeAdapters/runtimeDefinitions.js";
 import { resolveEvolvableAssetVersion } from "../evolution/assetResolutionService.js";
 import { WorkflowExecutionService } from "./workflowExecutionService.js";
 import { computeNextRunAt, InvalidScheduleError } from "./schedule.js";
@@ -105,9 +107,14 @@ interface AgentPreflightRow {
   status: string;
   current_version_id: string | null;
   version_id: string | null;
-  runtime_config_json: unknown;
-  runtime_policy_json: unknown;
-  model_provider_id: string | null;
+  runtime_profile_id: string | null;
+  profile_runtime_key: string | null;
+  profile_model_provider_id: string | null;
+  profile_runtime_installation: string | null;
+  profile_execution_host_kind: string | null;
+  profile_host_capabilities_json: unknown;
+  version_risk_level: "low" | "medium" | "high" | "critical" | null;
+  max_run_time_seconds: number | null;
 }
 
 export class AutomationService {
@@ -583,6 +590,7 @@ export class AutomationService {
     const triggerContext = input.triggerContext ?? null;
 
     const run = await runs.createQueuedRun({
+      execution_kind: "agent",
       space_id: input.spaceId,
       user_id: instructedByUserId,
       agent_id: auto.agent_id,
@@ -610,6 +618,7 @@ export class AutomationService {
     });
     const automationRunId = await automations.createAutomationRun({
       automationId: auto.id,
+      targetType: "agent_run",
       runId: run.id,
       // Who pressed the button, which is an audit fact and stays one even when
       // the Run itself is the automation owner's work.
@@ -666,6 +675,7 @@ export class AutomationService {
       });
       const automationRunId = await new PgAutomationRepository(client).createAutomationRun({
         automationId: auto.id,
+        targetType: AUTOMATION_TARGET_WORKFLOW,
         runId: execution.rootRunId,
         workflowExecutionId: execution.workflowExecutionId,
         triggeredByUserId: input.actorUserId,
@@ -744,18 +754,36 @@ export class AutomationService {
       `SELECT a.status,
               a.current_version_id,
               av.id AS version_id,
-              av.runtime_config_json,
-              av.runtime_policy_json,
-              av.model_provider_id
+              av.risk_level AS version_risk_level,
+              av.max_run_time_seconds,
+              arp.id AS runtime_profile_id,
+              arp.runtime_key AS profile_runtime_key,
+              arp.model_provider_id AS profile_model_provider_id,
+              arp.runtime_installation AS profile_runtime_installation,
+              arp.execution_host_kind AS profile_execution_host_kind,
+              arp.host_capabilities_json AS profile_host_capabilities_json
          FROM agents a
          LEFT JOIN agent_versions av ON av.id = a.current_version_id AND av.space_id = a.space_id
+         LEFT JOIN LATERAL (
+           SELECT candidate.id, candidate.runtime_key,
+                  candidate.model_provider_id, candidate.runtime_installation,
+                  execution_host.kind AS execution_host_kind,
+                  execution_host.capabilities_json AS host_capabilities_json
+             FROM agent_runtime_profiles candidate
+             LEFT JOIN hosts execution_host ON execution_host.id = candidate.execution_host_id
+            WHERE candidate.space_id = a.space_id
+              AND candidate.agent_id = a.id
+              AND candidate.enabled = true
+              AND candidate.is_default = true
+            LIMIT 1
+         ) arp ON true
         WHERE a.space_id = $1 AND a.id = $2`,
       [spaceId, agentId],
     );
     const row = agent.rows[0];
     const runtimeErrors: string[] = [];
     const runtimeWarnings: string[] = [];
-    let adapterType: string | null = null;
+    let runtimeKey: string | null = null;
     let riskLevel: string | null = null;
     let requiredSandboxLevel: string | null = null;
     let modelProviderId: string | null = null;
@@ -767,28 +795,41 @@ export class AutomationService {
       if (row.status !== "active") runtimeErrors.push(`Agent is not active (status=${row.status})`);
       if (!row.current_version_id) runtimeErrors.push("Agent has no current version");
       if (row.current_version_id && !row.version_id) runtimeErrors.push("Current AgentVersion not found");
+      if (!row.runtime_profile_id || !row.profile_runtime_key) {
+        runtimeErrors.push("Agent has no enabled default Runtime Profile");
+      }
 
-      const runtimeConfig = recordValue(row.runtime_config_json);
-      const runtimePolicy = recordValue(row.runtime_policy_json);
-      adapterType =
-        stringValue(runtimeConfig.adapter_type) ??
-        stringValue(runtimePolicy.default_adapter_type) ??
-        "model_api";
-      riskLevel = normalizeRiskLevel(runtimePolicy.risk_level);
-      const spec = runtimeAdapterSpec(adapterType);
+      runtimeKey = row.profile_runtime_key;
+      riskLevel = normalizeRiskLevel(row.version_risk_level);
+      const spec = runtimeKey ? runtimeAdapterSpec(runtimeKey) : null;
       requiredSandboxLevel = requiredSandboxFor(riskLevel, spec);
-      if (!spec) {
-        runtimeErrors.push(`Unknown runtime adapter '${adapterType}'`);
-      } else if (spec.implementation_status !== "implemented") {
-        runtimeErrors.push(`Runtime adapter '${adapterType}' is not implemented`);
+      if (!runtimeKey || !getAgentRuntimeDefinition(runtimeKey)) {
+        runtimeErrors.push(`Unknown or non-ACP runtime '${runtimeKey ?? "(missing)"}'`);
+      } else if (!spec || spec.implementation_status !== "implemented") {
+        runtimeErrors.push(`Runtime '${runtimeKey}' is not implemented`);
       }
       if (requiredSandboxLevel === "one_shot_docker") {
         if (!spec?.sandbox.supports_one_shot_docker) {
-          runtimeErrors.push(`Runtime adapter '${adapterType}' does not support one_shot_docker sandbox execution`);
+          runtimeErrors.push(`Runtime adapter '${runtimeKey}' does not support one_shot_docker sandbox execution`);
         }
       }
+      // Routing refuses a Server copy that is still installing or unhealthy, so
+      // a preflight that ignores it reports `executable: true` for a fire that
+      // then dies `route_no_candidate`. Same predicate, one owner.
+      if (
+        runtimeKey
+        && row.runtime_profile_id
+        && !isRuntimeInstallationReady({
+          execution_host_kind: row.profile_execution_host_kind,
+          host_capabilities_json: row.profile_host_capabilities_json,
+          runtime_key: runtimeKey,
+          runtime_installation: row.profile_runtime_installation,
+        })
+      ) {
+        runtimeErrors.push(`Runtime '${runtimeKey}' is not installed and healthy on the Server Runtime yet`);
+      }
       if (spec?.sandbox.requires_workspace_for_execution && !projectFolderId) {
-        runtimeErrors.push(`Runtime adapter '${adapterType}' requires project_folder_id`);
+        runtimeErrors.push(`Runtime adapter '${runtimeKey}' requires project_folder_id`);
       }
       if (
         spec?.sandbox.requires_file_access
@@ -820,13 +861,7 @@ export class AutomationService {
           runtimeErrors.push("Project writer authority is required");
         }
       }
-      modelProviderId = row.model_provider_id ?? null;
-      if (!modelProviderId && spec?.model.model_provider_mode === "required") {
-        modelProviderId = await resolveDefaultProvider(db, spaceId, adapterType);
-        if (!modelProviderId) {
-          runtimeErrors.push(`Runtime adapter '${adapterType}' requires a model provider`);
-        }
-      }
+      modelProviderId = row.profile_model_provider_id;
     }
 
     const registry = await loadActionRegistry();
@@ -843,7 +878,7 @@ export class AutomationService {
         trigger_origin: triggerOrigin,
         agent_status: row?.status,
         risk_level: riskLevel ?? "medium",
-        adapter_type: adapterType,
+        runtime_key: runtimeKey,
       },
       force_record: false,
     }).decision;
@@ -881,7 +916,7 @@ export class AutomationService {
         },
         metadata_json: {
           project_folder_id: projectFolderId ?? null,
-          adapter_type: adapterType,
+          runtime_key: runtimeKey,
         },
         force_record: false,
       }).decision;
@@ -895,7 +930,9 @@ export class AutomationService {
       executable: runtimeErrors.length === 0 && policyErrors.length === 0,
       runtime_preflight: {
         executable: runtimeErrors.length === 0,
-        adapter_type: adapterType,
+        runtime_key: runtimeKey,
+        risk_level: riskLevel,
+        max_run_time_seconds: row?.max_run_time_seconds ?? null,
         required_sandbox_level: requiredSandboxLevel,
         project: projectPreflight,
         errors: runtimeErrors,
@@ -1237,9 +1274,9 @@ function normalizeRiskLevel(value: unknown): string {
   return typeof value === "string" && VALID_RISK_LEVELS.has(value) ? value : "medium";
 }
 
-function runtimeAdapterSpec(adapterType: string | null) {
-  if (!adapterType) return null;
-  return getRuntimeAdapterSpec(adapterType);
+function runtimeAdapterSpec(runtimeKey: string | null) {
+  if (!runtimeKey) return null;
+  return getRuntimeAdapterSpec(runtimeKey);
 }
 
 function requiredSandboxFor(
@@ -1250,32 +1287,6 @@ function requiredSandboxFor(
   if (riskLevel === "high") return "worktree";
   if (spec?.sandbox.requires_file_access) return "read_only";
   return "none";
-}
-
-async function resolveDefaultProvider(
-  db: { query<Row = Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<{ rows: Row[] }> },
-  spaceId: string,
-  adapterType: string,
-): Promise<string | null> {
-  const result = await db.query<{ id: string; config_json: unknown }>(
-    `SELECT id, config_json
-       FROM model_providers
-      WHERE space_id = $1 AND enabled = TRUE`,
-    [spaceId],
-  );
-  let spaceDefault: string | null = null;
-  for (const row of result.rows) {
-    const cfg = recordValue(row.config_json);
-    if (cfg.runtime_default_for === adapterType) return row.id;
-    if (cfg.runtime_default_adapter_type === adapterType) return row.id;
-    if (Array.isArray(cfg.runtime_default_adapter_types) && cfg.runtime_default_adapter_types.includes(adapterType)) {
-      return row.id;
-    }
-    const defaults = recordValue(cfg.runtime_defaults);
-    if (defaults[adapterType] === true) return row.id;
-    if (spaceDefault === null && cfg.is_default === true) spaceDefault = row.id;
-  }
-  return spaceDefault;
 }
 
 function policyCheck(action: string, decision: {

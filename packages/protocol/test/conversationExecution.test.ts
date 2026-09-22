@@ -27,7 +27,7 @@ describe("Conversation execution contracts", () => {
       runtime: {
         agent_id: "agent-1",
         runtime_profile_id: "profile-1",
-        adapter_type: "claude_code",
+        runtime_key: "claude_code",
         runtime_installation: "own",
       },
     });
@@ -37,7 +37,7 @@ describe("Conversation execution contracts", () => {
       additional_runtimes: [{
         agent_id: "agent-2",
         runtime_profile_id: "profile-2",
-        adapter_type: "claude_code",
+        runtime_key: "claude_code",
         runtime_installation: "own",
       }],
     }).additional_runtimes).toHaveLength(1);
@@ -64,7 +64,7 @@ describe("Conversation execution contracts", () => {
       runtime: {
         agent_id: "agent-1",
         runtime_profile_id: "profile-1",
-        adapter_type: "claude_code",
+        runtime_key: "claude_code",
         runtime_installation: "own",
       },
       primary: { kind: "managed" as const, managed_workspace_id: "session-1", display_path: null },

@@ -17,7 +17,7 @@ import { sql } from "drizzle-orm";
 import { users } from "./auth.js";
 import { interestTopics } from "./interestProfiles.js";
 import { projects } from "./projects.js";
-import { runs } from "./runs.js";
+import { automationRuns } from "./automations.js";
 import { sourceItems } from "./sources.js";
 import { sourceChannels } from "./sourceChannels.js";
 import { spaces } from "./spaces.js";
@@ -32,7 +32,7 @@ export const informationDigests = pgTable("information_digests", {
   digestDate: varchar("digest_date", { length: 10 }).notNull(),
   profileMaturity: varchar("profile_maturity", { length: 16 }),
   status: varchar({ length: 16 }).default("ready").notNull(),
-  generatedByRunId: varchar("generated_by_run_id", { length: 36 }),
+  generatedByAutomationRunId: varchar("generated_by_automation_run_id", { length: 36 }),
   settingsJson: jsonb("settings_json").default({}).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
@@ -49,9 +49,7 @@ export const informationDigests = pgTable("information_digests", {
   foreignKey({ columns: [t.spaceId], foreignColumns: [spaces.id], name: "information_digests_space_fkey" }),
   foreignKey({ columns: [t.ownerUserId], foreignColumns: [users.id], name: "information_digests_owner_user_fkey" }).onDelete("cascade"),
   foreignKey({ columns: [t.projectId, t.spaceId], foreignColumns: [projects.id, projects.spaceId], name: "information_digests_project_fkey" }).onDelete("cascade"),
-  // Single-column SET NULL: a composite FK would also null the non-null tenant
-  // key when the provenance Run is deleted.
-  foreignKey({ columns: [t.generatedByRunId], foreignColumns: [runs.id], name: "information_digests_run_fkey" }).onDelete("set null"),
+  foreignKey({ columns: [t.generatedByAutomationRunId], foreignColumns: [automationRuns.id], name: "information_digests_automation_run_fkey" }).onDelete("set null"),
   check("ck_information_digests_scope", sql`(digest_type = 'personal' AND owner_user_id IS NOT NULL AND project_id IS NULL) OR (digest_type = 'project' AND owner_user_id IS NULL AND project_id IS NOT NULL)`),
   check("ck_information_digests_date", sql`digest_date ~ '^\\d{4}-\\d{2}-\\d{2}$'`),
   check("ck_information_digests_maturity", sql`profile_maturity IS NULL OR profile_maturity IN ('cold','warming','warm')`),

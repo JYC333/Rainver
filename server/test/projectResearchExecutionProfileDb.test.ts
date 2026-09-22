@@ -65,11 +65,15 @@ describe("ProjectResearchExecutionProfileService managed agent capabilities (rea
     const freshlyCreated = await versionRow();
     expect(freshlyCreated.rows[0]!.capabilities_json).toEqual(expect.arrayContaining([
       "research.source_collect", "research.source_summarize", "research.evidence_extract",
-      "research.brief_synthesize", "research.idea_generate", "research.adhoc_analyze", "research.monitor_compare",
+      "research.brief_synthesize", "research.idea_generate", "research.monitor_compare",
     ]));
+    // ADR 0022: the bounded notebook entries are `provider_task` Runs that
+    // route to no Agent, so their capabilities are not required here.
+    expect(freshlyCreated.rows[0]!.capabilities_json).not.toContain("research.adhoc_analyze");
+    expect(freshlyCreated.rows[0]!.capabilities_json).not.toContain("research.ask");
 
-    // Simulate a space provisioned before research.adhoc_analyze / research.monitor_compare
-    // existed — the historical narrow capability list.
+    // Simulate a space provisioned before research.monitor_compare existed —
+    // the historical narrow capability list.
     await db.pool.query(
       `UPDATE agent_versions SET capabilities_json=$2::jsonb WHERE id=$1`,
       [agentRow.rows[0]!.current_version_id, JSON.stringify([
@@ -81,7 +85,7 @@ describe("ProjectResearchExecutionProfileService managed agent capabilities (rea
     await service.resolve(identity, {});
     const healed = await versionRow();
     expect(healed.rows[0]!.capabilities_json).toEqual(expect.arrayContaining([
-      "research.adhoc_analyze", "research.monitor_compare",
+      "research.monitor_compare",
     ]));
   });
 });

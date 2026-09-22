@@ -35,21 +35,13 @@ describe("maintenance-only migrations", () => {
     expect(requiresMaintenance(late)).toBe(false);
   });
 
-  it("marks the release that drops the retired CLI credential tables", async () => {
+  it("keeps the new-epoch baseline out of maintenance-only handling", async () => {
     const chain = loadMigrations(join(import.meta.dirname, "..", "migrations"));
-    const retirement = chain.find((file) => file.name.includes("retire_server_cli_credentials"));
-    expect(retirement, "the phase-3 retirement migration is in the chain").toBeDefined();
-    expect(requiresMaintenance(retirement!.sql)).toBe(true);
-    // The frozen baseline and the release before this one stay installable
-    // from the UI: the distinction is compatibility with the running version,
-    // not whether a database changes. Named individually rather than "every
-    // other migration", so the next deliberate maintenance migration does not
-    // fail a test that was only ever about these.
-    for (const version of ["0000", "0001", "0003"]) {
-      const file = chain.find((entry) => entry.version === version);
-      expect(file, `migration ${version} is in the chain`).toBeDefined();
-      expect(requiresMaintenance(file!.sql), `${version}_${file!.name}`).toBe(false);
-    }
+    expect(chain.map(({ version, name }) => ({ version, name }))).toEqual([
+      { version: "0000", name: "baseline" },
+    ]);
+    expect(requiresMaintenance(chain[0]!.sql)).toBe(false);
+    expect(chain[0]!.sql).not.toContain("cli_credential_profiles");
   });
 
   it("reports the flag through the status the CLI prints", async () => {

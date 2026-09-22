@@ -12,6 +12,7 @@ import type {
 import { Card, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
+import { Select } from '../../components/ui/select'
 
 /**
  * Consent and state for importing one folder's ambient CLI history from one
@@ -49,7 +50,7 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
       setSessions(listed.sessions)
       setVisibility(current => ({
         ...Object.fromEntries(
-          offer.policy.entries.map(entry => [`${entry.adapter_type}:${entry.installation}`, entry.default_visibility]),
+          offer.policy.entries.map(entry => [`${entry.runtime_key}:${entry.installation}`, entry.default_visibility]),
         ),
         ...current,
       }))
@@ -67,11 +68,11 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
   if (location.execution_host_kind !== 'remote') return null
 
   const runtimes = countedRuntimes(counts, policy)
-  const visibilityFor = (adapterType: string, installation: string): 'private' | 'space_shared' =>
-    visibility[`${adapterType}:${installation}`] ?? 'space_shared'
-  const autoExtractFor = (adapterType: string, installation: string): boolean =>
+  const visibilityFor = (runtimeKey: string, installation: string): 'private' | 'space_shared' =>
+    visibility[`${runtimeKey}:${installation}`] ?? 'space_shared'
+  const autoExtractFor = (runtimeKey: string, installation: string): boolean =>
     (policy?.entries ?? []).some(entry =>
-      entry.adapter_type === adapterType && entry.installation === installation && entry.auto_extract)
+      entry.runtime_key === runtimeKey && entry.installation === installation && entry.auto_extract)
 
   /**
    * Records the choice, not just the control's state.
@@ -82,21 +83,21 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
    * by the next one they are not.
    */
   async function chooseVisibility(
-    adapterType: string,
+    runtimeKey: string,
     installation: string,
     next: 'private' | 'space_shared',
     sync: boolean,
   ) {
-    const key = `${adapterType}:${installation}`
+    const key = `${runtimeKey}:${installation}`
     setVisibility(current => ({ ...current, [key]: next }))
     setBusy(key)
     try {
       setPolicy(await ambientSessionsApi.setPolicy(location.id, {
-        adapter_type: adapterType,
+        runtime_key: runtimeKey,
         installation,
         sync,
         default_visibility: next,
-        auto_extract: autoExtractFor(adapterType, installation),
+        auto_extract: autoExtractFor(runtimeKey, installation),
       }))
     } catch (error) {
       toast.error(errMsg(error))
@@ -105,15 +106,15 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
     }
   }
 
-  async function toggleAutoExtract(adapterType: string, installation: string, autoExtract: boolean) {
-    setBusy(`${adapterType}:${installation}`)
+  async function toggleAutoExtract(runtimeKey: string, installation: string, autoExtract: boolean) {
+    setBusy(`${runtimeKey}:${installation}`)
     try {
       setPolicy(await ambientSessionsApi.setPolicy(location.id, {
-        adapter_type: adapterType,
+        runtime_key: runtimeKey,
         installation,
         sync: runtimes.some(runtime =>
-          runtime.adapter_type === adapterType && runtime.installation === installation && runtime.sync),
-        default_visibility: visibilityFor(adapterType, installation),
+          runtime.runtime_key === runtimeKey && runtime.installation === installation && runtime.sync),
+        default_visibility: visibilityFor(runtimeKey, installation),
         auto_extract: autoExtract,
       }))
     } catch (error) {
@@ -123,11 +124,11 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
     }
   }
 
-  async function toggleSync(adapterType: string, installation: string, sync: boolean) {
-    setBusy(`${adapterType}:${installation}`)
+  async function toggleSync(runtimeKey: string, installation: string, sync: boolean) {
+    setBusy(`${runtimeKey}:${installation}`)
     try {
       setPolicy(await ambientSessionsApi.setPolicy(location.id, {
-        adapter_type: adapterType, installation, sync, default_visibility: visibilityFor(adapterType, installation),
+        runtime_key: runtimeKey, installation, sync, default_visibility: visibilityFor(runtimeKey, installation),
       }))
       toast.success(sync ? 'New conversations in this folder will be imported' : 'Syncing stopped; nothing was deleted')
     } catch (error) {
@@ -137,11 +138,11 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
     }
   }
 
-  async function runSync(adapterType: string, installation: string) {
-    setBusy(`${adapterType}:${installation}`)
+  async function runSync(runtimeKey: string, installation: string) {
+    setBusy(`${runtimeKey}:${installation}`)
     try {
       const report = await ambientSessionsApi.sync(location.id, {
-        adapter_type: adapterType, installation, visibility: visibilityFor(adapterType, installation),
+        runtime_key: runtimeKey, installation, visibility: visibilityFor(runtimeKey, installation),
       })
       const rejected = report.malformed_sessions + report.failed_sessions
       const summary = `${report.sessions_written} session${report.sessions_written === 1 ? '' : 's'}, `
@@ -208,10 +209,10 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
       ) : (
         <div className="space-y-2">
           {runtimes.map(runtime => (
-            <div key={`${runtime.adapter_type}:${runtime.installation}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
+            <div key={`${runtime.runtime_key}:${runtime.installation}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2 text-sm font-medium">
-                  {runtime.adapter_type}
+                  {runtime.runtime_key}
                   {runtime.installation !== 'own' && <Badge variant="outline" className="text-[11px]">{runtime.installation}</Badge>}
                 </div>
                 <p className="text-xs text-muted-foreground">
@@ -222,29 +223,32 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-3">
-                <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                  Who can read it
-                  <select
-                    className="rounded border bg-background px-1 py-0.5 text-xs"
-                    value={visibilityFor(runtime.adapter_type, runtime.installation)}
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <span>Who can read it</span>
+                  <Select
+                    ariaLabel={`Who can read it \u2014 ${runtime.runtime_key} ${runtime.installation}`}
+                    size="sm"
+                    className="min-w-[16rem]"
+                    value={visibilityFor(runtime.runtime_key, runtime.installation)}
                     disabled={busy !== null}
-                    onChange={event => void chooseVisibility(
-                      runtime.adapter_type,
+                    onChange={value => void chooseVisibility(
+                      runtime.runtime_key,
                       runtime.installation,
-                      event.target.value as 'private' | 'space_shared',
+                      value as 'private' | 'space_shared',
                       runtime.sync,
                     )}
-                  >
-                    <option value="space_shared">Project shared — members can read it, and it feeds the Brief</option>
-                    <option value="private">Only me — a read-only archive, never used for extraction</option>
-                  </select>
-                </label>
+                    options={[
+                      { value: 'space_shared', label: 'Project shared — members can read it, and it feeds the Brief' },
+                      { value: 'private', label: 'Only me — a read-only archive, never used for extraction' },
+                    ]}
+                  />
+                </div>
                 <label className="flex items-center gap-2 text-xs text-muted-foreground">
                   <input
                     type="checkbox"
                     checked={runtime.sync}
                     disabled={busy !== null}
-                    onChange={event => void toggleSync(runtime.adapter_type, runtime.installation, event.target.checked)}
+                    onChange={event => void toggleSync(runtime.runtime_key, runtime.installation, event.target.checked)}
                   />
                   Keep syncing
                 </label>
@@ -254,9 +258,9 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
                 >
                   <input
                     type="checkbox"
-                    checked={autoExtractFor(runtime.adapter_type, runtime.installation)}
+                    checked={autoExtractFor(runtime.runtime_key, runtime.installation)}
                     disabled={busy !== null}
-                    onChange={event => void toggleAutoExtract(runtime.adapter_type, runtime.installation, event.target.checked)}
+                    onChange={event => void toggleAutoExtract(runtime.runtime_key, runtime.installation, event.target.checked)}
                   />
                   Extract automatically
                 </label>
@@ -264,7 +268,7 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
                   size="sm"
                   variant="outline"
                   disabled={busy !== null || runtime.error !== null}
-                  onClick={() => void runSync(runtime.adapter_type, runtime.installation)}
+                  onClick={() => void runSync(runtime.runtime_key, runtime.installation)}
                 >
                   <Download className="size-4" />Import now
                 </Button>
@@ -301,7 +305,7 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-medium">{session.title ?? session.vendor_session_id}</div>
                   <div className="text-xs text-muted-foreground">
-                    {session.adapter_type} · {session.record_count} record{session.record_count === 1 ? '' : 's'}
+                    {session.runtime_key} · {session.record_count} record{session.record_count === 1 ? '' : 's'}
                     {session.last_record_at && ` · ${new Date(session.last_record_at).toLocaleDateString()}`}
                   </div>
                 </div>
@@ -326,15 +330,15 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
 /** Counts the daemon reported, joined with whatever consent already exists for each. */
 function countedRuntimes(counts: AmbientSessionCount[], policy: AmbientImportPolicy | null) {
   const entries = policy?.entries ?? []
-  const byKey = new Map(counts.map(count => [`${count.adapter_type}:${count.installation}`, count]))
+  const byKey = new Map(counts.map(count => [`${count.runtime_key}:${count.installation}`, count]))
   for (const entry of entries) {
-    const key = `${entry.adapter_type}:${entry.installation}`
+    const key = `${entry.runtime_key}:${entry.installation}`
     if (byKey.has(key)) continue
     // Consent exists for a runtime the host has not reported on lately; the
     // switch must still be visible so it can be turned off.
     byKey.set(key, {
       location_id: '',
-      adapter_type: entry.adapter_type,
+      runtime_key: entry.runtime_key,
       installation: entry.installation,
       session_count: 0,
       oldest_updated_at: null,
@@ -345,6 +349,6 @@ function countedRuntimes(counts: AmbientSessionCount[], policy: AmbientImportPol
   return [...byKey.values()].map(count => ({
     ...count,
     sync: entries.some(entry =>
-      entry.adapter_type === count.adapter_type && entry.installation === count.installation && entry.sync),
+      entry.runtime_key === count.runtime_key && entry.installation === count.installation && entry.sync),
   }))
 }

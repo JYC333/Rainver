@@ -6,9 +6,10 @@ import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
 import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 import type { ServerConfig } from "../../config.js";
 import { ProjectResearchExecutionProfileService } from "./executionProfileService.js";
+import { runBoundedProviderTask } from "../runs/boundedProviderTaskRun.js";
+import { enqueueProviderTaskRunJob, providerTaskRunPreparers } from "../runs/providerTaskRunHandler.js";
 import { PgRunRepository } from "../runs/repository.js";
-import { PgJobQueueRepository } from "../jobs/repository.js";
-import { RunOrchestrationService } from "../runs/orchestrationService.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
 import { runOutputResult } from "../runs/orchestrationResults.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { createManagedExecutionPolicy } from "../policy/managedExecutionPolicy.js";
@@ -26,6 +27,20 @@ export { NOTEBOOK_SECTION_KEYS, SECTION_LABELS };
  * project research operation budget. Enforced per project per UTC day.
  */
 export const RESEARCH_ADHOC_DAILY_RUN_LIMIT = 20;
+
+/**
+ * ADR 0022: both notebook analysis entries are bounded, single-shot structured
+ * generations with no tools and no turns of their own, so they run as
+ * `provider_task` Runs through the providers module rather than being
+ * dispatched to an Agent runtime. These names are the ProviderTask/usage task
+ * labels for the two entries.
+ */
+const RESEARCH_ADHOC_TASK = "project_research_adhoc_analyze";
+const RESEARCH_ADHOC_CAPABILITY_ID = "research.adhoc_analyze";
+const RESEARCH_NOTEBOOK_CHAT_TASK = "project_research_notebook_chat";
+const RESEARCH_BOUNDED_SYSTEM_PROMPT =
+  "You are the Project Research bounded analysis task. Work only on the supplied notes and evidence context, "
+  + "preserve source and evidence references, and answer with the requested JSON object and nothing else.";
 
 // `type: [X, "null"]` is valid JSON Schema, but not every provider's
 // structured-output validator accepts a type array (MiniMax's rejects it
@@ -263,27 +278,54 @@ export class ProjectResearchAreaService {
           AND pci.status='active' AND ${sourceItemReadableClause("si", "$4", false)}`,
       [identity.spaceId, projectId, materialIds, identity.userId],
     ) : { rows: [] };
-    const execution = objectValue(body.execution); const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config).resolve(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
-    const instruction = [
-      "Perform the requested bounded research analysis using only the supplied note and evidence context.",
-      `User request: ${prompt}`, `Target note: ${title}`, `Note base version: ${baseVersion}`,
-      `Current note as indexed blocks (edit by block index; the document has ${blocks.length} blocks):\n${blocks.map((value, index) => `[${index}] ${value || "(empty)"}`).join("\n") || "(empty document)"}`,
-      `Selected material:\n${material.rows.map((item) => JSON.stringify(item)).join("\n")}`,
-      "Return JSON only with a top-level notebook_update. Express the change as minimal block operations against the indexed blocks:",
-      `- {"op":"append","index":null,"count":null,"markdown":"..."} adds blocks at the end`,
-      `- {"op":"insert","index":N,"count":null,"markdown":"..."} inserts before block N`,
-      `- {"op":"replace","index":N,"count":C,"markdown":"..."} replaces blocks N..N+C-1`,
-      `- {"op":"delete","index":N,"count":C,"markdown":null} removes blocks`,
-      "Never rewrite blocks you are not changing. Use refs for source_item ids you relied on.",
-    ].join("\n\n");
-    const run = await new PgRunRepository(this.db).createQueuedRunWithBudgetAdmission({
-      agent_id: resolved.agentId, space_id: identity.spaceId, user_id: identity.userId, project_id: projectId,
-      mode: "live", run_type: "agent", trigger_origin: "manual", runtime_profile_id: resolved.runtimeProfileId,
-      prompt, instruction, capability_id: "research.adhoc_analyze", capabilities_json: ["research.adhoc_analyze"],
-      contract_snapshot: { source: { kind: "direct", id: note.id }, project_id: projectId, policy_context_json: createManagedExecutionPolicy("project_research", true), workflow_input_json: { research_adhoc: { note_id: note.id, base_version: baseVersion, source_item_ids: materialIds } }, structured_output_json: ADHOC_OUTPUT_CONTRACT },
+    const execution = objectValue(body.execution);
+    const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config)
+      .resolveProvider(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
+    const instruction = adhocAnalysisInstruction({
+      prompt, title, baseVersion, blocks,
+      material: material.rows.map((item) => JSON.stringify(item)),
     });
-    const job = await new PgJobQueueRepository(this.db).enqueue({ job_type: "agent_run", space_id: identity.spaceId, user_id: identity.userId, agent_id: resolved.agentId, payload: { run_id: run.id } });
-    return { run_id: run.id, job_id: job.id, status: run.status, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
+    // Admitted and made durable here, performed by the worker. It used to run
+    // inline on this request: a crash between the provider answering and the
+    // block ops being applied left a succeeded Run whose edit never reached
+    // the note and which nothing would ever retry, and a transient provider
+    // failure came back as a 502 with no attempt behind it.
+    const queued = await withQueryableTransaction(this.db, async (db) => {
+      const run = await new PgRunRepository(db).createQueuedProviderTaskRun({
+        space_id: identity.spaceId,
+        user_id: identity.userId,
+        trigger_origin: "manual",
+        run_type: "agent",
+        task: RESEARCH_ADHOC_TASK,
+        prompt,
+        instruction,
+        project_id: projectId,
+        capability_id: RESEARCH_ADHOC_CAPABILITY_ID,
+        contract_snapshot: {
+          source: { kind: "direct", id: note.id }, project_id: projectId,
+          policy_context_json: createManagedExecutionPolicy("project_research", true),
+          workflow_input_json: { research_adhoc: { note_id: note.id, base_version: baseVersion, source_item_ids: materialIds } },
+          structured_output_json: ADHOC_OUTPUT_CONTRACT,
+          route_hints_json: {
+            owner_domain: "projectResearch",
+            stage: "research_adhoc",
+            provider_id: resolved.modelProviderId,
+            model: resolved.modelName,
+          },
+        },
+      });
+      const job = await enqueueProviderTaskRunJob(db, {
+        run_id: run.id, space_id: identity.spaceId, user_id: identity.userId,
+      });
+      return { run, job };
+    });
+    return {
+      run_id: queued.run.id,
+      job_id: queued.job.id,
+      status: "queued",
+      daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT,
+      daily_used: used + 1,
+    };
   }
 
   /**
@@ -333,7 +375,8 @@ export class ProjectResearchAreaService {
       [identity.spaceId, projectId, materialIds, identity.userId],
     ) : { rows: [] };
     const execution = objectValue(body.execution);
-    const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config).resolve(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
+    const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config)
+      .resolveProvider(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
 
     const notes = await this.listProjectNotes(identity, projectId);
     const notebookText = notes.map((note) => {
@@ -356,28 +399,33 @@ export class ProjectResearchAreaService {
       "Never rewrite blocks you are not changing. Use refs for source_item ids you relied on.",
     ].filter(Boolean).join("\n\n");
 
-    const run = await new PgRunRepository(this.db).createQueuedRunWithBudgetAdmission({
-      agent_id: resolved.agentId, space_id: identity.spaceId, user_id: identity.userId, project_id: projectId,
-      mode: "live", run_type: "agent", trigger_origin: "manual", runtime_profile_id: resolved.runtimeProfileId,
-      prompt: message, instruction, capability_id: "research.ask", capabilities_json: ["research.ask"],
-      contract_snapshot: {
+    const task = await runBoundedProviderTask(this.db, this.config, {
+      completion: "structured",
+      runType: "agent", triggerOrigin: "manual",
+      spaceId: identity.spaceId, userId: identity.userId, projectId,
+      task: RESEARCH_NOTEBOOK_CHAT_TASK, capabilityId: "research.ask",
+      providerId: resolved.modelProviderId, model: resolved.modelName,
+      system: RESEARCH_BOUNDED_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: instruction }],
+      outputFormat: NOTEBOOK_CHAT_OUTPUT_CONTRACT,
+      prompt: message, instruction,
+      contractSnapshot: {
         source: { kind: "direct", id: folderId }, project_id: projectId,
         policy_context_json: createManagedExecutionPolicy("project_research", true),
         workflow_input_json: {},
         structured_output_json: NOTEBOOK_CHAT_OUTPUT_CONTRACT,
+        route_hints_json: { owner_domain: "projectResearch", stage: "research_notebook_chat" },
       },
+      spend: { kind: "person", user_id: identity.userId },
     });
-    await new RunOrchestrationService(this.config, new PgRunRepository(this.db)).executeRun({
-      run_id: run.id, space_id: identity.spaceId, worker_id: `notebook-chat:${randomUUID()}`, command_source: "http",
-    });
-    const finished = await new PgRunRepository(this.db).getRun(identity.spaceId, run.id);
-    if (!finished || !["succeeded", "degraded"].includes(finished.status)) {
-      const errorText = finished?.error_message ?? "The notebook chat run did not complete successfully.";
-      await sessions.addMessage(identity.spaceId, identity.userId, session.id, { role: "assistant", content: errorText, run_id: run.id, metadata: { error: true } });
-      return { session_id: session.id, run_id: run.id, ok: false, error: errorText, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
+    if (!task.ok) {
+      const errorText = task.error || "The notebook chat task did not complete successfully.";
+      await sessions.addMessage(identity.spaceId, identity.userId, session.id, { role: "assistant", content: errorText, ...(task.runId ? { run_id: task.runId } : {}), metadata: { error: true } });
+      return { session_id: session.id, run_id: task.runId, ok: false, error: errorText, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
     }
+    const runId = task.runId;
 
-    const output = runOutputResult(finished.output_json);
+    const output = task.output;
     const answer = text(output.answer, 8000) || "(no answer returned)";
     const notebookUpdate = objectValue(output.notebook_update);
     let notebookEdit: { note_id: string; version: number; conflict: boolean } | null = null;
@@ -391,7 +439,7 @@ export class ProjectResearchAreaService {
         // is not permission to have the model rewrite it.
         await assertWritableSpaceObject(this.db, identity, targetNote.id, "Note not found");
         const applied = await withNoteWrites(this.db, (scope) => scope.applyOps({
-          spaceId: identity.spaceId, noteId: targetNote.id, baseVersion: targetNote.version, rawOps, source: "ai_adhoc", runId: run.id, refs,
+          spaceId: identity.spaceId, noteId: targetNote.id, baseVersion: targetNote.version, rawOps, source: "ai_adhoc", runId, refs,
         }));
         if (applied) notebookEdit = { note_id: targetNote.id, version: applied.note.version, conflict: applied.conflict };
       } else {
@@ -402,10 +450,10 @@ export class ProjectResearchAreaService {
         const applied = await withNoteWrites(this.db, async (scope) => {
           const created = await new ProjectResearchAreaService(scope.db, this.config).createProjectNote(scope, {
             spaceId: identity.spaceId, projectId, folderId, title: newTitle, doc: markdownToPm(""),
-            createdByUserId: null, createdByRunId: run.id, at: now,
+            createdByUserId: null, createdByRunId: runId, at: now,
           });
           const result = await scope.applyOps({
-            spaceId: identity.spaceId, noteId: created.id, baseVersion: created.version, rawOps, source: "ai_adhoc", runId: run.id, refs,
+            spaceId: identity.spaceId, noteId: created.id, baseVersion: created.version, rawOps, source: "ai_adhoc", runId, refs,
           });
           return result ? { noteId: created.id, ...result } : null;
         });
@@ -413,9 +461,9 @@ export class ProjectResearchAreaService {
       }
     }
     await sessions.addMessage(identity.spaceId, identity.userId, session.id, {
-      role: "assistant", content: answer, run_id: run.id, metadata: { notebook_edit: notebookEdit },
+      role: "assistant", content: answer, run_id: runId, metadata: { notebook_edit: notebookEdit },
     });
-    return { session_id: session.id, run_id: run.id, ok: true, reply: answer, notebook_edit: notebookEdit, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
+    return { session_id: session.id, run_id: runId, ok: true, reply: answer, notebook_edit: notebookEdit, daily_limit: RESEARCH_ADHOC_DAILY_RUN_LIMIT, daily_used: used + 1 };
   }
 
   /**
@@ -432,18 +480,44 @@ export class ProjectResearchAreaService {
     const row = run.rows[0];
     if (!row?.project_id || !["succeeded", "degraded"].includes(row.status)) return;
     const contract = objectValue(objectValue(objectValue(row.contract_snapshot_json).workflow_input_json).research_adhoc);
-    const noteId = optionalString(contract.note_id); const baseVersion = Number(contract.base_version);
+    await this.applyAdhocNotebookUpdate({
+      spaceId,
+      runId,
+      contract,
+      update: objectValue(runOutputResult(row.output_json).notebook_update),
+    });
+  }
+
+  /**
+   * Applies one ad-hoc run's block ops to the note its contract pinned.
+   *
+   * Idempotent on the Run: a revision already attributed to it means the edit
+   * landed, so the `provider_task_run` handler applying it before the Run goes
+   * terminal and the reconciler replaying it afterwards cannot double-write.
+   */
+  async applyAdhocNotebookUpdate(input: {
+    spaceId: string;
+    runId: string;
+    contract: Record<string, unknown>;
+    update: Record<string, unknown>;
+  }): Promise<void> {
+    const noteId = optionalString(input.contract.note_id);
+    const baseVersion = Number(input.contract.base_version);
     if (!noteId || !Number.isInteger(baseVersion)) return;
-    const applied = await this.db.query(`SELECT 1 FROM note_revisions WHERE note_id=$1 AND created_by_run_id=$2 LIMIT 1`, [noteId, runId]);
+    const applied = await this.db.query(
+      `SELECT 1 FROM note_revisions WHERE note_id=$1 AND created_by_run_id=$2 LIMIT 1`,
+      [noteId, input.runId],
+    );
     if (applied.rows[0]) return;
-    const update = objectValue(runOutputResult(row.output_json).notebook_update);
-    const rawOps: unknown[] = Array.isArray(update.ops) ? update.ops : [];
+    const rawOps: unknown[] = Array.isArray(input.update.ops) ? input.update.ops : [];
     if (rawOps.length === 0) {
       throw new Error("Ad-hoc research run output does not contain a valid notebook_update");
     }
-    const refs = Array.isArray(update.refs) ? update.refs.filter((v): v is string => typeof v === "string").slice(0, 50) : [];
+    const refs = Array.isArray(input.update.refs)
+      ? input.update.refs.filter((v): v is string => typeof v === "string").slice(0, 50)
+      : [];
     await withNoteWrites(this.db, (scope) => scope.applyOps({
-      spaceId, noteId, baseVersion, rawOps, source: "ai_adhoc", runId, refs,
+      spaceId: input.spaceId, noteId, baseVersion, rawOps, source: "ai_adhoc", runId: input.runId, refs,
     }));
   }
 
@@ -710,3 +784,79 @@ function evidenceCardParts(markdown: string): { why: string; how: string; what: 
   return { why, how, what: what || (!why && !how ? clipWords(markdown.trim(), 80) : "") };
 }
 function clipWords(value: string, limit: number): string { return value.split(/\s+/).filter(Boolean).slice(0, limit).join(" "); }
+
+/** The rendered instruction one ad-hoc analysis Run freezes and replays. */
+function adhocAnalysisInstruction(input: {
+  prompt: string;
+  title: string;
+  baseVersion: number;
+  blocks: string[];
+  material: string[];
+}): string {
+  return [
+    "Perform the requested bounded research analysis using only the supplied note and evidence context.",
+    `User request: ${input.prompt}`, `Target note: ${input.title}`, `Note base version: ${input.baseVersion}`,
+    `Current note as indexed blocks (edit by block index; the document has ${input.blocks.length} blocks):\n${input.blocks.map((value, index) => `[${index}] ${value || "(empty)"}`).join("\n") || "(empty document)"}`,
+    `Selected material:\n${input.material.join("\n")}`,
+    "Return JSON only with a top-level notebook_update. Express the change as minimal block operations against the indexed blocks:",
+    `- {"op":"append","index":null,"count":null,"markdown":"..."} adds blocks at the end`,
+    `- {"op":"insert","index":N,"count":null,"markdown":"..."} inserts before block N`,
+    `- {"op":"replace","index":N,"count":C,"markdown":"..."} replaces blocks N..N+C-1`,
+    `- {"op":"delete","index":N,"count":C,"markdown":null} removes blocks`,
+    "Never rewrite blocks you are not changing. Use refs for source_item ids you relied on.",
+  ].join("\n\n");
+}
+
+/**
+ * How the worker performs an ad-hoc analysis Run.
+ *
+ * Everything it needs is on the Run: the rendered instruction, the frozen
+ * output contract, and the provider/model the request resolved. Re-resolving
+ * the provider here would let a space default changed after admission decide
+ * what a queued Run runs on.
+ */
+export function registerResearchProviderTaskRuns(): void {
+  providerTaskRunPreparers.register(RESEARCH_ADHOC_CAPABILITY_ID, async ({ db, config, run }) => {
+    const contract = objectValue(run.contract_snapshot_json);
+    const hints = objectValue(contract.route_hints_json);
+    const providerId = optionalString(hints.provider_id);
+    const userId = optionalString(run.instructed_by_user_id);
+    if (!providerId || !userId) {
+      throw new Error("Ad-hoc research Run is missing its provider binding or instructing user");
+    }
+    const adhoc = objectValue(objectValue(contract.workflow_input_json).research_adhoc);
+    const service = new ProjectResearchAreaService(db, config);
+    return {
+      completion: "structured",
+      outputFormat: (objectValue(contract.structured_output_json) as Record<string, unknown>).schema
+        ? contract.structured_output_json as typeof ADHOC_OUTPUT_CONTRACT
+        : ADHOC_OUTPUT_CONTRACT,
+      spaceId: run.space_id,
+      userId,
+      projectId: run.project_id ?? null,
+      task: RESEARCH_ADHOC_TASK,
+      capabilityId: RESEARCH_ADHOC_CAPABILITY_ID,
+      providerId,
+      model: optionalString(hints.model),
+      system: RESEARCH_BOUNDED_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: run.instruction ?? run.prompt ?? "" }],
+      prompt: run.prompt ?? "",
+      instruction: run.instruction ?? null,
+      runType: run.run_type ?? "agent",
+      triggerOrigin: run.trigger_origin ?? "manual",
+      spend: { kind: "person", user_id: userId },
+      // Applied before the Run goes terminal, so a terminal ad-hoc Run always
+      // has its edit on the note. The reconciler's replay stays as the safety
+      // net for Runs that reached terminal the old way.
+      finalize: async (completion, runId) => {
+        await service.applyAdhocNotebookUpdate({
+          spaceId: run.space_id,
+          runId,
+          contract: adhoc,
+          update: objectValue(objectValue(completion.output).notebook_update),
+        });
+        return { outputText: "", outputJson: completion.output ?? {} };
+      },
+    };
+  });
+}

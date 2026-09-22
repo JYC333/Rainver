@@ -5,7 +5,7 @@ import { resolveSandboxLevelForRuntime } from "../src/modules/runs/runRepository
 describe("runtime sandbox resolution", () => {
   it("uses an ephemeral run directory for a CLI without a workspace", () => {
     expect(resolveSandboxLevelForRuntime({
-      adapterType: "opencode",
+      runtimeKey: "opencode",
       configuredLevel: "none",
       riskLevel: "low",
       projectFolderId: null,
@@ -14,7 +14,7 @@ describe("runtime sandbox resolution", () => {
 
   it("uses a worktree when a workspace is bound", () => {
     expect(resolveSandboxLevelForRuntime({
-      adapterType: "opencode",
+      runtimeKey: "opencode",
       configuredLevel: "none",
       riskLevel: "high",
       projectFolderId: "workspace-1",
@@ -28,7 +28,7 @@ describe("runtime sandbox resolution", () => {
     // low-risk run that cannot write it cannot do its work at all — and the
     // levels came out inverted, since a *higher*-risk run could write.
     expect(resolveSandboxLevelForRuntime({
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       configuredLevel: "none",
       riskLevel: "low",
       projectFolderId: "workspace-1",
@@ -44,7 +44,7 @@ describe("runtime sandbox resolution", () => {
       // could. Risk may decide how a run is contained; it must not decide
       // whether the run can work at all.
       const level = resolveSandboxLevelForRuntime({
-        adapterType: "claude_code",
+        runtimeKey: "claude_code",
         configuredLevel: "none",
         riskLevel,
         projectFolderId: "workspace-1",
@@ -55,7 +55,7 @@ describe("runtime sandbox resolution", () => {
 
   it("does not let a configured read-only level downgrade high-risk CLI work", () => {
     expect(resolveSandboxLevelForRuntime({
-      adapterType: "codex_cli",
+      runtimeKey: "codex_cli",
       configuredLevel: "read_only",
       riskLevel: "high",
       projectFolderId: "workspace-1",
@@ -66,7 +66,7 @@ describe("runtime sandbox resolution", () => {
     "does not let configured %s drop a Folder-bound run below its floor",
     (configuredLevel) => {
       expect(resolveSandboxLevelForRuntime({
-        adapterType: "claude_code",
+        runtimeKey: "claude_code",
         configuredLevel,
         riskLevel: "low",
         projectFolderId: "workspace-1",
@@ -76,25 +76,25 @@ describe("runtime sandbox resolution", () => {
 
   it("preserves a stronger configured sandbox above the read-only baseline", () => {
     expect(resolveSandboxLevelForRuntime({
-      adapterType: "opencode",
+      runtimeKey: "opencode",
       configuredLevel: "worktree",
       riskLevel: "medium",
       projectFolderId: "workspace-1",
     })).toBe("worktree");
   });
 
-  it("does not add a workspace requirement to a managed API runtime", () => {
+  it("does not add a persistent workspace requirement to OpenCode", () => {
     expect(resolveSandboxLevelForRuntime({
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       configuredLevel: "none",
       riskLevel: "low",
       projectFolderId: null,
-    })).toBe("none");
+    })).toBe("ephemeral");
   });
 
   it("forces critical local CLI runs into one-shot Docker", () => {
     expect(resolveSandboxLevelForRuntime({
-      adapterType: "opencode",
+      runtimeKey: "opencode",
       configuredLevel: "none",
       riskLevel: "critical",
       projectFolderId: null,

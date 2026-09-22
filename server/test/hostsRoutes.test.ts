@@ -6,16 +6,20 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { hostsModule } from "../src/modules/hosts/index.js";
 import { resolveHostApiBaseUrl } from "../src/modules/runs/runWorkSurface.js";
 import { loadConfig } from "../src/config.js";
-import { __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
+import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthRepository } from "../src/modules/auth/identity.js";
 import type { CurrentUser } from "../src/modules/auth/identity.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { __resetHostRegisterRateLimitForTests, HOST_REGISTER_MAX_ATTEMPTS } from "../src/modules/hosts/pairingRateLimit.js";
+import { PgHostRepository } from "../src/modules/hosts/repository.js";
+import { SERVER_OPENCODE_RELEASE } from "../src/modules/runtimeAdapters/opencodeRelease.js";
+import { MIN_HOST_DAEMON_VERSION } from "../src/modules/hosts/daemonCompatibility.js";
+import { supportsRuntimeBackendMode } from "../src/modules/runtimeAdapters/runtimeDefinitions.js";
 
 /** A daemon's whole hello, as `helloInfo()` sends it; the wire requires all of it. */
 const HELLO_INFO = {
   platform: "linux",
   arch: "x64",
-  daemon_version: "0.1.0",
+  daemon_version: MIN_HOST_DAEMON_VERSION,
   environment_kind: "linux_native",
   capabilities_json: {},
   workspace_reports: [],
@@ -104,11 +108,13 @@ beforeAll(async () => {
   app = buildModuleServer(loadConfig({
     SERVER_DATABASE_URL: db.connectionUri,
     SERVER_TRUSTED_PROXY_HOST: "localhost",
+    INSTANCE_ADMIN_EMAIL: "instance-admin@example.test",
   }), [hostsModule]);
   await app.listen({ port: 0, host: "127.0.0.1" });
 });
 
 afterEach(() => {
+  __setAuthIdentityForTests(null);
   __setAuthRepositoryForTests(null);
   __resetHostRegisterRateLimitForTests();
 });
@@ -128,6 +134,58 @@ beforeEach(async () => {
 });
 
 describe("hosts routes", () => {
+  it("lets ordinary members read Server Runtime health but forbids them from retrying provisioning", async (ctx) => {
+    if (!db.available || !app || !db.pool) return ctx.skip();
+    const hostId = await new PgHostRepository(db.pool).ensureServerHostId();
+    __setAuthIdentityForTests({ spaceId: "host-route-space", userId: OTHER_USER });
+
+    const status = await app.inject({
+      method: "GET",
+      url: `/api/v1/hosts/${hostId}/runtime-provisioning/opencode`,
+    });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toMatchObject({
+      host_id: hostId,
+      runtime_key: "opencode",
+      installation: { state: "queued" },
+    });
+
+    const retry = await app.inject({
+      method: "POST",
+      url: `/api/v1/hosts/${hostId}/runtime-provisioning/opencode/retry`,
+    });
+    expect(retry.statusCode).toBe(403);
+    expect(retry.json()).toMatchObject({ detail: "Managing the built-in host requires instance admin" });
+    expect((await db.pool.query(
+      `SELECT 1 FROM host_runtime_provisioning WHERE host_id = $1 AND runtime_key = 'opencode'`,
+      [hostId],
+    )).rowCount).toBe(0);
+  });
+
+  it("reports each runtime's backend-mode support from the registry the server enforces", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    __setAuthRepositoryForTests(stubAuth());
+    // The composer gates ModelProvider mode on this row. Derived from anything
+    // other than the AgentRuntimeDefinition, it offered a mode that Profile
+    // admission (`supportsRuntimeBackendMode`) then answered with 422.
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/hosts/runtime-definitions",
+      headers: { cookie: authCookie(OWNER_TOKEN) },
+    });
+    expect(response.statusCode).toBe(200);
+    const items = response.json().items as Array<Record<string, unknown>>;
+    for (const item of items) {
+      expect(item).not.toHaveProperty("provider_binding");
+      expect(item).toMatchObject({
+        supports_runtime_native: supportsRuntimeBackendMode(String(item.runtime_key), "runtime_native"),
+        supports_model_provider: supportsRuntimeBackendMode(String(item.runtime_key), "model_provider"),
+      });
+    }
+    expect(items.find((item) => item.runtime_key === "opencode")).toMatchObject({ supports_model_provider: true });
+    expect(items.find((item) => item.runtime_key === "claude_code")).toMatchObject({ supports_model_provider: false });
+  });
+
   it("rejects pairing-code issuance without a session", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     const response = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", payload: { name: "Desktop" } });
@@ -154,7 +212,7 @@ describe("hosts routes", () => {
     const register = await app.inject({
       method: "POST",
       url: "/api/v1/hosts/register",
-      payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64", daemon_version: "0.1.0" },
+      payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" },
     });
     expect(register.statusCode).toBe(201);
     expect(register.json()).toMatchObject({ host_id: hostId, name: "Desktop" });
@@ -467,8 +525,8 @@ describe("hosts routes", () => {
        VALUES ('upload-agent', 'upload-space', NULL, 'Agent', 'active', 'standard', 'space_shared', now(), now())`,
     );
     await db.pool.query(
-      `INSERT INTO agent_versions (id, agent_id, space_id, version_label, system_prompt, model_config_json, runtime_config_json, context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, runtime_policy_json, created_at)
-       VALUES ('upload-agent-version', 'upload-agent', 'upload-space', 'v1', 'x', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, now())`,
+      `INSERT INTO agent_versions (id, agent_id, space_id, version_label, system_prompt, context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, created_at)
+       VALUES ('upload-agent-version', 'upload-agent', 'upload-space', 'v1', 'x', '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, now())`,
     );
 
     async function pairAndRegister(name: string): Promise<{ hostId: string; token: string }> {
@@ -496,10 +554,20 @@ describe("hosts routes", () => {
       payload: { project_id: "upload-project", name: "mapping" },
     });
     const locationId = created.json().id as string;
+    await ensureDefaultRuntimeProfile(db.pool, {
+      agent: "upload-agent",
+      space: "upload-space",
+      runtimeKey: "claude_code",
+      executionHostId: hostA.hostId,
+      workspaceLocationId: locationId,
+      workspaceMode: "location",
+      runtimeInstallation: "managed:1.0.0",
+      now,
+    });
     const runId = "upload-run-1";
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, workspace_location_id, adapter_type, owner_user_id, created_at, updated_at)
-       VALUES ($1, 'upload-space', 'upload-agent', 'upload-agent-version', 'agent', 'manual', 'succeeded', 'live', $2, 'claude_code', $3, $4, $4)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, workspace_location_id, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, 'upload-space', 'upload-agent', 'upload-agent-version', 'agent', 'manual', 'succeeded', 'live', $2, $3, $4, $4, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = 'upload-space' AND p.agent_id = 'upload-agent' AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = 'upload-space' AND p.agent_id = 'upload-agent' AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = 'upload-space' AND p.agent_id = 'upload-agent' AND p.is_default = TRUE))`,
       [runId, locationId, OWNER, now],
     );
 
@@ -567,7 +635,6 @@ describe("hosts routes", () => {
           ...HELLO_INFO,
           platform: "linux",
           arch: "x64",
-          daemon_version: "0.1.0",
           server_url: "http://laptop.local:3000",
         }));
       });
@@ -604,7 +671,7 @@ describe("hosts routes", () => {
     const socket = hostSocket(token);
     const helloAck = await new Promise<Record<string, unknown>>((resolve, reject) => {
       socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64", daemon_version: "0.1.0" }));
+        socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64" }));
       });
       socket.addEventListener("message", (event) => resolve(JSON.parse(String(event.data))));
       socket.addEventListener("error", (event) => reject(event));
@@ -613,12 +680,19 @@ describe("hosts routes", () => {
     expect(helloAck).toMatchObject({ type: "hello_ack", host_id: hostId });
     // The daemon asks each runtime for its options exactly as the adapter
     // spec launches it, so the spec is the only place a runtime is added.
-    const probes = helloAck.runtime_probes as Array<{ adapter_type: string; runtime: string | null; argv: string[]; login: unknown }>;
+    const probes = helloAck.runtime_probes as Array<{ runtime_key: string; runtime: string | null; argv: string[]; login: unknown }>;
+    expect(probes.every((probe) => typeof probe.runtime_key === "string" && probe.runtime_key.length > 0)).toBe(true);
+    expect(probes.some((probe) => "adapter_type" in probe)).toBe(false);
     expect(probes.map((probe) => probe.runtime).sort()).toEqual(["claude", "codex", "opencode"]);
     expect(probes.find((probe) => probe.runtime === "opencode")).toMatchObject({
-      adapter_type: "opencode",
+      runtime_key: "opencode",
       argv: ["opencode", "acp", "--cwd", "rainver:remote-workspace-cwd"],
       login: { command: ["opencode", "auth", "login"], home_subdir: ".local/share/opencode", credential_file: "auth.json" },
+      // A paired Host installs what the ACP registry publishes, never the
+      // Server's release pin. The registry refresh has not run here, so it is
+      // told there is nothing to install rather than handed the pin.
+      distribution: null,
+      version: null,
     });
     expect(probes.find((probe) => probe.runtime === "codex")?.argv).toEqual(["codex-acp"]);
 
@@ -657,6 +731,7 @@ describe("hosts routes", () => {
         claude_code: [{
           id: "own", version: "2.1.0", logged_in: true,
           runtime_version: "2.1.0",
+          health_check_protocol: null,
           // The version this copy could be rolled back to, carried through
           // normalization — the host card's rollback button reads it, and a
           // field dropped here is a field the product never sees. Null for the
@@ -690,7 +765,7 @@ describe("hosts routes", () => {
     });
     expect(heartbeatAck).toMatchObject({ type: "heartbeat_ack" });
     expect(heartbeatAck.runtime_probes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ adapter_type: "opencode" }),
+      expect.objectContaining({ runtime_key: "opencode" }),
     ]));
 
     const closed = new Promise<void>((resolve) => socket.addEventListener("close", () => resolve()));
@@ -716,6 +791,48 @@ describe("hosts routes", () => {
     expect(offlineStatus).toBe("offline");
   });
 
+  it("tells the built-in Server Host's daemon to install the release-pinned OpenCode", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    __setAuthRepositoryForTests(stubAuth());
+    const hosts = new PgHostRepository(db.pool);
+    const serverHostId = await hosts.ensureServerHostId();
+    const token = await hosts.rotateBuiltinHostToken(serverHostId);
+
+    const socket = hostSocket(token);
+    const helloAck = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, environment_kind: "server" }));
+      });
+      socket.addEventListener("message", (event) => resolve(JSON.parse(String(event.data))));
+      socket.addEventListener("error", (event) => reject(event));
+      setTimeout(() => reject(new Error("timed out waiting for hello_ack")), 5000);
+    });
+    expect(helloAck).toMatchObject({ type: "hello_ack", host_id: serverHostId });
+
+    // Which copy a machine installs is resolved once, in the probe, by the
+    // host's kind: this daemon is the Server Runtime, so it is told the
+    // version this Rainver release pins (ADR 0022, Phase 2 §1).
+    const probes = helloAck.runtime_probes as Array<Record<string, unknown>>;
+    expect(probes.find((probe) => probe.runtime_key === "opencode")).toMatchObject({
+      version: SERVER_OPENCODE_RELEASE.version,
+      distribution: SERVER_OPENCODE_RELEASE.distribution,
+    });
+
+    // The same answer on every refresh, not only at hello.
+    const heartbeatAck = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      socket.addEventListener("message", (event) => resolve(JSON.parse(String(event.data))), { once: true });
+      socket.send(JSON.stringify({ type: "heartbeat", ...HELLO_INFO, environment_kind: "server" }));
+      setTimeout(() => reject(new Error("timed out waiting for heartbeat_ack")), 5000);
+    });
+    expect(heartbeatAck.runtime_probes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runtime_key: "opencode", version: SERVER_OPENCODE_RELEASE.version }),
+    ]));
+
+    const closed = new Promise<void>((resolve) => socket.addEventListener("close", () => resolve()));
+    socket.close();
+    await closed;
+  });
+
   it("closes an already-connected daemon's live WebSocket immediately on revoke, instead of only blocking its next reconnect", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
@@ -736,7 +853,7 @@ describe("hosts routes", () => {
     const socket = hostSocket(token);
     await new Promise<void>((resolve, reject) => {
       socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64", daemon_version: "0.1.0" }));
+        socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64" }));
       });
       socket.addEventListener("message", (event) => {
         const frame = JSON.parse(String(event.data));
@@ -818,6 +935,71 @@ describe("hosts routes", () => {
     });
     expect(rejection.frame).toMatchObject({ type: "error", detail: "invalid_token" });
     expect(rejection.code).toBe(1008);
+  });
+
+  /**
+   * The wire is versioned by the daemon, not per frame: a daemon from before
+   * the `adapter_type` -> `runtime_key` rename reads `runtime_key` as absent
+   * and silently falls back to the raw argv command, so every Run it accepts
+   * fails for a reason that names neither the daemon nor the rename. The
+   * host is refused at hello instead, and stays offline with the version it
+   * reported recorded beside it.
+   */
+  it("refuses a hello from a daemon below the minimum version and leaves the host offline", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    __setAuthRepositoryForTests(stubAuth());
+    const issue = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/pairing-codes",
+      headers: { cookie: authCookie(OWNER_TOKEN) },
+      payload: { name: "Lagging Daemon Host" },
+    });
+    const { host_id: hostId, pairing_code: pairingCode } = issue.json();
+    const register = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/register",
+      payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" },
+    });
+    const { token } = register.json();
+
+    const socket = hostSocket(token);
+    const rejection = await new Promise<{ frame: Record<string, unknown>; code: number }>((resolve, reject) => {
+      let frame: Record<string, unknown> | undefined;
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, daemon_version: "0.1.0" }));
+      });
+      socket.addEventListener("message", (event) => {
+        frame = JSON.parse(String(event.data));
+      });
+      socket.addEventListener("close", (event) => resolve({ frame: frame ?? {}, code: event.code }));
+      setTimeout(() => reject(new Error("timed out waiting for the outdated-daemon rejection")), 5000);
+    });
+    expect(rejection.frame.type).toBe("error");
+    expect(String(rejection.frame.detail)).toContain("daemon_outdated");
+    expect(String(rejection.frame.detail)).toContain(MIN_HOST_DAEMON_VERSION);
+    expect(rejection.code).toBe(1008);
+
+    const listed = await app.inject({
+      method: "GET",
+      url: "/api/v1/hosts",
+      headers: { cookie: authCookie(OWNER_TOKEN) },
+    });
+    const host = (listed.json().items as Array<Record<string, unknown>>).find((item) => item.id === hostId);
+    expect(host).toMatchObject({ status: "offline", daemon_version: "0.1.0" });
+
+    // A daemon at the floor is admitted on the same host, so the gate is the
+    // version and not the host.
+    const current = hostSocket(token);
+    const ack = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      current.addEventListener("open", () => current.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO })));
+      current.addEventListener("message", (event) => resolve(JSON.parse(String(event.data))));
+      current.addEventListener("error", (event) => reject(event));
+      setTimeout(() => reject(new Error("timed out waiting for hello_ack")), 5000);
+    });
+    expect(ack).toMatchObject({ type: "hello_ack", host_id: hostId });
+    const closed = new Promise<void>((resolve) => current.addEventListener("close", () => resolve()));
+    current.close();
+    await closed;
   });
 
   it("rejects a second WebSocket hello instead of switching the connection identity", async (ctx) => {

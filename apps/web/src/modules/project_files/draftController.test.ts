@@ -44,7 +44,10 @@ describe('ProjectFileDraftController', () => {
     await vi.advanceTimersByTimeAsync(DRAFT_IDLE_MS - 1)
     expect(save).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
-    await vi.runOnlyPendingTimersAsync()
+    // The timer starts async hashing/persistence but intentionally does not
+    // return that promise. Join the controller's acknowledgement boundary
+    // rather than assuming pending-timer draining also settles the save.
+    await controller.flush()
     expect(save).toHaveBeenCalledTimes(1)
     expect(save.mock.calls[0]![0]).toMatchObject({ content: 'two', expected_version: null })
     expect(controller.snapshot().status).toBe('saved')

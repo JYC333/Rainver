@@ -22,7 +22,7 @@ function makeThread(overrides: Partial<InquiryThread> = {}): InquiryThread {
 const providers = [{ id: 'provider-1', name: 'Provider', provider_type: 'openai', enabled: true } as never]
 const providerVendors = [{
   id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions',
-  supports_chat: true, supports_runtime_tools: true, supports_structured_output: true,
+  supports_chat: true, supports_structured_output: true,
   supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1',
   api_key_required: true, subscription_only: false,
 }] satisfies ProviderVendorOut[]

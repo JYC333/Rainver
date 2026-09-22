@@ -3,7 +3,7 @@ import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 
 interface RemotenessInput {
   id: string;
-  adapter_type?: string | null;
+  runtime_key?: string | null;
   workspace_location_id?: string | null;
   project_folder_id?: string | null;
   model_provider_id?: string | null;
@@ -11,21 +11,21 @@ interface RemotenessInput {
 }
 
 /**
- * Whether a run is handed to a host daemon rather than executed in-process.
+ * Whether an Agent runtime is handed to a Host daemon. ProviderTask execution
+ * is intentionally outside this runtime-target function.
  *
- * This is the runtime's question, not the host's. Every `local_cli` adapter is
+ * This is the runtime's question, not the host's. Every `local_cli` runtime is
  * dispatched to a daemon now — the built-in host's as much as a paired
- * machine's, since the built-in host *is* a daemon — while every other family
- * executes in-process on the server: a `model_api` run on a remote Folder
- * still calls the routed provider from here, because there is no subprocess to
- * hand anything to.
+ * machine's, since the built-in host *is* a daemon. ProviderTask Runs use the
+ * bounded provider-invocation lifecycle and carry no Agent runtime identity.
  *
  * That distinction decides more than where the process starts. A run handed to
- * a daemon gets no server-brokered Runtime Context (its agent pulls what it
- * needs through the `rainver` command in its work surface), no server-side CLI
- * continuity (the vendor session in its Agent profile is the continuity), and
- * no sandbox-level escalation (the daemon builds the namespace). A run that
- * executes in-process keeps all three, because nothing else can supply them.
+ * a daemon receives its authorized Runtime Context through ACP, while the
+ * `rainver` work surface separately provides live action reachability. For a
+ * persistent HostThread, Runtime Context's event cursor is bound to that same
+ * opaque vendor session; no server-local CLI state directory is involved.
+ * Sandbox-level escalation is also host-owned because the daemon builds the
+ * namespace. ProviderTask Runs remain bounded in-process invocations.
  *
  * It used to take a `hostKind` and answer false for the server host. That was
  * the same question when the server host was an in-process boundary; it is the
@@ -37,8 +37,8 @@ interface RemotenessInput {
  * was corrected and the read model was not, which denied a provider that had
  * in fact been used. One function, so that cannot recur.
  */
-export function dispatchesToHostDaemon(adapterType: string | null | undefined): boolean {
-  return getRuntimeAdapterSpec(adapterType ?? undefined)?.executor_family === "local_cli";
+export function dispatchesToHostDaemon(runtimeKey: string | null | undefined): boolean {
+  return getRuntimeAdapterSpec(runtimeKey ?? undefined)?.executor_family === "local_cli";
 }
 
 function hasRecordedModel(run: RemotenessInput): boolean {
@@ -71,7 +71,7 @@ export async function resolveRunRemoteness(
 ): Promise<Set<string>> {
   // Every run reaching here already sits on a remote Location — that is what
   // the query below establishes — so the adapter is the remaining question.
-  const relevant = runs.filter((run) => hasRecordedModel(run) && dispatchesToHostDaemon(run.adapter_type));
+  const relevant = runs.filter((run) => hasRecordedModel(run) && dispatchesToHostDaemon(run.runtime_key));
   if (relevant.length === 0) return new Set();
 
   const locationIds = [...new Set(relevant.flatMap((run) => run.workspace_location_id ? [run.workspace_location_id] : []))];

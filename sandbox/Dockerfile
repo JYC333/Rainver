@@ -96,6 +96,7 @@ COPY packages/folder-read/package.json ./packages/folder-read/package.json
 COPY --from=deps /app/packages/folder-read/dist ./packages/folder-read/dist
 COPY packages/outbound-guard/package.json ./packages/outbound-guard/package.json
 COPY --from=deps /app/packages/outbound-guard/dist ./packages/outbound-guard/dist
+COPY --from=deps /app/packages/outbound-guard/node_modules ./packages/outbound-guard/node_modules
 COPY packages/host-daemon/package.json ./packages/host-daemon/package.json
 COPY --from=deps /app/packages/host-daemon/dist ./packages/host-daemon/dist
 COPY --from=deps /app/packages/host-daemon/node_modules ./packages/host-daemon/node_modules

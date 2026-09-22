@@ -39,44 +39,104 @@ export async function resolveNodeInputs(
 ): Promise<ResolvedNodeInputs> {
   const result: ResolvedNodeInputs = { values: {}, bindings: [] };
   for (const binding of input.bindings) {
-    const source = await db.query<{ node_id: string; run_id: string; output_json: unknown }>(
-      `SELECT source_node.id AS node_id, r.id AS run_id, r.output_json
-         FROM ${input.sourceTable} source_node
-         JOIN ${input.linkTable} link
-           ON link.${input.linkNodeColumn} = source_node.id AND link.space_id = source_node.space_id
-         JOIN runs r ON r.id = link.run_id AND r.space_id = link.space_id
-         JOIN LATERAL (
-           SELECT evaluation.outcome_status
-             FROM run_evaluations evaluation
-            WHERE evaluation.space_id = r.space_id AND evaluation.run_id = r.id
-            ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC
-            LIMIT 1
-         ) latest_evaluation ON latest_evaluation.outcome_status = 'passed'
-        WHERE source_node.space_id = $1 AND source_node.node_key = $2
-          AND source_node.${input.scopeColumn} = $3
-        ORDER BY (link.role='delegated') DESC, link.created_at DESC, link.id DESC
-        LIMIT 1`,
-      [input.spaceId, binding.from_node, input.scopeId],
-    );
+    const source = input.sourceTable === "workflow_execution_nodes"
+      ? await db.query<{
+        node_id: string;
+        run_id: string | null;
+        output_json: unknown;
+        action_attempt_id: string | null;
+        action_output_text: string | null;
+        action_output_json: unknown;
+      }>(
+        `SELECT source_node.id AS node_id,
+                passed_run.run_id, passed_run.output_json,
+                action_attempt.id AS action_attempt_id,
+                action_attempt.output_text AS action_output_text,
+                action_attempt.output_json AS action_output_json
+           FROM workflow_execution_nodes source_node
+           LEFT JOIN LATERAL (
+             SELECT r.id AS run_id, r.output_json
+               FROM workflow_execution_node_runs link
+               JOIN runs r ON r.id = link.run_id AND r.space_id = link.space_id
+               JOIN LATERAL (
+                 SELECT evaluation.outcome_status
+                   FROM run_evaluations evaluation
+                  WHERE evaluation.space_id = r.space_id AND evaluation.run_id = r.id
+                  ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC
+                  LIMIT 1
+               ) latest_evaluation ON latest_evaluation.outcome_status = 'passed'
+              WHERE link.node_id = source_node.id AND link.space_id = source_node.space_id
+                AND (source_node.node_kind <> 'action' OR link.role = 'delegated')
+              ORDER BY (link.role='delegated') DESC, link.created_at DESC, link.id DESC
+              LIMIT 1
+           ) passed_run ON true
+           LEFT JOIN LATERAL (
+             SELECT attempt.id, attempt.output_text, attempt.output_json
+               FROM workflow_execution_action_attempts attempt
+              WHERE attempt.node_id = source_node.id AND attempt.space_id = source_node.space_id
+                AND attempt.status = 'succeeded'
+              ORDER BY attempt.attempt_number DESC
+              LIMIT 1
+           ) action_attempt ON source_node.node_kind = 'action'
+          WHERE source_node.space_id = $1 AND source_node.node_key = $2
+            AND source_node.execution_id = $3
+          LIMIT 1`,
+        [input.spaceId, binding.from_node, input.scopeId],
+      )
+      : await db.query<{
+        node_id: string;
+        run_id: string | null;
+        output_json: unknown;
+        action_attempt_id: string | null;
+        action_output_text: string | null;
+        action_output_json: unknown;
+      }>(
+        `SELECT source_node.id AS node_id, r.id AS run_id, r.output_json,
+                NULL::varchar AS action_attempt_id, NULL::text AS action_output_text,
+                NULL::jsonb AS action_output_json
+           FROM ${input.sourceTable} source_node
+           JOIN ${input.linkTable} link
+             ON link.${input.linkNodeColumn} = source_node.id AND link.space_id = source_node.space_id
+           JOIN runs r ON r.id = link.run_id AND r.space_id = link.space_id
+           JOIN LATERAL (
+             SELECT evaluation.outcome_status
+               FROM run_evaluations evaluation
+              WHERE evaluation.space_id = r.space_id AND evaluation.run_id = r.id
+              ORDER BY evaluation.evaluated_at DESC, evaluation.id DESC
+              LIMIT 1
+           ) latest_evaluation ON latest_evaluation.outcome_status = 'passed'
+          WHERE source_node.space_id = $1 AND source_node.node_key = $2
+            AND source_node.${input.scopeColumn} = $3
+          ORDER BY (link.role='delegated') DESC, link.created_at DESC, link.id DESC
+          LIMIT 1`,
+        [input.spaceId, binding.from_node, input.scopeId],
+      );
     const row = source.rows[0];
-    const canonicalOutput = row ? record(row.output_json) : {};
-    const hasCanonicalOutput = canonicalOutput.schema_version === "run_output.v1";
-    const canonicalResult = hasCanonicalOutput ? runOutputResult(row?.output_json) : {};
+    const hasPassedRun = Boolean(row?.run_id);
+    const hasActionAttempt = Boolean(row?.action_attempt_id);
+    const rawOutput = hasPassedRun ? row?.output_json : row?.action_output_json;
+    const canonicalOutput = hasPassedRun ? record(rawOutput) : {};
+    const hasCanonicalOutput = hasPassedRun && canonicalOutput.schema_version === "run_output.v1";
+    const canonicalResult = hasCanonicalOutput ? runOutputResult(rawOutput) : {};
+    const actionOutput = hasActionAttempt ? record(rawOutput) : {};
+    const sourceAvailable = hasPassedRun || hasActionAttempt;
     let value: unknown = null;
     let artifactId: string | null = null;
-    let missingReason: string | null = row ? null : "passed_source_run_missing";
-    if (row && binding.source !== "artifact" && !hasCanonicalOutput) {
+    let missingReason: string | null = sourceAvailable ? null : "passed_source_run_missing";
+    if (hasPassedRun && binding.source !== "artifact" && !hasCanonicalOutput) {
       missingReason = "canonical_output_missing";
-    } else if (row && binding.source === "output_text") {
-      value = canonicalOutput.summary ?? null;
+    } else if (sourceAvailable && binding.source === "output_text") {
+      value = hasActionAttempt && !hasPassedRun
+        ? row?.action_output_text ?? null
+        : canonicalOutput.summary ?? null;
       if (value === null) missingReason = "output_text_missing";
-    } else if (row && binding.source === "output_json") {
-      value = jsonPointer(canonicalResult, binding.json_pointer ?? "");
+    } else if (sourceAvailable && binding.source === "output_json") {
+      value = jsonPointer(hasActionAttempt && !hasPassedRun ? actionOutput : canonicalResult, binding.json_pointer ?? "");
       if (value === undefined) {
         value = null;
         missingReason = "json_pointer_missing";
       }
-    } else if (row && binding.source === "artifact") {
+    } else if (sourceAvailable && binding.source === "artifact" && hasPassedRun) {
       const artifact = await db.query<{ id: string }>(
         `SELECT id FROM artifacts
           WHERE space_id = $1 AND run_id = $2 AND artifact_type = $3
@@ -86,6 +146,8 @@ export async function resolveNodeInputs(
       artifactId = artifact.rows[0]?.id ?? null;
       value = artifactId ? { artifact_id: artifactId, artifact_type: binding.artifact_type } : null;
       if (!artifactId) missingReason = "artifact_missing";
+    } else if (sourceAvailable && binding.source === "artifact") {
+      missingReason = "artifact_missing";
     }
     if (missingReason && binding.required) throw new InputBindingResolutionError(binding.name, missingReason);
     const bounded = boundValue(value);

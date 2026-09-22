@@ -50,23 +50,19 @@ Business code enforcing wired sensitive actions must use
 `PolicyGateway.enforceProposalApply()`. Do not call PolicyEngine directly to
 authorize or perform a sensitive action.
 
-**Non-mutating simulation exceptions:** Four locations use `PolicyEngine` directly for
-preflight simulation — they are not enforcement points and must not persist
+**Non-mutating simulation exception:** one location uses `PolicyEngine` directly
+for preflight simulation — it is not an enforcement point and must not persist
 `PolicyDecisionRecord`. Real runtime execution still goes through `PolicyGateway`.
-- `PreflightService` (`server/src/modules/runs/preflightService.ts`) — dry-run simulation before a run exists.
-- `RunService._validate_run_target_agent` / `_validate_adapter_for_target`
-  (`server/src/modules/runs/service.ts`) — lightweight preflight during run creation.
-- Agent run creation preflight (`server/src/modules/agents/routes.ts` and `server/src/modules/runs/`) —
-  non-mutating preflight before queuing a run.
-- `AutomationPolicyPreflightService` (`server/src/modules/automations/`) —
-  read-only policy preflight simulation for automation-origin runtime gates.
-  It uses runtime requirements to decide whether ModelProvider/API-key
-  credential policy simulation applies.
+- `AutomationsService.runPreflight` (`server/src/modules/automations/service.ts`) —
+  read-only policy preflight simulation for a manual or scheduled Automation
+  fire, reached through `preflightAgentRun` / `preflightWorkflow`. It reads the
+  Agent's enabled default `AgentRuntimeProfile` and simulates
+  `runtime.use_credential` only when that Profile's `model_provider_id` is set.
 
 All other business code performing enforcement must call `PolicyGateway.enforce()` or
-`PolicyGateway.enforceProposalApply()` —
-direct `PolicyEngine` or `HardInvariantGuard` usage outside these allowed locations is a
-boundary violation detected by `server/test/boundaries.test.ts`.
+`PolicyGateway.enforceProposalApply()`; direct `PolicyEngine` or
+`HardInvariantGuard` usage outside that one location is a boundary violation.
+No automated check enforces this today — it is a review rule.
 
 #### PolicyCheckRequest field semantics
 
@@ -231,7 +227,7 @@ PolicyGateway section above for the allowed preflight-only sites.
 
 | Action | Enforcement Point | Decision inputs (context) | Behavior |
 |--------|------------------|-----------------------------|----------|
-| `runtime.execute` | `RunOrchestrationService` before adapter execution | `agent_status`, `tool_name`, `trigger_origin`, `adapter_type`, risk/sandbox fields | DENY/REQUIRE_APPROVAL prevents execution; records PolicyDecisionRecord + RunEvent |
+| `runtime.execute` | `RunOrchestrationService` before runtime execution | `agent_status`, `tool_name`, `trigger_origin`, `runtime_key`, risk/sandbox fields | DENY/REQUIRE_APPROVAL prevents execution; records PolicyDecisionRecord + RunEvent |
 | `runtime.use_credential` | `authorizeCredentialSpend`, before any ModelProvider key is resolved or proxy lease minted (provider invocation, lease minting, and the Run executor) | `trigger_origin` of the person, the root Run, or an unattended setup; the live Automation grant; `resource_space_id` | DENY prevents credential resolution; unattended spend with no authorization record is denied, not sent for approval. A CLI runtime resolves no credential here — its login is held by its copy on the execution host (ADR 0016). **fail_closed**. |
 | `context.inject_memory` | `ContextPrepareService` via `enforce()` before context assembly | `trigger_origin` | Cross-space DENY; records PolicyDecisionRecord on DENY |
 | `context.render_for_runtime` | `RunOrchestrationService` before adapter execution | `has_context_taint` | Cross-space DENY; records PolicyDecisionRecord on DENY |
@@ -266,7 +262,7 @@ wired.
 
 ### Automation Policy Preflight
 
-`AutomationPolicyPreflightService` is a simulation-only preflight layer for
+`AutomationsService.runPreflight` is a simulation-only preflight layer for
 manual and schedule-triggered automations. It dry-runs the policy decisions that would be
 encountered before adapter invocation for `runtime.execute`,
 `runtime.use_credential`, `context.inject_memory`, and
@@ -275,23 +271,19 @@ encountered before adapter invocation for `runtime.execute`,
 It does **not** call `PolicyGateway.enforce()`, does **not** write
 `PolicyDecisionRecord`, does **not** decrypt credentials, and does **not** mutate
 Run, Automation, MemoryEntry, Proposal, Policy, Credential, or Artifact rows.
-For `runtime.execute` and `runtime.use_credential`, preflight uses the same
-shared request builders and credential metadata resolver as real execution.
-Credential policy preflight inspects only
-ModelProvider/Credential metadata and uses the same source priority as execution:
-run model provider, runtime adapter provider, agent version provider, then
-runtime adapter credential.
-Runtime requirements decide whether ModelProvider metadata is relevant at all:
-`capability`, `claude_code`, and `codex_cli` do not participate in
-ModelProvider/API-key credential checks. To stay consistent with real execution,
-automation policy preflight does not treat space default ModelProviders as a
-credential source; the credential policy chain is only explicit run provider,
-runtime adapter provider, agent version provider, then runtime adapter
-credential. A CLI runtime relies on runtime preflight and on the login its copy holds on
-its execution host, not on `runtime.use_credential` simulation.
-Every wired runtime adapter must have an explicit runtime requirements entry.
-Unknown non-empty adapter types fail with a stable configuration error instead
-of silently using `model_provider_mode=none`.
+For `runtime.execute` and `runtime.use_credential`, preflight decides from the
+same authority real execution uses: the selected `AgentRuntimeProfile`. There is
+no credential chain to walk. A `model_provider` Profile names an enabled
+same-Space ModelProvider and an explicit model, and that one provider is what
+credential preflight inspects — metadata only, never a decrypted key. A
+`runtime_native` Profile stores no binding and relies on the login its runtime
+copy holds on its execution Host, so `runtime.use_credential` is not simulated
+for it at all. Nothing falls back to a runtime adapter provider, an AgentVersion
+provider, or the Space default: the Space runtime default is a provisioning
+template for Profiles that do not exist yet, and neither dispatch nor preflight
+reads it. There is no runtime-requirements registry and no
+`runtime_requirements_missing` failure; an Agent with no enabled default Profile
+fails preflight on that, not on a missing requirements entry.
 
 Policy preflight is not enforcement. Real runtime enforcement, durable audit, and
 terminal run failure semantics remain in `RunOrchestrationService`. Automation has

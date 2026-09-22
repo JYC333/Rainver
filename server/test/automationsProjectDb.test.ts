@@ -47,7 +47,7 @@ import { assertBudgetSourcesAvailable, checkRunBudget } from "../src/modules/run
 import type { RunRecord } from "../src/modules/runs/runRepositoryTypes.js";
 import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { seedMainlineRoomsForAllProjects, seedServerHost } from "./support/domainSeeds.js";
 import { decidePersonaWrite } from "../src/modules/memory/memoryApplyRepository.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -56,9 +56,11 @@ const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; // space owner + project o
 const MEMBER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"; // plain space member, not a project member
 const ADMIN = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"; // may fire another member's automation
 const PROJECT = "55555555-5555-4555-8555-555555555555";
+const PROJECT_FOLDER = "50000000-0000-4000-8000-000000000001";
 const OTHER_PROJECT = "66666666-6666-4666-8666-666666666666"; // lives in OTHER_SPACE
 const AGENT = "77777777-7777-4777-8777-777777777777";
 const AGENT_VERSION = "88888888-8888-4888-8888-888888888888";
+const SERVER_HOST = "70000000-0000-4000-8000-000000000001";
 const WORKFLOW_ASSET = "99999999-9999-4999-8999-999999999999";
 const WORKFLOW_VERSION = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
 
@@ -85,6 +87,12 @@ beforeEach(async () => {
     ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "automation_runs", "automation_credential_grants", "automations", "scheduler_tasks", "jobs", "task_runs", "tasks", "sessions", "room_user_members", "rooms", "runs", "agent_runtime_profiles", "agent_versions", "agents", "source_items", "project_source_item_links", "project_source_bindings", "source_connections", "source_connectors", "project_folders", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
+  await seedServerHost(db.pool, {
+    id: SERVER_HOST,
+    installations: {
+      opencode: [{ id: "managed:1.0.0", version: "1.0.0", logged_in: true, options: null, health_check_protocol: "acp" }],
+    },
+  });
   const now = new Date().toISOString();
   for (const [spaceId, name] of [[SPACE, "Main"], [OTHER_SPACE, "Other"]] as const) {
     await db.pool.query(
@@ -109,6 +117,13 @@ beforeEach(async () => {
      VALUES ($1,$2,$3,'Research','active',$4,$4), ($5,$6,NULL,'Elsewhere','active',$4,$4)`,
     [PROJECT, SPACE, OWNER, now, OTHER_PROJECT, OTHER_SPACE],
   );
+  await db.pool.query(
+    `INSERT INTO project_folders (
+       id, space_id, project_id, created_by_user_id, name, status,
+       kind, is_primary, protected, system_managed, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,'Research code','active','code',true,false,false,$5,$5)`,
+    [PROJECT_FOLDER, SPACE, PROJECT, OWNER, now],
+  );
   await seedMainlineRoomsForAllProjects(db.pool);
   await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
@@ -117,21 +132,66 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1,$2,$3,'v1','Test agent','{}'::jsonb,'{"adapter_type":"model_api"}'::jsonb,
-       '{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb,$4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'Test agent',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $4
+     )`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
   await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, AGENT_VERSION]);
   await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, model_provider_id, model_name,
-       runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
-     ) VALUES ($1,$2,$3,'Default','model_api',NULL,NULL,
-       '{"adapter_type":"model_api"}'::jsonb,'{"default_adapter_type":"model_api"}'::jsonb,true,true,$4,$4)`,
-    [randomUUID(), SPACE, AGENT, now],
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'Default',
+       'opencode',
+       'runtime_native',
+       $5,
+       'managed',
+       'managed:1.0.0',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       true,
+       $4,
+       $4
+     )`,
+    [randomUUID(), SPACE, AGENT, now, SERVER_HOST],
   );
   await db.pool.query(
     `INSERT INTO model_providers (
@@ -144,6 +204,16 @@ beforeEach(async () => {
 
 function service(): AutomationService {
   return new AutomationService(config, new PgAutomationRepository(db.pool));
+}
+
+function createAutomation(input: Parameters<AutomationService["create"]>[0]) {
+  return service().create({
+    ...input,
+    body: {
+      project_folder_id: PROJECT_FOLDER,
+      ...input.body,
+    },
+  });
 }
 
 describeWithPostgres("Automation × Project binding (real Postgres)", () => {
@@ -177,7 +247,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
 
   it("creates a project-bound automation, exposes project_id, and clears it on update", async () => {
     if (!db.available) return;
-    const created = await service().create({
+    const created = await createAutomation({
       spaceId: SPACE,
       ownerUserId: OWNER,
       body: {
@@ -212,7 +282,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
 
   it("lists automations filtered by project_id", async () => {
     if (!db.available) return;
-    const bound = await service().create({
+    const bound = await createAutomation({
       spaceId: SPACE,
       ownerUserId: OWNER,
       body: {
@@ -223,7 +293,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
         config_json: { target_type: "agent_run" },
       },
     });
-    const unbound = await service().create({
+    const unbound = await createAutomation({
       spaceId: SPACE,
       ownerUserId: OWNER,
       body: {
@@ -246,7 +316,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   it("rejects project binding for non-agent_run targets with 422", async () => {
     if (!db.available) return;
     await expect(
-      service().create({
+      createAutomation({
         spaceId: SPACE,
         ownerUserId: OWNER,
         body: {
@@ -263,7 +333,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   it("requires project writer authority to bind: plain space member gets 403", async () => {
     if (!db.available) return;
     await expect(
-      service().create({
+      createAutomation({
         spaceId: SPACE,
         ownerUserId: MEMBER,
         body: {
@@ -282,7 +352,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
        VALUES ($1,$2,$3,$4,'member','active',$5,$5)`,
       [randomUUID(), SPACE, PROJECT, MEMBER, now],
     );
-    const created = await service().create({
+    const created = await createAutomation({
       spaceId: SPACE,
       ownerUserId: MEMBER,
       body: {
@@ -298,7 +368,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   it("rejects binding a project from another space (404 from writer check)", async () => {
     if (!db.available) return;
     await expect(
-      service().create({
+      createAutomation({
         spaceId: SPACE,
         ownerUserId: OWNER,
         body: {
@@ -327,7 +397,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
 
   it("fire creates the run with the automation's project_id, as the person who asked", async () => {
     if (!db.available) return;
-    const created = await service().create({
+    const created = await createAutomation({
       spaceId: SPACE,
       ownerUserId: OWNER,
       body: {
@@ -363,7 +433,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     // owner's work: the Run is stamped as the schedule would have stamped it,
     // so nothing the firer did makes them responsible for what it writes
     // (ADR 0003 §5 / D1). Who pressed it stays in `automation_runs`.
-    const created = await service().create({
+    const created = await createAutomation({
       spaceId: SPACE,
       ownerUserId: OWNER,
       body: {
@@ -413,7 +483,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
 
   it("enforces an automation max_runs cap across direct fires", async () => {
     if (!db.available) return;
-    const created = await service().create({
+    const created = await createAutomation({
       spaceId: SPACE,
       ownerUserId: OWNER,
       body: {
@@ -439,7 +509,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
 
   it("checks every effective max_runs source and rejects Task admission before task_runs", async () => {
     if (!db.available) return;
-    const automation = await service().create({
+    const automation = await createAutomation({
       spaceId: SPACE,
       ownerUserId: OWNER,
       body: {
@@ -580,6 +650,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
 
     const repo = new PgRunRepository(db.pool);
     const input = {
+      execution_kind: "agent" as const,
       agent_id: AGENT,
       space_id: SPACE,
       user_id: OWNER,
@@ -769,7 +840,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       [WORKFLOW_ASSET, WORKFLOW_VERSION],
     );
 
-    const automation = await service().create({
+    const automation = await createAutomation({
       spaceId: SPACE,
       ownerUserId: OWNER,
       body: {
@@ -837,7 +908,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     // `manual`, the response reports `manual`, and the credential authority
     // later walks up to this row — three answers about one fire, and they are
     // the same answer only if the row carries the decision too.
-    const asked = await service().create({
+    const asked = await createAutomation({
       spaceId: SPACE,
       ownerUserId: OWNER,
       body: {
@@ -928,7 +999,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   it("rejects follow resolution for unattended workflow triggers", async () => {
     if (!db.available) return;
     await expect(
-      service().create({
+      createAutomation({
         spaceId: SPACE,
         ownerUserId: OWNER,
         body: {
@@ -949,7 +1020,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
   it("rejects source event automations", async () => {
     if (!db.available) return;
     await expect(
-      service().create({
+      createAutomation({
         spaceId: SPACE,
         ownerUserId: OWNER,
         body: {
@@ -963,9 +1034,33 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
+  it("fire preflight refuses a Server Runtime copy that is still being installed", async () => {
+    if (!db.available) return;
+    const created = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Paper digest",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        trigger_type: "manual",
+      },
+    });
+    // Routing refuses this copy, so a preflight that only checked the runtime
+    // key reported `executable: true` and the fire died `route_no_candidate`.
+    await db.pool.query(
+      `UPDATE agent_runtime_profiles SET runtime_installation = 'managed:pending'
+        WHERE space_id = $1 AND agent_id = $2`,
+      [SPACE, AGENT],
+    );
+    await expect(
+      service().fire({ spaceId: SPACE, automationId: created.id, actorUserId: OWNER }),
+    ).rejects.toMatchObject({ statusCode: 422, message: expect.stringContaining("Server Runtime") });
+  });
+
   it("fire preflight fails when the bound project was soft-deleted after binding", async () => {
     if (!db.available) return;
-    const created = await service().create({
+    const created = await createAutomation({
       spaceId: SPACE,
       ownerUserId: OWNER,
       body: {

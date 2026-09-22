@@ -23,7 +23,7 @@ export class RuntimeContextPlanningError extends Error {
 }
 
 export interface WindowPlannerInput {
-  model: string;
+  model: string | null;
   items: ContextItem[];
   currentMessageItemId: string;
   outputReserveTokens?: number | null;

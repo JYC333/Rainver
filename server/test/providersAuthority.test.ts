@@ -153,7 +153,6 @@ describe("providers read authority", () => {
       display_name: "DeepSeek",
       protocol: "openai_completions",
       supports_chat: true,
-      supports_runtime_tools: true,
       supports_structured_output: true,
       supports_embedding: false,
       supports_rerank: false,

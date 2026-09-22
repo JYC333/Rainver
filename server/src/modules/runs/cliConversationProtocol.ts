@@ -14,9 +14,9 @@ import type { PermissionOption, ContentBlock } from "@agentclientprotocol/sdk";
 export type { ContentBlock } from "@agentclientprotocol/sdk";
 import { usageFromAcp } from "./cliRuntimeMeasurement.js";
 import { decidePermission, type PermissionDecisionRecord } from "./runPermissionPolicy.js";
-import { getRuntimeAdapterSpec, isAcpRuntimeAdapter, type VendorCliAdapterType } from "../runtimeAdapters/specs.js";
+import { getRuntimeAdapterSpec, isAcpRuntimeAdapter, type VendorCliRuntimeKey } from "../runtimeAdapters/specs.js";
 
-type ConversationProtocolAdapter = VendorCliAdapterType;
+type ConversationProtocolAdapter = VendorCliRuntimeKey;
 
 export interface AcpSessionConfigSelection {
   id: string;
@@ -71,7 +71,7 @@ export function withAcpModelSelection(
 }
 
 export function createCliConversationController(input: {
-  adapter_type: ConversationProtocolAdapter;
+  runtime_key: ConversationProtocolAdapter;
   prompt?: string;
   prompts?: string[];
   prompt_blocks?: ContentBlock[][];
@@ -113,7 +113,7 @@ export function createCliConversationController(input: {
   const promptBlocks = input.prompt_blocks?.filter((blocks) => blocks.length > 0);
   if (prompts.length === 0 && (!promptBlocks || promptBlocks.length === 0)) return undefined;
   const normalized = { ...input, prompts, prompt_blocks: promptBlocks };
-  if (isAcpRuntimeAdapter(input.adapter_type)) return new AcpController(normalized);
+  if (isAcpRuntimeAdapter(input.runtime_key)) return new AcpController(normalized);
   return undefined;
 }
 
@@ -167,7 +167,7 @@ export class AcpController implements CliStdioController {
   private promptIndex = 0;
 
   constructor(private readonly input: {
-    adapter_type: ConversationProtocolAdapter;
+    runtime_key: ConversationProtocolAdapter;
     prompts: string[];
     prompt_blocks?: ContentBlock[][];
     cwd: string;
@@ -343,7 +343,7 @@ export class AcpController implements CliStdioController {
         return;
       }
       this.usage = addUsage(this.usage, usage);
-      if (this.input.adapter_type === "claude_code" && this.selectedModel && usage) {
+      if (this.input.runtime_key === "claude_code" && this.selectedModel && usage) {
         this.modelUsage = addModelUsage(this.modelUsage, this.selectedModel, usage);
       }
       if (this.promptIndex + 1 < this.promptCount()) {
@@ -605,7 +605,7 @@ export class AcpController implements CliStdioController {
   }
 
   private label(): string {
-    return getRuntimeAdapterSpec(this.input.adapter_type)?.display_name ?? this.input.adapter_type;
+    return getRuntimeAdapterSpec(this.input.runtime_key)?.display_name ?? this.input.runtime_key;
   }
 
   private captureSelectedModel(result: Record<string, unknown>): void {
@@ -630,7 +630,7 @@ export class AcpController implements CliStdioController {
     params: Record<string, unknown>,
     update: Record<string, unknown>,
   ): void {
-    if (this.input.adapter_type !== "claude_code" || update.sessionUpdate !== "usage_update") return;
+    if (this.input.runtime_key !== "claude_code" || update.sessionUpdate !== "usage_update") return;
     const updateMeta = record(update._meta);
     const paramsMeta = record(params._meta);
     const claudeMeta = record(

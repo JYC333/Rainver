@@ -13,7 +13,7 @@ export interface ImportedSessionRow {
   workspace_location_id: string | null;
   execution_host_id: string | null;
   owner_user_id: string;
-  adapter_type: string;
+  runtime_key: string;
   installation: string;
   vendor_session_id: string;
   cwd: string | null;
@@ -55,7 +55,7 @@ export interface ImportedSessionRecordRow {
 }
 
 const SESSION_COLUMNS = `id, space_id, project_id, project_folder_id, workspace_location_id,
-  execution_host_id, owner_user_id, adapter_type, installation, vendor_session_id, cwd, title,
+  execution_host_id, owner_user_id, runtime_key, installation, vendor_session_id, cwd, title,
   visibility, access_level, source_state, load_state, last_error, record_count, first_record_at,
   last_record_at, vendor_updated_at, last_synced_at, last_seen_on_host_at, created_at, updated_at`;
 
@@ -193,7 +193,7 @@ export class PgImportedSessionRepository {
     workspaceLocationId: string;
     executionHostId: string;
     ownerUserId: string;
-    adapterType: string;
+    runtimeKey: string;
     installation: string;
     visibility: string;
     session: AmbientSessionSummary;
@@ -205,8 +205,8 @@ export class PgImportedSessionRepository {
     const vendorUpdatedAt = isoOrNull(input.session.updated_at);
     const existing = await this.db.query<{ id: string }>(
       `SELECT id FROM imported_sessions
-       WHERE workspace_location_id = $1 AND adapter_type = $2 AND installation = $3 AND vendor_session_id = $4`,
-      [input.workspaceLocationId, input.adapterType, input.installation, input.session.session_id],
+       WHERE workspace_location_id = $1 AND runtime_key = $2 AND installation = $3 AND vendor_session_id = $4`,
+      [input.workspaceLocationId, input.runtimeKey, input.installation, input.session.session_id],
     );
     if (existing.rows.length === 0) {
       // A session whose Location was unregistered has a null location, and
@@ -227,14 +227,14 @@ export class PgImportedSessionRepository {
           WHERE id = (
             SELECT id FROM imported_sessions
              WHERE space_id = $4 AND project_id = $5 AND workspace_location_id IS NULL
-               AND adapter_type = $6 AND installation = $7 AND vendor_session_id = $8
+               AND runtime_key = $6 AND installation = $7 AND vendor_session_id = $8
              ORDER BY created_at ASC
              LIMIT 1
           )
           RETURNING id`,
         [
           input.workspaceLocationId, input.executionHostId, input.projectFolderId,
-          input.spaceId, input.projectId, input.adapterType, input.installation, input.session.session_id,
+          input.spaceId, input.projectId, input.runtimeKey, input.installation, input.session.session_id,
         ],
       );
       if (orphan.rows[0]) existing.rows.push(orphan.rows[0]);
@@ -268,15 +268,15 @@ export class PgImportedSessionRepository {
       const inserted = await this.db.query<{ id: string }>(
         `INSERT INTO imported_sessions (
            id, space_id, project_id, project_folder_id, workspace_location_id, execution_host_id,
-           owner_user_id, adapter_type, installation, vendor_session_id, cwd, title, visibility,
+           owner_user_id, runtime_key, installation, vendor_session_id, cwd, title, visibility,
            access_level, source_state, load_state, last_error, record_count, vendor_updated_at,
            last_synced_at, last_seen_on_host_at, created_at, updated_at
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'full','present',$14,$15,0,$16,$17,$17,$17,$17)
-         ON CONFLICT (workspace_location_id, adapter_type, installation, vendor_session_id) DO NOTHING
+         ON CONFLICT (workspace_location_id, runtime_key, installation, vendor_session_id) DO NOTHING
          RETURNING id`,
         [
           sessionId, input.spaceId, input.projectId, input.projectFolderId, input.workspaceLocationId,
-          input.executionHostId, input.ownerUserId, input.adapterType, input.installation,
+          input.executionHostId, input.ownerUserId, input.runtimeKey, input.installation,
           input.session.session_id, input.session.cwd, input.session.title, input.visibility,
           input.loadState, input.error, vendorUpdatedAt, now,
         ],
@@ -284,8 +284,8 @@ export class PgImportedSessionRepository {
       if (inserted.rows.length === 0) {
         const raced = await this.db.query<{ id: string }>(
           `SELECT id FROM imported_sessions
-            WHERE workspace_location_id = $1 AND adapter_type = $2 AND installation = $3 AND vendor_session_id = $4`,
-          [input.workspaceLocationId, input.adapterType, input.installation, input.session.session_id],
+            WHERE workspace_location_id = $1 AND runtime_key = $2 AND installation = $3 AND vendor_session_id = $4`,
+          [input.workspaceLocationId, input.runtimeKey, input.installation, input.session.session_id],
         );
         const winner = raced.rows[0]?.id;
         if (!winner) {
@@ -383,7 +383,7 @@ export class PgImportedSessionRepository {
   async markMissingAsGone(input: {
     spaceId: string;
     workspaceLocationId: string;
-    adapterType: string;
+    runtimeKey: string;
     installation: string;
     /** Exactly what the host enumerated this sync — never what the server holds. */
     listedVendorSessionIds: readonly string[];
@@ -391,10 +391,10 @@ export class PgImportedSessionRepository {
     const result = await this.db.query(
       `UPDATE imported_sessions
           SET source_state = 'gone', updated_at = now()
-        WHERE space_id = $1 AND workspace_location_id = $2 AND adapter_type = $3 AND installation = $4
+        WHERE space_id = $1 AND workspace_location_id = $2 AND runtime_key = $3 AND installation = $4
           AND source_state <> 'gone'
           AND NOT (vendor_session_id = ANY($5::text[]))`,
-      [input.spaceId, input.workspaceLocationId, input.adapterType, input.installation, [...input.listedVendorSessionIds]],
+      [input.spaceId, input.workspaceLocationId, input.runtimeKey, input.installation, [...input.listedVendorSessionIds]],
     );
     return result.rowCount ?? 0;
   }
@@ -409,16 +409,16 @@ export class PgImportedSessionRepository {
   async heldSessions(input: {
     spaceId: string;
     workspaceLocationId: string;
-    adapterType: string;
+    runtimeKey: string;
     installation: string;
   }): Promise<Array<{ session_id: string; updated_at: string }>> {
     const result = await this.db.query<{ session_id: string; updated_at: string | null }>(
       `SELECT vendor_session_id AS session_id,
               to_char(vendor_updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS updated_at
          FROM imported_sessions
-        WHERE space_id = $1 AND workspace_location_id = $2 AND adapter_type = $3 AND installation = $4
+        WHERE space_id = $1 AND workspace_location_id = $2 AND runtime_key = $3 AND installation = $4
           AND load_state = 'complete' AND vendor_updated_at IS NOT NULL`,
-      [input.spaceId, input.workspaceLocationId, input.adapterType, input.installation],
+      [input.spaceId, input.workspaceLocationId, input.runtimeKey, input.installation],
     );
     return result.rows.flatMap((row) => (row.updated_at ? [{ session_id: row.session_id, updated_at: row.updated_at }] : []));
   }
@@ -427,13 +427,13 @@ export class PgImportedSessionRepository {
   async countForRuntime(input: {
     spaceId: string;
     workspaceLocationId: string;
-    adapterType: string;
+    runtimeKey: string;
     installation: string;
   }): Promise<number> {
     const result = await this.db.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM imported_sessions
-        WHERE space_id = $1 AND workspace_location_id = $2 AND adapter_type = $3 AND installation = $4`,
-      [input.spaceId, input.workspaceLocationId, input.adapterType, input.installation],
+        WHERE space_id = $1 AND workspace_location_id = $2 AND runtime_key = $3 AND installation = $4`,
+      [input.spaceId, input.workspaceLocationId, input.runtimeKey, input.installation],
     );
     return Number(result.rows[0]?.total ?? "0");
   }
@@ -442,14 +442,14 @@ export class PgImportedSessionRepository {
   async unfinishedSessionIds(input: {
     spaceId: string;
     workspaceLocationId: string;
-    adapterType: string;
+    runtimeKey: string;
     installation: string;
   }): Promise<string[]> {
     const result = await this.db.query<{ vendor_session_id: string }>(
       `SELECT vendor_session_id FROM imported_sessions
-        WHERE space_id = $1 AND workspace_location_id = $2 AND adapter_type = $3 AND installation = $4
+        WHERE space_id = $1 AND workspace_location_id = $2 AND runtime_key = $3 AND installation = $4
           AND load_state = 'partial' AND source_state = 'present'`,
-      [input.spaceId, input.workspaceLocationId, input.adapterType, input.installation],
+      [input.spaceId, input.workspaceLocationId, input.runtimeKey, input.installation],
     );
     return result.rows.map((row) => row.vendor_session_id);
   }

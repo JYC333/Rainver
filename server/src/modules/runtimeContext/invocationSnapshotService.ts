@@ -9,7 +9,7 @@ import type {
 } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
-import { managedProviderMessages, renderManagedDelivery } from "./managedRenderer.js";
+import { renderManagedDelivery } from "./managedRenderer.js";
 import { ContextWindowReconciliationRepository } from "./reconciliationRepository.js";
 import { SealedPayloadCipher } from "./sealedPayloadCrypto.js";
 import type { RuntimeContextContinuityService } from "./continuity/service.js";
@@ -22,7 +22,7 @@ export interface InvocationAttemptInput {
   invocationId: string;
   envelope: RuntimeContextEnvelope;
   control: ExecutionControlSnapshot;
-  adapterType: string;
+  runtimeKey: string;
   providerId: string | null;
   model: string | null;
   usageSourceId: string;
@@ -88,7 +88,7 @@ export class InvocationSnapshotService {
         control,
         invocationId: input.invocationId,
         attempt,
-        adapterType: input.adapterType,
+        runtimeKey: input.runtimeKey,
         providerId: input.providerId,
         model: input.model,
         mode: input.mode,
@@ -141,10 +141,10 @@ export class InvocationSnapshotService {
       await db.query(
         `INSERT INTO invocation_deliveries (
            id,space_id,invocation_id,attempt,execution_control_snapshot_id,
-           adapter_type,provider_id,renderer_version,delivery_metadata_json,created_at
+           runtime_key,provider_id,renderer_version,delivery_metadata_json,created_at
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)`,
         [deliveryId, input.spaceId, input.invocationId, attempt, control.id,
-          input.adapterType, input.providerId, parsedDelivery.renderer_version,
+          input.runtimeKey, input.providerId, parsedDelivery.renderer_version,
           JSON.stringify(safeDeliveryMetadata(parsedDelivery)), now],
       );
       await db.query(
@@ -527,12 +527,11 @@ function acceptedSourceRefs(envelope: RuntimeContextEnvelope) {
 }
 
 function safeDeliveryMetadata(delivery: InvocationDelivery): Record<string, unknown> {
-  const providerRequest = managedProviderMessages(delivery);
   return {
     id: delivery.id,
     invocation_id: delivery.invocation_id,
     delivery_kind: delivery.delivery_kind,
-    adapter_type: delivery.adapter_type,
+    runtime_key: delivery.runtime_key,
     provider_id: delivery.provider_id,
     model: delivery.model,
     renderer_version: delivery.renderer_version,
@@ -553,16 +552,6 @@ function safeDeliveryMetadata(delivery: InvocationDelivery): Record<string, unkn
     max_output_tokens: delivery.max_output_tokens,
     snapshot_draft_ref: delivery.snapshot_draft_ref,
     audit_refs: delivery.audit_refs,
-    runtime_host_binding: {
-      model: delivery.model,
-      provider_id: delivery.provider_id,
-      system_prompt_hash: hashValue(providerRequest.system),
-      prompt_hash: hashValue(providerRequest.messages.at(-1)?.content ?? ""),
-      messages: providerRequest.messages.map((message) => ({
-        role: message.role,
-        content_hash: hashValue(message.content),
-      })),
-    },
   };
 }
 

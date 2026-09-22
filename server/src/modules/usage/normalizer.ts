@@ -91,7 +91,7 @@ export function normalizeUsageObservation(
     meter_subject_id: subject.id,
     subject_user_id: trimOrNull(input.subject_user_id),
     subject_team_id: trimOrNull(input.subject_team_id),
-    adapter_type: trimOrNull(input.adapter_type),
+    runtime_key: trimOrNull(input.runtime_key),
     runtime_tool_version: trimOrNull(input.runtime_tool_version),
     provider_id: trimOrNull(input.provider_id),
     provider_type: trimOrNull(input.provider_type),

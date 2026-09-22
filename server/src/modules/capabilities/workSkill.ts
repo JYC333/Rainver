@@ -18,11 +18,11 @@ import {
  * gets no Skill and no surface.
  *
  * Its content has one source. The judgement rules are the same constants
- * `ManagedAgentToolSurface` assembles for the managed loop
- * (`systemActions/conversationPolicy.ts`); only the CLI mechanics below are
- * specific to a runtime that reaches the actions over a command instead of
- * native tool calls. Two hand-maintained copies of "when to call which action"
- * is precisely the drift this arrangement exists to prevent.
+ * enforced by the ACP System Action Gateway
+ * (`systemActions/conversationPolicy.ts`); the CLI mechanics below describe
+ * how an external runtime reaches those actions. Two hand-maintained copies
+ * of "when to call which action" are precisely the drift this arrangement
+ * exists to prevent.
  *
  * What an agent may actually call is decided elsewhere and is unchanged by
  * this file: the Run's `permission_snapshot_json.tool_grants` computed at

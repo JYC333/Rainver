@@ -6,6 +6,7 @@ import { AgentGroupRunService, type AgentGroupMessageRecipientSegment } from "..
 import { HttpError, withDbTransaction, dateIso } from "../routeUtils/common.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { PgRunRepository } from "../runs/repository.js";
+import type { AgentRunRecord } from "../runs/repository.js";
 import { visibleRoomTranscriptSql } from "../sessions/messagePath.js";
 import {
   assertProjectWriter,
@@ -20,7 +21,7 @@ import { PgRoomRepository, ROOM_AUDIENCE_SQL, type RoomRecord } from "./reposito
 import { RoomReferenceService } from "./referenceService.js";
 import { ProjectOverviewService } from "../projects/overviewService.js";
 import { SpaceAssistantService, type ManagedAssistantPreparation } from "../agents/spaceAssistantService.js";
-import type { ConversationInputPart, RoomDetail, RuntimeSessionConfigSelection, ThreadReferencePick } from "@rainver/protocol";
+import type { ConversationInputPart, RoomAgentPresetRequest, RoomDetail, RuntimeSessionConfigSelection, ThreadReferencePick } from "@rainver/protocol";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { RoomRosterService } from "./rosterService.js";
 import { RoomConversationSummaryService } from "./conversationSummaryService.js";
@@ -257,12 +258,7 @@ export class RoomService {
     name?: string | null;
     idempotency_key?: string | null;
     confirm_room_share?: boolean;
-    execution?: {
-      host_id: string;
-      workspace_location_id: string;
-      adapter_type: string;
-      installation: string;
-    } | null;
+    execution?: RoomAgentPresetRequest["execution"];
   }) {
     return this.rosterService().addPresetAgent(identity, roomId, input);
   }
@@ -664,7 +660,9 @@ export class RoomService {
             original.id,
           ]));
           const originalRuns = await Promise.all(originalRunIds.map(runId => runs.getRun(identity.spaceId, runId)));
-          const completeRuns = originalRuns.filter((run): run is NonNullable<typeof run> => Boolean(run));
+          const completeRuns = originalRuns.filter(
+            (run): run is AgentRunRecord => run?.execution_kind === "agent",
+          );
           if (completeRuns.length !== originalRunIds.length || completeRuns.some(run => run.session_id !== conversation.id || (run.status !== "failed" && run.status !== "degraded"))) {
             throw new HttpError(409, "Every recipient Run in this Room turn must be failed before retry");
           }
@@ -1061,7 +1059,7 @@ export class RoomService {
           });
           try {
             assertConversationInputCapabilities(capabilityInputParts, backend.prompt_capabilities);
-            assertConversationInputResourceTools(capabilityInputParts, backend.adapter_type);
+            assertConversationInputResourceTools(capabilityInputParts, backend.runtime_key);
           } catch (error) {
             if (error instanceof ConversationInputCapabilityError) {
               const label = agentMembers.find((member) => member.agent_id === agentId)?.agent_name ?? agentId;

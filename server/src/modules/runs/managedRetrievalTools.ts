@@ -1,12 +1,10 @@
 import { KNOWLEDGE_RETRIEVAL_OBJECT_TYPES } from "../knowledge/retrievalObjectTypes.js";
 import type {
-  CanonicalMessage,
   CanonicalToolCall,
   CanonicalToolDefinition,
   RetrievalBriefResponse,
   RetrievalSearchResponse,
   RetrievalToolMode,
-  RuntimeHostExecuteRequest,
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -27,12 +25,8 @@ import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynt
 import { RetrievalToolService } from "../retrieval/tool/service.js";
 import type { RetrievalToolPolicyAction } from "../retrieval/tool/policy.js";
 import type { RunRecord } from "./repository.js";
-import type { ManagedModelRequest, ManagedToolDispatchResult } from "./managedAgentLoopPort.js";
-import type { ManagedToolContribution } from "./managedToolLoop.js";
 
-export type RuntimeHostExecutor = ManagedModelRequest;
-
-export interface ManagedApiRetrievalToolDeps {
+export interface RetrievalToolDeps {
   retrievalToolService?: RetrievalToolService | null;
 }
 
@@ -41,7 +35,6 @@ export interface ResolvedRetrievalToolBinding {
   services: Partial<Record<RetrievalToolDomain, RetrievalToolService>>;
   toolMode: RetrievalToolMode;
   toolDefinitions: CanonicalToolDefinition[];
-  toolBindings: RuntimeHostExecuteRequest["tool_bindings"];
   policyDatabaseUrl: string | null;
   egressPolicySnapshot: { external_egress_enabled: boolean };
   settingsSnapshot: Record<string, unknown>;
@@ -134,7 +127,7 @@ const OPTIONAL_DOMAIN_TOOL_SPECS = [MEMORY_TOOL_SPEC, PROJECT_TOOL_SPEC, SOURCE_
 export async function resolveRetrievalToolBinding(
   config: ServerConfig,
   run: RunRecord,
-  deps: ManagedApiRetrievalToolDeps,
+  deps: RetrievalToolDeps,
 ): Promise<ResolvedRetrievalToolBinding | null> {
   if (!run.instructed_by_user_id) return null;
   // Enablement: either the run/runtime config opts in, or the space sets a
@@ -153,7 +146,6 @@ export async function resolveRetrievalToolBinding(
       services: { knowledge: deps.retrievalToolService },
       toolMode: runMode,
       toolDefinitions,
-      toolBindings: toolBindingsForSpecs([KNOWLEDGE_TOOL_SPEC]),
       policyDatabaseUrl: null,
       egressPolicySnapshot: { external_egress_enabled: true },
       settingsSnapshot: { source: "test_injected_service" },
@@ -204,7 +196,6 @@ export async function resolveRetrievalToolBinding(
     services,
     toolMode: effectiveMode,
     toolDefinitions: toolDefinitionsForSpecs(enabledSpecs),
-    toolBindings: toolBindingsForSpecs(enabledSpecs),
     policyDatabaseUrl: config.databaseUrl,
     egressPolicySnapshot: {
       external_egress_enabled: settings.externalEgressEnabled,
@@ -219,72 +210,6 @@ export async function resolveRetrievalToolBinding(
       embedding_dimensions: settings.embeddingDimensions,
       max_results_default: settings.maxResultsDefault,
     },
-  };
-}
-
-/**
- * What Retrieval offers a run.
- *
- * In `manual_tool_only` the model receives the governed retrieval tools. In a
- * preflight mode it receives none: the system performs one governed retrieval
- * step itself and contributes the result as model-visible content. That is a
- * statement about what Retrieval provides, not about whether the run may loop —
- * a preflight run that also holds delegation or proposal grants keeps them, and
- * a preflight run holding nothing else is a single bounded call exactly as
- * before.
- */
-export async function retrievalToolContribution(
-  binding: ResolvedRetrievalToolBinding,
-  run: RunRecord,
-  request: RuntimeHostExecuteRequest,
-  baseMessages: readonly CanonicalMessage[],
-  dispatch: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>,
-): Promise<ManagedToolContribution> {
-  if (!isRetrievalPreflightMode(binding.toolMode)) {
-    return { definitions: binding.toolDefinitions, bindings: binding.toolBindings };
-  }
-  const preface = await runRetrievalPreflight(binding, run, request, baseMessages, dispatch);
-  return { definitions: [], bindings: [], ...preface };
-}
-
-async function runRetrievalPreflight(
-  binding: ResolvedRetrievalToolBinding,
-  run: RunRecord,
-  request: RuntimeHostExecuteRequest,
-  baseMessages: readonly CanonicalMessage[],
-  dispatch: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>,
-): Promise<{
-  prefaceMessages: CanonicalMessage[];
-  prefaceSummaries: Array<Record<string, unknown>>;
-  prefaceArtifacts: unknown[];
-}> {
-  const empty = { prefaceMessages: [], prefaceSummaries: [], prefaceArtifacts: [] };
-  // Delivery-backed execution has already completed governed acquisition and
-  // planning. Adapter-side preflight would inject model-visible content that
-  // is absent from the immutable Delivery/Snapshot.
-  if (request.invocation_audit_refs) return empty;
-  const query = preflightQuery(request, baseMessages);
-  if (!query) return empty;
-  const mode = retrievalSearchModeFromSettings(binding.settingsSnapshot.default_search_mode) ?? "hybrid";
-  const maxResults = numberFromSettings(binding.settingsSnapshot.max_results_default) ?? 10;
-  const call: CanonicalToolCall = {
-    id: `preflight-${binding.toolMode}`,
-    name: binding.toolMode === "preflight_brief" ? "retrieval.brief" : "retrieval.search",
-    arguments_json: JSON.stringify({
-      query,
-      mode,
-      max_results: Math.min(Math.max(maxResults, 1), 50),
-      include_trace: false,
-    }),
-  };
-  const result = await dispatch(call);
-  return {
-    prefaceMessages: [{
-      role: "user",
-      content: `Retrieval preflight (${call.name}) result:\n${JSON.stringify(result.modelResult)}`,
-    }],
-    prefaceSummaries: [{ ...result.summary, preflight: true }],
-    prefaceArtifacts: result.artifact ? [result.artifact] : [],
   };
 }
 
@@ -327,21 +252,6 @@ function toolDefinitionsForSpecs(specs: readonly RetrievalToolDomainSpec[]): Can
       input_schema: retrievalToolInputSchema(true, spec.objectTypes),
     },
   ]);
-}
-
-function toolBindingsForSpecs(specs: readonly RetrievalToolDomainSpec[]): RuntimeHostExecuteRequest["tool_bindings"] {
-  return specs.flatMap((spec) => [spec.searchTool, spec.briefTool].map((toolName) => ({
-    id: toolName,
-    external_type: "internal",
-    external_ref: toolName,
-    display_name: toolName,
-    required_scopes: spec.requiredScopes,
-    credential_ref: null,
-    data_exposure_level: "model_provider",
-    observability_level: "structured_events",
-    side_effect_level: "none",
-    approval_required: false,
-  })));
 }
 
 export async function runRetrievalToolCall(
@@ -537,29 +447,6 @@ function parseRetrievalToolArguments(
   return params;
 }
 
-function preflightQuery(
-  request: RuntimeHostExecuteRequest,
-  messages: readonly CanonicalMessage[],
-): string {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (message?.role === "user" && typeof message.content === "string" && message.content.trim()) {
-      return message.content.trim().slice(0, 1024);
-    }
-  }
-  return request.prompt.trim().slice(0, 1024);
-}
-
-function numberFromSettings(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : null;
-}
-
-function retrievalSearchModeFromSettings(value: unknown): RetrievalSearchMode | null {
-  return typeof value === "string" && (RETRIEVAL_TOOL_MODES as readonly string[]).includes(value)
-    ? (value as RetrievalSearchMode)
-    : null;
-}
-
 function toolSpecForName(name: string): RetrievalToolDomainSpec | null {
   for (const spec of [KNOWLEDGE_TOOL_SPEC, ...OPTIONAL_DOMAIN_TOOL_SPECS]) {
     if (name === spec.searchTool || name === spec.briefTool) return spec;
@@ -681,8 +568,6 @@ function retrievalToolModeIn(record: Record<string, unknown>): RetrievalToolMode
 
 function retrievalCapabilityMode(value: unknown): RetrievalToolMode | null {
   if (!Array.isArray(value)) return null;
-  if (value.includes("retrieval.preflight_brief")) return "preflight_brief";
-  if (value.includes("retrieval.preflight_search")) return "preflight_search";
   if (
     value.includes("retrieval.tools") ||
     value.includes("knowledge.retrieval_tools") ||
@@ -696,14 +581,8 @@ function retrievalCapabilityMode(value: unknown): RetrievalToolMode | null {
 function isRetrievalToolMode(value: unknown): value is RetrievalToolMode {
   return (
     value === "off" ||
-    value === "manual_tool_only" ||
-    value === "preflight_search" ||
-    value === "preflight_brief"
+    value === "manual_tool_only"
   );
-}
-
-export function isRetrievalPreflightMode(value: RetrievalToolMode): boolean {
-  return value === "preflight_search" || value === "preflight_brief";
 }
 
 function modelResultForSearch(tool: string, response: RetrievalSearchResponse): Record<string, unknown> {

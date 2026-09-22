@@ -1,138 +1,153 @@
-# AgentVersion vs AgentRuntimeProfile — Authority Boundary
+# Agent Runtime Authority
 
-Two tables share model/provider/runtime fields. The split is intentional and
-must be preserved.
+Rainver separates Agent definition, runtime deployment, and bounded provider
+work. Each has one authority; none is a fallback for another.
 
----
+## Agent definition: `AgentVersion`
 
-## AgentVersion — design-time authority
+`agent_versions` owns immutable Agent behavior and constraints: prompt and its
+provenance, risk and maximum duration, context and memory policies,
+capabilities, tool permissions/policy, output policy/schema, and scheduling
+configuration. Publishing a version does not clone, rewrite, or select a
+runtime Profile. AgentVersion has no runtime key, ModelProvider/model binding,
+or runtime configuration/policy fallback.
 
-`agent_versions` captures the *intent* of an agent: what it should think, what
-it can do, and what constraints it operates under. Fields it owns:
+## Deployment: `AgentRuntimeProfile`
 
-- `system_prompt` — the base instruction that defines the agent's role
-- `model_config_json` — preferred model config (provider, name, max_tokens)
-- `model_provider_id`, `model_name` — preferred model (fallback if no profile)
-- `context_policy_json` — which context scopes the agent reads
-- `memory_policy_json` — which memory scopes are readable/writable
-- `capabilities_json` — capability ceiling (what the agent is allowed to use)
-- `tool_permissions_json`, `tool_policy_json` — tool allowlist / audit policy
-- `output_policy_json` — egress and format constraints
-- `schedule_config_json` — scheduling hints for job-triggered runs
-- `output_schema_json` — structured output contract
+`agent_runtime_profiles` is the mutable, Agent-scoped deployment authority. A
+Profile identifies the ACP `runtime_key`, execution Host, installed copy,
+workspace mode/location, backend mode, optional same-Space ModelProvider/model,
+and narrowly scoped runtime options. Each Agent is provisioned with one
+enabled default Profile. With no Space provisioning template, the product
+default is the Server Runtime's managed OpenCode copy using
+`backend_mode = runtime_native`.
 
-A version is immutable once published (`published_at IS NOT NULL`). Changing any
-of these requires a new version row. Versions accumulate; `agents.current_version_id`
-points to the active one.
+The two backend modes are explicit:
 
----
+- `runtime_native`: the runtime uses the login/configuration on that execution
+  Host; no ModelProvider binding is stored.
+- `model_provider`: a Profile selects a Space-selectable Provider and model.
+  The server authorizes the spend and issues a short-lived proxy lease;
+  upstream credentials never enter a runtime process.
 
-## AgentRuntimeProfile — deployment-time authority
+Either backend mode is valid on either Host kind. `model_provider` is **not**
+Server-only: the dispatched Run is handed a lease URL, never a key, and
+`hostProviderProxyBaseUrl` resolves that address for a paired Host from its
+per-host override, the instance-wide external proxy URL, or the control-plane
+address plus the proxy port. The host daemon's bound-run environment filter
+(`filterAmbientEnv`) exists for exactly this case, so a paired machine's own
+vendor keys cannot displace the binding. What `model_provider` may not be is
+*unbound*: a Profile with no execution Host, workspace mode and installation
+has nothing to hand the lease to, and admission refuses it.
 
-`agent_runtime_profiles` captures *how* an agent is deployed in a specific
-environment. Fields it owns:
+A Provider is selectable in a Space through exactly one mechanism: an enabled
+`model_provider_space_grants` row for that Space joined to an enabled Provider.
+A Provider owned by another Space and never granted is not selectable on a
+Profile or on the Space provisioning template, whatever else the caller knows
+about it.
 
-- `adapter_type` — which runtime adapter executes the agent (model_api, claude_code, etc.)
-- `model_provider_id`, `model_name` — production override (wins over version defaults)
-- `runtime_config_json` — adapter-specific execution parameters (timeouts, sandbox config)
-- `runtime_policy_json` — execution-time risk and rate limits (may tighten version ceiling)
+The optional Space runtime default is a provisioning template for future
+Profiles only. Dispatch does not consult it. Updating it never rewrites an
+existing Profile. Disabling or ungranting the Provider it names does not
+rewrite it either: the template keeps its selection, the read model reports
+`state = "needs_repair"` with a reason, and Agent creation fails with the
+`space_runtime_default_needs_repair` error naming the selection and the repair
+rather than a Profile-level "provider is not selectable". Writing the template
+back to `runtime_native` is the repair and the reset — absence of a row and an
+explicit native row mean the same product default, so there is no separate
+delete endpoint. The Server Runtime is instance-wide; a paired Host's native
+account belongs to its owner. The UI must disclose the shared-account semantics
+when the Server copy is signed in to a paid account.
 
-The profile owns no credential column, and nothing else does either. A CLI
-runs on the execution host the profile names (`execution_host_id` +
-`runtime_installation`) and uses the login held by that copy on that host —
-Rainver brokers none and stores none (ADR 0016 §7, BOUNDARIES B45). A CLI
-profile that names no host is not a runnable backend at all (B46).
+### Profile option bags
 
-Profiles are mutable and may be changed without creating a new version. An agent
-may have multiple profiles (e.g. dev vs prod) controlled by `enabled` and
-`is_default`.
+A Profile carries two narrowly scoped option bags, and a key has exactly one
+authoring authority between them:
 
-For Project Conversations, a profile is only a candidate during the explicit
-preflight. `session_conversation_backends` and the conversation-shaped
-`host_threads` snapshot the selected Agent profile, Host, CLI installation, and
-Primary Workspace when the Conversation is initialized. Later profile edits,
-`is_default` changes, Folder Location changes, and Host heartbeat updates may
-block a later Run, but they cannot rebind that initialized Conversation.
-
-Project Research uses this same authority boundary without requiring manual
-Agent setup. Its execution-profile service provisions or reuses a space-scoped
-`system_research` Agent and a `model_api` runtime profile from the selected
-ModelProvider/model. Research setup does not accept explicit Agent/profile,
-runtime-adapter, or CLI-credential selection. The resolved Agent/profile IDs
-are recorded in the research workflow and operation before any stage run is
-queued, and each stage run carries the profile as an `explicit` pin — provider
-choice has no other expression in routing (see
-[ROUTING.md](ROUTING.md)).
-
-**No research stage run can hold a tool grant.** `buildRunToolGrants`
-intersects three sets: the run's `capabilities_json`, the AgentVersion's
-`tool_permissions_json.allowed_tools`, and the System Action Registry. Two of
-them exclude every research stage independently — `research.*` ids are
-capability declarations rather than System Action ids, and the research
-AgentVersion is provisioned without `tool_permissions_json`, so `allowed_tools`
-is empty. `permission_snapshot_json.tool_grants` is therefore `[]` for every
-research run, `authorization.request` included, since that entry is appended
-only when other grants exist.
-
-Granting a stage a system action means satisfying all of: the action's id in the
-stage's `capabilities_json`, the same id in the research AgentVersion's
-`capabilities_json` (or routing rejects the profile for a missing capability),
-the id in that AgentVersion's `allowed_tools`, and — decided by the registry
-rather than by configuration — the action being `agent_tool` visible and
-accepting `agent` as an actor type. The `objectAction` and `httpAction` entries
-are deliberately not agent-tool visible, so the three configurable conditions
-can all hold and still yield no grant. See
-[SYSTEM_ACTIONS.md](SYSTEM_ACTIONS.md).
-
-OpenCode is a local CLI adapter with two credential paths: the login the copy
-holds on its execution host, or an OpenAI-compatible ModelProvider. In provider
-mode the CLI receives a run-scoped `opencode.json` containing the provider
-proxy URL and lease token; the upstream provider key remains inside the
-server/provider proxy boundary.
-
----
-
-## Resolution order at run time
-
-`AGENT_COLUMNS` in `agents/repository.ts` resolves using COALESCE priority:
-
-```
-adapter_type     → runtime profile > version runtime_policy_json.default_adapter_type
-model_provider_id → runtime profile > version
-model_name       → runtime profile > version
-runtime_policy_json → runtime profile > version
-```
-
-The version values are the design-time ceiling; the profile values are the
-deployment-time override.
-
----
-
-## Run snapshot
-
-`runs` stores:
-- `agent_version_id` — which version was in effect (immutable, for audit)
-- `runtime_profile_id` — which profile was selected (nullable)
-- `runtime_profile_snapshot_json` — a point-in-time copy of the profile at run
-  start, so profile edits after the fact do not retroactively change run history
-
-The snapshot is authoritative for interpreting a historical run. The live tables
-are authoritative for future runs.
-
----
-
-## What does NOT belong in each
-
-| Field | Belongs in version? | Belongs in profile? |
+| Bag | Authors | Read by |
 |---|---|---|
-| system_prompt | ✓ | ✗ |
-| context/memory policy | ✓ | ✗ |
-| capability ceiling | ✓ | ✗ |
-| credential to use | ✗ | ✓ |
-| adapter type | ✗ (hint only) | ✓ |
-| sandbox config | ✗ | ✓ |
-| model override for prod | ✗ | ✓ |
+| `runtime_config_json` | `tools`, `tool_ids`, `supports_live`, `supports_dry_run` | route candidate filtering |
+| `runtime_policy_json` | `allow_permission_bypass` (a runtime's `permission_bypass_policy_key`) | CLI command rendering |
 
-If a field determines *what the agent is*, it belongs in `agent_versions`.
-If a field determines *how the agent runs in a given environment*, it belongs in
-`agent_runtime_profiles`.
+Admission refuses a key stored in the bag that does not author it, so no reader
+resolves the same key from two bags by precedence. Everything else in either
+bag is runtime-specific and belongs to whichever the author chose. Neither bag
+may carry credential material, or shadow runtime identity or an immutable
+AgentVersion constraint, at any depth; `RuntimeProfileOptionsJsonSchema` in
+`@rainver/protocol` is the single implementation of that rule, parsed at the
+route boundary and again in repository admission rather than re-walked.
+
+## Runtime definitions and execution
+
+`runtime_key` resolves through the code-owned runtime registry to an
+`AgentRuntimeDefinition`; it is not a database identity. Only implemented ACP
+definitions are selectable Agent runtimes. OpenCode, Claude Code and Codex CLI
+all use the same Rainver `AcpRuntimeAdapter` and `AcpController`. The execution
+Host daemon resolves and launches the installed copy. There is no private
+Server Agent loop and no `model_api` Agent runtime.
+
+Bounded model requests remain in the Provider subsystem. Incidental work such
+as query rewriting or reranking uses its ProviderTask/policy/usage records
+without a Run. A bounded operation that needs Run-level lifecycle or
+attribution uses a `provider_task` Run linked to ProviderTask control,
+delivery and snapshot records.
+
+## Run authority and snapshots
+
+`runs.execution_kind` determines the valid shape; `run_role` remains an
+independent execution/coordinator dimension.
+
+| Run kind | Agent / version | Runtime Profile and key | ProviderTask refs |
+|---|---|---|---|
+| `agent` | required | selected Profile and runtime key required; Profile snapshot is stamped before dispatch | absent, except for separately ledgered incidental subcalls |
+| `provider_task` | absent | absent | required for the formal bounded operation |
+
+An Agent Run resolves its AgentVersion and Profile independently. The selected
+Profile snapshot records the deployment/backend inputs used by that Run;
+editing the live Profile later cannot change the historical interpretation.
+Queued Runs may await route selection, but they cannot dispatch without the
+selected Profile, runtime key, Host and required snapshot. There is no
+AgentVersion selector fallback and no Host-global Provider fallback.
+
+Conversation bindings and Host threads additionally freeze their selected
+Profile/Host/installation and workspace context when initialized. Later edits
+can make a subsequent Run unavailable, but cannot silently rebind that
+conversation.
+
+Project Research stage executions are ordinary Agent Runs pinned to the
+provisioned research Agent's Profile. Its bounded incidental provider calls
+remain ProviderTasks. Native Automation and deterministic Workflow Action
+results retain their owning Automation/Workflow lifecycle rather than gaining
+synthetic Agent Runs.
+
+## Policy and credentials
+
+AgentVersion constraints define what the Agent may do; Profile settings define
+where and how its ACP runtime is deployed. Live Space membership, provider
+eligibility, Host trust, workspace isolation, credential-spend policy and
+System Action authorization may narrow the effective request. A runtime choice
+cannot grant tools or weaken policy. Run snapshots and the route decision
+record the effective execution selection and its source.
+
+Provider API keys are resolved only in the server/provider boundary. ACP
+runtimes use either their Host-local native login or the lease-based Provider
+proxy path. Never pass provider secrets through ambient variables, CLI
+arguments, or persisted runtime options.
+
+## Source of truth
+
+- Schema: `server/src/db/schema/agents.ts`, `runs.ts`, and ProviderTask schema.
+- Profile admission and the single Profile row writer:
+  `server/src/modules/agents/runtimeProfileAdmission.ts`.
+- Agent/AgentVersion provisioning and the Space template:
+  `server/src/modules/agents/repository.ts`.
+- Request contracts for Profile and template writes:
+  `packages/protocol/src/agents.ts`.
+- ACP registry and adapter: `server/src/modules/runtimeAdapters/`.
+- Route selection and persisted decision: `server/src/modules/routing/`.
+- Run creation, snapshotting, and execution: `server/src/modules/runs/`.
+- Bounded model calls and spend authorization: `server/src/modules/providers/`.
+
+See [ROUTING.md](ROUTING.md), [RUNS_AND_OUTPUTS.md](RUNS_AND_OUTPUTS.md),
+and [runtime-adapters.md](../modules/runtime-adapters.md) for the corresponding
+execution details.

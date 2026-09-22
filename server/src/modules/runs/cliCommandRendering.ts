@@ -84,7 +84,7 @@ export async function renderCliCommand(
   // with `protocol: "acp"`, so the field only ever restated this).
   if (input.model && spec.invocation.protocol !== "acp") {
     if (!spec.model.supports_model_override || !spec.model.model_arg_template) {
-      throw new CliRenderError("model_override_not_supported", `adapter_type '${spec.adapter_type}' does not support model override`);
+      throw new CliRenderError("model_override_not_supported", `runtime_key '${spec.runtime_key}' does not support model override`);
     }
     extraArgs.push(...renderCommandTemplate(spec.model.model_arg_template, { model: input.model }));
   }
@@ -139,7 +139,7 @@ function permissionBypassError(
   },
 ): string | null {
   if (!spec.permissions.supports_permission_bypass) {
-    return `Runtime adapter '${spec.adapter_type}' does not support permission bypass.`;
+    return `Runtime adapter '${spec.runtime_key}' does not support permission bypass.`;
   }
   const key = spec.permissions.permission_bypass_policy_key ?? "allow_permission_bypass";
   if (input.runtime_policy_json?.[key] !== true) {

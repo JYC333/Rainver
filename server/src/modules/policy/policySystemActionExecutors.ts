@@ -1,15 +1,15 @@
-import type { RuntimeHostExecuteResponse, SystemActionId } from "@rainver/protocol";
+import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { SystemActionExecutor } from "../systemActions/gateway.js";
-import type { RunRecord } from "../runs/repository.js";
+import type { AgentRunRecord } from "../runs/repository.js";
 import { AuthorizationRequestService } from "./authorizationRequestService.js";
 
 /** `authorization.request` (action authority consolidation plan, P1.5). */
 export function registerPolicySystemActionExecutors(
   executors: Map<SystemActionId, SystemActionExecutor>,
   config: ServerConfig,
-  run: RunRecord,
+  run: AgentRunRecord,
 ): void {
   const db = getDbPool(config.databaseUrl!);
 
@@ -30,30 +30,6 @@ export function registerPolicySystemActionExecutors(
         authorization_request_id: request.id,
         status: request.status,
       },
-      suspend: authorizationRequestPauseResponse(request.id),
     };
   });
-}
-
-function authorizationRequestPauseResponse(requestId: string): RuntimeHostExecuteResponse {
-  return {
-    success: false,
-    stdout: "",
-    stderr: "",
-    output_text: "",
-    output_json: {
-      authorization_request_id: requestId,
-      authorization_request_status: "pending",
-    },
-    exit_code: null,
-    error_text: "Agent authorization request is pending review.",
-    error_code: "authorization_request_pending",
-    started_at: null,
-    completed_at: new Date().toISOString(),
-    model: null,
-    usage: null,
-    events: [],
-    adapter_metadata: {},
-    adapter_log_json: null,
-  };
 }

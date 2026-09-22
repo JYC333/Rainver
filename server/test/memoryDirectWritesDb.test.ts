@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
 import { insertMemoryEntry } from "./support/memoryFixtures.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
@@ -14,7 +15,6 @@ import { undoProjectUpdate } from "../src/modules/projectWork/updateUndo.js";
 import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
 import { ProjectAttentionService } from "../src/modules/projects/attentionService.js";
 import { registerMemoryProjectIntegration } from "../src/modules/memory/projectIntegration.js";
-import type { RuntimeHostExecuteRequest } from "@rainver/protocol";
 
 // Real-Postgres coverage for the memory write an Agent makes on its own
 // (ADR 0003 §2). Before this existed the Agent had no memory write at all —
@@ -57,12 +57,23 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions
-       (id, agent_id, space_id, version_label, system_prompt, model_config_json, runtime_config_json,
-        context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, runtime_policy_json, created_at)
-     VALUES ($1, $2, $3, 'v1', 'Test', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
+       (
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     )
+     VALUES ($1, $2, $3, 'v1', 'Test', '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, $4)`,
     [AGENT_VERSION_ID, AGENT_ID, SPACE, now],
   );
   await db.pool.query("UPDATE agents SET current_version_id = $2 WHERE id = $1", [AGENT_ID, AGENT_VERSION_ID]);
+  await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT_ID, space: SPACE, now });
   const project = await new PgProjectRepository(db.pool).create({ spaceId: SPACE, userId: OWNER }, { name: "Memory Project" });
   PROJECT = project.id as string;
   await db.pool.query(
@@ -71,8 +82,8 @@ beforeEach(async () => {
     [SESSION_ID, SPACE, OWNER, PROJECT, now],
   );
   await db.pool.query(
-    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, session_id)
-     VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,$5,$6,'private','full',$7,$6,$8)`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, session_id, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+     VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $5, $6, 'private', 'full', $7, $6, $8, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [RUN_ID, SPACE, AGENT_ID, AGENT_VERSION_ID, now, OWNER, PROJECT, SESSION_ID],
   );
   await db.pool.query(
@@ -90,12 +101,11 @@ async function acceptProposal(proposal: ApplyProposal) {
 }
 
 async function dispatcher(overrides: Record<string, unknown> = {}) {
-  const run = await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID);
+  const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
   if (!run) throw new Error("Test Run was not created");
   return SystemActionDispatcher.create(
     loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_MEMORY_DIRECT_WRITES_PER_SESSION: "3" }),
-    { ...run, ...overrides },
-    {} as RuntimeHostExecuteRequest,
+    { ...run, ...overrides }
   );
 }
 
@@ -202,11 +212,10 @@ describe("memory.remember / memory.revise, direct (real Postgres)", () => {
 
   it("refuses to promise shared memory where no Project can hold it", async () => {
     if (!db.available) return;
-    const run = await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID);
+    const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
     const dispatch = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
-      { ...run!, project_id: null },
-      {} as RuntimeHostExecuteRequest,
+      { ...run!, project_id: null }
     );
     const result = await dispatch.dispatch(
       remember({ content: "The team agreed on Thursdays", visibility: "space_shared" }),
@@ -290,13 +299,12 @@ describe("memory.remember / memory.revise, direct (real Postgres)", () => {
 
   it("puts the paused turn in front of the person when the conversation has no session", async () => {
     if (!db.available) return;
-    const run = await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID);
+    const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
     // A group with no Room carries no session (`agentGroups/service.ts`
     // refuses one), which is exactly where the breaker counts per Run.
     const sessionless = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_MEMORY_DIRECT_WRITES_PER_SESSION: "3" }),
-      { ...run!, session_id: null },
-      {} as RuntimeHostExecuteRequest,
+      { ...run!, session_id: null }
     );
     for (let index = 0; index < 3; index += 1) {
       expect((await sessionless.dispatch(remember({ content: `Turn ${index}` }, `s-${index}`))).modelResult)
@@ -424,17 +432,16 @@ describe("memory.remember / memory.revise, direct (real Postgres)", () => {
     const now = new Date().toISOString();
     const secondRun = randomUUID();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, session_id, permission_snapshot_json)
-       VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,$5,$6,'private','full',$7,$6,$8,$9::jsonb)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, session_id, permission_snapshot_json, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $5, $6, 'private', 'full', $7, $6, $8, $9::jsonb, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [secondRun, SPACE, AGENT_ID, AGENT_VERSION_ID, now, OWNER, second.id, SESSION_ID,
         JSON.stringify({ tool_grants: [{ action_id: "memory.remember" }] })],
     );
-    const run = await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID);
+    const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
     const first = await dispatcher();
     const other = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_MEMORY_DIRECT_WRITES_PER_SESSION: "3" }),
-      { ...run!, id: secondRun, project_id: second.id as string },
-      {} as RuntimeHostExecuteRequest,
+      { ...run!, id: secondRun, project_id: second.id as string }
     );
     await first.dispatch(remember({ content: "A" }, "split-a"));
     await other.dispatch(remember({ content: "B" }, "split-b"));
@@ -565,18 +572,17 @@ describe("a person's own archive and restore (real Postgres)", () => {
     const now = new Date().toISOString();
     const theirRun = randomUUID();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, session_id, permission_snapshot_json)
-       VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,$5,$6,'private','full',$7,$6,$8,$9::jsonb)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, session_id, permission_snapshot_json, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $5, $6, 'private', 'full', $7, $6, $8, $9::jsonb, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [theirRun, SPACE, AGENT_ID, AGENT_VERSION_ID, now, OTHER, PROJECT, SESSION_ID,
         JSON.stringify({ tool_grants: [{ action_id: "memory.remember" }] })],
     );
-    const run = await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID);
+    const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
     // The other member's turns in the same Room conversation: same session id,
     // a different person.
     const theirs = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_MEMORY_DIRECT_WRITES_PER_SESSION: "3" }),
-      { ...run!, id: theirRun, owner_user_id: OTHER, instructed_by_user_id: OTHER },
-      {} as RuntimeHostExecuteRequest,
+      { ...run!, id: theirRun, owner_user_id: OTHER, instructed_by_user_id: OTHER }
     );
     for (let index = 0; index < 3; index += 1) {
       expect((await theirs.dispatch(remember({ content: `Theirs ${index}` }, `t-${index}`))).modelResult)

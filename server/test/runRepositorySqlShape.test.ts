@@ -48,10 +48,10 @@ class RunCreateSqlShapeDb implements Queryable {
           space_id: "space-1",
           agent_id: "agent-1",
           name: "CLI",
-          adapter_type: "codex_cli",
+          runtime_key: "codex_cli",
           model_provider_id: null,
           model_name: null,
-          runtime_config_json: { adapter_type: "codex_cli" },
+          runtime_config_json: {},
           runtime_policy_json: {},
           enabled: true,
           is_default: true,
@@ -79,7 +79,7 @@ class RunCreateSqlShapeDb implements Queryable {
         run_group_id: "group-1",
         delegation_id: null,
         project_id: "project-1",
-        adapter_type: "codex_cli",
+        runtime_key: "codex_cli",
         model_provider_id: null,
         required_sandbox_level: "ephemeral",
         trigger_origin: "manual",
@@ -117,7 +117,7 @@ class RunCreateSqlShapeDb implements Queryable {
         delegation_id: params[12] === null ? null : String(params[12]),
         project_id: params[31] === null ? null : String(params[31]),
         scheduled_at: null,
-        adapter_type: params[22] === null ? null : String(params[22]),
+        runtime_key: params[22] === null ? null : String(params[22]),
         capability_id: null,
         capabilities_json: [],
         model_provider_id: params[25] === null ? null : String(params[25]),
@@ -158,7 +158,7 @@ class RunCreateSqlShapeDb implements Queryable {
         run_group_id: "group-1",
         delegation_id: null,
         project_id: null,
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         model_provider_id: "provider-1",
         model_override_json: { messages: [{ role: "user", content: "hello" }] },
         runtime_profile_snapshot_json: {},
@@ -180,10 +180,94 @@ class RunCreateSqlShapeDb implements Queryable {
   }
 }
 
+class RunAuthorityProjectionDb implements Queryable {
+  readonly calls: string[] = [];
+
+  async query<Row = Record<string, unknown>>(sql: string): Promise<QueryResult<Row>> {
+    this.calls.push(sql);
+    if (sql.includes("r.execution_kind, r.runtime_key")) {
+      return {
+        rows: [{
+          id: "provider-run-1",
+          space_id: "space-1",
+          agent_id: null,
+          agent_version_id: null,
+          execution_kind: "provider_task",
+          runtime_key: null,
+          status: "succeeded",
+          mode: "live",
+          prompt: null,
+          instruction: null,
+          project_folder_id: null,
+          session_id: null,
+          project_id: null,
+        }] as Row[],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes("execution_kind, runtime_key,")) {
+      return {
+        rows: [{
+          id: "provider-run-1",
+          space_id: "space-1",
+          agent_id: null,
+          agent_version_id: null,
+          execution_kind: "provider_task",
+          runtime_key: null,
+          status: "succeeded",
+          mode: "live",
+          prompt: null,
+          instruction: null,
+          project_folder_id: null,
+          session_id: null,
+          project_id: null,
+          effective_access_level: "full",
+        }] as Row[],
+        rowCount: 1,
+      };
+    }
+    return { rows: [], rowCount: 0 };
+  }
+}
+
+class ProviderTaskRunSqlShapeDb implements Queryable {
+  call: { sql: string; params: readonly unknown[] } | null = null;
+
+  async query<Row = Record<string, unknown>>(
+    sql: string,
+    params: readonly unknown[] = [],
+  ): Promise<QueryResult<Row>> {
+    this.call = { sql, params };
+    return {
+      rows: [{ id: String(params[0]), space_id: String(params[1]), execution_kind: "provider_task", status: "running" }] as Row[],
+      rowCount: 1,
+    };
+  }
+}
+
 describe("PgRunRepository SQL shape", () => {
+  it("projects Run execution authority on detail and list reads", async () => {
+    const db = new RunAuthorityProjectionDb();
+    const repository = new PgRunRepository(db);
+
+    const detail = await repository.getRun("space-1", "provider-run-1");
+    const list = await repository.listRuns({
+      space_id: "space-1",
+      user_id: "user-1",
+      limit: 20,
+      offset: 0,
+    });
+
+    expect(detail).toMatchObject({ execution_kind: "provider_task", runtime_key: null });
+    expect(list[0]).toMatchObject({ execution_kind: "provider_task", runtime_key: null });
+    expect(db.calls.some((sql) => sql.includes("r.execution_kind, r.runtime_key"))).toBe(true);
+    expect(db.calls.some((sql) => sql.includes("execution_kind, runtime_key,"))).toBe(true);
+  });
+
   it("keeps queued run INSERT columns aligned with values", async () => {
     const db = new RunCreateSqlShapeDb();
     await new PgRunRepository(db).createQueuedRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -197,10 +281,11 @@ describe("PgRunRepository SQL shape", () => {
     expect(runInsert).toBeTruthy();
     const { columns, values } = insertColumnsAndValues(runInsert!.sql);
     expect(values).toHaveLength(columns.length);
-    expect(runInsert!.params).toHaveLength(39);
+    expect(runInsert!.params).toHaveLength(40);
     expect(runInsert!.params[34]).toBe("default");
     expect(runInsert!.params[35]).toBe('{"tool_grants":[]}');
-    expect(columns.at(-1)).toBe("host_task_thread_id");
+    expect(columns.slice(-2)).toEqual(["host_task_thread_id", "execution_kind"]);
+    expect(new Set(columns).size).toBe(columns.length);
     expect(columns.slice(15, 18)).toEqual(["run_type", "trigger_origin", "status"]);
     expect(values.slice(15, 18)).toEqual(["$16", "$17", "'queued'"]);
     expect(runInsert!.params.slice(15, 18)).toEqual(["agent", "manual", "live"]);
@@ -209,6 +294,7 @@ describe("PgRunRepository SQL shape", () => {
   it("persists the scenario allowance with its derived tool grants", async () => {
     const db = new RunCreateSqlShapeDb();
     await new PgRunRepository(db).createQueuedRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -240,6 +326,7 @@ describe("PgRunRepository SQL shape", () => {
   it("persists an explicitly requested runtime profile without preselecting it", async () => {
     const db = new RunCreateSqlShapeDb();
     await new PgRunRepository(db).createQueuedRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -260,6 +347,7 @@ describe("PgRunRepository SQL shape", () => {
   it("creates coordinator runs without physical attempts", async () => {
     const db = new RunCreateSqlShapeDb();
     const run = await new PgRunRepository(db).createCoordinatorRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -270,15 +358,98 @@ describe("PgRunRepository SQL shape", () => {
     });
     expect(run.run_role).toBe("coordinator");
     expect(run.runtime_profile_id).toBeNull();
-    expect(run.adapter_type).toBeNull();
+    expect(run.runtime_key).toBeNull();
     expect(run.model_provider_id).toBeNull();
     expect(db.calls.some((call) => call.sql.includes("FROM agent_runtime_profiles"))).toBe(false);
     expect(db.calls.some((call) => call.sql.includes("INSERT INTO run_attempts"))).toBe(false);
   });
 
+  it("creates a ProviderTask Run with no Agent/runtime authority and exact ledger references", async () => {
+    const db = new ProviderTaskRunSqlShapeDb();
+    const run = await new PgRunRepository(db).createProviderTaskRun({
+      execution_kind: "provider_task",
+      space_id: "space-1",
+      user_id: "user-1",
+      trigger_origin: "manual",
+      run_type: "reflection",
+      task: "daily_report",
+      prompt: "Generate report for 2026-09-10.",
+      provider_id: "provider-1",
+      model: "gpt-4o-mini",
+      control_id: "control-1",
+      delivery_id: "delivery-1",
+      invocation_snapshot_id: "snapshot-1",
+      contract_snapshot: {
+        source: { kind: "direct", id: "setting-1" },
+        git_snapshot: null,
+      },
+    });
+
+    expect(run).toEqual({ id: expect.any(String), space_id: "space-1", execution_kind: "provider_task", status: "running" });
+    expect(db.call?.sql).toContain("agent_id, agent_version_id, execution_kind");
+    expect(db.call?.params[2]).toBe("provider_task");
+    expect(db.call?.sql).toContain("provider_task_control_id, provider_task_delivery_id, provider_task_snapshot_id");
+    expect(db.call?.params.slice(3, 6)).toEqual(["control-1", "delivery-1", "snapshot-1"]);
+    expect(db.call?.sql).not.toContain("INSERT INTO run_attempts");
+  });
+
+  it("queues a ProviderTask Run with no provider or ledger references yet", async () => {
+    const db = new ProviderTaskRunSqlShapeDb();
+    const run = await new PgRunRepository(db).createQueuedProviderTaskRun({
+      space_id: "space-1",
+      user_id: "user-1",
+      trigger_origin: "manual",
+      run_type: "agent",
+      task: "project_research_adhoc_analyze",
+      prompt: "Summarize the selected material.",
+      instruction: "…rendered instruction…",
+      project_id: null,
+      capability_id: "research.adhoc_analyze",
+      contract_snapshot: { source: { kind: "direct", id: "note-1" } },
+    });
+
+    expect(run).toMatchObject({ space_id: "space-1", execution_kind: "provider_task" });
+    // The queued arm of `ck_runs_execution_shape`: the bounded task has not
+    // picked a provider or opened its ledger records yet, so the INSERT must
+    // not name those columns at all.
+    expect(db.call?.sql).toContain("'queued'");
+    expect(db.call?.sql).not.toContain("provider_task_control_id");
+    expect(db.call?.sql).not.toContain("model_provider_id");
+    expect(db.call?.sql).not.toContain("started_at");
+    // A ProviderTask Run has no physical Run attempts; its attempts are the
+    // ProviderTask ledger's.
+    expect(db.call?.sql).not.toContain("INSERT INTO run_attempts");
+  });
+
+  it("binds a queued ProviderTask Run to the attempt that starts it, once", async () => {
+    const db = new ProviderTaskRunSqlShapeDb();
+    const started = await new PgRunRepository(db).startQueuedProviderTaskRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      provider_id: "provider-1",
+      control_id: "control-1",
+      delivery_id: "delivery-1",
+      invocation_snapshot_id: "snapshot-1",
+    });
+
+    expect(started).toBe(true);
+    expect(db.call?.sql).toContain("SET status = 'running'");
+    expect(db.call?.sql).toContain("started_at = $3::timestamptz");
+    expect(db.call?.sql).toContain("provider_task_control_id = $5");
+    // The guard: a second attempt, or a job retry that found the Run already
+    // running, must not re-stamp it, and a Run cancelled while queued must
+    // not be started at all.
+    expect(db.call?.sql).toContain("AND status = 'queued'");
+    expect(db.call?.sql).toContain("AND execution_kind = 'provider_task'");
+    expect(db.call?.params.slice(3, 7)).toEqual([
+      "provider-1", "control-1", "delivery-1", "snapshot-1",
+    ]);
+  });
+
   it("creates grouped agent runs with root and group lineage", async () => {
     const db = new RunCreateSqlShapeDb();
     const run = await new PgRunRepository(db).createGroupedAgentRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -309,6 +480,7 @@ describe("PgRunRepository SQL shape", () => {
   it("snapshots tool grants through the delegated child creation path", async () => {
     const db = new RunCreateSqlShapeDb();
     const run = await new PgRunRepository(db).createDelegatedChildRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -339,6 +511,7 @@ describe("PgRunRepository SQL shape", () => {
     // whole Project write surface.
     const db = new RunCreateSqlShapeDb();
     await new PgRunRepository(db).createDelegatedChildRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",

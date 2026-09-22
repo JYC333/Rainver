@@ -153,7 +153,6 @@ describe("providerVendorCapabilities", () => {
     it("uses the vendor registry for OpenAI Codex managed capabilities", () => {
       expect(providerVendor("openai_codex")).toMatchObject({
         supportsChat: true,
-        supportsRuntimeTools: true,
         supportsStructuredOutput: true,
       });
       expect(providerSupportsStructuredOutput("openai_codex")).toBe(true);
@@ -187,7 +186,6 @@ describe("providerVendorCapabilities", () => {
           "supportsChat",
           "supportsEmbedding",
           "supportsRerank",
-          "supportsRuntimeTools",
           "supportsStructuredOutput",
         ]);
       }

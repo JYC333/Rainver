@@ -347,7 +347,7 @@ export class PostRunFinalizationService {
         event_types: events.map((event) => event.event_type),
         error_codes: errorCodes,
         required_sandbox_level: run.required_sandbox_level,
-        adapter_type: run.adapter_type,
+        runtime_key: run.runtime_key,
         verification,
         verification_results: verificationResults.map((result) => ({
           verifier_type: result.verifier_type,

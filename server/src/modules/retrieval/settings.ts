@@ -84,8 +84,6 @@ const RETRIEVAL_SEARCH_MODES: readonly RetrievalSearchMode[] = ["exact", "lexica
 const RETRIEVAL_TOOL_MODES: readonly RetrievalToolMode[] = [
   "off",
   "manual_tool_only",
-  "preflight_search",
-  "preflight_brief",
 ];
 const CONTEXT_OPS_REVIEW_MODES: readonly ContextOpsReviewMode[] = ["private_only", "admins", "members"];
 const CONTEXT_OPS_SCAN_MODES: readonly ContextOpsScanMode[] = ["admins", "members"];

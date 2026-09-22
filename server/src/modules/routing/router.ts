@@ -23,7 +23,7 @@ const SANDBOX_RANK: Record<SandboxLevel, number> = {
 };
 
 export const EMPTY_ROUTE_HINTS: RouteHints = {
-  preferred_adapter_types: [],
+  preferred_runtime_keys: [],
   execution_shape: null,
   preferred_runtime_profile_id: null,
   required_capabilities: [],
@@ -44,7 +44,7 @@ export class DeterministicRouteSelector {
     for (const candidate of candidates) {
       const reasons = hardFilterReasons(request, hints, candidate);
       if (reasons.length > 0) {
-        rejected.push({ runtime_profile_id: candidate.runtime_profile_id, adapter_type: candidate.adapter_type, reasons });
+        rejected.push({ runtime_profile_id: candidate.runtime_profile_id, runtime_key: candidate.runtime_key, reasons });
         continue;
       }
       const scoreTrace = scoreCandidate(request, hints, candidate);
@@ -68,12 +68,20 @@ export class DeterministicRouteSelector {
   }
 }
 
+/** Reuse only candidates that passed the current routing gate for a persisted selection. */
+export function candidateForPersistedDecision(
+  decision: RouteDecision,
+  runtimeProfileId: string,
+): RouteCandidate | null {
+  return decision.candidates.find((item) => item.candidate.runtime_profile_id === runtimeProfileId)?.candidate ?? null;
+}
+
 export function mergeRouteHints(sources: Array<{ source: string; value: unknown }>): RouteHints {
-  const result: RouteHints = { ...EMPTY_ROUTE_HINTS, preferred_adapter_types: [], required_capabilities: [], required_tools: [], sources: [] };
+  const result: RouteHints = { ...EMPTY_ROUTE_HINTS, preferred_runtime_keys: [], required_capabilities: [], required_tools: [], sources: [] };
   for (const source of sources) {
     const value = record(source.value);
     result.sources.push(source.source);
-    result.preferred_adapter_types = unique([...result.preferred_adapter_types, ...stringArray(value.preferred_adapter_types ?? value.preferred_adapters ?? value.recommended_runtime_adapters)]);
+    result.preferred_runtime_keys = unique([...result.preferred_runtime_keys, ...stringArray(value.preferred_runtime_keys)]);
     result.execution_shape = executionShape(value.execution_shape) ?? result.execution_shape;
     result.required_capabilities = unique([...result.required_capabilities, ...stringArray(value.required_capabilities)]);
     result.required_tools = unique([...result.required_tools, ...stringArray(value.required_tools)]);
@@ -91,7 +99,15 @@ function hardFilterReasons(request: RouteRequest, hints: RouteHints, candidate: 
   const reasons: string[] = [];
   const requiredCapabilities = unique([...(request.required_capabilities ?? []), ...hints.required_capabilities]);
   const requiredTools = unique([...(request.required_tools ?? []), ...hints.required_tools]);
+  // Profile state, runtime implementation and installation readiness are three
+  // separate statuses and a caller must be able to tell them apart: "disabled",
+  // "not an implemented ACP runtime" and "the Server copy is still installing"
+  // need different repairs, and collapsing them into `candidate_disabled` hid
+  // an asynchronous install behind a configuration error.
   if (!candidate.enabled) reasons.push("candidate_disabled");
+  if (candidate.runtime_runnable === false) reasons.push("runtime_not_runnable");
+  if (candidate.installation_ready === false) reasons.push("runtime_installation_not_ready");
+  if (candidate.host_dispatch_permitted === false) reasons.push("execution_host_not_permitted");
   if (!candidate.credential_available) reasons.push("credential_unavailable");
   const shape = hints.execution_shape;
   // File and code shapes are admitted on what the adapter declares, never on
@@ -120,7 +136,7 @@ function hardFilterReasons(request: RouteRequest, hints: RouteHints, candidate: 
   ) {
     reasons.push("runtime_profile_not_in_fallback_chain");
   }
-  if (request.adapter_types && request.adapter_types.length > 0 && !request.adapter_types.includes(candidate.adapter_type)) reasons.push("adapter_not_requested");
+  if (request.runtime_keys && request.runtime_keys.length > 0 && !request.runtime_keys.includes(candidate.runtime_key)) reasons.push("runtime_not_requested");
   if (request.runtime_profile_is_explicit && request.runtime_profile_id !== candidate.runtime_profile_id) reasons.push("explicit_profile_not_selected");
   if (hints.preferred_runtime_profile_id && hints.preferred_runtime_profile_id === candidate.runtime_profile_id) {
     // A preferred profile is scored, not hard-required.
@@ -129,7 +145,7 @@ function hardFilterReasons(request: RouteRequest, hints: RouteHints, candidate: 
   if (!requiredTools.every((tool) => candidate.tools.includes(tool))) reasons.push("required_tool_missing");
   const requiredSandbox = stricterSandbox(request.required_sandbox_level, hints.required_sandbox_level);
   const candidateSandbox = request.risk_level === "critical"
-    && isLocalCliRuntimeAdapter(candidate.adapter_type)
+    && isLocalCliRuntimeAdapter(candidate.runtime_key)
     ? "one_shot_docker" as const
     : requiredSandbox;
   // A local CLI may have a worktree baseline while also supporting a
@@ -170,8 +186,8 @@ function requiresPersistentWorkspace(
 }
 
 function scoreCandidate(request: RouteRequest, hints: RouteHints, candidate: RouteCandidate): Record<string, number> {
-  const preferredAdapters = [...(request.adapter_types ?? []), ...hints.preferred_adapter_types];
-  const preference = preferredAdapters.includes(candidate.adapter_type) ? 20 : 0;
+  const preferredRuntimeKeys = [...(request.runtime_keys ?? []), ...hints.preferred_runtime_keys];
+  const preference = preferredRuntimeKeys.includes(candidate.runtime_key) ? 20 : 0;
   const profilePreference = hints.preferred_runtime_profile_id === candidate.runtime_profile_id || request.runtime_profile_id === candidate.runtime_profile_id ? 25 : 0;
   const defaultProfile = candidate.is_default ? 3 : 0;
   const passRate = (candidate.historical_verification_pass_rate ?? 0.5) * 20;
@@ -179,19 +195,13 @@ function scoreCandidate(request: RouteRequest, hints: RouteHints, candidate: Rou
   const latency = candidate.estimated_latency_ms === null ? 0 : Math.max(-10, 5 - (candidate.estimated_latency_ms / 1000));
   const latencyBudget = hints.latency_budget_ms !== null && candidate.estimated_latency_ms !== null && candidate.estimated_latency_ms <= hints.latency_budget_ms ? 4 : 0;
   const costBudget = hints.cost_budget_usd !== null && candidate.estimated_cost_usd !== null && candidate.estimated_cost_usd <= hints.cost_budget_usd ? 4 : 0;
-  const shapeDefault = executionShapeScore(hints.execution_shape, candidate);
-  return { preference, profile_preference: profilePreference, execution_shape_default: shapeDefault, default_profile: defaultProfile, verification_pass_rate: passRate, cost, latency, latency_budget: latencyBudget, cost_budget: costBudget };
-}
-
-function executionShapeScore(
-  shape: RouteExecutionShape | null,
-  candidate: RouteCandidate,
-): number {
-  if (
-    (shape === "conversational" || shape === "structured_generation") &&
-    candidate.adapter_type === "model_api"
-  ) return 30;
-  return 0;
+  // Execution shape no longer discriminates between candidates: every runtime
+  // is an ACP runtime, and shape-sensitive admission is `required_capabilities`
+  // and file-access filtering, not a score. The term that used to sit here
+  // added 30 for a default Profile on conversational/structured work — a
+  // ten-fold restatement of `default_profile` that could outrank an explicit
+  // `profile_preference`, under a name that promised something about shape.
+  return { preference, profile_preference: profilePreference, default_profile: defaultProfile, verification_pass_rate: passRate, cost, latency, latency_budget: latencyBudget, cost_budget: costBudget };
 }
 
 function trustRequiredForRisk(risk: RouteRiskLevel): RouteTrustLevel {

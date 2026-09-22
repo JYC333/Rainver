@@ -1,49 +1,17 @@
-import {
-  getRuntimeAdapterSpec,
-} from "../runtimeAdapters/specs.js";
-import { recommendedMaxOutputTokens } from "../providers/modelOutputLimits.js";
 import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import type { AgentOut, AgentRecord } from "./repository.js";
 
-export const DEFAULT_MODEL_CONFIG = { model: "claude-sonnet-4-6", max_tokens: 8192 };
-
-/**
- * Default model config for a version that names a model but supplies no
- * explicit config. Known models get their recommended output budget instead
- * of the generic default — stamping 8192 onto a reasoning model starves its
- * structured outputs (thinking and completion share the same budget).
- */
-export function defaultModelConfigFor(modelName: string | null | undefined): { model: string; max_tokens: number } {
-  if (!modelName) return { ...DEFAULT_MODEL_CONFIG };
-  return {
-    model: modelName,
-    max_tokens: recommendedMaxOutputTokens(modelName) ?? DEFAULT_MODEL_CONFIG.max_tokens,
-  };
-}
 export const DEFAULT_MEMORY_POLICY = {
   readable_scopes: ["user", "project"],
   writable_scopes: ["user", "project"],
   readable_types: ["preference", "semantic", "episodic", "procedural", "project"],
 };
-export const DEFAULT_RUNTIME_POLICY = {
-  risk_level: "medium",
-  max_run_time_seconds: 300,
-  allowed_adapter_types: [
-    "capability",
-    "model_api",
-    "claude_code",
-    "codex_cli",
-    "opencode",
-    "gemini_cli",
-  ],
-  default_adapter_type: "model_api",
-};
-export const DEFAULT_RUNTIME_CONFIG = { risk_level: "medium", max_run_time_seconds: 300 };
+export const DEFAULT_AGENT_RISK_LEVEL = "medium" as const;
+export const DEFAULT_AGENT_MAX_RUN_TIME_SECONDS = 300;
+export const DEFAULT_RUNTIME_CONFIG: Record<string, unknown> = {};
 
 export function agentOut(row: WithAccessLevel<AgentRecord>): AgentOut {
-  const adapterType = normalizeAdapterType(row.runtime_adapter_type ?? runtimePolicy(row).default_adapter_type);
-  const spec = getRuntimeAdapterSpec(adapterType);
-  const requiresModelProvider = spec?.model.model_provider_mode === "required";
+  const runtimeKey = row.runtime_key ?? null;
   const hasModel =
     row.model_provider_id !== null ||
     row.provider_name !== null ||
@@ -70,34 +38,11 @@ export function agentOut(row: WithAccessLevel<AgentRecord>): AgentOut {
           model: row.model_name ?? null,
         }
       : null,
-    adapter_type: adapterType,
-    requires_model_provider: requiresModelProvider,
+    runtime_key: runtimeKey,
     system_prompt: bodyWithheld(row.effective_access_level) ? null : row.system_prompt ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
-}
-
-function runtimePolicy(row: AgentRecord): Record<string, unknown> {
-  return recordValue(row.runtime_policy_json) ?? DEFAULT_RUNTIME_POLICY;
-}
-
-export function buildRuntimePolicy(
-  adapterType: string,
-  base: Record<string, unknown> | null | undefined,
-): Record<string, unknown> {
-  const policy = { ...DEFAULT_RUNTIME_POLICY, ...(base ?? {}) };
-  const allowed = Array.isArray(policy.allowed_adapter_types)
-    ? policy.allowed_adapter_types.filter((item): item is string => typeof item === "string")
-    : [...DEFAULT_RUNTIME_POLICY.allowed_adapter_types];
-  if (!allowed.includes(adapterType)) allowed.push(adapterType);
-  policy.allowed_adapter_types = allowed;
-  policy.default_adapter_type = adapterType;
-  return policy;
-}
-
-export function normalizeAdapterType(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim() : "model_api";
 }
 
 export function recordValue(value: unknown): Record<string, unknown> | null {

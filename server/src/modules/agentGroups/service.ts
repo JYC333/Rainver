@@ -465,6 +465,7 @@ export class AgentGroupRunService {
           for (const recipientAgentId of segment.recipient_agent_ids) {
             const preparedBackend = backends.get(recipientAgentId);
             const run = await repos.runs.createGroupedAgentRun({
+              execution_kind: "agent",
               agent_id: recipientAgentId,
               space_id: input.space_id,
               user_id: identity.userId,
@@ -517,6 +518,7 @@ export class AgentGroupRunService {
         }
         const preparedRootBackend = backends.get(firstRecipientAgentId);
         const rootRun = await repos.runs.createQueuedRun({
+          execution_kind: "agent",
           agent_id: firstRecipientAgentId,
           space_id: input.space_id,
           user_id: identity.userId,
@@ -581,6 +583,7 @@ export class AgentGroupRunService {
             const recipientAgentId = segment.recipient_agent_ids[recipientIndex]!;
             const preparedBackend = backends.get(recipientAgentId);
             const run = await repos.runs.createGroupedAgentRun({
+              execution_kind: "agent",
               agent_id: recipientAgentId,
               space_id: input.space_id,
               user_id: identity.userId,
@@ -1100,6 +1103,9 @@ export class AgentGroupRunService {
           agent_id: input.target_agent_id,
           requested: null,
         });
+        if (!delegatedBackend) {
+          throw new HttpError(409, `Conversation runtime for Agent '${input.target_agent_id}' is unavailable`);
+        }
         const thread = await executionContexts.getConversationThread(
           input.space_id,
           parentRun.session_id,
@@ -1112,7 +1118,7 @@ export class AgentGroupRunService {
         }
         delegatedBackend = {
           ...delegatedBackend,
-          adapter_type: thread.adapter_type,
+          runtime_key: thread.runtime_key,
           execution_host_id: thread.execution_host_id,
           workspace_mode: thread.workspace_mode,
           workspace_location_id: thread.workspace_location_id,
@@ -1143,6 +1149,7 @@ export class AgentGroupRunService {
       }
     }
     const childRun = await repos.runs.createDelegatedChildRun({
+      execution_kind: "agent",
       agent_id: input.target_agent_id,
       space_id: input.space_id,
       user_id: identity.userId,
@@ -1474,7 +1481,7 @@ export async function prepareHostConversationDispatch(input: {
     }
     return null;
   }
-  if (!isLocalCliRuntimeAdapter(input.backend.adapter_type)) {
+  if (!isLocalCliRuntimeAdapter(input.backend.runtime_key)) {
     throw new HttpError(409, `Room agent '${input.agentId}' has a host binding for an unsupported runtime`);
   }
 
@@ -1535,7 +1542,7 @@ export async function prepareHostConversationDispatch(input: {
   // managed; the built-in host runs the copies its daemon installed and has no
   // vendor CLI on PATH, so skipping the check here is what would let a Room
   // turn dispatch to a runtime that is not there and fail at the spawn.
-  const runtimeAvailable = hostInstallationIds(target.capabilities_json, input.backend.adapter_type)
+  const runtimeAvailable = hostInstallationIds(target.capabilities_json, input.backend.runtime_key)
     .includes(input.backend.runtime_installation!);
   if (!hostOnline || !executionReady || !runtimeAvailable) {
     throw new HttpError(409, `Room agent '${input.agentId}' host is offline or its runtime is unavailable`);
@@ -1550,7 +1557,7 @@ export async function prepareHostConversationDispatch(input: {
         spaceId: input.spaceId,
         sessionId: input.sessionId,
         agentId: input.agentId,
-        adapterType: input.backend.adapter_type,
+        runtimeKey: input.backend.runtime_key,
         runtimeInstallation: input.backend.runtime_installation!,
         createdByUserId: input.userId,
       })
@@ -1560,7 +1567,7 @@ export async function prepareHostConversationDispatch(input: {
           executionHostId: input.backend.execution_host_id!,
           userId: directUserId!,
           agentId: input.agentId,
-          adapterType: input.backend.adapter_type,
+          runtimeKey: input.backend.runtime_key,
           runtimeInstallation: input.backend.runtime_installation!,
           createdByUserId: input.userId,
         })
@@ -1570,7 +1577,7 @@ export async function prepareHostConversationDispatch(input: {
           executionHostId: input.backend.execution_host_id!,
           userId: directUserId!,
           agentId: input.agentId,
-          adapterType: input.backend.adapter_type,
+          runtimeKey: input.backend.runtime_key,
           runtimeInstallation: input.backend.runtime_installation!,
           createdByUserId: input.userId,
         });
@@ -1578,7 +1585,7 @@ export async function prepareHostConversationDispatch(input: {
     hostThread.execution_host_id !== input.backend.execution_host_id
     || hostThread.workspace_location_id !== input.backend.workspace_location_id
     || hostThread.workspace_mode !== input.backend.workspace_mode
-    || hostThread.adapter_type !== input.backend.adapter_type
+    || hostThread.runtime_key !== input.backend.runtime_key
     || hostThread.runtime_installation !== input.backend.runtime_installation
   ) {
     throw new HttpError(
@@ -1737,7 +1744,7 @@ async function prepareRoomConversationBackends(input: {
     }
     const pinnedBackend: ResolvedConversationBackend = {
       ...backend,
-      adapter_type: thread.adapter_type,
+      runtime_key: thread.runtime_key,
       execution_host_id: thread.execution_host_id,
       workspace_mode: thread.workspace_mode,
       workspace_location_id: thread.workspace_location_id,
@@ -1811,7 +1818,7 @@ async function prepareRoomConversationBackends(input: {
         renderRoomPromptMessages(hostMessages, hostPromptFresh ? replayContext.summary_text : null),
       ].filter(Boolean).join("\n\n") || null;
     }
-    const localCli = isLocalCliRuntimeAdapter(pinnedBackend.adapter_type) && !hostBound;
+    const localCli = isLocalCliRuntimeAdapter(pinnedBackend.runtime_key) && !hostBound;
     const contextFingerprint = localCli
       ? roomRuntimeContextFingerprint(
           pinnedBackend,
@@ -1893,7 +1900,7 @@ function roomRunModelOverride(
     conversation_backend: {
       schema_version: "conversation_backend.v1",
       runtime_profile_id: backend.runtime_profile_id,
-      adapter_type: backend.adapter_type,
+      runtime_key: backend.runtime_key,
       model_name: backend.model_name,
       model_provider_id: backend.model_provider_id,
       prompt_capabilities: backend.prompt_capabilities ?? null,
@@ -1987,7 +1994,7 @@ function delegatedRoomModelOverride(
           conversation_backend: {
             schema_version: "conversation_backend.v1",
             runtime_profile_id: backend.runtime_profile_id,
-            adapter_type: backend.adapter_type,
+            runtime_key: backend.runtime_key,
                   model_name: backend.model_name,
             model_provider_id: backend.model_provider_id,
           },
@@ -2260,7 +2267,7 @@ function roomRuntimeContextFingerprint(
     project_updated_at: revision?.project_updated_at ?? null,
     active_brief_version_id: revision?.active_brief_version_id ?? null,
     runtime_profile_id: backend.runtime_profile_id,
-    adapter_type: backend.adapter_type,
+    runtime_key: backend.runtime_key,
     model_name: backend.model_name,
     model_provider_id: backend.model_provider_id,
     runtime_config_json: backend.runtime_config_json,
@@ -2318,7 +2325,7 @@ function roomRunContract(
     required_outputs_json: [{
       name: "conversation_capture",
       path: "conversation_capture.json",
-          required: Boolean(backend && !backend.host_thread && isLocalCliRuntimeAdapter(backend.adapter_type)),
+          required: Boolean(backend && !backend.host_thread && isLocalCliRuntimeAdapter(backend.runtime_key)),
       media_type: "application/vnd.rainver.proposals+json",
       max_bytes: 262_144,
       json_schema: {

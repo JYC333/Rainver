@@ -71,8 +71,9 @@ The exact active route-module list is intentionally not duplicated here.
 `server/src/gateway/routeRegistry.ts::SERVER_MODULES` is its executable source
 of truth, and [`MODULES.md`](MODULES.md) records the current human-readable
 module inventory and route ownership.
-`runtimeAdapters` is a first-class code-only domain consumed by `runs`,
-`runtimeHost`, and `hosts`.
+`runtimeAdapters` is a first-class code-only domain consumed by `runs` and
+`hosts`. Agent execution uses the shared ACP adapter and execution Host daemon;
+bounded provider calls stay in the Provider subsystem.
 
 ## Current fail-closed gaps
 

@@ -9,7 +9,7 @@ import { registerProjectWorkSystemActionExecutors } from "../src/modules/project
 import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.js";
 import type { SystemActionId } from "@rainver/protocol";
 import { loadSystemActionRegistry } from "../src/modules/systemActions/registry.js";
-import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import { resolveAgentActorId } from "../src/db/actorResolver.js";
 import {
@@ -22,7 +22,7 @@ import {
 } from "../src/modules/projectWork/taskActions.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * The Agent's Project write surface.
@@ -84,7 +84,7 @@ async function agentContext() {
 async function events(taskId: string): Promise<{ kind: string; data: Record<string, unknown> }[]> {
   const result = await db.pool!.query<{ event_kind: string; data_json: Record<string, unknown> }>(
     `SELECT event_kind, data_json FROM project_work_events
-      WHERE space_id = $1 AND subject_id = $2 ORDER BY created_at, id`,
+      WHERE space_id = $1 AND subject_id = $2 ORDER BY created_at, seq`,
     [SPACE, taskId],
   );
   return result.rows.map((row) => ({ kind: row.event_kind, data: row.data_json }));
@@ -135,12 +135,19 @@ beforeEach(async () => {
   );
   await db.pool!.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, model_config_json, runtime_config_json,
-       context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, created_at
-     ) VALUES ($1, $2, $3, 'v1', '{}', '{}', '{}', '{}', '[]', '{}', '{}', now())`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES ($1, $2, $3, 'v1', '{}', '{}', '[]', '{}', now())`,
     [VERSION, AGENT, SPACE],
   );
+  await ensureDefaultRuntimeProfile(db.pool!, { agent: AGENT, space: SPACE });
   // The Room manager, which can never be dispatched to run a Task.
   await db.pool!.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, visibility, created_at, updated_at)
@@ -586,18 +593,20 @@ describe("the origin gate at the dispatch path", () => {
    * phase did not, so the gate was inert at every real dispatch while its unit
    * cases passed — the same shape of gap P1 and P2 each hit once.
    */
-  async function enforceFor(runOverrides: Partial<RunRecord> & { trigger_origin: string }, actionId: string) {
+  async function enforceFor(runOverrides: Partial<AgentRunRecord> & { trigger_origin: string }, actionId: string) {
     const registry = await loadSystemActionRegistry();
     const definition = [...registry.values()].find((entry) => entry.id === actionId)!;
     const run = {
       id: randomUUID(),
       space_id: SPACE,
       agent_id: AGENT,
+      agent_version_id: "version-1",
+      execution_kind: "agent",
       project_id: PROJECT,
       instructed_by_user_id: OWNER,
       status: "running",
       ...runOverrides,
-    } as unknown as RunRecord;
+    } as unknown as AgentRunRecord;
     return enforceDeclaredResourcePolicy(
       db.connectionUri,
       definition,
@@ -632,10 +641,7 @@ describe("the origin gate at the dispatch path", () => {
     // to a specialist and have it go through unasked.
     const root = randomUUID();
     await db.pool!.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type,
-         trigger_origin, status, mode, owner_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $6, $4, 'sandboxed', 'agent', 'autonomous', 'running', 'live', $5, now(), now())`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $6, $4, 'sandboxed', 'agent', 'autonomous', 'running', 'live', $5, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [root, SPACE, AGENT, PROJECT, OWNER, VERSION],
     );
     const decision = await enforceFor({ trigger_origin: "delegation", root_run_id: root }, "task.create");
@@ -646,10 +652,7 @@ describe("the origin gate at the dispatch path", () => {
     if (!db.available) return ctx.skip();
     const root = randomUUID();
     await db.pool!.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type,
-         trigger_origin, status, mode, owner_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $6, $4, 'sandboxed', 'agent', 'manual', 'running', 'live', $5, now(), now())`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $6, $4, 'sandboxed', 'agent', 'manual', 'running', 'live', $5, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [root, SPACE, AGENT, PROJECT, OWNER, VERSION],
     );
     const decision = await enforceFor({ trigger_origin: "delegation", root_run_id: root }, "task.create");
@@ -819,10 +822,7 @@ describe("the executor band", () => {
     const { executors, run } = executorsFor();
     const runId = (run as { id: string }).id;
     await db.pool!.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type,
-         trigger_origin, status, mode, owner_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, 'sandboxed', 'agent', 'manual', 'running', 'live', $6, now(), now())`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, $5, 'sandboxed', 'agent', 'manual', 'running', 'live', $6, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [runId, SPACE, AGENT, VERSION, PROJECT, OWNER],
     );
     const attempt = async (n: number, taskId: string) => {

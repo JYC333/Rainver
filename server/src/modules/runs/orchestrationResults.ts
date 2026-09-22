@@ -29,36 +29,6 @@ export function terminalStatusFromAdapter(result: RunAdapterResultEnvelope): Run
   return "failed";
 }
 
-/**
- * A managed Run keeps going when one of its server-owned tools cannot be used —
- * the tool call returns `ok: false` and the model answers without it. The
- * summaries record that, but a terminal `succeeded` would make an answer
- * produced without a tool indistinguishable from one produced with it, which
- * matters most exactly when nobody is reading the Run. Report the failed tools
- * so the caller can settle the Run as `degraded` instead.
- *
- * This reads the family-neutral key every managed tool loop writes. It must
- * keep matching what `managedToolLoop.ts` emits: a delegation or proposal tool
- * failing is the same kind of evidence as a retrieval tool failing, and the
- * Always-on gate depends on all of them being visible here.
- */
-export function managedToolDegradation(
-  result: RunAdapterResultEnvelope,
-): { tool_names: string[]; error_codes: string[] } | null {
-  const metadata = recordValue(result.metadata_json);
-  const failed = ["managed_tool_calls"]
-    .flatMap((key) => (Array.isArray(metadata[key]) ? metadata[key] as unknown[] : []))
-    .map((call) => recordValue(call))
-    .filter((call) => call.ok === false);
-  if (failed.length === 0) return null;
-  const unique = (values: unknown[]) =>
-    [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
-  return {
-    tool_names: unique(failed.map((call) => call.tool_name)),
-    error_codes: unique(failed.map((call) => call.error_code)),
-  };
-}
-
 export function adapterErrorJson(result: RunAdapterResultEnvelope): unknown {
   if (result.success) return {};
   const output = recordValue(result.output_json);
@@ -66,7 +36,7 @@ export function adapterErrorJson(result: RunAdapterResultEnvelope): unknown {
   return sanitizeEvidenceJson({
     error_code: result.error_code ?? "adapter_failed",
     error_text: result.error_message ?? "Runtime adapter failed.",
-    adapter_type: result.adapter_type,
+    runtime_key: result.runtime_key,
     adapter_kind: result.adapter_kind,
     exit_code: result.exit_code,
     ...(Object.keys(diagnostics).length > 0
@@ -122,7 +92,7 @@ export function semanticFailureErrorJson(
     ? sanitizeEvidenceJson({
         error_code: failure.error_code,
         error_text: failure.error_message,
-        adapter_type: result.adapter_type,
+        runtime_key: result.runtime_key,
         adapter_kind: result.adapter_kind,
         exit_code: result.exit_code,
       })
@@ -195,22 +165,6 @@ function normalizeOutputManifest(value: unknown): CanonicalRunOutput["output_man
   });
 }
 
-export function waitingForDependencyFromAdapter(
-  result: RunAdapterResultEnvelope,
-): Record<string, unknown> | null {
-  if (!result.success) return null;
-  const waiting = recordValue(recordValue(result.output_json).waiting_for_results);
-  if (waiting.status !== "waiting") return null;
-  const dependsOnRunIds = stringArrayValue(waiting.depends_on_run_ids);
-  if (dependsOnRunIds.length === 0) return null;
-  return sanitizeEvidenceJson({
-    ...waiting,
-    status: "waiting",
-    depends_on_run_ids: dependsOnRunIds,
-    pending_run_ids: stringArrayValue(waiting.pending_run_ids),
-  }) as Record<string, unknown>;
-}
-
 export function materializationEventStatus(
   item: RunMaterializationItemSummary,
 ): "succeeded" | "failed" | "warning" | "skipped" {
@@ -227,11 +181,11 @@ export function adapterFailureEnvelope(
 ): RunAdapterResultEnvelope {
   const now = new Date().toISOString();
   return {
-    adapter_type: run.adapter_type ?? "unknown",
+    runtime_key: run.runtime_key ?? "unknown",
     adapter_kind: "custom",
     success: false,
     output_text: "",
-    output_json: { adapter_type: run.adapter_type ?? "unknown" },
+    output_json: { runtime_key: run.runtime_key ?? "unknown" },
     exit_code: 1,
     error_code: errorCode,
     error_message: redactEvidenceText(message),
@@ -239,7 +193,7 @@ export function adapterFailureEnvelope(
     completed_at: now,
     usage: null,
     metadata_json: {
-      adapter_type: run.adapter_type ?? "unknown",
+      runtime_key: run.runtime_key ?? "unknown",
     },
   };
 }
@@ -250,11 +204,11 @@ export function adapterTimeoutEnvelope(
 ): RunAdapterResultEnvelope {
   const now = new Date().toISOString();
   return {
-    adapter_type: run.adapter_type ?? "unknown",
-    adapter_kind: isVendorCliAdapter(run.adapter_type) ? "local_cli" : "managed_api",
+    runtime_key: run.runtime_key ?? "unknown",
+    adapter_kind: isVendorCliAdapter(run.runtime_key) ? "local_cli" : "managed_api",
     success: false,
     output_text: "",
-    output_json: { adapter_type: run.adapter_type ?? "unknown" },
+    output_json: { runtime_key: run.runtime_key ?? "unknown" },
     exit_code: 1,
     error_code: "adapter_timeout",
     error_message: `Runtime adapter timed out after ${timeoutMs}ms.`,
@@ -262,7 +216,7 @@ export function adapterTimeoutEnvelope(
     completed_at: now,
     usage: null,
     metadata_json: {
-      adapter_type: run.adapter_type ?? "unknown",
+      runtime_key: run.runtime_key ?? "unknown",
       timeout_ms: timeoutMs,
     },
   };
@@ -383,8 +337,8 @@ export function summarizeOutput(value: string | undefined): string | null {
 }
 
 export function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
+  if (error instanceof Error) return redactEvidenceText(error.message) ?? "run orchestration failed";
+  if (typeof error === "string") return redactEvidenceText(error) ?? "run orchestration failed";
   return "run orchestration failed";
 }
 
@@ -396,11 +350,4 @@ export function recordValue(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function stringArrayValue(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value
-    .map((item) => typeof item === "string" ? item.trim() : "")
-    .filter((item) => item.length > 0))];
 }

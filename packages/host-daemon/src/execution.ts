@@ -133,7 +133,7 @@ interface ActiveRun {
   /** Server-authorized logical conversation resources resolved by this daemon. */
   inputResourcePaths: Record<string, string>;
   /** Which runtime this run is executing, so an upgrade of that copy can drain it. */
-  adapterType: string | null;
+  runtimeKey: string | null;
   timedOut: boolean;
   /** Whether something asked this run to stop, as opposed to it stopping on its own. */
   terminationRequested: boolean;
@@ -307,14 +307,14 @@ export function resolveAcpLaunch(
   rawCommand: string,
   args: string[],
   installation: string = OWN_INSTALLATION,
-  /** Required for a managed copy: the tools directory is keyed by adapter, and the command name (`claude-agent-acp`) is not it. */
-  adapterType: string = rawCommand,
+  /** Required for a managed copy: the tools directory is keyed by runtime key, not command name (`claude-agent-acp`). */
+  runtimeKey: string = rawCommand,
 ): AcpLaunch {
   if (installation !== OWN_INSTALLATION) {
     // A managed copy: launched from its manifest with its own HOME, never
     // looked up on PATH (`tools.ts`).
-    const tool = readToolManifestSync(adapterType, installation);
-    if (!tool) throw new Error(`This daemon does not have ${adapterType} ${installation} installed.`);
+    const tool = readToolManifestSync(runtimeKey, installation);
+    if (!tool) throw new Error(`This daemon does not have ${runtimeKey} ${installation} installed.`);
     return { command: tool.command, args: [...tool.args, ...args], env: { ...tool.env, HOME: tool.home } };
   }
   if (!isPackagedAdapter(rawCommand)) return { command: rawCommand, args, env: {} };
@@ -339,9 +339,9 @@ export function resolveAcpLaunch(
 }
 
 /** Resolve the separate read-only binary tree needed by a managed strict launch. */
-export function managedToolTreeForLaunch(adapterType: string | undefined, installation: string | undefined): string | null {
-  if (!adapterType || !installation || installation === OWN_INSTALLATION) return null;
-  return managedToolTree(adapterType, installation);
+export function managedToolTreeForLaunch(runtimeKey: string | undefined, installation: string | undefined): string | null {
+  if (!runtimeKey || !installation || installation === OWN_INSTALLATION) return null;
+  return managedToolTree(runtimeKey, installation);
 }
 
 /**
@@ -373,48 +373,48 @@ export function hasInFlightRuns(): boolean {
 }
 
 /**
- * Adapters whose copy is being replaced right now.
+ * Runtime keys whose managed copy is being replaced right now.
  *
  * Draining is only half of it: a drain that reports "quiet" and then spends a
  * minute downloading is a window in which a new dispatch starts against the
  * copy about to be deleted. So the replacement holds this for its whole
- * duration and every launch of that adapter is refused while it does — a
+ * duration and every launch of that runtime is refused while it does — a
  * refusal the control plane can retry, rather than a binary pulled out from
  * under a running session.
  */
-const replacingAdapters = new Set<string>();
+const replacingRuntimeKeys = new Set<string>();
 
-/** Whether a launch of this adapter must be refused because its copy is being replaced. */
-export function adapterIsBeingReplaced(adapterType: string | null | undefined): boolean {
-  return typeof adapterType === "string" && replacingAdapters.has(adapterType);
+/** Whether a launch of this runtime must be refused because its copy is being replaced. */
+export function isRuntimeKeyBeingReplaced(runtimeKey: string | null | undefined): boolean {
+  return typeof runtimeKey === "string" && replacingRuntimeKeys.has(runtimeKey);
 }
 
 /**
- * Work that runs a copy without being a Run: a verification recipe, a C3
- * probe, a usage probe, an open login terminal.
+ * Work that runs a copy without being a Run: a verification recipe, a usage
+ * probe, or an open login terminal.
  *
  * They are in neither run registry, so a drain that only counted Runs reported
  * "quiet" and then deleted the directory one of them was executing from. The
  * closed door alone is not enough either — it only orders *replacement before
- * work*, and this is the other order. Counted per adapter because that is what
+ * work*, and this is the other order. Counted per runtime key because that is what
  * a replacement holds.
  */
-const adapterHolders = new Map<string, number>();
+const runtimeKeyHolders = new Map<string, number>();
 
 /**
  * Marks one copy as in use until the returned function is called, so a
  * replacement waits for it. Used directly by work with no single call to wrap
  * — an open login terminal, which ends on its own child's exit.
  */
-export function holdAdapter(adapterType: string): () => void {
-  adapterHolders.set(adapterType, (adapterHolders.get(adapterType) ?? 0) + 1);
+export function holdRuntimeKey(runtimeKey: string): () => void {
+  runtimeKeyHolders.set(runtimeKey, (runtimeKeyHolders.get(runtimeKey) ?? 0) + 1);
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    const remaining = (adapterHolders.get(adapterType) ?? 1) - 1;
-    if (remaining > 0) adapterHolders.set(adapterType, remaining);
-    else adapterHolders.delete(adapterType);
+    const remaining = (runtimeKeyHolders.get(runtimeKey) ?? 1) - 1;
+    if (remaining > 0) runtimeKeyHolders.set(runtimeKey, remaining);
+    else runtimeKeyHolders.delete(runtimeKey);
   };
 }
 
@@ -422,9 +422,9 @@ export function holdAdapter(adapterType: string): () => void {
  * Marks one copy as in use for the duration of `work`, so a replacement waits
  * for it. Returns `work`'s result; the count is released even if it throws.
  */
-export async function holdingAdapter<T>(adapterType: string | null | undefined, work: () => Promise<T>): Promise<T> {
-  if (typeof adapterType !== "string") return work();
-  const release = holdAdapter(adapterType);
+export async function withRuntimeKeyHeld<T>(runtimeKey: string | null | undefined, work: () => Promise<T>): Promise<T> {
+  if (typeof runtimeKey !== "string") return work();
+  const release = holdRuntimeKey(runtimeKey);
   try {
     return await work();
   } finally {
@@ -433,34 +433,34 @@ export async function holdingAdapter<T>(adapterType: string | null | undefined, 
 }
 
 /**
- * Holds one adapter closed, drains its Runs, and runs `replace` with nothing
+ * Holds one runtime key closed, drains its Runs, and runs `replace` with nothing
  * able to start against it.
  *
  * Nothing is killed: a drain that does not converge abandons the replacement,
  * which loses an upgrade rather than someone's work. `launchingRuns` counts as
- * busy across all adapters — a dispatch whose child is not registered yet is a
+ * busy across all runtimes — a dispatch whose child is not registered yet is a
  * Run about to use some copy, and which one is not known until it is.
- * Work that is not a Run — verification recipes, usage probes,
- * an open login terminal — registers through `holdingAdapter`, so it is drained
- * for as well as refused afterwards.
+ * Work that is not a Run — verification recipes, usage probes, an open login
+ * terminal — registers through `withRuntimeKeyHeld`, so it is drained for as
+ * well as refused afterwards.
  */
-export async function withAdapterDrained<T>(
-  adapterType: string,
+export async function withRuntimeKeyDrained<T>(
+  runtimeKey: string,
   timeoutMs: number,
   replace: () => Promise<T>,
 ): Promise<T> {
-  if (replacingAdapters.has(adapterType)) {
-    throw new Error(`Another change to ${adapterType} is already in progress on this host`);
+  if (replacingRuntimeKeys.has(runtimeKey)) {
+    throw new Error(`Another change to ${runtimeKey} is already in progress on this host`);
   }
-  replacingAdapters.add(adapterType);
+  replacingRuntimeKeys.add(runtimeKey);
   try {
     const deadline = Date.now() + timeoutMs;
     const busy = () => launchingRuns.size > 0
-      || (adapterHolders.get(adapterType) ?? 0) > 0
-      || [...activeRuns.values()].some((run) => run.adapterType === adapterType);
+      || (runtimeKeyHolders.get(runtimeKey) ?? 0) > 0
+      || [...activeRuns.values()].some((run) => run.runtimeKey === runtimeKey);
     while (busy()) {
       if (Date.now() >= deadline) {
-        throw new Error(`Runs are still using ${adapterType}; try again once they finish`);
+        throw new Error(`Runs are still using ${runtimeKey}; try again once they finish`);
       }
       await new Promise((resolve) => {
         const timer = setTimeout(resolve, 500);
@@ -469,7 +469,7 @@ export async function withAdapterDrained<T>(
     }
     return await replace();
   } finally {
-    replacingAdapters.delete(adapterType);
+    replacingRuntimeKeys.delete(runtimeKey);
   }
 }
 
@@ -629,7 +629,7 @@ function rainverCliPath(): string {
  * it will resume next turn, and whatever the vendor CLI remembers on its own.
  *
  * The key is
- * `agents/<agent_id>/<container_kind>/<container_id>/<adapter>/<provider|ambient>`,
+ * `agents/<agent_id>/<container_kind>/<container_id>/<runtime_key>/<provider|ambient>`,
  * and the directory follows it with a `profiles/` level inserted so it sits
  * beside — not inside — the Agent's managed workspaces. It is not under
  * `runs/`: a profile deleted when its run exits takes with it the session the
@@ -641,14 +641,14 @@ function rainverCliPath(): string {
  */
 export function providerProfileDir(profileKey: string): string {
   const segments = profileKey.split("/");
-  const [agents, agentId, containerKind, containerId, adapterType, providerId] = segments;
+  const [agents, agentId, containerKind, containerId, runtimeKey, providerId] = segments;
   if (segments.length !== 6 || agents !== "agents") {
     throw new Error(`runtime profile key has an unusable shape: ${profileKey}`);
   }
-  if (containerKind !== "direct" && containerKind !== "conversation" && containerKind !== "location") {
+  if (containerKind !== "direct" && containerKind !== "conversation" && containerKind !== "location" && containerKind !== "agent") {
     throw new Error(`runtime profile key has an unusable container kind: ${profileKey}`);
   }
-  for (const segment of [agentId, containerId, adapterType, providerId]) {
+  for (const segment of [agentId, containerId, runtimeKey, providerId]) {
     if (!segment || !/^[A-Za-z0-9._-]+$/.test(segment) || segment.startsWith(".")) {
       throw new Error(`runtime profile key has an unusable segment: ${profileKey}`);
     }
@@ -659,7 +659,7 @@ export function providerProfileDir(profileKey: string): string {
   // archive silently moved nothing.
   return join(
     runtimeProfileContainerPath(agentId!, containerKind, containerId!),
-    adapterType!,
+    runtimeKey!,
     providerId!,
   );
 }
@@ -671,12 +671,12 @@ export function providerProfileDir(profileKey: string): string {
  * credential rather than logging in per profile: an Agent × container profile
  * per Room would otherwise multiply logins by Agents × Rooms. `own` is the
  * machine's own home directory — the CLI the user already logged into — and a
- * managed adapter has a stable private HOME so its login never mixes with the
+ * managed runtime has a stable private HOME so its login never mixes with the
  * machine's.
  */
-function loginHomeFor(adapterType: string, installation: string): string | null {
+function loginHomeFor(runtimeKey: string, installation: string): string | null {
   if (installation === OWN_INSTALLATION) return homedir();
-  return readToolManifestSync(adapterType, installation)?.home ?? null;
+  return readToolManifestSync(runtimeKey, installation)?.home ?? null;
 }
 
 /**
@@ -925,14 +925,14 @@ export async function handleLaunch(
   // Refused rather than raced: this copy is being replaced, and starting
   // against a directory that is about to be renamed away is the failure the
   // drain exists to prevent (ADR 0016 §9).
-  if (adapterIsBeingReplaced(frame.adapter_type)) {
+  if (isRuntimeKeyBeingReplaced(frame.runtime_key)) {
     send({
       type: "complete",
       run_id: frame.run_id,
       launch_id: frame.launch_id,
       exit_code: 1,
       timed_out: false,
-      error: `${frame.adapter_type} is being upgraded on this host; retry in a moment.`,
+      error: `${frame.runtime_key} is being upgraded on this host; retry in a moment.`,
     });
     return;
   }
@@ -975,6 +975,13 @@ async function launchRun(
       error: error instanceof Error ? error.message : String(error),
     });
     return;
+  }
+  if (!cwd && !frame.workspace && !frame.workspace_location_id) {
+    // A Server Agent Run may have neither a Conversation thread nor a
+    // WorkspaceLocation. Give it a private, Run-scoped cwd and let the
+    // existing orphan sweeper remove it with the rest of the Run directory.
+    cwd = join(runDir(frame.run_id), "workspace");
+    await mkdir(cwd, { recursive: true, mode: 0o700 });
   }
   if (!cwd) {
     send({
@@ -1060,7 +1067,7 @@ async function launchRun(
 
   let launch: AcpLaunch;
   try {
-    launch = resolveAcpLaunch(rawCommand, args, frame.installation ?? OWN_INSTALLATION, frame.adapter_type ?? rawCommand);
+    launch = resolveAcpLaunch(rawCommand, args, frame.installation ?? OWN_INSTALLATION, frame.runtime_key ?? rawCommand);
   } catch (error) {
     send({
       type: "complete",
@@ -1105,7 +1112,7 @@ async function launchRun(
   // Task run that needs gcloud. Today's single producer always sends a real
   // adapter type; the wire contract allows it to be absent, and this is what
   // that case gets.
-  let baseEnv: Record<string, string> = clearVendorCredentialEnv(process.env, frame.adapter_type ?? "");
+  let baseEnv: Record<string, string> = clearVendorCredentialEnv(process.env, frame.runtime_key ?? "");
   let bindingEnv: Record<string, string> = {};
   let workSurfaceEnv: Record<string, string> = {};
   // Kept out of the binding block so the strict namespace below can bind them:
@@ -1132,7 +1139,7 @@ async function launchRun(
   }
   if (frame.provider_binding) {
     try {
-      const adapterType = frame.adapter_type ?? rawCommand;
+      const runtimeKey = frame.runtime_key ?? rawCommand;
       const binding = frame.provider_binding;
       // A frame that writes nothing, points at nothing and links nothing is
       // the credential half alone — a runtime whose state root cannot move
@@ -1143,7 +1150,7 @@ async function launchRun(
         || binding.files.length > 0 || binding.login_link !== null;
       if (relocatesState) {
         profileDir = providerProfileDir(binding.profile_key);
-        loginHome = loginHomeFor(adapterType, frame.installation ?? OWN_INSTALLATION);
+        loginHome = loginHomeFor(runtimeKey, frame.installation ?? OWN_INSTALLATION);
       }
       bindingEnv = relocatesState
         ? await materializeProviderBinding(binding, profileDir!, loginHome, log)
@@ -1151,7 +1158,7 @@ async function launchRun(
       if (binding.credential_source === "provider_lease") {
         baseEnv = filterAmbientEnv(process.env);
       } else if (relocatesState) {
-        baseEnv = clearStateRootEnv(process.env, adapterType);
+        baseEnv = clearStateRootEnv(process.env, runtimeKey);
         // A managed copy is launched with `HOME` pointing inside its own tree
         // so its login never mixes with the machine's. That reason is gone
         // once the credential is linked into the profile and the state root is
@@ -1160,7 +1167,7 @@ async function launchRun(
         // branch exists to keep them for.
         delete acpAdapterEnv.HOME;
       } else {
-        baseEnv = clearVendorCredentialEnv(process.env, adapterType);
+        baseEnv = clearVendorCredentialEnv(process.env, runtimeKey);
       }
     } catch (error) {
       send({
@@ -1191,7 +1198,7 @@ async function launchRun(
   let spawnCommandArgs = spawnArgs;
   let spawnEnv: Record<string, string> = { ...baseEnv, ...derivedEnv };
   const strict = config.trust === "strict";
-  if (strict && frame.adapter_type === "codex_cli") {
+  if (strict && frame.runtime_key === "codex_cli") {
     // This Run's own profile — the Agent × container one (`profileDir`), never
     // the login home. `profileDir` is set in the same branch that resolves
     // `loginHome`, so the old third fallback could not be reached — and had it
@@ -1222,7 +1229,7 @@ async function launchRun(
   if (strict) {
     try {
       const tool = frame.installation && frame.installation !== OWN_INSTALLATION
-        ? readToolManifestSync(frame.adapter_type ?? rawCommand, frame.installation)
+        ? readToolManifestSync(frame.runtime_key ?? rawCommand, frame.installation)
         : null;
       const plan = planStrictLaunch({
         runId: frame.run_id,
@@ -1239,7 +1246,7 @@ async function launchRun(
         ]),
         profileDir,
         loginHome,
-        toolTree: tool ? managedToolTreeForLaunch(frame.adapter_type ?? rawCommand, frame.installation) : null,
+        toolTree: tool ? managedToolTreeForLaunch(frame.runtime_key ?? rawCommand, frame.installation) : null,
         runtimeRoot: daemonRuntimeRoot(),
         workspaceBinds: attachedWorkspaceBinds,
       });
@@ -1295,7 +1302,7 @@ async function launchRun(
       ...(workSurfaceEnv.RAINVER_SKILL_PATH ? { [WORK_SKILL_PATH_PLACEHOLDER]: workSurfaceEnv.RAINVER_SKILL_PATH } : {}),
     },
     inputResourcePaths,
-    adapterType: frame.adapter_type ?? null,
+    runtimeKey: frame.runtime_key ?? null,
     timedOut: false,
     terminationRequested: false,
     timeoutTimer: null,

@@ -447,6 +447,9 @@ export class PgJobQueueRepository {
             AND (CAST($3 AS text) IS NULL OR claimed_by = $3)
          RETURNING id, job_type, payload_json, space_id
        ),
+       -- Both Run-backed job types: cancelling the job that would have
+       -- performed a queued ProviderTask Run has to settle that Run too, or
+       -- the person sees a cancelled job beside a Run still listed as queued.
        cancelled_run AS (
          UPDATE runs
             SET status = 'cancelled',
@@ -455,7 +458,7 @@ export class PgJobQueueRepository {
                 error_message = 'Run cancelled',
                 error_json = '{"error_code":"run_cancelled","error_text":"Run cancelled"}'::jsonb
            FROM cancelled_job
-          WHERE cancelled_job.job_type = 'agent_run'
+          WHERE cancelled_job.job_type IN ('agent_run', 'provider_task_run')
             AND runs.id::text = cancelled_job.payload_json->>'run_id'
             AND runs.status <> ALL($4::text[])
            RETURNING runs.id, runs.space_id
@@ -540,11 +543,15 @@ export class PgJobQueueRepository {
             AND attempts < max_attempts
           RETURNING id, space_id, user_id, job_type, attempts, max_attempts
        ),
-       exhausted_agent_runs AS (
+       -- Both Run-backed job types, because both leave a Run behind when the
+       -- job stops retrying: a provider_task_run job whose Run never started
+       -- would otherwise sit queued forever, still spending its domain's
+       -- daily budget, with nothing left to perform it.
+       exhausted_runs AS (
          SELECT payload_json->>'run_id' AS run_id
            FROM jobs
           WHERE status IN ('claimed', 'running')
-            AND job_type = 'agent_run'
+            AND job_type IN ('agent_run', 'provider_task_run')
             AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
             AND attempts >= max_attempts
             AND payload_json ? 'run_id'
@@ -570,8 +577,8 @@ export class PgJobQueueRepository {
                 updated_at = $1::timestamptz,
                 error_message = 'run abandoned: backing job stuck and retry attempts exhausted',
                 error_json = '{"error_code":"run_abandoned","error_text":"run abandoned: backing job stuck and retry attempts exhausted"}'::jsonb
-           FROM exhausted_agent_runs
-          WHERE runs.id::text = exhausted_agent_runs.run_id
+           FROM exhausted_runs
+          WHERE runs.id::text = exhausted_runs.run_id
             AND runs.status <> ALL($3::text[])
            RETURNING runs.id, runs.space_id
        )
@@ -607,6 +614,12 @@ export class PgJobQueueRepository {
     };
   }
 
+  /**
+   * Agent Runs only, on purpose: the execution lock is taken by
+   * `RunOrchestrationService.executeRun`, and a bounded ProviderTask Run never
+   * goes through it — `boundedProviderTaskRun.ts` performs the provider call
+   * directly. There is no lock of a ProviderTask Run's for this to release.
+   */
   private async deleteOrphanRunExecutionLocks(cutoff: string): Promise<void> {
     await this.db.query(
       `WITH stuck_agent_runs AS (

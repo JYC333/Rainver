@@ -143,11 +143,7 @@ describe("skipped-surface access (real Postgres)", () => {
       [ARTIFACT, SPACE, OWNER, now],
     );
     await db.pool.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-         owner_user_id, visibility, access_level, output_json, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,'space_shared','summary',
-                 '{"text":"SECRET RUN OUTPUT"}'::jsonb,$6,$6)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, owner_user_id, visibility, access_level, output_json, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'space_shared', 'summary', '{"text":"SECRET RUN OUTPUT"}'::jsonb, $6, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [RUN, SPACE, AGENT, VERSION, OWNER, now],
     );
 
@@ -191,11 +187,7 @@ describe("skipped-surface access (real Postgres)", () => {
     const now = new Date().toISOString();
     const TASK = "88888888-8888-4888-8888-888888888888";
     await db.pool.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-         owner_user_id, visibility, access_level, output_json, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,'space_shared','summary',
-                 '{"text":"SECRET RUN OUTPUT"}'::jsonb,$6,$6)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, owner_user_id, visibility, access_level, output_json, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'space_shared', 'summary', '{"text":"SECRET RUN OUTPUT"}'::jsonb, $6, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [RUN, SPACE, AGENT, VERSION, OWNER, now],
     );
     await db.pool.query(
@@ -228,11 +220,7 @@ describe("skipped-surface access (real Postgres)", () => {
   it("withholds a Run's error text from summary viewers while keeping its status", async () => {
     const now = new Date().toISOString();
     await db.pool.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-         owner_user_id, visibility, access_level, error_message, error_json, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'agent','manual','failed','live',$5,'space_shared','summary',
-                 'SECRET FAILURE TEXT','{"detail":"SECRET"}'::jsonb,$6,$6)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, owner_user_id, visibility, access_level, error_message, error_json, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'manual', 'failed', 'live', $5, 'space_shared', 'summary', 'SECRET FAILURE TEXT', '{"detail":"SECRET"}'::jsonb, $6, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [RUN, SPACE, AGENT, VERSION, OWNER, now],
     );
     const runs = new PgRunRepository(db.pool);
@@ -292,10 +280,7 @@ describe("run trace over HTTP (real Postgres)", () => {
     const now = new Date().toISOString();
     const actorId = randomUUID();
     await db.pool.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-         owner_user_id, visibility, access_level, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,'space_shared','summary',$6,$6)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, owner_user_id, visibility, access_level, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'space_shared', 'summary', $6, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [RUN, SPACE, AGENT, VERSION, OWNER, now],
     );
     await db.pool.query(

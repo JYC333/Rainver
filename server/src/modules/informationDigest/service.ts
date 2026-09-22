@@ -22,20 +22,19 @@ interface RankedCandidate {
 export class InformationDigestService {
   constructor(private readonly db: Queryable) {}
 
-  async personal(spaceId: string, userId: string, date: string, runId?: string | null): Promise<PersistedDigest> {
+  async personal(spaceId: string, userId: string, date: string, automationRunId?: string | null): Promise<PersistedDigest> {
     assertDate(date);
     const existing = await new PgInformationDigestRepository(this.db).findByScope(spaceId, "personal", userId, date);
-    // A read may materialize an early empty snapshot. The scheduled Run is the
-    // authoritative once-daily pass and must replace that snapshot rather than
-    // treating its existence as completed work.
-    if (existing && (!runId || existing.generated_by_run_id)) {
+    // A read may materialize an early empty snapshot. The scheduled Automation
+    // fire is the authoritative once-daily pass and replaces that snapshot.
+    if (existing && (!automationRunId || existing.generated_by_automation_run_id)) {
       return (await new PgInformationDigestRepository(this.db).get(spaceId, existing.id, userId))!;
     }
     return withQueryableTransaction(this.db, async (tx) => {
       const repo = new PgInformationDigestRepository(tx);
       await repo.lockScope(spaceId, "personal", userId, date);
       const lockedExisting = await repo.findByScope(spaceId, "personal", userId, date);
-      if (lockedExisting && (!runId || lockedExisting.generated_by_run_id)) {
+      if (lockedExisting && (!automationRunId || lockedExisting.generated_by_automation_run_id)) {
         return (await repo.get(spaceId, lockedExisting.id, userId))!;
       }
       const profileService = new InterestProfileService(tx);
@@ -60,7 +59,7 @@ export class InformationDigestService {
         digestCutoff,
       );
       const digestId = await repo.replace({
-        spaceId, type: "personal", ownerUserId: userId, date, maturity, runId,
+        spaceId, type: "personal", ownerUserId: userId, date, maturity, automationRunId,
         settings: { interest_slots: profileSettings.interest_slots, serendipity_slots: profileSettings.serendipity_slots, ranking: maturity === "cold" ? "recency_source_diversity" : "topic_recency_source_diversity" },
         items: [
           ...selected.map((item, position) => ({
@@ -93,23 +92,23 @@ export class InformationDigestService {
     });
   }
 
-  async project(spaceId: string, projectId: string, readerUserId: string, date: string, runId?: string | null): Promise<PersistedDigest> {
+  async project(spaceId: string, projectId: string, readerUserId: string, date: string, automationRunId?: string | null): Promise<PersistedDigest> {
     assertDate(date);
     const existing = await new PgInformationDigestRepository(this.db).findByScope(spaceId, "project", projectId, date);
-    if (existing && (!runId || existing.generated_by_run_id)) {
+    if (existing && (!automationRunId || existing.generated_by_automation_run_id)) {
       return (await new PgInformationDigestRepository(this.db).get(spaceId, existing.id, readerUserId))!;
     }
     return withQueryableTransaction(this.db, async (tx) => {
       const repo = new PgInformationDigestRepository(tx);
       await repo.lockScope(spaceId, "project", projectId, date);
       const lockedExisting = await repo.findByScope(spaceId, "project", projectId, date);
-      if (lockedExisting && (!runId || lockedExisting.generated_by_run_id)) {
+      if (lockedExisting && (!automationRunId || lockedExisting.generated_by_automation_run_id)) {
         return (await repo.get(spaceId, lockedExisting.id, readerUserId))!;
       }
       const candidates = await repo.projectCandidates(spaceId, projectId, date);
       const selected = diversify(rankProject(candidates, date), DEFAULT_PROJECT_SLOTS);
       const digestId = await repo.replace({
-        spaceId, type: "project", projectId, date, maturity: null, runId,
+        spaceId, type: "project", projectId, date, maturity: null, automationRunId,
         settings: { interest_slots: DEFAULT_PROJECT_SLOTS, ranking: "project_triage_recency_source_diversity", serendipity: false },
         items: selected.map((item, position) => ({
           candidate: item.candidate,

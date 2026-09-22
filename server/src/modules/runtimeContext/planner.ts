@@ -11,7 +11,7 @@ export interface RuntimeContextPlanningInput {
   executionControlSnapshotId: string;
   setupRef: { type: string; id: string; version?: string | null } | null;
   turn: TurnContextRequest;
-  model: string;
+  model: string | null;
   outputReserveTokens?: number | null;
   modelWindowOverride?: ModelWindowOverride | null;
   directItems: ContextItem[];

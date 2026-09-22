@@ -7,11 +7,12 @@ import { AutonomyService } from "../src/modules/autonomy/service.js";
 import { registerEvolutionReviewAutonomyDiscoverer } from "../src/modules/evolution/autonomyDiscoverer.js";
 import { registerPeriodicDigestAutonomyDiscoverer } from "../src/modules/projects/autonomyDiscoverer.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { loadConfig } from "../src/config.js";
 import { authorizeCredentialSpend, CredentialSpendDeniedError } from "../src/modules/policy/credentialSpend.js";
 import { resetTables } from "./support/resetTables.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { seedMainlineRoomsForAllProjects, seedServerRuntimeProfile } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "22222222-2222-4222-8222-222222222222";
@@ -19,6 +20,7 @@ const AGENT = "33333333-3333-4333-8333-333333333333";
 const VERSION = "44444444-4444-4444-8444-444444444444";
 const AUTOMATION = "55555555-5555-4555-8555-555555555555";
 const PROFILE = "66666666-6666-4666-8666-666666666666";
+const SERVER_HOST = "99999999-9999-4999-8999-999999999999";
 const PROJECT_A = "77777777-7777-4777-8777-777777777777";
 const PROJECT_B = "88888888-8888-4888-8888-888888888888";
 // Anchored to the real current UTC day (noon, to stay clear of day-boundary
@@ -79,24 +81,42 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1, $2, $3, 'v1', 'test', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-               '{}'::jsonb, '[]'::jsonb,
-               '{"allowed_tools":["project.summary.brief"]}'::jsonb,
-               '{}'::jsonb, $4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       risk_level,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'test',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '["autonomy.periodic_digest","autonomy.evolution_review","retrieval.preflight_brief"]'::jsonb,
+       '{"allowed_tools":["project.summary.brief"]}'::jsonb,
+       'low',
+       $4
+     )`,
     [VERSION, AGENT, SPACE, now],
   );
   await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
-  await db.pool.query(
-    `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, runtime_config_json,
-       runtime_policy_json, enabled, is_default, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'Autonomous Codex', 'codex_cli', '{}'::jsonb,
-               '{}'::jsonb, true, true, $4, $4)`,
-    [PROFILE, SPACE, AGENT, now],
-  );
+  await seedServerRuntimeProfile(db.pool, {
+    profileId: PROFILE,
+    agent: AGENT,
+    space: SPACE,
+    hostId: SERVER_HOST,
+    runtimeKey: "codex_cli",
+    runtimeInstallation: "managed:1.0.0",
+    now,
+  });
   await db.pool.query(
     `INSERT INTO automations (
        id, space_id, owner_user_id, agent_id, name, trigger_type, status,
@@ -201,8 +221,8 @@ function launch(
     },
     quota: {
       runtime: "codex_cli",
-      execution_host_id: "host-1",
-      installation: "own",
+      execution_host_id: SERVER_HOST,
+      installation: "managed:1.0.0",
       available: true,
       utilization_pct: 25,
       checked_at: options.quotaCheckedAt ?? beforeNow(5 * 60_000),
@@ -210,6 +230,14 @@ function launch(
     runtimeProfileId: PROFILE,
     now: NOW,
   });
+}
+
+async function dispatchAutonomyRun(runId: string): Promise<void> {
+  const runs = new PgRunRepository(db.pool);
+  const run = await runs.getAgentRun(SPACE, runId);
+  if (!run) throw new Error(`Autonomy Run '${runId}' disappeared before dispatch`);
+  await new PgRouteDecisionRepository(db.pool).routeRun(run);
+  await runs.markRunRunning({ run_id: runId, space_id: SPACE, started_at: NOW.toISOString() });
 }
 
 describeWithPostgres("bounded periodic digest launch", () => {
@@ -336,6 +364,7 @@ describeWithPostgres("bounded periodic digest launch", () => {
       launch_tick_id: launched.tick_id,
       last_seen_tick_id: repeatedObservation.tick_id,
     });
+    await dispatchAutonomyRun(runId);
     const terminal = await new PgRunRepository(db.pool).markRunTerminal({
       run_id: runId,
       space_id: SPACE,
@@ -407,10 +436,15 @@ describeWithPostgres("bounded periodic digest launch", () => {
     await seedProject(PROJECT_A, "Review Project", beforeNow(6 * DAY_MS));
     const launched = await launch();
     const runId = launched.launched_run_ids[0]!;
-    await db.pool.query(
-      `UPDATE runs SET status = 'waiting_for_review', updated_at = $2 WHERE id = $1`,
-      [runId, beforeNow(3 * HOUR_MS)],
-    );
+    await dispatchAutonomyRun(runId);
+    await new PgRunRepository(db.pool).markRunWaitingForReview({
+      run_id: runId,
+      space_id: SPACE,
+      approval_code: "test_review",
+      message: "Waiting on an operator review.",
+      risk_level: "low",
+      paused_at: beforeNow(3 * HOUR_MS),
+    });
     const recovery = new AutonomyRecoveryService(db.pool);
     await expect(recovery.cancelStaleWaitingForReview({ maxAgeSeconds: 3_600, now: NOW }))
       .resolves.toMatchObject({ cancelled: 1, run_ids: [runId] });
@@ -509,6 +543,7 @@ describeWithPostgres("bounded evolution review launch", () => {
       visibility: "private",
       permission_snapshot_json: { tool_grants: [] },
     });
+    await dispatchAutonomyRun(runId);
     const terminal = await new PgRunRepository(db.pool).markRunTerminal({
       run_id: runId,
       space_id: SPACE,
@@ -572,6 +607,7 @@ describeWithPostgres("bounded evolution review launch", () => {
   it("launches an error-severity signal immediately after the cursor", async () => {
     await seedEvolutionSignals(5);
     const first = await launch();
+    await dispatchAutonomyRun(first.launched_run_ids[0]!);
     const terminal = await new PgRunRepository(db.pool).markRunTerminal({
       run_id: first.launched_run_ids[0]!,
       space_id: SPACE,
@@ -601,6 +637,7 @@ describeWithPostgres("bounded evolution review launch", () => {
     await seedEvolutionSignals(5);
     const first = await launch();
     expect(first.candidates_launched).toBe(1);
+    await dispatchAutonomyRun(first.launched_run_ids[0]!);
     const terminal = await new PgRunRepository(db.pool).markRunTerminal({
       run_id: first.launched_run_ids[0]!,
       space_id: SPACE,

@@ -9,7 +9,6 @@ import { adapterProviderRequirement } from "./adapterProviderRequirement.js";
 import { resolveHostLeaseUrl } from "./hostProviderProxyAddress.js";
 import { codexModelCatalog, renderCodexProviderToml } from "./codexProviderConfig.js";
 import { applyOpenCodeProviderConfig, openCodeModelId } from "./opencodeProviderConfig.js";
-import { PgHostRuntimeProviderBindingRepository } from "../hosts/runtimeProviderBindingRepository.js";
 import {
   authorizeCredentialSpend,
   CredentialSpendDeniedError,
@@ -18,8 +17,8 @@ import {
 } from "../policy/credentialSpend.js";
 import type { HostLaunchProviderBinding } from "@rainver/protocol";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
-import type { RunRecord } from "./repository.js";
-import type { VendorCliAdapterType } from "../runtimeAdapters/specs.js";
+import type { AgentRunRecord } from "./repository.js";
+import type { VendorCliRuntimeKey } from "../runtimeAdapters/specs.js";
 
 /**
  * What the executing host is told. Deliberately runtime-agnostic: the daemon
@@ -58,7 +57,7 @@ export type RemoteProviderBindingFrame = HostLaunchProviderBinding;
  */
 export interface RuntimeProfileScope {
   agent_id: string;
-  container_kind: "conversation" | "direct" | "location";
+  container_kind: "conversation" | "direct" | "location" | "agent";
   container_id: string;
 }
 
@@ -121,16 +120,15 @@ export async function resolveRuntimeProfileScope(
     if (row?.container_id) {
       return { agent_id: run.agent_id, container_kind: "location", container_id: row.container_id };
     }
-  }
-  if (!workspaceLocationId) {
-    // Every remote dispatch is workspace-bound (hosts.md, phase 2 C9), so this
-    // is a caller that skipped resolution rather than a legitimate shape.
-    // Failing here is the point: proceeding would silently hand the run the
-    // machine's own `~/.claude`, which is what this key exists to prevent.
     throw new RemoteProviderBindingError(
       "runtime_profile_scope_unresolved",
-      "This run has neither a host thread nor a WorkspaceLocation, so its runtime profile has no container.",
+      "The Run's Host thread has no valid runtime profile container.",
     );
+  }
+  if (!workspaceLocationId) {
+    // Ordinary Agent Runs have no Conversation thread or Workspace Location.
+    // The Agent itself is their durable runtime-state boundary.
+    return { agent_id: run.agent_id, container_kind: "agent", container_id: run.agent_id };
   }
   return { agent_id: run.agent_id, container_kind: "location", container_id: workspaceLocationId };
 }
@@ -147,7 +145,7 @@ export async function resolveRuntimeProfileScope(
  */
 export function runtimeProfileKey(
   scope: RuntimeProfileScope,
-  adapterType: string,
+  runtimeKey: string,
   providerId: string | null,
 ): string {
   return [
@@ -155,7 +153,7 @@ export function runtimeProfileKey(
     scope.agent_id,
     scope.container_kind,
     scope.container_id,
-    adapterType,
+    runtimeKey,
     providerId ?? "ambient",
   ].join("/");
 }
@@ -178,10 +176,10 @@ export function runtimeProfileKey(
  * the daemon ever holds the bytes.
  */
 export function buildUnboundRuntimeProfile(
-  adapterType: string,
+  runtimeKey: string,
   scope: RuntimeProfileScope,
 ): RemoteProviderBindingFrame {
-  const login = getRuntimeAdapterSpec(adapterType)?.credentials?.login ?? null;
+  const login = getRuntimeAdapterSpec(runtimeKey)?.credentials?.login ?? null;
   // A runtime profile can replace the machine's state root only when its login
   // can travel with it. Running without that contract would put every Agent on
   // the managed installation's one session/auto-memory tree, contradicting
@@ -189,13 +187,13 @@ export function buildUnboundRuntimeProfile(
   if (!login) {
     throw new RemoteProviderBindingError(
       "runtime_profile_isolation_unsupported",
-      `Runtime adapter '${adapterType}' does not declare a login/state-root boundary, so Rainver cannot isolate its CLI state by Agent.`,
+      `Runtime adapter '${runtimeKey}' does not declare a login/state-root boundary, so Rainver cannot isolate its CLI state by Agent.`,
     );
   }
   return {
-    profile_key: runtimeProfileKey(scope, adapterType, null),
+    profile_key: runtimeProfileKey(scope, runtimeKey, null),
     env: {},
-    profile_env: profileStateEnv(adapterType),
+    profile_env: profileStateEnv(runtimeKey),
     files: [],
     credential_source: "host_login",
     login_link: { home_subdir: login.home_subdir, credential_file: login.credential_file },
@@ -228,9 +226,9 @@ export function buildUnboundRuntimeProfile(
  *   machine-global, which is no worse than before this phase but is not the
  *   isolation this claims. Recorded in the deferred register.
  */
-function profileStateEnv(adapterType: string): Record<string, string> {
-  if (adapterType === "claude_code") return { CLAUDE_CONFIG_DIR: ".claude" };
-  if (adapterType === "codex_cli") return { CODEX_HOME: ".codex" };
+function profileStateEnv(runtimeKey: string): Record<string, string> {
+  if (runtimeKey === "claude_code") return { CLAUDE_CONFIG_DIR: ".claude" };
+  if (runtimeKey === "codex_cli") return { CODEX_HOME: ".codex" };
   return {
     XDG_DATA_HOME: ".local/share",
     XDG_CONFIG_HOME: ".config",
@@ -240,12 +238,11 @@ function profileStateEnv(adapterType: string): Record<string, string> {
 }
 
 /**
- * `model_override_json.source` written when the remote path actually bound a
- * run to a provider. It is the marker that separates a provider the router
- * predicted from one the run actually used — for a remote run those are
- * different questions with different answers.
+ * `model_override_json.source` written after the selected Runtime Profile's
+ * backend is handed to the remote runtime. It marks a backend actually used,
+ * rather than a value merely predicted by route selection.
  */
-export const HOST_BINDING_MODEL_SOURCE = "host_binding";
+export const RUNTIME_PROFILE_MODEL_SOURCE = "runtime_profile";
 
 /**
  * Records the backend this remote run was resolved to — written once the
@@ -278,7 +275,7 @@ export async function recordRemoteRunBackend(
   // says this provider was used rather than predicted, and a `claude_code`
   // binding legitimately has no model.
   const patch: Record<string, unknown> = used
-    ? { source: HOST_BINDING_MODEL_SOURCE, ...(used.model ? { model: used.model } : {}) }
+    ? { source: RUNTIME_PROFILE_MODEL_SOURCE, ...(used.model ? { model: used.model } : {}) }
     : {};
   await db.query(
     used
@@ -316,82 +313,36 @@ export class RemoteProviderBindingError extends Error {
 export interface ResolvedRemoteBinding {
   provider_id: string;
   model: string | null;
-  /**
-   * Where the choice came from, which decides what happens when it turns out
-   * to be unusable. `dispatch` was asked for explicitly and validated in the
-   * dispatching Space, so failing it is right. `host_default` was never asked
-   * for by this run — a Host is user-scoped and can back Locations in several
-   * Spaces, so its default may name a provider granted in a different one.
-   * Failing there would turn runs that used to work into hard errors.
-   */
-  origin: "dispatch" | "host_default";
 }
 
 /**
- * The backend this remote Run was bound to.
- *
- * A thread-dispatched Run carries the choice its dispatch resolved and
- * validated, snapshotted on the message. Anything else — an Automation, Room
- * root run, Plan or Workflow node, evolution run whose Folder prefers a remote
- * Location — never went through dispatch, so it falls back to the Host ×
- * adapter default, which is what the user configured for that machine.
- *
- * Deliberately never `runs.model_provider_id`: the router stamps that column
- * for any routed run before host kind is resolved, so it can name a provider
- * the run never used.
+ * The Run's frozen Runtime Profile snapshot is the only source of its backend.
+ * A `model_provider` snapshot names the provider and the model; anything else
+ * — a `runtime_native` Profile, or a snapshot without those fields — binds
+ * nothing, and the runtime spends its execution Host's own login. There is no
+ * dispatch-time provider override and no Host-wide default to fall back to:
+ * `AgentRuntimeProfile` is the single deployment authority (ADR 0022).
  */
 export async function resolveRemoteRunBinding(
   db: Queryable,
   run: { id: string; host_task_thread_id?: string | null },
-  hostId: string,
-  adapterType: string,
 ): Promise<ResolvedRemoteBinding | null> {
-  // Conversation host-bound Agents deliberately use only the vendor
-  // runtime's own host login. Their rendered Conversation prompt is the only
-  // control-plane context allowed across the boundary; a Conversation thread
-  // must never inherit a Host × adapter ModelProvider default or mint a proxy
-  // lease.
-  const conversationThread = await db.query<{ container_kind: string | null }>(
-    `SELECT container_kind FROM host_threads WHERE id = $1 AND container_kind = 'conversation' LIMIT 1`,
-    [run.host_task_thread_id ?? null],
-  );
-  if (conversationThread.rows[0]?.container_kind === "conversation") return null;
-  // What the dispatch resolved to, read off the Run it stamped. This used to
-  // come from the queued message row that produced the Run; a remote Task run
-  // is one Run created at admission now, and the admission writes the same
-  // decision onto it.
   const dispatched = await db.query<{
-    model_provider_id: string | null;
-    model_override_json: Record<string, unknown> | null;
+    runtime_profile_snapshot_json: Record<string, unknown> | null;
   }>(
-    `SELECT model_provider_id, model_override_json FROM runs WHERE id = $1 LIMIT 1`,
+    `SELECT runtime_profile_snapshot_json
+       FROM runs WHERE id = $1 LIMIT 1`,
     [run.id],
   );
   const row = dispatched.rows[0];
-  const override = row?.model_override_json ?? {};
-  // A dispatch that named a provider is authoritative. Tested on the column
-  // rather than on `source`, which is not stable for this purpose: the
-  // admission writes `request`, and `recordRemoteRunBackend` overwrites it
-  // with `host_binding` at launch — so a re-resolve on the same Run would
-  // fall through to the Host default and could pick a different backend than
-  // the one it is already running on.
-  if (row?.model_provider_id) {
-    const model = override.model;
+  const profile = row?.runtime_profile_snapshot_json ?? {};
+  if (profile.backend_mode === "model_provider" && typeof profile.model_provider_id === "string") {
     return {
-      provider_id: row.model_provider_id,
-      model: typeof model === "string" ? model : null,
-      origin: "dispatch",
+      provider_id: profile.model_provider_id,
+      model: typeof profile.model_name === "string" ? profile.model_name : null,
     };
   }
-  // An admission that deliberately chose ambient login by overriding the host
-  // default away — it made a decision, and it was "no provider". Told apart
-  // from a Run that never chose by the marker the admission writes.
-  if (override.source === "request") return null;
-
-  const fallback = await new PgHostRuntimeProviderBindingRepository(db).get(hostId, adapterType);
-  return fallback
-    ? { provider_id: fallback.model_provider_id, model: fallback.model, origin: "host_default" }
-    : null;
+  return null;
 }
 
 /**
@@ -401,9 +352,9 @@ export async function resolveRemoteRunBinding(
  */
 export async function buildRemoteProviderBinding(input: {
   config: ServerConfig;
-  run: RunRecord;
+  run: AgentRunRecord;
   hostId: string;
-  adapterType: string;
+  runtimeKey: string;
   binding: ResolvedRemoteBinding;
   scope: RuntimeProfileScope;
   ttlSeconds: number;
@@ -412,11 +363,11 @@ export async function buildRemoteProviderBinding(input: {
   /** The Run executor's policy seam; unset in production, where the policy service decides. */
   enforcer?: CredentialSpendDeps["enforcer"];
 }): Promise<RemoteProviderBinding> {
-  const requirement = adapterProviderRequirement(input.adapterType);
+  const requirement = adapterProviderRequirement(input.runtimeKey);
   if (!requirement) {
     throw new RemoteProviderBindingError(
       "adapter_provider_binding_unsupported",
-      `Runtime adapter '${input.adapterType}' does not support a ModelProvider binding.`,
+      `Runtime adapter '${input.runtimeKey}' does not support a ModelProvider binding.`,
     );
   }
 
@@ -452,10 +403,10 @@ export async function buildRemoteProviderBinding(input: {
   // Codex and OpenCode name a model in their config, and the server-host path
   // refuses without one rather than letting the runtime fall back to a
   // built-in default that the bound provider does not serve.
-  if (!model && input.adapterType !== "claude_code") {
+  if (!model && input.runtimeKey !== "claude_code") {
     throw new RemoteProviderBindingError(
-      `${input.adapterType === "codex_cli" ? "codex" : "opencode"}_model_required`,
-      `ModelProvider '${providerName}' must provide a model for '${input.adapterType}'.`,
+      `${input.runtimeKey === "codex_cli" ? "codex" : "opencode"}_model_required`,
+      `ModelProvider '${providerName}' must provide a model for '${input.runtimeKey}'.`,
     );
   }
 
@@ -488,7 +439,7 @@ export async function buildRemoteProviderBinding(input: {
     route: requirement.route,
     upstream_base_url: upstreamBaseUrl,
     model,
-    adapter_type: input.adapterType,
+    runtime_key: input.runtimeKey,
     session_id: input.run.session_id,
     parent_run_id: input.run.parent_run_id ?? null,
     root_run_id: input.run.root_run_id ?? null,
@@ -522,7 +473,7 @@ export async function buildRemoteProviderBinding(input: {
   try {
     return {
       frame: bindingFrame({
-        adapterType: input.adapterType,
+        runtimeKey: input.runtimeKey,
         providerId: input.binding.provider_id,
         scope: input.scope,
         leaseUrl,
@@ -570,16 +521,16 @@ export async function buildRemoteProviderBinding(input: {
  * Null also when a bound provider named no model at all.
  */
 export function boundAcpModelId(
-  adapterType: VendorCliAdapterType,
+  runtimeKey: VendorCliRuntimeKey,
   model: string | null,
 ): string | null {
-  if (!model || adapterType === "claude_code") return null;
-  if (adapterType === "opencode") return openCodeModelId(model);
+  if (!model || runtimeKey === "claude_code") return null;
+  if (runtimeKey === "opencode") return openCodeModelId(model);
   return model;
 }
 
 function bindingFrame(input: {
-  adapterType: string;
+  runtimeKey: string;
   providerId: string;
   scope: RuntimeProfileScope;
   leaseUrl: string;
@@ -591,14 +542,14 @@ function bindingFrame(input: {
   // Every segment is already constrained — the adapter type comes from the
   // runtime-adapter catalog, the ids are generated identifiers — and the
   // daemon validates the shape again before it builds a path from it.
-  const profile_key = runtimeProfileKey(input.scope, input.adapterType, input.providerId);
+  const profile_key = runtimeProfileKey(input.scope, input.runtimeKey, input.providerId);
   // A bound run reaches its backend through the lease this frame carries, so
   // it needs no login and gets no link: linking one in would put the machine's
   // subscription credential inside a profile that is not using it. B67 applies
   // in full, which is what `credential_source` tells the daemon.
   const login_link = null;
   const credential_source = "provider_lease" as const;
-  if (input.adapterType === "claude_code") {
+  if (input.runtimeKey === "claude_code") {
     // Claude has no binding-supplied config file; what it needs is an empty
     // profile so this machine's own login is not visible, plus the endpoint.
     const env: Record<string, string> = {
@@ -615,7 +566,7 @@ function bindingFrame(input: {
   }
 
   const model = input.model!;
-  if (input.adapterType === "codex_cli") {
+  if (input.runtimeKey === "codex_cli") {
     const catalogRelative = ".codex/model-catalogs/rainver-provider.json";
     return {
       profile_key,

@@ -12,7 +12,7 @@ import type { RetrievalEgressDestination } from "../retrieval/egress/egressPolic
 export interface RuntimeContextAuthoritySnapshot {
   executionControlSnapshotId: string;
   setupRef: { type: "work_context_setup"; id: string; version: string };
-  model: string;
+  model: string | null;
   outputReserveTokens?: number | null;
   modelWindowOverride?: ModelWindowOverride | null;
   agentId: string;

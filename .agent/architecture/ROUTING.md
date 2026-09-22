@@ -1,201 +1,182 @@
-# Model–Runtime Routing
+# Agent Runtime Profile Routing
 
-C2 routing is a deterministic server decision made before a run is dispatched.
-It is not an LLM classifier and it does not grant permissions that the run
-contract or runtime policy did not already allow.
+Routing deterministically selects an eligible `AgentRuntimeProfile` before an
+Agent Run is dispatched. It selects the deployment Profile as a unit; it does
+not independently choose a model, credential, or Host, and it grants no
+permissions.
 
-## Decision flow
+## Candidate scope and authority
 
-1. Candidate profiles are loaded for the run's agent and space. Credential
-   availability is checked against the configured model-provider credential or
-   a CLI credential selected only from the Run owner's enabled space grants.
-   A conversation's explicit user × session binding pins both the runtime
-   profile and that user's credential; an invalid or foreign credential produces
-   no candidate and never falls back to another member's capacity.
-2. Hard filters reject disabled/unimplemented profiles, missing capabilities or
-   tools, insufficient sandbox support, incompatible execution mode, and a
-   trust level below the risk requirement. File and code execution shapes are
-   admitted on the candidate's declared `requires_file_access`: a runtime
-   without it has no working directory to act in and is rejected with
-   `execution_shape_incompatible`, and one with it must additionally carry a C3
-   pass before serving those shapes. No adapter name appears in either
-   condition. A candidate's declared minimum
-   sandbox level must be at least the effective requirement; one-shot Docker
-   is additionally gated by the runtime's explicit Docker capability. For a
-   critical run, every local-CLI candidate is evaluated as requiring
-   one-shot Docker even when the initial Run adapter is managed API; an unsafe
-   local candidate is rejected before scoring so a safe fallback can win.
-   Stronger isolation is eligible, weaker isolation is fail-closed. Security
-   minima use the stricter of the run-derived requirement and any hint; hints
-   cannot downgrade either.
-   Managed runtimes retain their declared trust baseline; every local CLI has
-   baseline `low`. A local CLI reaches at most `medium` only when the exact
-   runtime version has a complete C3 pass and declares a runtime-config
-   subagent disable mechanism. Every non-low local-CLI route therefore requires
-   C3 pass; no adapter name is special-cased in any trust or admission decision.
-   (Scoring is a separate matter — `execution_shape_default` below still keys on
-   two adapter names.)
-3. Remaining candidates receive a stable rule score. `scoreCandidate` returns
-   nine additive terms and the highest total wins; there is no normalisation and
-   no term that vetoes another. Ties resolve by pass rate, then profile id.
+`PgRouteDecisionRepository` loads Profiles belonging to the Run's Agent,
+validates Provider eligibility for the Run's responsible user, and resolves
+the execution target from the Profile. An ordinary Agent Run admits any
+Profile that names a complete execution target — Host, workspace mode and
+installed copy — whether that Host is the built-in Server Runtime or a paired
+Host; what the ACP runtime-authority cutover removed from this path is the
+Conversation HostThread, not the paired Host. A Conversation or Task with a pinned Host thread is limited to
+that thread's Host, workspace mode/location and runtime key. A Conversation
+uses its persisted backend snapshot rather than rebinding to later Profile or
+Provider edits, so `credential_available` is recomputed from that snapshot's own
+backend mode and Provider instead of being inherited from the Profile's, and a
+snapshot whose backend mode is neither mode is refused
+(`conversation_backend_mode_invalid`) rather than read as `runtime_native` —
+`session_conversation_backends` carries the Profile's backend-mode and binding
+CHECKs on the columns it freezes.
 
-   | Term | Weight | Driven by |
-   |---|---|---|
-   | `execution_shape_default` | 30 | `executionShapeScore()` — matches `model_api` for conversational/structured shapes, conformant `opencode` for file/code shapes |
-   | `profile_preference` | 25 | candidate matches `hints.preferred_runtime_profile_id` or the request's `runtime_profile_id`. Scored, not hard-required — when the request's profile is *explicit* the hard filter has already removed every other candidate, so this term only decides anything for a non-explicit profile |
-   | `preference` | 20 | candidate's adapter type is in the requested or hinted adapter list |
-   | `verification_pass_rate` | 0–20 | 90-day history, neutral 0.5 prior below three samples |
-   | `cost` | −10..+5 | `max(-10, 5 - estimated_cost_usd)` |
-   | `latency` | −10..+5 | `max(-10, 5 - seconds)` |
-   | `latency_budget`, `cost_budget` | 4 each | candidate fits a hinted budget |
-   | `default_profile` | 3 | `is_default` |
+Who may dispatch follows the Host's trust mode (ADR 0016 section 3): the strict
+Server Host serves the instance, while a paired Host serves only its registered
+owner, so a Profile on someone else's paired Host is rejected
+`execution_host_not_permitted` rather than silently dropped from the candidate
+set.
 
-   Two consequences worth stating. The shape bonus outranks an explicitly
-   hinted profile, so a preferred profile can lose to one the shape term
-   favours — an *explicit* profile pin is a hard filter and is unaffected.
-   And `request.adapter_types` is already a hard filter
-   (`adapter_not_requested`), so its contribution to `preference` is redundant;
-   that term does real work only for `hints.preferred_adapter_types`.
-4. The sorted candidates become the persisted fallback chain. A3 consumes this
-   chain when a retryable attempt fails: the next untried eligible profile is
-   selected for the next physical attempt and stamped as a new attempt-scoped
-   route decision. Routing still never silently retries a failed run; the
-   Supervisor owns the retry decision.
+The candidate's `runtime_key` must resolve to an implemented ACP runtime. The
+selected Profile determines the runtime, backend mode, Provider/model (when
+`model_provider`), Host and installation. `AgentVersion` supplies task
+capabilities and risk constraints only; it is not a fallback for missing
+Profile fields. Capability declarations are read from the Agent's current
+`AgentVersion` — a Runtime Profile is deployment authority and never restates
+what the Agent may be asked to do. Credential eligibility is checked before
+scoring, and an ineligible Provider does not fall through to another user's
+credential.
 
-Runtime capabilities are resolved from the selected profile's explicit
-capability restriction when present, otherwise from the AgentVersion currently
-attached to the agent. A runtime profile describes execution transport and
-does not need to duplicate the agent's declared task capabilities.
+The Profile's backend mode decides which credential that check asks about,
+because it decides what the Run will spend:
 
-`runs.capabilities_json` also carries declarations for server-owned System
-Actions used to build the immutable Run tool-grant snapshot. Registered System
-Action ids are removed before `required_capabilities` is evaluated because
-they execute through the server's Agent Tool Gateway rather than the selected
-runtime. Their authorization remains fail-closed through
-`permission_snapshot_json`; non-System-Action capability ids continue to
-participate in the runtime hard filter.
+| Backend mode | `credential_available` |
+|---|---|
+| `model_provider` | the Provider is enabled, granted to the Space, and holds a usable credential for the responsible user |
+| `runtime_native` | the Profile names a Host, workspace mode and installation (B46); a runtime whose `credential_mode` is `none` needs nothing, and a local CLI that names no Host is refused |
 
-Persistent Project Folder availability is evaluated separately from a runtime's
-minimum sandbox level. A file-access CLI whose adapter declares
-`requires_workspace_for_execution=false` may be routed without a project
-Folder for low/medium-risk work; execution then provisions an ephemeral
-run directory. High-risk work requires a persistent Project Folder/worktree, while
-critical local-CLI work uses the explicit one-shot Docker path. Managed/API
-runtimes that do not access files continue to run without a Project Folder.
+A `model_provider` Profile is always Host-bound, so answering with the Host
+alone would skip Provider eligibility entirely: a disabled Provider or a
+withdrawn Space grant would pass routing and surface only at launch, after
+dispatch, as `model_provider_not_found`. The gate instead persists a
+`credential_unavailable` rejection, which is the same answer the pinned
+Conversation path gives as `conversation_model_provider_unavailable`.
 
-Hints are merged with provenance from task contract, workflow node, and
-evolution strategy. They influence preference and stricter constraints only; a
-hint cannot bypass credential, sandbox, policy, or trust filters. A manually
-selected runtime profile is stamped as `explicit` and is a hard route pin;
-default/automation/plan selections may be routed among eligible candidates.
-When a user explicitly supplies a profile while starting a plan, that explicit
-choice is propagated to its child runs as the same hard pin.
+## Admission, scoring and retry
 
-## Persistence and execution boundary
+Hard filters reject disabled candidates, runtimes that are not implemented ACP
+definitions, installations the execution Host has not reported healthy, Hosts
+the responsible user may not dispatch to, unavailable credentials, explicit
+runtime/profile mismatches, retry exclusions, missing required capabilities or
+tools, unsupported execution mode, insufficient isolation, missing required
+workspace/file access, and trust below the effective minimum. A critical local
+CLI candidate additionally needs explicit one-shot Docker support. Risk and
+hints can increase sandbox and trust requirements; hints cannot weaken the
+Run's requirements. File/code execution shapes require a runtime that declares
+file access. Low/medium-risk CLI work may use an ephemeral run directory where
+no persistent workspace is required; high-risk work requires a persistent
+workspace.
 
-`route_decisions` stores the selected profile, candidate score trace, rejected
-reasons, fallback chain, hint sources, baseline/effective trust, and C3 suite
-evidence per physical attempt. `runs.route_decision_id` stamps the current run
-route. `runs.requested_runtime_profile_id` remains immutable while current
-selected route fields are refreshed per attempt. Historical verification rates use only runs with verification results in
-the last 90 days and require at least three samples; candidates without enough
-evidence receive the neutral prior. The selected profile snapshot is also refreshed on the run before
-`markRunRunning`, so the existing policy and adapter layers execute the same
-profile that the router selected.
+Profile state, runtime implementation and installation readiness stay three
+separate rejection reasons — `candidate_disabled`, `runtime_not_runnable` and
+`runtime_installation_not_ready` — because they need different repairs and an
+asynchronous Server install must not read as a configuration error. Automation
+preflight answers installation readiness with the same predicate
+(`isRuntimeInstallationReady`), so it cannot admit a fire that routing will
+then refuse.
 
-`GET /api/v1/runs/:runId/route-decision` exposes the durable decision to the
-space-visible run read path. A route with no eligible candidate fails closed and
-never invokes an adapter. The decision row records `status = 'no_route'` and the
-`route_no_candidate` reason, but the run itself terminates as
-`run_orchestration_failed` — `RouteSelectionError` is not a
-`RunPreparationError`, so the orchestration catch does not surface its code.
+### Effective trust
 
-The C3 conformance suite remains the source for runtime-specific trust upgrades;
-until it supplies evidence, the static adapter declarations and current trust
-levels are used.
+Effective trust is a property of the execution target the Profile is bound to,
+not of the runtime registry. Current ACP Host-daemon dispatch does not apply
+the legacy generated subagent-deny configuration, so a declaration that a
+vendor supports a restriction is not proof that this Run received it, and no
+runtime declaration raises a candidate.
 
-## What routing does not decide
+| Execution target | Effective trust |
+|---|---|
+| Built-in strict Server Host (`hosts.kind = 'server'`) | at least `medium` |
+| Paired trusted Host (`hosts.kind = 'remote'`), responsible user is the Host's `owner_user_id` | at least `medium` |
+| Paired trusted Host (`hosts.kind = 'remote'`), any other responsible user | the runtime's baseline (`low` today) |
+| No execution Host | the runtime's baseline (`low` today) |
 
-Verified 2026-08-15. These are properties of the current implementation, not
-intentions, and each is a trap someone has already fallen into.
+The two `medium`s rest on different things. The Server Host's is an enforced
+control: its daemon wraps every Run in a fresh rootless bubblewrap namespace
+built from an empty root and an explicit bind allowlist (B62,
+[ADR 0016](../decisions/0016-control-plane-execution-hosts.md) section 2). A
+paired Host's is ownership: it is the responsible user's own machine, and they
+extend to it the same trust they extend to a Run they start there themselves
+([ADR 0016](../decisions/0016-control-plane-execution-hosts.md) section 3 and
+its 2026-09-21 owner-trust amendment). That is a statement about who bears the
+risk, not about containment — a paired Host still spawns natively with no
+namespace, and no isolation claim follows from this level. A Run on that Host
+by anyone else is not the owner's own and keeps the baseline; it is already
+refused as `execution_host_not_permitted` before trust is reached. Routing
+derives both from the one ownership fact `host_dispatch_permitted` records, on
+the pinned Conversation path as well as the unpinned one.
 
-**Routing selects a runtime profile row, nothing finer.** A candidate is one
-`agent_runtime_profiles` row — adapter, model provider, model, runtime config —
-with at most one credential resolved onto it. The query selects every profile
-of that run's own agent; `enabled` and the adapter's `implementation_status`
-are then applied as hard filters rather than as query predicates. Selecting a
-row settles adapter, provider, model and credential at once; there is no way to
-route one of them independently.
+Risk requires trust: `low` risk needs `low`, `medium` needs `medium`, and
+`high`/`critical` need `high`. The product-default AgentVersion risk is
+`medium`, so an ordinary Agent routes on the Server Host, and the same Profile
+on a paired Host routes for that Host's owner and for no one else. No current
+runtime or Host reaches `high`, so `high`- and `critical`-risk Agent Runs have
+no eligible candidate on either Host.
 
-**The router never reads `model_provider_id` or `model_name`.** They are
-carried on `RouteCandidate` and referenced nowhere in `router.ts`. Two profiles
-differing only in provider are indistinguishable to it. A caller that needs a
-specific provider or model therefore has no way to express that as a routing
-requirement, and must pin the profile explicitly — which is why Project
-Research pins, and why removing that pin would silently drop the user's
-provider choice rather than free the router to honour it.
+### Scoring and retry
 
-**Scoring only decides anything when a pool has more than one surviving
-candidate, and the main producers of routing traffic pin.** A conversation pins
-its profile through the user x session binding, and Project Research pins
-because provider choice has no other expression (below). A pinned run's pool is
-one candidate by construction, so the nine terms sum to a foregone conclusion
-and no weight is falsifiable from its trace. Whether that is true of any
-particular instance is a question for the instance, not for this document —
-note that `ProjectResearchExecutionProfileService.ensureProfile` creates a new
-enabled profile per distinct provider/model selection and never disables the
-old one, so a `system_research` agent accumulates profiles even though every
-one of its runs is pinned to a single one.
+Every surviving Profile receives a deterministic additive score. The current
+terms are:
 
-**The `required_tools` channel is live on the request side and unpopulated on
-the candidate side, which makes it a trap.** `routing/repository.ts` passes a
-hardcoded `[]`, but `hints.required_tools` has at least four producers, each an
-unfiltered pass-through of client-authored JSON: a Task's `policy_json` via
-`contractRouteHints`, a workflow node's `contract_json` via
-`workflowExecutionService`, a plan node's `policy_json` via `plans/repository`,
-and an automation's `config_json` via `targetSupport`.
+| Term | Weight / range | Current behavior |
+|---|---:|---|
+| `profile_preference` | 0 or 25 | Requested or hinted Profile match |
+| `preference` | 0 or 20 | Requested or hinted runtime-key preference |
+| `verification_pass_rate` | 0–20 | Historical rate, with 0.5 neutral default |
+| `cost`, `latency` | −10..+5 each | Estimated values when available; otherwise 0 |
+| `latency_budget`, `cost_budget` | 0 or 4 each | Candidate fits a supplied budget |
+| `default_profile` | 0 or 3 | Profile is marked default |
 
-Meanwhile `candidate.tools` reads `runtime_config_json.tools` / `tool_ids` /
-`runtime_policy_json.tools`, and no server code writes any of those keys — a
-user *can* set `runtime_config_json` when creating a runtime profile, but
-nothing the system provisions carries them. So any of those four carriers
-declaring a `required_tools` value rejects every system-created candidate with
-`required_tool_missing`. `server/test/routing.test.ts` already exercises the
-workflow-node carrier with this field.
+Ties resolve by verification pass rate, then Profile id. This is an additive
+heuristic, not a learned classifier. Execution shape is an admission input, not
+a scoring term: file and code shapes are filtered on declared capabilities and
+file access, and no term rewards a Profile for a shape. Being the Agent's
+default is worth `default_profile` and nothing more, so it cannot outrank the
+Profile a caller explicitly preferred.
 
-The run then fails as `run_orchestration_failed`, not as `route_no_candidate`:
-`RouteSelectionError` is not a `RunPreparationError`, so the orchestration catch
-maps it to the generic code. `route_no_candidate` survives only inside
-`route_decisions.status = 'no_route'` and its reason text. Anyone diagnosing
-this from the run alone sees nothing about routing.
+An explicitly selected Profile is a hard pin. A preferred Profile is only a
+score; non-explicit dispatch may select another eligible Profile. On retry,
+the persisted fallback chain constrains which untried Profiles can be selected.
+Routing records a decision per physical attempt; the Supervisor, not the
+router, decides whether a failed Run should be retried.
 
-This is why wiring run tool grants into `required_tools` would break routing
-rather than constrain it — the candidate side has to be populated first.
+## Tool and capability channels
 
-`required_capabilities` is the channel that works: it compares the run's
-`capabilities_json` against the candidate's, resolved as described above —
-profile restriction first, AgentVersion as fallback.
+`required_capabilities` checks the candidate's capability declarations, which
+come from the Agent's current `AgentVersion` and only from there. Registered
+System Action ids are filtered out of runtime requirements because those
+actions execute through the server-owned `AgentToolGateway`; their authority
+comes from the Run's immutable permission snapshot and call-time policy checks.
 
-**Tool grants are not file capability.** The System Action Registry holds
-domain operations — retrieval, memory, project summary, notes, knowledge,
-delegation — and no file or execution tool, and CLI adapters reach it through
-the same `AgentToolGateway` as the managed path. What separates the paths is
-the sandbox, which is what `requires_file_access` names.
+The `required_tools` request/hint channel currently has an important limitation:
+the repository supplies an empty candidate-side tool list, while client-owned
+hints may still provide required tools. Such a hint can therefore reject every
+candidate. Do not use it as an authorization mechanism or equate it with Run
+tool grants. Any future use must define a server-owned candidate capability
+source and retain the System Action authorization boundary.
 
-**Historical cost, latency and pass rate are grouped by `adapter_type`.** The
-history CTE aggregates per adapter and joins on it, so two profiles on the same
-adapter receive identical figures regardless of model or funding. Any per-
-candidate cost reasoning has to introduce a finer grouping first. The cost
-average is also mostly null in practice — CLI usage, models absent from the
-catalog, and every row predating catalog-derived pricing contribute nothing —
-and a null cost scores 0, so the `cost` term is usually inert as well. See
-[TOKEN_USAGE_METERING.md](../../docs/TOKEN_USAGE_METERING.md) for which events
-carry a priced value.
+## Durable decision and failure behavior
 
-**The fallback chain is the scoring order, and it constrains retry admission.**
-It is `scored.map(...)`. `hasFallbackRoute` reads it to answer whether a retry
-has anywhere to go, and `retryRouteContext` feeds it back as
-`fallback_runtime_profile_ids`, which is a *hard filter*
-(`runtime_profile_not_in_fallback_chain`) — so the chain decides which profiles
-a retry may legally use, not just whether one exists. Simplifying scoring away
-would also remove the deterministic retry order.
+`route_decisions` stores the selected runtime Profile/key, Provider reference,
+score trace, rejected reasons, hint provenance and fallback chain. The Run
+records the requested Profile separately from the selected Profile and receives
+the selected runtime key and Profile snapshot before execution.
+
+`runs.runtime_profile_snapshot_json` is written through the one projection in
+`sessions/runtimeProfileSnapshot.ts`, the same shape a Conversation binding
+freezes, extended with the selected execution target. It therefore always
+carries `backend_mode`: the provider-lease resolver, the execution-control
+egress gate and Runtime Context planning all branch on that field, and a Run
+missing it silently executes on the Host's native login instead of the
+server-issued lease. A route with
+no eligible candidate fails closed; no adapter is invoked. The public Run
+failure may be more general than the detailed `no_route` reason persisted in
+the route-decision row.
+
+Provider id and model name are attributes of the selected Profile, not
+independent dimensions in the scoring function. A caller that requires a
+specific Provider/model must select the corresponding Profile explicitly.
+
+See [AGENT_RUNTIME_AUTHORITY.md](AGENT_RUNTIME_AUTHORITY.md) for ownership and
+[RUNS_AND_OUTPUTS.md](RUNS_AND_OUTPUTS.md) for the Run contract.

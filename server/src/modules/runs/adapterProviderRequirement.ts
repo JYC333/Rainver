@@ -11,22 +11,20 @@ export interface AdapterProviderRequirement {
 }
 
 /**
- * What makes a `ModelProvider` usable by a runtime adapter.
- *
- * Single source of truth on purpose: dispatch-time validation
- * (`hosts/runtimeProviderBindingResolution.ts`) and the binding the daemon is
- * handed (`runs/remoteProviderBinding.ts`) must agree, or a dispatch validates
- * and then fails on the host with an error nobody is waiting on.
+ * What makes a `ModelProvider` usable by an ACP runtime: the base-URL field its
+ * binding reads, and the proxy route the Run's lease is minted on.
  *
  * All that survives of the server-side CLI binding: since ADR 0016 a vendor
  * CLI runs only on an execution host, and the provider binding it receives is
  * built for the wire, not for a local subprocess environment.
+ * `runs/remoteProviderBinding.ts` is the one consumer, and a runtime with no
+ * requirement is refused there rather than given a guessed one.
  */
-export function adapterProviderRequirement(adapterType: string): AdapterProviderRequirement | null {
+export function adapterProviderRequirement(runtimeKey: string): AdapterProviderRequirement | null {
   // Read from the spec, where the runtime's provider API family is declared
   // once (`model.provider_api`); a runtime that takes no provider — a
   // registry agent, or one that declares none — has no requirement.
-  const spec = getRuntimeAdapterSpec(adapterType);
+  const spec = getRuntimeAdapterSpec(runtimeKey);
   if (!spec || spec.invocation?.remote_host_only) return null;
   switch (spec.model.provider_api) {
     case "claude_compatible":

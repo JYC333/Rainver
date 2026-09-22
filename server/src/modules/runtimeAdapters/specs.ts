@@ -1,9 +1,7 @@
 import { getDynamicRuntimeAdapterSpec, listDynamicRuntimeAdapterSpecs } from "./dynamicSpecs.js";
 
-export type RuntimeAdapterType =
+export type RuntimeKey =
   | "capability"
-  | "model_api"
-  | "ts_agent_host"
   | "claude_code"
   | "codex_cli"
   | "opencode"
@@ -12,12 +10,12 @@ export type RuntimeAdapterType =
 
 /**
  * The implemented vendor CLIs. The one closed list: every per-vendor table
- * (`Record<VendorCliAdapterType, …>`) keys on it so the compiler names each
+ * (`Record<VendorCliRuntimeKey, …>`) keys on it so the compiler names each
  * place a new CLI needs a decision, instead of a literal check silently
  * treating it as "not a CLI". Membership *checks* go through
  * `isVendorCliAdapter` / `isAcpRuntimeAdapter`, which read the spec.
  */
-export type VendorCliAdapterType = Extract<RuntimeAdapterType, "claude_code" | "codex_cli" | "opencode">;
+export type VendorCliRuntimeKey = Extract<RuntimeKey, "claude_code" | "codex_cli" | "opencode">;
 
 /**
  * How a managed copy of a runtime is obtained on an execution host — the
@@ -59,16 +57,16 @@ export interface RuntimeLoginSpec {
   hint?: string;
 }
 
-export type RuntimeKind = "native" | "local_cli" | "managed_api" | "custom";
-export type RuntimeExecutorFamily = "native" | "local_cli" | "managed_api" | "custom";
+export type RuntimeKind = "native" | "local_cli" | "custom";
+export type RuntimeExecutorFamily = "native" | "local_cli" | "custom";
 export type ImplementationStatus = "implemented" | "planned" | "disabled";
-export type CredentialMode = "none" | "cli_profile" | "cli_profile_or_model_provider" | "model_provider_api_key";
+export type CredentialMode = "none" | "cli_profile" | "cli_profile_or_model_provider";
 export type CredentialReleaseChannel = "server_runtime_host";
 type RuntimeConfigValue = string | number | boolean | Record<string, string>;
 
 export interface RuntimeAdapterSpec {
   /** A builtin type, or a dynamic adapter's own id (`acp_<registry id>`). */
-  adapter_type: RuntimeAdapterType | (string & {});
+  runtime_key: RuntimeKey | (string & {});
   display_name: string;
   runtime_kind: RuntimeKind;
   executor_family: RuntimeExecutorFamily;
@@ -158,7 +156,6 @@ export interface RuntimeAdapterSpec {
     category: string | null;
   }>;
   model: {
-    model_provider_mode: "none" | "optional" | "required";
     supports_model_override: boolean;
     model_arg_template?: string[];
     model_config_behavior: "uses_model" | "not_applicable" | "unsupported";
@@ -225,9 +222,9 @@ const worktreeCli: RuntimeAdapterSpec["sandbox"] = {
   requires_workspace_for_execution: false,
 };
 
-export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, RuntimeAdapterSpec>> = {
+export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeAdapterSpec>> = {
   capability: {
-    adapter_type: "capability",
+    runtime_key: "capability",
     display_name: "Capability",
     runtime_kind: "native",
     executor_family: "native",
@@ -246,7 +243,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     credentials: { credential_mode: "none" },
     sandbox: noFiles,
     model: {
-      model_provider_mode: "none",
       supports_model_override: false,
       model_config_behavior: "not_applicable",
     },
@@ -261,81 +257,8 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     },
     limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
-  model_api: {
-    adapter_type: "model_api",
-    display_name: "Model API",
-    runtime_kind: "managed_api",
-    executor_family: "managed_api",
-    implementation_status: "implemented",
-    enabled_by_default: true,
-    subagent_support: "none",
-    subagent_disable_mechanism: "not_applicable",
-    delegation_controllability: "server_policy",
-    structured_output: "provider_response",
-    checkpoint_resume: "none",
-    cancellation_reliability: "best_effort",
-    observability_level: "structured",
-    side_effect_level: "external",
-    data_exposure: "provider",
-    baseline_trust_level: "high",
-    credentials: { credential_mode: "model_provider_api_key" },
-    sandbox: noFiles,
-    model: {
-      model_provider_mode: "required",
-      supports_model_override: false,
-      model_config_behavior: "uses_model",
-    },
-    permissions: { supports_permission_bypass: false },
-    usage: {
-      usage_accuracy: "estimated",
-      supports_usage_probe: false,
-    },
-    output: {
-      patch_strategy: "none",
-      artifact_path_strategy: "none",
-    },
-    limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
-  },
-  ts_agent_host: {
-    adapter_type: "ts_agent_host",
-    display_name: "Server Agent Host",
-    runtime_kind: "managed_api",
-    executor_family: "managed_api",
-    implementation_status: "implemented",
-    enabled_by_default: false,
-    subagent_support: "none",
-    subagent_disable_mechanism: "not_applicable",
-    delegation_controllability: "server_policy",
-    structured_output: "provider_response",
-    checkpoint_resume: "none",
-    cancellation_reliability: "best_effort",
-    observability_level: "structured",
-    side_effect_level: "external",
-    data_exposure: "provider",
-    baseline_trust_level: "high",
-    credentials: {
-      credential_mode: "model_provider_api_key",
-      credential_release_channel: "server_runtime_host",
-    },
-    sandbox: noFiles,
-    model: {
-      model_provider_mode: "required",
-      supports_model_override: false,
-      model_config_behavior: "uses_model",
-    },
-    permissions: { supports_permission_bypass: false },
-    usage: {
-      usage_accuracy: "estimated",
-      supports_usage_probe: false,
-    },
-    output: {
-      patch_strategy: "none",
-      artifact_path_strategy: "none",
-    },
-    limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
-  },
   claude_code: {
-    adapter_type: "claude_code",
+    runtime_key: "claude_code",
     display_name: "Claude Code",
     runtime_kind: "local_cli",
     executor_family: "local_cli",
@@ -387,7 +310,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     },
     sandbox: worktreeCli,
     model: {
-      model_provider_mode: "none",
       supports_model_override: true,
       model_arg_template: ["--model", "{model}"],
       model_config_behavior: "uses_model",
@@ -413,7 +335,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
   codex_cli: {
-    adapter_type: "codex_cli",
+    runtime_key: "codex_cli",
     display_name: "Codex CLI",
     runtime_kind: "local_cli",
     executor_family: "local_cli",
@@ -470,7 +392,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     // one boundary is ours. Verified on the built-in host 2026-09-08.
     strict_session_config: [{ id: "mode", type: "select", value: "agent-full-access", category: "mode" }],
     model: {
-      model_provider_mode: "none",
       supports_model_override: false,
       model_config_behavior: "not_applicable",
       provider_api: "openai_compatible",
@@ -487,7 +408,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
   opencode: {
-    adapter_type: "opencode",
+    runtime_key: "opencode",
     display_name: "OpenCode",
     runtime_kind: "local_cli",
     executor_family: "local_cli",
@@ -547,7 +468,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     },
     sandbox: worktreeCli,
     model: {
-      model_provider_mode: "none",
       supports_model_override: true,
       model_arg_template: ["--model", "{model}"],
       model_config_behavior: "uses_model",
@@ -565,7 +485,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
   gemini_cli: {
-    adapter_type: "gemini_cli",
+    runtime_key: "gemini_cli",
     display_name: "Gemini CLI",
     runtime_kind: "local_cli",
     executor_family: "local_cli",
@@ -591,7 +511,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     },
     sandbox: worktreeCli,
     model: {
-      model_provider_mode: "none",
       supports_model_override: false,
       model_config_behavior: "not_applicable",
     },
@@ -607,7 +526,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
     limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
   custom: {
-    adapter_type: "custom",
+    runtime_key: "custom",
     display_name: "Custom Runtime Adapter",
     runtime_kind: "custom",
     executor_family: "custom",
@@ -632,7 +551,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeAdapterType, 
       requires_workspace_for_execution: true,
     },
     model: {
-      model_provider_mode: "optional",
       supports_model_override: false,
       model_config_behavior: "unsupported",
     },
@@ -653,33 +571,33 @@ export function listRuntimeAdapterSpecs(): RuntimeAdapterSpec[] {
   return [...Object.values(BUILTIN_RUNTIME_ADAPTER_SPECS), ...listDynamicRuntimeAdapterSpecs()];
 }
 
-export function getRuntimeAdapterSpec(adapterType: string | null | undefined): RuntimeAdapterSpec | null {
-  if (!adapterType) return null;
-  return BUILTIN_RUNTIME_ADAPTER_SPECS[adapterType as RuntimeAdapterType] ?? getDynamicRuntimeAdapterSpec(adapterType);
+export function getRuntimeAdapterSpec(runtimeKey: string | null | undefined): RuntimeAdapterSpec | null {
+  if (!runtimeKey) return null;
+  return BUILTIN_RUNTIME_ADAPTER_SPECS[runtimeKey as RuntimeKey] ?? getDynamicRuntimeAdapterSpec(runtimeKey);
 }
 
-export function isImplementedRuntimeAdapter(adapterType: string | null | undefined): boolean {
-  return getRuntimeAdapterSpec(adapterType)?.implementation_status === "implemented";
+export function isImplementedRuntimeAdapter(runtimeKey: string | null | undefined): boolean {
+  return getRuntimeAdapterSpec(runtimeKey)?.implementation_status === "implemented";
 }
 
-export function isLocalCliRuntimeAdapter(adapterType: string | null | undefined): boolean {
-  return getRuntimeAdapterSpec(adapterType)?.runtime_kind === "local_cli";
+export function isLocalCliRuntimeAdapter(runtimeKey: string | null | undefined): boolean {
+  return getRuntimeAdapterSpec(runtimeKey)?.runtime_kind === "local_cli";
 }
 
 export function getLocalCliRuntimeAdapterSpec(
-  adapterType: string | null | undefined,
+  runtimeKey: string | null | undefined,
 ): LocalCliRuntimeAdapterSpec | null {
-  const spec = getRuntimeAdapterSpec(adapterType);
+  const spec = getRuntimeAdapterSpec(runtimeKey);
   if (!spec || spec.runtime_kind !== "local_cli") return null;
   return spec as LocalCliRuntimeAdapterSpec;
 }
 
-export function isVendorCliAdapter(adapterType: string | null | undefined): adapterType is VendorCliAdapterType {
-  const spec = getRuntimeAdapterSpec(adapterType);
+export function isVendorCliAdapter(runtimeKey: string | null | undefined): runtimeKey is VendorCliRuntimeKey {
+  const spec = getRuntimeAdapterSpec(runtimeKey);
   return spec?.runtime_kind === "local_cli" && spec.implementation_status === "implemented";
 }
 
 /** A vendor CLI driven over the Agent Client Protocol — what a remote host can run. */
-export function isAcpRuntimeAdapter(adapterType: string | null | undefined): adapterType is VendorCliAdapterType {
-  return isVendorCliAdapter(adapterType) && getLocalCliRuntimeAdapterSpec(adapterType)?.invocation.protocol === "acp";
+export function isAcpRuntimeAdapter(runtimeKey: string | null | undefined): runtimeKey is VendorCliRuntimeKey {
+  return isVendorCliAdapter(runtimeKey) && getLocalCliRuntimeAdapterSpec(runtimeKey)?.invocation.protocol === "acp";
 }

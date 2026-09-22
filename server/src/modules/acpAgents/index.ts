@@ -6,7 +6,7 @@ import { AcpAgentService } from "./service.js";
 
 export const acpAgentsModule: ServerModule = { name: "acpAgents", registerRoutes };
 
-export { AcpAgentService, acpAgentAdapterType } from "./service.js";
+export { AcpAgentService, acpAgentRuntimeKey } from "./service.js";
 export { __setAcpRegistryForTests, type AcpRegistryEntry } from "./registry.js";
 
 const REFRESH_INTERVAL_MS = 60_000;

@@ -19,13 +19,13 @@ import {
  */
 const QUOTA_RUNTIMES = new Set(["claude_code", "codex_cli"]);
 
-export function hasSubscriptionQuota(adapterType: string): boolean {
-  return QUOTA_RUNTIMES.has(adapterType);
+export function hasSubscriptionQuota(runtimeKey: string): boolean {
+  return QUOTA_RUNTIMES.has(runtimeKey);
 }
 
 /**
  * What a host can run, in the one shape every reader uses. A runtime on a
- * host has one identity — the adapter type and the copy (`own` or
+ * host has one identity — the runtime key and the copy (`own` or
  * `managed:<version>`) — and everything reported about a copy (version, login
  * state, options) is resolved from that installation and its stable HOME.
  *
@@ -130,6 +130,7 @@ function installation(value: unknown, reportsSubscriptionQuota: boolean): Runtim
     id: entry.id,
     version: typeof entry.version === "string" ? entry.version : null,
     runtime_version: typeof entry.runtime_version === "string" ? entry.runtime_version : null,
+    health_check_protocol: entry.health_check_protocol === "acp" ? "acp" : null,
     logged_in: typeof entry.logged_in === "boolean" ? entry.logged_in : null,
     options: options(entry.options),
     ...(held ? { accounts: held } : {}),
@@ -146,53 +147,53 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
   const runtimes = strings(source.runtimes);
   const versions = stringMap(source.versions);
   const installations: Record<string, RuntimeInstallation[]> = {};
-  for (const [adapterType, copies] of Object.entries(record(source.installations))) {
-    const quota = hasSubscriptionQuota(adapterType);
+  for (const [runtimeKey, copies] of Object.entries(record(source.installations))) {
+    const quota = hasSubscriptionQuota(runtimeKey);
     const parsed = Array.isArray(copies)
       ? copies.flatMap((copy) => { const entry = installation(copy, quota); return entry ? [entry] : []; })
       : [];
-    if (parsed.length > 0) installations[adapterType] = parsed;
+    if (parsed.length > 0) installations[runtimeKey] = parsed;
   }
   return HostCapabilitiesSchema.parse({ runtimes, versions, installations });
 }
 
 /** The copies of a runtime a host reports, by id. */
-export function hostInstallationIds(capabilities: unknown, adapterType: string): string[] {
-  return (normalizeHostCapabilities(capabilities).installations[adapterType] ?? []).map((copy) => copy.id);
+export function hostInstallationIds(capabilities: unknown, runtimeKey: string): string[] {
+  return (normalizeHostCapabilities(capabilities).installations[runtimeKey] ?? []).map((copy) => copy.id);
 }
 
 export function hostInstallationOptions(
   capabilities: unknown,
-  adapterType: string,
+  runtimeKey: string,
   installationId: string,
 ): RuntimeSessionConfigOption[] {
-  return normalizeHostCapabilities(capabilities).installations[adapterType]
+  return normalizeHostCapabilities(capabilities).installations[runtimeKey]
     ?.find((copy) => copy.id === installationId)?.options?.config_options ?? [];
 }
 
 export function hostInstallationAuthMethods(
   capabilities: unknown,
-  adapterType: string,
+  runtimeKey: string,
   installationId: string,
 ): RuntimeAuthMethod[] {
-  return normalizeHostCapabilities(capabilities).installations[adapterType]
+  return normalizeHostCapabilities(capabilities).installations[runtimeKey]
     ?.find((copy) => copy.id === installationId)?.options?.auth_methods ?? [];
 }
 
 export function hostInstallationCliLoginAvailable(
   capabilities: unknown,
-  adapterType: string,
+  runtimeKey: string,
   installationId: string,
 ): boolean {
-  return normalizeHostCapabilities(capabilities).installations[adapterType]
+  return normalizeHostCapabilities(capabilities).installations[runtimeKey]
     ?.find((copy) => copy.id === installationId)?.options?.cli_login_available === true;
 }
 
 export function hostInstallationPromptCapabilities(
   capabilities: unknown,
-  adapterType: string,
+  runtimeKey: string,
   installationId: string,
 ): RuntimePromptCapabilities | null {
-  return normalizeHostCapabilities(capabilities).installations[adapterType]
+  return normalizeHostCapabilities(capabilities).installations[runtimeKey]
     ?.find((copy) => copy.id === installationId)?.options?.prompt_capabilities ?? null;
 }

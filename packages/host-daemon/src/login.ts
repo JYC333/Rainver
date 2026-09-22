@@ -5,7 +5,7 @@ import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { loggedIn, OWN_INSTALLATION, readToolManifestSync, renderManagedLoginCommand, toolsDir, type ToolLoginSpec, renderManagedCommand } from "./tools.js";
 import { parseAcpAuthMethods } from "./acpProbe.js";
-import { holdAdapter, resolveAcpLaunch, substituteCwd } from "./execution.js";
+import { holdRuntimeKey, resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { terminalAuthAvailable } from "./terminalAuth.js";
 import { clearVendorCredentialEnv } from "./providerBinding.js";
 
@@ -33,29 +33,29 @@ const sessions = new Map<string, LoginSession>();
 
 function resolveAuthAgentLaunch(frame: LoginOpenFrame): { command: string; args: string[]; env: Record<string, string>; home: string } {
   if (frame.installation !== OWN_INSTALLATION) {
-    const manifest = readToolManifestSync(frame.adapter_type, frame.installation);
-    if (!manifest) throw new Error(`This daemon does not have ${frame.adapter_type} ${frame.installation} installed.`);
+    const manifest = readToolManifestSync(frame.runtime_key, frame.installation);
+    if (!manifest) throw new Error(`This daemon does not have ${frame.runtime_key} ${frame.installation} installed.`);
     return { command: manifest.command, args: manifest.args, env: manifest.env, home: manifest.home };
   }
   if (!frame.argv?.length) throw new Error("This ACP authentication flow has no launch command");
   const home = homedir();
   const [rawCommand, ...args] = frame.argv.map((arg) => substituteCwd(arg, home));
-  return { ...resolveAcpLaunch(rawCommand!, args, OWN_INSTALLATION, frame.adapter_type), home };
+  return { ...resolveAcpLaunch(rawCommand!, args, OWN_INSTALLATION, frame.runtime_key), home };
 }
 
-function loginAmbient(adapterType: string): Record<string, string> {
-  return clearVendorCredentialEnv(process.env, adapterType);
+function loginAmbient(runtimeKey: string): Record<string, string> {
+  return clearVendorCredentialEnv(process.env, runtimeKey);
 }
 
 /** What fixed login program to run for one copy. */
 export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[]; env: Record<string, string>; home: string; login: ToolLoginSpec | null } {
-  const ambient = loginAmbient(frame.adapter_type);
+  const ambient = loginAmbient(frame.runtime_key);
   if (frame.auth_method && frame.login_action) throw new Error("Choose either ACP authentication or CLI login");
   if (frame.login_action === "logout") return resolveLogoutCommand(frame, ambient);
   if (frame.login_action === "cli") {
     if (frame.installation === OWN_INSTALLATION) throw new Error("CLI login fallback is only available for managed Agents");
-    const manifest = readToolManifestSync(frame.adapter_type, frame.installation);
-    if (!manifest) throw new Error(`This daemon does not have ${frame.adapter_type} ${frame.installation} installed.`);
+    const manifest = readToolManifestSync(frame.runtime_key, frame.installation);
+    if (!manifest) throw new Error(`This daemon does not have ${frame.runtime_key} ${frame.installation} installed.`);
     const entryArgs = manifest.entry_args ?? (manifest.command === process.execPath ? null : []);
     if (!entryArgs) throw new Error("Reinstall this managed Agent before using CLI login");
     return {
@@ -79,11 +79,11 @@ export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[];
     if (!command) throw new Error("This installation does not declare a supported login method");
     return { command, env: ambient, home: homedir(), login: frame.login };
   }
-  const manifest = readToolManifestSync(frame.adapter_type, frame.installation);
-  if (!manifest) throw new Error(`This daemon does not have ${frame.adapter_type} ${frame.installation} installed.`);
+  const manifest = readToolManifestSync(frame.runtime_key, frame.installation);
+  if (!manifest) throw new Error(`This daemon does not have ${frame.runtime_key} ${frame.installation} installed.`);
   // Rendered now rather than trusted from the manifest: the template's
   // placeholders can gain meanings after a copy was installed.
-  const tree = join(toolsDir(), manifest.adapter_type, manifest.version);
+  const tree = join(toolsDir(), manifest.runtime_key, manifest.version);
   const command = renderManagedLoginCommand(tree, manifest.login ?? frame.login) ?? manifest.login_command;
   if (!command) throw new Error("This installation does not declare a supported login method");
   return { command, env: { ...ambient, ...manifest.env, HOME: manifest.home }, home: manifest.home, login: manifest.login ?? frame.login };
@@ -105,10 +105,10 @@ function resolveLogoutCommand(
     if (!command) throw new Error("This installation does not declare a logout command");
     return { command, env: ambient, home: homedir(), login: frame.login };
   }
-  const manifest = readToolManifestSync(frame.adapter_type, frame.installation);
-  if (!manifest) throw new Error(`This daemon does not have ${frame.adapter_type} ${frame.installation} installed.`);
+  const manifest = readToolManifestSync(frame.runtime_key, frame.installation);
+  if (!manifest) throw new Error(`This daemon does not have ${frame.runtime_key} ${frame.installation} installed.`);
   const login = manifest.login ?? frame.login;
-  const tree = join(toolsDir(), manifest.adapter_type, manifest.version);
+  const tree = join(toolsDir(), manifest.runtime_key, manifest.version);
   const specCommand = renderManagedCommand(tree, login?.managed_logout_command);
   if (specCommand) {
     return { command: specCommand, env: { ...ambient, ...manifest.env, HOME: manifest.home }, home: manifest.home, login };
@@ -124,8 +124,8 @@ function resolveLogoutCommand(
   };
 }
 
-function sanitizedEnv(extra: Record<string, string>, home: string, adapterType: string): Record<string, string> {
-  return { ...loginAmbient(adapterType), ...extra, HOME: home };
+function sanitizedEnv(extra: Record<string, string>, home: string, runtimeKey: string): Record<string, string> {
+  return { ...loginAmbient(runtimeKey), ...extra, HOME: home };
 }
 
 function acpErrorText(value: unknown): string {
@@ -146,9 +146,9 @@ function openAgentAuthSession(
   const child = spawn(launch.command, launch.args, {
     cwd: launch.home,
     stdio: ["pipe", "pipe", "pipe"],
-    env: sanitizedEnv(launch.env, launch.home, frame.adapter_type),
+    env: sanitizedEnv(launch.env, launch.home, frame.runtime_key),
   });
-  log(`ACP authenticate ${frame.adapter_type} ${frame.installation}: ${method.id}`);
+  log(`ACP authenticate ${frame.runtime_key} ${frame.installation}: ${method.id}`);
   let buffer = "";
   let exited = false;
   let waitingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -300,12 +300,12 @@ export function openLoginSession(
   if (!terminalAuthAvailable()) throw new Error("Interactive login requires the script(1) terminal utility on this host.");
   const resolved = resolveLoginCommand(frame);
   const pty = ptyArgv(resolved.command);
-  log(`login ${frame.adapter_type} ${frame.installation}: ${resolved.command.join(" ")}`);
+  log(`login ${frame.runtime_key} ${frame.installation}: ${resolved.command.join(" ")}`);
   const env: Record<string, string> = { ...resolved.env, TERM: "xterm-256color", COLUMNS: String(LOGIN_TERMINAL_COLS), LINES: String(LOGIN_TERMINAL_ROWS) };
   const child: ChildProcess = spawn(pty.command, pty.args, { env, cwd: resolved.home, stdio: ["pipe", "pipe", "pipe"] });
   // Held until this session ends, so a replacement of this copy waits rather
   // than deleting the directory the login is writing its credential into.
-  const releaseLogin = holdAdapter(frame.adapter_type);
+  const releaseLogin = holdRuntimeKey(frame.runtime_key);
   // A write that lands as the program exits fails asynchronously (EPIPE) on
   // stdin's own 'error' event; unhandled, that would take the daemon down.
   child.stdin?.on("error", () => { /* the exit that follows is the report */ });
@@ -343,7 +343,7 @@ export function openLoginSession(
         // as fast as it drops keystrokes.
         if (refused.reason !== lastRefusal) {
           lastRefusal = refused.reason;
-          log(`login ${frame.adapter_type} ${frame.installation}: input refused (${refused.reason})${refused.fatal ? "; closing" : ""}`);
+          log(`login ${frame.runtime_key} ${frame.installation}: input refused (${refused.reason})${refused.fatal ? "; closing" : ""}`);
           send({ type: "login_output", session_id: frame.session_id, data: `\r\n[rainver] ${refused.reason}${refused.fatal ? "; closing this login session" : ""}.\r\n` });
         }
         if (refused.fatal) session.close();

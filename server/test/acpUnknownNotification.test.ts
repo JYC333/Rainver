@@ -10,7 +10,7 @@ import { createCliConversationController } from "../src/modules/runs/cliConversa
  */
 describe("an ACP notification the controller does not recognise", () => {
   const controller = () => createCliConversationController({
-    adapter_type: "codex_cli",
+    runtime_key: "codex_cli",
     prompt: "hello",
     cwd: "/workspace",
   })!;
@@ -49,7 +49,7 @@ describe("structured conversation prompt content", () => {
   it("sends ACP image and resource blocks without stringifying or rewriting them", () => {
     const sent: Record<string, unknown>[] = [];
     const acp = createCliConversationController({
-      adapter_type: "codex_cli",
+      runtime_key: "codex_cli",
       cwd: "/workspace",
       prompt_blocks: [[
         { type: "text", text: "Describe this" },
@@ -87,7 +87,7 @@ describe("structured conversation prompt content", () => {
  */
 describe("a session option that disappears once the model is chosen", () => {
   const withConfig = (config: Parameters<typeof createCliConversationController>[0]["session_config"]) =>
-    createCliConversationController({ adapter_type: "codex_cli", prompt: "hello", cwd: "/workspace", session_config: config })!;
+    createCliConversationController({ runtime_key: "codex_cli", prompt: "hello", cwd: "/workspace", session_config: config })!;
 
   const advertise = (ids: Array<{ id: string; type: "select" | "boolean"; category: string; current: unknown; choices?: string[] }>) => ({
     configOptions: ids.map((option) => ({
@@ -131,7 +131,7 @@ describe("the vendor session a failed turn leaves behind", () => {
   const reachSession = (config: Parameters<typeof createCliConversationController>[0]["session_config"]) => {
     const sent: Record<string, unknown>[] = [];
     const acp = createCliConversationController({
-      adapter_type: "codex_cli", prompt: "hello", cwd: "/workspace", session_config: config,
+      runtime_key: "codex_cli", prompt: "hello", cwd: "/workspace", session_config: config,
     })!;
     acp.start((m) => sent.push(m));
     acp.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, (m) => sent.push(m), () => {});

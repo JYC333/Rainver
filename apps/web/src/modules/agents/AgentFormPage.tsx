@@ -1,28 +1,34 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import { ChevronDown, ChevronRight, Loader2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentTemplatesApi, agentsApi, hostsApi, projectsApi, providersApi, type ModelProviderOut } from '../../api/client'
+import { agentTemplatesApi, agentsApi, projectsApi } from '../../api/client'
 import type {
   AgentTemplateOut,
   AgentTemplateVersionOut,
   CreateAgentFromTemplateBody,
-  HostRuntimeAdapterOption,
   Project,
 } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
-import ProviderSelector from '../providers/ProviderSelector'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
+import { Select } from '../../components/ui/select'
 import { Textarea } from '../../components/ui/textarea'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Badge } from '../../components/ui/badge'
 import { errMsg } from '../../lib/utils'
 import { SafetyView } from './ConfigCards'
 import {
+  ScheduleEditorFields,
+  scheduleConfigFromEditor,
+  scheduleEditorFromConfig,
+  type ScheduleEditorValue,
+} from './ScheduleEditor'
+import {
   RetrievalToolDomainControls,
   mergeRetrievalToolDomains,
+  readRetrievalToolDomains,
   type RetrievalToolDomainState,
 } from './RetrievalToolDomainControls'
 import {
@@ -35,7 +41,6 @@ import {
   isMemoryOutput,
   outputTypeLabel,
 } from './policyMap'
-import HostExecutionTargetPicker, { type HostExecutionSelection } from '../command_center/HostExecutionTargetPicker'
 
 const CREATE_NOTE: Record<string, string> = {
   activity_reflector: 'This agent processes captures / activity records into typed proposals and a reflection summary for review.',
@@ -50,45 +55,6 @@ function Toggle({ checked, onChange, label, note }: { checked: boolean; onChange
   )
 }
 
-
-function scheduleFromConfig(config: Record<string, unknown> | null | undefined) {
-  const cronStr = typeof config?.cron === 'string' ? config.cron : ''
-  const daily = /^0 (\d{1,2}) \* \* \*$/.exec(cronStr)
-  if (daily) {
-    return {
-      scheduleMode: 'daily' as const,
-      dailyHour: daily[1].padStart(2, '0'),
-      cron: cronStr,
-      scheduleEnabled: config?.enabled === true,
-    }
-  }
-  if (cronStr) {
-    return {
-      scheduleMode: 'cron' as const,
-      dailyHour: '08',
-      cron: cronStr,
-      scheduleEnabled: config?.enabled === true,
-    }
-  }
-  return {
-    scheduleMode: 'manual' as const,
-    dailyHour: '08',
-    cron: '0 8 * * *',
-    scheduleEnabled: false,
-  }
-}
-
-function hostSelectionFromQuery(params: URLSearchParams): HostExecutionSelection | null {
-  const host_id = params.get('host') ?? ''
-  const workspace_location_id = params.get('location') ?? ''
-  const adapter_type = params.get('adapter') ?? ''
-  const installation = params.get('installation') ?? ''
-  const workspace_mode = params.get('mode') === 'managed' ? 'managed' : 'location'
-  return host_id && adapter_type && installation && (workspace_mode === 'managed' || workspace_location_id)
-    ? { host_id, workspace_location_id: workspace_mode === 'managed' ? null : workspace_location_id, workspace_mode, adapter_type, installation }
-    : null
-}
-
 export default function AgentFormPage() {
   const { templateId } = useParams()
   const [searchParams] = useSearchParams()
@@ -101,49 +67,19 @@ export default function AgentFormPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get('project') ?? '')
-  // A Room roster that already chose where the Agent runs hands the choice
-  // over in the URL, so the form opens with the host binding in place.
-  const [hostExecution, setHostExecution] = useState<HostExecutionSelection | null>(() => hostSelectionFromQuery(searchParams))
-
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
-  const [modelSelection, setModelSelection] = useState<{ provider_id: string; model: string } | null>(null)
-  const [defaultProvider, setDefaultProvider] = useState<ModelProviderOut | null>(null)
-  const [runtime, setRuntime] = useState<string>(() => hostSelectionFromQuery(searchParams)?.adapter_type ?? 'model_api')
-  const [cliAdapters, setCliAdapters] = useState<HostRuntimeAdapterOption[]>([])
-  const [scheduleMode, setScheduleMode] = useState<'manual' | 'daily' | 'cron'>('manual')
-  const [dailyHour, setDailyHour] = useState('08')
-  const [cron, setCron] = useState('0 8 * * *')
-  const [scheduleEnabled, setScheduleEnabled] = useState(false)
+  const [schedule, setSchedule] = useState<ScheduleEditorValue>(() => scheduleEditorFromConfig(null))
+  const [riskLevel, setRiskLevel] = useState<'low' | 'medium' | 'high' | 'critical'>('medium')
+  const [maxRunTimeSeconds, setMaxRunTimeSeconds] = useState(300)
   const [inputs, setInputs] = useState<Record<string, boolean>>({})
   const [outputs, setOutputs] = useState<Record<string, boolean>>({})
-  const [maxTokens, setMaxTokens] = useState('')
-  const [temperature, setTemperature] = useState('')
   const [retrievalToolDomains, setRetrievalToolDomains] = useState<RetrievalToolDomainState>({
     memory: false,
     project_public_summary: false,
     source: false,
   })
-
-  useEffect(() => {
-    Promise.all([
-      hostsApi.listRuntimeAdapters().then(result => result.items).catch(() => [] as HostRuntimeAdapterOption[]),
-      providersApi.list().catch(() => [] as ModelProviderOut[]),
-    ])
-      .then(([adapters, providers]) => {
-        setCliAdapters(adapters)
-        const provider = providers.find(p => p.is_default && p.enabled) ?? null
-        setDefaultProvider(provider)
-        if (provider?.default_model) {
-          setModelSelection(prev => prev ?? { provider_id: provider.id, model: provider.default_model ?? '' })
-        }
-      })
-      .catch(() => {
-        setCliAdapters([])
-        setDefaultProvider(null)
-      })
-  }, [])
 
   useEffect(() => {
     if (templateId) return
@@ -166,55 +102,18 @@ export default function AgentFormPage() {
         if (!t.current_version_id) return
         const v = await agentTemplatesApi.getVersion(t.id, t.current_version_id)
         setVersion(v)
+        setRiskLevel(v.execution_constraints.risk_level)
+        setMaxRunTimeSeconds(v.execution_constraints.max_run_time_seconds)
         setSystemPrompt('')
-        const runtimePolicy = v.runtime_policy_json as Record<string, unknown>
-        const nextRuntime = typeof runtimePolicy.default_adapter_type === 'string' ? runtimePolicy.default_adapter_type : 'model_api'
-        setRuntime(nextRuntime)
-        const modelConfig = v.model_config_json as Record<string, unknown>
-        setMaxTokens(typeof modelConfig.max_tokens === 'number' ? String(modelConfig.max_tokens) : '')
-        setTemperature(typeof modelConfig.temperature === 'number' ? String(modelConfig.temperature) : '')
-        if (typeof modelConfig.model === 'string' && defaultProvider) {
-          setModelSelection({ provider_id: defaultProvider.id, model: modelConfig.model })
-        }
-        const schedule = scheduleFromConfig(v.schedule_defaults_json as Record<string, unknown>)
-        setScheduleMode(schedule.scheduleMode)
-        setDailyHour(schedule.dailyHour)
-        setCron(schedule.cron)
-        setScheduleEnabled(schedule.scheduleEnabled)
+        setSchedule(scheduleEditorFromConfig(v.schedule_defaults_json))
         const enabledCtx = new Set(defaultInputContexts(v))
         setInputs(Object.fromEntries(allowedInputContexts(v).map(id => [id, enabledCtx.has(id)])))
         setOutputs(Object.fromEntries(allowedOutputTypes(v).map(id => [id, true])))
-        setRetrievalToolDomains({ memory: false, project_public_summary: false, source: false })
+        setRetrievalToolDomains(readRetrievalToolDomains(v.tool_policy_json))
       })
       .catch(err => toast.error(errMsg(err)))
       .finally(() => setLoading(false))
   }, [templateId])
-
-  // The catalog of CLI runtimes, which is now a property of the instance's
-  // adapter specs rather than of what the server has installed: a CLI runs on
-  // an execution host, and which copy runs is chosen with the host.
-  const runtimeOptions = useMemo(() => {
-    const options = [
-      { value: 'model_api', label: 'API — call a model provider (no tools)' },
-      ...cliAdapters.map(adapter => ({ value: adapter.adapter_type, label: `${adapter.display_name} (tools, filesystem)` })),
-    ]
-    if (!options.some(option => option.value === runtime)) {
-      options.push({ value: runtime, label: templateId ? `${runtime} (template default)` : `${runtime} (host runtime)` })
-    }
-    return options
-  }, [cliAdapters, runtime, templateId])
-
-  const isCli = runtime !== 'model_api'
-  const isClaudeCli = runtime === 'claude_code'
-  const isCodexCli = runtime === 'codex_cli'
-  const providerRequired = !isCli && !hostExecution
-  const showProviderSelector = !hostExecution && (!isCli || isClaudeCli || isCodexCli)
-  function buildScheduleConfig(): Record<string, unknown> {
-    if (scheduleMode === 'manual') return { enabled: false, cron: null }
-    if (scheduleMode === 'daily') return { enabled: scheduleEnabled, cron: `0 ${Number(dailyHour)} * * *` }
-    return { enabled: scheduleEnabled, cron }
-  }
-
   function buildContextConfig(): Record<string, unknown> {
     const base = version?.context_policy_json ?? {}
     const enabledInputs = Object.entries(inputs).filter(([, on]) => on).map(([key]) => key)
@@ -227,59 +126,32 @@ export default function AgentFormPage() {
     return buildOutputPolicy(base, enabledOutputs)
   }
 
-  function buildModelConfig(): Record<string, unknown> {
-    const cfg: Record<string, unknown> = { ...(version?.model_config_json ?? {}) }
-    const selectedModel = modelSelection?.model?.trim()
-    if (showProviderSelector && selectedModel) cfg.model = selectedModel
-    else delete cfg.model
-    if (maxTokens.trim()) cfg.max_tokens = Number(maxTokens)
-    else delete cfg.max_tokens
-    if (temperature.trim()) cfg.temperature = Number(temperature)
-    else delete cfg.temperature
-    return cfg
-  }
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!activeSpaceId) { toast.error('Select an operational space'); return }
-    if (providerRequired && !modelSelection?.provider_id) {
-      toast.error('Select a model provider for the API runtime')
-      return
-    }
     setSaving(true)
     try {
-      const runtimeConfig = {
-        adapter_type: runtime,
-      }
-      const runtimeConfigWithTools = mergeRetrievalToolDomains(runtimeConfig, retrievalToolDomains)
+      const toolPolicy = mergeRetrievalToolDomains(version?.tool_policy_json ?? {}, retrievalToolDomains)
       const common = {
         name: name.trim(),
         description: description.trim() || null,
         system_prompt: systemPrompt.trim() || null,
-        model_config_json: buildModelConfig(),
-        schedule_config_json: buildScheduleConfig(),
+        schedule_config_json: scheduleConfigFromEditor(schedule),
         context_policy_json: buildContextConfig(),
         output_policy_json: buildOutputConfig(),
+        tool_policy_json: toolPolicy,
+        execution_constraints: {
+          risk_level: riskLevel,
+          max_run_time_seconds: maxRunTimeSeconds,
+        },
       }
       const created = templateId
         ? await agentTemplatesApi.createAgent(templateId, {
             ...common,
-            adapter_type: runtime,
-            runtime_config_json: runtimeConfigWithTools,
-            default_model_provider_id: showProviderSelector ? (modelSelection?.provider_id ?? null) : null,
-            default_model: showProviderSelector ? (modelSelection?.model || null) : null,
           } satisfies CreateAgentFromTemplateBody)
         : await agentsApi.create({
-            ...common,
+          ...common,
             project_id: selectedProjectId || null,
-            adapter_type: runtime,
-            runtime_config_json: runtimeConfigWithTools,
-            default_model_provider_id: hostExecution ? null : showProviderSelector ? (modelSelection?.provider_id ?? null) : null,
-            default_model: hostExecution ? null : showProviderSelector ? (modelSelection?.model || null) : null,
-            execution_host_id: hostExecution?.host_id ?? null,
-            workspace_location_id: hostExecution?.workspace_location_id ?? null,
-            workspace_mode: hostExecution?.workspace_mode ?? null,
-            runtime_installation: hostExecution?.installation ?? null,
           })
       toast.success('Agent created')
       navigate(`/agents/${created.id}`)
@@ -287,21 +159,6 @@ export default function AgentFormPage() {
       toast.error(errMsg(err))
     } finally {
       setSaving(false)
-    }
-  }
-
-  function handleRuntimeChange(next: string) {
-    setRuntime(next)
-    setHostExecution(null)
-  }
-
-  function handleHostExecutionChange(next: HostExecutionSelection | null) {
-    setHostExecution(next)
-    if (next) {
-      setRuntime(next.adapter_type)
-      setModelSelection(null)
-    } else if (hostExecution) {
-      setRuntime('model_api')
     }
   }
 
@@ -313,7 +170,9 @@ export default function AgentFormPage() {
     context_policy_json: buildContextConfig(),
     output_policy_json: buildOutputConfig(),
     memory_policy_json: version?.memory_policy_json ?? {},
-    tool_policy_json: version?.tool_policy_json ?? {},
+    tool_policy_json: mergeRetrievalToolDomains(version?.tool_policy_json ?? {}, retrievalToolDomains),
+    risk_level: riskLevel,
+    max_run_time_seconds: maxRunTimeSeconds,
   }
 
   return (
@@ -337,6 +196,41 @@ export default function AgentFormPage() {
             <label className="text-[11px] font-medium text-muted-foreground uppercase">Name</label>
             <Input value={name} onChange={e => setName(e.target.value)} required />
           </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Run risk</span>
+              <Select
+                ariaLabel="Run risk"
+                value={riskLevel}
+                onChange={value => setRiskLevel(value as typeof riskLevel)}
+                options={[
+                  { value: 'low', label: 'Low' },
+                  { value: 'medium', label: 'Medium' },
+                  // Risk requires trust, and no runtime or Host reaches `high`
+                  // today (ROUTING.md, "Effective trust"), so either of these
+                  // leaves the Agent with no eligible candidate anywhere.
+                  { value: 'high', label: 'High · no execution target reaches high trust yet', disabled: true },
+                  { value: 'critical', label: 'Critical · no execution target reaches high trust yet', disabled: true },
+                ]}
+              />
+              <p className="text-xs text-muted-foreground">
+                High and critical risk require a high-trust execution target. Neither the Server Runtime nor a paired Host provides one yet, so an Agent set to either would never route.
+              </p>
+            </div>
+            <label className="space-y-1.5">
+              <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Maximum run time (seconds)</span>
+              <Input
+                aria-label="Maximum run time (seconds)"
+                type="number"
+                min={1}
+                max={3600}
+                step={1}
+                value={maxRunTimeSeconds}
+                onChange={event => setMaxRunTimeSeconds(Number(event.target.value))}
+                required
+              />
+            </label>
+          </div>
           <div className="space-y-1.5">
             <label className="text-[11px] font-medium text-muted-foreground uppercase">Description</label>
             <Input value={description} onChange={e => setDescription(e.target.value)} />
@@ -353,62 +247,29 @@ export default function AgentFormPage() {
           {!templateId && (
             <div className="space-y-1.5">
               <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Project (optional)</label>
-              <select
+              <Select
+                ariaLabel="Project (optional)"
                 value={selectedProjectId}
-                onChange={e => { setSelectedProjectId(e.target.value); setHostExecution(null) }}
-                className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm"
-              >
-                <option value="">No Project — personal Agent</option>
-                {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
-              </select>
+                onChange={setSelectedProjectId}
+                options={[
+                  { value: '', label: 'No Project — personal Agent' },
+                  ...projects.map(project => ({ value: project.id, label: project.name })),
+                ]}
+              />
               <p className="text-xs text-muted-foreground">A Project is required for a Project Location. Managed workspaces are Space-level and do not need a Project.</p>
             </div>
           )}
         </Card>
 
         <Card className="p-4 space-y-4">
-          <CardTitle>Runtime &amp; model</CardTitle>
-          <div className="space-y-1.5">
-            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Runtime</label>
-            <select
-              value={runtime}
-              onChange={e => handleRuntimeChange(e.target.value)}
-              disabled={Boolean(hostExecution)}
-              className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm disabled:opacity-60"
-            >
-              {runtimeOptions.map(option => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-            <p className="text-xs text-muted-foreground">
-              {hostExecution
-                ? 'Set by the host runtime chosen below — change the adapter there.'
-                : isCli
-                ? isClaudeCli
-                  ? 'Uses Claude Code login by default; optionally select a Claude-compatible provider below.'
-                  : isCodexCli
-                    ? 'Uses Codex login by default; optionally select an OpenAI-compatible provider below.'
-                    : 'Uses the CLI with its own login; the model is managed by the CLI runtime.'
-                : 'Runs a prompt against a configured model provider. Pick the provider below.'}
-            </p>
-          </div>
-          {!templateId && (
-            <HostExecutionTargetPicker
-              projectId={selectedProjectId}
-              value={hostExecution}
-              onChange={handleHostExecutionChange}
-            />
-          )}
-          {showProviderSelector && (
-            <ProviderSelector
-              value={modelSelection}
-              onChange={setModelSelection}
-              required={providerRequired}
-              requireClaudeCompatible={isClaudeCli}
-              requireOpenAiCompatible={isCodexCli}
-              emptyLabel={isClaudeCli ? 'Claude Code default' : isCodexCli ? 'Codex default' : defaultProvider?.default_model ? 'System default provider' : undefined}
-            />
-          )}
+          <CardTitle>Default execution</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            New Agents receive a Server Runtime Profile for the release-pinned OpenCode installation. Choose a different Host, runtime installation, or ModelProvider after creation in Runtime Profiles. Native account state on the Server Runtime is shared by people authorized to run Agents there.
+          </p>
+        </Card>
+
+        <Card className="p-4 space-y-4">
+          <CardTitle>Tools</CardTitle>
           <RetrievalToolDomainControls
             value={retrievalToolDomains}
             onChange={setRetrievalToolDomains}
@@ -417,31 +278,7 @@ export default function AgentFormPage() {
 
         <Card className="p-4 space-y-3">
           <CardTitle>Schedule</CardTitle>
-          <div className="space-y-1.5">
-            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Cadence</label>
-            <select value={scheduleMode} onChange={e => setScheduleMode(e.target.value as typeof scheduleMode)} className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm">
-              <option value="manual">Manual only</option>
-              <option value="daily">Daily</option>
-              <option value="cron">Custom cron</option>
-            </select>
-          </div>
-          {scheduleMode === 'daily' && (
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Hour (UTC)</label>
-              <Input value={dailyHour} onChange={e => setDailyHour(e.target.value)} className="w-24" />
-            </div>
-          )}
-          {scheduleMode === 'cron' && (
-            <div className="space-y-1.5">
-              <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Cron expression</label>
-              <Input value={cron} onChange={e => setCron(e.target.value)} className="font-mono" />
-            </div>
-          )}
-          {scheduleMode !== 'manual' && (
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={scheduleEnabled} onChange={e => setScheduleEnabled(e.target.checked)} /> Enabled
-            </label>
-          )}
+          <ScheduleEditorFields value={schedule} onChange={setSchedule} />
         </Card>
 
         <Card className="p-4">
@@ -482,17 +319,6 @@ export default function AgentFormPage() {
                 ) : (
                   <p className="text-xs text-muted-foreground">No durable output types are preconfigured.</p>
                 )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Max tokens</label>
-                  <Input value={maxTokens} onChange={e => setMaxTokens(e.target.value)} placeholder="8192" />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Temperature</label>
-                  <Input value={temperature} onChange={e => setTemperature(e.target.value)} placeholder="(default)" />
-                </div>
               </div>
 
               <div className="border-t border-border pt-4">

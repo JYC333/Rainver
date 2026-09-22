@@ -13,7 +13,7 @@ import type {
 export interface RuntimeSkillRunContext {
   space_id: string;
   run_id: string;
-  adapter_type: string | null;
+  runtime_key: string | null;
   capability_id?: string | null;
   agent_id: string | null;
   project_id: string | null;
@@ -26,7 +26,7 @@ export interface RuntimeSkillCandidate {
   capability_id: string;
   capability_version_id: string | null;
   capability_enablement_id: string | null;
-  runtime_adapter_type: string;
+  runtime_key: string;
   render_mode: string;
   binding_json: Record<string, unknown>;
   enablement_config_json: Record<string, unknown>;
@@ -48,7 +48,7 @@ interface RuntimeSkillCandidateRow {
   capability_key: string;
   capability_version_id: string | null;
   capability_enablement_id: string | null;
-  runtime_adapter_type: string;
+  runtime_key: string;
   render_mode: string;
   binding_json: unknown;
   enablement_config_json: unknown;
@@ -72,8 +72,8 @@ export class PgRuntimeSkillProvider implements RuntimeSkillProvider {
   }
 
   async loadCandidatesForRun(run: RuntimeSkillRunContext): Promise<RuntimeSkillCandidate[]> {
-    const adapterType = optionalString(run.adapter_type);
-    if (!adapterType) return [];
+    const runtimeKey = optionalString(run.runtime_key);
+    if (!runtimeKey) return [];
     const requestedCapabilityIds = capabilityIdsForRun(run);
     if (requestedCapabilityIds.length === 0) return [];
 
@@ -106,7 +106,7 @@ export class PgRuntimeSkillProvider implements RuntimeSkillProvider {
               b.capability_key,
               b.capability_version_id,
               se.id AS capability_enablement_id,
-              b.runtime_adapter_type,
+              b.runtime_key,
               b.render_mode,
               b.binding_json,
               se.config_json AS enablement_config_json,
@@ -115,7 +115,7 @@ export class PgRuntimeSkillProvider implements RuntimeSkillProvider {
          JOIN capability_runtime_bindings b
            ON b.space_id = $1
           AND b.capability_key = se.capability_key
-          AND b.runtime_adapter_type = $5
+          AND b.runtime_key = $5
           AND b.enabled = TRUE
           AND se.capability_version_id IS NOT NULL
           AND se.capability_version_id = b.capability_version_id
@@ -124,13 +124,13 @@ export class PgRuntimeSkillProvider implements RuntimeSkillProvider {
           AND cv.space_id = $1
           AND cv.status = 'available'
         WHERE se.enabled = TRUE
-        ORDER BY b.capability_key ASC, b.runtime_adapter_type ASC, b.render_mode ASC`,
+        ORDER BY b.capability_key ASC, b.runtime_key ASC, b.render_mode ASC`,
       [
         run.space_id,
         run.project_id,
         run.agent_id,
         run.instructed_by_user_id,
-        adapterType,
+        runtimeKey,
         requestedCapabilityIds,
       ],
     );
@@ -146,14 +146,14 @@ export class PgRuntimeSkillProvider implements RuntimeSkillProvider {
       if (!capability || row.capability_version_id !== null) continue;
       for (const binding of capability.default_runtime_bindings) {
         if (!binding.enabled) continue;
-        if (binding.runtime_adapter_type !== adapterType) continue;
+        if (binding.runtime_key !== runtimeKey) continue;
         if (binding.render_mode !== "render_skill" && binding.render_mode !== "inline_prompt") continue;
         const candidate: RuntimeSkillCandidate = {
           binding_id: binding.id,
           capability_id: capability.id,
           capability_version_id: null,
           capability_enablement_id: row.capability_enablement_id,
-          runtime_adapter_type: binding.runtime_adapter_type,
+          runtime_key: binding.runtime_key,
           render_mode: binding.render_mode,
           binding_json: binding.binding_json,
           enablement_config_json: objectValue(row.config_json),
@@ -224,7 +224,7 @@ export class PgRuntimeSkillProvider implements RuntimeSkillProvider {
 }
 
 export function renderRuntimeSkillCandidate(candidate: RuntimeSkillCandidate): RenderedRuntimeSkill | null {
-  if (candidate.runtime_adapter_type === "claude_code" && candidate.render_mode === "render_skill") {
+  if (candidate.runtime_key === "claude_code" && candidate.render_mode === "render_skill") {
     return {
       ...candidate,
       rendered: renderClaudeSkill({
@@ -234,7 +234,7 @@ export function renderRuntimeSkillCandidate(candidate: RuntimeSkillCandidate): R
       }),
     };
   }
-  if (candidate.runtime_adapter_type === "codex_cli" && candidate.render_mode === "render_skill") {
+  if (candidate.runtime_key === "codex_cli" && candidate.render_mode === "render_skill") {
     return {
       ...candidate,
       rendered: renderCodexSkill({
@@ -244,7 +244,7 @@ export function renderRuntimeSkillCandidate(candidate: RuntimeSkillCandidate): R
       }),
     };
   }
-  if (candidate.runtime_adapter_type === "model_api" && candidate.render_mode === "inline_prompt") {
+  if (candidate.runtime_key === "opencode" && candidate.render_mode === "inline_prompt") {
     return {
       ...candidate,
       rendered: renderGenericPromptSkill({
@@ -267,7 +267,7 @@ function candidateFromRow(row: RuntimeSkillCandidateRow): RuntimeSkillCandidate 
     capability_id: row.capability_key,
     capability_version_id: row.capability_version_id,
     capability_enablement_id: row.capability_enablement_id,
-    runtime_adapter_type: row.runtime_adapter_type,
+    runtime_key: row.runtime_key,
     render_mode: row.render_mode,
     binding_json: objectValue(row.binding_json),
     enablement_config_json: objectValue(row.enablement_config_json),
@@ -282,7 +282,7 @@ function candidateIdentity(candidate: RuntimeSkillCandidate): string {
     candidate.capability_id,
     candidate.capability_version_id ?? "builtin",
     candidate.binding_id,
-    candidate.runtime_adapter_type,
+    candidate.runtime_key,
     candidate.render_mode,
   ].join("\u0000");
 }

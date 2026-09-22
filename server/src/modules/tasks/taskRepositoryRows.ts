@@ -83,14 +83,14 @@ export interface TaskRow {
   deleted_at: unknown;
 }
 
-export interface TaskRunListRow extends VisibleRunRecord {
+export type TaskRunListRow = VisibleRunRecord & {
   task_run_id: string;
   task_run_space_id: string;
   task_run_task_id: string;
   task_run_run_id: string;
   task_run_role: string;
   task_run_created_at: unknown;
-}
+};
 
 export interface TaskEvaluationRow {
   id: string;

@@ -13,9 +13,6 @@ description: >
   proposal-only. This is the Chat identity for a personal / space assistant;
   per-run context selection never requires a new AgentVersion.
 
-model_config:
-  max_tokens: 4096
-
 # Product-level context categories. allowed_input_contexts is the safety ceiling
 # (copied verbatim, never expandable by overrides). default_input_contexts is the
 # starting set; the assistant may dynamically narrow/select within the ceiling at
@@ -55,12 +52,9 @@ tool_policy:
   workspace_write: false
   credential_access: false
 
-runtime_policy:
+execution_constraints:
   risk_level: low
   max_run_time_seconds: 120
-  allowed_adapter_types:
-    - model_api
-  default_adapter_type: model_api
 
 # allowed_output_types is the ceiling. The model selects which output(s) to emit
 # inside this set per run (classification_mode: model_selects). chat_message is the

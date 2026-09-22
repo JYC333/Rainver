@@ -150,7 +150,7 @@ export default function KnowledgeReviewPage({ embedded = false }: { embedded?: b
       ]} />
       <Select ariaLabel="Extraction agent" value={extractAgentId} onChange={setExtractAgentId} options={[
         { value: '', label: agents.length ? 'Select an Agent' : 'No active Agent available' },
-        ...agents.map(agent => ({ value: agent.id, label: `${agent.name}${agent.adapter_type ? ` · ${agent.adapter_type.replace(/_/g, ' ')}` : ''}` })),
+        ...agents.map(agent => ({ value: agent.id, label: `${agent.name}${agent.runtime_key ? ` · ${agent.runtime_key.replace(/_/g, ' ')}` : ''}` })),
       ]} />
       <Button disabled={!extractSourceId || !extractAgentId} onClick={() => knowledgePromotionApi.extract(projectId, {
         source_kind: extractKind,

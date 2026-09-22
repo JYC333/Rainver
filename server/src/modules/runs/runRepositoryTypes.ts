@@ -13,12 +13,11 @@ export interface Queryable {
   ): Promise<QueryResult<Row>>;
 }
 
-export interface RunRecord {
+export interface RunRecordBase {
   id: string;
   space_id: string;
-  agent_id: string;
   agent_name?: string | null;
-  agent_version_id: string;
+  runtime_key: string | null;
   run_role?: "execution" | "coordinator";
   requested_runtime_profile_id?: string | null;
   runtime_profile_id?: string | null;
@@ -43,7 +42,6 @@ export interface RunRecord {
   workflow_version_id?: string | null;
   route_decision_id?: string | null;
   scheduled_at?: string | null;
-  adapter_type: string | null;
   capability_id?: string | null;
   capabilities_json?: unknown;
   model_provider_id: string | null;
@@ -68,6 +66,24 @@ export interface RunRecord {
   access_level?: string;
   has_context_taint?: boolean;
   context_taint_json?: unknown;
+}
+
+export type AgentRunRecord = RunRecordBase & {
+  execution_kind: "agent";
+  agent_id: string;
+  agent_version_id: string;
+};
+
+export type ProviderTaskRunRecord = RunRecordBase & {
+  execution_kind: "provider_task";
+  agent_id: null;
+  agent_version_id: null;
+};
+
+export type RunRecord = AgentRunRecord | ProviderTaskRunRecord;
+
+export function isAgentRunRecord(run: RunRecord): run is AgentRunRecord {
+  return run.execution_kind === "agent";
 }
 
 /**
@@ -232,6 +248,7 @@ export interface ProposalSummaryRecord {
 }
 
 export interface RunCreateInput {
+  execution_kind: "agent";
   agent_id: string;
   space_id: string;
   user_id: string;
@@ -243,28 +260,6 @@ export interface RunCreateInput {
   workspace_location_id?: string | null;
   trust_mode?: "sandboxed" | "trusted_host" | null;
   host_task_thread_id?: string | null;
-  /**
-   * The runtime this Run must execute on, when the caller already knows it.
-   *
-   * Normally the router is the sole authority for adapter, provider and route
-   * decision, and this stays null until it stamps one. A dispatch to a paired
-   * machine is the exception: the adapter is chosen and validated when the
-   * dispatch is admitted — the caller named it, the Host reports that
-   * installation, and the Workspace Location is pinned to it — and
-   * `remoteHostCliAdapter` reads it back off the Run to pick the spec. There
-   * is no routing decision left to make.
-   */
-  adapter_type?: string | null;
-  /**
-   * The backend this Run was admitted against, when the caller resolved one.
-   *
-   * Same exception as `adapter_type`, and for the same reason: a dispatch to
-   * a paired machine resolves and validates its provider at admission, and
-   * `resolveRemoteRunBinding` reads the column back before launch to decide
-   * what the host is leased. Left null it would fall through to the Host
-   * default, which is the decision the dispatch had already overridden.
-   */
-  model_provider_id?: string | null;
   project_id?: string | null;
   prompt?: string | null;
   instruction?: string | null;
@@ -294,6 +289,7 @@ export interface RunCreateInput {
 }
 
 export interface DelegatedChildRunCreateInput {
+  execution_kind: "agent";
   agent_id: string;
   space_id: string;
   user_id: string;
@@ -307,28 +303,6 @@ export interface DelegatedChildRunCreateInput {
   workspace_location_id?: string | null;
   trust_mode?: "sandboxed" | "trusted_host" | null;
   host_task_thread_id?: string | null;
-  /**
-   * The runtime this Run must execute on, when the caller already knows it.
-   *
-   * Normally the router is the sole authority for adapter, provider and route
-   * decision, and this stays null until it stamps one. A dispatch to a paired
-   * machine is the exception: the adapter is chosen and validated when the
-   * dispatch is admitted — the caller named it, the Host reports that
-   * installation, and the Workspace Location is pinned to it — and
-   * `remoteHostCliAdapter` reads it back off the Run to pick the spec. There
-   * is no routing decision left to make.
-   */
-  adapter_type?: string | null;
-  /**
-   * The backend this Run was admitted against, when the caller resolved one.
-   *
-   * Same exception as `adapter_type`, and for the same reason: a dispatch to
-   * a paired machine resolves and validates its provider at admission, and
-   * `resolveRemoteRunBinding` reads the column back before launch to decide
-   * what the host is leased. Left null it would fall through to the Host
-   * default, which is the decision the dispatch had already overridden.
-   */
-  model_provider_id?: string | null;
   project_id?: string | null;
   prompt?: string | null;
   instruction?: string | null;

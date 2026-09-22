@@ -407,13 +407,19 @@ Automation supports manual and schedule-triggered fire. Policy preflight is not
 enforcement: it does not call `PolicyGateway.enforce()`, decrypt credentials, or
 mutate Run, Automation, MemoryEntry, Proposal, Policy, Credential, or Artifact
 rows.
-Runtime requirements decide whether provider defaults apply: `capability`,
-`claude_code`, and `codex_cli` never inherit the space default
-ModelProvider. Runtime-scoped provider defaults decide which provider is used
-for `model_provider_mode=required`; only those runtimes fall back to the space
-default provider. Runtime requirements are mandatory for every wired runtime
-adapter; unknown non-empty adapter types fail with `runtime_requirements_missing`
-instead of silently using `model_provider_mode=none`.
+The selected `AgentRuntimeProfile` is the only source of a Run's ModelProvider,
+so there is nothing for a runtime-requirements registry to decide. A
+`model_provider` Profile names an enabled same-Space Provider **and** an
+explicit model — `runtimeProfileAdmission.ts` answers either half alone with
+422 — while a `runtime_native` Profile stores no binding at all and relies on
+the login its runtime copy holds on its execution Host. No runtime adapter,
+AgentVersion, or Space default supplies a provider a Profile did not name: the
+Space runtime default is a provisioning template for Profiles that do not exist
+yet, and dispatch never reads it. Automation policy preflight reads exactly one
+field for this, `agent_runtime_profiles.model_provider_id` of the Agent's
+enabled default Profile (`AutomationsService.runPreflight` in
+`server/src/modules/automations/service.ts`), and simulates
+`runtime.use_credential` only when that field is set.
 
 ## Policy table wiring summary
 

@@ -243,7 +243,7 @@ async function applyRuntimeSkillBindingUpdateProposal(
       WHERE id = $1
         AND space_id = $2
       RETURNING id, space_id, capability_key, capability_version_id,
-                runtime_adapter_type, render_mode, binding_json, enabled`,
+                runtime_key, render_mode, binding_json, enabled`,
     [
       bindingId,
       context.proposal.space_id,

@@ -106,7 +106,7 @@ function request() {
     },
     invocationId: RUN,
     executionControlSnapshotId: CONTROL,
-    adapterType: "model_api",
+    runtimeKey: "opencode",
     providerId: PROVIDER,
     model: "gpt-4o",
     usageSourceId: `run:${RUN}:attempt:1`,
@@ -216,7 +216,7 @@ describe("RuntimeContextInvocationGateway", () => {
     );
     await gateway.prepareInvocation({
       ...request(),
-      adapterType: "codex_cli",
+      runtimeKey: "codex_cli",
       cliBinding: {
         id: "40000000-0000-4000-8000-000000000099",
         runtime_state_key: "40000000-0000-4000-8000-000000000098",

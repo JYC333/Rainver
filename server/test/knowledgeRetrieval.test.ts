@@ -709,7 +709,7 @@ describe("Knowledge zero-LLM retrieval", () => {
       object_id: ITEM_B,
       signal_type: "accepted",
       dwell_ms: null,
-      created_at: "2026-06-23T00:00:00.000Z",
+      created_at: new Date().toISOString(),
     });
 
     const boosted = await new RetrievalSearchService(db, knowledgeRetrievalRegistry, {

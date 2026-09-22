@@ -39,10 +39,10 @@ export const hostThreads = pgTable("host_threads", {
 	agentId: varchar("agent_id", { length: 36 }),
 	containerKind: varchar("container_kind", { length: 16 }),
 	containerUserId: varchar("container_user_id", { length: 36 }),
-	adapterType: varchar("adapter_type", { length: 64 }).notNull(),
+	runtimeKey: varchar("runtime_key", { length: 64 }).notNull(),
 	// Which copy of the runtime on the host this thread runs on — `own` (the
 	// machine's PATH install) or `managed:<version>`. Pinned like
-	// `adapter_type`: the vendor session lives inside that installation's
+	// `runtime_key`: the vendor session lives inside that installation's
 	// login state, so a thread cannot move between copies.
 	runtimeInstallation: varchar("runtime_installation", { length: 64 }).default('own').notNull(),
 	vendorSessionId: varchar("vendor_session_id", { length: 256 }),

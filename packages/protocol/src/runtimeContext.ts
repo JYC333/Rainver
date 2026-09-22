@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
+import { RuntimeKeySchema } from "./runtimeAuthority.js";
 
 const JsonObjectSchema = z.record(z.unknown());
 const RefSchema = z.object({
@@ -434,7 +435,7 @@ export const ContextWindowAllocationsSchema = z.object({
 export type ContextWindowAllocations = z.infer<typeof ContextWindowAllocationsSchema>;
 
 export const ContextWindowPlanSchema = z.object({
-  model: z.string().min(1),
+  model: z.string().min(1).nullable(),
   model_catalog_version: z.string().min(1),
   tokenizer_version: z.string().min(1),
   total_window_tokens: z.number().int().positive(),
@@ -601,7 +602,7 @@ export const InvocationDeliverySchema = z.object({
   id: IdSchema,
   invocation_id: IdSchema,
   delivery_kind: z.enum(["agent_task", "provider_task"]),
-  adapter_type: z.string().min(1),
+  runtime_key: RuntimeKeySchema,
   provider_id: IdSchema.nullable(),
   model: z.string().nullable(),
   renderer_version: z.string().min(1),
@@ -767,14 +768,6 @@ export const InvocationSnapshotSafeSchema = z.object({
   cli_known_cursor: z.number().int().nonnegative().nullable(),
   capture_status: ContextCaptureStatusSchema,
   error_code: z.string().nullable(),
-  dispatch_binding: z.object({
-    request_fingerprint: z.string().min(1),
-    bound_at: ISODateTimeSchema,
-  }).strict().optional(),
-  dispatch: z.object({
-    request_fingerprint: z.string().min(1),
-    dispatched_at: ISODateTimeSchema,
-  }).strict().optional(),
   created_at: ISODateTimeSchema,
   ...SecretResponseGuards,
 }).strict().superRefine((snapshot, context) => {

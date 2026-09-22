@@ -37,6 +37,7 @@ export class KnowledgeExtractionService {
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const run = await new PgRunRepository(db).createQueuedRun({
+        execution_kind: "agent",
         agent_id: agentId,
         space_id: identity.spaceId,
         user_id: identity.userId,

@@ -56,7 +56,7 @@ export default function ProjectConversationBackendCard({ projectId }: { projectI
     setBusy(true)
     try {
       await agentsApi.resolveHostRuntimeProfile(assistant.id, {
-        adapter_type: hostSelection.adapter_type,
+        runtime_key: hostSelection.runtime_key,
         execution_host_id: hostSelection.host_id,
         workspace_location_id: hostSelection.workspace_location_id,
         workspace_mode: hostSelection.workspace_mode,
@@ -114,9 +114,9 @@ export default function ProjectConversationBackendCard({ projectId }: { projectI
               <span className="ml-1 text-muted-foreground">
                 {profile.execution_host_id
                   ? profile.workspace_mode === 'location'
-                    ? `· ${profile.adapter_type} · Project Location${profile.workspace_location_id ? ` ${profile.workspace_location_id}` : ''} · owner-only (others fall back)`
-                    : `· ${profile.adapter_type} · isolated managed workspace · owner-only (others fall back)`
-                  : `· ${profile.adapter_type}`}
+                    ? `· ${profile.runtime_key} · Project Location${profile.workspace_location_id ? ` ${profile.workspace_location_id}` : ''} · owner-only (others fall back)`
+                    : `· ${profile.runtime_key} · isolated managed workspace · owner-only (others fall back)`
+                  : `· ${profile.runtime_key}`}
               </span>
             </span>
           </label>

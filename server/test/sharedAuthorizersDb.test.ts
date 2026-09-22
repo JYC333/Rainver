@@ -219,12 +219,12 @@ describe("Run command authority (real Postgres)", () => {
     const parent = randomUUID();
     const now = new Date().toISOString();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-                         owner_user_id, visibility, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,'private',$6,$6)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, owner_user_id, visibility, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'private', $6, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [parent, SPACE, RUN_AGENT, RUN_VERSION, OWNER, now],
     );
     await expect(new PgRunRepository(db.pool).createQueuedRun({
+      execution_kind: "agent",
       agent_id: RUN_AGENT,
       space_id: SPACE,
       user_id: OTHER,
@@ -259,9 +259,8 @@ describe("Run command authority (real Postgres)", () => {
     const child = randomUUID();
     const now = new Date().toISOString();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-                         owner_user_id, visibility, parent_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,'private',$6,$7,$7)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, owner_user_id, visibility, parent_run_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'private', $6, $7, $7, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [child, SPACE, RUN_AGENT, RUN_VERSION, OWNER, RUN, now],
     );
     const runs = new PgRunRepository(db.pool);

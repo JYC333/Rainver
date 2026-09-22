@@ -11,7 +11,6 @@ import {
 } from "../jobs/handlerRegistry.js";
 import type { JobHandlerResult } from "../jobs/handlerRegistry.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
-import type { RuntimeHostLogger } from "../runtimeHost/index.js";
 import { finalizeChatTurn } from "./chatTurnFinalizer.js";
 import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
@@ -23,15 +22,15 @@ import {
   instanceUpdatePending,
 } from "../deployment/drainAdmission.js";
 import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
+import { enqueueRunTerminalReconcilers } from "./runTerminalReconcilers.js";
 
 export function registerAgentRunHandler(
   registry: JobHandlerRegistry,
   config: ServerConfig,
-  runtimeHostLogger?: RuntimeHostLogger,
 ): void {
   if (!config.databaseUrl) return;
 
-  const { repository, orchestration, materializer } = buildRunOrchestration(config, { runtimeHostLogger });
+  const { repository, orchestration, materializer } = buildRunOrchestration(config);
 
   registry.register("agent_run", async (job) =>
     handleAgentRun(job, orchestration, materializer, repository, config));
@@ -268,38 +267,12 @@ async function handleAgentRun(
          FROM runs WHERE id=$1 AND space_id=$2`,
       [runId, job.space_id],
     );
-    const workflowInput = recordValue(contract.rows[0]?.workflow_input_json);
-    const kind = stringValue(workflowInput.kind);
-    const queue = new PgJobQueueRepository(db);
-    if (kind === "knowledge_candidate_extraction") {
-      await queue.enqueue({
-        job_type: "knowledge_candidate_extraction_reconcile",
-        space_id: job.space_id,
-        user_id: job.user_id,
-        payload: { run_id: runId },
-      });
-    } else if (kind === "managed_experiment") {
-      await queue.enqueue({
-        job_type: "managed_experiment_reconcile",
-        space_id: job.space_id,
-        user_id: job.user_id,
-        payload: { run_id: runId },
-      });
-    } else if (workflowInput.project_research_standing !== undefined) {
-      await queue.enqueue({
-        job_type: "project_research_standing_reconcile",
-        space_id: job.space_id,
-        user_id: job.user_id,
-        payload: { run_id: runId },
-      });
-    } else if (workflowInput.project_research !== undefined) {
-      await queue.enqueue({
-        job_type: "project_research_execution_nudge",
-        space_id: job.space_id,
-        user_id: job.user_id,
-        payload: { run_id: runId, reason: "agent_run_terminal" },
-      });
-    }
+    await enqueueRunTerminalReconcilers(db, {
+      space_id: job.space_id,
+      user_id: job.user_id,
+      run_id: runId,
+      workflow_input_json: recordValue(contract.rows[0]?.workflow_input_json),
+    });
   }
   return result;
 }

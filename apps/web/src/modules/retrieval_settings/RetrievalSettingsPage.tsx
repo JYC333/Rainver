@@ -36,8 +36,6 @@ const SEARCH_MODE_OPTIONS: Array<{ value: RetrievalSearchMode; label: string }> 
 const RETRIEVAL_TOOL_MODE_OPTIONS: Array<{ value: RetrievalToolMode; label: string }> = [
   { value: 'off', label: 'Off' },
   { value: 'manual_tool_only', label: 'Manual tools' },
-  { value: 'preflight_search', label: 'Preflight search' },
-  { value: 'preflight_brief', label: 'Preflight brief' },
 ]
 
 const CONTEXT_OPS_REVIEW_MODE_OPTIONS: Array<{ value: ContextOpsReviewMode; label: string }> = [

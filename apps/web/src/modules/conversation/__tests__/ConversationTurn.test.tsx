@@ -107,11 +107,14 @@ describe('ConversationTurn — the states of D3', () => {
 
   it('failed: the bubble carries the failure, and the steps stay open', () => {
     show(<ConversationTurn turn={turn('failed', [
-      { ...tool(0, 'write', 'failed'), output: 'Upstream refused.' },
-      { type: 'diagnostic', index: 1, level: 'error', text: 'Upstream refused.', error_code: 'provider_unavailable' },
+      tool(0, 'inspect', 'succeeded'),
+      { ...tool(1, 'write', 'failed'), output: 'Upstream refused.' },
+      { type: 'diagnostic', index: 2, level: 'error', text: 'Upstream refused.', error_code: 'provider_unavailable' },
     ])} />)
     expect(screen.getByText('Upstream refused.')).toBeInTheDocument()
+    expect(screen.getByText('inspect')).toBeInTheDocument()
     expect(screen.getByText('write')).toBeInTheDocument()
+    expect(screen.queryByText(/tool call completed/)).not.toBeInTheDocument()
     expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('write'))
     expect(screen.getAllByText('Upstream refused.')).toHaveLength(2)
@@ -125,6 +128,8 @@ describe('ConversationTurn — the states of D3', () => {
     />)
     expect(screen.getByText('approval needed')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Review request' })).toBeInTheDocument()
+    expect(screen.getByText('write_file')).toBeInTheDocument()
+    expect(screen.queryByText(/tool call completed/)).not.toBeInTheDocument()
   })
 
   it('blocked on a supervisor decision reads differently from an approval', () => {

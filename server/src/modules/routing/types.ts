@@ -15,7 +15,7 @@ export type RouteExecutionShape =
   | "code_execution";
 
 export interface RouteHints {
-  preferred_adapter_types: string[];
+  preferred_runtime_keys: string[];
   execution_shape: RouteExecutionShape | null;
   preferred_runtime_profile_id: string | null;
   required_capabilities: string[];
@@ -29,7 +29,7 @@ export interface RouteHints {
 }
 
 export interface RouteRequest {
-  adapter_types?: string[];
+  runtime_keys?: string[];
   runtime_profile_id?: string | null;
   runtime_profile_is_explicit?: boolean;
   excluded_runtime_profile_ids?: string[];
@@ -46,18 +46,31 @@ export interface RouteRequest {
 export interface RouteCandidate {
   runtime_profile_id: string;
   profile_name: string;
-  adapter_type: string;
+  runtime_key: string;
   /** A Room specialist whose runtime is pinned to a paired execution Host. */
   host_bound?: boolean;
   execution_host_id?: string | null;
+  execution_host_kind?: string | null;
   workspace_location_id?: string | null;
   workspace_mode?: "location" | "managed" | null;
   runtime_installation?: string | null;
+  backend_mode: "runtime_native" | "model_provider";
   model_provider_id: string | null;
   model_name: string | null;
   runtime_config_json: Record<string, unknown>;
   runtime_policy_json: Record<string, unknown>;
+  /** The Profile's own enabled flag, and nothing else. */
   enabled: boolean;
+  /** The Profile's `runtime_key` resolves to an implemented ACP runtime. */
+  runtime_runnable?: boolean;
+  /** The execution Host reports a healthy installed copy of that runtime. */
+  installation_ready?: boolean;
+  /**
+   * The responsible user may dispatch to this Profile's execution Host. The
+   * strict Server Host serves the instance; a paired Host serves only its own
+   * registered owner (ADR 0016 section 3).
+   */
+  host_dispatch_permitted?: boolean;
   is_default: boolean;
   credential_available: boolean;
   capabilities: string[];
@@ -92,7 +105,7 @@ export interface RouteCandidate {
 
 export interface RouteRejection {
   runtime_profile_id: string;
-  adapter_type: string;
+  runtime_key: string;
   reasons: string[];
 }
 

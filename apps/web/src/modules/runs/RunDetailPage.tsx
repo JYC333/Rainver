@@ -17,6 +17,7 @@ import { useRun, RUN_TERMINAL_STATUSES } from '../../hooks/useRun'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { useSpace } from '../../contexts/SpaceContext'
 import { PersonalContextPanel } from './PersonalContextPanel'
+import { ProviderTaskBadge, runActorLabel } from './runActor'
 import { isGrantDerivedProposal } from '../memory/EgressReviewNotice'
 import { promptLibraryPath } from '../prompts/paths'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
@@ -488,6 +489,7 @@ export default function RunDetailPage() {
           <Badge variant="secondary">{r.mode}</Badge>
           {r.mode === 'dry_run' && <PreviewBadge />}
           <Badge variant="outline">{r.run_type}</Badge>
+          <ProviderTaskBadge run={r} />
           <ScopeBadge visibility={r.visibility} />
         </div>
         {r.mode === 'dry_run' && <DryRunBanner />}
@@ -503,13 +505,19 @@ export default function RunDetailPage() {
             <p><span className="text-muted-foreground">Execution space</span><br /><span>{executionSpace?.name ?? 'Unavailable space'}</span></p>
             <p><span className="text-muted-foreground">Project context</span><br /><span>{r.project_folder_id ? 'Project Folder attached' : 'No Project Folder'}</span></p>
             <p><span className="text-muted-foreground">Instructed by</span><br /><span>{instructedBy}</span></p>
+            {/* A bounded provider task has no Agent, AgentVersion or runtime
+                snapshot by construction, so the identifiers below are empty by
+                design. Say what it is instead of leaving the page silent. */}
+            {r.execution_kind === 'provider_task' && (
+              <p><span className="text-muted-foreground">Ran by</span><br /><span>{runActorLabel(r, null)}</span></p>
+            )}
           </div>
           <details className="rounded-md border border-border bg-muted/20 p-3 text-xs">
             <summary className="cursor-pointer font-medium">Technical identifiers</summary>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <p className="break-all"><span className="text-muted-foreground">run_id</span><br /><span className="font-mono select-all">{r.id}</span></p>
-              <p className="break-all"><span className="text-muted-foreground">agent_id</span><br /><span className="font-mono select-all">{r.agent_id}</span></p>
-              <p className="break-all"><span className="text-muted-foreground">agent_version_id</span><br /><span className="font-mono select-all">{r.agent_version_id}</span></p>
+              <p className="break-all"><span className="text-muted-foreground">agent_id</span><br /><span className="font-mono select-all">{r.agent_id ?? '—'}</span></p>
+              <p className="break-all"><span className="text-muted-foreground">agent_version_id</span><br /><span className="font-mono select-all">{r.agent_version_id ?? '—'}</span></p>
               <p className="break-all"><span className="text-muted-foreground">project_folder_id</span><br /><span className="font-mono select-all">{r.project_folder_id ?? '—'}</span></p>
               <p className="break-all"><span className="text-muted-foreground">space_id</span><br /><span className="font-mono select-all">{r.space_id}</span></p>
             </div>

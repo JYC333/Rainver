@@ -30,6 +30,7 @@ import { resolveRunRemoteness } from "../runs/runRemoteness.js";
 import { RunBudgetExceededError, RunBudgetSourceReferenceError } from "../runs/budgetEnforcement.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import {
+  HttpError,
   dbPool,
   parsePage,
   query as routeQuery,
@@ -43,6 +44,7 @@ import { prepareHostConversationDispatch } from "../agentGroups/service.js";
 import { renderAgentIdentityPrompt } from "../agentGroups/agentIdentityPrompt.js";
 import { TERMINAL_RUN_STATUSES } from "../runs/orchestrationResults.js";
 import { assertProjectReadable } from "../projects/access.js";
+import { requireSpaceOwnerOrAdmin } from "../routeUtils/access.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import {
@@ -52,11 +54,12 @@ import {
   jsonBody,
   nullableBodyString,
   optionalArrayBody,
-  optionalBooleanBody,
   optionalRecordBody,
   recordValue,
   params,
   requiredBodyString,
+  parseExecutionConstraints,
+  rejectRetiredAgentDeploymentFields,
   sendDomainError,
   stringValue,
 } from "./agentRouteInputs.js";
@@ -177,6 +180,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (!run) {
         return reply.code(404).send({ detail: "Run not found in this space" });
       }
+      if (run.execution_kind !== "agent") {
+        return reply.code(404).send({ detail: "Run not found in this space" });
+      }
       if (!(await agentRepository().getVisible(identity.spaceId, identity.userId, run.agent_id))) {
         return reply.code(404).send({ detail: "Run not found in this space" });
       }
@@ -292,11 +298,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const body = jsonBody(request);
+      rejectRetiredAgentDeploymentFields(body);
       const creation = await resolveContentCreationContext(dbPool(context.config), {
         userId: identity.userId,
         requestSpaceId: identity.spaceId,
         projectId: stringValue(body.project_id),
       });
+      const executionConstraints = parseExecutionConstraints(body.execution_constraints);
       const agent = await agentRepository().create({
         spaceId: creation.spaceId,
         projectId: creation.projectId,
@@ -306,22 +314,44 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         visibility: creation.visibility,
         roleInstruction: nullableBodyString(body, "role_instruction") ?? null,
         systemPrompt: nullableBodyString(body, "system_prompt") ?? null,
-        defaultModelProviderId: nullableBodyString(body, "default_model_provider_id") ?? null,
-        defaultModel: nullableBodyString(body, "default_model") ?? null,
-        adapterType: nullableBodyString(body, "adapter_type") ?? null,
-        modelConfigJson: optionalRecordBody(body, "model_config_json"),
-        runtimeConfigJson: optionalRecordBody(body, "runtime_config_json"),
-        executionHostId: nullableBodyString(body, "execution_host_id"),
-        workspaceLocationId: nullableBodyString(body, "workspace_location_id"),
-        workspaceMode: nullableBodyString(body, "workspace_mode") as "location" | "managed" | null,
-        runtimeInstallation: nullableBodyString(body, "runtime_installation"),
+        riskLevel: executionConstraints.risk_level,
+        maxRunTimeSeconds: executionConstraints.max_run_time_seconds,
         contextPolicyJson: optionalRecordBody(body, "context_policy_json"),
         memoryPolicyJson: optionalRecordBody(body, "memory_policy_json"),
         capabilitiesJson: optionalArrayBody(body, "capabilities_json"),
         toolPermissionsJson: optionalRecordBody(body, "tool_permissions_json"),
-        runtimePolicyJson: optionalRecordBody(body, "runtime_policy_json"),
       });
       return reply.code(201).send(agent);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.get("/api/v1/agents/runtime-default", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const value = await agentRepository().getSpaceAgentRuntimeDefault(identity.spaceId);
+      return reply.send(value ? protocol.SpaceAgentRuntimeDefaultOutSchema.parse(value) : null);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.put("/api/v1/agents/runtime-default", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    if (!(await requireSpaceOwnerOrAdmin(context.config, identity, reply, "Only space owners or admins may change defaults for future Agent Profiles"))) return reply;
+    try {
+      const body = protocol.SpaceAgentRuntimeDefaultWriteSchema.parse(jsonBody(request));
+      const value = await agentRepository().setSpaceAgentRuntimeDefault(identity.spaceId, {
+        runtimeKey: body.runtime_key,
+        backendMode: body.backend_mode,
+        modelProviderId: body.model_provider_id,
+        modelName: body.model_name,
+        runtimeConfigJson: body.runtime_config_json,
+      });
+      return reply.send(protocol.SpaceAgentRuntimeDefaultOutSchema.parse(value));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -424,6 +454,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const body = jsonBody(request);
       rejectRuntimeProfileCredential(body);
+      const write = parseRuntimeProfileBody(protocol.AgentRuntimeProfileCreateBodySchema, body);
       const repository = agentRepository();
       const agentId = params(request).agentId ?? "";
       if (!await repository.canWriteRuntimeProfiles(identity.spaceId, identity.userId, agentId)) {
@@ -433,18 +464,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         identity.spaceId,
         agentId,
         {
-          name: requiredBodyString(body, "name"),
-          adapterType: requiredBodyString(body, "adapter_type"),
-          modelProviderId: nullableBodyString(body, "model_provider_id"),
-          modelName: nullableBodyString(body, "model_name"),
-          executionHostId: nullableBodyString(body, "execution_host_id"),
-          workspaceLocationId: nullableBodyString(body, "workspace_location_id"),
-          workspaceMode: nullableBodyString(body, "workspace_mode") as "location" | "managed" | null,
-          runtimeInstallation: nullableBodyString(body, "runtime_installation"),
-          runtimeConfigJson: optionalRecordBody(body, "runtime_config_json"),
-          runtimePolicyJson: optionalRecordBody(body, "runtime_policy_json"),
-          enabled: optionalBooleanBody(body, "enabled"),
-          isDefault: optionalBooleanBody(body, "is_default"),
+          name: write.name,
+          runtimeKey: write.runtime_key,
+          backendMode: write.backend_mode,
+          modelProviderId: write.model_provider_id ?? null,
+          modelName: write.model_name ?? null,
+          executionHostId: write.execution_host_id ?? null,
+          workspaceLocationId: write.workspace_location_id ?? null,
+          workspaceMode: write.workspace_mode ?? null,
+          runtimeInstallation: write.runtime_installation ?? null,
+          runtimeConfigJson: write.runtime_config_json,
+          runtimePolicyJson: write.runtime_policy_json,
+          enabled: write.enabled,
+          isDefault: write.is_default,
           actorUserId: identity.userId,
         },
       );
@@ -475,7 +507,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         executionHostId: requiredBodyString(body, "execution_host_id"),
         workspaceLocationId: nullableBodyString(body, "workspace_location_id"),
         workspaceMode,
-        adapterType: requiredBodyString(body, "adapter_type"),
+        runtimeKey: requiredBodyString(body, "runtime_key"),
         runtimeInstallation: requiredBodyString(body, "runtime_installation"),
       });
       return reply.send(profile);
@@ -490,6 +522,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const body = jsonBody(request);
       rejectRuntimeProfileCredential(body);
+      const patch = parseRuntimeProfileBody(protocol.AgentRuntimeProfileUpdateBodySchema, body);
       const repository = agentRepository();
       const agentId = params(request).agentId ?? "";
       const profileId = params(request).profileId ?? "";
@@ -500,35 +533,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         identity.spaceId,
         agentId,
         profileId,
-        {
-          name: Object.hasOwn(body, "name") ? requiredBodyString(body, "name") : undefined,
-          adapterType: Object.hasOwn(body, "adapter_type")
-            ? requiredBodyString(body, "adapter_type")
-            : undefined,
-          modelProviderId: Object.hasOwn(body, "model_provider_id")
-            ? nullableBodyString(body, "model_provider_id")
-            : undefined,
-          modelName: Object.hasOwn(body, "model_name")
-            ? nullableBodyString(body, "model_name")
-            : undefined,
-          executionHostId: Object.hasOwn(body, "execution_host_id")
-            ? nullableBodyString(body, "execution_host_id")
-            : undefined,
-          workspaceLocationId: Object.hasOwn(body, "workspace_location_id")
-            ? nullableBodyString(body, "workspace_location_id")
-            : undefined,
-          workspaceMode: Object.hasOwn(body, "workspace_mode")
-            ? nullableBodyString(body, "workspace_mode") as "location" | "managed" | null
-            : undefined,
-          runtimeInstallation: Object.hasOwn(body, "runtime_installation")
-            ? nullableBodyString(body, "runtime_installation")
-            : undefined,
-          runtimeConfigJson: optionalRecordBody(body, "runtime_config_json"),
-          runtimePolicyJson: optionalRecordBody(body, "runtime_policy_json"),
-          enabled: optionalBooleanBody(body, "enabled"),
-          isDefault: optionalBooleanBody(body, "is_default"),
-          actorUserId: identity.userId,
-        },
+        { ...runtimeProfilePatchFields(patch), actorUserId: identity.userId },
       );
       return reply.send(profile);
     } catch (error) {
@@ -664,6 +669,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       }
       const resolvedProjectFolderId = creation.projectId ? projectFolderId : null;
       const run = await repository.createQueuedRunWithBudgetAdmission({
+        execution_kind: "agent",
         agent_id: agentId,
         space_id: creation.spaceId,
         user_id: identity.userId,
@@ -945,7 +951,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         );
         try {
           assertConversationInputCapabilities(req.input_parts, backend.prompt_capabilities);
-          assertConversationInputResourceTools(req.input_parts, backend.adapter_type);
+          assertConversationInputResourceTools(req.input_parts, backend.runtime_key);
         } catch (error) {
           if (error instanceof ConversationInputCapabilityError) {
             throw new ChatContextError(`Agent '${agent.name}' cannot accept this conversation input: ${error.message}`, error.statusCode);
@@ -1251,7 +1257,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             );
             try {
               assertConversationInputCapabilities(originalMessage.input_parts ?? [], backend.prompt_capabilities);
-              assertConversationInputResourceTools(originalMessage.input_parts ?? [], backend.adapter_type);
+              assertConversationInputResourceTools(originalMessage.input_parts ?? [], backend.runtime_key);
             } catch (error) {
               if (error instanceof ConversationInputCapabilityError) {
                 throw new ChatContextError(`Retry context needs review: ${error.message}`, error.statusCode);
@@ -1359,6 +1365,72 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 }
 
+/**
+ * Request validation for a Runtime Profile body is the protocol schema and
+ * nothing else. `.strict()` is what retires `adapter_type`,
+ * `credential_profile_id` and the other deployment aliases — one rule, not a
+ * hand-maintained list per route — and the option-bag schemas carry the
+ * authority and bag-ownership rules the repository admits on.
+ */
+function parseRuntimeProfileBody<T>(
+  schema: { safeParse(value: unknown): { success: true; data: T } | { success: false; error: { issues: Array<{ path: PropertyKey[]; message: string }> } } },
+  body: Record<string, unknown>,
+): T {
+  const parsed = schema.safeParse(body);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const where = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+  throw new HttpError(422, `${where}${issue?.message ?? "Invalid runtime profile body"}`);
+}
+
+/**
+ * The PATCH body's present keys, and only those.
+ *
+ * `updateRuntimeProfile` discriminates an unnamed field from one explicitly
+ * cleared with `Object.hasOwn`, which an `undefined`-valued key satisfies. A
+ * patch literal that always carries every key therefore reads as "clear
+ * everything the caller did not repeat" — a `{"is_default": true}` PATCH from
+ * the conversation backend card would unbind the product-default Profile's
+ * execution Host (B46) and leave the Agent with no route candidate. Copying
+ * only the keys the parsed body actually has keeps `.nullish()`'s distinction
+ * intact all the way to the repository.
+ */
+function runtimeProfilePatchFields(
+  patch: protocol.AgentRuntimeProfileUpdateBody,
+): Partial<RuntimeProfilePatch> {
+  const fields: Record<string, unknown> = {};
+  for (const [bodyKey, patchKey] of Object.entries(RUNTIME_PROFILE_PATCH_FIELDS)) {
+    if (Object.hasOwn(patch, bodyKey)) {
+      fields[patchKey] = (patch as Record<string, unknown>)[bodyKey];
+    }
+  }
+  return fields as Partial<RuntimeProfilePatch>;
+}
+
+type RuntimeProfilePatch = Parameters<PgAgentRepository["updateRuntimeProfile"]>[3];
+
+/**
+ * Keyed by `Required<…>` so a field added to the protocol body fails to
+ * compile here until it is mapped, rather than being silently dropped.
+ */
+const RUNTIME_PROFILE_PATCH_FIELDS: {
+  [K in keyof Required<protocol.AgentRuntimeProfileUpdateBody>]: keyof RuntimeProfilePatch;
+} = {
+  name: "name",
+  runtime_key: "runtimeKey",
+  backend_mode: "backendMode",
+  model_provider_id: "modelProviderId",
+  model_name: "modelName",
+  execution_host_id: "executionHostId",
+  workspace_location_id: "workspaceLocationId",
+  workspace_mode: "workspaceMode",
+  runtime_installation: "runtimeInstallation",
+  runtime_config_json: "runtimeConfigJson",
+  runtime_policy_json: "runtimePolicyJson",
+  enabled: "enabled",
+  is_default: "isDefault",
+};
+
 function rejectRuntimeProfileCredential(body: Record<string, unknown>): void {
   const config = optionalRecordBody(body, "runtime_config_json") ?? {};
   // Refused rather than ignored: writing a runtime profile takes only read
@@ -1410,9 +1482,10 @@ async function prepareChatRun(
   },
 ): Promise<PreparedChatRun> {
   const lightweightCliConversation =
-    isLocalCliRuntimeAdapter(input.backend.adapter_type) &&
+    isLocalCliRuntimeAdapter(input.backend.runtime_key) &&
     !input.projectId;
   const created = await services.runs.createQueuedRun({
+    execution_kind: "agent",
     agent_id: input.agentId,
     space_id: input.spaceId,
     user_id: input.userId,
@@ -1666,10 +1739,10 @@ function agentChatUnitOfWork(db: Pool | PoolClient): AgentChatUnitOfWork {
 
 function publicConversationBackend(
   backend: ResolvedConversationBackend,
-): { runtime_profile_id: string; adapter_type: string } {
+): { runtime_profile_id: string; runtime_key: string } {
   return {
     runtime_profile_id: backend.runtime_profile_id,
-    adapter_type: backend.adapter_type,
+    runtime_key: backend.runtime_key,
   };
 }
 

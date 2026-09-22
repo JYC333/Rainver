@@ -258,19 +258,19 @@ describe("retrievalMaintenancePersistence", () => {
       });
     });
 
-    it("can link maintenance reports and packets to the automation run that produced them", async () => {
+    it("records automation attribution without inventing a Run relationship", async () => {
       const db = fakeDb();
       const artifactId = await persistRetrievalMaintenanceReportArtifact(db, {
         spaceId: "space-1",
         ownerUserId: "user-1",
-        runId: "run-1",
+        automationRunId: "automation-run-1",
         report: report(),
         source: "automation_knowledge_retrieval_maintenance",
       });
       const proposalId = await createRetrievalMaintenanceProposalPacket(db, {
         spaceId: "space-1",
         ownerUserId: "user-1",
-        runId: "run-1",
+        automationRunId: "automation-run-1",
         artifactId,
         report: report(),
         source: "automation_knowledge_retrieval_maintenance",
@@ -281,10 +281,10 @@ describe("retrievalMaintenancePersistence", () => {
       // db.calls[1] is createRetrievalMaintenanceProposalPacket's internal
       // lineage-key dedup lookup (a SELECT); the INSERT is [2].
       const proposalParams = db.calls[2]!.params;
-      expect(artifactParams[2]).toBe("run-1");
-      expect(proposalParams[2]).toBe("run-1");
-      expect(JSON.parse(String(artifactParams[13]))).toMatchObject({ run_id: "run-1" });
-      expect(JSON.parse(String(proposalParams[10]))).toMatchObject({ run_id: "run-1" });
+      expect(artifactParams[2]).toBeNull();
+      expect(proposalParams[2]).toBeNull();
+      expect(JSON.parse(String(artifactParams[13]))).toMatchObject({ automation_run_id: "automation-run-1" });
+      expect(JSON.parse(String(proposalParams[10]))).toMatchObject({ automation_run_id: "automation-run-1" });
     });
 
     it("creates a private batched maintenance packet proposal", async () => {

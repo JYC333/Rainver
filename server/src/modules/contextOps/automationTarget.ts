@@ -7,14 +7,11 @@ import {
   type AutomationTargetPreflightContext,
 } from "../automations/targetRegistry.js";
 import {
-  automationContract,
   lockAndCheckAutomationBudget,
   markAutomationScheduleHandled,
   recordValue,
 } from "../automations/targetSupport.js";
 import { HttpError } from "../routeUtils/common.js";
-import { canonicalRunOutput } from "../runs/orchestrationResults.js";
-import { PgRunRepository } from "../runs/repository.js";
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 import { runContextReviewCycle } from "./reviewCycle.js";
 
@@ -83,27 +80,15 @@ async function execute(
   const pool = getDbPool(config.databaseUrl);
   const started = await withTransaction(pool, async (client) => {
     await lockAndCheckAutomationBudget(client, automation);
-    const run = await new PgRunRepository(client).createRunningSystemRun({
-      space_id: fireInput.spaceId,
-      user_id: fireInput.actorUserId,
-      agent_id: automation.agent_id,
-      project_folder_id: automation.project_folder_id,
-      trigger_origin: "automation",
-      prompt: "Run Context Review Cycle.",
-      instruction: "Persist aggregate Context Ops reports and review packets without direct canonical writes.",
-      capability_id: "context_ops.review_cycle",
-      capabilities_json: ["context_ops.review_cycle"],
-      source: triggerType === "schedule" ? "scheduled" : "managed",
-      contract_snapshot: automationContract(automation),
-    });
     const automationRunId = await new PgAutomationRepository(client).createAutomationRun({
       automationId: automation.id,
-      runId: run.id,
+      targetType: TARGET_TYPE,
+      runId: null,
       triggeredByUserId: fireInput.actorUserId,
       triggerType,
       preflightSnapshot,
     });
-    return { runId: run.id, automationRunId };
+    return { automationRunId };
   });
 
   try {
@@ -112,27 +97,32 @@ async function execute(
         spaceId: fireInput.spaceId,
         userId: fireInput.actorUserId,
         request: requestFromConfig(automation.config_json),
-        runId: started.runId,
+        automationRunId: started.automationRunId,
       });
-      await new PgRunRepository(client).markRunTerminal({
-        run_id: started.runId,
-        space_id: fireInput.spaceId,
+      await new PgAutomationRepository(client).completeNativeAutomationRun({
+        automationRunId: started.automationRunId,
         status: reviewResult.degraded ? "degraded" : "succeeded",
-        output_text: reviewResult.degraded
-          ? "Context Review Cycle completed with warnings."
-          : "Context Review Cycle completed.",
-        output_json: canonicalRunOutput({
-          success: true,
-          outputText: reviewResult.degraded
-            ? "Context Review Cycle completed with warnings."
-            : "Context Review Cycle completed.",
-          outputJson: {
-            automation_target: TARGET_TYPE,
-            context_ops_review_cycle: reviewResult,
+        result: {
+          artifact_id: reviewResult.artifact_id,
+          proposal_id: reviewResult.claim_candidates.proposal_id,
+          artifact_ids: {
+            retrieval_maintenance: reviewResult.retrieval_maintenance.artifact_id,
+            diagnostics: reviewResult.diagnostics.artifact_id,
+            memory_maintenance: reviewResult.memory_maintenance.artifact_id,
+            claim_candidates: reviewResult.claim_candidates.artifact_id,
           },
-        }),
-        exit_code: 0,
-        completed_at: new Date().toISOString(),
+          proposal_ids: {
+            retrieval_maintenance: reviewResult.retrieval_maintenance.proposal_id,
+            diagnostics: reviewResult.diagnostics.proposal_id,
+            memory_maintenance: reviewResult.memory_maintenance.proposal_id,
+            claim_candidates: reviewResult.claim_candidates.proposal_id,
+          },
+          finding_count:
+            reviewResult.retrieval_maintenance.finding_count
+            + reviewResult.memory_maintenance.finding_count,
+          degraded: reviewResult.degraded,
+          warnings: reviewResult.warnings,
+        },
       });
       if (context.advanceSchedule) {
         await new PgAutomationRepository(client).advanceSchedule(automation);
@@ -140,7 +130,6 @@ async function execute(
       return reviewResult;
     });
     return {
-      run_id: started.runId,
       automation_run_id: started.automationRunId,
       trigger_origin: "automation",
       preflight_executable: Boolean(preflightSnapshot.executable),
@@ -174,22 +163,13 @@ async function execute(
     };
   } catch (error) {
     await withTransaction(pool, async (client) => {
-      await new PgRunRepository(client).markRunTerminal({
-        run_id: started.runId,
-        space_id: fireInput.spaceId,
+      await new PgAutomationRepository(client).completeNativeAutomationRun({
+        automationRunId: started.automationRunId,
         status: "failed",
-        output_text: "Context Review Cycle failed.",
-        output_json: canonicalRunOutput({
-          success: false,
-          outputText: "Context Review Cycle failed.",
-          outputJson: { automation_target: TARGET_TYPE },
-        }),
-        error_json: {
+        error: {
           error_code: "context_ops_review_cycle_automation_failed",
           error_text: error instanceof Error ? error.message : "Context review cycle failed",
         },
-        exit_code: 1,
-        completed_at: new Date().toISOString(),
       });
       if (context.advanceSchedule) {
         await new PgAutomationRepository(client).advanceSchedule(automation);

@@ -10,10 +10,6 @@ import type {
   ProviderStreams,
   Tool,
 } from "@earendil-works/pi-ai";
-import type {
-  CanonicalToolCall,
-  CanonicalToolDefinition,
-} from "@rainver/protocol";
 import type { ProviderInfo } from "../commands/store.js";
 import { effectiveMaxOutputTokens } from "../modelOutputLimits.js";
 import { requireProviderVendor } from "../vendors.js";
@@ -209,48 +205,20 @@ async function piModel(
   } as Model<Api>, costAccuracy: catalogModel ? "catalog" : "unknown" };
 }
 
-function toolCall(call: CanonicalToolCall) {
-  let argumentsValue: Record<string, unknown> = {};
-  try {
-    const parsed: unknown = JSON.parse(call.arguments_json);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      argumentsValue = parsed as Record<string, unknown>;
-    }
-  } catch {
-    // Canonical tool arguments are validated before dispatch. Preserve an
-    // invalid historical value as an empty object so pi can still serialize
-    // the conversation and the runtime tool boundary remains authoritative.
-  }
-  return { type: "toolCall" as const, id: call.id, name: providerToolName(call.name), arguments: argumentsValue };
-}
-
 function piMessages(messages: ChatMessage[]): Context["messages"] {
   const now = Date.now();
   return messages.flatMap((message, index): Context["messages"] => {
     const timestamp = now + index;
     if (message.role === "system") return [];
-    if (message.role === "tool" && message.tool_call_id) {
-      return [{
-        role: "toolResult",
-        toolCallId: message.tool_call_id,
-        toolName: providerToolName(message.name ?? "tool"),
-        content: [{ type: "text", text: message.content ?? "" }],
-        isError: false,
-        timestamp,
-      }];
-    }
     if (message.role === "assistant") {
       return [{
         role: "assistant",
-        content: [
-          ...(message.content ? [{ type: "text" as const, text: message.content }] : []),
-          ...(message.tool_calls ?? []).map(toolCall),
-        ],
+        content: message.content ? [{ type: "text" as const, text: message.content }] : [],
         api: "pi-messages",
         provider: "rainver",
         model: "transcript",
         usage: emptyUsage(),
-        stopReason: message.tool_calls?.length ? "toolUse" : "stop",
+        stopReason: "stop",
         timestamp,
       }];
     }
@@ -277,23 +245,6 @@ function emptyUsage() {
     totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
-}
-
-function piTool(definition: CanonicalToolDefinition): Tool {
-  return {
-    name: providerToolName(definition.name),
-    description: definition.description ?? "",
-    parameters: (definition.input_schema ?? { type: "object", properties: {} }) as Tool["parameters"],
-  };
-}
-
-function providerToolName(name: string): string {
-  const safe = name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
-  return safe || "tool";
-}
-
-function toolNameReverseMap(tools: CanonicalToolDefinition[] | null | undefined): Map<string, string> {
-  return new Map((tools ?? []).map((tool) => [providerToolName(tool.name), tool.name]));
 }
 
 function structuredTool(output: ProviderStructuredOutput): Tool {
@@ -372,19 +323,6 @@ function providerFinishReason(protocol: string, message: AssistantMessage): stri
   return stopReason;
 }
 
-function responseToolCalls(message: AssistantMessage, allowed: CanonicalToolDefinition[] | null | undefined): CanonicalToolCall[] | undefined {
-  const reverseNames = toolNameReverseMap(allowed);
-  const calls = message.content
-    .filter((part): part is Extract<(typeof message.content)[number], { type: "toolCall" }> => part.type === "toolCall")
-    .filter((part) => Boolean(part.id && part.name))
-    .map((part) => ({
-      id: part.id,
-      name: reverseNames.get(part.name) ?? part.name,
-      arguments_json: JSON.stringify(part.arguments),
-    }));
-  return calls.length ? calls : undefined;
-}
-
 /**
  * How a stream that failed part-way through should be classified.
  *
@@ -454,24 +392,15 @@ export async function completePiAiChat(
   if (!vendor.supportsChat) {
     throw new ProviderInvocationError(400, `provider_type '${provider.provider_type}' does not support chat`);
   }
-  if (body.tools?.length && !vendor.supportsRuntimeTools) {
-    throw new ProviderInvocationError(
-      400,
-      `provider_type '${provider.provider_type}' does not support runtime-host tools yet`,
-      { failure_class: "permanent", actions: ["fail"] },
-      "runtime_tool_provider_unsupported",
-    );
-  }
 
   await loadPi();
   const modelId = resolveModelName(provider, body.model);
   const { model, costAccuracy } = await piModel(provider, modelId);
-  const outputTool = body.output_format && !body.tools?.length ? structuredTool(body.output_format) : null;
-  const tools = outputTool ? [outputTool] : (body.tools ?? []).map(piTool);
+  const outputTool = body.output_format ? structuredTool(body.output_format) : null;
   const context: Context = {
     systemPrompt: piSystemPrompt(body),
     messages: piMessages(body.messages),
-    ...(tools.length ? { tools } : {}),
+    ...(outputTool ? { tools: [outputTool] } : {}),
   };
   const api = await loadApi(vendor.protocol);
   const maxTokens = effectiveMaxOutputTokens(modelId, body.max_tokens) ?? undefined;
@@ -482,7 +411,6 @@ export async function completePiAiChat(
     const response = await networkFetch(input, {
       ...(init ?? {}),
       headers,
-      signal: init?.signal ?? body.abort_signal,
     });
     responseStatus = response.status;
     return response;
@@ -494,7 +422,6 @@ export async function completePiAiChat(
     // whenever rainver supplied no credential.
     apiKey: apiKey ?? "rainver-keyless",
     fetch: trackedFetch,
-    signal: body.abort_signal,
     temperature: body.temperature,
     maxTokens,
     cacheRetention: body.cache_strategy === "conversation" ? "short" : "none",
@@ -510,9 +437,6 @@ export async function completePiAiChat(
   let finalMessage: AssistantMessage | null = null;
   try {
     for await (const event of stream) {
-      if (event.type === "text_delta" && !body.output_format && !body.tools?.length) {
-        body.on_text_delta?.(event.delta);
-      }
       if (event.type === "done") finalMessage = event.message;
       if (event.type === "error") finalMessage = event.error;
     }
@@ -520,7 +444,7 @@ export async function completePiAiChat(
   } catch (error) {
     if (error instanceof ProviderInvocationError) throw error;
     const detail = error instanceof Error ? error.message : "Provider request failed";
-    const failure = streamFailure(responseStatus, detail, body.abort_signal?.aborted === true);
+    const failure = streamFailure(responseStatus, detail, false);
     throw new ProviderInvocationError(failure.status, detail, failure.decision, failure.code);
   }
 
@@ -531,11 +455,7 @@ export async function completePiAiChat(
     responseStatus < 300;
   if ((finalMessage.stopReason === "error" && !providerSemanticStop) || finalMessage.stopReason === "aborted") {
     const detail = finalMessage.errorMessage ?? "Provider request failed";
-    const failure = streamFailure(
-      responseStatus,
-      detail,
-      finalMessage.stopReason === "aborted" || body.abort_signal?.aborted === true,
-    );
+    const failure = streamFailure(responseStatus, detail, finalMessage.stopReason === "aborted");
     throw new ProviderInvocationError(failure.status, detail, failure.decision, failure.code);
   }
 
@@ -584,7 +504,6 @@ export async function completePiAiChat(
     usage: responseUsage(finalMessage),
     cost: responseCost(finalMessage),
     cost_accuracy: costAccuracy,
-    tool_calls: responseToolCalls(finalMessage, body.tools),
     structured_output: structuredOutput,
     finish_reason: finishReason,
   };

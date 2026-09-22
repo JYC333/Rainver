@@ -55,7 +55,7 @@ function usageFingerprint(usage: AmbientUsage): string {
 /** What a sync did, per runtime, for the caller and for the batch pointer. */
 export interface AmbientSyncReport {
   location_id: string;
-  adapter_type: string;
+  runtime_key: string;
   installation: string;
   sessions_seen: number;
   sessions_written: number;
@@ -101,7 +101,7 @@ async function readAmbientImportPolicy(db: Queryable, locationId: string): Promi
  */
 export function scheduledExtractionSpend(
   db: Queryable,
-  input: { userId: string; locationId: string; adapterType: string; installation: string },
+  input: { userId: string; locationId: string; runtimeKey: string; installation: string },
 ): CredentialSpendBasis {
   return {
     kind: "setup",
@@ -109,7 +109,7 @@ export function scheduledExtractionSpend(
     record_id: input.locationId,
     user_id: input.userId,
     still_authorized: async () => (await readAmbientImportPolicy(db, input.locationId)).entries.some((entry) =>
-      entry.adapter_type === input.adapterType
+      entry.runtime_key === input.runtimeKey
       && entry.installation === input.installation
       && entry.auto_extract === true),
   };
@@ -194,7 +194,7 @@ export class ImportedSessionService {
     identity: SpaceUserIdentity,
     locationId: string,
     input: {
-      adapter_type: string;
+      runtime_key: string;
       installation?: string;
       sync: boolean;
       default_visibility?: "private" | "space_shared";
@@ -205,7 +205,7 @@ export class ImportedSessionService {
     const policy = await this.readPolicy(locationId);
     const installation = input.installation ?? OWN_INSTALLATION;
     const entry: AmbientImportPolicyEntry = {
-      adapter_type: input.adapter_type,
+      runtime_key: input.runtime_key,
       installation,
       sync: input.sync,
       // Carried forward when the caller only moved the sync switch: silently
@@ -213,17 +213,17 @@ export class ImportedSessionService {
       // becomes shared without anyone deciding it.
       default_visibility: input.default_visibility
         ?? policy.entries.find((existing) =>
-          existing.adapter_type === input.adapter_type && existing.installation === installation)?.default_visibility
+          existing.runtime_key === input.runtime_key && existing.installation === installation)?.default_visibility
         ?? "space_shared",
       auto_extract: input.auto_extract
         ?? policy.entries.find((existing) =>
-          existing.adapter_type === input.adapter_type && existing.installation === installation)?.auto_extract
+          existing.runtime_key === input.runtime_key && existing.installation === installation)?.auto_extract
         ?? false,
       updated_at: new Date().toISOString(),
       updated_by_user_id: identity.userId,
     };
     const entries = policy.entries.filter(
-      (existing) => !(existing.adapter_type === entry.adapter_type && existing.installation === entry.installation),
+      (existing) => !(existing.runtime_key === entry.runtime_key && existing.installation === entry.installation),
     );
     entries.push(entry);
     const next: AmbientImportPolicy = { entries, offered_at: policy.offered_at ?? new Date().toISOString() };
@@ -268,7 +268,7 @@ export class ImportedSessionService {
     identity: SpaceUserIdentity,
     locationId: string,
     input: {
-      adapter_type: string;
+      runtime_key: string;
       installation?: string;
       session_ids?: string[] | null;
       visibility?: "private" | "space_shared";
@@ -283,7 +283,7 @@ export class ImportedSessionService {
     const installation = input.installation ?? OWN_INSTALLATION;
     const report: AmbientSyncReport = {
       location_id: locationId,
-      adapter_type: input.adapter_type,
+      runtime_key: input.runtime_key,
       installation,
       sessions_seen: 0,
       sessions_written: 0,
@@ -302,33 +302,33 @@ export class ImportedSessionService {
       return report;
     }
 
-    const probe = acpRuntimeProbes().find((candidate) => candidate.adapter_type === input.adapter_type);
-    if (!probe) throw new HttpError(422, `Unknown runtime adapter ${input.adapter_type}`);
+    const probe = acpRuntimeProbes().find((candidate) => candidate.runtime_key === input.runtime_key);
+    if (!probe) throw new HttpError(422, `Unknown runtime adapter ${input.runtime_key}`);
 
     const policy = await this.readPolicy(locationId);
     const entry = policy.entries.find(
-      (candidate) => candidate.adapter_type === input.adapter_type && candidate.installation === installation,
+      (candidate) => candidate.runtime_key === input.runtime_key && candidate.installation === installation,
     );
     const visibility = input.visibility ?? entry?.default_visibility ?? "space_shared";
 
     const alreadyHeld = await this.sessions.countForRuntime({
       spaceId: identity.spaceId,
       workspaceLocationId: locationId,
-      adapterType: input.adapter_type,
+      runtimeKey: input.runtime_key,
       installation,
     });
 
     const held = await this.sessions.heldSessions({
       spaceId: identity.spaceId,
       workspaceLocationId: locationId,
-      adapterType: input.adapter_type,
+      runtimeKey: input.runtime_key,
       installation,
     });
 
     const retrySessionIds = await this.sessions.unfinishedSessionIds({
       spaceId: identity.spaceId,
       workspaceLocationId: locationId,
-      adapterType: input.adapter_type,
+      runtimeKey: input.runtime_key,
       installation,
     });
 
@@ -337,7 +337,7 @@ export class ImportedSessionService {
       target.host_id,
       {
         workspace_location_id: locationId,
-        adapter_type: input.adapter_type,
+        runtime_key: input.runtime_key,
         installation,
         session_ids: input.session_ids ?? null,
         retry_session_ids: retrySessionIds,
@@ -360,7 +360,7 @@ export class ImportedSessionService {
     );
     const hostThreadSessionIds = await new PgHostThreadRepository(this.db).listVendorSessionIds({
       workspaceLocationId: locationId,
-      adapterType: input.adapter_type,
+      runtimeKey: input.runtime_key,
       runtimeInstallation: installation,
     });
 
@@ -382,7 +382,7 @@ export class ImportedSessionService {
         workspaceLocationId: locationId,
         executionHostId: target.host_id,
         ownerUserId: identity.userId,
-        adapterType: input.adapter_type,
+        runtimeKey: input.runtime_key,
         installation,
         visibility,
         session: replay.session,
@@ -416,7 +416,7 @@ export class ImportedSessionService {
       report.marked_gone = await this.sessions.markMissingAsGone({
         spaceId: identity.spaceId,
         workspaceLocationId: locationId,
-        adapterType: input.adapter_type,
+        runtimeKey: input.runtime_key,
         installation,
         listedVendorSessionIds: result.listed_session_ids,
       });
@@ -475,7 +475,7 @@ export class ImportedSessionService {
       : scheduledExtractionSpend(this.db, {
           userId: identity.userId,
           locationId: target.location_id,
-          adapterType: entry.adapter_type,
+          runtimeKey: entry.runtime_key,
           installation: entry.installation,
         });
     try {
@@ -514,7 +514,7 @@ export class ImportedSessionService {
         meter_subject_type: "user",
         meter_subject_id: session.owner_user_id,
         subject_user_id: session.owner_user_id,
-        adapter_type: session.adapter_type,
+        runtime_key: session.runtime_key,
         model: usage.model,
         project_id: target.project_id,
         project_folder_id: target.project_folder_id,
@@ -567,7 +567,7 @@ export class ImportedSessionService {
     report: AmbientSyncReport,
   ): Promise<void> {
     if (report.sessions_written === 0 && report.marked_gone === 0) return;
-    const label = `Imported ${report.sessions_written} ${report.adapter_type} session${report.sessions_written === 1 ? "" : "s"}`;
+    const label = `Imported ${report.sessions_written} ${report.runtime_key} session${report.sessions_written === 1 ? "" : "s"}`;
     try {
       await new PgActivityRepository(this.db).create(identity, {
         source_type: "external_chat",

@@ -80,8 +80,10 @@ Manifests are source definitions only — they are not the local trust/enable st
 
 ## Execution Model
 
-Capability execution is not active. `adapter_type="capability"` is a
-declared, disabled runtime adapter type in `server/src/modules/runtimeAdapters`.
+Capability execution is not active. `runtime_key="capability"` is a declared,
+`planned`, not-enabled-by-default registry entry in
+`server/src/modules/runtimeAdapters/specs.ts`, and `getAgentRuntimeDefinition`
+returns nothing for it.
 Capability manifests are catalog/UI metadata only.
 
 Returned artifacts are materialized as `Artifact` rows linked to the Run and project. Returned activities are materialized as `ActivityRecord` rows with `source_kind="run_event"` unless the capability supplies a valid source kind.

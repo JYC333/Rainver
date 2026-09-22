@@ -7,7 +7,7 @@ import { reconcileProjectResearch } from "../src/modules/scheduler/backgroundSer
 import { isRetryableSourcePostProcessingFailure, sourcePostProcessingFailureCode, SourcePostProcessingRecoveryService } from "../src/modules/sources/postProcessing/recoveryService.js";
 import { emitSourcePostProcessingDeepAnalysisEvent } from "../src/modules/sources/postProcessing/eventEmitter.js";
 import { normalizeActions, normalizeInputConfig, SOURCE_POST_PROCESSING_EVENT_JOB_TYPE, type SourcePostProcessingRunOut } from "../src/modules/sources/postProcessing/repository.js";
-import { defaultModelProviderForSpace, promptBudgetCharsFor, sourcePostProcessingExecutionRequest, validateSourcePostProcessingInputContextBinding } from "../src/modules/sources/postProcessing/service.js";
+import { promptBudgetCharsFor, sourcePostProcessingExecutionRequest, validateSourcePostProcessingInputContextBinding } from "../src/modules/sources/postProcessing/service.js";
 import { seedAgentWithVersion, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { seedArxivSourceChain } from "./support/researchSeeds.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
@@ -313,29 +313,7 @@ describe("sourcePostProcessingRecoveryDb", () => {
 });
 
 describe("sourcePostProcessingService", () => {
-  class FakeDb implements Queryable {
-    constructor(private readonly rows: unknown[]) {}
-
-    async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
-      expect(sql).toContain("FROM model_provider_space_grants");
-      expect(sql).toContain("g.is_default = true");
-      expect(sql).toContain("p.enabled = true");
-      expect(params).toEqual(["space-1"]);
-      return { rows: this.rows as Row[], rowCount: this.rows.length };
-    }
-  }
-
   describe("Source post-processing service", () => {
-    it("resolves the space default model provider from provider grants", async () => {
-      await expect(defaultModelProviderForSpace(new FakeDb([
-        { id: "provider-1", default_model: "model-a" },
-      ]), "space-1")).resolves.toEqual({ id: "provider-1", default_model: "model-a" });
-    });
-
-    it("returns null when the space has no enabled default provider grant", async () => {
-      await expect(defaultModelProviderForSpace(new FakeDb([]), "space-1")).resolves.toBeNull();
-    });
-
     it("rejects project retrieval context when the rule is not project-bound", () => {
       const inputConfig = normalizeInputConfig({
         retrieval_context: {

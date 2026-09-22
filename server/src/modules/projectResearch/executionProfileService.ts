@@ -6,22 +6,24 @@ import { providerSupportsStructuredOutput } from "../providers/structuredOutputC
 
 const RESEARCH_AGENT_KIND = "system_research";
 const RESEARCH_AGENT_NAME = "Auto Research";
-const RESEARCH_ADAPTER = "model_api" as const;
-// Every research.* capability a stage of this workflow can require at
-// routing time (screening/synthesis use the first five; ad-hoc notebook
-// analysis and incremental monitoring comparison need the other two). Keep
-// this the single list new stages draw from — a capability missing here
-// fails routing with "No runtime candidate passed routing hard filters" for
-// every existing space's agent, since capabilities_json is otherwise fixed
-// at first provisioning.
+const RESEARCH_RUNTIME_KEY = "opencode" as const;
+// Every research.* capability an *Agent* stage of this workflow can require at
+// routing time. Keep this the single list new Agent stages draw from — a
+// capability missing here fails routing with "No runtime candidate passed
+// routing hard filters" for every existing space's agent, since
+// capabilities_json is otherwise fixed at first provisioning.
+//
+// Bounded ProviderTask stages are deliberately absent: ad-hoc notebook
+// analysis (`research.adhoc_analyze`) and notebook chat (`research.ask`) are
+// single-shot structured generations that run in-process and select no
+// Agent or Runtime Profile (ADR 0022 §2/§3), so requiring their capability
+// here would only be a routing requirement nothing routes.
 const RESEARCH_AGENT_CAPABILITY_IDS = [
   "research.source_collect",
   "research.source_summarize",
   "research.evidence_extract",
   "research.brief_synthesize",
   "research.idea_generate",
-  "research.adhoc_analyze",
-  "research.ask",
   "research.monitor_compare",
 ];
 export interface ResearchExecutionSelection {
@@ -32,7 +34,14 @@ export interface ResearchExecutionSelection {
 export interface ResolvedResearchExecution {
   agentId: string;
   runtimeProfileId: string;
-  adapterType: typeof RESEARCH_ADAPTER;
+  runtimeKey: typeof RESEARCH_RUNTIME_KEY;
+  modelProviderId: string;
+  modelName: string | null;
+}
+
+/** What a bounded ProviderTask stage needs: a provider and a model, and no
+ * Agent or Runtime Profile at all. */
+export interface ResolvedResearchProvider {
   modelProviderId: string;
   modelName: string | null;
 }
@@ -52,6 +61,21 @@ export class ProjectResearchExecutionProfileService {
     identity: SpaceUserIdentity,
     selection: ResearchExecutionSelection,
   ): Promise<ResolvedResearchExecution> {
+    const provider = await this.resolveProvider(identity, selection);
+    const managedAgent = await this.ensureManagedAgent(identity, provider.modelProviderId, provider.modelName);
+    return this.ensureProfile(identity, managedAgent.id, provider.modelProviderId, provider.modelName);
+  }
+
+  /**
+   * Provider/model selection for a bounded ProviderTask stage. It performs the
+   * same space-grant and structured-output checks as `resolve`, but creates no
+   * managed Agent and no Runtime Profile: a `provider_task` Run carries neither
+   * (ADR 0022 §3).
+   */
+  async resolveProvider(
+    identity: SpaceUserIdentity,
+    selection: ResearchExecutionSelection,
+  ): Promise<ResolvedResearchProvider> {
     const provider = selection.modelProviderId
       ? await this.getProvider(identity.spaceId, selection.modelProviderId)
       : await this.getDefaultProvider(identity.spaceId);
@@ -61,11 +85,12 @@ export class ProjectResearchExecutionProfileService {
     if (!providerSupportsStructuredOutput(provider.provider_type)) {
       throw new HttpError(422, `Model provider type '${provider.provider_type}' does not support Auto Research structured output`);
     }
-    const modelName = optionalString(selection.modelName)
-      ?? provider.default_model
-      ?? firstModel(provider.capabilities_json);
-    const managedAgent = await this.ensureManagedAgent(identity, provider.id, modelName);
-    return this.ensureProfile(identity, managedAgent.id, provider.id, modelName);
+    return {
+      modelProviderId: provider.id,
+      modelName: optionalString(selection.modelName)
+        ?? provider.default_model
+        ?? firstModel(provider.capabilities_json),
+    };
   }
 
   private async ensureManagedAgent(
@@ -94,10 +119,6 @@ export class ProjectResearchExecutionProfileService {
         visibility: "space_shared",
         roleInstruction: "Execute bounded Project Research stages and preserve source/evidence references.",
         systemPrompt: "You are the Project Research execution agent. Work only on the supplied research corpus and preserve source and evidence references in every research output.",
-        defaultModelProviderId: modelProviderId,
-        defaultModel: modelName,
-        adapterType: RESEARCH_ADAPTER,
-        runtimeConfigJson: { purpose: "project_research" },
         agentKind: RESEARCH_AGENT_KIND,
         capabilitiesJson: RESEARCH_AGENT_CAPABILITY_IDS,
         outputSchemaJson: {
@@ -160,38 +181,71 @@ export class ProjectResearchExecutionProfileService {
     }>(
       `SELECT id, model_provider_id, model_name
         FROM agent_runtime_profiles
-        WHERE space_id=$1 AND agent_id=$2 AND adapter_type=$3
+        WHERE space_id=$1 AND agent_id=$2 AND runtime_key=$3
+          AND backend_mode='model_provider'
           AND model_provider_id=$4 AND enabled=true
         ORDER BY is_default DESC, created_at ASC, id ASC`,
-      [identity.spaceId, agentId, RESEARCH_ADAPTER, modelProviderId],
+      [identity.spaceId, agentId, RESEARCH_RUNTIME_KEY, modelProviderId],
     );
     const exact = profiles.rows.find((profile) => profile.model_name === modelName);
     if (exact) {
       return {
         agentId,
         runtimeProfileId: exact.id,
-        adapterType: RESEARCH_ADAPTER,
+        runtimeKey: RESEARCH_RUNTIME_KEY,
         modelProviderId,
         modelName,
       };
     }
 
+    const binding = await this.db.query<{
+      execution_host_id: string | null;
+      workspace_mode: "location" | "managed" | null;
+      runtime_installation: string | null;
+      runtime_config_json: unknown;
+    }>(
+      `SELECT execution_host_id, workspace_mode, runtime_installation, runtime_config_json
+         FROM agent_runtime_profiles
+        WHERE space_id=$1 AND agent_id=$2 AND runtime_key=$3
+          AND enabled=true AND is_default=true
+        LIMIT 1`,
+      [identity.spaceId, agentId, RESEARCH_RUNTIME_KEY],
+    );
+    const defaultProfile = binding.rows[0];
+    if (
+      !defaultProfile?.execution_host_id
+      || defaultProfile.workspace_mode !== "managed"
+      || !defaultProfile.runtime_installation
+    ) {
+      throw new HttpError(409, "The managed Research Agent has no Server Runtime Profile binding");
+    }
+    const runtimeConfig = defaultProfile.runtime_config_json
+      && typeof defaultProfile.runtime_config_json === "object"
+      && !Array.isArray(defaultProfile.runtime_config_json)
+      ? defaultProfile.runtime_config_json as Record<string, unknown>
+      : {};
     const created = await PgAgentRepository.fromConfig(this.config).createRuntimeProfile(
       identity.spaceId,
       agentId,
       {
-        name: "Research · Managed API",
-        adapterType: RESEARCH_ADAPTER,
+        name: "Research · OpenCode",
+        runtimeKey: RESEARCH_RUNTIME_KEY,
+        backendMode: "model_provider",
         modelProviderId,
         modelName,
-        runtimeConfigJson: { purpose: "project_research" },
+        executionHostId: defaultProfile.execution_host_id,
+        workspaceMode: defaultProfile.workspace_mode,
+        runtimeInstallation: defaultProfile.runtime_installation,
+        runtimeConfigJson: { ...runtimeConfig, purpose: "project_research" },
+        actorUserId: identity.userId,
+        allowPendingServerInstallation: defaultProfile.runtime_installation === "managed:pending",
         isDefault: false,
       },
     );
     return {
       agentId,
       runtimeProfileId: created.id,
-      adapterType: RESEARCH_ADAPTER,
+      runtimeKey: RESEARCH_RUNTIME_KEY,
       modelProviderId,
       modelName,
     };

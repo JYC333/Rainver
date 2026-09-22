@@ -1,12 +1,16 @@
 # ADR 0016: Control Plane And Execution Hosts, Two Trust Modes
 
-Date: 2026-08-21 · revised 2026-09-07
+Date: 2026-08-21 · revised 2026-09-21
 
 ## Status
 
 Accepted. Defines the execution topology, the two trust modes one host daemon
-runs in, and the remote trusted-host exception to the server-host Gateway and
-isolation requirements of ADR 0014. Current implementation lives in
+runs in, and the remote trusted-host exception to ADR 0014's host-local
+filesystem and isolation requirements. Two 2026-09-21 amendments sit in §3: the
+first restores the server-owned Runtime Context Gateway on every Agent path and
+does not grant the control plane remote filesystem access; the second makes an
+owner-triggered Run on that owner's paired Host `medium` effective trust for
+routing, and grants no containment. Current implementation lives in
 [modules/hosts.md](../modules/hosts.md); pending Project-kernel work and
 real-host acceptance gates remain in
 [tasks/deferred-register.md](../tasks/deferred-register.md).
@@ -159,10 +163,51 @@ A Room specialist bound to a remote Workspace Location is still an Agent
 identity, but its Conversation turns are sent through the same host daemon and
 one opaque vendor session is kept per Conversation × Agent. On a trusted host
 the owner-only gate applies to a managed workspace too, including a direct chat
-between the Host owner and the Agent. A rendered Room prompt (Project state
-plus Room summary/recent messages) or direct-chat history is prompt content
-the reader already may read, not Runtime Context, memory, credentials, or
-provider state; none of those cross the host boundary.
+between the Host owner and the Agent. Conversation input and policy-authorized
+Runtime Context may cross to the selected Agent runtime as ACP prompt content;
+that is an explicit model-input transfer, not permission to inspect additional
+Host files. Credentials, physical paths, and unselected context do not cross
+the boundary.
+
+### Amendment (2026-09-21): Runtime Context Delivery on every Agent Host
+
+The earlier remote-host exception skipped the Runtime Context Gateway for a
+Run dispatched to a daemon. [ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)
+supersedes that omission: every Agent Run is authorized, planned and snapshotted
+by the server Runtime Context Gateway before ACP dispatch, regardless of Host
+kind. The Delivery's semantic sections are projected into ACP's single
+user-prompt channel; ACP does not define a separate system-message role. This
+does not change Host trust, workspace/path ownership, native-account ownership,
+or server-side tool authorization. Persistent HostThread context cursors are
+bound to the same opaque ACP session; mismatches or authority rotations start a
+new ACP session.
+
+### Amendment (2026-09-21): Owner-triggered Runs on a paired Host are medium trust for routing
+
+Routing derived a paired Host's effective trust from containment alone, so it
+sat at the runtime baseline (`low`) and the product-default `medium`-risk
+Agent — what `POST /api/v1/agents` publishes — could not route to the owner's
+own machine at all. That read the trust question as "what does the Host
+confine" when this section already answers it as "whose trust makes this Run
+safe": a paired Host is safe because its owner extends that machine the trust
+a native process has.
+
+A Run whose responsible user **is** that Host's `owner_user_id` therefore
+counts as at least `medium` effective trust. The owner extends to their own
+machine the same trust they extend to a Run they start there by hand, so the
+product-default Agent routes to a Profile bound to their paired Host. A Run on
+that Host by anyone else is not the owner's own Run and keeps the runtime
+baseline — it is already refused before trust is reached, by the owner-only
+dispatch rule above, and that rule does not move. The built-in strict Host's
+`medium` is unchanged and rests on its per-Run namespace. Nothing reaches
+`high`: `high`- and `critical`-risk Agent Runs still have no eligible
+candidate on either Host.
+
+This is a routing and authorization statement about **who bears the risk**,
+not a containment guarantee. A paired Host still spawns natively under the
+owner's own OS permissions with no per-Run namespace; B62's "no namespace
+containment" for a trusted host is unchanged, and no isolation claim may be
+derived from this trust level.
 
 ### 4. Paths are host-owned
 
@@ -305,10 +350,10 @@ account — or an ACP-registry agent that has no "own" copy at all. The built-in
 host has managed copies only; it is a container, and there is no person's own
 install on it to respect. For any ACP adapter with a distribution, the daemon
 installs on request (`install_tool`) into
-`<config dir>/tools/<adapter_type>/<version>/` — never onto PATH or into
+`<config dir>/tools/<runtime_key>/<version>/` — never onto PATH or into
 global package trees — launches it by the absolute path its manifest records,
 and removes program versions on request. Managed user state has a stable private
-HOME at `<config dir>/managed-state/<adapter_type>/home/`; it is not versioned
+HOME at `<config dir>/managed-state/<runtime_key>/home/`; it is not versioned
 with the executable. Agent sessions remain in their separate Agent profiles.
 
 **Credentials live with the copy**, on every host. Logging a copy in is the
@@ -476,3 +521,12 @@ way: it would be another strict daemon registered from another machine.
   pairing and no revocation, credentials living with the copy on every host
   (§7), managed workspaces only on the built-in host (§4), instance-wide
   versions (§9), and the concurrency cap (§8).
+- **2026-09-21** — a Run whose responsible user owns the paired Host it is
+  bound to counts as `medium` effective trust for routing, so the
+  product-default `medium`-risk Agent reaches the owner's own machine (§3
+  amendment). Another member's Run there keeps the baseline and the owner-only
+  dispatch rule is unchanged; this states who bears the risk, not containment.
+- **2026-09-21** — the ACP Runtime Authority Reset plan restored the canonical
+  Runtime Context Gateway for Agent Runs on both built-in and paired Hosts.
+  Delivery is sent through ACP; the Host still owns physical paths and the
+  opaque vendor session, and a mismatch starts a fresh session.

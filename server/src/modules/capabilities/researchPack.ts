@@ -15,7 +15,7 @@ function binding(
   return {
     id: `${capabilityId}:${runtime}:${renderMode}`,
     capability_id: capabilityId,
-    runtime_adapter_type: runtime,
+    runtime_key: runtime,
     render_mode: renderMode,
     binding_json: {},
     enabled: true,
@@ -47,7 +47,7 @@ function researchCapability(
     },
     supported_execution_modes: ["runtime_native", "project_sources", "manual_urls"],
     default_runtime_bindings: [
-      binding(id, "model_api", "inline_prompt"),
+      binding(id, "opencode", "inline_prompt"),
       binding(id, "claude_code", "render_skill"),
       binding(id, "codex_cli", "render_skill"),
     ],

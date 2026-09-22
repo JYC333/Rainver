@@ -16,7 +16,7 @@ import { SourceChannelService } from "../sources/channels/sourceChannelService.j
 import { upsertSourceChannelScanTask } from "../sources/sourceConnectionScheduler.js";
 import { computeNextCheckAt } from "../sources/sourceScanCadence.js";
 import { ProjectResearchRepository } from "./repository.js";
-import { ProjectResearchAreaService } from "./areaService.js";
+import { ProjectResearchAreaService, registerResearchProviderTaskRuns } from "./areaService.js";
 import { ProjectResearchReportStatusService } from "./reportStatusService.js";
 import { rejectLegacyResearchRuntimeFields } from "./inputValidation.js";
 import {
@@ -2836,6 +2836,9 @@ export class ProjectResearchOrchestrator {
 
 export function registerProjectResearchHandler(registry: JobHandlerRegistry, config: ServerConfig): void {
   if (!config.databaseUrl) return;
+  // Research's bounded ProviderTask Runs are performed by the shared
+  // `provider_task_run` worker; this is where the module says how.
+  registerResearchProviderTaskRuns();
   registry.register("project_research_execution_nudge", async (job): Promise<JobHandlerResult> => {
     const db = getDbPool(config.databaseUrl!);
     const orchestrator = new ProjectResearchOrchestrator(db, config);

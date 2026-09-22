@@ -13,7 +13,7 @@ import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 describe("contentAccessDefencesDb", () => {
   const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -126,17 +126,24 @@ describe("contentAccessDefencesDb", () => {
       );
       await db.pool.query(
         `INSERT INTO agent_versions
-           (id, agent_id, space_id, version_label, model_config_json, runtime_config_json,
-            context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json,
-            runtime_policy_json, created_at)
-         VALUES ($1,$2,$3,'v1','{}','{}','{}','{}','[]','[]','{}',now())`,
+           (
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     )
+         VALUES ($1, $2, $3, 'v1', '{}', '{}', '[]', '[]', now())`,
         [VERSION, AGENT, SPACE],
       );
+      await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT, space: SPACE });
       await db.pool.query(
-        `INSERT INTO runs
-           (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status,
-            mode, created_at, updated_at, owner_user_id, visibility, access_level)
-         VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',now(),now(),$5,'private','full')`,
+        `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+         VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', now(), now(), $5, 'private', 'full', 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
         [RUN, SPACE, AGENT, VERSION, OWNER],
       );
       await db.pool.query(
@@ -146,8 +153,8 @@ describe("contentAccessDefencesDb", () => {
       );
       await db.pool.query(
         `INSERT INTO invocation_deliveries
-           (id,space_id,invocation_id,attempt,execution_control_snapshot_id,adapter_type,renderer_version,delivery_metadata_json,created_at)
-         VALUES ($1,$2,$3,1,$4,'model_api','test.v1','{}'::jsonb,now())`,
+           (id,space_id,invocation_id,attempt,execution_control_snapshot_id,runtime_key,renderer_version,delivery_metadata_json,created_at)
+         VALUES ($1,$2,$3,1,$4,'opencode','test.v1','{}'::jsonb,now())`,
         [DELIVERY, SPACE, RUN, CONTROL],
       );
       await db.pool.query(
@@ -367,21 +374,41 @@ describe("contentDerivationVisibilityDb", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_versions
-         (id, agent_id, space_id, version_label, system_prompt,
-          model_config_json, runtime_config_json, context_policy_json,
-          memory_policy_json, capabilities_json, tool_permissions_json,
-          runtime_policy_json, created_at)
-       VALUES ($1, $2, $3, 'v1', 'Test', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-               '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
+         (
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     )
+       VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'Test',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $4
+     )`,
       [AGENT_VERSION_ID, AGENT_ID, SPACE_ID, now],
     );
-    await db.pool.query("UPDATE agents SET current_version_id = $2 WHERE id = $1", [AGENT_ID, AGENT_VERSION_ID]);
+      await db.pool.query("UPDATE agents SET current_version_id = $2 WHERE id = $1", [AGENT_ID, AGENT_VERSION_ID]);
+      await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT_ID, space: SPACE_ID, now });
   });
 
   describe("derived content visibility against real PostgreSQL", () => {
     it("keeps artifacts and proposals from a private Run unreadable to another Space member", async (ctx) => {
       if (!db.available || !db.pool) return ctx.skip();
       const run = await new PgRunRepository(db.pool).createQueuedRun({
+        execution_kind: "agent",
         agent_id: AGENT_ID,
         space_id: SPACE_ID,
         user_id: OWNER_ID,
@@ -403,7 +430,7 @@ describe("contentDerivationVisibilityDb", () => {
       ).materializeAdapterResult({
         run,
         adapterResult: {
-          adapter_type: "model_api",
+          runtime_key: "opencode",
           adapter_kind: "managed_api",
           success: true,
           output_text: "",

@@ -28,7 +28,7 @@ function session(
   access_level: 'full' | 'summary' = 'full',
 ) {
   return {
-    id: SESSION, project_id: PROJECT, adapter_type: 'claude_code', title: 'Branch review',
+    id: SESSION, project_id: PROJECT, runtime_key: 'claude_code', title: 'Branch review',
     cwd: '/home/me/project', visibility, access_level, source_state: 'present',
     load_state: 'complete', record_count: 2, last_record_at: '2026-08-29T10:00:00.000Z',
   }

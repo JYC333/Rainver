@@ -17,7 +17,7 @@ describe("capability/open-skill protocol schemas", () => {
     const binding = CapabilityRuntimeBindingSchema.parse({
       id: "bind-1",
       capability_id: "research.source_collect",
-      runtime_adapter_type: "model_api",
+      runtime_key: "opencode",
       render_mode: "inline_prompt",
       binding_json: {},
       enabled: true,

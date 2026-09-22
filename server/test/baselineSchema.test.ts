@@ -11,6 +11,7 @@ import { Pool } from "pg";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadMigrations, migrate } from "../src/db/migrator.js";
+import { baselineSql, tableDefinition } from "./support/baselineSql.js";
 
 // Empty-DB migration test. Applies the whole migration chain to a fresh
 // Postgres via the server migration runner and asserts the resulting schema
@@ -85,41 +86,20 @@ async function baselineTableNames(p: Pool): Promise<string[]> {
   return res.rows.map((r) => r.table_name);
 }
 
-function normalizeBaselineSql(sql: string): string {
-  return sql
-    .replace(/"([^"]+)"/g, "$1")
-    .replace(/\bvarchar\(/g, "character varying(")
-    .replace(/\bCREATE TABLE (?!public\.)([a-z_][a-z0-9_]*)/g, "CREATE TABLE public.$1")
-    .replace(/,\s*/g, ", ")
-    .replace(/[ \t]+/g, " ");
-}
-
-function baselineSql(): string {
-  return normalizeBaselineSql(readFileSync(join(MIGRATIONS_DIR, "0000_baseline.sql"), "utf8"));
-}
-
-function tableDefinition(sql: string, table: string): string {
-  const match = new RegExp(`CREATE TABLE public\\.${table} \\(([\\s\\S]*?)\\n\\);`).exec(normalizeBaselineSql(sql));
-  return match?.[1] ?? "";
-}
-
-// sha256 of 0000_baseline.sql as frozen on 2026-09-06, when the first
-// deployment started carrying data. The runner refuses a changed applied file
-// at runtime; this pins the same fact at test time, before any database is
-// involved, so a stray `schema:generate` under the old fold-into-the-baseline
-// habit fails here rather than at the next start of a real instance.
-const FROZEN_BASELINE_SHA256 = "a9bd58568be126d1c76f07896103916012326be09c488dd5d9fc953f2f307c41";
+// sha256 of the reset schema epoch's 0000 baseline, generated on 2026-09-21
+// by drizzle-kit from server/src/db/schema/ against an empty chain.
+// The new epoch deliberately has no upgrade path from the previous baseline;
+// after release, this baseline is frozen and future changes append migrations.
+const FROZEN_BASELINE_SHA256 = "f56f601904c122567264fefd808540371bf461eb8c99b521e6ddc1cd18b564e0";
 
 describe("server runner applies the migration chain", () => {
-  // The chain is append-only: a frozen baseline followed by one numbered file
-  // per schema change, contiguous, with the Drizzle journal naming exactly the
-  // files on disk. `schema:check` enforces the same shape; asserted here too so
-  // the test suite fails on a half-committed migration without drizzle-kit.
-  it("keeps an append-only chain that starts at the frozen baseline", () => {
+  // The reset ships one new-epoch baseline and no migration from the prior
+  // epoch. Future changes may append numbered migrations to this new chain.
+  it("starts the new schema epoch from one baseline", () => {
     const migrationFiles = readdirSync(MIGRATIONS_DIR)
       .filter((name) => /^\d+_.+\.sql$/.test(name))
       .sort();
-    expect(migrationFiles[0]).toBe("0000_baseline.sql");
+    expect(migrationFiles).toEqual(["0000_baseline.sql"]);
     migrationFiles.forEach((file, index) => {
       expect(file.startsWith(`${String(index).padStart(4, "0")}_`), `gap or duplicate before ${file}`).toBe(true);
     });
@@ -129,6 +109,7 @@ describe("server runner applies the migration chain", () => {
     expect(journal.entries.map((entry) => entry.tag)).toEqual(
       migrationFiles.map((file) => file.replace(/\.sql$/, "")),
     );
+    expect(journal.entries).toHaveLength(1);
     for (const entry of journal.entries) {
       expect(existsSync(join(MIGRATIONS_DIR, "meta", `${String(entry.idx).padStart(4, "0")}_snapshot.json`))).toBe(true);
     }
@@ -137,6 +118,18 @@ describe("server runner applies the migration chain", () => {
   it("never rewrites the frozen baseline", () => {
     const sql = readFileSync(join(MIGRATIONS_DIR, "0000_baseline.sql"));
     expect(createHash("sha256").update(sql).digest("hex")).toBe(FROZEN_BASELINE_SHA256);
+  });
+
+  // The epoch baseline is generated from `src/db/schema/`, not dumped from a
+  // migrated pre-epoch database. A dump carries catalog names the Drizzle
+  // definitions do not mention — including NOT NULL constraints still named
+  // after the retired `adapter_type` column — so `schema:check` could never
+  // see them and every new instance would be created carrying them.
+  it("is generated from the Drizzle schema, not dumped from a migrated database", () => {
+    const sql = readFileSync(join(MIGRATIONS_DIR, "0000_baseline.sql"), "utf8");
+    expect(sql).not.toContain("PostgreSQL database dump");
+    expect(sql).not.toMatch(/CONSTRAINT "?[a-z_]+_not_null"? NOT NULL/);
+    expect(sql).not.toContain("adapter_type");
   });
 
   it("carries the execution topology the Folder/Location split needs", () => {
@@ -228,7 +221,9 @@ describe("server runner applies the migration chain", () => {
     expect(memoryEntries).toContain("created_from_proposal_id character varying(36)");
     expect(baseline).toContain("ck_memory_entries_memory_layer");
     expect(baseline).toContain("ck_memory_entries_scope_type");
-    expect(baseline).toContain("scope_type IN ('user', 'project', 'agent')");
+    expect(memoryEntries).toContain(
+      "CONSTRAINT ck_memory_entries_scope_type CHECK (scope_type IN ('user', 'project', 'agent'))",
+    );
     expect(baseline).toContain("ix_memory_entries_memory_type");
     expect(baseline).toContain("memory_entries_created_from_proposal_id_fkey");
   });
@@ -236,14 +231,16 @@ describe("server runner applies the migration chain", () => {
   it("keeps retrieval base object types centralized in a generated database enum", () => {
     const baseline = baselineSql();
     expect(baseline).toContain("CREATE EXTENSION IF NOT EXISTS vector");
-    expect(baseline).toContain("CREATE TYPE public.retrieval_object_type AS ENUM");
+    const enumStart = baseline.indexOf("CREATE TYPE public.retrieval_object_type AS ENUM");
+    const enumEnd = baseline.indexOf(");", enumStart);
+    const retrievalObjectTypes = baseline.slice(enumStart, enumEnd);
     expect(baseline).toContain("CREATE TABLE public.space_object_profiles");
     expect(baseline).toContain("CREATE TABLE public.space_object_profile_relation_hints");
-    expect(baseline).toContain("base_object_type retrieval_object_type NOT NULL");
-    expect(baseline).toContain("endpoint_object_type retrieval_object_type NOT NULL");
-    expect(baseline).toContain("object_type retrieval_object_type NOT NULL");
-    expect(baseline).toContain("from_object_type retrieval_object_type NOT NULL");
-    expect(baseline).toContain("to_object_type retrieval_object_type NOT NULL");
+    expect(baseline).toContain("base_object_type public.retrieval_object_type NOT NULL");
+    expect(baseline).toContain("endpoint_object_type public.retrieval_object_type NOT NULL");
+    expect(baseline).toContain("object_type public.retrieval_object_type NOT NULL");
+    expect(baseline).toContain("from_object_type public.retrieval_object_type NOT NULL");
+    expect(baseline).toContain("to_object_type public.retrieval_object_type NOT NULL");
     expect(baseline).not.toContain("ck_space_object_profiles_base_object_type");
     expect(baseline).not.toContain("ck_space_object_profile_relation_hints_endpoint_type");
     expect(baseline).not.toContain("ck_note_links_endpoint_type");
@@ -254,9 +251,12 @@ describe("server runner applies the migration chain", () => {
     expect(baseline).not.toContain("ck_retrieval_edges_to_object_type");
     expect(baseline).not.toContain("ck_retrieval_feedback_events_object_type");
     expect(baseline).toContain("ck_space_object_profile_relation_hints_link_type_format");
-    expect(baseline).toContain(
-      "'knowledge_item', 'note', 'source', 'claim', 'memory_entry', 'project_public_summary', 'source_item', 'extracted_evidence'",
-    );
+    for (const objectType of [
+      "knowledge_item", "note", "source", "claim", "memory_entry",
+      "project_public_summary", "source_item", "extracted_evidence", "inquiry_thread",
+    ]) {
+      expect(retrievalObjectTypes).toContain(`'${objectType}'`);
+    }
   });
 
   it("keeps note collection trees and memberships space-scoped in the baseline", () => {

@@ -28,6 +28,7 @@ import { readInstanceOperationsPolicy } from "../settings/index.js";
 import { DeploymentService } from "../deployment/service.js";
 import { ConversationInputService } from "../sessions/conversationInputService.js";
 import { PgProjectFileDraftRepository } from "../projectFolders/draftRepository.js";
+import { sharedServerOpenCodeProvisioner } from "../hosts/serverOpenCodeProvisioner.js";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -133,6 +134,20 @@ export function startBackgroundServices(
   ];
 
   if (config.databaseUrl) {
+    // The same instance the admin retry route wakes: a claim is heartbeated
+    // only by the instance that took it.
+    const serverOpenCodeProvisioner = sharedServerOpenCodeProvisioner(
+      getDbPool(config.databaseUrl),
+      { log },
+    );
+    tasks.push({
+      name: "server_opencode_provisioning",
+      intervalSeconds: 15,
+      runOnStart: true,
+      awaitRunOnStart: false,
+      run: async () => serverOpenCodeProvisioner.reconcile(),
+    });
+
     tasks.push({
       name: "project_file_draft_retention",
       intervalSeconds: 900,

@@ -9,11 +9,14 @@ import { loadActionRegistry } from "../src/modules/policy/actionRegistry.js";
 import { AuthorizationRequestService } from "../src/modules/policy/authorizationRequestService.js";
 import { enforce } from "../src/modules/policy/service.js";
 import { registerAgentRunHandler } from "../src/modules/runs/agentRunHandler.js";
-import { PgRunRepository, type RunRecord } from "../src/modules/runs/repository.js";
+import { PgRunRepository, type AgentRunRecord, type RunRecord } from "../src/modules/runs/repository.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { assembleRunInputEnvelope } from "../src/modules/runs/runInputEnvelope.js";
 import { buildRunToolGrants } from "../src/modules/systemActions/runToolGrants.js";
+import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { seedServerRuntimeProfile } from "./support/domainSeeds.js";
 
 describe("runToolGrantProvisioningDb", () => {
   // The real creation path must persist the fail-closed intersection of Run
@@ -24,6 +27,7 @@ describe("runToolGrantProvisioningDb", () => {
   const SPACE = "space-1";
   const USER = "user-1";
   const AGENT = "agent-1";
+  const SERVER_HOST = "server-host-1";
   let agentVersionId = "";
 
   const db = useTestDatabase(`${import.meta.filename}#runToolGrantProvisioningDb`, { max: 10 });
@@ -33,7 +37,7 @@ describe("runToolGrantProvisioningDb", () => {
     const now = new Date().toISOString();
     await resetTables(
       db.pool,
-      ["runs", "agent_versions", "agents", "space_memberships", "spaces", "users"],
+      ["runs", "agent_runtime_profiles", "agent_versions", "agents", "space_memberships", "hosts", "machines", "spaces", "users"],
       { cascade: true },
     );
     await db.pool.query(
@@ -58,11 +62,30 @@ describe("runToolGrantProvisioningDb", () => {
     // missing grant cannot be blamed on an agent that was never allowed a tool.
     await db.pool.query(
       `INSERT INTO agent_versions (
-         id, agent_id, space_id, version_label, system_prompt, model_config_json,
-         runtime_config_json, context_policy_json, memory_policy_json,
-         capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-       ) VALUES ($1,$2,$3,'v1','You are a test agent.','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,
-         '{}'::jsonb,$4::jsonb,$5::jsonb,'{}'::jsonb,$6)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       risk_level,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'You are a test agent.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       $4::jsonb,
+       $5::jsonb,
+       'low',
+       $6
+     )`,
       [
         agentVersionId,
         AGENT,
@@ -73,6 +96,7 @@ describe("runToolGrantProvisioningDb", () => {
       ],
     );
     await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, agentVersionId]);
+    await seedServerRuntimeProfile(db.pool, { agent: AGENT, space: SPACE, hostId: SERVER_HOST, now });
   });
 
   async function readSnapshot(runId: string): Promise<unknown> {
@@ -89,6 +113,7 @@ describe("runToolGrantProvisioningDb", () => {
       const repository = new PgRunRepository(db.pool);
 
       const created = await repository.createQueuedRun({
+        execution_kind: "agent",
         agent_id: AGENT,
         space_id: SPACE,
         user_id: USER,
@@ -123,6 +148,7 @@ describe("runToolGrantProvisioningDb", () => {
       const repository = new PgRunRepository(db.pool);
 
       const created = await repository.createQueuedRun({
+        execution_kind: "agent",
         agent_id: AGENT,
         space_id: SPACE,
         user_id: USER,
@@ -159,6 +185,7 @@ describe("runToolGrantProvisioningDb", () => {
       const repository = new PgRunRepository(db.pool);
 
       const created = await repository.createQueuedRun({
+        execution_kind: "agent",
         agent_id: AGENT,
         space_id: SPACE,
         user_id: USER,
@@ -191,10 +218,83 @@ describe("runToolGrantProvisioningDb", () => {
       });
     });
 
+    it("records a failed action_completed Run event when a Run calls an ungranted tool", async (ctx) => {
+      if (!db.available || !db.pool) return ctx.skip();
+      // The refusal never reaches the gateway, so without its own event the
+      // Run carries no evidence and `governedToolDegradation` cannot see it.
+      const repository = new PgRunRepository(db.pool);
+      // RunEvent.actor_id is a real FK: without the Agent's actor identity the
+      // best-effort append would be dropped and prove nothing.
+      await db.pool.query(
+        `INSERT INTO actors (id, space_id, actor_type, agent_id, display_name, status, metadata_json, created_at, updated_at)
+         VALUES ($1, $2, 'agent', $1, 'Agent', 'active', '{}'::jsonb, now(), now())
+         ON CONFLICT DO NOTHING`,
+        [AGENT, SPACE],
+      );
+      const created = await repository.createQueuedRun({
+        execution_kind: "agent",
+        agent_id: AGENT,
+        space_id: SPACE,
+        user_id: USER,
+        mode: "live",
+        run_type: "agent",
+        trigger_origin: "manual",
+        prompt: "Call a tool this Run was never granted",
+        capabilities_json: [],
+      });
+      await new PgRouteDecisionRepository(db.pool).routeRun(created);
+      await repository.markRunRunning({
+        run_id: created.id,
+        space_id: SPACE,
+        started_at: new Date().toISOString(),
+      });
+      const stored = await repository.getRun(SPACE, created.id);
+
+      const dispatcher = await SystemActionDispatcher.create(
+        { ...loadConfig({}), databaseUrl: db.connectionUri },
+        stored as AgentRunRecord,
+      );
+      const result = await dispatcher.dispatch({
+        id: "call-ungranted-1",
+        name: "project.source.propose_bind",
+        arguments_json: "{}",
+      });
+
+      expect(result.modelResult).toMatchObject({
+        ok: false,
+        error_code: "system_action_not_granted",
+      });
+      const events = await db.pool.query<{
+        event_type: string;
+        status: string;
+        error_code: string | null;
+        metadata_json: Record<string, unknown>;
+      }>(
+        `SELECT event_type, status, error_code, metadata_json
+           FROM run_events
+          WHERE run_id = $1 AND space_id = $2
+          ORDER BY event_index`,
+        [created.id, SPACE],
+      );
+      const refusal = events.rows.find((row) => row.event_type === "action_completed");
+      // Exactly the shape `RunOrchestrationService.governedToolDegradation`
+      // reads back: a failed `action_completed` carrying the action id.
+      expect(refusal).toMatchObject({
+        status: "failed",
+        error_code: "system_action_not_granted",
+      });
+      expect(refusal?.metadata_json).toMatchObject({
+        action_id: "project.source.propose_bind",
+        tool_call_id: "call-ungranted-1",
+        ok: false,
+      });
+    });
+
     it("creates and approves a request bound to an audited same-Run denial", async (ctx) => {
       if (!db.available) return ctx.skip();
       const repository = new PgRunRepository(db.pool);
       const created = await repository.createQueuedRun({
+        execution_kind: "agent",
         agent_id: AGENT,
         space_id: SPACE,
         user_id: USER,
@@ -205,18 +305,8 @@ describe("runToolGrantProvisioningDb", () => {
         capabilities_json: ["agent.delegate"],
       });
       const now = new Date().toISOString();
-      await db.pool.query(
-        `UPDATE runs
-            SET status = 'running', started_at = $3, updated_at = $3
-          WHERE id = $1 AND space_id = $2`,
-        [created.id, SPACE, now],
-      );
-      await db.pool.query(
-        `UPDATE run_attempts
-            SET status = 'running', started_at = $3, last_activity_at = $3, updated_at = $3
-          WHERE run_id = $1 AND space_id = $2 AND attempt_number = 1`,
-        [created.id, SPACE, now],
-      );
+      await new PgRouteDecisionRepository(db.pool).routeRun(created);
+      await repository.markRunRunning({ run_id: created.id, space_id: SPACE, started_at: now });
       const policyResult = await enforce(
         { databaseUrl: db.connectionUri },
         await loadActionRegistry(),
@@ -434,6 +524,7 @@ describe("runToolGrantProvisioningDb", () => {
       expect(recoveredAgentJob.rows).toHaveLength(1);
 
       const rejectedRun = await repository.createQueuedRun({
+        execution_kind: "agent",
         agent_id: AGENT,
         space_id: SPACE,
         user_id: USER,
@@ -443,18 +534,8 @@ describe("runToolGrantProvisioningDb", () => {
         prompt: "Reject this bounded authorization",
         capabilities_json: ["agent.delegate"],
       });
-      await db.pool.query(
-        `UPDATE runs
-            SET status = 'running', started_at = $3, updated_at = $3
-          WHERE id = $1 AND space_id = $2`,
-        [rejectedRun.id, SPACE, now],
-      );
-      await db.pool.query(
-        `UPDATE run_attempts
-            SET status = 'running', started_at = $3, last_activity_at = $3, updated_at = $3
-          WHERE run_id = $1 AND space_id = $2 AND attempt_number = 1`,
-        [rejectedRun.id, SPACE, now],
-      );
+      await new PgRouteDecisionRepository(db.pool).routeRun(rejectedRun);
+      await repository.markRunRunning({ run_id: rejectedRun.id, space_id: SPACE, started_at: now });
       const rejectedPolicy = await enforce(
         { databaseUrl: db.connectionUri },
         await loadActionRegistry(),

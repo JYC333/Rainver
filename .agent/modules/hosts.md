@@ -11,13 +11,11 @@ both the server-host and remote-host execution paths; the self-maintained
 vendor CLI protocol implementations (stream-json argv, NDJSON-RPC) it
 replaced are deleted. So is the remote-host provider-binding plan
 (`remote-host-provider-binding-plan.md`, P1–P2 shipped in `404b1b87` and the
-commits that followed, retired 2026-08-28): its shipped state is the
-"Model-backend binding" material below (host×adapter defaults, the
-`provider_binding` launch frame, host-side profile materialization, the B67
-allowlist at spawn); its open real-host acceptance items are in the deferred
-register's multi-host section and its two actionable leftovers in
-`plans/backlog.md` §8. **This document describes the ACP-based system as it
-stands today.**
+commits that followed, retired 2026-08-28). The later ACP runtime authority
+reset removed Host-wide ModelProvider defaults, their routes and UI. Current
+backend choice is Profile-owned; a selected Profile's authorized provider
+binding may be materialized into the Host launch frame, but Hosts do not
+select or default that binding. **This document describes the current system.**
 
 ## Purpose
 
@@ -66,9 +64,10 @@ on every member's host list already. The routes that stay 404 for it are the
 ones that mean nothing here: attaching an existing directory on the machine
 (ADR 0016 §4 — its Locations are always managed workspaces under the
 instance's workspace root), browsing its directories, its provider-proxy
-address (it reaches the proxy in-network), and its host×adapter model source —
-the built-in host's Runs are not provider-bound, so the card renders the
-copy's own account as text rather than a selector and asks for no binding.
+address (it reaches the proxy in-network), and any Host-level provider
+binding/default. When a supported Profile selects `model_provider`, its
+Run-scoped binding is carried with that Run; it is not stored as a Host
+default.
 
 `BUILTIN_HOST_MAX_CONCURRENT_RUNS` (default 3) is how many Runs it executes at
 once, surfaced as `max_concurrent_runs` on `GET /api/v1/hosts` and shown on
@@ -175,12 +174,29 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
 - `POST /api/v1/hosts/pairing-codes` — `{ name }` → `{ host_id, pairing_code, expires_at }` (13-character Crockford base32, 10 min TTL).
 - `GET /api/v1/hosts` — the server host plus every remote host the caller owns.
 - `GET /api/v1/hosts/execution-targets?project_id=` — the caller's online
-  remote hosts and ACP installations. Without `project_id`, hosts have no
+  remote hosts and ACP installations, plus the built-in host, which is listed
+  whether or not it is online. Without `project_id`, hosts have no
   registered Locations; with it, only Locations in that readable Project are
   returned. Every target advertises the managed-workspace choice. This is the
   canonical Host/CLI/Workspace candidate projection for both Project Settings
   and Conversation first-Run setup; neither surface derives a separate list
   from Agent runtime profiles.
+  Each target carries `host_kind` (`server` | `remote`,
+  `HostExecutionTargetSchema` in `packages/protocol/src/hosts.ts`), and that
+  field — never a label — is the lifecycle authority the composer and the
+  execution-target picker branch on. `host_name` for the built-in host is the
+  product string **"Server Runtime"**, substituted in
+  `projectFolders/workspaceLocations.ts`; it is presentation and must not be
+  parsed back into authority.
+- `GET /api/v1/hosts/runtime-definitions` — the static ACP runtime catalog the
+  frontend reads instead of re-deriving eligibility. Per runtime:
+  `runtime_key`, `display_name`, launch `command`, `capability_probe`,
+  `remote_eligible`, `registry_id`, `latest_managed_version`,
+  `server_supported_version`, `reports_managed_cli_version`, `provider_api`,
+  and the two backend-mode flags `supports_runtime_native` /
+  `supports_model_provider`, read from the same `AgentRuntimeDefinition` that
+  Profile admission enforces so the composer cannot offer a mode the server
+  answers with 422. There is no `provider_binding` field on this endpoint.
 - `POST /api/v1/hosts/:hostId/revoke` — terminal; a revoked host's token stops
   authenticating. Also closes the host's live WebSocket connection
   immediately if it has one (`HostConnectionRegistry.closeConnection`) — so
@@ -242,165 +258,41 @@ Cancelling a remote Run goes through `PATCH /api/v1/runs/:runId/stop` like any
 other Run — the deleted thread-cancel route was a thread-to-run lookup wrapping
 that same `orchestration.cancelRun`, not separate machinery.
 
-Model-backend binding. Space-scoped
-via `introspectIdentity` because validating a ModelProvider needs the Space its
-grant lives in, but host **ownership** is still the gate (B63) and an unowned
-host id answers 404, not 403 — matching `revoke`:
+### Profile-owned backend selection and Host launch
 
-- `GET /api/v1/hosts/:hostId/runtime-provider-bindings` — this host's defaults.
-- `PUT /api/v1/hosts/:hostId/runtime-provider-bindings/:adapterType` —
-  `{ model_provider_id, model? }`. Validates that the adapter is remote-eligible
-  and that the provider exposes the compatible base URL that adapter needs
-  (`adapterProviderRequirement` in `runs/runtimeProviderBinding.ts` is the one
-  place that mapping lives, shared with execution-time binding construction).
-- `DELETE /api/v1/hosts/:hostId/runtime-provider-bindings/:adapterType` —
-  returns that host×adapter to the machine's own login state.
+Hosts have no ModelProvider defaults, host×runtime binding table, or
+`runtime-provider-bindings` API. `AgentRuntimeProfile` is the only Agent
+backend authority: it pins `runtime_key`, `backend_mode`, and, when the
+selected runtime supports it, a same-Space ModelProvider and explicit model.
+Routing validates that Profile against the Agent Run's Space and the provider
+grant before the immutable Run snapshot is dispatched. A Host cannot choose a
+different provider or fall back to a Host-wide default.
 
-`host_runtime_provider_bindings` is keyed `(host_id, adapter_type)` only. A
-provider is reachable through a Space grant, so a binding whose provider has no
-enabled grant in the *dispatching* Space fails at dispatch with a 422 rather
-than resolving differently per Space.
+For a supported Profile binding, the Server authorizes credential spend and
+creates a short-lived, Run-scoped proxy lease. The optional `provider_binding`
+launch frame contains only the proxy address, lease token, model and
+Profile-scoped configuration files; the upstream API key remains inside the
+Server/provider boundary. The Host daemon writes the supplied bytes into the
+Run's isolated runtime profile and starts ACP. Native mode instead links the
+runtime to its owner-controlled Host login without copying credential bytes.
+Switching backend mode changes the runtime profile key so a session created
+under one backend is not resumed under another.
 
-Both dispatch routes accept per-dispatch `model_provider_id` / `model`
-overrides. Precedence is **override > the thread's own backend > host×adapter
-default > none**, and an explicit `model_provider_id: null` is a real choice
-("ambient login for this one dispatch"), so the override is read by key
-presence, not truthiness.
-
-A thread's own backend is the resolved provider and model of its newest Run
-(`threadRunBinding` in `tasks/repository.ts`). The Host × adapter default
-therefore decides a thread's *first* backend only. Without that step,
-resolution re-read the default at every dispatch, so changing it moved
-**every** existing thread on that host onto a new backend, and since a bound
-run's vendor session lives inside that provider's profile directory, each of
-them lost its conversation as well — a setting meant to pick a default for new
-work silently reset old work. An override becomes what the thread inherits
-next, which is how a user changes a thread's backend. (This used to read the
-thread's newest *message* — the queue's ledger — where queued rows counted and
-withdrawn ones did not; with one Run created per dispatch there is no queued
-state to reason about.)
-
-Resolution happens at **dispatch** time, and the result is stamped onto the Run
-it creates: `runs.model_provider_id` and `model_override_json.model`.
-Validation can then fail the request the sender is waiting on. The snapshot
-names a concrete model, not "whatever the provider defaults to" — a thread that
-inherited a null model would follow the provider's `default_model` if that were
-later edited, which is the same drift one level down. `source: "request"` is
-written even when the decision was "no provider at all", because that is what
-tells an admission that deliberately chose ambient login apart from a Run that
-never chose and should fall back to the Host default.
-
-Such a Run is `run_type: 'system'`, which `routeRun` skips. That is load-bearing
-rather than cosmetic: on any other run_type the router would stamp its own
-predicted provider over the backend the dispatch already resolved and
-validated, and binding resolution reads that column.
-
-The admission also writes the thread and the vendor session to resume into the
-Run's `model_override_json.host_thread` — the same shape the Room, delegation
-and direct-chat paths write. The `agent_run` job handler reads both from the
-Run (`hosts/threadDispatchInputs.ts`), never from the job payload: twenty
-places enqueue that job, and the ones that did not know they were re-dispatching
-a thread-bound Run (the supervisor retry, an authorization re-enqueue, the
-resume endpoint, direct chat) used to start a fresh vendor session every turn
-while the thread believed it was resuming one. At execution, a Run that never
-went through dispatch — an Automation, Room root run, Plan or Workflow node,
-evolution run whose Folder prefers a remote Location — falls back to the Host ×
-adapter default, so the per-host setting means what the Command Center says it
-means rather than applying only to dispatched threads.
-
-**Before execution, `runs.model_provider_id` is not evidence of a binding**:
-`PgRouteDecisionRepository.routeRun` stamps that column for any routed run
-before host kind is resolved, so a remote run created by another path can carry
-a provider it never used. A dispatched Run is `run_type: 'system'`, which the
-router skips, so on that path the column carries the dispatch's own decision
-and binding resolution reads it; a Run without one falls back to the Host
-default. Once the binding is resolved — before the run launches — the
-column becomes authoritative in the other direction: the remote adapter writes
-back what it bound and marks it `source = "host_binding"`, so a reader can tell
-a chosen provider from a predicted one. The write-back merges into
-`model_override_json` rather than replacing it — that column also carries
-`execution_mode`, `chat_turn` and Conversation/Host-thread continuity, and a
-Room turn pinned to a remote Location reaches this path.
-
-`route_decisions.selected_model_provider_id` is the router's own second copy of
-that value and means nothing for a thread-dispatched run: those runs are
-`run_type = 'system'`, which `routeRun` skips, so they have no route decision
-row at all. For a remote run created by any *other* path there is a row, and it
-records what the router selected — not what executed. Neither column is
-evidence of a binding.
-
-`runToOut`'s `resolved_model` reports `used_by_adapter` for a remote run only
-when the column carries the `host_binding` marker — otherwise Run detail would
-present the router's prediction as a fact about what ran. Remoteness itself
-comes from the Run's Location, **not** from `trust_mode`: only the
-thread-dispatch path writes that column, so an Automation, Workflow or
-evolution run on a remote Location can have it null and still run remotely.
-Every read path that renders a Run passes the answer in, resolved by
-`resolveRunRemoteness` (`runs/runRemoteness.ts`), which answers a whole page in
-one query and skips rows with nothing recorded to qualify. `trust_mode` is the
-floor for a caller that has not been given the answer.
-
-At execution, `remoteHostCliAdapter` reads the binding from the message,
-creates a provider-proxy lease bound to that Host, and carries a
-`provider_binding` frame in the launch message: the proxy URL the *host* can
-reach, a short-lived lease token, and the model. The provider's real key never
-leaves the server — the proxy substitutes it. The adapter owns the lease's
-lifetime, so it is revoked when the run reaches any terminal state rather than
-at its own TTL, and revoking a Host revokes its live leases immediately
-(`ProviderProxyLeaseRegistry.revokeHost`), since a lease is plain HTTP and a
-cut socket does not stop it.
-
-The address a host uses to reach the proxy comes from **configuration only**.
-The host's control-plane address is `hostControlPlaneUrl`: `FRONTEND_URL` for
-a paired host, and the in-network `http://server:<port>` for the built-in one.
-The proxy's address follows from it plus `PROVIDER_PROXY_PORT`. Nothing a
-daemon reports, and nothing a request's Host or `X-Forwarded-*` carries,
-enters either address.
-
-`hostProviderProxyBaseUrl` is the one place that resolves it: an explicit
-per-host override (`hosts.provider_proxy_base_url`, editable in the Command
-Center, for a reverse proxy in front of the API or a proxy published elsewhere).
-After that, the two kinds of host differ:
-- **Built-in host:** always the in-network listener. An address published for
-  machines outside would take its lease token off the internal network.
-- **Paired host:** the instance-wide `PROVIDER_PROXY_EXTERNAL_BASE_URL`, then
-  an address derived from `FRONTEND_URL` plus `PROVIDER_PROXY_PORT`.
-  Derivation happens only when `FRONTEND_URL` is `http:` and the port is
-  fixed, because the listener is plaintext. Configuration outranks
-  derivation, since the derived address is inferred.
-`GET /api/v1/hosts` returns the resolved answer as
-`provider_proxy_effective_url` so the UI shows what a dispatched run will
-actually get rather than deriving a second, possibly different one. With
-nothing to resolve, a bound remote run fails with a stated reason rather than
-receiving a URL it cannot resolve.
-
-`PROVIDER_PROXY_PORT` (listen port) and the published port binding stay
-deployment settings — one needs a socket rebind, the other is a container port
-mapping the app cannot change about itself. Compose binds the published port to loopback by default;
-widening that bind is the deliberate step that puts lease traffic on the local
-network, and it is plaintext until a TLS entry exists.
-
-The frame is runtime-agnostic on purpose:
-`{ profile_key, env, profile_env, files }`. The
-server generates every Codex-TOML and OpenCode-JSON decision using the **same**
-builders the server-host path uses (`renderCodexProviderToml`,
-`codexModelCatalog`, `applyOpenCodeProviderConfig`), and the daemon creates a
-directory, writes those bytes, and reports the paths back as environment. A
-second set of generators on the daemon is what would silently drift — a catalog
-Codex never reads, an OpenCode provider block missing the `npm` field that
-makes it loadable at all — so the daemon stays a byte writer, consistent with
-its rule against becoming a vendor protocol translator. `files[].contents` may
-carry `{{RAINVER_RUN_PROFILE}}`, which the daemon replaces with the
-absolute profile path; Codex's config has to name its own catalog absolutely
-and only the executing machine knows where that is. Paths that escape the
-profile are refused — the daemon runs unsandboxed on a machine the user owns.
+The proxy address is resolved from server configuration and the Host's
+registered control-plane context, never from a daemon-reported URL or an
+untrusted request header. `PROVIDER_PROXY_PORT` and any externally published
+port remain deployment settings. Host revocation removes its active leases;
+terminal Runs revoke their Run lease. See
+[`AGENT_RUNTIME_AUTHORITY.md`](../architecture/AGENT_RUNTIME_AUTHORITY.md)
+and [`CREDENTIAL_STORAGE.md`](../architecture/CREDENTIAL_STORAGE.md) for the
+Profile and credential boundaries.
 
 ### The runtime profile: one per Agent × container
 
 `profile_key` is
-`agents/<agent_id>/<container_kind>/<container_id>/<adapter_type>/<provider_id|ambient>`,
+`agents/<agent_id>/<container_kind>/<container_id>/<runtime_key>/<provider_id|ambient>`,
 and the profile lives at
-`agents/<agent_id>/profiles/<container_kind>/<container_id>/<adapter_type>/<provider_id|ambient>`
+`agents/<agent_id>/profiles/<container_kind>/<container_id>/<runtime_key>/<provider_id|ambient>`
 under the daemon's config directory — beside the Agent's managed workspaces,
 not inside them. The container is the **Conversation** for a Room turn, the
 **owner** for a direct chat, and the **WorkspaceLocation** for everything else
@@ -531,12 +423,10 @@ verified on a real host** — if it ignores `XDG_DATA_HOME`, its state stays
 machine-global, which is no worse than before this phase but is not the
 isolation claimed here. See the deferred register.
 
-This granularity is the minimal extension of what ADR 0016 already decided for
-remote runs: session continuity is the vendor CLI's own state on that machine,
-addressed by the thread's opaque `vendor_session_id`. The server-host
-conversation-home machinery (`prepareConversationHome(state_key)`) is
-deliberately *not* what this reuses — ADR 0016 records that server-brokered
-Runtime Context continuity has no meaning for a remote host.
+This granularity extends the HostThread's opaque `vendor_session_id` to the
+Runtime Context cursor. The HostThread and Runtime Context binding must resume
+the same ACP session; a mismatch or authority rotation starts a fresh session.
+The server does not materialize CLI state directories on a remote Host.
 
 ### Login state: one per host × installation, shared by link
 
@@ -735,8 +625,8 @@ handled the same way — the builtin CLIs and enabled registry agents alike:
   OpenCode). Detected by `--version`; never installed, upgraded, or
   reconfigured by the daemon. Its login state is the machine's.
 - **`managed:<version>`** — a copy the daemon installed on the owner's
-  request into `<config dir>/tools/<adapter_type>/<version>/`, with its own
-  stable HOME at `<config dir>/managed-state/<adapter_type>/home/`, separate
+  request into `<config dir>/tools/<runtime_key>/<version>/`, with its own
+  stable HOME at `<config dir>/managed-state/<runtime_key>/home/`, separate
   from the machine's own CLI and other adapters. Removal deletes binaries,
   retaining managed user state for reinstallation.
 
@@ -760,9 +650,9 @@ Every
 changes it, the connected daemon adopts the new probes and immediately sends a
 fresh heartbeat, so installing an agent never requires a daemon reconnect.
 
-A runtime on a host has **one identity: adapter type × copy**, and
+A runtime on a host has **one identity: runtime key × copy**, and
 everything about a copy lives on the copy. The capability report is
-`{ runtimes, versions, installations }`: `installations[adapter_type]` holds
+`{ runtimes, versions, installations }`: `installations[runtime_key]` holds
 one `{ id, version, logged_in, options }` per copy (`logged_in` comes from
 the configured credential file for built-ins, otherwise from whether ACP
 session setup succeeds when the Agent advertises authentication. ACP Agent
@@ -786,15 +676,15 @@ server validates what it stores and serves. Daemon and server deploy together;
 `hosts/capabilities.ts` accepts only the current installations shape and does
 not translate obsolete heartbeat layouts.
 
-Install (`POST /api/v1/hosts/:hostId/installations/:adapterType`, host owner)
-sends `install_tool { request_id, adapter_type, version, distribution, login,
+Install (`POST /api/v1/hosts/:hostId/installations/:runtimeKey`, host owner)
+sends `install_tool { request_id, runtime_key, version, distribution, login,
 runtime_version_command }`;
 the daemon materializes the distribution — `npx` as a pinned `npm install
 --prefix`, `uvx` as `uv tool install` with a private `UV_TOOL_DIR`, `binary`
 as an https download verified against its sha256 and extracted — behind a
 staging rename, writes `manifest.json` (absolute command, args, env, `home`,
 the rendered `login_command`), answers `tool_result { installation }` and
-heartbeats. `DELETE .../installations/:adapterType/:installation` sends
+heartbeats. `DELETE .../installations/:runtimeKey/:installation` sends
 `uninstall_tool`; only a managed copy can be removed.
 
 An install of a *different* version is an upgrade, and an upgrade replaces the
@@ -804,7 +694,7 @@ refuses the upgrade rather than killing anything — "still in use" is an
 ordinary answer here, not a fault. It then keeps exactly one previous version
 directory (ADR 0016 §9). Both versions use the same managed HOME: login, native
 history, Skills and configuration survive upgrade, reinstall and pruning.
-`POST .../installations/:adapterType/rollback` (`rollback_tool`) drains the same
+`POST .../installations/:runtimeKey/rollback` (`rollback_tool`) drains the same
 way, deletes the current binaries, and promotes the previous version without
 rewinding user data. The host reports only the current
 copy plus `rollback_version`, so an Agent has one version per host and one
@@ -815,10 +705,80 @@ rather than started against a directory about to be renamed away. Draining
 alone would not do it, because a drain reports quiet and the download that
 follows takes long enough for the next dispatch to arrive.
 
+**The Server Runtime's own copy reconciles itself.**
+`hosts/serverOpenCodeProvisioner.ts` runs every 15s
+(`scheduler/backgroundServices.ts`) and drives one release-pinned OpenCode copy
+on the built-in host toward `runtimeAdapters/opencodeRelease.ts`, through the
+same `install_tool` lifecycle a paired host's owner triggers by hand — there is
+no second, Server-direct installer. Desired state lives in
+`host_runtime_provisioning` (`hosts/runtimeProvisioningRepository.ts`), and
+`claim()` is an atomic `queued → installing` transition so only one process
+owns an install. The owner then *heartbeats* that claim on every later tick
+while it waits on the daemon, because `last_attempt_at` would otherwise only
+record when the install began, and a long install would be indistinguishable
+from one whose process died — a second Server process would fail it out from
+under its owner. `running` and the owned claim are per-instance, so there is
+exactly one provisioner per process (`sharedServerOpenCodeProvisioner`): the
+scheduler builds it and the admin retry route *wakes* it rather than building
+a one-shot instance whose claim nothing would then heartbeat.
+Only a claim that has gone `INSTALL_HEARTBEAT_STALE_MS` without a heartbeat is
+declared interrupted, and the placeholder that leaves behind is the one error
+message the daemon's real answer is allowed to replace; every other failure
+stays sticky until an explicit owner retry or a new pinned release. A paired
+host is never provisioned this way: the reconciler resolves the built-in host
+by authority and refuses to write desired state for anything else.
+
+The states are `queued → installing → ready | failed`, and only `failed` is
+retryable: `retry()` moves `failed → queued` and nothing else, so a `ready` or
+`installing` row answers the route with 409. Two routes expose the row, both in
+`hosts/routes.ts` and both 404 on a host that is not `kind = 'server'`:
+
+- `GET /api/v1/hosts/:hostId/runtime-provisioning/opencode` — the
+  `serverOpenCodeProvisioningStatus` projection: installation state, desired /
+  installed / active version, error, attempt count, and the active copy's
+  native-login account summary.
+- `POST /api/v1/hosts/:hostId/runtime-provisioning/opencode/retry` — host-owner
+  (built-in allowed); requeues a failed row, wakes the process-wide
+  provisioner for one reconcile, answers 202.
+
+**A version becomes active only after it answers ACP.** `complete()` is
+reached only when the host reports `managed:<desired version>` with
+`health_check_protocol === "acp"`; a copy that installed but does not speak ACP
+leaves the row short of `ready`, and a `ready` row whose healthy copy has
+disappeared is requeued for another health check rather than trusted. That same
+transaction is what activates the version for Agents: under `FOR UPDATE` it
+writes `state = 'ready'` plus `installed_version`, repoints
+`agent_runtime_profiles.runtime_installation` from `managed:pending` (and from
+the previous `managed:<version>` for a default Profile) to the new copy, and
+records one `host_runtime_changes` row only when the version actually changed.
+The previous version directory stays on disk under the daemon's one-previous
+rule, so `POST .../installations/opencode/rollback` remains the undo.
+
+**Where the artifact comes from differs by host kind.**
+`runtimeProbes.ts`'s `resolveDistribution(spec, hostKind)` returns
+`SERVER_OPENCODE_RELEASE` — the release-pinned archive and sha256 in
+`runtimeAdapters/opencodeRelease.ts` — for the built-in host's OpenCode, and
+the ACP registry entry for every other host/runtime pair. A probe with no host
+kind named means `"remote"`, so only the Server Host's own install path sees
+the pin.
+
 Install, upgrade, rollback and removal are recorded in
 `host_runtime_changes` and listed on the Updates page
-(`GET /api/v1/hosts/runtime-changes`); the host's own report stays the
+(`GET /api/v1/hosts/runtime-changes`); `hosts/usageService.ts`'s
+`recordHostRuntimeChange` is the one writer, used by the routes and by the
+provisioner's own completion transaction alike. The host's own report stays the
 authority on what is installed now.
+
+**Installation readiness gates the Server Runtime only.** A route candidate is
+admitted only when its Profile's runtime installation is healthy *on the
+built-in host* (`routing/repository.ts`'s `hostInstallationReady` short-circuits
+for any other host kind). A paired Host's runtime lifecycle belongs to its
+owner, not to the control plane: nothing here knows when they will install or
+upgrade a copy, and refusing a Profile because the machine is currently offline
+or a version behind would make routing guess at someone else's machine. The
+cost of that asymmetry is explicit — a Profile naming a `managed:x` copy the
+paired Host does not have passes admission and fails at launch, where the host
+itself answers.
 `GET /api/v1/hosts/runtime-adapters` also exposes each adapter's current
 registry version. The Host card compares it with the installed package and
 shows its compact CLI upgrade control only while they differ; neither internal
@@ -827,7 +787,7 @@ package version is exposed in that UI.
 The stable HOME protects files, not a vendor guarantee that older binaries can
 read newer session formats.
 
-**Subscription quota.** `usage_probe { adapter_type, installation, login,
+**Subscription quota.** `usage_probe { runtime_key, installation, login,
 timeout_seconds }` asks a host what one copy has left; the daemon reads that
 copy's own login and answers `usage_probe_result { quota }` — percentages,
 reset text, and a reason when it could not read one. Never the credential.
@@ -839,7 +799,7 @@ than launching a CLI to learn nothing. The control plane caches the answer in
 `host_runtime_usage`, refreshes every three hours, folds in the live reading a
 finished Run carries back, and shows it beside the copy on the host card.
 `GET /api/v1/hosts/:hostId/usage` is a cache read; `POST
-.../installations/:adapterType/:installation/usage` is the probe.
+.../installations/:runtimeKey/:installation/usage` is the probe.
 
 What a dispatch may choose is decided where dispatch is validated — the
 admission resolves the backend and refuses an unusable one, so the caller
@@ -940,15 +900,15 @@ file holds several accounts declares `accounts_format` in its login spec
 copy's `accounts` as provider ids and credential kinds (`api`, `oauth`) and
 never reads past the `type` field. The host card shows such a copy as
 `own · 1.18 · 2 accounts` with the names on hover, its login as **Add
-account** and its logout as **Remove account**, and its Model source's ambient
-option as "Agent-managed (2 accounts)"; a single-account CLI keeps
+account** and its logout as **Remove account**; a single-account CLI keeps
 **Log in / Log in again** (a login replaces the account) and gains **Log out**
 while logged in.
 
 Enabling a registry agent (`modules/acpAgents`, instance admin) publishes a
 dynamic adapter `acp_<id>` (`runtimeAdapters/dynamicSpecs.ts`) whose command
 is its adapter type and whose only copies are managed ones
-(`remote_host_only`, low trust, `model_provider_mode: "none"`). Every process
+(`remote_host_only`, low trust, `credential_mode: "cli_profile"`, so
+`supportsRuntimeBackendMode` admits only `runtime_native`). Every process
 reloads the enabled set at startup and every 60s. Disabling is refused (409)
 while any host still reports a copy (`GET /api/v1/acp-agents` lists
 `installed_on`), so nothing is orphaned on a machine and no pinned thread
@@ -963,18 +923,11 @@ picker that is one list, the ACP registry — nothing is shown above it as a
 default: the builtin CLIs are ordinary registry entries there (mapped through
 the spec's `registry_id`) and offer **Install** like any enabled agent. The card does not repeat the raw PATH runtime
 inventory above this list (and does not surface the daemon's Git utility as an
-Agent). The host×adapter **Model source** is rendered inside that same Agent
-row rather than in a disconnected backend grid: adapters with a supported
-ModelProvider binding get a selector whose ambient option reads **Agent-managed
-account**; generic registry Agents such as Cursor remain visible and state
-**Agent-managed · no Rainver override**, because ACP authentication does not
-describe how Rainver should inject an arbitrary ModelProvider into the Agent's
-config. This describes Rainver's integration boundary, not whether the Agent's
-own product settings support BYOK. Agent name, copies, login actions and Model
-source share one compact row; copy controls scroll horizontally if the viewport
-cannot hold them rather than turning every normal desktop row into two lines.
-Login remains per installation while Model source remains per host×adapter;
-the visual grouping does not collapse those two authority scopes. The
+Agent). The card presents Agent copies and host-local install/login state; it
+has no Host-level ModelProvider selector or default. Backend selection belongs
+to the Agent's Runtime Profile, and the runtime registry determines whether
+that Profile may use a provider-backed mode. Login remains per installation
+and is not a Host-wide ModelProvider default. The
 picker lazily reads the registry for every host owner: search results remain
 visible while installing and after installation, with explicit
 **Installing…** and **Installed** states. A not-yet-enabled entry offers one
@@ -986,7 +939,8 @@ the picker never sends an arbitrary registry distribution directly to the
 daemon. A non-admin host owner sees only the entries that need no enabling —
 the builtin CLIs and already-enabled agents. No agent is labelled "built-in": the builtin
 CLIs and registry agents differ only in server-side capability (provider
-binding, subagent lockdown, usage), which is not a host concern.
+binding and usage projections), which is not a Host concern. The Host owns
+ACP launch and process lifecycle; the server owns policy and tool authority.
 
 The instance admin's **ACP registry** panel on Instance Settings
 (`modules/instance_settings/AcpRegistryPanel`) is the instance-wide management
@@ -1090,6 +1044,16 @@ Location branch/head/dirty/readiness). A remote Location omitted from a
 heartbeat is marked `execution_ready = false`. On socket close, the host is
 marked `offline` immediately; Host liveness remains distinct from Location
 readiness.
+A `hello` reporting a daemon older than `MIN_HOST_DAEMON_VERSION`
+(`hosts/daemonCompatibility.ts`, currently `0.2.0` — the release that renamed
+`adapter_type` to `runtime_key` on the wire) is refused with
+`daemon_outdated`: the reported version is recorded and the host stays offline
+rather than accepting Runs an older daemon would fail one at a time, so a
+paired host must update before it can execute again. The refused daemon
+recognises that close (`isOutdatedDaemonClose` in `commands/run.ts`), logs the
+update instruction once and retries on a 15-minute floor rather than the
+ordinary ≤30s backoff, so an un-updated host does not re-record its version
+every half minute; its registration stays valid, unlike revocation.
 Heartbeat staleness (`HEARTBEAT_STALE_MS`, 45s) is computed at read time in
 `PgHostRepository`, not swept by a background job — a host that dies without
 closing its socket reports offline the next time anyone lists hosts.
@@ -1137,12 +1101,11 @@ absolute path — lazy, ≤500 entries, directories only), `workspace_register`
 (runs the daemon's own `workspace add` validation and registration, so
 terminal and UI produce identical state), and `workspace_forget` (drops the
 local path mapping after a server-side unregister; offline daemons keep it and
-`workspace list` shows the divergence). `hosts.default_adapter_type` is the
-owner's preferred CLI on this machine, set from the Command Center host card
-(`POST /hosts/:hostId/default-adapter`, validated against reported
-installations): auto-provisioned Assistant backends, execution-target adapter
-ordering, and dispatch-option defaults all read it, with the built-in
-OpenCode-first ordering as the null fallback.
+`workspace list` shows the divergence). Hosts do not store a preferred Agent
+runtime: the selected AgentRuntimeProfile determines the runtime, while the
+execution-target picker uses the built-in Server Runtime as its product
+default (found by `host_kind === 'server'`, not by its name) and requires
+explicit selection for paired Hosts.
 
 Files & Code uses a separate bounded pull on the same socket: `folder_read`
 (server → daemon, Location id + relative path + Folder protection flag) and
@@ -1353,38 +1316,39 @@ the declared role, which is what lets settlement match
 `tasks.required_outputs_json` and close the Task. A declaration whose file
 never arrived is reported into the Task's own stream rather than dropped.
 
-## No server-brokered Runtime Context for a remote run (D1)
+## Runtime Context Delivery through ACP
 
-`RunOrchestrationService.prepareRuntimeContext` and `enforceRuntimePolicy`
-both branch on `hostKind`: a remote run skips the Runtime Context Gateway
-entirely (no retrieval, no provider/model resolution — planning a
-Delivery would fail outright anyway, since there is no bound provider to
-resolve a default model from), and never has its
-`required_sandbox_level` escalated past the
-dispatch endpoint's `none` (`resolveSandboxLevelForRuntime` is server-host-only
-policy for a workspace the server itself provisions). The daemon runs the
-vendor CLI bare, auto-approving edits/commands in the workspace
-(trusted-host default — the user reviews the returned diff instead).
+Every Agent Run, on either the built-in Server Host or a paired Host, passes
+through the server-owned Runtime Context Gateway. The Gateway authorizes,
+plans and records the Delivery; orchestration projects its semantic sections
+into ACP's single user-prompt channel. ACP does not expose a distinct system
+message role, so the projection labels authoritative Agent/task instructions,
+reference data and the current user input. Those labels do not replace
+server-side authorization: live tools and side effects still pass through the
+Run-scoped gateway and policy checks. Runtime Context does not grant the daemon
+additional filesystem access or change the Host trust model.
+
+For a persistent HostThread, the Runtime Context event cursor follows the same
+opaque ACP vendor session id. When the session and context binding disagree,
+or the binding rotates with changed authority, orchestration starts a fresh
+ACP session rather than resuming stale transcript state. A threadless Run gets
+a full Delivery and does not persist an unused cursor.
 
 ## Dispatch: the runtime decides, not the machine
 
 Every `local_cli` runtime is dispatched to a host daemon —
-`dispatchesToHostDaemon(adapter_type)` (`runs/runRemoteness.ts`) is the one
+`dispatchesToHostDaemon(runtime_key)` (`runs/runRemoteness.ts`) is the one
 predicate, and it asks about the runtime, not the host. The built-in host is a
 daemon like any other, so a CLI Run on a server Location goes over the same
-WebSocket a paired machine's does. Every other executor family stays in-process
-on the server, because there is no subprocess to hand it to: `model_api` is an
-API call this server makes.
+WebSocket a paired machine's does. Bounded ProviderTask calls remain
+Server-owned invocations and are not Agent runtime executors.
 
-That distinction decides more than where a process starts. A Run handed to a
-daemon gets **no server-brokered Runtime Context** — no retrieval, no
-Invocation Delivery, no provider/model resolution — and pulls what it needs
-through the `rainver` command in its work surface; **no server-side CLI
-continuity**, because the vendor session in its Agent profile is the
-continuity; **no sandbox-level escalation**, because the daemon builds the
-namespace from the dispatch's `isolation` policy; and **no Run Exchange**,
-because that is a directory pair the server stages and reads back. A Run that
-executes in-process keeps all four, since nothing else can supply them.
+That distinction decides more than where a process starts. The Server prepares
+Runtime Context Delivery and the permission snapshot, while the daemon owns
+runtime launch, local paths and namespace construction. A daemon Run's tools
+are reached through the `rainver` work surface, separately from its prompt
+context; the daemon uploads diffs/output for Server-side materialization. The
+server-local CLI Run Exchange is not used by the current ACP Agent path.
 `hostKind` is left meaning only *which machine*. It decides where a Run's
 **ModelProvider** spend is checked, not whether: the Run executor checks a
 server-host Run's recorded provider before it starts, and a daemon Run on
@@ -1419,6 +1383,19 @@ rather than accepting it silently — a config blob written through another
 route still carries it harmlessly, because there is no reader. Granting `install` through the
 product needs an authorization surface — ADR 0017 puts egress in the Exposure
 row — and that is in the deferred register.
+
+**The same ownership fact sets routing's effective trust for a paired Host.**
+A Run whose responsible user is that Host's `owner_user_id` counts as at least
+`medium` (`routing/repository.ts`'s `effectiveTrustLevel`, reading the boolean
+`host_dispatch_permitted` already computed), so the product-default
+`medium`-risk Agent routes to its owner's own machine; a Run there by anyone
+else keeps the runtime baseline and is refused `execution_host_not_permitted`
+first. The built-in host's `medium` is its per-Run namespace, a different
+control for the same level. Neither reaches `high`, so `high`/`critical`-risk
+Agents have no candidate on either host. Owner trust says who bears the risk —
+it is not a containment claim, and a paired host still spawns natively with no
+namespace (B62, ADR 0016 §3 and its 2026-09-21 owner-trust amendment; the
+table is in `architecture/ROUTING.md`, "Effective trust").
 
 **Capacity.** `HostConnectionRegistry.dispatchLaunch` takes the built-in host's
 cap and queues past it, releasing a slot on every path that ends a Run — a
@@ -1773,13 +1750,16 @@ Three things stopped holding at once. The behaviours are the *model's*, and the
 verdict carried no model, so a pass measured on one model spoke for every model
 that copy could select. One sample of a non-deterministic runtime is weak
 evidence for a permanent verdict. And the strongest question — will it write
-outside what it was given — became structural under ADR 0016: the daemon binds
-the workspace and nothing else, so a behaviour test now stood in front of a
-boundary that already held, measuring politeness while reading like a
-guarantee.
+outside what it was given — cannot be answered by a behavioral probe. Only the
+built-in strict Host provides per-Run namespace containment; a trusted paired
+Host runs natively under its owner's OS permissions and has no namespace
+containment. Removing the probe does not imply filesystem confinement; the
+execution Host trust mode is the boundary (B62 and
+`SECURITY_AND_ACCESS_BOUNDARIES.md` §10).
 
-What contains a CLI Run is the host's namespace, its egress profile and
-ADR 0008's credential channel. Fixed verification recipes keep using
+Filesystem containment follows the execution Host trust mode as described
+above. Provider-bound calls use their separately authorized egress profile
+and ADR 0008's credential channel. Fixed verification recipes keep using
 `command_run`; when the Run uses a managed installation, its adapter and
 installation identity travel with that frame so the same namespace binds the
 versioned executable tree.

@@ -2141,24 +2141,14 @@ export interface Board {
 
 export interface TaskRunCreateBody {
   agent_id?: string | null
+  runtime_profile_id?: string
   mode?: string
   run_type?: string
   session_id?: string | null
   workspace_location_id?: string | null
   project_id?: string | null
   project_folder_id?: string | null
-  adapter_type?: string
-  /** Remote dispatch only: which copy of the runtime on the host (`own` or `managed:<version>`); a thread keeps its first. */
-  installation?: string
   thread_id?: string | null
-  /**
-   * Remote dispatch only. Absent means the thread's own backend (or the Host ×
-   * adapter default on its first message); an explicit `null` means the
-   * machine's own login for this dispatch. The two are read by key presence,
-   * not truthiness — omitting the field is not the same as sending null.
-   */
-  model_provider_id?: string | null
-  model?: string | null
   timeout_ms?: number | null
   task_title?: string | null
   prompt?: string | null
@@ -2180,7 +2170,7 @@ export interface RunResolvedModel {
   provider_name: string | null
   provider_type: string | null
   model: string | null
-  source: 'request' | 'runtime_profile' | 'agent_default' | 'runtime_default' | 'space_default' | 'host_binding' | 'none'
+  source: 'request' | 'runtime_profile' | 'agent_default' | 'runtime_default' | 'space_default' | 'none'
   used_by_adapter: boolean
   adapter_model_support: 'uses_model' | 'not_applicable' | 'unsupported' | 'unknown'
   disclosure_note?: string | null
@@ -2200,8 +2190,14 @@ export interface RunUsage {
 export interface Run {
   id: string
   space_id: string
-  agent_id: string
-  agent_version_id: string
+  /**
+   * Null for a `provider_task` Run: a bounded Server-side model call has no
+   * Agent, AgentVersion or runtime snapshot (ADR: Run.execution_kind).
+   */
+  agent_id: string | null
+  agent_version_id: string | null
+  /** Which of the two durable Run shapes this is; the read model always sets it. */
+  execution_kind: 'agent' | 'provider_task'
   run_role: 'execution' | 'coordinator'
   requested_runtime_profile_id?: string | null
   selected_runtime_profile_id?: string | null
@@ -2234,7 +2230,7 @@ export interface Run {
   error_json: Record<string, unknown> | null
   output_json: Record<string, unknown> | null
   usage: RunUsage | null
-  selected_adapter_type?: string | null
+  selected_runtime_key?: string | null
   capability_id?: string | null
   capabilities_json?: string[]
   selected_model_provider_id?: string | null
@@ -3045,10 +3041,10 @@ export interface AgentOut {
   source_template_id: string | null
   source_template_version_id: string | null
   model: AgentModelSummary | null
-  // Effective runtime adapter and whether it needs a space model provider.
-  // CLI runtimes manage their own model/login and require no provider.
-  adapter_type: string | null
-  requires_model_provider: boolean
+  // Effective runtime adapter. Every ACP runtime manages its own account or
+  // takes an optional Rainver-proxied Provider binding per Profile, so there
+  // is no Agent-level "needs a provider" flag to read.
+  runtime_key: string | null
   system_prompt: string | null
   created_at: string
   updated_at: string
@@ -3059,17 +3055,14 @@ export interface AgentVersionOut {
   agent_id: string
   space_id: string
   version_label: string
-  model_provider_id: string | null
-  model_name: string | null
   system_prompt: string | null
   prompt_provenance_json: Record<string, unknown> | null
-  model_config_json: Record<string, unknown>
-  runtime_config_json: Record<string, unknown>
+  risk_level: 'low' | 'medium' | 'high' | 'critical'
+  max_run_time_seconds: number
   context_policy_json: Record<string, unknown>
   memory_policy_json: Record<string, unknown>
   capabilities_json: unknown[]
   tool_permissions_json: Record<string, unknown>
-  runtime_policy_json: Record<string, unknown>
   tool_policy_json: Record<string, unknown>
   output_policy_json: Record<string, unknown>
   schedule_config_json: Record<string, unknown>
@@ -3129,11 +3122,10 @@ export interface AgentTemplateVersionOut {
   template_id: string
   version: string
   system_prompt: string | null
-  model_config_json: Record<string, unknown>
   context_policy_json: Record<string, unknown>
   memory_policy_json: Record<string, unknown>
   tool_policy_json: Record<string, unknown>
-  runtime_policy_json: Record<string, unknown>
+  execution_constraints: { risk_level: 'low' | 'medium' | 'high' | 'critical'; max_run_time_seconds: number }
   output_policy_json: Record<string, unknown>
   schedule_defaults_json: Record<string, unknown>
   output_schema_json: Record<string, unknown>
@@ -3147,15 +3139,13 @@ export interface AgentConfigUpdateBody {
   name?: string | null
   description?: string | null
   system_prompt?: string | null
-  model_provider_id?: string | null
-  model_name?: string | null
-  model_config_json?: Record<string, unknown> | null
-  runtime_config_json?: Record<string, unknown> | null
   context_policy_json?: Record<string, unknown> | null
   memory_policy_json?: Record<string, unknown> | null
+  tool_policy_json?: Record<string, unknown> | null
   output_policy_json?: Record<string, unknown> | null
   schedule_config_json?: Record<string, unknown> | null
   output_schema_json?: Record<string, unknown> | null
+  execution_constraints?: { risk_level?: 'low' | 'medium' | 'high' | 'critical'; max_run_time_seconds?: number }
 }
 
 export interface CreateAgentFromTemplateBody {
@@ -3163,17 +3153,14 @@ export interface CreateAgentFromTemplateBody {
   space_id?: string | null
   name?: string | null
   description?: string | null
-  default_model_provider_id?: string | null
-  default_model?: string | null
-  adapter_type?: string | null
-  runtime_config_json?: Record<string, unknown> | null
-  model_config_json?: Record<string, unknown> | null
+  tool_policy_json?: Record<string, unknown> | null
   schedule_config_json?: Record<string, unknown> | null
   system_prompt?: string | null
   context_policy_json?: Record<string, unknown> | null
   memory_policy_json?: Record<string, unknown> | null
   output_policy_json?: Record<string, unknown> | null
   output_schema_json?: Record<string, unknown> | null
+  execution_constraints?: { risk_level?: 'low' | 'medium' | 'high' | 'critical'; max_run_time_seconds?: number }
 }
 
 export interface AgentCreateBody {
@@ -3182,24 +3169,15 @@ export interface AgentCreateBody {
   description?: string | null
   role_instruction?: string | null
   system_prompt?: string | null
-  default_model_provider_id?: string | null
-  default_model?: string | null
-  adapter_type?: string | null
-  model_config_json?: Record<string, unknown> | null
-  runtime_config_json?: Record<string, unknown> | null
   context_policy_json?: Record<string, unknown> | null
   memory_policy_json?: Record<string, unknown> | null
   capabilities_json?: unknown[] | null
   tool_permissions_json?: Record<string, unknown> | null
-  runtime_policy_json?: Record<string, unknown> | null
   tool_policy_json?: Record<string, unknown> | null
   output_policy_json?: Record<string, unknown> | null
   schedule_config_json?: Record<string, unknown> | null
   output_schema_json?: Record<string, unknown> | null
-  execution_host_id?: string | null
-  workspace_location_id?: string | null
-  workspace_mode?: 'location' | 'managed' | null
-  runtime_installation?: string | null
+  execution_constraints?: { risk_level?: 'low' | 'medium' | 'high' | 'critical'; max_run_time_seconds?: number }
 }
 
 export interface AgentUpdateBody {
@@ -3208,8 +3186,6 @@ export interface AgentUpdateBody {
   role_instruction?: string | null
   status?: string
   system_prompt?: string | null
-  default_model_provider_id?: string | null
-  default_model?: string | null
 }
 
 export interface RunCreateBody {
@@ -3223,7 +3199,7 @@ export interface RunCreateBody {
   scheduled_at?: string | null
   parent_run_id?: string | null
   runtime_profile_id?: string | null
-  adapter_type?: string | null
+  runtime_key?: string | null
   capability_id?: string | null
   capabilities_json?: string[]
   model_provider_id?: string | null
@@ -3349,18 +3325,19 @@ export type {
   ConversationWorkspaceMode,
   HostCapabilities,
   HostExecutionTarget,
-  HostExecutionTargetAdapter,
+  HostExecutionTargetRuntime,
   HostExecutionTargetLocation,
   HostExecutionTargetsResponse,
   HostRuntimeChange,
+  HostRuntimeProvisioningStatus,
   HostRuntimeUsage,
   RuntimeAuthMethod,
   RuntimeInstallation,
-  RuntimeOptionChoice,
   RuntimeOptions,
   ManagedWorkspaceHeartbeat,
 } from '@rainver/protocol'
 export type { AgentRuntimeProfileOut, AgentRuntimeProfileCreateBody, AgentRuntimeProfileUpdateBody } from '@rainver/protocol'
+export type { SpaceAgentRuntimeDefaultOut, SpaceAgentRuntimeDefaultWrite } from '@rainver/protocol'
 
 export interface Host {
   id: string
@@ -3375,7 +3352,6 @@ export interface Host {
   platform: string | null
   arch: string | null
   daemon_version: string | null
-  default_adapter_type?: string | null
   /** Explicit proxy address for this host; null means the instance setting or a derived one applies. */
   provider_proxy_base_url?: string | null
   /** What a dispatched run will actually use, resolved server-side. */
@@ -3406,7 +3382,7 @@ export interface HostThread {
   agent_id: string | null
   project_folder_id: string | null
   host_id: string
-  adapter_type: string
+  runtime_key: string
   runtime_installation?: string
   vendor_session_id: string | null
   last_run_id: string | null
@@ -3417,9 +3393,9 @@ export interface HostThread {
   updated_at: string
 }
 
-/** control-center-phase2-plan.md P3 (C6): a `GET /hosts/runtime-adapters` row. */
-export interface HostRuntimeAdapterOption {
-  adapter_type: string
+/** ACP runtime definition information needed to present and manage an installation. */
+export interface HostRuntimeDefinitionOption {
+  runtime_key: string
   display_name: string
   command: string
   /** ACP runtime replatform P3: the vendor binary a host's capability probe actually reports (may differ from `command`). */
@@ -3431,24 +3407,12 @@ export interface HostRuntimeAdapterOption {
   latest_managed_version?: string | null
   /** Whether a managed copy reports a distinct bundled vendor CLI version. */
   reports_managed_cli_version?: boolean
-  /** Whether a ModelProvider can be bound to it; false for a registry agent, which runs on the copy's own login only. */
-  provider_binding?: boolean
+  /** Whether the runtime contract admits `runtime_native` — the copy's own login. */
+  supports_runtime_native: boolean
+  /** Whether the runtime contract admits `model_provider` — a Rainver-proxied Provider binding. */
+  supports_model_provider: boolean
   /** Which ModelProvider endpoint it speaks — the `<provider_api>_base_url` a binding needs. */
   provider_api?: 'claude_compatible' | 'openai_compatible' | null
-}
-
-/**
- * Which model backend a host's runtime adapter runs against by default. No
- * binding for an (host, adapter) pair means runs use the machine's own login
- * state, which stays the default.
- */
-export interface HostRuntimeProviderBinding {
-  host_id: string
-  adapter_type: string
-  model_provider_id: string
-  /** null = the provider's own default model. */
-  model: string | null
-  updated_at: string
 }
 
 export interface ProjectFolderExecutionConfig {
@@ -4117,7 +4081,7 @@ export interface HomeJobQueueStatusSection {
 
 export interface HomeRuntimeStatusSection {
   real_adapters_configured_count: number
-  configured_adapter_types: string[]
+  configured_runtime_keys: string[]
   message: string
 }
 

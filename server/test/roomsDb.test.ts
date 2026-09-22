@@ -25,6 +25,7 @@ import { PgRoomRepository, type RoomAgentMemberRecord } from "../src/modules/roo
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { AgentGroupRunService } from "../src/modules/agentGroups/service.js";
 import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups/lifecycleProjector.js";
+import { resolveAgentDelegationToolBinding, runAgentRoomToolCall } from "../src/modules/runs/managedAgentDelegationTools.js";
 import {
   ROOM_DELEGATION_COMPLETION_RETRY_JOB,
   registerRoomDelegationCompletionRetryHandler,
@@ -206,7 +207,7 @@ beforeEach(async () => {
        capabilities_json, last_heartbeat_at, created_at, updated_at
      ) VALUES (
        'host-1', NULL, 'machine-1', 'server', 'server', 'server', 'online',
-       '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true}]}}'::jsonb,
+       '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true,"health_check_protocol":"acp"}],"opencode":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true,"health_check_protocol":"acp"}]}}'::jsonb,
        $1, $1, $1
      )`,
     [now],
@@ -247,15 +248,31 @@ beforeEach(async () => {
     // the seed reads as somebody's own work and is deliberately not
     // overwritten.
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt,
-       model_config_json, runtime_config_json, context_policy_json,
-       memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, follows_seed_key, created_at
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       risk_level,
+       follows_seed_key,
+       created_at
      ) VALUES (
-       'version-1', 'agent-1', 'space-1', 'v1', 'Coordinate the Room.',
-       '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-       '[]'::jsonb, '{}'::jsonb, '{}'::jsonb,
-       'agent_template.personal_assistant.system', $1
+       'version-1',
+       'agent-1',
+       'space-1',
+       'v1',
+       'Coordinate the Room.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       'low',
+       'agent_template.personal_assistant.system',
+       $1
      )`,
     [now],
   );
@@ -274,17 +291,57 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, execution_host_id,
-       workspace_mode, runtime_installation, runtime_config_json,
-       runtime_policy_json, enabled, is_default, created_at, updated_at
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
      ) VALUES (
-       'runtime-cli', 'space-1', 'agent-1', 'Subscription',
-       'claude_code', 'host-1', 'managed', 'managed:1.0.0', '{}'::jsonb, '{}'::jsonb,
-       true, true, $1, $1
+       'runtime-cli',
+       'space-1',
+       'agent-1',
+       'Subscription',
+       'claude_code',
+       'runtime_native',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       true,
+       $1,
+       $1
      )`,
     [now],
   );
 });
+
+async function dispatchQueuedRoomRuns(runIds: readonly string[]): Promise<void> {
+  const repository = new PgRunRepository(db.pool!);
+  const routing = new PgRouteDecisionRepository(db.pool!);
+  for (const runId of runIds) {
+    const run = await repository.getAgentRun("space-1", runId);
+    if (!run) throw new Error(`Room Agent Run '${runId}' disappeared before dispatch`);
+    if (run.status !== "queued") continue;
+    await routing.routeRun(run);
+    await repository.markRunRunning({
+      run_id: runId,
+      space_id: "space-1",
+      started_at: new Date().toISOString(),
+    });
+  }
+}
 
 /**
  * A conversation in a Room, as a fixture.
@@ -310,13 +367,25 @@ async function seedConversation(
   await seedRoomManager(db.pool, { space: scope.spaceId, room: room.id, agent: "agent-1" });
   await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, execution_host_id,
-       workspace_location_id, workspace_mode, runtime_installation,
-       runtime_config_json, runtime_policy_json, enabled, is_default,
-       created_at, updated_at
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       execution_host_id,
+       workspace_location_id,
+       workspace_mode,
+       runtime_installation,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
      )
      SELECT gen_random_uuid()::varchar, member.space_id, member.agent_id,
-            'Conversation fixture CLI', 'claude_code', $3::varchar, $4::varchar, $5::varchar, 'managed:1.0.0',
+            'Conversation fixture CLI', 'claude_code', 'runtime_native', $3::varchar, $4::varchar, $5::varchar, 'managed:1.0.0',
             '{}'::jsonb, '{}'::jsonb, true, false, now(), now()
        FROM room_agent_members member
       WHERE member.space_id = $1 AND member.room_id = $2 AND member.status = 'active'
@@ -326,7 +395,7 @@ async function seedConversation(
              AND profile.enabled = true AND profile.execution_host_id = $3::varchar
              AND profile.workspace_mode = $5::varchar
              AND profile.workspace_location_id IS NOT DISTINCT FROM $4::varchar
-             AND profile.adapter_type = 'claude_code' AND profile.runtime_installation = 'managed:1.0.0'
+             AND profile.runtime_key = 'claude_code' AND profile.runtime_installation = 'managed:1.0.0'
         )`,
     [
       scope.spaceId,
@@ -353,7 +422,7 @@ async function seedConversation(
       runtime: {
         agent_id: "agent-1",
         runtime_profile_id: "runtime-cli",
-        adapter_type: "claude_code",
+        runtime_key: "claude_code",
         runtime_installation: "managed:1.0.0",
       },
     },
@@ -497,6 +566,7 @@ describe("Room workflow (real Postgres)", () => {
         const result = await service!.continueAfterDomainEventInTransaction(
           client, owner, created.room.id, conversation.id, failure(jobId));
         await client.query("COMMIT");
+        await dispatchQueuedRoomRuns(result.run_ids);
         // The turn this continuation started must finish before the next one
         // may begin; the pipeline's own retries are minutes apart.
         await db.pool.query(
@@ -529,12 +599,42 @@ describe("Room workflow (real Postgres)", () => {
     const conversation = await seedConversation(owner, created.room.id, "Main");
     await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
-         id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
-         runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
-       ) VALUES (
-         'runtime-api','space-1','agent-1','Managed API','model_api','provider-1','test-model',
-         '{}'::jsonb,'{}'::jsonb,true,false,now(),now()
-       )`,
+       id,
+       space_id,
+       agent_id,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       name,
+       runtime_key,
+       backend_mode,
+       model_provider_id,
+       model_name,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       'runtime-api',
+       'space-1',
+       'agent-1',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       'Managed API',
+       'opencode',
+       'model_provider',
+       'provider-1',
+       'test-model',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       false,
+       now(),
+       now()
+     )`,
     );
     const source = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Define the Project.",
@@ -543,6 +643,7 @@ describe("Room workflow (real Postgres)", () => {
         runtime_profile_id: "runtime-cli",
       }],
     });
+    await dispatchQueuedRoomRuns(source.run_ids);
     await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [source.run_ids[0]],
@@ -628,6 +729,7 @@ describe("Room workflow (real Postgres)", () => {
         expect.objectContaining({ content: "Define the Project.", role: "user" }),
       ]),
     });
+    await dispatchQueuedRoomRuns(first.run_ids);
     await db.pool.query(
       "UPDATE runs SET status='failed', ended_at=now(), updated_at=now() WHERE id = ANY($1::varchar[])",
       [first.run_ids],
@@ -642,6 +744,7 @@ describe("Room workflow (real Postgres)", () => {
     });
     expect(retried.message.id).toBe(first.message.id);
     expect(retried.run_ids).not.toEqual(first.run_ids);
+    await dispatchQueuedRoomRuns(retried.run_ids);
     await expect(db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM messages
         WHERE session_id=$1 AND metadata_json->>'continuation_proposal_id'=$2`,
@@ -709,7 +812,7 @@ describe("Room workflow (real Postgres)", () => {
        ) VALUES (
          'host-owner', 'user-1', 'machine-owner', 'Owner laptop', 'remote',
          'linux_native', 'online',
-         '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true}]}}'::jsonb,
+         '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true,"health_check_protocol":"acp"}]}}'::jsonb,
          $1, $1, $1
        )`,
       [now],
@@ -859,19 +962,17 @@ describe("Room workflow (real Postgres)", () => {
     expect(listed.items).toHaveLength(2);
   });
 
-  it("opens a Room with no eligible backend, and reports it on the explicit draft", async (ctx) => {
+  it("opens a Room with no paired backend and keeps its pending Server Assistant visible", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     await removeManagedAssistant();
     await db.pool.query("UPDATE model_provider_space_grants SET enabled = false WHERE space_id = 'space-1'");
-    // The built-in host is the other eligible backend now that no CLI runs on
-    // the server itself (ADR 0016), so "no backend" means no provider *and*
-    // no host with a logged-in copy.
+    // There is no paired-Host backend or provider grant. The new Agent still
+    // receives its default Server/OpenCode Profile; Phase 2 owns installing
+    // that Server runtime and reporting readiness.
     await db.pool.query("UPDATE hosts SET capabilities_json = '{}'::jsonb WHERE id = 'host-1'");
     const owner = { spaceId: "space-1", userId: "user-1" };
-    // Provisioning can fail, so it belongs on the action that needs it. Making
-    // it fail Room creation — and, once the mainline is created with the
-    // Project, Project creation — would put a Space's backend configuration in
-    // the way of making a Project at all.
+    // Room and draft creation remain independent of the Server runtime's
+    // installation lifecycle.
     const created = await service.createRoom(owner, { project_id: "project-1", title: "No backend yet" });
     await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM rooms WHERE space_id = 'space-1' AND id = $1",
@@ -880,11 +981,31 @@ describe("Room workflow (real Postgres)", () => {
 
     const draft = await service.createConversationDraft(owner, created.room.id);
     expect(draft.room_id).toBe(created.room.id);
-    // The draft remains visible even though manager provisioning is blocked;
-    // preflight reports the missing backend without losing the Conversation.
     await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant'",
-    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
+    )).resolves.toMatchObject({ rows: [{ count: "1" }] });
+    await expect(db.pool.query<{
+      runtime_key: string;
+      backend_mode: string;
+      execution_host_id: string | null;
+      runtime_installation: string | null;
+      enabled: boolean;
+      is_default: boolean;
+    }>(
+      `SELECT runtime_key, backend_mode, execution_host_id, runtime_installation, enabled, is_default
+         FROM agent_runtime_profiles
+        WHERE space_id = 'space-1'
+          AND agent_id = (
+            SELECT id FROM agents WHERE space_id = 'space-1' AND agent_kind = 'system_assistant'
+          )`,
+    )).resolves.toMatchObject({ rows: [{
+      runtime_key: "opencode",
+      backend_mode: "runtime_native",
+      execution_host_id: "host-1",
+      runtime_installation: "managed:pending",
+      enabled: true,
+      is_default: true,
+    }] });
     await expect(db.pool.query<{ count: string }>(
       "SELECT COUNT(*)::text AS count FROM sessions WHERE space_id = 'space-1' AND room_id = $1",
       [created.room.id],
@@ -1058,6 +1179,7 @@ describe("Room workflow (real Postgres)", () => {
       },
       async runSemanticExtraction() { return null; },
     };
+    await dispatchQueuedRoomRuns([runId]);
     await db.pool.query(
       `UPDATE runs
           SET status = 'waiting_for_review',
@@ -1178,6 +1300,7 @@ describe("Room workflow (real Postgres)", () => {
         runtime_profile_id: "runtime-cli",
       }],
     });
+    await dispatchQueuedRoomRuns(dispatched.run_ids);
     const groupId = dispatched.task_group_ids[0]!;
 
     await expect(groupService.getTimeline(member, groupId, { limit: 20, offset: 0 }))
@@ -1226,6 +1349,7 @@ describe("Room workflow (real Postgres)", () => {
         }],
       },
     );
+    await dispatchQueuedRoomRuns(first.run_ids);
     await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [first.run_ids[0]],
@@ -1361,12 +1485,42 @@ describe("Room workflow (real Postgres)", () => {
     const owner = { spaceId: "space-1", userId: "user-1" };
     await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
-         id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
-         runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
-       ) VALUES (
-         'runtime-api','space-1','agent-1','Managed API','model_api','provider-1','test-model',
-         '{}'::jsonb,'{}'::jsonb,true,false,now(),now()
-       )`,
+       id,
+       space_id,
+       agent_id,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       name,
+       runtime_key,
+       backend_mode,
+       model_provider_id,
+       model_name,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       'runtime-api',
+       'space-1',
+       'agent-1',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       'Managed API',
+       'opencode',
+       'model_provider',
+       'provider-1',
+       'test-model',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       false,
+       now(),
+       now()
+     )`,
     );
     const created = await service.createRoom(owner, {
       project_id: "project-1",
@@ -1422,12 +1576,42 @@ describe("Room workflow (real Postgres)", () => {
     const owner = { spaceId: "space-1", userId: "user-1" };
     await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
-         id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
-         runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
-       ) VALUES (
-         'runtime-focus','space-1','agent-1','Managed API','model_api','provider-1','test-model',
-         '{}'::jsonb,'{}'::jsonb,true,false,now(),now()
-       )`,
+       id,
+       space_id,
+       agent_id,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       name,
+       runtime_key,
+       backend_mode,
+       model_provider_id,
+       model_name,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       'runtime-focus',
+       'space-1',
+       'agent-1',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       'Managed API',
+       'opencode',
+       'model_provider',
+       'provider-1',
+       'test-model',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       false,
+       now(),
+       now()
+     )`,
     );
     const readable = randomUUID();
     const unreadable = randomUUID();
@@ -1532,12 +1716,42 @@ describe("Room workflow (real Postgres)", () => {
     });
     await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
-         id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
-         runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
-       ) VALUES (
-         'runtime-api','space-1','agent-1','Managed API','model_api','provider-1','test-model',
-         '{}'::jsonb,'{}'::jsonb,true,false,now(),now()
-       )`,
+       id,
+       space_id,
+       agent_id,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       name,
+       runtime_key,
+       backend_mode,
+       model_provider_id,
+       model_name,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       'runtime-api',
+       'space-1',
+       'agent-1',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       'Managed API',
+       'opencode',
+       'model_provider',
+       'provider-1',
+       'test-model',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       false,
+       now(),
+       now()
+     )`,
     );
     const created = await service.createRoom(owner, {
       project_id: "project-1",
@@ -1603,7 +1817,7 @@ describe("Room workflow (real Postgres)", () => {
     // capabilities. A Room allowance must not eliminate the only otherwise
     // valid runtime before even a simple conversation can start.
     const runs = new PgRunRepository(db.pool);
-    const queued = await runs.getRun("space-1", sent.run_ids[0]!);
+    const queued = await runs.getAgentRun("space-1", sent.run_ids[0]!);
     expect(queued).not.toBeNull();
     const routed = await new PgRouteDecisionRepository(db.pool).routeRun(queued!);
     expect(routed.runtime_profile_id).toBe("runtime-cli");
@@ -1640,6 +1854,7 @@ describe("Room workflow (real Postgres)", () => {
     // these grants exist. The same Agent, same Project, outside a Room, is
     // still bound by its own (empty) AgentVersion allowance.
     await expect(new PgRunRepository(db.pool).createQueuedRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -1707,6 +1922,7 @@ describe("Room workflow (real Postgres)", () => {
 
     // The turn ends the way a failed one does in production: the Run is failed
     // and its Host thread is no longer claimed by it.
+    await dispatchQueuedRoomRuns([sent.run_ids[0]!]);
     await db.pool.query(`UPDATE runs SET status = 'failed' WHERE id = $1`, [sent.run_ids[0]]);
     await db.pool.query(
       `UPDATE host_threads SET dispatch_lock_id = NULL, updated_at = now()
@@ -1790,6 +2006,7 @@ describe("Room workflow (real Postgres)", () => {
       [first.run_ids[0]],
     );
     const firstRuntime = firstRun.rows[0]!;
+    await dispatchQueuedRoomRuns([firstRuntime.id]);
     await db.pool.query(
       `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now()
         WHERE id = $1`,
@@ -1850,6 +2067,7 @@ describe("Room workflow (real Postgres)", () => {
         runtime_profile_id: "runtime-cli",
       }],
     });
+    await dispatchQueuedRoomRuns(memberTurn.run_ids);
     await seedConversationMessages(db.pool, {
       space: "space-1", session: conversation.id,
       messages: [{
@@ -2098,7 +2316,7 @@ describe("Room workflow (real Postgres)", () => {
     const runtimeProfile = await db.pool.query<{ id: string }>(
       `SELECT id FROM agent_runtime_profiles
         WHERE space_id='space-1' AND agent_id=$1 AND enabled=true
-          AND adapter_type != 'model_api'
+          AND runtime_key != 'opencode'
         ORDER BY is_default DESC, id ASC LIMIT 1`,
       [presetSpecialist!.agent_id],
     );
@@ -2117,7 +2335,7 @@ describe("Room workflow (real Postgres)", () => {
         runtime: {
           agent_id: presetSpecialist!.agent_id,
           runtime_profile_id: runtimeProfile.rows[0]!.id,
-          adapter_type: "claude_code",
+          runtime_key: "claude_code",
           runtime_installation: "managed:1.0.0",
         },
       },
@@ -2172,7 +2390,7 @@ describe("Room workflow (real Postgres)", () => {
        ) VALUES (
          'host-room-bound', 'user-1', 'machine-1', 'Room host', 'remote',
          'linux_native', 'online', now(),
-         '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true}]}}'::jsonb,
+         '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true,"health_check_protocol":"acp"}]}}'::jsonb,
          now(), now()
        );
        UPDATE workspace_locations
@@ -2183,20 +2401,25 @@ describe("Room workflow (real Postgres)", () => {
               workspace_location_id = 'location-1', runtime_installation = 'managed:1.0.0'
         WHERE id = 'runtime-cli'`,
     );
-    const agent = await new PgAgentRepository(db.pool)
-      .create({
+    const agentRepository = new PgAgentRepository(db.pool);
+    const agent = await agentRepository.create({
         spaceId: owner.spaceId,
         projectId: "project-1",
         userId: owner.userId,
         ownerUserId: owner.userId,
         name: "Remote Researcher",
         visibility: "private",
-        adapterType: "claude_code",
-        runtimePolicyJson: { default_adapter_type: "claude_code" },
-        executionHostId: "host-room-bound",
-        workspaceLocationId: "location-1",
-        runtimeInstallation: "managed:1.0.0",
+        riskLevel: "low",
       });
+    const [agentDefaultProfile] = await agentRepository.listRuntimeProfiles(owner.spaceId, agent.id);
+    if (!agentDefaultProfile) throw new Error("new Agent has no default Runtime Profile");
+    await agentRepository.updateRuntimeProfile(owner.spaceId, agent.id, agentDefaultProfile.id, {
+      runtimeKey: "claude_code",
+      executionHostId: "host-room-bound",
+      workspaceLocationId: "location-1",
+      workspaceMode: "location",
+      runtimeInstallation: "managed:1.0.0",
+    });
     await service.addAgent(owner, created.room.id, {
       agent_id: agent.id,
       share_private_with_member_ids: [member.userId],
@@ -2208,31 +2431,36 @@ describe("Room workflow (real Postgres)", () => {
         ORDER BY is_default DESC, id ASC LIMIT 1`,
       [agent.id],
     );
-    await db.pool.query(
-      `INSERT INTO agent_runtime_profiles (
-         id, space_id, agent_id, name, adapter_type, model_provider_id, model_name,
-         runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
-       ) VALUES (
-         'runtime-server-bypass', 'space-1', $1, 'Server fallback', 'model_api', 'provider-1',
-         'test-model', '{}'::jsonb, '{}'::jsonb, true, false, now(), now()
-       )`,
-      [agent.id],
-    );
-    const delegatedAgent = await new PgAgentRepository(db.pool)
-      .create({
+    const alternativeProfile = await agentRepository.createRuntimeProfile(owner.spaceId, agent.id, {
+      name: "Managed workspace alternative",
+      runtimeKey: "claude_code",
+      executionHostId: "host-room-bound",
+      workspaceMode: "managed",
+      runtimeInstallation: "managed:1.0.0",
+      backendMode: "runtime_native",
+      enabled: true,
+      isDefault: false,
+      actorUserId: owner.userId,
+    });
+    const delegatedAgent = await agentRepository.create({
         spaceId: owner.spaceId,
         projectId: "project-1",
         userId: owner.userId,
         ownerUserId: owner.userId,
         name: "Remote Delegate",
         visibility: "private",
-        adapterType: "claude_code",
-        runtimePolicyJson: { default_adapter_type: "claude_code" },
-        executionHostId: "host-room-bound",
-        workspaceLocationId: "location-1",
-        runtimeInstallation: "managed:1.0.0",
+        riskLevel: "low",
         roleInstruction: "Separate evidence from assumption.",
       });
+    const [delegatedDefaultProfile] = await agentRepository.listRuntimeProfiles(owner.spaceId, delegatedAgent.id);
+    if (!delegatedDefaultProfile) throw new Error("new delegated Agent has no default Runtime Profile");
+    await agentRepository.updateRuntimeProfile(owner.spaceId, delegatedAgent.id, delegatedDefaultProfile.id, {
+      runtimeKey: "claude_code",
+      executionHostId: "host-room-bound",
+      workspaceLocationId: "location-1",
+      workspaceMode: "location",
+      runtimeInstallation: "managed:1.0.0",
+    });
     await service.addAgent(owner, created.room.id, {
       agent_id: delegatedAgent.id,
       share_private_with_member_ids: [member.userId],
@@ -2245,7 +2473,7 @@ describe("Room workflow (real Postgres)", () => {
     await expect(service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Do not switch this specialist to the server.",
       recipient_segments: [{ recipient_agent_ids: [agent.id], content: "Use the server fallback." }],
-      backends: [{ agent_id: agent.id, runtime_profile_id: "runtime-server-bypass" }],
+      backends: [{ agent_id: agent.id, runtime_profile_id: alternativeProfile.id }],
     })).rejects.toMatchObject({ statusCode: 409 });
     const backend = {
       agent_id: agent.id,
@@ -2288,10 +2516,15 @@ describe("Room workflow (real Postgres)", () => {
     expect(new Set(
       firstRun.rows[0]!.permission_snapshot_json?.tool_grants?.map((grant) => grant.action_id) ?? [],
     )).toEqual(new Set(["authorization.request", ...ROOM_CONVERSATION_TOOL_ALLOWANCE]));
-    const firstRunRecord = await new PgRunRepository(db.pool).getRun("space-1", first.run_ids[0]!);
+    const firstRunRecord = await new PgRunRepository(db.pool).getAgentRun("space-1", first.run_ids[0]!);
     if (!firstRunRecord) throw new Error("host-bound Room Run was not persisted");
     await expect(new PgRouteDecisionRepository(db.pool).routeRun(firstRunRecord))
       .resolves.toMatchObject({ runtime_profile_id: profile.rows[0]!.id });
+    await new PgRunRepository(db.pool).markRunRunning({
+      run_id: first.run_ids[0]!,
+      space_id: "space-1",
+      started_at: new Date().toISOString(),
+    });
     const thread = await db.pool.query<{
       id: string;
       last_run_id: string;
@@ -2373,6 +2606,7 @@ describe("Room workflow (real Postgres)", () => {
       last_run_id: delegated.child_run_id,
       dispatch_lock_id: delegated.child_run_id,
     });
+    await dispatchQueuedRoomRuns([delegated.child_run_id!]);
     await db.pool.query(
       `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`,
       [delegated.child_run_id],
@@ -2402,10 +2636,15 @@ describe("Room workflow (real Postgres)", () => {
       `UPDATE runs SET model_override_json = jsonb_set(model_override_json, '{execution_mode}', '"conversation_lightweight.v1"') WHERE id = $1`,
       [second.run_ids[0]],
     );
-    const secondRunRecord = await new PgRunRepository(db.pool).getRun("space-1", second.run_ids[0]!);
+    const secondRunRecord = await new PgRunRepository(db.pool).getAgentRun("space-1", second.run_ids[0]!);
     if (!secondRunRecord) throw new Error("second host-bound Run was not persisted");
     await expect(new PgRouteDecisionRepository(db.pool).routeRun(secondRunRecord))
       .resolves.toMatchObject({ runtime_profile_id: profile.rows[0]!.id });
+    await new PgRunRepository(db.pool).markRunRunning({
+      run_id: second.run_ids[0]!,
+      space_id: "space-1",
+      started_at: new Date().toISOString(),
+    });
     expect(secondRun.rows[0]!.prompt).not.toContain("[Internal Project guidance");
     await db.pool.query(
       `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`,
@@ -2601,13 +2840,30 @@ describe("Room workflow (real Postgres)", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_versions (
-         id, agent_id, space_id, version_label, system_prompt, model_config_json,
-         runtime_config_json, context_policy_json, memory_policy_json, capabilities_json,
-         tool_permissions_json, runtime_policy_json, created_at
-       ) VALUES (
-         'version-2', 'agent-2', 'space-1', 'v1', 'Specialist.',
-         '{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb, $1
-       )`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       risk_level,
+       created_at
+     ) VALUES (
+       'version-2',
+       'agent-2',
+       'space-1',
+       'v1',
+       'Specialist.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       'low',
+       $1
+     )`,
       [now],
     );
     await db.pool.query("UPDATE agents SET current_version_id = 'version-2' WHERE id = 'agent-2'");
@@ -2618,22 +2874,78 @@ describe("Room workflow (real Postgres)", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
-         id, space_id, agent_id, name, adapter_type, runtime_config_json,
-         runtime_policy_json, enabled, is_default, created_at, updated_at
-       ) VALUES (
-         'runtime-cli-2', 'space-1', 'agent-2', 'Subscription', 'claude_code',
-         '{}'::jsonb, '{}'::jsonb, true, true, $1, $1
-       )`,
+       id,
+       space_id,
+       agent_id,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       name,
+       runtime_key,
+       backend_mode,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       'runtime-cli-2',
+       'space-1',
+       'agent-2',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       'Subscription',
+       'claude_code',
+       'runtime_native',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       true,
+       $1,
+       $1
+     )`,
       [now],
     );
     await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
-         id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
-         runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
-       ) VALUES (
-         'runtime-api','space-1','agent-1','Managed API','model_api','provider-1','test-model',
-         '{}'::jsonb,'{}'::jsonb,true,false,$1,$1
-       )`,
+       id,
+       space_id,
+       agent_id,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       name,
+       runtime_key,
+       backend_mode,
+       model_provider_id,
+       model_name,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       'runtime-api',
+       'space-1',
+       'agent-1',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       'Managed API',
+       'opencode',
+       'model_provider',
+       'provider-1',
+       'test-model',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       false,
+       $1,
+       $1
+     )`,
       [now],
     );
 
@@ -2653,6 +2965,7 @@ describe("Room workflow (real Postgres)", () => {
     // dispatch (this test's later delegation-completion continuation) can
     // claim the conversation's turn again — mirrors the pattern the
     // continueAfterProposal tests above already use.
+    await dispatchQueuedRoomRuns([managerRunId]);
     await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [managerRunId],
@@ -2677,6 +2990,7 @@ describe("Room workflow (real Postgres)", () => {
       [spawned.child_run_id],
     )).resolves.toMatchObject({ rows: [{ trust_mode: null }] });
 
+    await dispatchQueuedRoomRuns([spawned.child_run_id!]);
     await db.pool.query(
       "UPDATE runs SET status='succeeded', output_json=$2, ended_at=now(), updated_at=now() WHERE id=$1",
       [spawned.child_run_id, JSON.stringify({ summary: "Layered memory improves recall by 12%." })],
@@ -2728,13 +3042,30 @@ describe("Room workflow (real Postgres)", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_versions (
-         id, agent_id, space_id, version_label, system_prompt, model_config_json,
-         runtime_config_json, context_policy_json, memory_policy_json, capabilities_json,
-         tool_permissions_json, runtime_policy_json, created_at
-       ) VALUES (
-         'version-2', 'agent-2', 'space-1', 'v1', 'Specialist.',
-         '{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb, $1
-       )`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       risk_level,
+       created_at
+     ) VALUES (
+       'version-2',
+       'agent-2',
+       'space-1',
+       'v1',
+       'Specialist.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       'low',
+       $1
+     )`,
       [now],
     );
     await db.pool.query("UPDATE agents SET current_version_id = 'version-2' WHERE id = 'agent-2'");
@@ -2745,12 +3076,42 @@ describe("Room workflow (real Postgres)", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
-         id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
-         runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
-       ) VALUES (
-         'runtime-api','space-1','agent-1','Managed API','model_api','provider-1','test-model',
-         '{}'::jsonb,'{}'::jsonb,true,false,$1,$1
-       )`,
+       id,
+       space_id,
+       agent_id,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       name,
+       runtime_key,
+       backend_mode,
+       model_provider_id,
+       model_name,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       'runtime-api',
+       'space-1',
+       'agent-1',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       'Managed API',
+       'opencode',
+       'model_provider',
+       'provider-1',
+       'test-model',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       false,
+       $1,
+       $1
+     )`,
       [now],
     );
 
@@ -2781,26 +3142,61 @@ describe("Room workflow (real Postgres)", () => {
     });
     expect(spawned.child_run_id).toBeTruthy();
 
-    // The Manager explicitly waited on this delegation (agent.wait_for_results),
-    // unlike the sibling test above where it already replied and ended its turn.
-    await db.pool.query(
-      `UPDATE runs SET status='waiting_for_dependency', output_json=$2, updated_at=now() WHERE id=$1`,
-      [managerRunId, JSON.stringify({
+    // Simulate the Manager while its ACP invocation is active, including the
+    // route snapshot and attempt that real dispatch persists before exposing
+    // Agent tools.
+    await dispatchQueuedRoomRuns([managerRunId]);
+    const runs = new PgRunRepository(db.pool);
+    const managerRun = await runs.getAgentRun("space-1", managerRunId);
+    if (!managerRun) throw new Error("manager run not found");
+    const binding = await resolveAgentDelegationToolBinding(
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }),
+      managerRun,
+      { pool: db.pool },
+    );
+    if (!binding) throw new Error("agent room tool binding not found");
+    const waitResult = await runAgentRoomToolCall({
+      id: "wait-call-1",
+      name: "agent.wait_for_results",
+      arguments_json: JSON.stringify({
+        scope: "own_delegations",
+        reason: "Waiting on the specialist.",
+      }),
+    }, binding, managerRun);
+    expect(waitResult.modelResult).toMatchObject({
+      ok: true,
+      status: "waiting",
+      depends_on_run_ids: [spawned.child_run_id],
+      pending_run_ids: [spawned.child_run_id],
+    });
+
+    const pausedManager = await runs.getRun("space-1", managerRunId);
+    expect(pausedManager).toMatchObject({
+      status: "waiting_for_dependency",
+      output_json: {
         waiting_for_results: {
           status: "waiting",
-          scope: "run_ids",
+          scope: "own_delegations",
           reason: "Waiting on the specialist.",
-          resume_instruction: null,
           depends_on_run_ids: [spawned.child_run_id],
         },
-      })],
+      },
+    });
+    await expect(db.pool.query<{ status: string }>(
+      `SELECT status FROM run_attempts WHERE space_id='space-1' AND run_id=$1`,
+      [managerRunId],
+    )).resolves.toMatchObject({ rows: [{ status: "waiting_for_dependency" }] });
+    await db.pool.query(
+      `INSERT INTO run_execution_locks (run_id, locked_at, worker_id, job_id)
+       VALUES ($1, $2, 'manager-worker', NULL)`,
+      [managerRunId, now],
     );
 
+    await dispatchQueuedRoomRuns([spawned.child_run_id!]);
     await db.pool.query(
       "UPDATE runs SET status='succeeded', output_json=$2, ended_at=now(), updated_at=now() WHERE id=$1",
       [spawned.child_run_id, JSON.stringify({ summary: "Layered memory improves recall by 12%." })],
     );
-    const runs = new PgRunRepository(db.pool);
     const childRun = await runs.getRun("space-1", spawned.child_run_id!);
     if (!childRun) throw new Error("child run not found");
 
@@ -2810,9 +3206,29 @@ describe("Room workflow (real Postgres)", () => {
     }));
     await projector.markDelegatedRunTerminal(childRun);
 
-    // The pre-existing dependency-wait path resumed the Manager run instead.
+    // The child projector sees the durable waiter but must not enqueue it while
+    // the Manager's ACP invocation still owns its execution lock.
+    expect((await runs.getRun("space-1", managerRunId))?.status).toBe("waiting_for_dependency");
+    await db.pool.query("DELETE FROM run_execution_locks WHERE run_id=$1", [managerRunId]);
+    await projector.reconcileWaitingRun(pausedManager!);
+
+    // After the execution lock is released, recovery resumes the same Run and
+    // attempt with the completed result in its continuation prompt.
     const resumedManager = await runs.getRun("space-1", managerRunId);
-    expect(resumedManager?.status).toBe("queued");
+    expect(resumedManager).toMatchObject({
+      id: managerRunId,
+      status: "queued",
+      prompt: expect.stringContaining("Layered memory improves recall by 12%"),
+      output_json: {
+        waiting_for_results: { status: "resumed" },
+        waiting_for_results_resume: { resumed_at: expect.any(String) },
+      },
+    });
+    await expect(db.pool.query<{ status: string }>(
+      `SELECT status FROM run_attempts
+        WHERE space_id='space-1' AND run_id=$1 AND attempt_number=1`,
+      [managerRunId],
+    )).resolves.toMatchObject({ rows: [{ status: "queued" }] });
 
     // The new domain-event continuation must not also have fired for this
     // completion — that would duplicate the resume path above.
@@ -2840,13 +3256,30 @@ describe("Room workflow (real Postgres)", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_versions (
-         id, agent_id, space_id, version_label, system_prompt, model_config_json,
-         runtime_config_json, context_policy_json, memory_policy_json, capabilities_json,
-         tool_permissions_json, runtime_policy_json, created_at
-       ) VALUES (
-         'version-2', 'agent-2', 'space-1', 'v1', 'Specialist.',
-         '{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'{}'::jsonb,'{}'::jsonb, $1
-       )`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       risk_level,
+       created_at
+     ) VALUES (
+       'version-2',
+       'agent-2',
+       'space-1',
+       'v1',
+       'Specialist.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       'low',
+       $1
+     )`,
       [now],
     );
     await db.pool.query("UPDATE agents SET current_version_id = 'version-2' WHERE id = 'agent-2'");
@@ -2857,12 +3290,42 @@ describe("Room workflow (real Postgres)", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
-         id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,
-         runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
-       ) VALUES (
-         'runtime-api','space-1','agent-1','Managed API','model_api','provider-1','test-model',
-         '{}'::jsonb,'{}'::jsonb,true,false,$1,$1
-       )`,
+       id,
+       space_id,
+       agent_id,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       name,
+       runtime_key,
+       backend_mode,
+       model_provider_id,
+       model_name,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       'runtime-api',
+       'space-1',
+       'agent-1',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       'Managed API',
+       'opencode',
+       'model_provider',
+       'provider-1',
+       'test-model',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       false,
+       $1,
+       $1
+     )`,
       [now],
     );
 
@@ -2878,6 +3341,7 @@ describe("Room workflow (real Postgres)", () => {
       backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli"}],
     });
     const managerRunId = sent.run_ids[0]!;
+    await dispatchQueuedRoomRuns([managerRunId]);
     await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [managerRunId],
@@ -2897,6 +3361,7 @@ describe("Room workflow (real Postgres)", () => {
       instruction: "Investigate the working-memory question.",
     });
     expect(spawned.child_run_id).toBeTruthy();
+    await dispatchQueuedRoomRuns([spawned.child_run_id!]);
 
     // Simulate what a first delegate's own completion notification leaves
     // behind while it is mid-dispatch: a fresh, non-terminal run in this
@@ -2906,13 +3371,15 @@ describe("Room workflow (real Postgres)", () => {
     await db.pool.query(
       `INSERT INTO runs (
          id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-         session_id, created_at, updated_at, owner_user_id, visibility, access_level, model_override_json
+         session_id, created_at, updated_at, owner_user_id, visibility, access_level, model_override_json,
+         execution_kind, requested_runtime_profile_id, runtime_profile_selection_source
        ) VALUES (
          $1,'space-1','agent-1','version-1','agent','manual','queued','live',
-         $2,$3,$3,'user-1','private','full',$4::jsonb
-       )`,
+         $2,$3,$3,'user-1','private','full',$4::jsonb,
+         'agent','runtime-cli','explicit')`,
       [busyRunId, conversation.id, now, JSON.stringify({ chat_turn: { schema_version: "chat_turn.v1", user_id: "user-1" } })],
     );
+    await dispatchQueuedRoomRuns([busyRunId]);
 
     await db.pool.query(
       "UPDATE runs SET status='succeeded', output_json=$2, ended_at=now(), updated_at=now() WHERE id=$1",
@@ -2969,6 +3436,7 @@ describe("Room workflow (real Postgres)", () => {
     expect(stillNotPosted.rows[0]?.total).toBe("0");
 
     // The turn frees up.
+    await dispatchQueuedRoomRuns([busyRunId]);
     await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [busyRunId],
@@ -3366,11 +3834,28 @@ describe("Room workflow (real Postgres)", () => {
     // marks it, so it is detached from the seed by that act alone.
     await db.pool.query(
       `INSERT INTO agent_versions (
-         id, agent_id, space_id, version_label, system_prompt, model_config_json,
-         runtime_config_json, context_policy_json, memory_policy_json,
-         capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-       ) VALUES ($1, $2, 'space-1', 'v99', 'A prompt somebody wrote by hand',
-         '{}', '{}', '{}', '{}', '[]', '{}', '{}', now())`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       'space-1',
+       'v99',
+       'A prompt somebody wrote by hand',
+       '{}',
+       '{}',
+       '[]',
+       '{}',
+       now()
+     )`,
       [randomUUID(), secondManager],
     );
     await db.pool.query(
@@ -4197,11 +4682,7 @@ describe("Room workflow (real Postgres)", () => {
     const runIn = async (sessionId: string): Promise<string> => {
       const id = randomUUID();
       await db.pool!.query(
-        `INSERT INTO runs (
-           id, space_id, agent_id, agent_version_id, project_id, run_type, trigger_origin, status, mode,
-           session_id, instructed_by_user_id, created_at, updated_at, owner_user_id, visibility, access_level
-         ) VALUES ($1,'space-1','agent-1','version-1','project-1','agent','manual','succeeded','live',
-                   $2,'user-1',now(),now(),'user-1','space_shared','full')`,
+        `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, run_type, trigger_origin, status, mode, session_id, instructed_by_user_id, created_at, updated_at, owner_user_id, visibility, access_level, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, 'space-1', 'agent-1', 'version-1', 'project-1', 'agent', 'manual', 'succeeded', 'live', $2, 'user-1', now(), now(), 'user-1', 'space_shared', 'full', 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = 'space-1' AND p.agent_id = 'agent-1' AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = 'space-1' AND p.agent_id = 'agent-1' AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = 'space-1' AND p.agent_id = 'agent-1' AND p.is_default = TRUE))`,
         [id, sessionId],
       );
       return id;

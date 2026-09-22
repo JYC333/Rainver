@@ -3,7 +3,7 @@
 ## Purpose and source of truth
 
 System actions are the typed inventory of application capabilities that may be
-exposed through HTTP, managed-agent tools, internal jobs, or server-only calls.
+exposed through HTTP, ACP Agent tools, internal jobs, or server-only calls.
 They do not replace policy actions: a system action describes what can be
 invoked, while its `policy_action` identifies the mandatory enforcement gate.
 
@@ -47,34 +47,23 @@ plan):
   and denied policy decisions fail closed. It knows nothing about Runs, grants,
   or transports.
 - **`SystemActionDispatcher`** (`systemActions/systemActionDispatcher.ts`) is
-  the run-scoped layer every Agent-facing entry point actually calls. Given a
-  `RunRecord` and a request, it computes the Run's tool grants, builds the
-  gateway's executor map (via `registerModuleSystemActionExecutors` /
-  `executorRegistry.ts`, one registration function per owning module) and
-  policy enforcer, and normalizes gateway results/errors into one structured
-  tool-call shape. `dispatch()` and `listGrantedDefinitions()` are its call
-  surface; `ManagedAgentToolSurface` also reads its already-resolved
-  retrieval/delegation/generic/research bindings directly to assemble the
-  managed loop's tool set. The CLI tool surface and the managed loop both
-  call `dispatch`/`listGrantedDefinitions` directly and neither recomputes
-  grants or re-runs policy itself. Runtime delegation
+  the Run-scoped layer Agent-facing entry points call. Given a `RunRecord` and
+  a request, it computes the Run's tool grants, builds the gateway's executor
+  map (via `registerModuleSystemActionExecutors` / `executorRegistry.ts`, one
+  registration function per owning module) and policy enforcer, and
+  normalizes gateway results/errors into one structured tool-call shape.
+  `dispatch()` and `listGrantedDefinitions()` are its call surface. Runtime delegation
   materialization (Path B, below) is the one deliberate exception: it runs
   after the Run has already terminated, when a run-scoped in-flight dispatch
   is no longer meaningful, so it does not call `SystemActionDispatcher` at
   all — it independently checks the same grant snapshot and shares the
   schema and audit-event shape, but its own code is the dispatch path for
   that one case.
-- **`ManagedAgentToolSurface`** (`systemActions/managedAgentToolSurface.ts`)
-  is managed-loop-only: it constructs a `SystemActionDispatcher`, assembles
-  the retrieval/delegation/generic/research tool contributions it exposes,
-  and drives `executeManagedToolLoop`. It owns no dispatch or grant logic of
-  its own.
-
 HTTP routes continue to call their owning application services and
 `PolicyGateway` enforcement points directly; they do not go through
 `SystemActionDispatcher`. Server jobs may use internal/system-job actions.
 
-Local CLI Runs reach `SystemActionDispatcher` through a Run-scoped REST
+ACP Agent Runs reach `SystemActionDispatcher` through a Run-scoped REST
 surface: `GET /api/v1/runs/:runId/tools`, `GET
 /api/v1/runs/:runId/tools/:actionId` and `POST
 /api/v1/runs/:runId/tools/:actionId` (`runs/routes.ts`), in front of
@@ -208,11 +197,12 @@ Dynamic tool presentation has two bounded exceptions:
   Zod at dispatch time; only the tool-definition JSON Schema shown to the
   model is hand-built.
 
-## Managed-agent exposure
+## Agent tool exposure
 
-`SystemActionDispatcher` composes retrieval, delegation, and enabled generic
-actions for a managed run; `ManagedAgentToolSurface` assembles those into the
-managed loop's tool set. Exposure requires all of:
+`SystemActionDispatcher` resolves retrieval, delegation, and enabled generic
+actions for an ACP Agent Run. The executing Host supplies the `rainver` CLI
+transport; it does not run a second Server-side Agent loop. Exposure requires
+all of:
 
 1. registry visibility includes `agent_tool` and actor type includes `agent`;
 2. the action is present in `runs.capabilities_json` **and** permitted by the

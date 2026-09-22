@@ -1,23 +1,29 @@
 import type { ProviderVendorOut } from '../api/client'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { toast } from 'sonner'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
-const { listMock, presetsMock, vendorsMock, createMock, createFromPresetMock, activeSpace } = vi.hoisted(() => ({
+const { listMock, presetsMock, vendorsMock, createMock, createFromPresetMock, getRuntimeDefaultMock, setRuntimeDefaultMock, activeSpace } = vi.hoisted(() => ({
   listMock: vi.fn(),
   presetsMock: vi.fn(),
   vendorsMock: vi.fn(),
   createMock: vi.fn(),
   createFromPresetMock: vi.fn(),
+  getRuntimeDefaultMock: vi.fn(),
+  setRuntimeDefaultMock: vi.fn(),
   activeSpace: { id: 'personal-1', name: 'My Personal' },
 }))
 
 vi.mock('../api/client', () => ({
-  authApi: { mySpaces: vi.fn().mockResolvedValue([]) },
+  agentsApi: {
+    getSpaceRuntimeDefault: getRuntimeDefaultMock,
+    setSpaceRuntimeDefault: setRuntimeDefaultMock,
+  },
+  authApi: { mySpaces: vi.fn().mockResolvedValue([{ id: 'personal-1', name: 'My Personal', type: 'personal', role: 'owner' }]) },
   acpAgentsApi: { registry: vi.fn().mockResolvedValue({ items: [] }), list: vi.fn().mockResolvedValue({ items: [] }) },
-  hostsApi: { list: vi.fn().mockResolvedValue({ items: [] }), listRuntimeAdapters: vi.fn().mockResolvedValue({ items: [] }) },
+  hostsApi: { list: vi.fn().mockResolvedValue({ items: [] }), listRuntimeDefinitions: vi.fn().mockResolvedValue({ items: [] }) },
   providersApi: { list: listMock, presets: presetsMock, vendors: vendorsMock, create: createMock, createFromPreset: createFromPresetMock, delete: vi.fn(), test: vi.fn(), patch: vi.fn(), grant: vi.fn() },
 }))
 
@@ -96,15 +102,15 @@ const providerPresets = [
 ]
 
 const providerVendors = [
-  { id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1', api_key_required: true, subscription_only: false },
-  { id: 'openai_codex', display_name: 'OpenAI Codex (ChatGPT subscription)', protocol: 'openai_codex_responses', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://chatgpt.com/backend-api', api_key_required: false, subscription_only: true },
-  { id: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_completions', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.deepseek.com', api_key_required: true, subscription_only: false },
-  { id: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic_messages', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.anthropic.com', api_key_required: true, subscription_only: false },
-  { id: 'minimax', display_name: 'MiniMax', protocol: 'anthropic_messages', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.minimaxi.com/anthropic', api_key_required: true, subscription_only: false },
-  { id: 'ollama', display_name: 'Ollama', protocol: 'openai_completions', supports_chat: true, supports_runtime_tools: false, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: 'http://localhost:11434', api_key_required: false, subscription_only: false },
-  { id: 'openai_compatible', display_name: 'OpenAI-compatible endpoint', protocol: 'openai_completions', supports_chat: true, supports_runtime_tools: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: null, api_key_required: false, subscription_only: false },
-  { id: 'cohere', display_name: 'Cohere', protocol: 'cohere_v2', supports_chat: false, supports_runtime_tools: false, supports_structured_output: false, supports_embedding: true, supports_rerank: true, default_base_url: 'https://api.cohere.com', api_key_required: true, subscription_only: false },
-  { id: 'zeroentropy', display_name: 'ZeroEntropy', protocol: 'zeroentropy', supports_chat: false, supports_runtime_tools: false, supports_structured_output: false, supports_embedding: true, supports_rerank: true, default_base_url: 'https://api.zeroentropy.dev/v1', api_key_required: true, subscription_only: false },
+  { id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1', api_key_required: true, subscription_only: false },
+  { id: 'openai_codex', display_name: 'OpenAI Codex (ChatGPT subscription)', protocol: 'openai_codex_responses', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://chatgpt.com/backend-api', api_key_required: false, subscription_only: true },
+  { id: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.deepseek.com', api_key_required: true, subscription_only: false },
+  { id: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic_messages', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.anthropic.com', api_key_required: true, subscription_only: false },
+  { id: 'minimax', display_name: 'MiniMax', protocol: 'anthropic_messages', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.minimaxi.com/anthropic', api_key_required: true, subscription_only: false },
+  { id: 'ollama', display_name: 'Ollama', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: 'http://localhost:11434', api_key_required: false, subscription_only: false },
+  { id: 'openai_compatible', display_name: 'OpenAI-compatible endpoint', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: null, api_key_required: false, subscription_only: false },
+  { id: 'cohere', display_name: 'Cohere', protocol: 'cohere_v2', supports_chat: false, supports_structured_output: false, supports_embedding: true, supports_rerank: true, default_base_url: 'https://api.cohere.com', api_key_required: true, subscription_only: false },
+  { id: 'zeroentropy', display_name: 'ZeroEntropy', protocol: 'zeroentropy', supports_chat: false, supports_structured_output: false, supports_embedding: true, supports_rerank: true, default_base_url: 'https://api.zeroentropy.dev/v1', api_key_required: true, subscription_only: false },
 ] satisfies ProviderVendorOut[]
 
 describe('ModelProvidersPage — open add form takes over the view', () => {
@@ -116,6 +122,8 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
     vendorsMock.mockReset()
     createMock.mockReset()
     createFromPresetMock.mockReset()
+    getRuntimeDefaultMock.mockResolvedValue(null)
+    setRuntimeDefaultMock.mockReset()
     presetsMock.mockResolvedValue(providerPresets)
     // The vendor registry is the server's; the page reads it rather than
     // holding its own copy of which vendors can chat, embed, or rerank.
@@ -126,6 +134,33 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
     listMock.mockResolvedValue([])
     render(<ModelProvidersPage />)
     expect(await screen.findByText(EMPTY)).toBeInTheDocument()
+  })
+
+  it('saves an explicit OpenCode default for future Agent Profiles', async () => {
+    listMock.mockResolvedValue([provider])
+    setRuntimeDefaultMock.mockResolvedValue({
+      space_id: 'personal-1',
+      runtime_key: 'opencode',
+      backend_mode: 'model_provider',
+      model_provider_id: provider.id,
+      model_name: provider.default_model,
+      state: 'ready',
+      state_reason: null,
+    })
+    render(<ModelProvidersPage />)
+    await screen.findByRole('heading', { name: 'My OpenAI' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'OpenCode backend mode' }))
+    fireEvent.click(screen.getByRole('option', { name: provider.name }))
+    expect(screen.getByLabelText('OpenCode default model')).toHaveValue(provider.default_model)
+    fireEvent.click(screen.getByRole('button', { name: 'Save default for future Agents' }))
+
+    await waitFor(() => expect(setRuntimeDefaultMock).toHaveBeenCalledWith({
+      runtime_key: 'opencode',
+      backend_mode: 'model_provider',
+      model_provider_id: provider.id,
+      model_name: provider.default_model,
+    }))
   })
 
   it('hides the empty-state while the add form is open', async () => {
@@ -141,10 +176,64 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
   it('hides the existing provider list while the add form is open', async () => {
     listMock.mockResolvedValue([provider])
     render(<ModelProvidersPage />)
-    expect(await screen.findByText('My OpenAI')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'My OpenAI' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /add chat provider/i }))
-    // Existing providers are not shown mid-add.
+    // Existing providers are not shown mid-add — not in a card, and not as an
+    // option of the runtime-default picker either.
     expect(screen.queryByText('My OpenAI')).toBeNull()
+    expect(screen.queryByLabelText('OpenCode default backend')).toBeNull()
+  })
+
+  it('shows a repair state, and writes nothing, when the saved default Provider is gone', async () => {
+    // Plan Phase 4 §4: a deleted or disabled Provider must produce a visible
+    // repair state for future provisioning, never a silent native fallback.
+    listMock.mockResolvedValue([])
+    // The server derives the repair state from the grant ∧ enabled join that
+    // Profile admission uses; the page must render that, not its own guess.
+    getRuntimeDefaultMock.mockResolvedValue({
+      space_id: 'personal-1',
+      runtime_key: 'opencode',
+      backend_mode: 'model_provider',
+      model_provider_id: 'gone-1',
+      model_name: 'gpt-4o',
+      state: 'needs_repair',
+      state_reason: 'The selected ModelProvider is no longer enabled or granted to this Space',
+    })
+    render(<ModelProvidersPage />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('The selected ModelProvider is no longer enabled or granted to this Space')
+    expect(screen.getByRole('button', { name: 'OpenCode backend mode' })).toHaveTextContent(/needs repair/)
+    expect(setRuntimeDefaultMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps the Providers list readable when the runtime default fails to load', async () => {
+    // One failing call in the page's fan-out used to reject the whole
+    // Promise.all and blank the page. The card reports its own failure and
+    // offers a retry; nothing is saved over a template nobody could read.
+    listMock.mockResolvedValue([provider])
+    getRuntimeDefaultMock.mockRejectedValueOnce(new Error('runtime default unavailable'))
+    render(<ModelProvidersPage />)
+
+    expect(await screen.findByRole('heading', { name: 'My OpenAI' })).toBeInTheDocument()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('runtime default unavailable')
+    expect(screen.getByRole('button', { name: 'Save default for future Agents' })).toBeDisabled()
+
+    getRuntimeDefaultMock.mockResolvedValue({
+      space_id: 'personal-1',
+      runtime_key: 'opencode',
+      backend_mode: 'model_provider',
+      model_provider_id: provider.id,
+      model_name: provider.default_model,
+      state: 'ready',
+      state_reason: null,
+    })
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(screen.getByRole('button', { name: 'OpenCode backend mode' })).toHaveTextContent(provider.name)
+    expect(screen.getByRole('button', { name: 'Save default for future Agents' })).toBeEnabled()
   })
 
   it('applies the MiniMax preset to the add form', async () => {

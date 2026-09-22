@@ -12,8 +12,11 @@ import { PgUsageRepository } from "../src/modules/usage/repository.js";
 import { normalizeUsageObservation } from "../src/modules/usage/normalizer.js";
 import { EvolutionSignalEmitter } from "../src/modules/evolution/signalEmitters.js";
 import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
+import { seedServerHost } from "./support/domainSeeds.js";
 
 const SPACE = "81111111-1111-4111-8111-111111111111";
+const PROJECT = "81111111-1111-4111-8111-111111111112";
+const PROJECT_FOLDER = "81111111-1111-4111-8111-111111111113";
 const USER = "82222222-2222-4222-8222-222222222222";
 const AGENT = "83333333-3333-4333-8333-333333333333";
 const VERSION = "84444444-4444-4444-8444-444444444444";
@@ -23,6 +26,7 @@ const PROVIDER = "87777777-7777-4777-8777-777777777777";
 const CREDENTIAL = "88888888-8888-4888-8888-888888888888";
 const PROVIDER_CREDENTIAL = "89999999-9999-4999-8999-999999999999";
 const PROVIDER_GRANT = "8aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const SERVER_HOST = "80000000-0000-4000-8000-000000000001";
 
 
 const db = useTestDatabase(import.meta.filename, { max: 4 });
@@ -30,6 +34,12 @@ const db = useTestDatabase(import.meta.filename, { max: 4 });
 beforeEach(async () => {
   if (!db.available) return;
   await resetTables(db.pool, ["spaces", "users"], { cascade: true });
+  await seedServerHost(db.pool, {
+    id: SERVER_HOST,
+    installations: {
+      opencode: [{ id: "managed:1.0.0", version: "1.0.0", logged_in: true, options: null, health_check_protocol: "acp" }],
+    },
+  });
   const now = new Date().toISOString();
   await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at)
@@ -47,6 +57,18 @@ beforeEach(async () => {
     [SPACE, USER, now],
   );
   await db.pool.query(
+    `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+     VALUES ($1, $2, $3, 'Supervisor Test Project', 'active', $4, $4)`,
+    [PROJECT, SPACE, USER, now],
+  );
+  await db.pool.query(
+    `INSERT INTO project_folders (
+       id, space_id, project_id, created_by_user_id, name, status,
+       kind, is_primary, protected, system_managed, created_at, updated_at
+     ) VALUES ($1, $2, $3, $4, 'Supervisor Test Folder', 'active', 'code', true, false, false, $5, $5)`,
+    [PROJECT_FOLDER, SPACE, PROJECT, USER, now],
+  );
+  await db.pool.query(
     `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id,
                          created_at, updated_at, visibility)
      VALUES ($1, $2, $3, 'Supervisor Test Agent', 'active', NULL, $4, $4, 'space_shared')`,
@@ -54,13 +76,28 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt,
-       model_config_json, runtime_config_json, context_policy_json,
-       memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, created_at
-     ) VALUES ($1, $2, $3, 'v1', 'You are a test agent.',
-               '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-               '["research.brief_synthesize"]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'You are a test agent.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '["research.brief_synthesize"]'::jsonb,
+       '{}'::jsonb,
+       $4
+     )`,
     [VERSION, AGENT, SPACE, now],
   );
   await db.pool.query(
@@ -97,19 +134,83 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type,
-       model_provider_id, runtime_config_json, runtime_policy_json, enabled, is_default,
-       created_at, updated_at
-     ) VALUES ($1, $2, $3, 'Default', 'model_api', $4, '{}', '{}', true, true, $5, $5)`,
-    [PROFILE, SPACE, AGENT, PROVIDER, now],
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       model_provider_id,
+       model_name,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'Default',
+       'opencode',
+       'model_provider',
+       $4,
+       'test-model',
+       $6,
+       'managed',
+       'managed:1.0.0',
+       '{}',
+       '{}',
+       true,
+       true,
+       $5,
+       $5
+     )`,
+    [PROFILE, SPACE, AGENT, PROVIDER, now, SERVER_HOST],
   );
   await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, model_provider_id,
-       runtime_config_json, runtime_policy_json, enabled, is_default,
-       created_at, updated_at
-     ) VALUES ($1, $2, $3, 'Fallback', 'model_api', $4, '{}', '{}', true, false, $5, $5)`,
-    [FALLBACK_PROFILE, SPACE, AGENT, PROVIDER, now],
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       model_provider_id,
+       model_name,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'Fallback',
+       'opencode',
+       'model_provider',
+       $4,
+       'test-model',
+       $6,
+       'managed',
+       'managed:1.0.0',
+       '{}',
+       '{}',
+       true,
+       false,
+       $5,
+       $5
+     )`,
+    [FALLBACK_PROFILE, SPACE, AGENT, PROVIDER, now, SERVER_HOST],
   );
 });
 
@@ -604,96 +705,82 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     )).rows[0]?.count).toBe("1");
   });
 
-  it("reroutes a retry through the persisted C2 fallback chain", async (ctx) => {
+  it("routes ordinary Server Agent Runs without a Host thread and retries through the provider-bound C2 fallback", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const runId = await seedRun({ max_attempts: 2 });
     const repository = new PgRunRepository(db.pool);
     const routing = new PgRouteDecisionRepository(db.pool);
-    const initial = await repository.getRun(SPACE, runId);
+    const initial = await repository.getAgentRun(SPACE, runId);
     if (!initial) throw new Error("seeded run not found");
-    const firstRoute = await routing.routeRun(initial);
-    expect(firstRoute.runtime_profile_id).toBe(PROFILE);
-
-    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
-    await repository.markRunTerminal({
-      run_id: runId,
-      space_id: SPACE,
-      status: "failed",
-      error_json: { error_code: "runtime_stall_timeout" },
-      completed_at: new Date().toISOString(),
+    const first = await routing.routeRun(initial);
+    expect(first.runtime_profile_id).toBe(PROFILE);
+    expect(first.runtime_profile_snapshot_json).toMatchObject({
+      execution_host_id: SERVER_HOST,
+      runtime_installation: "managed:1.0.0",
     });
-    await new PostRunFinalizationService(
-      repository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      new PgRunSupervisor(db.pool),
-    ).finalize(runId, SPACE);
+    expect(first.model_override_json).not.toHaveProperty("host_thread");
+    expect(await routing.hasFallbackRoute({ space_id: SPACE, id: runId })).toBe(true);
 
-    const queuedRetry = await repository.getRun(SPACE, runId);
-    if (!queuedRetry) throw new Error("retry run not found");
-    const secondRoute = await routing.routeRun(queuedRetry);
-    expect(secondRoute.runtime_profile_id).toBe(FALLBACK_PROFILE);
-    expect((await db.pool.query<{ attempt_number: number; selected_runtime_profile_id: string }>(
-      `SELECT attempt_number, selected_runtime_profile_id
-         FROM route_decisions WHERE space_id = $1 AND run_id = $2 ORDER BY attempt_number`,
-      [SPACE, runId],
-    )).rows).toEqual([
-      { attempt_number: 1, selected_runtime_profile_id: PROFILE },
-      { attempt_number: 2, selected_runtime_profile_id: FALLBACK_PROFILE },
-    ]);
-    expect((await db.pool.query<{ decision: string; next_attempt_number: number | null }>(
-      `SELECT decision, next_attempt_number
-         FROM run_supervisor_decisions WHERE space_id = $1 AND run_id = $2`,
-      [SPACE, runId],
-    )).rows[0]).toEqual({ decision: "retry_fallback_route", next_attempt_number: 2 });
+    await db.pool.query(
+      `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 2, 'queued', now(), now())`,
+      [randomUUID(), SPACE, runId],
+    );
+    const fallback = await routing.routeRun(initial);
+    expect(fallback.runtime_profile_id).toBe(FALLBACK_PROFILE);
+    expect(fallback.model_provider_id).toBe(PROVIDER);
   });
 
-  it("loads routing capabilities from the agent's current version when profiles do not duplicate them", async (ctx) => {
+  it("takes runtime capabilities from the current AgentVersion, not a Runtime Profile bag", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const routing = new PgRouteDecisionRepository(db.pool);
     const candidates = await routing.listCandidates(SPACE, AGENT, USER);
     expect(candidates).toHaveLength(2);
-    expect(candidates[0]?.capabilities).toContain("research.brief_synthesize");
-    expect(candidates[1]?.capabilities).toContain("research.brief_synthesize");
+    // Both deployment Profiles of one Agent answer for the same declaration:
+    // capabilities are AgentVersion authority and a Profile never restates them.
+    expect(candidates.map((candidate) => candidate.capabilities))
+      .toEqual([["research.brief_synthesize"], ["research.brief_synthesize"]]);
+
+    await db.pool.query(
+      `UPDATE agent_runtime_profiles
+          SET runtime_config_json = '{"capabilities":["runtime.profile_bag"]}'::jsonb
+        WHERE space_id = $1 AND id = $2`,
+      [SPACE, PROFILE],
+    );
+    const afterProfileEdit = await routing.listCandidates(SPACE, AGENT, USER);
+    expect(afterProfileEdit.find((candidate) => candidate.runtime_profile_id === PROFILE)?.capabilities)
+      .toEqual(["research.brief_synthesize"]);
+
+    await db.pool.query(
+      `UPDATE agent_versions SET capabilities_json = '[]'::jsonb WHERE space_id = $1 AND id = $2`,
+      [SPACE, VERSION],
+    );
+    const afterVersionEdit = await routing.listCandidates(SPACE, AGENT, USER);
+    expect(afterVersionEdit.map((candidate) => candidate.capabilities)).toEqual([[], []]);
   });
 
-  it("keeps the current route when the persisted fallback chain has no remainder", async (ctx) => {
+  it("revalidates a persisted route against the current ACP hard filter", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
-    await db.pool.query(
-      `UPDATE agent_runtime_profiles SET enabled = false WHERE space_id = $1 AND id = $2`,
-      [SPACE, FALLBACK_PROFILE],
-    );
     const runId = await seedRun({ max_attempts: 2 });
     const repository = new PgRunRepository(db.pool);
     const routing = new PgRouteDecisionRepository(db.pool);
-    const initial = await repository.getRun(SPACE, runId);
+    const initial = await repository.getAgentRun(SPACE, runId);
     if (!initial) throw new Error("seeded run not found");
-    expect((await routing.routeRun(initial)).runtime_profile_id).toBe(PROFILE);
-    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
-    await repository.markRunTerminal({
-      run_id: runId,
-      space_id: SPACE,
-      status: "failed",
-      error_json: { error_code: "runtime_stall_timeout" },
-      completed_at: new Date().toISOString(),
+    await db.pool.query(
+      `INSERT INTO route_decisions (
+         id, space_id, run_id, attempt_number, status,
+         selected_runtime_profile_id, selected_runtime_key, selected_model_provider_id,
+         reason, hints_json, candidates_json, rejected_json, fallback_chain_json,
+         score_trace_json, created_at
+       ) VALUES ($1, $2, $3, 1, 'selected', $4, 'opencode', $5,
+                 'prior persisted selection', '{}'::jsonb, '[]'::jsonb, '[]'::jsonb,
+                 $6::jsonb, '{}'::jsonb, now())`,
+      [randomUUID(), SPACE, runId, PROFILE, PROVIDER, JSON.stringify([PROFILE, FALLBACK_PROFILE])],
+    );
+    await db.pool.query(`UPDATE hosts SET capabilities_json = '{}'::jsonb WHERE id = $1`, [SERVER_HOST]);
+    await expect(routing.routeRun(initial)).rejects.toMatchObject({
+      code: "route_selected_profile_unavailable",
     });
-    await new PostRunFinalizationService(
-      repository,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      new PgRunSupervisor(db.pool),
-    ).finalize(runId, SPACE);
-    const retry = await repository.getRun(SPACE, runId);
-    if (!retry) throw new Error("retry run not found");
-    expect((await routing.routeRun(retry)).runtime_profile_id).toBe(PROFILE);
-    expect((await db.pool.query<{ decision: string }>(
-      `SELECT decision FROM run_supervisor_decisions WHERE space_id = $1 AND run_id = $2`,
-      [SPACE, runId],
-    )).rows[0]?.decision).toBe("retry_same_route");
   });
 
   it("keeps approval-paused attempts resumable without inventing a duplicate attempt", async (ctx) => {
@@ -1034,20 +1121,33 @@ async function seedRun(contract: {
   await db.pool.query(
     `INSERT INTO runs (
        id, space_id, agent_id, agent_version_id, runtime_profile_id,
+       project_id, project_folder_id,
        run_type, trigger_origin, status, mode,
-       adapter_type, instructed_by_user_id, owner_user_id,
+       runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+       instructed_by_user_id, owner_user_id,
        required_sandbox_level, contract_snapshot_json, model_override_json,
        created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, 'agent', $7, 'queued', 'live',
-       'model_api', $6, $6, 'none', $8::jsonb, $9::jsonb, $10, $10)`,
+     , execution_kind) VALUES ($1, $2, $3, $4, $5, $6, $7, 'agent', $9, 'queued', 'live',
+       'default', 'opencode', $10::jsonb, $8, $8, 'none', $11::jsonb, $12::jsonb, $13, $13, 'agent')`,
     [
       runId,
       SPACE,
       AGENT,
       VERSION,
       PROFILE,
+      PROJECT,
+      PROJECT_FOLDER,
       USER,
       contract.trigger_origin ?? "manual",
+      JSON.stringify({
+        id: PROFILE,
+        runtime_key: "opencode",
+        backend_mode: "model_provider",
+        model_provider_id: PROVIDER,
+        model_name: "test-model",
+        runtime_config_json: {},
+        runtime_policy_json: {},
+      }),
       JSON.stringify({
         contract_version: "run_contract.v1",
         // Supervisor signals are targeted only for runs with an evolvable

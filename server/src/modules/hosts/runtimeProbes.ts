@@ -1,9 +1,10 @@
+import type { RuntimeProbe } from "@rainver/protocol";
 import {
   listRuntimeAdapterSpecs,
   type RuntimeAdapterSpec,
   type RuntimeDistribution,
-  type RuntimeLoginSpec,
 } from "../runtimeAdapters/index.js";
+import { SERVER_OPENCODE_RELEASE } from "../runtimeAdapters/opencodeRelease.js";
 import { renderCommandTemplate } from "../runs/cliCommandRendering.js";
 import { REMOTE_HOST_ACP_CWD_PLACEHOLDER } from "../runs/remoteHostCliAdapter.js";
 import { resolvedRegistryEntry } from "../acpAgents/registry.js";
@@ -15,20 +16,12 @@ import { resolvedRegistryEntry } from "../acpAgents/registry.js";
  * managed copy is obtained, and how either is logged into. The daemon holds
  * no list of its own; adding a runtime is a spec entry (or enabling a
  * registry agent), and the daemon needs no change.
+ *
+ * The shape is the wire's, not this module's: `RuntimeProbeSchema` in
+ * `@rainver/protocol` declares the fields once and both ends type against it,
+ * so a probe is built here and parsed there with nothing restating it.
  */
-export interface RuntimeProbe {
-  adapter_type: string;
-  /** The PATH binary of the machine's own install, or null when there is none to look for. */
-  runtime: string | null;
-  /** The launch argv, with the daemon's cwd placeholder where a workspace path goes. */
-  argv: string[];
-  /** How to obtain a managed copy; null when the registry could not say. */
-  distribution: RuntimeDistribution | null;
-  /** The pinned version a managed install gets, when the distribution names one. */
-  version: string | null;
-  login: RuntimeLoginSpec | null;
-  remote_host_only: boolean;
-}
+export type { RuntimeProbe };
 
 function acpSpecs(): RuntimeAdapterSpec[] {
   return listRuntimeAdapterSpecs().filter((spec) =>
@@ -39,11 +32,29 @@ function acpSpecs(): RuntimeAdapterSpec[] {
 }
 
 /**
+ * Which machine the probe is for. The built-in Server Host installs what this
+ * Rainver release pins; a paired Host installs what the ACP registry publishes
+ * and upgrades only when its owner says so.
+ */
+export type ProbeHostKind = "server" | "remote";
+
+/**
  * A builtin adapter's managed copy is whatever the ACP registry publishes
  * for it, as last resolved by the acpAgents refresh loop — never fetched
  * here, on a daemon's hello.
+ *
+ * The one exception is the Server Host's OpenCode, which the release pins
+ * (ADR 0022, Phase 2 §1): the release constant answers here so that the
+ * install path has a single resolved distribution to send, instead of a
+ * second branch deciding the same thing again at the route.
  */
-function resolveDistribution(spec: RuntimeAdapterSpec): { distribution: RuntimeDistribution | null; version: string | null } {
+function resolveDistribution(
+  spec: RuntimeAdapterSpec,
+  hostKind: ProbeHostKind,
+): { distribution: RuntimeDistribution | null; version: string | null } {
+  if (hostKind === "server" && spec.runtime_key === "opencode") {
+    return { distribution: SERVER_OPENCODE_RELEASE.distribution, version: SERVER_OPENCODE_RELEASE.version };
+  }
   const declared = spec.distribution;
   if (!declared) return { distribution: null, version: null };
   if (!("registry_id" in declared)) return { distribution: declared, version: versionOf(declared) };
@@ -58,12 +69,17 @@ function versionOf(distribution: RuntimeDistribution): string | null {
   return at > 0 ? distribution.package.slice(at + 1) : null;
 }
 
-export function acpRuntimeProbes(): RuntimeProbe[] {
+/**
+ * `hostKind` defaults to `"remote"` because that is what a probe means with no
+ * machine named: the registry's answer for a paired Host. Only the Server
+ * Host's own install path names `"server"`.
+ */
+export function acpRuntimeProbes(hostKind: ProbeHostKind = "remote"): RuntimeProbe[] {
   return acpSpecs().map((spec) => {
     const remoteHostOnly = spec.invocation!.remote_host_only === true;
-    const resolved = resolveDistribution(spec);
+    const resolved = resolveDistribution(spec, hostKind);
     return {
-      adapter_type: spec.adapter_type,
+      runtime_key: spec.runtime_key,
       runtime: remoteHostOnly ? null : (spec.invocation!.remote_capability_probe ?? spec.executable!.command!),
       argv: renderCommandTemplate(spec.invocation!.headless_command_template, {
         executable: spec.executable!.command!,
@@ -77,7 +93,7 @@ export function acpRuntimeProbes(): RuntimeProbe[] {
   });
 }
 
-/** The probe for one adapter, for an install request. */
-export function acpRuntimeProbe(adapterType: string): RuntimeProbe | null {
-  return acpRuntimeProbes().find((probe) => probe.adapter_type === adapterType) ?? null;
+/** The probe for one adapter on one machine, for an install request. */
+export function acpRuntimeProbe(runtimeKey: string, hostKind: ProbeHostKind = "remote"): RuntimeProbe | null {
+  return acpRuntimeProbes(hostKind).find((probe) => probe.runtime_key === runtimeKey) ?? null;
 }

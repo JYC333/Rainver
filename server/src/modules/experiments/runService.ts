@@ -203,6 +203,7 @@ export class ExperimentRunService {
         runtime_profile_id: optionalString(body.runtime_profile_id),
       };
       const managedRun = await new PgRunRepository(db).createQueuedRun({
+        execution_kind: "agent",
         agent_id: agentId,
         space_id: identity.spaceId,
         user_id: identity.userId,

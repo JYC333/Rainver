@@ -38,13 +38,13 @@ const initialDraft = {
 const providerVendors = [
   {
     id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions',
-    supports_chat: true, supports_runtime_tools: true, supports_structured_output: true,
+    supports_chat: true, supports_structured_output: true,
     supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1',
     api_key_required: true, subscription_only: false,
   },
   {
     id: 'openai_codex', display_name: 'OpenAI Codex', protocol: 'openai_codex_responses',
-    supports_chat: true, supports_runtime_tools: true, supports_structured_output: true,
+    supports_chat: true, supports_structured_output: true,
     supports_embedding: false, supports_rerank: false, default_base_url: 'https://chatgpt.com/backend-api',
     api_key_required: false, subscription_only: true,
   },

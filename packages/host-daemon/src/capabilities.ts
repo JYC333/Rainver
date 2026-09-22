@@ -27,6 +27,7 @@ export interface RuntimeInstallation {
   version: string | null;
   /** Vendor CLI version, when the managed adapter bundles a separate CLI. */
   runtime_version: string | null;
+  health_check_protocol?: "acp" | null;
   /** Whether its login state exists; null when the runtime declares no login. */
   logged_in: boolean | null;
   /** What this copy reports through ACP; null when it could not be asked. */
@@ -37,9 +38,9 @@ export interface RuntimeInstallation {
   rollback_version?: string | null;
 }
 
-/** What the server says to look for, per adapter (`hello_ack.runtime_probes`). */
+/** What the server says to look for, per runtime key (`hello_ack.runtime_probes`). */
 export interface RuntimeLookup {
-  adapter_type: string;
+  runtime_key: string;
   /** The PATH binary of the machine's own install; null for a managed-only runtime. */
   runtime: string | null;
   login: ToolLoginSpec | null;
@@ -47,14 +48,14 @@ export interface RuntimeLookup {
 
 /**
  * What this machine can run. One identity for a runtime on a host — the
- * adapter type and the copy — and everything about a copy lives on the
+ * runtime key and the copy — and everything about a copy lives on the
  * copy. `runtimes`/`versions` remain as the plain PATH inventory (vendor
  * binaries and git) for display and for readers that predate installations.
  */
 export interface DaemonCapabilities {
   runtimes: ProbedBinary[];
   versions: Partial<Record<ProbedBinary, string>>;
-  /** Every copy of every adapter, keyed by adapter type. */
+  /** Every copy of every runtime, keyed by runtime key. */
   installations: Record<string, RuntimeInstallation[]>;
 }
 
@@ -117,8 +118,8 @@ export function clearFailedRuntimeOptionsCache(): void {
 }
 
 /** Authentication changes this copy's session probe immediately. */
-export function clearRuntimeOptionsCache(adapterType: string, installation: string): void {
-  optionsCache.delete(`${adapterType}@${installation}`);
+export function clearRuntimeOptionsCache(runtimeKey: string, installation: string): void {
+  optionsCache.delete(`${runtimeKey}@${installation}`);
 }
 
 function loginState(home: string, login: ToolLoginSpec | null, options: RuntimeOptions | null): boolean | null {
@@ -144,7 +145,7 @@ function supportsManagedCliLogin(manifest: ToolManifest, entryArgs: string[]): P
     // Two named deletions were a denylist of length two; this is the one the
     // rest of the daemon uses, so a new vendor key is dropped here too.
     const env: Record<string, string | undefined> = {
-      ...helperProcessEnv(process.env, manifest.adapter_type ?? ""),
+      ...helperProcessEnv(process.env, manifest.runtime_key ?? ""),
       ...manifest.env,
       HOME: manifest.home,
     };
@@ -228,7 +229,7 @@ export async function detectCapabilities(
         if (ensureOwnRuntime && !(await ensureOwnRuntime(lookup))) continue;
         runtimes.push(lookup.runtime);
         versions[lookup.runtime] = version;
-        const asked = askOptions ? await runtimeOptions(`${lookup.adapter_type}@${OWN_INSTALLATION}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;
+        const asked = askOptions ? await runtimeOptions(`${lookup.runtime_key}@${OWN_INSTALLATION}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;
         const ownAccounts = heldAccounts(homedir(), lookup.login);
         found.push({
           id: OWN_INSTALLATION,
@@ -240,15 +241,16 @@ export async function detectCapabilities(
         });
       }
     }
-    const rollbackTarget = rollbackTargetFor(lookup.adapter_type);
-    for (const manifest of managed.get(lookup.adapter_type) ?? []) {
+    const rollbackTarget = rollbackTargetFor(lookup.runtime_key);
+    for (const manifest of managed.get(lookup.runtime_key) ?? []) {
       const id = managedInstallationId(manifest.version);
-      const asked = askOptions ? await runtimeOptions(`${lookup.adapter_type}@${id}`, () => askOptions(lookup, id)) : null;
+      const asked = askOptions ? await runtimeOptions(`${lookup.runtime_key}@${id}`, () => askOptions(lookup, id)) : null;
       const managedAccounts = heldAccounts(manifest.home, manifest.login);
       found.push({
         id,
         version: manifest.version,
         runtime_version: manifest.runtime_version ?? null,
+        health_check_protocol: manifest.health_check_protocol ?? null,
         logged_in: loginState(manifest.home, manifest.login, asked),
         options: reportedOptions(manifest.login, await withManagedCliLogin(manifest, asked)),
         ...(managedAccounts ? { accounts: managedAccounts } : {}),
@@ -258,7 +260,7 @@ export async function detectCapabilities(
           : null,
       });
     }
-    if (found.length > 0) installations[lookup.adapter_type] = found;
+    if (found.length > 0) installations[lookup.runtime_key] = found;
   }
   for (const bin of ALWAYS_PROBED) {
     const version = await probeVersion(bin);

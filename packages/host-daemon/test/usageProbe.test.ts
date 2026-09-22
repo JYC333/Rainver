@@ -58,7 +58,7 @@ describe("which program the probe enters", () => {
   // everything else. The probe wants the second: asking `codex-acp` for an
   // app-server answers `-32600 Invalid request`, which read as a timeout.
   const codexManifest = {
-    adapter_type: "codex_cli",
+    runtime_key: "codex_cli",
     version: "1.10.0",
     command: "/usr/local/bin/node",
     args: ["/tools/codex_cli/1.10.0/node_modules/@agentclientprotocol/codex-acp/dist/index.js"],
@@ -122,7 +122,7 @@ describe("probing one copy on this host", () => {
     await mkdir(tree, { recursive: true });
     await mkdir(join(home, ".claude"), { recursive: true });
     await writeFile(join(tree, "manifest.json"), JSON.stringify({
-      adapter_type: "claude_code", version: "1.0.0", command: "/bin/true", args: [], env: {},
+      runtime_key: "claude_code", version: "1.0.0", command: "/bin/true", args: [], env: {},
       home, login_command: null, login: null, installed_at: "",
     }));
     await writeFile(join(home, ".claude", ".credentials.json"), JSON.stringify(credentials));
@@ -133,7 +133,7 @@ describe("probing one copy on this host", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ five_hour: { utilization: 50, resets_at: null } }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const quota = await probeUsage({ adapter_type: "claude_code", installation: "managed:1.0.0", login: null, timeout_seconds: 10 });
+    const quota = await probeUsage({ runtime_key: "claude_code", installation: "managed:1.0.0", login: null, timeout_seconds: 10 });
 
     expect(quota).toMatchObject({ available: true, session_pct: 50 });
     // The whole point of moving this to the host: the credential is spent
@@ -147,7 +147,7 @@ describe("probing one copy on this host", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    const quota = await probeUsage({ adapter_type: "claude_code", installation: "managed:1.0.0", login: null, timeout_seconds: 10 });
+    const quota = await probeUsage({ runtime_key: "claude_code", installation: "managed:1.0.0", login: null, timeout_seconds: 10 });
 
     expect(quota).toMatchObject({ available: false });
     expect(quota.error).toMatch(/expired/);
@@ -155,12 +155,12 @@ describe("probing one copy on this host", () => {
   });
 
   it("refuses a copy this host does not have rather than falling back to the machine's own", async () => {
-    const quota = await probeUsage({ adapter_type: "claude_code", installation: "managed:9.9.9", login: null, timeout_seconds: 10 });
+    const quota = await probeUsage({ runtime_key: "claude_code", installation: "managed:9.9.9", login: null, timeout_seconds: 10 });
     expect(quota.error).toMatch(/does not have claude_code managed:9\.9\.9/);
   });
 
   it("says a runtime has no subscription quota rather than launching it to find out", async () => {
-    const quota = await probeUsage({ adapter_type: "opencode", installation: "own", login: null, timeout_seconds: 10 });
+    const quota = await probeUsage({ runtime_key: "opencode", installation: "own", login: null, timeout_seconds: 10 });
     expect(quota).toMatchObject({ available: false });
     expect(quota.error).toMatch(/no subscription quota/);
   });

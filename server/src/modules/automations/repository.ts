@@ -5,6 +5,7 @@ import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../scheduler/taskSt
 import { assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access.js";
 import { canReadAgent } from "../agents/agentAccess.js";
 import { computeNextRunAt } from "./schedule.js";
+import type { AutomationTargetType } from "@rainver/protocol";
 
 export interface AutomationRow {
   id: string;
@@ -75,13 +76,20 @@ export interface AutomationRepositoryPort {
   hasActiveGrant(spaceId: string, automationId: string): Promise<boolean>;
   createAutomationRun(input: {
     automationId: string;
-    runId: string;
+    targetType: AutomationTargetType;
+    runId: string | null;
     workflowExecutionId?: string | null;
     triggeredByUserId: string;
     triggerType: string;
     preflightSnapshot: Record<string, unknown>;
     triggerContext?: Record<string, unknown> | null;
   }): Promise<string>;
+  completeNativeAutomationRun(input: {
+    automationRunId: string;
+    status: "succeeded" | "degraded" | "failed" | "skipped";
+    result?: Record<string, unknown> | null;
+    error?: Record<string, unknown> | null;
+  }): Promise<void>;
 }
 
 const AUTOMATION_COLUMNS = `
@@ -510,7 +518,8 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
 
   async createAutomationRun(input: {
     automationId: string;
-    runId: string;
+    targetType: AutomationTargetType;
+    runId: string | null;
     workflowExecutionId?: string | null;
     triggeredByUserId: string;
     triggerType: string;
@@ -521,14 +530,19 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
     const now = new Date().toISOString();
     await this.db.query(
       `INSERT INTO automation_runs (
-         id, automation_id, run_id, workflow_execution_id, triggered_by_user_id, trigger_type,
-         preflight_snapshot_json, trigger_context_json, created_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9)`,
+         id, automation_id, target_type, run_id, workflow_execution_id,
+         native_status, native_started_at,
+         triggered_by_user_id, trigger_type, preflight_snapshot_json,
+         trigger_context_json, created_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12)`,
       [
         id,
         input.automationId,
+        input.targetType,
         input.runId,
         input.workflowExecutionId ?? null,
+        input.runId === null ? "running" : null,
+        input.runId === null ? now : null,
         input.triggeredByUserId,
         input.triggerType,
         JSON.stringify(input.preflightSnapshot),
@@ -537,6 +551,36 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
       ],
     );
     return id;
+  }
+
+  async completeNativeAutomationRun(input: {
+    automationRunId: string;
+    status: "succeeded" | "degraded" | "failed" | "skipped";
+    result?: Record<string, unknown> | null;
+    error?: Record<string, unknown> | null;
+  }): Promise<void> {
+    if ((input.status === "failed") !== Boolean(input.error)) {
+      throw new Error("Native Automation failure status and error details must agree");
+    }
+    if (input.status !== "failed" && !input.result) {
+      throw new Error("A successful native Automation outcome requires result details");
+    }
+    const updated = await this.db.query(
+      `UPDATE automation_runs
+          SET native_status=$2, native_result_json=$3::jsonb,
+              native_error_json=$4::jsonb, native_ended_at=$5
+        WHERE id=$1 AND run_id IS NULL AND native_status='running'`,
+      [
+        input.automationRunId,
+        input.status,
+        input.result ? JSON.stringify(input.result) : null,
+        input.error ? JSON.stringify(input.error) : null,
+        new Date().toISOString(),
+      ],
+    );
+    if (updated.rowCount !== 1) {
+      throw new Error(`Native Automation run '${input.automationRunId}' was not active`);
+    }
   }
 
   async listWorkflowExecutions(spaceId: string, automationId: string): Promise<Record<string, unknown>[]> {

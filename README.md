@@ -159,7 +159,7 @@ Persisted API keys are feature-gated and not enabled in the current build.
 | Memory | Scoped long-term information; written only via proposal → approval workflow |
 | Capability | Code-defined skill registered via `capability.yaml` manifest |
 | Sandbox | Per-run isolation; git worktree by default; one-shot Docker-required paths fail closed until implemented |
-| Adapter | Execution backend: `echo`, `model_api`, `claude_code`, `codex_cli`, `opencode` |
+| Agent runtime | Agent Runtime Profile selects an implemented ACP runtime: OpenCode, Claude Code, or Codex CLI. Bounded server-side model calls use the ProviderTask path, not an Agent runtime. |
 
 ## Built-in Templates
 

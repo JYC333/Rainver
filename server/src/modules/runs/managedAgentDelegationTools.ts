@@ -1,8 +1,6 @@
 import type {
   CanonicalToolCall,
   CanonicalToolDefinition,
-  RuntimeHostExecuteRequest,
-  RuntimeHostExecuteResponse,
 } from "@rainver/protocol";
 import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
@@ -13,8 +11,10 @@ import {
   type SpawnChildRunInput,
 } from "../agentGroups/service.js";
 import { PgAgentGroupRepository } from "../agentGroups/repository.js";
-import { PgRunRepository, type RunRecord } from "./repository.js";
+import { PgRunRepository, type AgentRunRecord } from "./repository.js";
 import { runAssignedTask } from "./runAssignedTask.js";
+import { isHardTerminalRunStatus } from "./orchestrationResults.js";
+import type { SystemActionDispatchResult } from "../systemActions/toolResult.js";
 
 const AGENT_DELEGATE_TOOL = "agent.delegate";
 const AGENT_WAIT_FOR_RESULTS_TOOL = "agent.wait_for_results";
@@ -29,7 +29,6 @@ export interface AgentDelegationTarget {
 export interface AgentDelegationToolBinding {
   targets: AgentDelegationTarget[];
   toolDefinitions: CanonicalToolDefinition[];
-  toolBindings: RuntimeHostExecuteRequest["tool_bindings"];
   service: Pick<AgentGroupRunService, "spawnChildRun"> & Partial<Pick<AgentGroupRunService, "preflightSpawnChildRunPolicy" | "spawnChildRunAuthorized">>;
   pool: Pool | null;
 }
@@ -42,7 +41,7 @@ export interface AgentDelegationToolDeps {
 
 export async function resolveAgentDelegationToolBinding(
   config: ServerConfig,
-  run: RunRecord,
+  run: AgentRunRecord,
   deps: AgentDelegationToolDeps = {},
 ): Promise<AgentDelegationToolBinding | null> {
   if (!run.run_group_id || !run.root_run_id || !run.instructed_by_user_id) return null;
@@ -60,32 +59,6 @@ export async function resolveAgentDelegationToolBinding(
     toolDefinitions: [
       ...(targets.length > 0 ? [agentDelegateToolDefinition(targets)] : []),
       agentWaitForResultsToolDefinition(targets, protocol),
-    ],
-    toolBindings: [
-      ...(targets.length > 0 ? [{
-        id: AGENT_DELEGATE_TOOL,
-        external_type: "internal",
-        external_ref: AGENT_DELEGATE_TOOL,
-        display_name: "Delegate to agent",
-        required_scopes: ["run.spawn_child"],
-        credential_ref: null,
-        data_exposure_level: "model_provider",
-        observability_level: "structured_events",
-        side_effect_level: "queued_child_run",
-        approval_required: false,
-      }] : []),
-      {
-        id: AGENT_WAIT_FOR_RESULTS_TOOL,
-        external_type: "internal",
-        external_ref: AGENT_WAIT_FOR_RESULTS_TOOL,
-        display_name: "Wait for agent results",
-        required_scopes: ["run.read"],
-        credential_ref: null,
-        data_exposure_level: "model_provider",
-        observability_level: "structured_events",
-        side_effect_level: "pause_current_run",
-        approval_required: false,
-      },
     ],
   };
 }
@@ -166,7 +139,7 @@ function agentWaitForResultsToolDefinition(
 
 async function loadDelegationTargets(
   config: ServerConfig,
-  run: RunRecord,
+  run: AgentRunRecord,
   pool?: Pool,
 ): Promise<AgentDelegationTarget[]> {
   const db = pool ?? getDbPool(requiredDatabaseUrl(config));
@@ -197,12 +170,11 @@ async function loadDelegationTargets(
 export async function runAgentRoomToolCall(
   call: CanonicalToolCall,
   binding: AgentDelegationToolBinding,
-  run: RunRecord,
-  request: RuntimeHostExecuteRequest,
+  run: AgentRunRecord,
   authorizedPolicy?: Awaited<ReturnType<AgentGroupRunService["preflightSpawnChildRunPolicy"]>>,
-): Promise<{ modelResult: unknown; summary: Record<string, unknown>; suspend?: RuntimeHostExecuteResponse }> {
+): Promise<SystemActionDispatchResult> {
   if (call.name === AGENT_WAIT_FOR_RESULTS_TOOL) {
-    return runAgentWaitForResultsToolCall(call, binding, run, request);
+    return runAgentWaitForResultsToolCall(call, binding, run);
   }
   if (call.name !== AGENT_DELEGATE_TOOL) {
     return {
@@ -278,7 +250,7 @@ export async function runAgentRoomToolCall(
   }
 }
 
-export function agentDelegatePolicyInput(call: CanonicalToolCall, binding: AgentDelegationToolBinding, run: RunRecord) {
+export function agentDelegatePolicyInput(call: CanonicalToolCall, binding: AgentDelegationToolBinding, run: AgentRunRecord) {
   const params = parseAgentDelegateArguments(call.arguments_json, binding.targets);
   const identity: AgentGroupIdentity = { spaceId: run.space_id, userId: run.instructed_by_user_id as string };
   const input: SpawnChildRunInput = {
@@ -301,9 +273,8 @@ export function agentDelegatePolicyInput(call: CanonicalToolCall, binding: Agent
 async function runAgentWaitForResultsToolCall(
   call: CanonicalToolCall,
   binding: AgentDelegationToolBinding,
-  run: RunRecord,
-  request: RuntimeHostExecuteRequest,
-): Promise<{ modelResult: unknown; summary: Record<string, unknown>; suspend?: RuntimeHostExecuteResponse }> {
+  run: AgentRunRecord,
+): Promise<SystemActionDispatchResult> {
   try {
     if (!binding.pool) throw new Error("agent.wait_for_results requires room database access.");
     const params = await parseAgentWaitArguments(call.arguments_json);
@@ -334,54 +305,117 @@ async function runAgentWaitForResultsToolCall(
       };
     }
 
-    const pending = dependencies.filter((dependency) => !isHardTerminalRunStatus(dependency.status));
-    const results = dependencies
-      .filter((dependency) => isHardTerminalRunStatus(dependency.status))
-      .map(waitResultForRun);
-    if (pending.length === 0) {
+    const dependsOnRunIds = dependencies.map((dependency) => dependency.id);
+    let waitState;
+    try {
+      waitState = await runs.parkRunForDependencyResults({
+        run_id: run.id,
+        space_id: run.space_id,
+        run_group_id: run.run_group_id as string,
+        scope: params.scope,
+        reason: params.reason,
+        resume_instruction: params.resume_instruction,
+        depends_on_run_ids: dependsOnRunIds,
+        paused_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      // The durable park is what makes the turn stop. Without it the Run keeps
+      // going with its dependencies unresolved, which is the one way an Agent
+      // can answer as though it had waited. Name it separately so it lands in
+      // the Run's governed-tool evidence and settles the Run `degraded`, rather
+      // than reading as an ordinary tool failure the model may shrug off.
+      return {
+        modelResult: {
+          ok: false,
+          tool: call.name,
+          status: "park_failed",
+          error: "This Run could not be paused to wait for the delegated results, so they are still unresolved.",
+        },
+        summary: {
+          tool_name: call.name,
+          ok: false,
+          error_code: "agent_wait_for_results_park_failed",
+          error_message: error instanceof Error ? error.message : "Parking the Run for dependency results failed.",
+          depends_on_run_ids: dependsOnRunIds,
+        },
+      };
+    }
+    if (waitState.status === "ready") {
+      const completed = (await Promise.all(dependsOnRunIds.map((runId) =>
+        runs.getAgentRun(run.space_id, runId),
+      ))).filter((dependency): dependency is NonNullable<typeof dependency> => Boolean(dependency));
       return {
         modelResult: {
           ok: true,
           tool: call.name,
           status: "ready",
-          results,
+          results: completed.map(waitResultForRun),
         },
         summary: {
           tool_name: call.name,
           ok: true,
           status: "ready",
           scope: params.scope,
-          depends_on_run_ids: dependencies.map((dependency) => dependency.id),
+          depends_on_run_ids: dependsOnRunIds,
+        },
+      };
+    }
+    if (waitState.status !== "waiting") {
+      const status = waitState.status;
+      return {
+        modelResult: {
+          ok: false,
+          tool: call.name,
+          status,
+          error: status === "run_not_running"
+            ? `This Run can no longer wait for results (status=${waitState.current_status ?? "unknown"}).`
+            : "The selected dependency Runs changed before the wait could be persisted.",
+        },
+        summary: {
+          tool_name: call.name,
+          ok: false,
+          status,
+          depends_on_run_ids: dependsOnRunIds,
         },
       };
     }
 
-    const waitingForResults = {
-      status: "waiting",
-      scope: params.scope,
-      reason: params.reason,
-      resume_instruction: params.resume_instruction,
-      requested_by_tool_call_id: call.id,
-      depends_on_run_ids: dependencies.map((dependency) => dependency.id),
-      pending_run_ids: pending.map((dependency) => dependency.id),
-      ready_results: results,
-    };
+    const statusByRunId = new Map(waitState.dependency_statuses.map((dependency) => [dependency.id, dependency.status]));
+    const pendingRunIds = dependsOnRunIds.filter((runId) => {
+      const status = statusByRunId.get(runId);
+      return status === undefined || !isHardTerminalRunStatus(status);
+    });
+    const readyDependencyRunIds = dependencies
+      .filter((dependency) => isHardTerminalRunStatus(statusByRunId.get(dependency.id) ?? dependency.status))
+      .map((dependency) => dependency.id);
+    const readyRuns = await Promise.all(readyDependencyRunIds.map((runId) =>
+      runs.getAgentRun(run.space_id, runId),
+    ));
+    const currentReadyResults = readyRuns
+      .filter((dependency): dependency is AgentRunRecord =>
+        dependency !== null && isHardTerminalRunStatus(dependency.status))
+      .map(waitResultForRun);
+
     return {
       modelResult: {
         ok: true,
         tool: call.name,
         status: "waiting",
-        pending_run_ids: pending.map((dependency) => dependency.id),
+        scope: params.scope,
+        reason: params.reason,
+        resume_instruction: params.resume_instruction,
+        depends_on_run_ids: dependsOnRunIds,
+        pending_run_ids: pendingRunIds,
+        ready_results: currentReadyResults,
       },
       summary: {
         tool_name: call.name,
         ok: true,
         status: "waiting",
         scope: params.scope,
-        depends_on_run_ids: dependencies.map((dependency) => dependency.id),
-        pending_run_ids: pending.map((dependency) => dependency.id),
+        depends_on_run_ids: dependsOnRunIds,
+        pending_run_ids: pendingRunIds,
       },
-      suspend: waitForResultsResponse(request, waitingForResults),
     };
   } catch (error) {
     return {
@@ -469,18 +503,19 @@ async function parseAgentWaitArguments(argumentsJson: string): Promise<{
 async function dependencyRunsForWait(input: {
   groups: PgAgentGroupRepository;
   runs: PgRunRepository;
-  run: RunRecord;
+  run: AgentRunRecord;
   scope: "current_turn" | "own_delegations" | "run_ids";
   explicitRunIds: readonly string[];
   targetAgentIds: readonly string[];
-}): Promise<RunRecord[]> {
+}): Promise<AgentRunRecord[]> {
   const ids = await dependencyRunIdsForWait(input);
   const targetFilter = new Set(input.targetAgentIds);
-  const dependencies: RunRecord[] = [];
+  const dependencies: AgentRunRecord[] = [];
   for (const runId of ids) {
     if (runId === input.run.id) continue;
     const dependency = await input.runs.getRun(input.run.space_id, runId);
     if (!dependency) continue;
+    if (dependency.execution_kind !== "agent") continue;
     if (dependency.run_group_id !== input.run.run_group_id) continue;
     if (input.run.root_run_id && dependency.root_run_id && dependency.root_run_id !== input.run.root_run_id) continue;
     if (targetFilter.size > 0 && !targetFilter.has(dependency.agent_id)) continue;
@@ -496,7 +531,7 @@ async function dependencyRunsForWait(input: {
 
 async function dependencyRunIdsForWait(input: {
   groups: PgAgentGroupRepository;
-  run: RunRecord;
+  run: AgentRunRecord;
   scope: "current_turn" | "own_delegations" | "run_ids";
   explicitRunIds: readonly string[];
 }): Promise<string[]> {
@@ -521,7 +556,7 @@ async function dependencyRunIdsForWait(input: {
   return stringArrayValue(recordValue(message?.metadata_json).recipient_run_ids);
 }
 
-function waitResultForRun(run: RunRecord): Record<string, unknown> {
+function waitResultForRun(run: AgentRunRecord): Record<string, unknown> {
   return {
     run_id: run.id,
     agent_id: run.agent_id,
@@ -532,39 +567,6 @@ function waitResultForRun(run: RunRecord): Record<string, unknown> {
     // result is not the audience for (ADR 0003 §4).
     prompt: runAssignedTask(run),
     result: terminalRunResultSummary(run),
-  };
-}
-
-function waitForResultsResponse(
-  request: RuntimeHostExecuteRequest,
-  waitingForResults: Record<string, unknown>,
-): RuntimeHostExecuteResponse {
-  const now = new Date().toISOString();
-  return {
-    success: true,
-    stdout: "",
-    stderr: "",
-    output_text: "",
-    output_json: {
-      adapter_type: "ts_agent_host",
-      run_id: request.run_id,
-      waiting_for_results: waitingForResults,
-    },
-    exit_code: 0,
-    error_text: null,
-    error_code: null,
-    started_at: now,
-    completed_at: now,
-    model: request.model ?? null,
-    usage: null,
-    events: [],
-    adapter_metadata: {
-      adapter_type: "ts_agent_host",
-      run_id: request.run_id,
-      tool_mode: "authorized_bindings",
-      waiting_for_results: waitingForResults,
-    },
-    adapter_log_json: null,
   };
 }
 
@@ -623,15 +625,7 @@ function stringArrayValue(value: unknown): string[] {
     .filter((item) => item.length > 0))];
 }
 
-function isHardTerminalRunStatus(status: string): boolean {
-  return status === "succeeded" ||
-    status === "failed" ||
-    status === "cancelled" ||
-    status === "degraded" ||
-    status === "orphaned";
-}
-
-function terminalRunResultSummary(run: RunRecord): string {
+function terminalRunResultSummary(run: AgentRunRecord): string {
   const envelope = recordValue(run.output_json);
   const output = recordValue(envelope.result);
   const text = stringValue(envelope.summary)

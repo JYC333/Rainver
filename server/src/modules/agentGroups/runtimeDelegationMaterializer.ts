@@ -6,7 +6,7 @@ import type {
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import { PgRunRepository, type RunRecord } from "../runs/repository.js";
+import { PgRunRepository, type AgentRunRecord } from "../runs/repository.js";
 import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
 import { AgentGroupRunService } from "./service.js";
 
@@ -17,7 +17,7 @@ export interface RuntimeDelegationMaterializationResult {
 
 export interface RuntimeDelegationMaterializerPort {
   materialize(input: {
-    run: RunRecord;
+    run: AgentRunRecord;
     output_json: unknown;
   }): Promise<RuntimeDelegationMaterializationResult>;
 }
@@ -56,7 +56,7 @@ export class AgentGroupRuntimeDelegationMaterializer
   }
 
   async materialize(input: {
-    run: RunRecord;
+    run: AgentRunRecord;
     output_json: unknown;
   }): Promise<RuntimeDelegationMaterializationResult> {
     const raw = recordValue(input.output_json);
@@ -106,7 +106,7 @@ export class AgentGroupRuntimeDelegationMaterializer
   }
 
   private async materializeOne(
-    run: RunRecord,
+    run: AgentRunRecord,
     entry: RuntimeDelegationOutputItem,
     index: number,
   ): Promise<RunMaterializationItemSummary> {
@@ -200,7 +200,7 @@ export class AgentGroupRuntimeDelegationMaterializer
   }
 
   private async materializeNotGranted(
-    run: RunRecord,
+    run: AgentRunRecord,
     entry: RuntimeDelegationOutputItem,
     index: number,
   ): Promise<RunMaterializationItemSummary> {
@@ -215,7 +215,7 @@ export class AgentGroupRuntimeDelegationMaterializer
   }
 
   private async appendActionEventBestEffort(
-    run: RunRecord,
+    run: AgentRunRecord,
     eventType: "action_invoked" | "action_completed",
     toolCallId: string,
     metadata: Record<string, unknown>,

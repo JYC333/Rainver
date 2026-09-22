@@ -51,7 +51,7 @@ export function AmbientImportBanner({ projectId }: { projectId: string }) {
   if (!offer) return null
 
   const total = offer.counts.reduce((sum, count) => sum + count.session_count, 0)
-  const runtimes = offer.counts.map(count => `${count.session_count} ${count.adapter_type}`).join(', ')
+  const runtimes = offer.counts.map(count => `${count.session_count} ${count.runtime_key}`).join(', ')
 
   async function dismiss() {
     if (!offer) return

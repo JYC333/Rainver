@@ -7,9 +7,6 @@ description: >
   memory through proposals only. It can propose memory updates, merges, and
   deletes — it can never directly write, merge, or delete memory.
 
-model_config:
-  max_tokens: 8192
-
 context_policy:
   allowed_input_contexts:
     - selected_activities
@@ -35,12 +32,9 @@ tool_policy:
   workspace_write: false
   credential_access: false
 
-runtime_policy:
+execution_constraints:
   risk_level: low
   max_run_time_seconds: 300
-  allowed_adapter_types:
-    - model_api
-  default_adapter_type: model_api
 
 output_policy:
   proposal_only: true

@@ -2,7 +2,11 @@
 
 Date: 2026-05-14
 
-Runs are the durable execution record for agent work. A run must be auditable: request metadata, selected runtime, status, output, errors, activities, artifacts, and proposals must be inspectable after execution.
+Runs are durable execution records. `execution_kind` distinguishes an ACP
+Agent Run from a bounded ProviderTask Run; `run_role` independently marks an
+execution or coordinator. A Run must be auditable: request metadata, selected
+Profile/runtime, status, output, errors, activities, artifacts, and proposals
+must be inspectable after execution.
 
 ## Logical input and output contracts
 
@@ -15,16 +19,16 @@ The protocol defines three runtime-neutral contracts:
 - `run_output.v1` is the canonical final result plus declared-output
   validation manifest.
 
-`run_input.v1` is passed to both managed and local-CLI adapter boundaries and
-to the internal runtime host. It does not create a new database authority and
-does not duplicate rendered private context.
+`run_input.v1` is a server-computed logical I/O projection; it creates no new
+database authority. ACP Agent prompts receive authorized context through
+Runtime Context Delivery, not by serializing the whole envelope into a second
+prompt channel.
 
-For local CLI Runs, the server projects the envelope to a hidden Run Exchange.
-Declared files are collected into the logical output manifest only after
-containment, regular-file, size, and optional JSON Schema checks. A successful
-process with a missing/invalid required output is a failed Run output.
-Undeclared bounded files may be materialized as candidate Artifacts but never
-satisfy a declaration. Raw Exchange state is deleted after materialization.
+The legacy server-local CLI Run Exchange is not used by current Agent Runs:
+selectable Agent runtimes execute through ACP on a Host daemon. Declared output
+artifacts are collected from the execution Host and checked against the Run's
+output contract. Missing or invalid required outputs fail the Run; undeclared
+files cannot satisfy a declaration.
 
 Terminal `runs.output_json` is always the strict `run_output.v1` envelope.
 Adapter-native structured values and materialization summaries live under
@@ -33,13 +37,12 @@ summary, result, and the validated output manifest. Workflow JSON Pointer
 bindings resolve against `result` and fail closed when the source Run has no
 canonical envelope.
 
-Managed model lifecycle events and the JSONL modes of OpenCode, Codex CLI, and
-Claude Code normalize to `runtime_event.v1`. Local CLI stdout is parsed by
-complete line as it arrives, so supported tool lifecycle events are appended
-before process exit. Text/token deltas, stderr/stdout chunks, and unknown
-vendor payloads are not persisted as RunEvent rows.
+ACP session and Agent events are normalized to `runtime_event.v1`. The shared
+ACP controller consumes protocol messages as they arrive; stdout/stderr
+chunks, raw token deltas, and unknown vendor payloads are not persisted as
+RunEvent rows.
 
-Local CLI runtimes receive an opaque, short-lived, Run-scoped bearer identity
+ACP Agent runtimes receive an opaque, short-lived, Run-scoped bearer identity
 (`run_tool_identities`) and only the intersection of the Run's declared grants
 and the System Action Registry. The Run-scoped REST tool surface
 (`/api/v1/runs/:runId/tools`) re-loads the Run and space boundary for every
@@ -59,7 +62,7 @@ succeeded runs. It returns one space-scoped aggregate containing:
 - `Run`
 - safe `Agent` summary
 - immutable `AgentVersion` snapshot with system-prompt presence/hash metadata, not raw prompt text
-- `RuntimeAdapter` summary
+- execution kind and selected `runtime_key`/Profile summary (Agent Runs only)
 - `ModelProvider` summary without secrets
 - safe Invocation Snapshot metadata, hashes, source refs, acknowledgements, and redaction metadata without raw rendered context text
 - ordered `RunStep`
@@ -103,23 +106,22 @@ missing this event, including stale/orphaned and retry-exhausted work. While
 the adapter is running, non-durable `chat.text_delta` frames reach the client
 as a growing `text` part, so the reply renders incrementally.
 
-Conversation backend selection is frozen on the Run. Host CLI Runs select an
-installation and isolated Agent/container profile on their execution host;
-the copy's login is linked there. Direct CLI chat receives a prompt and work
-surface over ACP and resumes its vendor session, without server-brokered
-Runtime Context Delivery or CLI credential grants. In-process runtimes retain
-the Runtime Context Gateway and its user-scoped Delivery/continuity rules.
-There is no synchronous Chat endpoint or second Chat execution path. Run
-cancellation remains the normal Run stop operation.
+Conversation backend selection is frozen in the selected Runtime Profile and
+Conversation/Host-thread snapshot. Every Agent Run uses the canonical Runtime
+Context Gateway Delivery, projected into ACP's single user-prompt channel, and
+the immutable permission snapshot. Persistent Host-thread context cursors are
+bound to the same opaque ACP session; a context/session mismatch starts a fresh
+session. Native login remains on that Host; ModelProvider-backed OpenCode uses
+the server proxy lease. There is no synchronous Chat endpoint or second Chat
+execution path. Run cancellation remains the normal Run stop operation.
 
 Each Room message creates one `agent_run_group`; the group is a collaboration
 task, not the persistent conversation. The group records `room_id`,
 `session_id`, `trigger_message_id`, `project_id`, and the Room's nullable
 `project_folder_id`. Every recipient Run
 records the speaking human as `instructed_by_user_id`, uses that human's
-conversation backend binding, and declares `conversation_capture.json` as a
-Run Exchange proposal packet (required for local CLI, declared as an optional
-closing backstop for managed API). Its schema requires an explicit
+conversation backend binding, and declares `conversation_capture.json` as an
+output-contract proposal packet for the ACP Agent Run. Its schema requires an explicit
 `status=succeeded|rejected`; `rejected` is a semantic failure signal, while
 `proposed_changes` remains the proposal payload. The server never infers
 semantic failure from natural-language output. Materialization first creates
@@ -208,20 +210,60 @@ be safely converted into durable records. Safe records are still created when
 possible. If the adapter succeeds but artifact/proposal/finalization
 materialization partially fails, the run is marked `degraded`.
 
-A successful adapter result is also `degraded` when any server-owned managed
-tool call failed — a `managed_tool_calls` summary entry with `ok: false`. One
-tool loop serves every managed tool family — Retrieval, Agent room delegation,
-and the generic proposal transports — so that is the single summary key, and it
-is deliberately named for none of them; there is no second per-family key. Those
-Runs still produce an answer, but they produced it without the tool, and a
-terminal `succeeded` would make an answer written without a granted tool
-indistinguishable from one written with it. The Run
+A successful adapter result is also `degraded` when a governed tool call this
+Run made failed. The evidence is the Run's own `action_completed` events: the
+System Action dispatcher records every governed call as one, and marks a
+refusal `failed`, so `degraded` is derived from the `failed` ones at the
+**latest attempt** — a retry that went through cleanly is not a degraded
+answer. Both an ungranted refusal and a `wait_for_results` park failure count;
+a vendor-internal tool failure inside the ACP runtime deliberately does not,
+because a runtime's own grep missing is its business and not a statement about
+Rainver's surface. Such a Run still produces an answer, but it produced it
+without the tool, and a terminal `succeeded` would make an answer written
+without a granted tool indistinguishable from one written with it. The Run
 additionally carries a `warning` event with `error_code`
-`managed_tool_degraded` naming the tools and their error codes. A managed
-invocation that falls back to a different Provider likewise emits a `warning`
-event carrying `event_code` `model_provider_mismatch` with the requested and
-actual Provider ids, since a fallback Provider serves its own default model
-rather than the requested one.
+`managed_tool_degraded` naming the tools and their error codes. That status and
+that event are what an unattended Run leaves behind for a reader who was not
+there; see the Always-on enablement gate in
+[../tasks/deferred-register.md](../tasks/deferred-register.md).
+
+ACP Agent tools dispatch through Rainver's Agent Tool/System Action Gateways.
+Bounded ProviderTask calls use their own policy, Delivery, snapshot, error,
+and usage ledger; they do not pass through the Agent runtime adapter. A formal
+bounded operation needing Run-level lifecycle records its ProviderTask refs on
+a `provider_task` Run; incidental calls do not create Runs. One bounded task is
+one Run however many provider attempts its key pool makes: each attempt links
+itself to the same Run, and the Run's terminal state is decided once, when the
+task itself succeeds or fails. `runs/boundedProviderTaskRun.ts` is the single
+implementation of that rule for both `text` and `structured` completions; a
+domain contributes the request and, optionally, a `finalize` step that turns
+the accepted completion into the Run's durable result. `finalize` runs *before*
+the Run is marked terminal, so a terminal bounded Run always has its output
+applied.
+
+A `provider_task` Run has two database shapes, mirroring the Agent shape's
+"snapshot required before dispatch". A **queued** row has no ModelProvider and
+no ProviderTask control/delivery/snapshot references and no `started_at`; it
+may only be `queued`, `cancelling`, or terminal without ever having started. A
+**started** row has all four. The attempt that starts the task fills them in
+the attempt's own transaction, so the Run cannot be `running` while pointing at
+a ledger record that was rolled back, and it refuses to start a Run that has
+left `queued` (`run_not_queued`) rather than spending the provider on work
+already called off. Cancellation and job exhaustion treat a queued ProviderTask
+Run as ordinary queued work: `cancelJob` and `reclaimStuckJobs` settle the Run
+behind a `provider_task_run` job exactly as they settle an `agent_run`'s, and
+the handler settles the Run `failed` when its own last attempt throws — which
+is the only thing that finishes a Run the worker never dispatched, because
+`recoverStaleRuns` reclaims only rows that actually started.
+
+A bounded task whose caller should not wait for it — because it writes durable
+records the request path must not lose — is admitted on the request path and
+performed by the worker. The request creates the queued Run through the same
+budget admission a queued Agent Run uses and enqueues one `provider_task_run`
+job carrying only `run_id`; the handler reloads the Run, rebuilds the request
+from its frozen contract, applies the same instance-update drain admission
+`agent_run` applies, and settles the Run failed only once the job has no
+retries left. Nothing about what the task does comes from the job payload.
 
 Artifact INSERTs run the `artifact.persist` policy gate first. Proposal INSERTs
 run the `proposal.create` policy gate first.
@@ -234,9 +276,9 @@ parse free text to authorize delegation. Materialization calls
 authority-envelope, and `run.spawn_child` policy checks before queueing any
 child run.
 
-Managed API and local CLI runs inside an AgentRunGroup expose authorized room
-tools through the same `AgentToolGateway`: `agent.delegate` and
-`agent.wait_for_results`. Both execution channels require the corresponding
+ACP Agent Runs inside an AgentRunGroup expose authorized room tools through the
+same `AgentToolGateway`: `agent.delegate` and `agent.wait_for_results`. The
+corresponding
 snapshotted Run tool grant. They are available to every active room agent, not
 only the manager. Natural-language requests such as
 "ask two reviewers" should be handled by the current recipient agent calling
@@ -306,7 +348,7 @@ proposal-envelope fields.
 - Managed artifacts and proposals are durable product records.
 - Native capability execution is not active. System bookkeeping runs may
   carry `capability_id` / `capabilities_json` provenance, but they do not execute
-  `adapter_type="capability"`; that adapter spec is disabled.
+  `runtime_key="capability"`; that runtime definition is disabled.
 - External capabilities default **disabled**; enable state persists in `$RAINVER_HOME/config/settings.yaml` (`capabilities.enabled_external_capabilities`) and survives registry reload.
 - Disabled external capabilities fail at adapter resolution with `capability_disabled` before execution.
 - `one_shot_docker` is the critical local-CLI executor mode. It provides a
@@ -403,13 +445,13 @@ review/model boundaries land; model-judge execution must use a model distinct
 from the generator. Root/integration verification is implemented by the B2
 Plan graph layer.
 
-The `RuntimeAdapterSpec` catalog is the dispatch declaration: each spec names
-an executor family, and orchestration selects the family implementation from a
-registry map. Adapter-specific names are not dispatch branches. The same spec
-records conservative runtime capability declarations for future routing and
-conformance checks. For Claude Code, the local CLI path renders and verifies a
-run-scoped `.claude/settings.json` denying the runtime-internal `Task` tool;
-Codex remains unknown for this control.
+The runtime registry exposes `AgentRuntimeDefinition`s for selectable ACP
+runtimes. One `AcpRuntimeAdapter` and `AcpController` implement Agent execution;
+runtime definitions provide command, installation, backend and capability
+facts. Static runtime capability declarations are not dynamic conformance
+evidence. In particular, the Host-daemon path does not currently apply the
+legacy generated subagent-deny config, so local CLI candidates stay at low
+effective trust until that control is enforced at the Host boundary.
 
 Workflow definitions are versioned through the evolvable-asset control plane.
 `runs.workflow_version_id` records the approved version selected for a fixed
@@ -448,35 +490,18 @@ all side-effecting system actions, so unattended work cannot park itself for a
 new interactive grant. A scheduled recovery task cancels any legacy/unexpected
 autonomous Run that nevertheless remains `waiting_for_review` beyond one hour.
 
-## Run model config (resolved_model)
+## Run model config (`resolved_model`)
 
-Each Run may snapshot its selected Agent runtime profile plus model provider
-and model name at creation. `RunOut.resolved_model` exposes a safe summary:
-
-- `provider_id`, `provider_name`, `provider_type`, `model`, `source` (`runtime_profile` | `request` | `agent_default` | `runtime_default` | `space_default` | `none`)
-- `used_by_adapter` — whether the selected runtime adapter consumes model config
-- `adapter_model_support` — `uses_model` | `not_applicable` | `unsupported` | `unknown`
-- `disclosure_note` — user-facing text when a model was recorded but not used (e.g. capability adapters)
-
-For managed calls, adapter evidence distinguishes intent from execution:
-`requested_model_provider_id` is the routed/requested Provider and
-`model_provider_id` plus `model` name the Provider/model that actually served
-the turn after any invocation-layer fallback. When those Provider ids differ,
-the adapter also emits a `warning` Run event with
-`event_code=model_provider_mismatch` and both ids, so event-stream consumers do
-not need to infer fallback from adapter metadata.
-
-`runs.runtime_profile_id` records which `AgentRuntimeProfile` was selected.
-`runs.runtime_profile_snapshot_json` stores the selected profile's adapter,
-provider/model, the Run-owner credential selected by routing, runtime config,
-and runtime policy at run creation. Execution uses that snapshot before falling back to the immutable
-`AgentVersion`, so later runtime profile edits affect only future runs.
-
-Adapters that consume model config today depend on runtime requirements.
-`claude_code` and `codex_cli` may receive model hints only when the underlying
-CLI supports them. `capability` records model config but does not call an LLM.
-Claude execution must go through the `claude_code`
-RuntimeAdapterSpec and `the host daemon CLI adapter`.
+`RunOut.resolved_model` is a safe read projection of the selected Profile's
+backend/model and whether the runtime definition consumes model configuration.
+It does not imply that a native runtime exposes its account's actual model.
+`runs.runtime_profile_id`, `runtime_key` and
+`runtime_profile_snapshot_json` preserve the selected deployment authority;
+AgentVersion is never a model/runtime fallback. A daemon resolves the selected
+Profile backend at launch. Provider-backed OpenCode receives the explicitly
+selected model through its short-lived proxy configuration; native runtimes
+use their Host-local account/configuration. ProviderTask Runs record their
+bounded invocation separately and have no Agent runtime model projection.
 
 Conversation text deltas are ephemeral transport events. The server keeps a
 bounded, five-minute in-process replay buffer so an SSE subscriber that connects

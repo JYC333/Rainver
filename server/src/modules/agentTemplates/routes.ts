@@ -17,6 +17,7 @@ import { PgAgentRepository } from "../agents/index.js";
 import { agentTemplateSystemPromptKey, resolveAgentSystemPrompt, type ResolvedAgentSystemPrompt } from "../agents/promptRegistry.js";
 import { promptProvenanceOf } from "../prompts/provenance.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
+import { parseExecutionConstraints, rejectRetiredAgentDeploymentFields } from "../agents/agentRouteInputs.js";
 
 interface TemplateSpec {
   id: string;
@@ -27,11 +28,6 @@ interface TemplateSpec {
   visibility: string;
   status: string;
   version: Record<string, unknown>;
-}
-
-interface DefaultProvider {
-  id: string;
-  default_model: string | null;
 }
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -115,22 +111,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (requestedVersion && requestedVersion !== version.id && requestedVersion !== version.version) {
         throw new HttpError(404, "Agent template version not found");
       }
-      const modelConfig = {
-        ...version.model_config_json,
-        ...objectValue(body.model_config_json),
-      };
-      const provider = await defaultProviderForSpace(context, creation.spaceId);
-      const providerId = optionalString(body.default_model_provider_id) ?? provider?.id ?? null;
-      const model = optionalString(body.default_model) ??
-        optionalString(modelConfig.model) ??
-        provider?.default_model ??
-        null;
-      const runtimePolicy = version.runtime_policy_json;
-      const runtimeConfig = optionalObject(body.runtime_config_json) ?? {};
-      const adapterType = optionalString(body.adapter_type) ??
-        optionalString(runtimeConfig.adapter_type) ??
-        optionalString(runtimePolicy.default_adapter_type) ??
-        "model_api";
+      rejectRetiredAgentDeploymentFields(body);
+      const executionConstraints = parseExecutionConstraints(
+        body.execution_constraints ?? version.execution_constraints,
+      );
       const requestSystemPrompt = optionalString(body.system_prompt);
       const resolvedSystemPrompt = requestSystemPrompt
         ? null
@@ -154,15 +138,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         promptProvenanceJson: resolvedSystemPrompt
           ? promptProvenanceOf(resolvedSystemPrompt.resolveResult)
           : null,
-        defaultModelProviderId: providerId,
-        defaultModel: model,
-        adapterType,
-        modelConfigJson: modelConfig,
-        runtimeConfigJson: runtimeConfig,
         contextPolicyJson: optionalObject(body.context_policy_json) ?? version.context_policy_json,
         memoryPolicyJson: optionalObject(body.memory_policy_json) ?? version.memory_policy_json,
-        runtimePolicyJson: runtimePolicy,
-        toolPolicyJson: version.tool_policy_json,
+        riskLevel: executionConstraints.risk_level,
+        maxRunTimeSeconds: executionConstraints.max_run_time_seconds,
+        toolPolicyJson: optionalObject(body.tool_policy_json) ?? version.tool_policy_json,
         outputPolicyJson: optionalObject(body.output_policy_json) ?? version.output_policy_json,
         scheduleConfigJson: optionalObject(body.schedule_config_json) ?? version.schedule_defaults_json,
         outputSchemaJson: optionalObject(body.output_schema_json) ?? version.output_schema_json,
@@ -253,11 +233,10 @@ function templateVersionToOut(template: TemplateSpec): Record<string, unknown> &
   id: string;
   version: string;
   system_prompt: string | null;
-  model_config_json: Record<string, unknown>;
   context_policy_json: Record<string, unknown>;
   memory_policy_json: Record<string, unknown>;
   tool_policy_json: Record<string, unknown>;
-  runtime_policy_json: Record<string, unknown>;
+  execution_constraints: { risk_level: string; max_run_time_seconds: number };
   output_policy_json: Record<string, unknown>;
   schedule_defaults_json: Record<string, unknown>;
   output_schema_json: Record<string, unknown>;
@@ -272,11 +251,10 @@ function templateVersionToOut(template: TemplateSpec): Record<string, unknown> &
     // prompt asset key at create time. Do not expose the legacy template.yaml
     // copy as an editable default.
     system_prompt: null,
-    model_config_json: objectValue(doc.model_config),
     context_policy_json: objectValue(doc.context_policy),
     memory_policy_json: objectValue(doc.memory_policy),
     tool_policy_json: objectValue(doc.tool_policy),
-    runtime_policy_json: objectValue(doc.runtime_policy),
+    execution_constraints: parseExecutionConstraints(doc.execution_constraints),
     output_policy_json: objectValue(doc.output_policy),
     schedule_defaults_json: objectValue(doc.schedule_defaults),
     output_schema_json: objectValue(doc.output_schema),
@@ -288,20 +266,6 @@ function templateVersionToOut(template: TemplateSpec): Record<string, unknown> &
 
 function versionId(template: TemplateSpec): string {
   return `${template.key}:v1`;
-}
-
-async function defaultProviderForSpace(context: ModuleContext, spaceId: string): Promise<DefaultProvider | null> {
-  const result = await dbPool(context.config).query<DefaultProvider>(
-    `SELECT id, default_model
-       FROM model_providers
-      WHERE space_id = $1
-        AND enabled = true
-        AND COALESCE((config_json->>'is_default')::boolean, false) = true
-      ORDER BY updated_at DESC
-      LIMIT 1`,
-    [spaceId],
-  );
-  return result.rows[0] ?? null;
 }
 
 function param(request: { params: unknown }, name: string): string {

@@ -62,14 +62,38 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, model_config_json, runtime_config_json,
-       context_policy_json, memory_policy_json, capabilities_json,
-       tool_permissions_json, runtime_policy_json, created_at
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
      ) VALUES
-       ($1, $3, $5, 'v1', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-        '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $7),
-       ($2, $4, $6, 'v1', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-        '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $7)`,
+       (
+       $1,
+       $3,
+       $5,
+       'v1',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $7
+     ),
+       (
+       $2,
+       $4,
+       $6,
+       'v1',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $7
+     )`,
     [VERSION_A, VERSION_B, AGENT_A, AGENT_B, SPACE_A, SPACE_B, now],
   );
   await db.pool.query(
@@ -115,12 +139,26 @@ describe("tenant reference integrity", () => {
 
     await db.pool.query(
       `INSERT INTO agent_versions (
-         id, agent_id, space_id, version_label, model_config_json,
-         runtime_config_json, context_policy_json, memory_policy_json,
-         capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-       ) VALUES ('tenant-current-only-v2', $1, $2, 'v2',
-                 '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-                 '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $3)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES (
+       'tenant-current-only-v2',
+       $1,
+       $2,
+       'v2',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $3
+     )`,
       [AGENT_A, SPACE_A, now],
     );
     await db.pool.query(
@@ -159,10 +197,10 @@ describe("tenant reference integrity", () => {
     await expect(db.pool.query(
       `INSERT INTO capability_runtime_bindings (
          id, space_id, capability_key, capability_version_id,
-         runtime_adapter_type, render_mode, binding_json, enabled,
+         runtime_key, render_mode, binding_json, enabled,
          created_at, updated_at
        ) VALUES ('cross-space-runtime-binding', $1, 'research.search',
-                 'tenant-capability-b', 'model_api', 'inline_prompt',
+                 'tenant-capability-b', 'opencode', 'inline_prompt',
                  '{}'::jsonb, true, $2, $2)`,
       [SPACE_A, now],
     )).rejects.toMatchObject({ code: "23503" });
@@ -326,7 +364,7 @@ async function insertRun(
     `INSERT INTO runs (
        id, space_id, agent_id, agent_version_id, run_type, trigger_origin,
        status, mode, created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, 'agent', 'manual', 'queued', 'live', $5, $5)`,
+     , execution_kind) VALUES ($1, $2, $3, $4, 'agent', 'manual', 'queued', 'live', $5, $5, 'agent')`,
     [id, spaceId, agentId, agentVersionId, now],
   );
 }

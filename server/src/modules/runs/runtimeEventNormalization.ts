@@ -38,11 +38,11 @@ export function normalizeManagedModelEvents(
 }
 
 export function normalizeVendorEvents(
-  adapterType: string,
+  runtimeKey: string,
   events: Record<string, unknown>[],
   completedAt: string,
 ): RuntimeSemanticEvent[] {
-  const normalizer = createVendorEventNormalizer(adapterType);
+  const normalizer = createVendorEventNormalizer(runtimeKey);
   return events.flatMap((event) => normalizer.push(event, completedAt));
 }
 
@@ -53,7 +53,7 @@ export function normalizeVendorEvents(
  * time must retain this instance; the batch helper above is for tests and
  * already-collected event arrays.
  */
-export function createVendorEventNormalizer(adapterType: string): {
+export function createVendorEventNormalizer(runtimeKey: string): {
   push(event: Record<string, unknown>, occurredAt: string): RuntimeSemanticEvent[];
 } {
   const toolCalls = createAcpToolCallLifecycle();
@@ -62,7 +62,7 @@ export function createVendorEventNormalizer(adapterType: string): {
     // ACP runtime replatform P3/P4: all conversation runtimes speak the same
     // session/update vocabulary. This branch is protocol-shaped, not
     // vendor-specific.
-    if (!isAcpRuntimeAdapter(adapterType) || event.method !== "session/update") return [];
+    if (!isAcpRuntimeAdapter(runtimeKey) || event.method !== "session/update") return [];
 
     const update = recordValue(recordValue(event.params).update);
     const updateType = stringValue(update.sessionUpdate);
@@ -70,7 +70,7 @@ export function createVendorEventNormalizer(adapterType: string): {
     const toolName = redactToolName(stringValue(update.title ?? update.name));
     if (updateType?.toLowerCase().includes("compact")) {
       return [runtimeEvent("provider_compacted", occurredAt, null, "Provider compacted its session context.", {
-        adapter_type: adapterType,
+        runtime_key: runtimeKey,
       })];
     }
     if (updateType === "tool_call") {
@@ -81,9 +81,9 @@ export function createVendorEventNormalizer(adapterType: string): {
         status,
       });
       return [
-        toolStartedEvent(adapterType, occurredAt, lifecycle.callId, toolName),
+        toolStartedEvent(runtimeKey, occurredAt, lifecycle.callId, toolName),
         ...((status === "completed" || status === "failed")
-          ? [toolTerminalEvent(adapterType, occurredAt, lifecycle.callId, toolName, status)]
+          ? [toolTerminalEvent(runtimeKey, occurredAt, lifecycle.callId, toolName, status)]
           : []),
       ];
     }
@@ -91,12 +91,12 @@ export function createVendorEventNormalizer(adapterType: string): {
       const status = stringValue(update.status);
       const lifecycle = toolCalls.updated({ callId: suppliedCallId, name: toolName, status });
       const inferredStart = lifecycle.missingStart
-        ? [toolStartedEvent(adapterType, occurredAt, lifecycle.callId, toolName)]
+        ? [toolStartedEvent(runtimeKey, occurredAt, lifecycle.callId, toolName)]
         : [];
       if (status !== "completed" && status !== "failed") return inferredStart;
       return [
         ...inferredStart,
-        toolTerminalEvent(adapterType, occurredAt, lifecycle.callId, toolName, status),
+        toolTerminalEvent(runtimeKey, occurredAt, lifecycle.callId, toolName, status),
       ];
     }
     return [];
@@ -106,19 +106,19 @@ export function createVendorEventNormalizer(adapterType: string): {
 }
 
 function toolStartedEvent(
-  adapterType: string,
+  runtimeKey: string,
   occurredAt: string,
   callId: string,
   toolName: string | null,
 ): RuntimeSemanticEvent {
   return runtimeEvent("tool_call_started", occurredAt, callId, "Tool call started.", {
-    adapter_type: adapterType,
+    runtime_key: runtimeKey,
     tool_name: toolName,
   });
 }
 
 function toolTerminalEvent(
-  adapterType: string,
+  runtimeKey: string,
   occurredAt: string,
   callId: string,
   toolName: string | null,
@@ -129,12 +129,12 @@ function toolTerminalEvent(
     occurredAt,
     callId,
     status === "failed" ? "Tool call failed." : "Tool call completed.",
-    { adapter_type: adapterType, tool_name: toolName },
+    { runtime_key: runtimeKey, tool_name: toolName },
   );
 }
 
 export function terminalRuntimeEvents(input: {
-  adapterType: string;
+  runtimeKey: string;
   success: boolean;
   completedAt: string;
   errorCode?: string | null;
@@ -146,12 +146,12 @@ export function terminalRuntimeEvents(input: {
       null,
       input.success ? "Assistant message completed." : "Runtime adapter failed.",
       {
-        adapter_type: input.adapterType,
+        runtime_key: input.runtimeKey,
         error_code: input.errorCode ?? null,
       },
     ),
     runtimeEvent("state_transition", input.completedAt, null, "Runtime adapter reached a terminal state.", {
-      adapter_type: input.adapterType,
+      runtime_key: input.runtimeKey,
       state: input.success ? "succeeded" : "failed",
     }),
   ];

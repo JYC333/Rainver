@@ -12,14 +12,14 @@ const PENDING_OUTPUT_MAX_CHARS = 64 * 1024
  */
 export default function RuntimeLoginTerminal({
   hostId,
-  adapterType,
+  runtimeKey,
   installation,
   target = null,
   interactive = true,
   onDone,
 }: {
   hostId: string
-  adapterType: string
+  runtimeKey: string
   installation: string
   target?: HostLoginTarget | null
   interactive?: boolean
@@ -45,7 +45,7 @@ export default function RuntimeLoginTerminal({
     const abort = new AbortController()
     void (async () => {
       try {
-        for await (const event of hostsApi.loginStream(hostId, adapterType, installation, target ?? null, abort.signal)) {
+        for await (const event of hostsApi.loginStream(hostId, runtimeKey, installation, target ?? null, abort.signal)) {
           if (cancelled) break
           handle(event)
         }
@@ -74,7 +74,7 @@ export default function RuntimeLoginTerminal({
     return () => { cancelled = true; abort.abort() }
     // A terminal is one session; a new host/copy is a new component.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hostId, adapterType, installation, target?.kind, target?.kind === 'acp' ? target.methodId : null])
+  }, [hostId, runtimeKey, installation, target?.kind, target?.kind === 'acp' ? target.methodId : null])
 
   function send(data: string) {
     // Nothing is listening after exit; the emulator is told to stop taking
@@ -85,7 +85,7 @@ export default function RuntimeLoginTerminal({
       .then(() => {
         const batch = queued.current
         queued.current = ''
-        return batch ? hostsApi.loginInput(hostId, adapterType, installation, batch) : null
+        return batch ? hostsApi.loginInput(hostId, runtimeKey, installation, batch) : null
       })
       .catch(caught => setError(errMsg(caught)))
   }

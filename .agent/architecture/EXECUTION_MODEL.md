@@ -140,18 +140,18 @@ creates screening/idea checkpoints. A historical operation serializes workflow
 state changes while allowing Source ingestion to continue through a persisted
 pending-incremental queue.
 
-Auto Research uses only the managed `model_api` path. Setup selects a
-ModelProvider and optional model; the server provisions the system research
-Agent/profile. Research source post-processing and synthesis Runs snapshot a
-JSON Schema output contract in the Run contract, and plain-text output is a
-terminal structured-output failure. OpenCode, Claude Code, and Codex remain
-generic local CLI runtimes and are not part of the Research execution API.
+Project Research provisions a system research Agent and Runtime Profile, then
+executes its stages as ordinary Agent Runs pinned to that Profile over ACP.
+Bounded question refinement remains an incidental ProviderTask call. Research
+source post-processing and synthesis Agent Runs snapshot a JSON Schema output
+contract in the Run contract, and plain-text output is a terminal
+structured-output failure.
 
 **AgentRunGroup** — manager-owned multi-agent room for grouped runs. A group has
 members, messages, delegations, one root run, and optional child runs. Human
 users manage/review the group; child-run creation is server-owned and policy
-gated through `run.spawn_child`. Managed API grouped runs can request child
-runs through the authorized `agent.delegate` runtime tool and can pause on
+gated through `run.spawn_child`. ACP Agent Runs can request child runs through
+the authorized `agent.delegate` runtime tool and can pause on
 other room results through `agent.wait_for_results`; frontend room
 messages remain natural-language instructions, but the Tiptap composer resolves
 structured `@agent` tokens into traceable recipient segments. No structured
@@ -178,9 +178,8 @@ references rather than physical Project Folder paths, credentials, rendered
 private context, or raw file bodies. Secret-shaped keys and escaping declared
 output paths fail closed during assembly.
 
-Managed API execution includes the envelope in the internal runtime-host
-request. Local CLI execution receives the same typed envelope at its adapter
-boundary; CLI-specific file projection is owned by the Run Exchange lifecycle.
+The ACP execution path receives the typed envelope at the Host boundary;
+runtime-specific file projection is owned by the Run Exchange lifecycle.
 
 ## RunStep Taxonomy
 
@@ -194,7 +193,7 @@ direct run.
 
 Runtime request and routing outcome are separate. The immutable
 `requested_runtime_profile_id` plus `runtime_profile_selection_source` record
-the caller's intent. The current `runtime_profile_id`, `adapter_type`,
+the caller's intent. The current `runtime_profile_id`, `runtime_key`,
 `model_provider_id`, runtime snapshot, and `route_decision_id` are selected
 execution state. Public DTOs expose them with `selected_*` and
 `active_route_decision_id` names. Routing and fallback retries may replace
@@ -202,20 +201,14 @@ selected state but never requested state; an explicit request remains a hard pin
 
 Route hints carry a runtime-neutral execution shape:
 `conversational`, `structured_generation`, `agentic_files`, or
-`code_execution`, plus required capabilities. (A parallel required-tools channel
-exists and is reachable from a Task's `policy_json`, but nothing populates the
-candidate side, so declaring one rejects every candidate; see
-[ROUTING.md](ROUTING.md).) Conversational Runs
-(including session-backed Chat) and structured generation score Managed API as
-the default. File/code shapes are admitted on the candidate's declared
-`requires_file_access`: a runtime without it has no working directory to act in
-and is rejected unconditionally — not as a consequence of which tools the run
-was granted — and a runtime with it must carry a C3 pass before serving those
-shapes. Managed API is rejected by that declaration rather than by its name. An explicit
-Runtime Profile remains a hard pin but still must pass capability, tool,
-sandbox, trust, credential, and shape compatibility filters. Fallback chains
-contain only candidates that passed those same hard filters; the selected
-profile/adapter/provider and decision id are stamped as route evidence.
+`code_execution`, plus required capabilities. (A parallel required-tools
+channel exists and is reachable from a Task's `policy_json`, but nothing
+populates the candidate side, so declaring one rejects every candidate; see
+[ROUTING.md](ROUTING.md).) File/code shapes require a runtime that declares
+file access. An explicit Runtime Profile remains a hard pin but must still pass
+capability, tool, sandbox, trust, credential and shape filters. Fallback
+chains contain only candidates that passed those hard filters; the selected
+Profile/runtime key/Provider and decision id are recorded as route evidence.
 
 TaskRun creation copies the Task contract and project binding. Automation fire
 copies the automation's validated contract configuration. Direct runs get a
@@ -297,7 +290,7 @@ RunEvent records the structured phase-level evidence spine of a run:
 
 | event_type | Meaning |
 |---|---|
-| `context_compiled` | Legacy evidence name retained by the closed event taxonomy; current managed execution records accepted Runtime Context Delivery and Invocation Snapshot evidence instead |
+| `context_compiled` | Legacy evidence name retained by the closed event taxonomy; current Agent Runs record accepted Runtime Context Delivery and Invocation Snapshot evidence instead |
 | `runtime_selected` | Runtime adapter resolved; sandbox level decided |
 | `credential_granted` | Credentials resolved for adapter |
 | `sandbox_created` | Worktree sandbox created |
@@ -339,16 +332,12 @@ call id as their idempotency key. Best-effort `action_invoked` /
 their persistence failure does not block or roll back the action. Required
 PolicyDecisionRecord persistence remains the fail-closed audit boundary.
 
-The managed multi-turn loop is implemented behind the rainver-owned
-`managedAgentLoop` port by pi-agent-core. Pi owns transcript accumulation,
-sequential batch execution, truncated-batch failure and turn stopping; it does
-not own provider access, tool grants, policy, audit, credentials or context.
-Every model turn calls the existing Runtime Host executor, and therefore gets a
-fresh accepted Delivery, dispatch fingerprint, provider usage record,
-acknowledgement and finalization. Raw model tool arguments cross back into
-`SystemActionGateway`, which remains the validation and authorization authority.
-Suspend envelopes terminate the current batch and later calls are represented
-as blocked tool results without being executed.
+Autonomous Agent conversation state and multi-turn execution belong to the
+external ACP runtime session on the selected Host. Runtime requests for
+Rainver-owned actions return through `AgentToolGateway` and
+`SystemActionGateway`, which remain the validation and authorization
+authorities. Bounded single-purpose model work stays in ProviderTask and does
+not create an Agent tool loop.
 
 Room dispatch reuses the canonical session -> queued Run -> orchestration
 pipeline. A Room is project-bound and may own multiple Conversations. A
@@ -402,11 +391,11 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
 
 ## Canonical Runtime Path
 
-- **Canonical adapter catalog:** `RuntimeAdapterSpec` entries in
-  `server/src/modules/runtimeAdapters/specs.ts`. Each entry declares the
-  executor family and runtime capability/trust claims;
-  `RunOrchestrationService` dispatches through that family map rather than
-  enumerating adapter names.
+- **Canonical runtime registry:** `AgentRuntimeDefinition`s are built from the
+  code-owned definitions in `server/src/modules/runtimeAdapters/`. One
+  `AcpRuntimeAdapter` and shared `AcpController` execute Agent Runs; definitions
+  supply runtime-specific command, installation, login, backend and capability
+  facts. Runtime identity does not select a parallel protocol loop.
 - **CLI copies:** installed on an execution host, never on the server. The
   host card installs, logs in, upgrades and rolls back a managed copy; the
   built-in host is instance-admin gated, a paired machine is its owner's.
@@ -415,16 +404,19 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   internal `POST /internal/runs/execute` port, server execution locks, and
   `agent_run` job dispatch (the server entrypoint runs the worker loop;
   The agents module owns run creation subresources (`POST /agents/{id}/runs`
-  compatibility alias). Runtime Context Gateway delivery, Project Folder
-  sandbox preparation, artifact/proposal materialization, and finalization are
-  native server.
-- **CLI execution:** `runs/remoteHostCliAdapter.ts` renders the runtime's ACP
-  argv and prompt, resolves its host-owned installation and Agent profile,
-  sends the daemon launch, and consumes ACP events. Every CLI runtime follows
-  this path on both host kinds. Login state is the managed copy's own, held on
-  the host; nothing is brokered per Run and no CLI Runtime Context Delivery is
-  assembled. A selected ModelProvider is reached through
-  an expiring proxy lease; its API key never enters the subprocess environment.
+  compatibility alias). The server authorizes, plans and snapshots Runtime
+  Context Delivery before sending its semantic content through ACP. Project
+  Folder paths and workspace mounts remain Host-owned; artifact/proposal
+  materialization and finalization remain Server-owned.
+- **Agent execution:** `runs/remoteHostCliAdapter.ts` resolves the selected
+  Agent Profile and Host installation, launches the ACP runtime through the
+  daemon, and consumes ACP events. The built-in Server Host and paired Hosts
+  share this boundary. The Runtime Context Gateway Delivery is projected into
+  ACP's single user-prompt channel with semantic section labels; tool grants
+  remain independently enforced by the Server gateway. Persistent Host-thread
+  cursor state follows the same opaque ACP session id. `runtime_native` login
+  state stays on its execution Host. An eligible ModelProvider backend uses an
+  expiring proxy lease; its API key never enters the runtime process.
 - **Isolation:** the built-in host's daemon runs inside `sandbox-runner` and
   builds a bubblewrap namespace for each Run. A paired trusted host executes
   natively. The daemon resolves all physical workspace/profile paths. There
@@ -432,67 +424,45 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   worktree/Run Exchange. Diffs and output files are uploaded as artifacts;
   execution can modify the selected workspace before review.
 - **Version selection:** dispatch selects an installation the daemon reports.
-  One current version per adapter per host, with one kept behind it as the
+  One current version per runtime key per host, with one kept behind it as the
   rollback target; there is no instance catalog and no per-Space policy.
-- **HostExecutionPort:** `HostDaemonExecutionAdapter` represents every CLI
-  dispatch, with its actual host kind and Location or managed-container
-  identity. Non-CLI runtimes retain the in-process `ServerHostExecutionAdapter`
-  and Runtime Context Gateway. Folder-less CLI Runs require a managed
-  container; they do not fall back to an application-server temporary directory.
+- **HostExecutionPort:** `HostDaemonExecutionAdapter` represents every Agent
+  dispatch, with its actual Host kind and Location or managed-container
+  identity. Bounded ProviderTask calls do not enter this Agent execution port.
+  Folder-less Agent Runs require a managed execution workspace; they do not
+  fall back to an application-server temporary directory.
 - **Verification:** `command_run` executes the server's recipe on the host
   holding that workspace; file-existence and Git checks use the same channel.
   Strict commands have no network and a minimal namespace; trusted commands
   execute natively with a minimal environment. Failure or incomplete output
   yields unavailable/error evidence. Terminal Task projection is shared.
-- **C3:** admin probes on the built-in host use the same duplex ACP transport,
-  in disposable workspaces and profiles. Bounded recursive file inspection and
-  observed termination accompany completion; no real-runtime pass is inferred
-  from a declaration or a unit-test fixture.
-
-Do not add new adapters to the agents module — it contains Agent/AgentVersion CRUD only.
+Do not add a second Agent execution loop to the agents module — Agent definition
+and Profile management remain separate from ACP dispatch.
 
 ### Runtime delegation boundary
 
-System-level delegation is currently real only for managed API runs inside an
+System-level delegation runs through ACP Agent Runs inside an
 `AgentRunGroup`: `agent.delegate` and `agent.wait_for_results` are exposed
-through the group and policy boundary. Vendor CLIs do not receive those
-server-owned tools. A CLI may nevertheless create its own runtime-internal
-subagents; that behavior is not uniformly controllable across runtimes.
-Claude runs currently render and verify a run-scoped `.claude/settings.json`
-denying the runtime-internal `Task` tool; OpenCode renders and verifies a
-run-scoped locked-agent `opencode.json` denying Task and webfetch; Codex
-remains `unknown`. Absence of a server tool alone does not prove single-agent
-execution.
-
-Codex is not required to gain an equivalent control (decided 2026-08-13).
-Runtime-internal subagents widen no permission surface: they execute in the
-same worktree sandbox and the same freshly cleared `HOME`, reach providers only
-through the same provider proxy, and spend the same Run cost cap, and
-file-scope conformance judges the resulting worktree diff whichever internal
-agent wrote it. What they do cost is attribution and cancellation certainty,
-and Codex is already priced for that — its `unknown` declaration fails the
-subagent conformance check by construction, which holds every Codex route at
-`low` trust. The declaration stays `unknown` because that is the truth; a
-verified value would have to come from an actual probe.
+through the Rainver work surface and policy boundary. A runtime may also create
+runtime-internal subagents, which are not represented as Rainver Agent Runs and
+do not receive independent Run attribution. The Host-daemon path currently
+skips the legacy subagent-deny config writer; therefore its static capability
+declarations do not prove that runtime-internal delegation is disabled. CLI
+candidates remain at their low effective-trust baseline until a restriction is
+actually applied and verified at the Host boundary. Dynamic C3 conformance
+probes are retired and do not qualify or gate current dispatch.
 
 ### Runtime capability declarations
 
 The spec fields `subagent_support`, `subagent_disable_mechanism`,
 `delegation_controllability`, `structured_output`, `checkpoint_resume`,
 `cancellation_reliability`, `observability_level`, `side_effect_level`,
-`data_exposure`, and `trust_level` are declarations used by later routing and
-conformance work. They are intentionally conservative: Claude Code and
-OpenCode declare runtime-configurable subagent disablement, Codex CLI remains
-`unknown` until verified, and planned runtimes are not treated as executable merely because a
-catalog entry exists. C3 turns these declarations into conformance-backed
-route constraints.
-
-The C3 MVP stores one result per runtime×version in
-`runtime_conformance_results`. A result is `passed` only when every check in
-the suite has an explicit passing observation; probe errors become failed
-checks. The five MVP checks are file-scope obedience, subagent-attempt
-detection, cancellation reliability, structured-output compliance, and
-credential leakage. A runtime declaration is not itself conformance evidence.
+`data_exposure`, and `baseline_trust_level` describe registry-known runtime
+behavior used by runtime selection and UI. Such declarations describe product
+capability, not the enforcement installed for a specific Host Run. Planned
+runtimes are not executable merely because a registry entry exists. Dynamic
+C3 result storage and behavioral conformance gates are retired; routing trust
+must be based on controls actually enforced by current dispatch code.
 
 The runtime execution lifecycle uses this external-call pattern:
 
@@ -504,13 +474,14 @@ The runtime execution lifecycle uses this external-call pattern:
 
 `PolicyGateway` is the only enforcement entry point for all policy gates.
 `PolicyEngine` is internal to the policy package; business services must not
-call it directly to authorize or perform a sensitive action. `PreflightService`
-may call it only for non-mutating dry-run simulation, which does not persist a
-`PolicyDecisionRecord`. Actual runtime execution still uses `PolicyGateway`.
+call it directly to authorize or perform a sensitive action. The Automation
+execution preflight (`AutomationsService.runPreflight` in
+`server/src/modules/automations/service.ts`) may call it only for non-mutating
+dry-run simulation, which does not persist a `PolicyDecisionRecord`. Actual runtime execution still uses `PolicyGateway`.
 
 Policy gates run in this order inside server run orchestration:
 
-1. **`runtime.execute`** — `PolicyGateway.enforce()` is called **before** credential resolution, Runtime Context Delivery preparation, and `adapter.execute()`. Rule-relevant fields (`agent_status`, `agent_tool_permissions`, `tool_name`, `adapter_type`, `trigger_origin`, etc.) are passed in `PolicyCheckRequest.context`; safe audit copies remain in `metadata_json`. Blocking decisions raise `PolicyGateBlocked`, are written once through `write_blocked_gate_audit()`, and fail the run.
+1. **`runtime.execute`** — `PolicyGateway.enforce()` is called **before** credential resolution, Runtime Context Delivery preparation, and ACP dispatch. Rule-relevant fields (`agent_status`, `agent_tool_permissions`, `tool_name`, `runtime_key`, `trigger_origin`, etc.) are passed in `PolicyCheckRequest.context`; safe audit copies remain in `metadata_json`. Blocking decisions raise `PolicyGateBlocked`, are written once through `write_blocked_gate_audit()`, and fail the run.
 
 2. **`runtime.use_credential`** — decided by `authorizeCredentialSpend`
    **before** a server-owned ModelProvider key is fetched. The Run executor
@@ -527,7 +498,7 @@ Policy gates run in this order inside server run orchestration:
 
 3. **`context.inject_memory`** — resolved into the immutable execution-control snapshot before Runtime Context acquires Memory candidates. Cross-space without grant → hard DENY. DENY → Delivery preparation fails closed.
 
-4. **`context.render_for_runtime`** — enforced by execution-control preflight and live Gateway authorization before an accepted Delivery reaches `adapter.execute()`. Cross-space drift hard denies.
+4. **`context.render_for_runtime`** — evaluated in the Automation execution preflight (`automations/service.ts`), whose `policy_preflight` snapshot refuses the request (422) when the decision is not `allow`, and carried by the cross-space personal-memory invariant in `policy/decisionCore.ts`, where a cross-space read without a PersonalMemoryGrant hard denies. It is not a second live gate in front of `adapter.execute()`; no other server path enforces it today.
 
 Context assembly also freezes each selected item's owner and visibility and
 updates the Run's `context_taint_json`. Materialization treats that summary as
@@ -543,7 +514,7 @@ data-flow boundary, independent of adapter behavior or prompt compliance.
    `agent.delegate`; callers may not directly forge agent-origin child-run
    spawns. Audit write failure is fail-closed and rolls back child-run creation.
 
-None of these gates may be bypassed. No secret material is resolved before `runtime.use_credential` passes. No context is injected before `context.inject_memory` passes. No adapter is invoked before both `runtime.execute` and `context.render_for_runtime` pass.
+None of these gates may be bypassed. No secret material is resolved before `runtime.use_credential` passes. No context is injected before `context.inject_memory` passes. The gate in front of the adapter is `runtime.execute`, enforced by `runs/orchestrationService.ts`'s `enforceRuntimePolicy` before dispatch; a non-allowed decision raises `RunPreparationError` and the Run ends terminal-failed.
 
 **artifact.persist** — `RunMaterializationService` calls `PolicyGateway.enforce()` before the egress guard, filesystem write, or Artifact row creation. DENY and REQUIRE_APPROVAL call `write_blocked_gate_audit()` once and then raise `PersonalMemoryEgressError`. `PolicyAuditPersistError` and blocked-decision audit write failures block artifact persistence.
 

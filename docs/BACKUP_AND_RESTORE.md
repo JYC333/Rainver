@@ -265,10 +265,12 @@ or unexpected `backup_format`, a PostgreSQL **major-version** mismatch between t
 source and the live restore target, a `schema_migration_version` that this build's
 `server/migrations/` chain does not contain, or a `schema_migration_checksum` that differs from
 this build's copy of that migration file. The last two mean the archive came from a newer build,
-or an applied migration was edited: restoring it would produce a database the migration runner
-refuses to start against. An archive from an **older** build is fine — migrations are
-append-only, and the next `start.sh` applies the ones the archive predates. For controlled
-recovery you can override this check with
+or an applied migration was edited, or the archive belongs to the previous schema epoch:
+restoring it would produce a database the migration runner refuses to start against. An archive
+from an **older** build within the current epoch is fine — migrations are append-only, and the
+next `start.sh` applies the ones the archive predates. A previous-epoch database has no upgrade
+path and must be recreated from the new baseline; do not use the override to cross the epoch.
+For other controlled recovery cases you can override this check with
 `--force-incompatible-backup`; `--force` (file overwrite) and `--force-running` (active
 services) do **not** imply it. The metadata is never silently ignored.
 

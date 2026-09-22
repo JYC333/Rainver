@@ -102,7 +102,7 @@ export class ConversationExecutionContextService {
           if (existingBinding) {
             const existingThread = await repository.getConversationThread(identity.spaceId, session.id, runtime.agent_id);
             if ((runtime.runtime_profile_id !== null && existingBinding.runtime_profile_id !== runtime.runtime_profile_id)
-              || existingThread?.adapter_type !== runtime.adapter_type
+              || existingThread?.runtime_key !== runtime.runtime_key
               || existingThread?.runtime_installation !== runtime.runtime_installation) {
               throw new ConversationExecutionContextError(409, "CLI runtime is fixed for this Conversation Agent; start a new Conversation to change it");
             }
@@ -123,14 +123,14 @@ export class ConversationExecutionContextService {
             spaceId: identity.spaceId,
             sessionId: session.id,
             agentId: selectedProfile.agent_id,
-            adapterType: selectedProfile.adapter_type,
+            runtimeKey: selectedProfile.runtime_key,
             runtimeInstallation: selectedProfile.runtime_installation!,
             createdByUserId: identity.userId,
           });
           if (thread.execution_host_id !== host.id
             || thread.workspace_mode !== primary.kind
             || thread.workspace_location_id !== primary.locationId
-            || thread.adapter_type !== selectedProfile.adapter_type
+            || thread.runtime_key !== selectedProfile.runtime_key
             || thread.runtime_installation !== selectedProfile.runtime_installation) {
             throw new ConversationExecutionContextError(409, "Conversation runtime continuity is already pinned to a different execution target");
           }
@@ -141,7 +141,7 @@ export class ConversationExecutionContextService {
             {
               event: "execution_agent_runtime_initialized",
               eventKey: `execution_agent_runtime:${selectedProfile.agent_id}`,
-              content: `Agent ${selectedProfile.agent_name} joined the Conversation runtime on ${host.name} with ${selectedProfile.adapter_type} (${selectedProfile.runtime_installation}).`,
+              content: `Agent ${selectedProfile.agent_name} joined the Conversation runtime on ${host.name} with ${selectedProfile.runtime_key} (${selectedProfile.runtime_installation}).`,
               details: {
                 execution_host_id: host.id,
                 primary_workspace_mode: primary.kind,
@@ -149,7 +149,7 @@ export class ConversationExecutionContextService {
                 primary_workspace_location_id: primary.locationId,
                 agent_id: selectedProfile.agent_id,
                 runtime_profile_id: selectedProfile.id,
-                adapter_type: selectedProfile.adapter_type,
+                runtime_key: selectedProfile.runtime_key,
                 runtime_installation: selectedProfile.runtime_installation,
               },
             },
@@ -190,7 +190,7 @@ export class ConversationExecutionContextService {
           candidate.execution_host_id === host.id
           && candidate.workspace_mode === primary.kind
           && (primary.kind !== "location" || candidate.workspace_location_id === primary.locationId)
-          && hostInstallationAvailability(host, candidate.adapter_type, candidate.runtime_installation).usable,
+          && hostInstallationAvailability(host, candidate.runtime_key, candidate.runtime_installation).usable,
         );
         if (candidates.length !== 1) {
           throw new ConversationExecutionContextError(
@@ -238,14 +238,14 @@ export class ConversationExecutionContextService {
           spaceId: identity.spaceId,
           sessionId: session.id,
           agentId: participant.agent_id,
-          adapterType: participant.adapter_type,
+          runtimeKey: participant.runtime_key,
           runtimeInstallation: participant.runtime_installation!,
           createdByUserId: identity.userId,
         });
         if (thread.execution_host_id !== host.id
           || thread.workspace_mode !== primary.kind
           || thread.workspace_location_id !== primary.locationId
-          || thread.adapter_type !== participant.adapter_type
+          || thread.runtime_key !== participant.runtime_key
           || thread.runtime_installation !== participant.runtime_installation) {
           throw new ConversationExecutionContextError(409, "Conversation runtime continuity is already pinned to a different execution target");
         }
@@ -265,12 +265,12 @@ export class ConversationExecutionContextService {
             primary_workspace_location_id: primary.locationId,
             agent_id: profile.agent_id,
             runtime_profile_id: profile.id,
-            adapter_type: profile.adapter_type,
+            runtime_key: profile.runtime_key,
             runtime_installation: profile.runtime_installation,
             agents: participantProfiles.map((participant) => ({
               agent_id: participant.agent_id,
               runtime_profile_id: participant.id,
-              adapter_type: participant.adapter_type,
+              runtime_key: participant.runtime_key,
               runtime_installation: participant.runtime_installation,
             })),
           },
@@ -479,7 +479,7 @@ export class ConversationExecutionContextService {
         agent_id: profile.agent_id,
         agent_name: profile.agent_name,
         runtime_profile_id: profile.id,
-        adapter_type: profile.adapter_type,
+        runtime_key: profile.runtime_key,
         runtime_installation: profile.runtime_installation,
         execution_host_id: profile.execution_host_id,
         workspace_mode: profile.workspace_mode,
@@ -497,8 +497,8 @@ export class ConversationExecutionContextService {
     for (const participant of participantAgents) {
       if (!visibleParticipantAgentIds.includes(participant.agent_id)) continue;
       for (const target of hostTargets) {
-        for (const adapter of target.adapters) {
-          for (const installation of adapter.installations) {
+        for (const runtime of target.runtimes) {
+          for (const installation of runtime.installations) {
             const workspaceChoices = [
               ...(target.managed_workspace_available
                 ? [{ mode: "managed" as const, locationId: null, ready: true }]
@@ -515,7 +515,7 @@ export class ConversationExecutionContextService {
                 execution_host_id: target.host_id,
                 workspace_mode: workspace.mode,
                 workspace_location_id: workspace.locationId,
-                adapter_type: adapter.adapter_type,
+                runtime_key: runtime.runtime_key,
                 runtime_installation: installation.id,
               });
               if (existingTargets.has(candidateKey)) continue;
@@ -524,7 +524,7 @@ export class ConversationExecutionContextService {
                 agent_id: participant.agent_id,
                 agent_name: participant.agent_name,
                 runtime_profile_id: null,
-                adapter_type: adapter.adapter_type,
+                runtime_key: runtime.runtime_key,
                 runtime_installation: installation.id,
                 execution_host_id: target.host_id,
                 workspace_mode: workspace.mode,
@@ -593,7 +593,7 @@ export class ConversationExecutionContextService {
             && profile.execution_host_id === thread.execution_host_id
             && profile.workspace_mode === thread.workspace_mode
             && profile.workspace_location_id === thread.workspace_location_id
-            && profile.adapter_type === thread.adapter_type
+            && profile.runtime_key === thread.runtime_key
             && profile.runtime_installation === thread.runtime_installation;
           const pinnedHost = hosts.find((host) => host.id === thread.execution_host_id) ?? null;
           const pinnedLocation = thread.workspace_location_id
@@ -738,7 +738,7 @@ export class ConversationExecutionContextService {
     return {
       agent_id: agentId,
       runtime_profile_id: binding.runtime_profile_id,
-      adapter_type: thread.adapter_type,
+      runtime_key: thread.runtime_key,
       runtime_installation: thread.runtime_installation,
     };
   }
@@ -757,7 +757,7 @@ export class ConversationExecutionContextService {
       runtimes.push({
         agent_id: binding.agent_id,
         runtime_profile_id: binding.runtime_profile_id,
-          adapter_type: thread.adapter_type,
+          runtime_key: thread.runtime_key,
         runtime_installation: thread.runtime_installation,
       });
     }
@@ -782,7 +782,7 @@ export class ConversationExecutionContextService {
       ? await repository.getConversationThread(session.space_id, session.id, runtime.agent_id)
       : null;
     if (binding && ((runtime.runtime_profile_id !== null && binding.runtime_profile_id !== runtime.runtime_profile_id)
-      || thread?.adapter_type !== runtime.adapter_type
+      || thread?.runtime_key !== runtime.runtime_key
       || thread?.runtime_installation !== runtime.runtime_installation)) {
       throw new ConversationExecutionContextError(409, "CLI runtime is fixed for this Conversation Agent; start a new Conversation to change it");
     }
@@ -843,19 +843,19 @@ export class ConversationExecutionContextService {
         executionHostId: host.id,
         workspaceLocationId: primary.locationId,
         workspaceMode: primary.kind,
-        adapterType: runtime.adapter_type,
+        runtimeKey: runtime.runtime_key,
         runtimeInstallation: runtime.runtime_installation,
       });
       runtimeProfileId = ensured.id;
     }
     const profile = await repository.getRuntimeProfile(session.space_id, runtime.agent_id, runtimeProfileId);
-    if (!profile || !profile.enabled || profile.execution_host_id !== host.id || profile.adapter_type !== runtime.adapter_type || profile.runtime_installation !== runtime.runtime_installation) {
+    if (!profile || !profile.enabled || profile.execution_host_id !== host.id || profile.runtime_key !== runtime.runtime_key || profile.runtime_installation !== runtime.runtime_installation) {
       throw new ConversationExecutionContextError(409, "Selected CLI runtime is not available on the selected Host");
     }
     if (!profile.workspace_mode || (profile.workspace_mode === "location" && !profile.workspace_location_id)) {
       throw new ConversationExecutionContextError(409, "Selected runtime is not a host-bound conversation runtime");
     }
-    const installation = hostInstallationAvailability(host, profile.adapter_type, profile.runtime_installation);
+    const installation = hostInstallationAvailability(host, profile.runtime_key, profile.runtime_installation);
     if (!installation.usable) throw new ConversationExecutionContextError(409, installation.reason!);
     if (profile.workspace_mode !== primary.kind
       || (primary.kind === "location" && profile.workspace_location_id !== primary.locationId)) {
@@ -913,7 +913,7 @@ function runtimeChoice(candidate: ConversationExecutionRuntimeProfile): Conversa
   return {
     agent_id: candidate.agent_id,
     runtime_profile_id: candidate.runtime_profile_id,
-    adapter_type: candidate.adapter_type,
+    runtime_key: candidate.runtime_key,
     runtime_installation: candidate.runtime_installation,
   };
 }
@@ -926,14 +926,14 @@ function pinnedRuntimeChoice(choice: ConversationRuntimeChoice | null): Conversa
 
 function runtimeTargetKey(target: Pick<
   RuntimeProfileRow,
-  "agent_id" | "execution_host_id" | "workspace_mode" | "workspace_location_id" | "adapter_type" | "runtime_installation"
+  "agent_id" | "execution_host_id" | "workspace_mode" | "workspace_location_id" | "runtime_key" | "runtime_installation"
 >): string {
   return [
     target.agent_id,
     target.execution_host_id ?? "",
     target.workspace_mode ?? "",
     target.workspace_location_id ?? "",
-    target.adapter_type,
+    target.runtime_key,
     target.runtime_installation ?? "",
   ].join("\u0000");
 }
@@ -973,10 +973,10 @@ function draftBlockReason(
   if (runtime.agent_id === "") return "Choose an Agent";
   const selectedRuntime = usableRuntimes.find((candidate) =>
     candidate.agent_id === runtime.agent_id
-    && candidate.adapter_type === runtime.adapter_type
+    && candidate.runtime_key === runtime.runtime_key
     && candidate.runtime_installation === runtime.runtime_installation
     && (runtime.runtime_profile_id === null || candidate.runtime_profile_id === runtime.runtime_profile_id));
-  if (!selectedRuntime || selectedRuntime.adapter_type !== runtime.adapter_type || selectedRuntime.runtime_installation !== runtime.runtime_installation) {
+  if (!selectedRuntime || selectedRuntime.runtime_key !== runtime.runtime_key || selectedRuntime.runtime_installation !== runtime.runtime_installation) {
     return "The selected CLI installation is unavailable";
   }
   if (selectedRuntime.execution_host_id !== host.id) return "CLI installation and Host must be on the same execution Host";
@@ -1028,7 +1028,7 @@ function runtimeAvailability(
   // `listHosts(userId)` has already applied Host ownership visibility; this
   // helper only evaluates the current heartbeat/capability state.
   if (!hostIsOnline(host)) return { usable: false, reason: "The execution Host is offline" };
-  const installation = hostInstallationAvailability(host, profile.adapter_type, profile.runtime_installation);
+  const installation = hostInstallationAvailability(host, profile.runtime_key, profile.runtime_installation);
   if (!installation.usable) return installation;
   if (profile.workspace_mode === "location") {
     if (!location || location.execution_host_id !== host.id) {
@@ -1046,13 +1046,13 @@ function runtimeAvailability(
 
 function hostInstallationAvailability(
   host: ExecutionHostRow,
-  adapterType: string,
+  runtimeKey: string,
   installationId: string | null,
 ): { usable: boolean; reason: string | null } {
   // The built-in host reports its installations like any other daemon, and a
   // container with nothing installed reports none. Waiving the check for it
   // offered a copy that does not exist and failed at launch instead.
-  const installation = normalizeHostCapabilities(host.capabilities_json).installations[adapterType]
+  const installation = normalizeHostCapabilities(host.capabilities_json).installations[runtimeKey]
     ?.find((candidate) => candidate.id === installationId);
   if (!installation) return { usable: false, reason: "The CLI installation is unavailable on the Host" };
   if (installation.logged_in === false) return { usable: false, reason: "The CLI installation is not logged in" };

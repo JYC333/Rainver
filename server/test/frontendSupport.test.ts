@@ -138,7 +138,7 @@ function emptyHomeSummary() {
     },
     runtime_status: {
       real_adapters_configured_count: 0,
-      configured_adapter_types: [],
+      configured_runtime_keys: [],
       message: "No runtime adapters configured.",
     },
     model_provider_status: {

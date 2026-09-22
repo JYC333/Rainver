@@ -88,7 +88,7 @@ export async function runContextReviewCycle(
     spaceId: string;
     userId: string;
     request: ContextReviewCycleRequest;
-    runId?: string | null;
+    automationRunId?: string | null;
   },
 ): Promise<ContextReviewCycleResult> {
   const reviewScope = input.request.review_scope;
@@ -121,7 +121,7 @@ export async function runContextReviewCycle(
   const retrievalArtifactId = await persistRetrievalMaintenanceReportArtifact(db, {
     spaceId: input.spaceId,
     ownerUserId: input.userId,
-    runId: input.runId ?? null,
+    automationRunId: input.automationRunId ?? null,
     report: retrievalReport,
     source: "context_ops_review_cycle",
     settingsSnapshot,
@@ -134,7 +134,7 @@ export async function runContextReviewCycle(
       createRetrievalMaintenanceProposalPacket(db, {
         spaceId: input.spaceId,
         ownerUserId: input.userId,
-        runId: input.runId ?? null,
+        automationRunId: input.automationRunId ?? null,
         report: retrievalReport,
         source: "context_ops_review_cycle",
         settingsSnapshot,
@@ -302,7 +302,7 @@ export async function runContextReviewCycle(
   const artifactId = await persistContextReviewCycleReportArtifact(db, {
     spaceId: input.spaceId,
     ownerUserId: input.userId,
-    runId: input.runId ?? null,
+    automationRunId: input.automationRunId ?? null,
     reviewScope,
     result: resultWithoutArtifact,
   });
@@ -335,7 +335,7 @@ async function persistContextReviewCycleReportArtifact(
   input: {
     spaceId: string;
     ownerUserId: string;
-    runId: string | null;
+    automationRunId: string | null;
     reviewScope: "private" | "space_ops";
     result: Omit<ContextReviewCycleResult, "artifact_id">;
   },
@@ -348,7 +348,7 @@ async function persistContextReviewCycleReportArtifact(
     artifact_id: id,
     space_id: input.spaceId,
     owner_user_id: input.ownerUserId,
-    run_id: input.runId,
+    automation_run_id: input.automationRunId,
     generated_at: now,
     ...input.result,
     access_safety: {
@@ -367,7 +367,7 @@ async function persistContextReviewCycleReportArtifact(
     metadata: payload,
     canonicalFormat: "context_review_cycle_report.v1",
     visibility: visibilityForReviewScope(input.reviewScope),
-    runId: input.runId,
+    runId: null,
     createdAt: now,
   });
 }

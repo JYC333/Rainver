@@ -152,7 +152,7 @@ describe("memory + sessions contracts", () => {
         event_stream_url: "/api/v1/runs/run-1/turn/stream",
         backend: {
           runtime_profile_id: "runtime-profile-1",
-          adapter_type: "model_api",
+          runtime_key: "opencode",
         },
       }).status,
     ).toBe("queued");
@@ -161,12 +161,12 @@ describe("memory + sessions contracts", () => {
         options: [{
           runtime_profile_id: "runtime-profile-1",
           name: "Subscription",
-          adapter_type: "claude_code",
+          runtime_key: "claude_code",
           model_name: null,
         }],
         binding: {
           runtime_profile_id: "runtime-profile-1",
-          adapter_type: "claude_code",
+          runtime_key: "claude_code",
         },
       }).binding?.runtime_profile_id,
     ).toBe("runtime-profile-1");

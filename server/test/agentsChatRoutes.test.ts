@@ -96,7 +96,7 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
       async resolveBinding() {
         return {
           runtime_profile_id: "runtime-profile-1",
-          adapter_type: "model_api",
+          runtime_key: "opencode",
           execution_host_id: null,
           workspace_location_id: null,
           runtime_installation: null,
@@ -129,6 +129,7 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
         return {
           id: "run-1",
           space_id: "space-1",
+          execution_kind: "agent",
           agent_id: input.agent_id,
           agent_version_id: "agent-version-1",
           status: "queued",
@@ -138,7 +139,7 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
           project_folder_id: null,
           session_id: input.session_id ?? null,
           project_id: null,
-          adapter_type: null,
+          runtime_key: null,
           model_provider_id: null,
           required_sandbox_level: "none",
           trigger_origin: input.trigger_origin,
@@ -175,7 +176,7 @@ describe("agents asynchronous chat-turn route", () => {
       backends: {
         async resolveBinding() {
           return {
-            runtime_profile_id: "runtime-profile-1", adapter_type: "codex_cli",
+            runtime_profile_id: "runtime-profile-1", runtime_key: "codex_cli",
             execution_host_id: null, workspace_location_id: null, runtime_installation: "own", binding_id: "binding-1",
             runtime_state_key: "11111111-1111-4111-8111-111111111111",
             runtime_session_id: null, runtime_context_fingerprint: null,
@@ -191,7 +192,7 @@ describe("agents asynchronous chat-turn route", () => {
       runs: {
         async createQueuedRun(input) {
           queued.push(input as unknown as Record<string, unknown>);
-          return { id: "run-1", space_id: "space-1", agent_id: input.agent_id, agent_version_id: "agent-version-1", status: "queued", mode: input.mode, prompt: input.prompt ?? null, instruction: null, project_folder_id: null, session_id: input.session_id ?? null, project_id: null, adapter_type: null, model_provider_id: null, required_sandbox_level: "none", trigger_origin: input.trigger_origin, started_at: null, ended_at: null };
+          return { id: "run-1", space_id: "space-1", execution_kind: "agent", agent_id: input.agent_id, agent_version_id: "agent-version-1", status: "queued", mode: input.mode, prompt: input.prompt ?? null, instruction: null, project_folder_id: null, session_id: input.session_id ?? null, project_id: null, runtime_key: null, model_provider_id: null, required_sandbox_level: "none", trigger_origin: input.trigger_origin, started_at: null, ended_at: null };
         },
       },
     }));
@@ -307,7 +308,7 @@ describe("agents asynchronous chat-turn route", () => {
       event_stream_url: "/api/v1/runs/run-1/turn/stream",
       backend: {
         runtime_profile_id: "runtime-profile-1",
-        adapter_type: "model_api",
+        runtime_key: "opencode",
       },
     });
     expect(messages).toEqual([
@@ -339,7 +340,7 @@ describe("agents asynchronous chat-turn route", () => {
         async resolveBinding() {
           return {
             runtime_profile_id: "runtime-profile-1",
-            adapter_type: "claude_code",
+            runtime_key: "claude_code",
             binding_id: "binding-1",
             runtime_state_key: "11111111-1111-4111-8111-111111111111",
             runtime_session_id: null,
@@ -465,7 +466,7 @@ describe("agents asynchronous chat-turn route", () => {
           async resolveBinding() {
             return {
               runtime_profile_id: "runtime-profile-1",
-              adapter_type: "claude_code",
+              runtime_key: "claude_code",
               execution_host_id: null,
               workspace_location_id: null,
               runtime_installation: null,
@@ -510,7 +511,7 @@ describe("agents asynchronous chat-turn route", () => {
       conversation_backend: {
         schema_version: "conversation_backend.v1",
         runtime_profile_id: "runtime-profile-1",
-        adapter_type: "claude_code",
+        runtime_key: "claude_code",
       },
       execution_mode: "conversation_lightweight.v1",
       chat_turn: {
@@ -542,7 +543,7 @@ describe("agents asynchronous chat-turn route", () => {
           async resolveBinding() {
             return {
               runtime_profile_id: "runtime-profile-1",
-              adapter_type: "opencode",
+              runtime_key: "opencode",
               execution_host_id: null,
               workspace_location_id: null,
               runtime_installation: null,
@@ -601,7 +602,7 @@ describe("agents asynchronous chat-turn route", () => {
           async resolveBinding() {
             return {
               runtime_profile_id: "runtime-profile-1",
-              adapter_type: "claude_code",
+              runtime_key: "claude_code",
               execution_host_id: null,
               workspace_location_id: null,
               runtime_installation: null,

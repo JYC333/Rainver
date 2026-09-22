@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
+import { RuntimeKeySchema } from "./runtimeAuthority.js";
 
 /** The only filesystem modes a Conversation may use for its Primary. */
 export const ConversationWorkspaceModeSchema = z.enum(["managed", "location"]);
@@ -31,7 +32,7 @@ export type ConversationExecutionSelection = z.infer<typeof ConversationExecutio
 export const ConversationRuntimeSelectionSchema = z.object({
   agent_id: IdSchema,
   runtime_profile_id: IdSchema,
-  adapter_type: z.string().trim().min(1).max(64),
+  runtime_key: RuntimeKeySchema,
   runtime_installation: z.string().trim().min(1).max(128),
 }).strict();
 export type ConversationRuntimeSelection = z.infer<typeof ConversationRuntimeSelectionSchema>;
@@ -122,7 +123,7 @@ export const ConversationExecutionRuntimeProfileSchema = z.object({
   agent_id: IdSchema,
   agent_name: z.string().trim().min(1),
   runtime_profile_id: IdSchema.nullable(),
-  adapter_type: z.string().trim().min(1),
+  runtime_key: z.string().trim().min(1),
   runtime_installation: z.string().trim().min(1).nullable(),
   execution_host_id: IdSchema.nullable(),
   workspace_mode: ConversationWorkspaceModeSchema.nullable(),

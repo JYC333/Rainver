@@ -2,9 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
-import { resolveProviderCommandStore } from "../providers/commands/store.js";
-import { PgAgentRepository } from "../agents/repository.js";
-import { completeProviderText } from "../providers/invocation/invocation.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { canonicalRunOutput } from "../runs/orchestrationResults.js";
+import {
+  BoundedProviderTaskError,
+  runBoundedProviderTask,
+} from "../runs/boundedProviderTaskRun.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
@@ -19,7 +22,7 @@ import {
 } from "./repository.js";
 
 export interface DailyReportResult {
-  run_id: string;
+  run_id: string | null;
   artifact_id: string | null;
   proposal_ids: string[];
   experience_proposal_ids: string[];
@@ -29,6 +32,14 @@ export interface DailyReportResult {
   summary_preview: string;
   skipped?: boolean;
   existing_artifact_id?: string | null;
+}
+
+interface PersistedDailyReport {
+  artifactId: string;
+  proposalIds: string[];
+  experienceProposalIds: string[];
+  memoryProposalIds: string[];
+  summaryPreview: string;
 }
 
 interface SettingRow {
@@ -97,7 +108,6 @@ interface StructuredDailyReport {
   memory_candidates: MemoryCandidate[];
 }
 
-export const DAILY_REPORTER_AGENT_KIND = "system_daily_reporter";
 const VALID_MEMORY_TYPES = new Set(["semantic", "episodic", "preference", "procedural", "project"]);
 const SERVICE_VERSION = "1";
 
@@ -152,7 +162,7 @@ export class DailyCaptureReportService {
       const existing = await this.findExistingArtifact(input.spaceId, input.userId, input.localDate);
       if (existing) {
         return {
-          run_id: existing.run_id ?? "",
+          run_id: existing.run_id,
           artifact_id: existing.id,
           proposal_ids: [],
           experience_proposal_ids: [],
@@ -168,38 +178,9 @@ export class DailyCaptureReportService {
 
     const captures = await this.selectCaptures(input);
     const captureIds = captures.map((row) => row.id);
-    const agent = await this.ensureReporterAgent(input.spaceId, input.userId);
-    const runId = randomUUID();
-    const now = new Date().toISOString();
-    await this.db.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, run_type, trigger_origin, source,
-         mode, status, instructed_by_user_id, prompt, started_at, created_at, updated_at,
-         owner_user_id, visibility, access_level, required_sandbox_level
-       ) VALUES (
-         $1, $2, $3, $4, 'reflection', $5, 'managed',
-         'live', 'running', $6, $7, $8, $8, $8,
-         $6, 'space_shared', 'full', 'none'
-       )`,
-      [
-        runId,
-        input.spaceId,
-        agent.agentId,
-        agent.versionId,
-        input.triggerOrigin,
-        input.userId,
-        `Generate Daily Capture Report for ${input.localDate} from ${captures.length} capture(s).`,
-        now,
-      ],
-    );
-
     if (captures.length === 0) {
-      await this.db.query(
-        `UPDATE runs SET status = 'succeeded', ended_at = $2, updated_at = $2 WHERE id = $1`,
-        [runId, now],
-      );
       return {
-        run_id: runId,
+        run_id: null,
         artifact_id: null,
         proposal_ids: [],
         experience_proposal_ids: [],
@@ -211,7 +192,6 @@ export class DailyCaptureReportService {
       };
     }
 
-    const store = resolveProviderCommandStore(this.config);
     const contentBlocks = captures
       .map((cap) => {
         const text = (cap.content ?? "").trim();
@@ -229,77 +209,89 @@ export class DailyCaptureReportService {
       `Date: ${input.localDate}\nActivity IDs:\n${captureIds.map((id) => `  - ${id}`).join("\n")}\n\n` +
       `Captures:\n\n${bounded}\n\nGenerate the daily capture report JSON:`;
 
-    let rawJson: string;
-    try {
-      const completion = await completeProviderText(store, input.spaceId, {
-        provider_id: "",
-        model: null,
-        system: systemPrompt,
-        user: userPrompt,
-        task: "daily_report",
-        metering: {
-          source_resource_type: "run",
-          source_resource_id: runId,
-          run_id: runId,
+    // One Run for this report, whatever the key pool does behind it. It used
+    // to be one Run per provider attempt, each failed on the spot, so a report
+    // that succeeded on the second key left a failed Run beside it claiming
+    // the same work.
+    const persisted: { value: PersistedDailyReport | null } = { value: null };
+    const task = await runBoundedProviderTask(this.db, this.config, {
+      completion: "text",
+      spaceId: input.spaceId,
+      userId: input.userId,
+      task: "daily_report",
+      providerId: "",
+      model: null,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+      prompt: `Generate Daily Capture Report for ${input.localDate} from ${captures.length} capture(s).`,
+      runType: "reflection",
+      triggerOrigin: input.triggerOrigin,
+      contractSnapshot: {
+        source: { kind: "direct", id: input.setting.id },
+        route_hints_json: {
+          owner_domain: "dailyReports",
+          report_date: input.localDate,
+          setting_id: input.setting.id,
+          capture_count: captures.length,
         },
-        spend: dailyReportSpend(this.db, input),
-      });
-      rawJson = completion.text;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await this.db.query(
-        `UPDATE runs SET status = 'failed', error_message = $2, ended_at = $3, updated_at = $3 WHERE id = $1`,
-        [runId, message.slice(0, 1000), new Date().toISOString()],
-      );
-      return {
-        run_id: runId,
-        artifact_id: null,
-        proposal_ids: [],
-        experience_proposal_ids: [],
-        memory_proposal_ids: [],
-        capture_count: captures.length,
-        status: "failed",
-        summary_preview: `Provider call failed: ${message}`,
-      };
-    }
-
-    let report: StructuredDailyReport;
-    try {
-      report = parseStructuredReport(rawJson);
-    } catch {
-      await this.db.query(
-        `UPDATE runs SET status = 'failed', error_message = 'Invalid LLM JSON', ended_at = $2, updated_at = $2 WHERE id = $1`,
-        [runId, new Date().toISOString()],
-      );
-      return {
-        run_id: runId,
-        artifact_id: null,
-        proposal_ids: [],
-        experience_proposal_ids: [],
-        memory_proposal_ids: [],
-        capture_count: captures.length,
-        status: "failed",
-        summary_preview: "Invalid structured report from LLM.",
-      };
-    }
-
-    const persisted = await this.persistSuccessfulReport({
-      input,
-      report,
-      captureIds,
-      captureCount: captures.length,
-      runId,
+      },
+      spend: dailyReportSpend(this.db, input),
+      // Parsing and persistence are part of the bounded task, not of what
+      // happens after it: the Run is marked succeeded by the same transaction
+      // that writes the artifact and proposals, so a terminal Daily Report Run
+      // always has a report behind it.
+      finalize: async (completion, runId) => {
+        let report: StructuredDailyReport;
+        try {
+          report = parseStructuredReport(completion.text);
+        } catch {
+          throw new BoundedProviderTaskError(
+            "invalid_daily_report_json",
+            "Provider response did not match the Daily Capture Report structure.",
+          );
+        }
+        try {
+          persisted.value = await this.persistSuccessfulReport({
+            input,
+            report,
+            captureIds,
+            captureCount: captures.length,
+            runId,
+          });
+        } catch (error) {
+          throw new BoundedProviderTaskError(
+            "daily_report_persistence_failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+        return null;
+      },
     });
 
+    const report = persisted.value;
+    if (!task.ok || !report) {
+      return {
+        run_id: task.runId,
+        artifact_id: null,
+        proposal_ids: [],
+        experience_proposal_ids: [],
+        memory_proposal_ids: [],
+        capture_count: captures.length,
+        status: "failed",
+        summary_preview: task.ok
+          ? "Daily report produced no persisted report."
+          : dailyReportFailureSummary(task.errorCode, task.error),
+      };
+    }
     return {
-      run_id: runId,
-      artifact_id: persisted.artifactId,
-      proposal_ids: persisted.proposalIds,
-      experience_proposal_ids: persisted.experienceProposalIds,
-      memory_proposal_ids: persisted.memoryProposalIds,
+      run_id: task.runId,
+      artifact_id: report.artifactId,
+      proposal_ids: report.proposalIds,
+      experience_proposal_ids: report.experienceProposalIds,
+      memory_proposal_ids: report.memoryProposalIds,
       capture_count: captures.length,
       status: "succeeded",
-      summary_preview: persisted.summaryPreview,
+      summary_preview: report.summaryPreview,
     };
   }
 
@@ -431,10 +423,21 @@ export class DailyCaptureReportService {
     }
     const proposalIds = [...experienceProposalIds, ...memoryProposalIds];
 
-    await db.query(
-      `UPDATE runs SET status = 'succeeded', ended_at = $2, updated_at = $2 WHERE id = $1`,
-      [runId, endedAt],
-    );
+    await new PgRunRepository(db).markRunTerminal({
+      run_id: runId,
+      space_id: input.spaceId,
+      status: "succeeded",
+      output_json: canonicalRunOutput({
+        success: true,
+        outputText: report.overview,
+        outputJson: {
+          artifact_id: artifactId,
+          proposal_ids: proposalIds,
+          capture_count: captureCount,
+        },
+      }),
+      completed_at: endedAt,
+    });
     const nextRunAt = computeInitialNextRunAt(input.setting, new Date(endedAt));
     await new PgDailyReportSettingsRepository(db).recordReportCompleted(
       input.spaceId,
@@ -497,49 +500,6 @@ export class DailyCaptureReportService {
       [input.spaceId, input.userId, sourceTypes, bounds.startUtcIso, bounds.endUtcIso],
     );
     return result.rows;
-  }
-
-  /**
-   * The Space's daily-report Agent: the attribution every report Run is
-   * recorded under. System-managed like the source annotator — shared with the
-   * Space and owned by nobody, so the Space's owner or admin manages it — and
-   * created once per Space. The report spends through the Space's own provider
-   * task chain, so the Agent carries no model of its own.
-   */
-  private async ensureReporterAgent(spaceId: string, userId: string): Promise<{ agentId: string; versionId: string }> {
-    const existing = await this.activeReporterAgent(spaceId);
-    if (existing) return existing;
-    try {
-      const created = await PgAgentRepository.fromConfig(this.config).create({
-        spaceId,
-        userId,
-        ownerUserId: null,
-        agentKind: DAILY_REPORTER_AGENT_KIND,
-        name: "Daily capture report",
-        description: "System-managed agent that daily capture reports are recorded under.",
-        visibility: "space_shared",
-        adapterType: "capability",
-      });
-      if (!created.current_version_id) throw new Error("The daily-report Agent was created without a version.");
-      return { agentId: created.id, versionId: created.current_version_id };
-    } catch (error) {
-      // Another report created it first; the per-Space unique index kept it one.
-      const raced = await this.activeReporterAgent(spaceId);
-      if (raced) return raced;
-      throw error;
-    }
-  }
-
-  private async activeReporterAgent(spaceId: string): Promise<{ agentId: string; versionId: string } | null> {
-    const result = await this.db.query<{ id: string; current_version_id: string }>(
-      `SELECT id, current_version_id
-         FROM agents
-        WHERE space_id = $1 AND agent_kind = $2 AND status = 'active' AND current_version_id IS NOT NULL
-        LIMIT 1`,
-      [spaceId, DAILY_REPORTER_AGENT_KIND],
-    );
-    const row = result.rows[0];
-    return row ? { agentId: row.id, versionId: row.current_version_id } : null;
   }
 
   private async insertExperienceProposal(
@@ -642,6 +602,13 @@ function extractJson(text: string): string {
   const end = text.lastIndexOf("}");
   if (start >= 0 && end > start) return text.slice(start, end + 1);
   return text.trim();
+}
+
+/** What the person sees for a Daily Report that did not finish. */
+function dailyReportFailureSummary(code: string, message: string): string {
+  if (code === "invalid_daily_report_json") return "Invalid structured report from LLM.";
+  if (code === "daily_report_persistence_failed") return `Daily report persistence failed: ${message}`;
+  return `Provider call failed: ${message}`;
 }
 
 function parseStructuredReport(rawJson: string): StructuredDailyReport {

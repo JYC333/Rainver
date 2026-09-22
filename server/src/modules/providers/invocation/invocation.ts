@@ -26,10 +26,6 @@
  * written to process env and never returned in responses.
  */
 
-import type {
-  CanonicalToolCall,
-  CanonicalToolDefinition,
-} from "@rainver/protocol";
 import { createHash } from "node:crypto";
 import type {
   InvocationTarget,
@@ -37,7 +33,7 @@ import type {
   ProviderCommandStore,
   ProviderInfo,
 } from "../commands/store.js";
-import type { ProviderTaskAttemptRefs } from "../commands/types.js";
+import type { ProviderTaskAttemptRefs, ProviderTaskRunLifecycle } from "../commands/types.js";
 import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import type { UsageAttribution, UsageObservation } from "../../usage/index.js";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
@@ -56,9 +52,6 @@ import { completePiAiChat } from "./piAiChat.js";
 export interface ChatMessage {
   role: string;
   content: string | null;
-  tool_calls?: CanonicalToolCall[];
-  tool_call_id?: string;
-  name?: string;
 }
 
 export interface ProviderChatRequestBody {
@@ -68,14 +61,13 @@ export interface ProviderChatRequestBody {
   system?: string | null;
   temperature?: number;
   max_tokens?: number;
-  tools?: CanonicalToolDefinition[] | null;
   output_format?: ProviderStructuredOutput | null;
   cache_strategy?: "conversation";
-  on_text_delta?: (delta: string) => void;
-  abort_signal?: AbortSignal;
   egressPolicy?: RetrievalEgressPolicy | null;
   /** Managed Runtime Context deliveries authorize one physical provider only. */
   allow_provider_fallback?: boolean;
+  /** Optional lifecycle integration for formal bounded-task Runs. */
+  providerTaskRunLifecycle?: ProviderTaskRunLifecycle;
   metering: ProviderMeteringContext;
   /** Why this key is being spent; decided before any key is resolved. */
   spend: CredentialSpendBasis;
@@ -88,7 +80,6 @@ export interface ProviderChatResponseBody {
   usage: Record<string, unknown>;
   cost?: ProviderUsageCost;
   cost_accuracy: "catalog" | "unknown";
-  tool_calls?: CanonicalToolCall[];
   structured_output?: Record<string, unknown> | null;
   finish_reason?: string | null;
 }
@@ -127,12 +118,6 @@ export interface ProviderStructuredOutput {
 export type ProviderMeteringContext = Partial<UsageObservation>;
 
 export class ProviderInvocationError extends Error {
-  /** How many real network attempts (initial + same-key retries) were made
-   * for the request that ultimately threw this error. Set by
-   * invokeProviderWithPool after construction — callers that report a
-   * fixed "attempt=1" in error text should use this instead. */
-  attempts?: number;
-
   constructor(
     readonly statusCode: number,
     message: string,
@@ -204,14 +189,6 @@ async function fetchProviderResponse(
     });
   } catch (error) {
     if (error instanceof ProviderInvocationError) throw error;
-    if (init?.signal?.aborted) {
-      throw new ProviderInvocationError(
-        499,
-        "Provider request was cancelled by the run owner",
-        { failure_class: "permanent", actions: ["fail"] },
-        "provider_request_aborted",
-      );
-    }
     throw new ProviderInvocationError(
       502,
       `Provider network request failed (${safeUrlForError(url)}): ${errorDetail(error)}`,
@@ -316,10 +293,6 @@ function openAiBase(provider: ProviderInfo): string {
 function cohereV2Base(provider: ProviderInfo): string {
   const base = (provider.base_url || "https://api.cohere.com").replace(/\/+$/, "");
   return base.endsWith("/v2") ? base : `${base}/v2`;
-}
-
-function providerSupportsRuntimeTools(providerType: string): boolean {
-  return providerVendor(providerType)?.supportsRuntimeTools ?? false;
 }
 
 function diagnosticSummary(diagnostics: StructuredOutputDiagnostics | undefined): string {
@@ -610,14 +583,6 @@ function attemptOnce(
   if (body.output_format && !providerSupportsStructuredOutput(provider.provider_type)) {
     throw structuredOutputUnsupportedError(provider.provider_type);
   }
-  if (body.tools?.length && !providerSupportsRuntimeTools(provider.provider_type)) {
-    throw new ProviderInvocationError(
-      400,
-      `provider_type '${provider.provider_type}' does not support runtime-host tools yet; use an OpenAI-compatible or Anthropic provider, or disable retrieval tools for this run`,
-      { failure_class: "permanent", actions: ["fail"] },
-      "runtime_tool_provider_unsupported",
-    );
-  }
   return completePiAiChat(
     provider,
     httpClient(target.network_profile).fetch as typeof globalThis.fetch,
@@ -762,6 +727,7 @@ async function beginProviderTaskAttempt(
     eventType: UsageObservation["event_type"];
     model: string | null | undefined;
     input: unknown;
+    onStarted?: ProviderTaskRunLifecycle["onAttemptStarted"];
   },
 ): Promise<ProviderTaskAttemptRefs | null> {
   if (!store.beginProviderTaskAttempt) return null;
@@ -789,6 +755,7 @@ async function beginProviderTaskAttempt(
       source_type: metering.source_type ?? "local_run",
       execution_channel: metering.execution_channel ?? "managed_api",
     },
+    ...(input.onStarted ? { on_started: input.onStarted } : {}),
   });
 }
 
@@ -806,6 +773,11 @@ function meteringWithProviderTaskRefs(
   }
   return {
     ...metering,
+    ...(refs.run_id ? {
+      run_id: refs.run_id,
+      source_resource_type: "run",
+      source_resource_id: refs.run_id,
+    } : {}),
     idempotency_key: refs.usage_source_id,
     dimensions: {
       ...recordValue(metering.dimensions),
@@ -870,9 +842,13 @@ async function completeProviderTaskAttempt(
   refs: ProviderTaskAttemptRefs | null,
   status: "accepted" | "failed",
   errorCode: string | null,
+  lifecycle?: ProviderTaskRunLifecycle,
 ): Promise<void> {
-  if (!refs || !store.completeProviderTaskAttempt) return;
-  await store.completeProviderTaskAttempt(refs, { status, error_code: errorCode });
+  if (!refs) return;
+  if (store.completeProviderTaskAttempt) {
+    await store.completeProviderTaskAttempt(refs, { status, error_code: errorCode });
+  }
+  await lifecycle?.onAttemptCompleted(refs, { status, error_code: errorCode });
 }
 
 function providerErrorCode(error: unknown): string {
@@ -1047,7 +1023,6 @@ async function invokeProviderWithPool(
   }
 
   let lastError: unknown = null;
-  let attempts = 0;
   for (const candidate of target.candidates) {
     if (
       candidate.credential_kind === "subscription_oauth"
@@ -1063,30 +1038,29 @@ async function invokeProviderWithPool(
     }
     let sameKeyRetries = 0;
     for (;;) {
-      attempts += 1;
-      let emittedText = false;
-      const attemptBody = body.on_text_delta
-        ? {
-            ...body,
-            on_text_delta: (delta: string) => {
-              emittedText = true;
-              body.on_text_delta?.(delta);
-            },
-          }
-        : body;
       const providerTask = await beginProviderTaskAttempt(store, target, body.metering, {
         eventType: "llm.generation",
         model: body.model ?? target.provider.default_model,
         input: {
           system: body.system ?? null,
           messages: body.messages,
-          tools: body.tools ?? null,
           output_format: body.output_format ?? null,
           max_tokens: body.max_tokens ?? null,
         },
+        onStarted: body.providerTaskRunLifecycle?.onAttemptStarted,
       });
+      let acceptedResult: ProviderChatResponseBody | null = null;
+      let attemptAttribution = attribution;
       try {
-        const result = await attemptOnce(target, candidate.api_key, attemptBody);
+        if (providerTask?.run_id) {
+          attemptAttribution = await resolveProviderUsageAttribution(
+            store,
+            target.provider.space_id,
+            "llm.generation",
+            meteringWithProviderTaskRefs(body.metering, providerTask),
+          );
+        }
+        const result = await attemptOnce(target, candidate.api_key, body);
         if (candidate.member_id) {
           await store.recordPoolOutcome(candidate.member_id, { kind: "success" });
         }
@@ -1098,30 +1072,26 @@ async function invokeProviderWithPool(
           cost: result.cost,
           costAccuracy: result.cost_accuracy,
           metering: meteringWithProviderTaskRefs(body.metering, providerTask),
-          attribution,
+          attribution: attemptAttribution,
         });
-        await completeProviderTaskAttempt(store, providerTask, "accepted", null);
-        return result;
+        acceptedResult = result;
       } catch (error) {
-        await completeProviderTaskAttempt(store, providerTask, "failed", providerErrorCode(error));
+        await completeProviderTaskAttempt(
+          store,
+          providerTask,
+          "failed",
+          providerErrorCode(error),
+          body.providerTaskRunLifecycle,
+        );
         await recordFailedProviderAttemptUsage(store, target, {
           eventType: "llm.generation",
           model: body.model ?? target.provider.default_model,
           metering: body.metering,
-          attribution,
+          attribution: attemptAttribution,
           refs: providerTask,
           error,
         });
-        if (emittedText) {
-          throw new ProviderInvocationError(
-            502,
-            "Provider stream ended after partial output was delivered",
-            { failure_class: "permanent", actions: ["fail"] },
-            "provider_stream_interrupted",
-          );
-        }
         lastError = error;
-        if (error instanceof ProviderInvocationError) error.attempts = attempts;
         if (!(error instanceof ProviderInvocationError) || !error.resilience) {
           // Permanent request-shaped errors (and non-taxonomy errors) do not
           // rotate: another key would fail the same way.
@@ -1149,6 +1119,20 @@ async function invokeProviderWithPool(
           throw error;
         }
         break; // rotate to the next key
+      }
+      if (acceptedResult) {
+        // Outside the `try` on purpose: this is what records the attempt as
+        // accepted. Inside, a throw from here would fall into the `catch`,
+        // which completes the *same* attempt again as failed — telling the
+        // caller's Run lifecycle that a delivered completion failed.
+        await completeProviderTaskAttempt(
+          store,
+          providerTask,
+          "accepted",
+          null,
+          body.providerTaskRunLifecycle,
+        );
+        return acceptedResult;
       }
     }
   }
@@ -1284,6 +1268,7 @@ export interface ProviderTextCompletionInput {
   egressPolicy?: RetrievalEgressPolicy | null;
   metering: ProviderMeteringContext;
   spend: CredentialSpendBasis;
+  providerTaskRunLifecycle?: ProviderTaskRunLifecycle;
 }
 
 export interface ProviderMessagesCompletionInput {
@@ -1292,17 +1277,15 @@ export interface ProviderMessagesCompletionInput {
   system?: string | null;
   messages: ChatMessage[];
   max_tokens?: number;
-  tools?: CanonicalToolDefinition[] | null;
   output_format?: ProviderStructuredOutput | null;
   cache_strategy?: "conversation";
-  on_text_delta?: (delta: string) => void;
-  abort_signal?: AbortSignal;
   /** Auxiliary-task name; resolves a ProviderTaskPolicy chain when present. */
   task?: string | null;
   egressPolicy?: RetrievalEgressPolicy | null;
   allow_provider_fallback?: boolean;
   metering: ProviderMeteringContext;
   spend: CredentialSpendBasis;
+  providerTaskRunLifecycle?: ProviderTaskRunLifecycle;
 }
 
 /**
@@ -1333,6 +1316,7 @@ export async function completeProviderText(
     egressPolicy: input.egressPolicy,
     metering: input.metering,
     spend: input.spend,
+    providerTaskRunLifecycle: input.providerTaskRunLifecycle,
   });
 }
 
@@ -1346,7 +1330,6 @@ export async function completeProviderMessages(
   provider_id: string;
   model: string;
   usage: Record<string, unknown>;
-  tool_calls?: CanonicalToolCall[];
   structured_output?: Record<string, unknown> | null;
   finish_reason?: string | null;
 }> {
@@ -1356,15 +1339,13 @@ export async function completeProviderMessages(
     system: input.system,
     messages: input.messages,
     max_tokens: input.max_tokens,
-    tools: input.tools,
     output_format: input.output_format,
     cache_strategy: input.cache_strategy,
-    on_text_delta: input.on_text_delta,
-    abort_signal: input.abort_signal,
     egressPolicy: input.egressPolicy,
     allow_provider_fallback: input.allow_provider_fallback,
     metering: meteringContext(input.metering, input.task),
     spend: input.spend,
+    providerTaskRunLifecycle: input.providerTaskRunLifecycle,
   });
 
   // A structured contract is bound to the selected Research provider/model.
@@ -1385,7 +1366,6 @@ export async function completeProviderMessages(
           provider_id: result.provider_id,
           model: result.model,
           usage: result.usage,
-          tool_calls: result.tool_calls,
           structured_output: result.structured_output,
           finish_reason: result.finish_reason,
         };
@@ -1415,7 +1395,6 @@ export async function completeProviderMessages(
     provider_id: result.provider_id,
     model: result.model,
     usage: result.usage,
-    tool_calls: result.tool_calls,
     structured_output: result.structured_output,
     finish_reason: result.finish_reason,
   };

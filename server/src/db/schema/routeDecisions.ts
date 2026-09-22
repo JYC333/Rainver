@@ -9,7 +9,7 @@ export const routeDecisions = pgTable("route_decisions", {
   attemptNumber: integer("attempt_number").default(1).notNull(),
   status: varchar({ length: 32 }).notNull(),
   selectedRuntimeProfileId: varchar("selected_runtime_profile_id", { length: 36 }),
-  selectedAdapterType: varchar("selected_adapter_type", { length: 64 }),
+  selectedRuntimeKey: varchar("selected_runtime_key", { length: 64 }),
   selectedModelProviderId: varchar("selected_model_provider_id", { length: 36 }),
   reason: varchar({ length: 1024 }).notNull(),
   hintsJson: jsonb("hints_json").notNull(),

@@ -60,7 +60,7 @@ export interface PersistedDigest {
   digest_date: string;
   profile_maturity: "cold" | "warming" | "warm" | null;
   status: "ready" | "empty" | "failed";
-  generated_by_run_id: string | null;
+  generated_by_automation_run_id: string | null;
   settings: Record<string, unknown>;
   created_at: string;
   updated_at: string;
@@ -188,7 +188,7 @@ export class PgInformationDigestRepository {
     projectId?: string;
     date: string;
     maturity: "cold" | "warming" | "warm" | null;
-    runId?: string | null;
+    automationRunId?: string | null;
     settings: Record<string, unknown>;
     items: Array<{
       candidate: DigestCandidate;
@@ -215,15 +215,15 @@ export class PgInformationDigestRepository {
     await this.db.query(
       `INSERT INTO information_digests
          (id, space_id, digest_type, owner_user_id, project_id, digest_date,
-          profile_maturity, status, generated_by_run_id, settings_json, created_at, updated_at)
+          profile_maturity, status, generated_by_automation_run_id, settings_json, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11)
        ON CONFLICT (id) DO UPDATE SET
          profile_maturity = EXCLUDED.profile_maturity,
          status = EXCLUDED.status,
-         generated_by_run_id = COALESCE(EXCLUDED.generated_by_run_id, information_digests.generated_by_run_id),
+         generated_by_automation_run_id = COALESCE(EXCLUDED.generated_by_automation_run_id, information_digests.generated_by_automation_run_id),
          settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at`,
       [digestId, input.spaceId, input.type, input.ownerUserId ?? null, input.projectId ?? null,
-        input.date, input.maturity, input.items.length ? "ready" : "empty", input.runId ?? null,
+        input.date, input.maturity, input.items.length ? "ready" : "empty", input.automationRunId ?? null,
         JSON.stringify(input.settings), now],
     );
     await this.db.query(`DELETE FROM information_digest_items WHERE digest_id = $1`, [digestId]);
@@ -250,7 +250,7 @@ export class PgInformationDigestRepository {
   async get(spaceId: string, digestId: string, readerUserId: string): Promise<PersistedDigest | null> {
     const roots = await this.db.query<Omit<PersistedDigest, "items" | "settings"> & { settings_json: unknown }>(
       `SELECT id, digest_type, owner_user_id, project_id, digest_date, profile_maturity,
-              status, generated_by_run_id, settings_json, created_at, updated_at
+              status, generated_by_automation_run_id, settings_json, created_at, updated_at
          FROM information_digests WHERE space_id = $1 AND id = $2`,
       [spaceId, digestId],
     );
@@ -347,9 +347,9 @@ export class PgInformationDigestRepository {
     return { available: true, blindSpots: result.rows.map((row) => row.domain_key) };
   }
 
-  async findByScope(spaceId: string, type: "personal" | "project", scopeId: string, date: string): Promise<{ id: string; generated_by_run_id: string | null } | null> {
-    const result = await this.db.query<{ id: string; generated_by_run_id: string | null }>(
-      `SELECT id, generated_by_run_id FROM information_digests
+  async findByScope(spaceId: string, type: "personal" | "project", scopeId: string, date: string): Promise<{ id: string; generated_by_automation_run_id: string | null } | null> {
+    const result = await this.db.query<{ id: string; generated_by_automation_run_id: string | null }>(
+      `SELECT id, generated_by_automation_run_id FROM information_digests
         WHERE space_id = $1 AND digest_type = $2 AND digest_date = $4
           AND (($2 = 'personal' AND owner_user_id = $3) OR ($2 = 'project' AND project_id = $3))`,
       [spaceId, type, scopeId, date],

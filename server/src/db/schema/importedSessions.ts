@@ -57,7 +57,7 @@ export const importedSessions = pgTable("imported_sessions", {
 	executionHostId: varchar("execution_host_id", { length: 36 }),
 	/** The host owner: the only person who may import from that machine (ADR 0016). */
 	ownerUserId: varchar("owner_user_id", { length: 36 }).notNull(),
-	adapterType: varchar("adapter_type", { length: 64 }).notNull(),
+	runtimeKey: varchar("runtime_key", { length: 64 }).notNull(),
 	/** `own` or `managed:<version>` — the selected runtime installation. */
 	installation: varchar({ length: 64 }).notNull(),
 	/** The runtime's own opaque session id, in its own format. */
@@ -92,7 +92,7 @@ export const importedSessions = pgTable("imported_sessions", {
 	// Identity is the copy plus the runtime's own id: the same session id from
 	// two installations is two sessions, and re-importing the same one twice
 	// must land on the same row rather than a duplicate.
-	unique("uq_imported_sessions_source").on(table.workspaceLocationId, table.adapterType, table.installation, table.vendorSessionId),
+	unique("uq_imported_sessions_source").on(table.workspaceLocationId, table.runtimeKey, table.installation, table.vendorSessionId),
 	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "imported_sessions_space_id_fkey" }).onDelete("cascade"),
 	foreignKey({ columns: [table.projectId], foreignColumns: [projects.id], name: "imported_sessions_project_id_fkey" }).onDelete("cascade"),
 	foreignKey({ columns: [table.projectFolderId], foreignColumns: [projectFolders.id], name: "imported_sessions_project_folder_id_fkey" }).onDelete("set null"),

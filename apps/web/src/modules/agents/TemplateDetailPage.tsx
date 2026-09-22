@@ -9,7 +9,7 @@ import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Badge } from '../../components/ui/badge'
 import { errMsg } from '../../lib/utils'
-import { InputsView, OutputsView, ScheduleView, SafetyView, ModelView } from './ConfigCards'
+import { InputsView, OutputsView, ScheduleView, SafetyView } from './ConfigCards'
 import { outputTypeLabel } from './policyMap'
 
 export default function TemplateDetailPage() {
@@ -81,7 +81,10 @@ export default function TemplateDetailPage() {
             </div>
           </Card>
           <Card><ScheduleView version={current} /></Card>
-          <Card><CardTitle className="mb-2">Model</CardTitle><ModelView version={current} /></Card>
+          <Card>
+            <CardTitle className="mb-2">Runtime Profile</CardTitle>
+            <p className="text-sm text-muted-foreground">New Agents use the Space&apos;s explicit provisioning default, or Server Runtime OpenCode with its native account when no override is configured.</p>
+          </Card>
           <Card><SafetyView version={current} /></Card>
         </>
       )}

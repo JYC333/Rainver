@@ -22,13 +22,42 @@ import {
 
 const db = useTestDatabase(import.meta.filename, { max: 10 });
 
+/**
+ * A minimal ProviderTask ledger triple, the shape `beginProviderTaskAttempt`
+ * commits inside the attempt's own transaction. `runs` carries no foreign key
+ * to these tables, so the ids only need to be stable within a test.
+ */
+async function seedProviderTaskLedger(): Promise<{
+  provider_id: string;
+  control_id: string;
+  delivery_id: string;
+  invocation_snapshot_id: string;
+}> {
+  const now = new Date().toISOString();
+  const providerId = randomUUID();
+  await db.pool.query(
+    `INSERT INTO model_providers (
+       id, space_id, owner_user_id, name, provider_type, default_model,
+       enabled, capabilities_json, config_json, created_at, updated_at
+     ) VALUES ($1,'space-1','user-1','Bounded Task Provider','openai','gpt-test',
+               true,'{}'::jsonb,'{}'::jsonb,$2,$2)`,
+    [providerId, now],
+  );
+  return {
+    provider_id: providerId,
+    control_id: randomUUID(),
+    delivery_id: randomUUID(),
+    invocation_snapshot_id: randomUUID(),
+  };
+}
+
 beforeEach(async () => {
   if (!db.available) return;
   const now = new Date().toISOString();
   await resetTables(db.pool, ["spaces", "users"], { cascade: true });
   await resetTables(
     db.pool,
-    ["content_access_grants", "space_memberships", "actors", "agents", "agent_versions", "agent_runtime_profiles", "agent_run_groups", "agent_run_group_members", "agent_run_messages", "runs", "run_delegations", "run_steps", "run_events", "run_execution_locks", "run_evaluations", "verification_results", "run_finalizations", "jobs", "job_events", "artifacts", "tasks", "task_runs", "task_evaluations"],
+    ["content_access_grants", "space_memberships", "actors", "agents", "agent_versions", "agent_runtime_profiles", "agent_run_groups", "agent_run_group_members", "agent_run_messages", "runs", "run_delegations", "run_steps", "run_events", "run_execution_locks", "run_evaluations", "verification_results", "run_finalizations", "jobs", "job_events", "artifacts", "tasks", "task_runs", "task_evaluations", "model_providers"],
     { cascade: true },
   );
   await db.pool.query(
@@ -56,15 +85,21 @@ beforeEach(async () => {
   await db.pool.query(
     `INSERT INTO agent_versions (
        id, agent_id, space_id, version_label, system_prompt,
-       model_config_json, runtime_config_json, context_policy_json,
-       memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, created_at
+       context_policy_json, memory_policy_json, capabilities_json,
+       tool_permissions_json, created_at
      ) VALUES ('version-1', 'agent-1', 'space-1', 'v1', 'You are a test agent.',
-       '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-       '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $1)`,
+       '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, $1)`,
     [now],
   );
   await db.pool.query("UPDATE agents SET current_version_id = 'version-1' WHERE id = 'agent-1'");
+  await db.pool.query(
+    `INSERT INTO agent_runtime_profiles (
+       id, space_id, agent_id, name, runtime_key, backend_mode,
+       runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
+     ) VALUES ('profile-1','space-1','agent-1','Default','opencode','runtime_native',
+       '{}'::jsonb,'{}'::jsonb,true,true,$1,$1)`,
+    [now],
+  );
   await db.pool.query(
     `INSERT INTO model_providers (
        id, space_id, owner_user_id, name, provider_type, enabled,
@@ -82,7 +117,8 @@ async function seedAgent(
     space_id: string;
     status: string;
     system_prompt: string | null;
-    runtime_config_json: Record<string, unknown>;
+    runtime_key: string;
+    runtime_profile_options_json: Record<string, unknown>;
     skip_runtime_profile: boolean;
   }> = {},
 ): Promise<{ agentId: string; versionId: string }> {
@@ -99,18 +135,16 @@ async function seedAgent(
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1,$2,$3,'v1',$4,'{}'::jsonb,$6::jsonb,'{}'::jsonb,'{}'::jsonb,
-       '[]'::jsonb,'{}'::jsonb,'{}'::jsonb,$5)`,
+       id, agent_id, space_id, version_label, system_prompt,
+       context_policy_json, memory_policy_json, capabilities_json,
+       tool_permissions_json, created_at
+     ) VALUES ($1,$2,$3,'v1',$4,'{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'{}'::jsonb,$5)`,
     [
       versionId,
       agentId,
       spaceId,
       overrides.system_prompt ?? "You are a test agent.",
       now,
-      JSON.stringify(overrides.runtime_config_json ?? {}),
     ],
   );
   await db.pool.query(
@@ -118,13 +152,10 @@ async function seedAgent(
     [agentId, versionId, spaceId],
   );
   if (!overrides.skip_runtime_profile) {
-    const adapterType =
-      typeof overrides.runtime_config_json?.adapter_type === "string"
-        ? overrides.runtime_config_json.adapter_type
-        : "model_api";
+    const runtimeKey = overrides.runtime_key ?? "opencode";
     await seedRuntimeProfile(agentId, {
-      adapter_type: adapterType,
-      runtime_config_json: { adapter_type: adapterType },
+      runtime_key: runtimeKey,
+      runtime_config_json: overrides.runtime_profile_options_json ?? {},
       is_default: true,
     });
   }
@@ -137,7 +168,8 @@ async function seedRuntimeProfile(
     id: string;
     space_id: string;
     name: string;
-    adapter_type: string;
+    runtime_key: string;
+    backend_mode: "runtime_native" | "model_provider";
     model_provider_id: string | null;
     model_name: string | null;
     runtime_config_json: Record<string, unknown>;
@@ -145,24 +177,26 @@ async function seedRuntimeProfile(
   }> = {},
 ): Promise<string> {
   const id = overrides.id ?? randomUUID();
-  const adapterType = overrides.adapter_type ?? "model_api";
+  const runtimeKey = overrides.runtime_key ?? "opencode";
+  const backendMode = overrides.backend_mode ?? "runtime_native";
   const now = new Date().toISOString();
   await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, model_provider_id,
+       id, space_id, agent_id, name, runtime_key, backend_mode, model_provider_id,
        model_name, runtime_config_json, runtime_policy_json, enabled,
        is_default, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,true,$10,$11,$11)`,
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,true,$11,$12,$12)`,
     [
       id,
       overrides.space_id ?? "space-1",
       agentId,
       overrides.name ?? "Default",
-      adapterType,
+      runtimeKey,
+      backendMode,
       overrides.model_provider_id ?? null,
       overrides.model_name ?? null,
-      JSON.stringify(overrides.runtime_config_json ?? { adapter_type: adapterType }),
-      JSON.stringify({ default_adapter_type: adapterType }),
+      JSON.stringify(overrides.runtime_config_json ?? {}),
+      JSON.stringify({}),
       overrides.is_default ?? true,
       now,
     ],
@@ -174,8 +208,6 @@ async function seedRun(
   overrides: Partial<{
     space_id: string;
     status: string;
-    adapter_type: string;
-    model_provider_id: string | null;
     instructed_by_user_id: string | null;
     required_sandbox_level: string;
   }> = {},
@@ -185,16 +217,17 @@ async function seedRun(
   await db.pool.query(
     `INSERT INTO runs (
        id, space_id, agent_id, agent_version_id, run_type, trigger_origin,
-       status, mode, adapter_type, model_provider_id,
+       status, mode, runtime_profile_id, runtime_profile_selection_source,
+       runtime_key, runtime_profile_snapshot_json,
        instructed_by_user_id, required_sandbox_level, created_at, updated_at
-     ) VALUES ($1,$2,'agent-1','version-1','agent','manual',$3,'live',
-       $4,$5,$6,$7,$8,$8)`,
+     , execution_kind) VALUES ($1,$2,'agent-1','version-1','agent','manual',$3,'live',
+       'profile-1','default','opencode',
+       '{"id":"profile-1","runtime_key":"opencode","backend_mode":"runtime_native","runtime_config_json":{},"runtime_policy_json":{}}'::jsonb,
+       $4,$5,$6,$6,'agent')`,
     [
       id,
       overrides.space_id ?? "space-1",
       overrides.status ?? "queued",
-      overrides.adapter_type ?? "model_api",
-      overrides.model_provider_id ?? "provider-1",
       overrides.instructed_by_user_id ?? null,
       overrides.required_sandbox_level ?? "none",
       now,
@@ -241,6 +274,7 @@ describe("runs repositories against real PostgreSQL", () => {
     const { agentId, versionId } = await seedAgent();
 
     const run = await repo.createQueuedRun({
+      execution_kind: "agent",
       agent_id: agentId,
       space_id: "space-1",
       user_id: "user-1",
@@ -263,15 +297,13 @@ describe("runs repositories against real PostgreSQL", () => {
     });
   });
 
-  it("creates an unrouted Run without copying AgentVersion runtime config", async (ctx) => {
+  it("creates an unrouted Run when no Runtime Profile is available", async (ctx) => {
     if (!db.available) return ctx.skip();
     const repo = new PgRunRepository(db.pool);
-    const { agentId } = await seedAgent({
-      runtime_config_json: { adapter_type: "claude_code" },
-      skip_runtime_profile: true,
-    });
+    const { agentId } = await seedAgent({ skip_runtime_profile: true });
 
     const run = await repo.createQueuedRun({
+      execution_kind: "agent",
       agent_id: agentId,
       space_id: "space-1",
       user_id: "user-1",
@@ -282,7 +314,211 @@ describe("runs repositories against real PostgreSQL", () => {
     });
     expect(run.requested_runtime_profile_id).toBeNull();
     expect(run.runtime_profile_id).toBeNull();
-    expect(run.adapter_type).toBeNull();
+    expect(run.runtime_key).toBeNull();
+  });
+
+  it("allows a pre-dispatch failure without a Profile snapshot but rejects a started Run without one", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
+    const { agentId } = await seedAgent({ skip_runtime_profile: true });
+    const createUnroutedRun = () => repo.createQueuedRun({
+      execution_kind: "agent",
+      agent_id: agentId,
+      space_id: "space-1",
+      user_id: "user-1",
+      mode: "live",
+      run_type: "agent",
+      trigger_origin: "manual",
+      prompt: "route this run",
+    });
+
+    const failedBeforeDispatch = await createUnroutedRun();
+    expect(failedBeforeDispatch.runtime_profile_selection_source).toBe("default");
+    await db.pool.query(
+      `UPDATE runs
+          SET status = 'failed',
+              ended_at = now(),
+              error_json = '{"error_code":"no_route"}'::jsonb,
+              updated_at = now()
+        WHERE space_id = $1 AND id = $2`,
+      ["space-1", failedBeforeDispatch.id],
+    );
+    await expect(repo.getRun("space-1", failedBeforeDispatch.id)).resolves.toMatchObject({ status: "failed" });
+
+    const startedWithoutDispatch = await createUnroutedRun();
+    await expect(db.pool.query(
+      `UPDATE runs SET status = 'running', started_at = now(), updated_at = now()
+        WHERE space_id = $1 AND id = $2`,
+      ["space-1", startedWithoutDispatch.id],
+    )).rejects.toMatchObject({ code: "23514", constraint: "ck_runs_execution_shape" });
+
+    const coordinator = await repo.createCoordinatorRun({
+      execution_kind: "agent",
+      agent_id: agentId,
+      space_id: "space-1",
+      user_id: "user-1",
+      mode: "live",
+      run_type: "workflow",
+      trigger_origin: "manual",
+      prompt: "coordinate child work",
+    });
+    await db.pool.query(
+      `UPDATE runs SET status = 'waiting_for_dependency', updated_at = now()
+        WHERE space_id = $1 AND id = $2`,
+      ["space-1", coordinator.id],
+    );
+    await expect(repo.getRun("space-1", coordinator.id)).resolves.toMatchObject({
+      status: "waiting_for_dependency",
+    });
+  });
+
+  // ADR 0022 §3: the two Run shapes are mutually exclusive at the database
+  // level, so no code path can produce a ProviderTask Run wearing fake Agent
+  // identities or an Agent Run pointing at ProviderTask ledger records.
+  it("rejects a provider_task Run that carries Agent identities", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    await expect(db.pool.query(
+      `INSERT INTO runs (
+         id, space_id, execution_kind, run_type, trigger_origin, status, mode,
+         created_at, updated_at,
+         agent_id, agent_version_id, runtime_profile_id,
+         runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+         model_provider_id,
+         provider_task_control_id, provider_task_delivery_id, provider_task_snapshot_id
+       ) VALUES (
+         $1, 'space-1', 'provider_task', 'system', 'system', 'queued', 'live',
+         now(), now(),
+         'agent-1', 'version-1', 'profile-1',
+         'explicit', 'opencode', '{}'::jsonb,
+         'provider-1',
+         $2, $3, $4
+       )`,
+      [randomUUID(), randomUUID(), randomUUID(), randomUUID()],
+    )).rejects.toMatchObject({ code: "23514", constraint: "ck_runs_execution_shape" });
+  });
+
+  // The same "snapshot required before dispatch" rule the agent shape states:
+  // a bounded ProviderTask Run may be queued before the attempt that picks its
+  // provider exists, but it may never *start* without the ledger it points at.
+  it("queues a provider_task Run before its first attempt and settles it once started", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
+    const queued = await repo.createQueuedProviderTaskRun({
+      space_id: "space-1",
+      user_id: "user-1",
+      trigger_origin: "manual",
+      run_type: "agent",
+      task: "project_research_adhoc_analyze",
+      prompt: "Summarize the selected material.",
+      capability_id: "research.adhoc_analyze",
+    });
+    expect(queued).toMatchObject({ execution_kind: "provider_task", status: "queued" });
+    await expect(repo.getRun("space-1", queued.id)).resolves.toMatchObject({
+      status: "queued",
+      model_provider_id: null,
+    });
+
+    // Starting without the ledger it must point at is the shape violation.
+    await expect(db.pool.query(
+      `UPDATE runs SET status = 'running', started_at = now(), updated_at = now()
+        WHERE space_id = $1 AND id = $2`,
+      ["space-1", queued.id],
+    )).rejects.toMatchObject({ code: "23514", constraint: "ck_runs_execution_shape" });
+
+    const refs = await seedProviderTaskLedger();
+    await expect(repo.startQueuedProviderTaskRun({
+      run_id: queued.id,
+      space_id: "space-1",
+      provider_id: refs.provider_id,
+      control_id: refs.control_id,
+      delivery_id: refs.delivery_id,
+      invocation_snapshot_id: refs.invocation_snapshot_id,
+    })).resolves.toBe(true);
+    await expect(repo.getRun("space-1", queued.id)).resolves.toMatchObject({ status: "running" });
+
+    // Once started, the binding is not re-stamped: a second attempt of the
+    // same bounded task links itself to the ledger, not to the Run again.
+    await expect(repo.startQueuedProviderTaskRun({
+      run_id: queued.id,
+      space_id: "space-1",
+      provider_id: refs.provider_id,
+      control_id: refs.control_id,
+      delivery_id: refs.delivery_id,
+      invocation_snapshot_id: refs.invocation_snapshot_id,
+    })).resolves.toBe(false);
+
+    await repo.markRunTerminal({
+      run_id: queued.id,
+      space_id: "space-1",
+      status: "succeeded",
+      output_json: { schema_version: "run_output.v1", status: "succeeded", summary: "", result: {}, output_manifest: [] },
+      completed_at: new Date().toISOString(),
+    });
+    await expect(repo.getRun("space-1", queued.id)).resolves.toMatchObject({ status: "succeeded" });
+  });
+
+  it("lets a queued provider_task Run be cancelled without ever naming a provider", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
+    const queued = await repo.createQueuedProviderTaskRun({
+      space_id: "space-1",
+      user_id: "user-1",
+      trigger_origin: "manual",
+      run_type: "agent",
+      task: "project_research_adhoc_analyze",
+      prompt: "Summarize the selected material.",
+      capability_id: "research.adhoc_analyze",
+    });
+    await db.pool.query(
+      `UPDATE runs SET status = 'cancelled', ended_at = now(), updated_at = now()
+        WHERE space_id = $1 AND id = $2`,
+      ["space-1", queued.id],
+    );
+    await expect(repo.getRun("space-1", queued.id)).resolves.toMatchObject({ status: "cancelled" });
+  });
+
+  it("rejects a half-bound provider_task Run", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const refs = await seedProviderTaskLedger();
+    // A provider with no ledger, and a ledger with no provider, are both
+    // neither the queued shape nor the started one.
+    await expect(db.pool.query(
+      `INSERT INTO runs (
+         id, space_id, execution_kind, run_type, trigger_origin, status, mode,
+         created_at, updated_at, model_provider_id
+       ) VALUES ($1, 'space-1', 'provider_task', 'agent', 'manual', 'queued', 'live',
+                 now(), now(), $2)`,
+      [randomUUID(), refs.provider_id],
+    )).rejects.toMatchObject({ code: "23514", constraint: "ck_runs_execution_shape" });
+    await expect(db.pool.query(
+      `INSERT INTO runs (
+         id, space_id, execution_kind, run_type, trigger_origin, status, mode,
+         created_at, updated_at,
+         provider_task_control_id, provider_task_delivery_id, provider_task_snapshot_id
+       ) VALUES ($1, 'space-1', 'provider_task', 'agent', 'manual', 'queued', 'live',
+                 now(), now(), $2, $3, $4)`,
+      [randomUUID(), refs.control_id, refs.delivery_id, refs.invocation_snapshot_id],
+    )).rejects.toMatchObject({ code: "23514", constraint: "ck_runs_execution_shape" });
+  });
+
+  it("rejects an agent Run that carries ProviderTask ledger references", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    await expect(db.pool.query(
+      `INSERT INTO runs (
+         id, space_id, execution_kind, run_type, trigger_origin, status, mode,
+         created_at, updated_at,
+         agent_id, agent_version_id, runtime_profile_id,
+         runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+         provider_task_control_id, provider_task_delivery_id, provider_task_snapshot_id
+       ) VALUES (
+         $1, 'space-1', 'agent', 'agent', 'manual', 'queued', 'live',
+         now(), now(),
+         'agent-1', 'version-1', 'profile-1',
+         'explicit', 'opencode', '{}'::jsonb,
+         $2, $3, $4
+       )`,
+      [randomUUID(), randomUUID(), randomUUID(), randomUUID()],
+    )).rejects.toMatchObject({ code: "23514", constraint: "ck_runs_execution_shape" });
   });
 
   it("leaves the space default ModelProvider to Router selection", async (ctx) => {
@@ -307,6 +543,7 @@ describe("runs repositories against real PostgreSQL", () => {
     );
 
     const run = await repo.createQueuedRun({
+      execution_kind: "agent",
       agent_id: agentId,
       space_id: "space-1",
       user_id: "user-1",
@@ -316,7 +553,7 @@ describe("runs repositories against real PostgreSQL", () => {
       prompt: "hi",
     });
 
-    expect(run.adapter_type).toBeNull();
+    expect(run.runtime_key).toBeNull();
     expect(run.model_provider_id).toBeNull();
     expect(run.route_decision_id).toBeNull();
   });
@@ -325,10 +562,12 @@ describe("runs repositories against real PostgreSQL", () => {
     if (!db.available) return ctx.skip();
     const repo = new PgRunRepository(db.pool);
     const { agentId } = await seedAgent({
-      runtime_config_json: { adapter_type: "claude_code" },
+      runtime_key: "claude_code",
+      runtime_profile_options_json: { effort: "medium" },
     });
 
     const run = await repo.createQueuedRun({
+      execution_kind: "agent",
       agent_id: agentId,
       space_id: "space-1",
       user_id: "user-1",
@@ -338,7 +577,7 @@ describe("runs repositories against real PostgreSQL", () => {
       prompt: "chat",
     });
 
-    expect(run.adapter_type).toBeNull();
+    expect(run.runtime_key).toBeNull();
     expect(run.project_folder_id).toBeNull();
     expect(run.required_sandbox_level).toBe("none");
   });
@@ -346,20 +585,18 @@ describe("runs repositories against real PostgreSQL", () => {
   it("persists a requested runtime profile without preselecting or snapshotting it", async (ctx) => {
     if (!db.available) return ctx.skip();
     const repo = new PgRunRepository(db.pool);
-    const { agentId } = await seedAgent({
-      runtime_config_json: { adapter_type: "model_api" },
-    });
+    const { agentId } = await seedAgent();
     const profileId = await seedRuntimeProfile(agentId, {
       name: "CLI review",
-      adapter_type: "codex_cli",
+      runtime_key: "codex_cli",
       runtime_config_json: {
-        adapter_type: "codex_cli",
-        runtime_installation: "managed:1.2.3",
+        effort: "medium",
       },
       is_default: false,
     });
 
     const run = await repo.createQueuedRun({
+      execution_kind: "agent",
       agent_id: agentId,
       space_id: "space-1",
       user_id: "user-1",
@@ -372,12 +609,12 @@ describe("runs repositories against real PostgreSQL", () => {
 
     expect(run.requested_runtime_profile_id).toBe(profileId);
     expect(run.runtime_profile_id).toBeNull();
-    expect(run.adapter_type).toBeNull();
+    expect(run.runtime_key).toBeNull();
     expect(run.runtime_profile_snapshot_json).toBeNull();
 
     await db.pool.query(
       `UPDATE agent_runtime_profiles
-          SET runtime_config_json = '{"adapter_type":"model_api"}'::jsonb
+          SET runtime_config_json = '{"effort":"high"}'::jsonb
         WHERE id = $1`,
       [profileId],
     );

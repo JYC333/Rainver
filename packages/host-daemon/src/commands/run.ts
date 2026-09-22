@@ -15,9 +15,9 @@ import { probeUsage } from "../usageProbe.js";
 import { startEgressProxy } from "../egressProxy.js";
 
 import {
-  adapterIsBeingReplaced,
-  holdingAdapter,
-  withAdapterDrained,
+  isRuntimeKeyBeingReplaced,
+  withRuntimeKeyHeld,
+  withRuntimeKeyDrained,
   setEgressProxy,
   handleLaunch,
   handleStdin,
@@ -54,6 +54,18 @@ const TOOL_DRAIN_TIMEOUT_MS = 5 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
+/**
+ * How long to wait between attempts once the control plane has refused this
+ * daemon as outdated.
+ *
+ * Reconnecting cannot change that answer — only an update can — and every
+ * refused `hello` makes the server record this daemon's version again, so the
+ * ordinary ≤30s backoff turns one operator problem into a permanent write
+ * loop. Fifteen minutes is short enough that an update applied by hand comes
+ * back online promptly (an update restarts this process anyway) and long
+ * enough that an un-updated host costs the server almost nothing.
+ */
+const OUTDATED_RECONNECT_DELAY_MS = 15 * 60_000;
 const UPDATE_RESTART_POLL_MS = 30_000;
 /** How often the built-in host looks for a credential the control plane has not published yet. */
 const BUILTIN_CREDENTIAL_POLL_MS = 3_000;
@@ -149,12 +161,12 @@ export function toAmbientImportRequest(
 ): AmbientImportRequest {
   const cwd = workspaces[frame.workspace_location_id];
   if (!cwd) throw new Error(`This host has no registered directory for location ${frame.workspace_location_id}`);
-  const probe = probes.find((candidate) => candidate.adapter_type === frame.adapter_type);
-  if (!probe) throw new Error(`This host has no probe for ${frame.adapter_type}; reconnect to refresh them.`);
+  const probe = probes.find((candidate) => candidate.runtime_key === frame.runtime_key);
+  if (!probe) throw new Error(`This host has no probe for ${frame.runtime_key}; reconnect to refresh them.`);
   return {
     cwd,
     target: {
-      adapter_type: frame.adapter_type,
+      runtime_key: frame.runtime_key,
       installation: frame.installation || OWN_INSTALLATION,
       argv: probe.argv,
     },
@@ -203,6 +215,8 @@ export async function runService(options: { log?: (line: string) => void } = {})
     setEgressProxy(await startEgressProxy(log), config.server_url);
   }
   let reconnectDelay = RECONNECT_BASE_DELAY_MS;
+  let reconnectCeiling = RECONNECT_MAX_DELAY_MS;
+  let reportedOutdated = false;
   // A run outlives a single WebSocket connection (§5 — "an interrupted
   // connection while a run is active keeps the process alive"); see
   // `ReconnectableFrameSink`'s doc comment for why this can't be a plain
@@ -216,7 +230,16 @@ export async function runService(options: { log?: (line: string) => void } = {})
         log("latest release is installed and the host is idle; restarting into it");
         process.exit(UPDATE_RESTART_EXIT_CODE);
       }
-      if (result === "revoked") {
+      if (result === "outdated") {
+        // Say it once. The daemon is refused on every attempt, and repeating
+        // the instruction every quarter hour buries the log it appears in.
+        if (!reportedOutdated) {
+          log("this host is older than the control plane admits; it stays offline and runs nothing until `rainver-host update` (or automatic updates) installs a newer build");
+          reportedOutdated = true;
+        }
+        reconnectDelay = OUTDATED_RECONNECT_DELAY_MS;
+        reconnectCeiling = OUTDATED_RECONNECT_DELAY_MS;
+      } else if (result === "revoked") {
         // The built-in host cannot be revoked (the control plane refuses), so
         // this can only be a token the server rotated after losing its
         // published copy. Re-adopt and reconnect: disabling the service here
@@ -235,6 +258,8 @@ export async function runService(options: { log?: (line: string) => void } = {})
         }
       } else {
         reconnectDelay = RECONNECT_BASE_DELAY_MS;
+        reconnectCeiling = RECONNECT_MAX_DELAY_MS;
+        reportedOutdated = false;
       }
     } catch (error) {
       log(`connection lost: ${error instanceof Error ? error.message : String(error)}`);
@@ -245,7 +270,7 @@ export async function runService(options: { log?: (line: string) => void } = {})
     }
     log(`reconnecting in ${Math.round(reconnectDelay / 1000)}s`);
     await sleep(reconnectDelay);
-    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_DELAY_MS);
+    reconnectDelay = Math.min(reconnectDelay * 2, reconnectCeiling);
   }
 }
 
@@ -257,7 +282,17 @@ export function isRevocationClose(code: number, reason: string): boolean {
   return code === 1008 && (reason === "host_revoked" || reason === "invalid_token");
 }
 
-function connectOnce(serverUrl: string, token: string, log: (line: string) => void, sink: ReconnectableFrameSink, workspaces: Record<string, string>): Promise<"disconnected" | "update" | "revoked"> {
+/**
+ * The control plane refused this daemon's `hello` because its version is below
+ * the minimum it admits. Not revocation: the registration is still valid and
+ * the fix is an update, not re-pairing — so the daemon holds instead of
+ * removing its credentials.
+ */
+export function isOutdatedDaemonClose(code: number, reason: string): boolean {
+  return code === 1008 && reason === "daemon_outdated";
+}
+
+function connectOnce(serverUrl: string, token: string, log: (line: string) => void, sink: ReconnectableFrameSink, workspaces: Record<string, string>): Promise<"disconnected" | "update" | "revoked" | "outdated"> {
   return new Promise((resolve, reject) => {
     const endpoint = wsUrl(serverUrl);
     log(`connecting to ${endpoint}`);
@@ -466,9 +501,9 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
                 ...(frame.workspace_location_id ? { workspace_location_id: frame.workspace_location_id } : {}),
                 ...(frame.run_id ? { run_id: frame.run_id } : {}),
                 ...(frame.scratch_workspace ? { scratch_workspace: true } : {}),
-                ...(frame.adapter_type ? { adapter_type: frame.adapter_type } : {}),
+                ...(frame.runtime_key ? { runtime_key: frame.runtime_key } : {}),
                 ...(frame.installation ? { installation: frame.installation } : {}),
-                ...(frame.runtime_adapter_type ? { runtime_adapter_type: frame.runtime_adapter_type } : {}),
+                ...(frame.runtime_tree_key ? { runtime_tree_key: frame.runtime_tree_key } : {}),
                 ...(frame.runtime_installation ? { runtime_installation: frame.runtime_installation } : {}),
                 ...(frame.stdin !== undefined ? { stdin: frame.stdin } : {}),
                 command: frame.command,
@@ -494,11 +529,11 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
               // Run does — otherwise it reads a directory a replacement is
               // deleting, or two concurrent Codex app-servers rewrite one
               // `auth.json` between them.
-              if (adapterIsBeingReplaced(frame.adapter_type)) {
-                throw new Error(`${frame.adapter_type} is being upgraded on this host; retry in a moment.`);
+              if (isRuntimeKeyBeingReplaced(frame.runtime_key)) {
+                throw new Error(`${frame.runtime_key} is being upgraded on this host; retry in a moment.`);
               }
-              const quota = await holdingAdapter(frame.adapter_type, () => probeUsage({
-                adapter_type: frame.adapter_type,
+              const quota = await withRuntimeKeyHeld(frame.runtime_key, () => probeUsage({
+                runtime_key: frame.runtime_key,
                 installation: frame.installation,
                 login: frame.login,
                 timeout_seconds: frame.timeout_seconds,
@@ -522,13 +557,13 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
               // Held closed for the whole promotion, same as an upgrade:
               // promoting the previous copy deletes the directory a live
               // session would be running out of.
-              const promoted = await withAdapterDrained(
-                frame.adapter_type,
+              const promoted = await withRuntimeKeyDrained(
+                frame.runtime_key,
                 TOOL_DRAIN_TIMEOUT_MS,
-                () => rollbackTool(frame.adapter_type),
+                () => rollbackTool(frame.runtime_key),
               );
-              if (!promoted) throw new Error(`No previous version of ${frame.adapter_type} is kept on this host`);
-              log(`rolled ${frame.adapter_type} back to ${promoted.version}`);
+              if (!promoted) throw new Error(`No previous version of ${frame.runtime_key} is kept on this host`);
+              log(`rolled ${frame.runtime_key} back to ${promoted.version}`);
               sendHeartbeat();
               sink.send({
                 type: "tool_result",
@@ -553,23 +588,23 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             sink.send({ type: "tool_result", request_id: frame.request_id, ok: false, error: message, installation: null });
           };
           const action = frame.type === "install_tool"
-            ? withAdapterDrained(frame.adapter_type, TOOL_DRAIN_TIMEOUT_MS, async () => {
+            ? withRuntimeKeyDrained(frame.runtime_key, TOOL_DRAIN_TIMEOUT_MS, async () => {
                 // Held closed across the download too, not merely drained
                 // before it: swapping the binary under a live ACP session is
                 // how an upgrade breaks a Run someone is watching (ADR 0016 §9),
                 // and a materialize takes long enough for a new dispatch to
                 // arrive. A drain that does not converge aborts the upgrade
                 // rather than killing the Run.
-                log(`install ${frame.adapter_type} ${managedInstallationId(frame.version)}`);
+                log(`install ${frame.runtime_key} ${managedInstallationId(frame.version)}`);
                 const manifest = await installTool(frame, log);
-                log(`installed ${frame.adapter_type} ${managedInstallationId(frame.version)} → ${manifest.command}`);
+                log(`installed ${frame.runtime_key} ${managedInstallationId(frame.version)} → ${manifest.command}`);
                 return managedInstallationId(frame.version);
               })
             // Removal takes the same door: it deletes a directory a Run could
             // be running out of, exactly like a replacement.
-            : withAdapterDrained(frame.adapter_type, TOOL_DRAIN_TIMEOUT_MS, async () => {
-                if (!(await uninstallTool(frame))) throw new Error(`${frame.adapter_type} ${managedInstallationId(frame.version)} is not installed`);
-                log(`removed ${frame.adapter_type} ${managedInstallationId(frame.version)}`);
+            : withRuntimeKeyDrained(frame.runtime_key, TOOL_DRAIN_TIMEOUT_MS, async () => {
+                if (!(await uninstallTool(frame))) throw new Error(`${frame.runtime_key} ${managedInstallationId(frame.version)} is not installed`);
+                log(`removed ${frame.runtime_key} ${managedInstallationId(frame.version)}`);
                 return managedInstallationId(frame.version);
               });
           void action.then((installation) => {
@@ -584,14 +619,14 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             // The login process executes versioned binaries even though its
             // state lives in the stable managed HOME. Refuse replacement while
             // that process is active, like a launch.
-            if (adapterIsBeingReplaced(frame.adapter_type)) {
-              throw new Error(`${frame.adapter_type} is being upgraded on this host; retry in a moment.`);
+            if (isRuntimeKeyBeingReplaced(frame.runtime_key)) {
+              throw new Error(`${frame.runtime_key} is being upgraded on this host; retry in a moment.`);
             }
             openLoginSession(frame, (payload) => {
               sink.send(payload);
               // A finished login changes what this host reports.
               if (payload.type === "login_exit") {
-                clearRuntimeOptionsCache(frame.adapter_type, frame.installation);
+                clearRuntimeOptionsCache(frame.runtime_key, frame.installation);
                 sendHeartbeat();
               }
             }, log);
@@ -613,7 +648,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           void (async () => {
             try {
               const request = toAmbientImportRequest(frame, runtimeProbes ?? [], await currentWorkspaces());
-              log(`ambient import ${request.target.adapter_type} in ${request.cwd}`);
+              log(`ambient import ${request.target.runtime_key} in ${request.cwd}`);
               const { sessions, enumeration } = await importAmbientSessions(request, resolveAcpLaunch, log);
               for (const session of sessions) {
                 // One frame per session rather than one for the whole import:
@@ -699,6 +734,13 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       sink.unbindIfCurrent(sendOnThisConnection);
       if (isRevocationClose(event.code, event.reason)) {
         resolve("revoked");
+        return;
+      }
+      // Settled here rather than left to the `helloAcked` rejection below:
+      // that path reports it as an ordinary lost connection and retries on the
+      // ≤30s backoff, which no update ever arrives during.
+      if (isOutdatedDaemonClose(event.code, event.reason)) {
+        resolve("outdated");
         return;
       }
       // A launch message already queued when close() was requested may have

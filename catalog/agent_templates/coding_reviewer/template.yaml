@@ -7,9 +7,6 @@ description: >
   architecture risk summaries, and code-change suggestions. This is review only —
   not a code-writing agent: no code patches, no file writes, no patch apply.
 
-model_config:
-  max_tokens: 8192
-
 context_policy:
   allowed_input_contexts:
     - selected_workspace
@@ -42,12 +39,9 @@ tool_policy:
   patch_apply: false
   credential_access: false
 
-runtime_policy:
+execution_constraints:
   risk_level: low
   max_run_time_seconds: 600
-  allowed_adapter_types:
-    - model_api
-  default_adapter_type: model_api
 
 output_policy:
   proposal_only: true

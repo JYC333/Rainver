@@ -9,13 +9,21 @@ export {
   listRuntimeAdapterSpecs,
   type LocalCliRuntimeAdapterSpec,
   type RuntimeAdapterSpec,
-  type RuntimeAdapterType,
+  type RuntimeKey,
   type RuntimeExecutorFamily,
-  type VendorCliAdapterType,
+  type VendorCliRuntimeKey,
   type RuntimeDistribution,
   type RuntimeLoginSpec,
 } from "./specs.js";
 export { setDynamicRuntimeAdapterSpecs } from "./dynamicSpecs.js";
+export { AcpRuntimeAdapter } from "./acpRuntimeAdapter.js";
+export {
+  assertAgentRuntimeDefinition,
+  getAgentRuntimeDefinition,
+  isRunnableAgentRuntime,
+  listAgentRuntimeDefinitions,
+  supportsRuntimeBackendMode,
+} from "./runtimeDefinitions.js";
 export {
   assertRuntimeSubagentsDisabled,
   ensureRuntimeSubagentsDisabled,

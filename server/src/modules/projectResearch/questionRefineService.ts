@@ -213,7 +213,13 @@ export class ProjectResearchQuestionRefineService {
       modelProviderId: optionalString(executionBody.model_provider_id),
       modelName: optionalString(executionBody.model_name),
     };
-    const execution = await new ProjectResearchExecutionProfileService(this.db, this.config).resolve(identity, selection);
+    // Question refinement is an incidental bounded call: it selects no Agent,
+    // no AgentVersion and no Runtime Profile (ADR 0022 §2/§3), so it resolves
+    // a provider only. Manufacturing the managed Agent here bought nothing —
+    // its id was passed to `resolvePrompt` for an `agent`-scoped prompt
+    // attempt nothing writes for `project_research.question_refine`.
+    const execution = await new ProjectResearchExecutionProfileService(this.db, this.config)
+      .resolveProvider(identity, selection);
     const project = await this.db.query<{ name: string; description: string | null; goal: string | null }>(
       `SELECT p.name, p.description, bv.goal
          FROM projects p
@@ -242,7 +248,6 @@ export class ProjectResearchQuestionRefineService {
         spaceId: identity.spaceId,
         userId: identity.userId,
         projectId,
-        agentId: execution.agentId,
         assetKey: PROJECT_RESEARCH_QUESTION_REFINE_PROMPT_KEY,
         variables: {},
       });
@@ -296,7 +301,6 @@ export class ProjectResearchQuestionRefineService {
             spaceId: identity.spaceId,
             userId: identity.userId,
             projectId,
-            agentId: execution.agentId,
             assetKey: PROJECT_RESEARCH_QUESTION_SUBQUESTION_REPAIR_PROMPT_KEY,
             variables: {},
           });

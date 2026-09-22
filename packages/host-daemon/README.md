@@ -77,6 +77,13 @@ Without automatic updates, update manually at any time:
 rainver-host update
 ```
 
+Updating is not optional in the long run. The control plane requires a minimum
+daemon version (currently 0.2.0) and refuses an older one at `hello` with
+`daemon_outdated`: the Host shows as offline, executes no Runs, and stays that
+way until this machine is updated with the command above (or by turning
+automatic updates on). The daemon keeps retrying on a long interval and logs
+the reason once, so `journalctl --user -u rainver-host` names it.
+
 Automatic checks can be toggled later without pairing again:
 
 ```bash
@@ -127,7 +134,7 @@ sudo loginctl enable-linger "$USER"
 
 Managed CLI programs use versioned directories under the host config's `tools/`.
 Their login, native history, Skills and user configuration use the stable
-`managed-state/<adapter_type>/home/`; upgrading, reinstalling, rolling back or
+`managed-state/<runtime_key>/home/`; upgrading, reinstalling, rolling back or
 removing binaries does not delete it. Agent-run native sessions remain under
 `agents/<agent_id>/profiles/`. Include both directories in host-state backups.
 Binary rollback does not roll back the vendor data format.

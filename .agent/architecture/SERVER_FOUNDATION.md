@@ -60,7 +60,10 @@ The migration runner is the generated-SQL applier and remains an explicit ops
 command, not a startup hook.
 
 `server/migrations/` is the append-only migration chain: the frozen
-`0000_baseline.sql` plus one numbered file per schema change. Ordinary schema
+`0000_baseline.sql` plus one numbered file per schema change. That baseline
+starts the 2026-09-21 ACP runtime-authority schema epoch (ADR 0022 §5, B59):
+a pre-epoch database has no upgrade path and must be recreated from it, while
+everything after it is append-only. Ordinary schema
 changes start in `server/src/db/schema/`, run through
 `pnpm run schema:generate -- --name <name>`, and are then applied by the
 server migration runner.

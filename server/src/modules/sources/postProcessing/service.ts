@@ -1298,18 +1298,16 @@ export class SourcePostProcessingService {
    * caller then falls back to the conservative floor.
    */
   private async agentModelName(spaceId: string, agentId: string): Promise<string | null> {
-    const result = await this.db.query<{ model: string | null }>(
-      `SELECT COALESCE(version.model_config_json->>'model', version.model_name) AS model
-         FROM agents agent
-         JOIN agent_versions version
-           ON version.id = agent.current_version_id
-          AND version.agent_id = agent.id
-          AND version.space_id = agent.space_id
-        WHERE agent.space_id = $1 AND agent.id = $2
+    const result = await this.db.query<{ model_name: string | null }>(
+      `SELECT profile.model_name
+         FROM agent_runtime_profiles profile
+        WHERE profile.space_id = $1 AND profile.agent_id = $2
+          AND profile.enabled = true AND profile.is_default = true
+        ORDER BY profile.created_at ASC, profile.id ASC
         LIMIT 1`,
       [spaceId, agentId],
     );
-    const model = result.rows[0]?.model;
+    const model = result.rows[0]?.model_name;
     return typeof model === "string" && model.trim() ? model.trim() : null;
   }
 
@@ -1330,6 +1328,7 @@ export class SourcePostProcessingService {
     await refreshSourcePostProcessingAgentPrompt(pool, input.spaceId, input.agentId);
     const runs = new PgRunRepository(pool);
     const run = await runs.createQueuedRun({
+      execution_kind: "agent",
       space_id: input.spaceId,
       user_id: input.userId,
       agent_id: input.agentId,
@@ -1965,13 +1964,6 @@ async function ensureSourcePostProcessingAgent(pool: Pool, spaceId: string): Pro
     await refreshSourcePostProcessingAgentPrompt(pool, spaceId, existing.rows[0].id);
     return existing.rows[0];
   }
-  const provider = await defaultModelProviderForSpace(pool, spaceId);
-  if (!provider) {
-    throw new HttpError(
-      409,
-      "Configure a default model provider before creating source post-processing rules without an agent.",
-    );
-  }
   const agents = new PgAgentRepository(pool);
   const created = await agents.create({
     spaceId,
@@ -1980,9 +1972,6 @@ async function ensureSourcePostProcessingAgent(pool: Pool, spaceId: string): Pro
     description: "System-managed reusable agent for source summaries and post-processing.",
     visibility: "space_shared",
     systemPrompt: sourcePostProcessingAgentSystemPrompt(),
-    adapterType: "model_api",
-    defaultModelProviderId: provider.id,
-    defaultModel: provider.default_model,
   });
   await pool.query(
     `UPDATE agents
@@ -2025,25 +2014,6 @@ function sourcePostProcessingAgentSystemPrompt(): string {
     "Markdown content is allowed only inside JSON string fields such as digest_markdown, summary_markdown, content_excerpt, and proposal_markdown.",
     "Do not claim to have read content that is not present in the provided source items, evidence, retrieval context, or extracted text snippets.",
   ].join("\n");
-}
-
-export async function defaultModelProviderForSpace(
-  db: Queryable,
-  spaceId: string,
-): Promise<{ id: string; default_model: string | null } | null> {
-  const result = await db.query<{ id: string; default_model: string | null }>(
-    `SELECT p.id, p.default_model
-       FROM model_provider_space_grants g
-       JOIN model_providers p ON p.id = g.provider_id
-      WHERE g.space_id = $1
-        AND g.enabled = true
-        AND g.is_default = true
-        AND p.enabled = true
-      ORDER BY g.updated_at DESC, p.created_at DESC
-      LIMIT 1`,
-    [spaceId],
-  );
-  return result.rows[0] ?? null;
 }
 
 async function firstSpaceUserId(pool: Pool, spaceId: string): Promise<string> {

@@ -82,7 +82,7 @@ async function seedSession(visibility: "private" | "space_shared", records: Ambi
     workspaceLocationId: LOCATION,
     executionHostId: HOST,
     ownerUserId: OWNER,
-    adapterType: "claude_code",
+    runtimeKey: "claude_code",
     installation: "own",
     visibility,
     session: {

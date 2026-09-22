@@ -124,6 +124,9 @@ export function ReadingListView({
         source_item_ids: selected,
         execution: { model_provider_id: compareProvider },
       })
+      // The call only enqueues the bounded provider task; the worker applies
+      // the block ops to the understanding note afterwards. Saying the note was
+      // updated here claimed a result that has not happened yet.
       toast.success(`Comparison queued · run ${result.run_id.slice(0, 8)}`)
     } catch (error) {
       toast.error(errMsg(error))

@@ -532,16 +532,11 @@ export const RetrievalExplainResponseSchema = z
   .passthrough();
 export type RetrievalExplainResponse = z.infer<typeof RetrievalExplainResponseSchema>;
 
-// Managed-run retrieval policy. `off` (default) keeps managed runs no-tool;
-// `manual_tool_only` lets an opted-in managed run call the governed
-// retrieval.search / retrieval.brief tools; preflight modes run one governed
-// retrieval step before the model turn and surface the result as explicit
-// run evidence.
+// Run retrieval policy. `off` (default) keeps runs no-tool;
+// `manual_tool_only` lets an opted-in Agent Run call governed retrieval tools.
 export const RetrievalToolModeSchema = z.enum([
   "off",
   "manual_tool_only",
-  "preflight_search",
-  "preflight_brief",
 ]);
 export type RetrievalToolMode = z.infer<typeof RetrievalToolModeSchema>;
 

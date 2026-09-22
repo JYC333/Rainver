@@ -12,6 +12,8 @@ import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthReposi
 import { getRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/specs.js";
 import { AcpAgentService } from "../src/modules/acpAgents/service.js";
 import { acpRuntimeProbe } from "../src/modules/hosts/runtimeProbes.js";
+import { SERVER_OPENCODE_RELEASE } from "../src/modules/runtimeAdapters/opencodeRelease.js";
+import { MIN_HOST_DAEMON_VERSION } from "../src/modules/hosts/daemonCompatibility.js";
 import { getDbPool } from "../src/db/pool.js";
 import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dynamicSpecs.js";
 
@@ -19,7 +21,7 @@ import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dy
 const HELLO_INFO = {
   platform: "linux",
   arch: "x64",
-  daemon_version: "0.1.0",
+  daemon_version: MIN_HOST_DAEMON_VERSION,
   environment_kind: "linux_native",
   capabilities_json: {},
   workspace_reports: [],
@@ -139,6 +141,15 @@ describe("ACP registry agents", () => {
     __setAcpRegistryForTests("unavailable");
     await service.refreshRegistryCache();
     expect(acpRuntimeProbe("opencode")).toMatchObject({ distribution: OPENCODE.distribution, version: "1.18.23" });
+
+    // The Server Host installs what this release pins, not what the registry
+    // currently publishes — resolved once, in the probe, so the install route
+    // has a single distribution to send (ADR 0022, Phase 2 §1).
+    expect(acpRuntimeProbe("opencode", "server")).toMatchObject({
+      distribution: SERVER_OPENCODE_RELEASE.distribution,
+      version: SERVER_OPENCODE_RELEASE.version,
+    });
+    expect(SERVER_OPENCODE_RELEASE.version).not.toBe("1.18.23");
   });
 
   it("lets only the instance admin enable a registry agent, which then exists as a remote-only runtime adapter", async (ctx) => {
@@ -153,7 +164,7 @@ describe("ACP registry agents", () => {
 
     const enabled = await app.inject({ method: "PUT", url: "/api/v1/acp-agents/goose" });
     expect(enabled.statusCode).toBe(201);
-    expect(enabled.json()).toMatchObject({ id: "goose", adapter_type: "acp_goose" });
+    expect(enabled.json()).toMatchObject({ id: "goose", runtime_key: "acp_goose" });
 
     // The adapter catalog now carries it, shaped as low trust and remote-only.
     const spec = getRuntimeAdapterSpec("acp_goose");
@@ -164,16 +175,16 @@ describe("ACP registry agents", () => {
       executable: { command: "acp_goose" },
       distribution: GOOSE.distribution,
       invocation: { protocol: "acp", remote_host_only: true },
-      model: { model_provider_mode: "none" },
+      credentials: { credential_mode: "cli_profile" },
     });
-    expect(listRuntimeAdapterSpecs().map((candidate) => candidate.adapter_type)).toContain("acp_goose");
+    expect(listRuntimeAdapterSpecs().map((candidate) => candidate.runtime_key)).toContain("acp_goose");
 
     // The hosts module exposes it for installation, but does not offer it for
     // dispatch until the registry can describe an Agent-isolated login/state
     // root contract.
-    const adapters = await app.inject({ method: "GET", url: "/api/v1/hosts/runtime-adapters", headers: { cookie: `session_id=${ADMIN_TOKEN}` } });
+    const adapters = await app.inject({ method: "GET", url: "/api/v1/hosts/runtime-definitions", headers: { cookie: `session_id=${ADMIN_TOKEN}` } });
     expect(adapters.json().items).toContainEqual(expect.objectContaining({
-      adapter_type: "acp_goose", capability_probe: "acp_goose", remote_eligible: false,
+      runtime_key: "acp_goose", capability_probe: "acp_goose", remote_eligible: false,
       latest_managed_version: "1.2.3",
     }));
 
@@ -188,13 +199,12 @@ describe("ACP registry agents", () => {
       `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
       [deskId, JSON.stringify({ installations: { acp_goose: [{ id: "managed:1.2.3", version: "1.2.3", logged_in: false }] } })],
     );
-    const defaultRefused = await app.inject({
+    const obsoleteHostDefault = await app.inject({
       method: "POST",
       url: `/api/v1/hosts/${deskId}/default-adapter`,
-      payload: { adapter_type: "acp_goose" },
+      payload: { runtime_key: "acp_goose" },
     });
-    expect(defaultRefused.statusCode).toBe(422);
-    expect(defaultRefused.json()).toMatchObject({ code: "runtime_profile_isolation_unsupported" });
+    expect(obsoleteHostDefault.statusCode).toBe(404);
     const refused = await app.inject({ method: "DELETE", url: "/api/v1/acp-agents/goose" });
     expect(refused.statusCode).toBe(409);
     expect(refused.json().detail).toMatch(/Desk/);
@@ -224,7 +234,7 @@ describe("ACP registry agents", () => {
     let resolveInstallFrame: (frame: Record<string, unknown>) => void = () => {};
     const installFrame = new Promise<Record<string, unknown>>((resolve) => { resolveInstallFrame = resolve; });
     const helloAck = new Promise<Record<string, unknown>>((resolve, reject) => {
-      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64", daemon_version: "0.1.0" })));
+      socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64" })));
       socket.addEventListener("message", (event) => {
         const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
         if (frame.type === "hello_ack") resolve(frame);
@@ -239,14 +249,14 @@ describe("ACP registry agents", () => {
     // The probe list names the agent, so a daemon that has it reports it.
     const probes = (await helloAck).runtime_probes as Array<Record<string, unknown>>;
     expect(probes).toContainEqual({
-      adapter_type: "acp_goose", runtime: null, argv: ["acp_goose"], distribution: GOOSE.distribution,
+      runtime_key: "acp_goose", runtime: null, argv: ["acp_goose"], distribution: GOOSE.distribution,
       version: "1.2.3", login: null, remote_host_only: true,
     });
 
     const installed = await app.inject({ method: "POST", url: `/api/v1/hosts/${hostId}/installations/acp_goose` });
     expect(installed.statusCode).toBe(200);
-    expect(installed.json()).toMatchObject({ ok: true, installation: "managed:1.2.3", host_id: hostId, adapter_type: "acp_goose" });
-    expect(await installFrame).toMatchObject({ adapter_type: "acp_goose", version: "1.2.3", distribution: GOOSE.distribution, login: null });
+    expect(installed.json()).toMatchObject({ ok: true, installation: "managed:1.2.3", host_id: hostId, runtime_key: "acp_goose" });
+    expect(await installFrame).toMatchObject({ runtime_key: "acp_goose", version: "1.2.3", distribution: GOOSE.distribution, login: null });
     await db.pool.query(
       `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
       [hostId, JSON.stringify({ runtimes: [], versions: {}, installations: { acp_goose: [{
@@ -314,7 +324,7 @@ describe("ACP registry agents", () => {
       seen.push(frame);
       if (frame.type === "login_open") {
         expect(frame).toMatchObject({
-          adapter_type: "acp_goose", installation: "managed:1.2.3", login: null, argv: ["acp_goose"],
+          runtime_key: "acp_goose", installation: "managed:1.2.3", login: null, argv: ["acp_goose"],
           auth_method: { id: "device", type: "terminal", args: ["login"] },
         });
         socket.send(JSON.stringify({ type: "login_output", session_id: frame.session_id, data: "code? " }));
@@ -387,14 +397,11 @@ describe("ACP registry agents", () => {
     expect(unsupportedLogin.statusCode).toBe(422);
     expect(unsupportedLogin.json().detail).toMatch(/does not advertise a supported login method/);
 
-    const binding = await app.inject({
-      method: "PUT",
-      url: `/api/v1/hosts/${hostId}/runtime-provider-bindings/acp_goose`,
-      headers: { "content-type": "application/json" },
-      payload: JSON.stringify({ model_provider_id: "11111111-1111-4111-8111-111111111111" }),
+    const obsoleteBindingRoute = await app.inject({
+      method: "GET",
+      url: `/api/v1/hosts/${hostId}/runtime-provider-bindings`,
     });
-    expect(binding.statusCode).toBe(422);
-    expect(binding.json().detail).toMatch(/does not accept a ModelProvider/);
+    expect(obsoleteBindingRoute.statusCode).toBe(404);
     socket.close();
   });
 });

@@ -434,6 +434,7 @@ export class PgPlanRepository {
       }
       await assertBudgetSourcesAvailable(client, identity.spaceId, budgetSourcesFromPlan(plan.version_budget_json));
       const root = await new PgRunRepository(client).createCoordinatorRun({
+        execution_kind: "agent",
         agent_id: agentId,
         space_id: identity.spaceId,
         user_id: identity.userId,
@@ -673,6 +674,7 @@ export class PgPlanRepository {
       const nodeBudgetSources = budgetSourcesForNode(node, input.budgetSources, input.planId);
       await assertBudgetSourcesAvailable(client, identity.spaceId, nodeBudgetSources, { excludeExecutionRootId: input.rootRunId });
       const child = await new PgRunRepository(client).createQueuedRun({
+        execution_kind: "agent",
         agent_id: childAgentId,
         space_id: identity.spaceId,
         user_id: identity.userId,

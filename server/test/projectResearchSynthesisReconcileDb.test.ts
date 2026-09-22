@@ -3,12 +3,14 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createQuestionThreadScope, seedRelevantCorpusItem, seedResearchOperation } from "./support/researchSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { seedSpaceOwnerProject, seedAgentWithVersion } from "./support/domainSeeds.js";
+import { seedSpaceOwnerProject, seedAgentWithVersion, seedServerRuntimeProfile } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig } from "../src/config.js";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
 import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
 import { canonicalRunOutput } from "../src/modules/runs/orchestrationResults.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { WorkflowExecutionService } from "../src/modules/automations/workflowExecutionService.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
@@ -29,6 +31,7 @@ const OPERATION = "77777777-7777-4777-8777-777777777777";
 const AGENT = "99999999-9999-4999-8999-999999999999";
 const VERSION = "84444444-4444-4444-8444-444444444444";
 const RUNTIME_PROFILE = "83333333-3333-4333-8333-333333333333";
+const SERVER_HOST = "82222222-2222-4222-8222-222222222222";
 const CATALOG_ROOT = join(process.cwd(), "..", "catalog");
 const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 const CONFIG = loadConfig({});
@@ -57,24 +60,36 @@ beforeEach(async () => {
     currentStage: "synthesis", primaryThreadId: threadScope[0]!.thread_id,
     state: { research_question: "Does X improve Y?", thread_scope: threadScope }, now,
   });
-  await seedAgentWithVersion(db.pool, { agent: AGENT, version: VERSION, space: SPACE, owner: OWNER, systemPrompt: "Test agent.", now });
+  await seedAgentWithVersion(db.pool, { agent: AGENT, version: VERSION, space: SPACE, owner: OWNER, systemPrompt: "Test agent.", seedDefaultRuntimeProfile: false, now });
   await db.pool.query(
-    `INSERT INTO agent_runtime_profiles (
-       id,space_id,agent_id,name,adapter_type,runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at
-     ) VALUES ($1,$2,$3,'Research','model_api','{}'::jsonb,'{}'::jsonb,true,true,$4,$4)`,
-    [RUNTIME_PROFILE, SPACE, AGENT, now],
+    `UPDATE agent_versions
+        SET risk_level='low', capabilities_json='["research.monitor_compare"]'::jsonb
+      WHERE id=$1 AND space_id=$2`,
+    [VERSION, SPACE],
   );
+  await seedServerRuntimeProfile(db.pool, {
+    profileId: RUNTIME_PROFILE,
+    agent: AGENT,
+    space: SPACE,
+    hostId: SERVER_HOST,
+    now,
+  });
   await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
 });
+
+async function dispatchSynthesisRun(runId: string, startedAt: string): Promise<PgRunRepository> {
+  const runs = new PgRunRepository(db.pool);
+  const run = await runs.getAgentRun(SPACE, runId);
+  if (!run) throw new Error(`Synthesis Run '${runId}' disappeared before dispatch`);
+  await new PgRouteDecisionRepository(db.pool).routeRun(run);
+  await runs.markRunRunning({ run_id: runId, space_id: SPACE, started_at: startedAt });
+  return runs;
+}
 
 async function seedSynthesisRun(runId: string, status: string, contract: Record<string, unknown> | null, errorMessage: string | null = null): Promise<void> {
   const now = new Date().toISOString();
   await db.pool.query(
-    `INSERT INTO runs (
-       id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-       adapter_type, instructed_by_user_id, owner_user_id, project_id,
-       contract_snapshot_json, error_message, created_at, updated_at, started_at
-     ) VALUES ($1,$2,$3,$4,'agent','system',$5,'live','model_api',$6,$6,$7,$8::jsonb,$9,$10,$10,$11)`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, instructed_by_user_id, owner_user_id, project_id, contract_snapshot_json, error_message, created_at, updated_at, started_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'system', $5, 'live', $6, $6, $7, $8::jsonb, $9, $10, $10, $11, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [
       runId, SPACE, AGENT, VERSION, status, OWNER, PROJECT,
       JSON.stringify(contract ?? {}),
@@ -951,9 +966,16 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     expect(soloRunId).toBeTruthy();
     expect(soloQueued.comparison_source_item_ids).toEqual([items[4]]);
     expect(soloQueued.comparison_failed_source_item_ids).toEqual([items[5]]);
-    await db.pool.query(`UPDATE runs SET status='succeeded', output_json=$2::jsonb WHERE id=$1`, [soloRunId, JSON.stringify({
-      comparisons: [{ source_item_id: items[4], stance: "contradicts", detail: "Solo retry succeeded.", affected_sections: ["understanding"] }],
-    })]);
+    const soloRun = await dispatchSynthesisRun(soloRunId, new Date().toISOString());
+    await soloRun.markRunTerminal({
+      run_id: soloRunId,
+      space_id: SPACE,
+      status: "succeeded",
+      output_json: {
+        comparisons: [{ source_item_id: items[4], stance: "contradicts", detail: "Solo retry succeeded.", affected_sections: ["understanding"] }],
+      },
+      completed_at: new Date().toISOString(),
+    });
     const soloContract = (await db.pool.query<{
       output_json: unknown;
       contract_snapshot_json: { workflow_input_json?: { project_research?: { source_item_ids?: string[] } } };
@@ -985,7 +1007,14 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     // retry is dropped for good, not requeued into another loop.
     const secondSoloRunId = afterSoloSuccess.comparison_run_id;
     expect(secondSoloRunId).toBeTruthy();
-    await db.pool.query(`UPDATE runs SET status='succeeded', output_json=$2::jsonb WHERE id=$1`, [secondSoloRunId, JSON.stringify({ comparisons: [] })]);
+    const secondSoloRun = await dispatchSynthesisRun(secondSoloRunId, new Date().toISOString());
+    await secondSoloRun.markRunTerminal({
+      run_id: secondSoloRunId,
+      space_id: SPACE,
+      status: "succeeded",
+      output_json: { comparisons: [] },
+      completed_at: new Date().toISOString(),
+    });
 
     await settleDelegatedRun(secondSoloRunId);
     const final = (await db.pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];

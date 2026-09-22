@@ -1,16 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExecutionControlSnapshot, InvocationDelivery, RuntimeHostExecuteRequest } from "@rainver/protocol";
+import type { ExecutionControlSnapshot } from "@rainver/protocol";
 import { InvocationSnapshotService, SealedPayloadService } from "../src/modules/runtimeContext/invocationSnapshotService.js";
-import { PgInvocationDeliveryAuthorizer } from "../src/modules/runtimeContext/gateway.js";
+import { PgInvocationDeliveryAuthorizer, createProductionRuntimeContextInvocationGateway } from "../src/modules/runtimeContext/gateway.js";
 import { RuntimeContextContinuityService } from "../src/modules/runtimeContext/continuity/service.js";
 import { RuntimeContextPlanner } from "../src/modules/runtimeContext/planner.js";
 import { SealedPayloadCipher } from "../src/modules/runtimeContext/sealedPayloadCrypto.js";
 import { createProductionRuntimeContextPlanningService } from "../src/modules/runtimeContext/productionAcquisition.js";
 import { loadConversationContinuityThroughMessage } from "../src/modules/runtimeContext/conversationContinuity.js";
 import { normalizeContextItem } from "../src/modules/runtimeContext/itemNormalizer.js";
-import { authorizeRuntimeHostDelivery, bindRuntimeHostDeliveryRequest } from "../src/modules/runtimeHost/deliveryAuthorizer.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedConversationMessages } from "./support/domainSeeds.js";
@@ -28,6 +27,7 @@ const PROJECT = "30000000-0000-4000-8000-000000000011";
 const FOLDER = "30000000-0000-4000-8000-000000000012";
 const HOST = "30000000-0000-4000-8000-000000000014";
 const THREAD = "30000000-0000-4000-8000-000000000013";
+const PROFILE = "30000000-0000-4000-8000-000000000015";
 
 
 const db = useTestDatabase(import.meta.filename, { max: 2 });
@@ -41,7 +41,12 @@ beforeEach(async () => {
   );
   await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Delivery','personal',now(),now())`, [SPACE]);
   await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
-  await seedServerHost(db.pool, { id: HOST });
+  await seedServerHost(db.pool, {
+    id: HOST,
+    installations: {
+      opencode: [{ id: "managed:1.0.0", version: "1.0.0", logged_in: true, options: null, health_check_protocol: "acp" }],
+    },
+  });
   await db.pool.query(
     `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
      VALUES ($1,$2,$3,'owner','active',now(),now())`,
@@ -53,15 +58,30 @@ beforeEach(async () => {
     [AGENT, SPACE, USER],
   );
   await db.pool.query(
-    `INSERT INTO agent_versions (id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at)
-     VALUES ($1,$2,$3,'v1','test','{}','{}','{}','{}','[]','{}','{}',now())`,
+    `INSERT INTO agent_versions (id,agent_id,space_id,version_label,system_prompt,context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,created_at)
+     VALUES ($1,$2,$3,'v1','test','{}','{}','[]','{}',now())`,
     [VERSION, AGENT, SPACE],
   );
   await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
   await db.pool.query(
-    `INSERT INTO runs (id,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,adapter_type,required_sandbox_level,instructed_by_user_id,owner_user_id,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,'agent','manual','running','live','model_api','none',$5,$5,now(),now())`,
-    [RUN, SPACE, AGENT, VERSION, USER],
+    `INSERT INTO agent_runtime_profiles (
+       id,space_id,agent_id,execution_host_id,workspace_mode,runtime_installation,
+       name,runtime_key,backend_mode,runtime_config_json,runtime_policy_json,
+       enabled,is_default,created_at,updated_at
+     ) VALUES ($1,$2,$3,$4,'managed','managed:1.0.0','Default','opencode','runtime_native','{}','{}',true,true,now(),now())`,
+    [PROFILE, SPACE, AGENT, HOST],
+  );
+  await db.pool.query(
+    `INSERT INTO runs (
+       id,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,
+       runtime_profile_id,runtime_profile_selection_source,runtime_key,runtime_profile_snapshot_json,
+       required_sandbox_level,instructed_by_user_id,owner_user_id,created_at,updated_at,execution_kind
+     ) VALUES (
+       $1,$2,$3,$4,'agent','manual','running','live',$6,'default','opencode',
+       '{"id":"30000000-0000-4000-8000-000000000015","runtime_key":"opencode","backend_mode":"runtime_native","runtime_config_json":{},"runtime_policy_json":{}}'::jsonb,
+       'none',$5,$5,now(),now(),'agent'
+     )`,
+    [RUN, SPACE, AGENT, VERSION, USER, PROFILE],
   );
   await db.pool.query(
     `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at)
@@ -152,43 +172,6 @@ function envelope(trust: "domain_approved" | "user_confirmed" = "domain_approved
   });
 }
 
-function runtimeHostRequest(delivery: InvocationDelivery): RuntimeHostExecuteRequest {
-  return {
-    run_input: {
-      schema_version: "run_input.v1",
-      run_id: RUN,
-      space_id: SPACE,
-      instruction: null,
-      task_goal: "Private question",
-      messages: [],
-      inputs: { direct: null, workflow: null, upstream: null },
-      attachments: [],
-      project_folder_access: null,
-      output_contract: { schema_version: "run_output_contract.v1", structured_output: null, required_outputs: [] },
-      tool_grants: [],
-      execution: {
-        shape: "conversational",
-        risk_level: "low",
-        required_sandbox_level: "none",
-        policy_ref: `run_permission_snapshot:${RUN}`,
-        budget_ref: `run_contract:${RUN}`,
-      },
-    },
-    run_id: RUN,
-    space_id: SPACE,
-    model_provider_id: PROVIDER,
-    model: "gpt-4o",
-    system_prompt: null,
-    prompt: "Private question",
-    messages: [{ role: "user", content: "Private question" }],
-    mode: "live",
-    instruction: null,
-    tool_mode: "disabled",
-    tool_bindings: [],
-    invocation_audit_refs: delivery.audit_refs,
-  };
-}
-
 describe("Context Event continuity and checkpoints", () => {
   it("allocates dense idempotent scope sequences and exposes durable gaps", async () => {
     if (!db.available) return;
@@ -251,7 +234,7 @@ describe("Context Event continuity and checkpoints", () => {
       invocationId: RUN,
       envelope: envelope(),
       control: control(),
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       providerId: PROVIDER,
       model: "gpt-4o",
       usageSourceId: "continuity-finalize",
@@ -658,11 +641,15 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       [randomUUID(), PROVIDER, SPACE, USER],
     );
     await db.pool.query(
-      `UPDATE agent_versions SET model_config_json='{"model":"gpt-4o"}'::jsonb WHERE id=$1`,
-      [VERSION],
+      `UPDATE agent_runtime_profiles
+          SET backend_mode='model_provider', model_provider_id=$2, model_name='gpt-4o'
+        WHERE id=$1`,
+      [PROFILE, PROVIDER],
     );
     await db.pool.query(
-      `UPDATE runs SET session_id=$2,prompt='What code did I choose?',model_provider_id=$3,
+      `UPDATE runs SET session_id=$2,model_provider_id=$3,prompt='What code did I choose?',
+         runtime_profile_snapshot_json = runtime_profile_snapshot_json ||
+           jsonb_build_object('backend_mode','model_provider','model_provider_id',$3::varchar(36),'model_name','gpt-4o'),
          model_override_json=$4::jsonb WHERE id=$1`,
       [RUN, sessionId, PROVIDER, JSON.stringify({
         chat_turn: {
@@ -724,7 +711,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       invocationId: RUN,
       envelope: plannedEnvelope,
       control: authoritative,
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       providerId: PROVIDER,
       model: "gpt-4o",
       usageSourceId: `run:${RUN}:chat`,
@@ -772,78 +759,6 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     await expect(create()).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("binds and atomically consumes the exact Runtime Host request", async () => {
-    if (!db.available) return;
-    const snapshots = new InvocationSnapshotService(db.pool);
-    const first = await snapshots.createAttempt({
-      spaceId: SPACE,
-      invocationId: RUN,
-      envelope: envelope(),
-      control: control(),
-      adapterType: "model_api",
-      providerId: PROVIDER,
-      model: "gpt-4o",
-      usageSourceId: `run:${RUN}:dispatch:1`,
-    });
-    const request = runtimeHostRequest(first.delivery);
-    await expect(bindRuntimeHostDeliveryRequest(db.pool, request)).resolves.toBeUndefined();
-    await expect(authorizeRuntimeHostDelivery(db.pool, request)).resolves.toBeUndefined();
-    await expect(authorizeRuntimeHostDelivery(db.pool, request)).rejects.toMatchObject({ statusCode: 409 });
-    const dispatched = (await db.pool.query<{ safe_snapshot_json: Record<string, unknown> }>(
-      `SELECT safe_snapshot_json FROM invocation_snapshots WHERE id=$1`,
-      [first.snapshot.id],
-    )).rows[0]?.safe_snapshot_json;
-    expect(dispatched).toMatchObject({
-      dispatch: { request_fingerprint: expect.any(String), dispatched_at: expect.any(String) },
-    });
-
-    const second = await snapshots.createAttempt({
-      spaceId: SPACE,
-      invocationId: RUN,
-      envelope: envelope(),
-      control: control(),
-      adapterType: "model_api",
-      providerId: PROVIDER,
-      model: "gpt-4o",
-      usageSourceId: `run:${RUN}:dispatch:2`,
-    });
-    const secondRequest = runtimeHostRequest(second.delivery);
-    await expect(bindRuntimeHostDeliveryRequest(db.pool, secondRequest)).resolves.toBeUndefined();
-    await expect(authorizeRuntimeHostDelivery(db.pool, {
-      ...secondRequest,
-      max_tokens: 999,
-    })).rejects.toMatchObject({ statusCode: 409 });
-    await expect(authorizeRuntimeHostDelivery(db.pool, secondRequest)).resolves.toBeUndefined();
-
-    const third = await snapshots.createAttempt({
-      spaceId: SPACE,
-      invocationId: RUN,
-      envelope: envelope(),
-      control: control(),
-      adapterType: "model_api",
-      providerId: PROVIDER,
-      model: "gpt-4o",
-      usageSourceId: `run:${RUN}:dispatch:3`,
-    });
-    const thirdRequest = runtimeHostRequest(third.delivery);
-    await expect(bindRuntimeHostDeliveryRequest(db.pool, {
-      ...thirdRequest,
-      messages: [
-        ...thirdRequest.messages!,
-        {
-          role: "assistant",
-          content: null,
-          tool_calls: [
-            { id: "call-a", name: "retrieval.search", arguments_json: "{}" },
-            { id: "call-b", name: "retrieval.brief", arguments_json: "{}" },
-          ],
-        },
-        { role: "tool", content: "a", tool_call_id: "call-a", name: "retrieval.search" },
-        { role: "tool", content: "duplicate", tool_call_id: "call-a", name: "retrieval.search" },
-      ],
-    })).rejects.toMatchObject({ statusCode: 409 });
-  });
-
   it("stores safe attempts separately and audits authorized sealed replay reads", async () => {
     if (!db.available) return;
     const cipher = new SealedPayloadCipher(Buffer.alloc(32, 9));
@@ -853,7 +768,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       invocationId: RUN,
       envelope: envelope(),
       control: control(),
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       providerId: PROVIDER,
       model: "gpt-4o",
       usageSourceId: `run:${RUN}:attempt:1`,
@@ -920,7 +835,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       invocationId: RUN,
       envelope: envelope(),
       control: control(),
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       providerId: PROVIDER,
       model: "gpt-4o",
       usageSourceId: `run:${RUN}:attempt:2`,
@@ -993,7 +908,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       invocationId: RUN,
       envelope: envelope(),
       control: forged,
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       providerId: PROVIDER,
       model: "gpt-4o",
       usageSourceId: "usage-forged",
@@ -1138,31 +1053,31 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       undefined,
       new PgInvocationDeliveryAuthorizer(),
     );
-    const create = (adapterType: string) => snapshots.createAttempt({
+    const create = (runtimeKey: string) => snapshots.createAttempt({
       spaceId: SPACE,
       invocationId: RUN,
       envelope: planned,
       control: authoritative,
-      adapterType,
+      runtimeKey,
       providerId: PROVIDER,
       model: "gpt-4o",
-      usageSourceId: `run:${RUN}:${adapterType}`,
+      usageSourceId: `run:${RUN}:${runtimeKey}`,
       viewerUserId: USER,
       requireLiveAuthorization: true,
     });
-    await expect(create("model_api")).resolves.toBeDefined();
-    await expect(create("ts_agent_host")).rejects.toMatchObject({ statusCode: 409 });
+    await expect(create("opencode")).resolves.toBeDefined();
+    await expect(create("claude_code")).rejects.toMatchObject({ statusCode: 409 });
     await db.pool.query(
       `UPDATE model_provider_space_grants SET enabled=FALSE WHERE provider_id=$1 AND space_id=$2`,
       [PROVIDER, SPACE],
     );
-    await expect(create("model_api")).rejects.toMatchObject({ statusCode: 409 });
+    await expect(create("opencode")).rejects.toMatchObject({ statusCode: 409 });
     await db.pool.query(
       `UPDATE model_provider_space_grants SET enabled=TRUE WHERE provider_id=$1 AND space_id=$2`,
       [PROVIDER, SPACE],
     );
     await db.pool.query(`UPDATE project_folders SET status='archived',updated_at=now() WHERE id=$1`, [FOLDER]);
-    await expect(create("model_api")).rejects.toMatchObject({ statusCode: 404 });
+    await expect(create("opencode")).rejects.toMatchObject({ statusCode: 404 });
 
     await db.pool.query(`UPDATE project_folders SET status='active',updated_at=now() WHERE id=$1`, [FOLDER]);
     const sourceUpdatedAt = "2026-08-09T01:00:00.000Z";
@@ -1206,7 +1121,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       invocationId: RUN,
       envelope: sourcePlan,
       control: authoritative,
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       providerId: PROVIDER,
       model: "gpt-4o",
       usageSourceId: `run:${RUN}:source`,
@@ -1238,7 +1153,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       `UPDATE projects SET active_instruction_version_id=$1 WHERE id=$2 AND space_id=$3`,
       [replacementInstructionId, PROJECT, SPACE],
     );
-    await expect(create("model_api")).rejects.toMatchObject({ statusCode: 409 });
+    await expect(create("opencode")).rejects.toMatchObject({ statusCode: 409 });
   });
 
   /**
@@ -1379,7 +1294,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       invocationId: RUN,
       envelope: plan,
       control: authoritative,
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       providerId: PROVIDER,
       model: "gpt-4o",
       usageSourceId: `run:${RUN}:thread`,
@@ -1405,7 +1320,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       invocationId: RUN,
       envelope: envelope(),
       control: control(),
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       providerId: PROVIDER,
       model: "wrong-model",
       usageSourceId: "failed-render",
@@ -1414,6 +1329,75 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     expect((await db.pool.query(
       `SELECT 1 FROM context_window_reconciliations WHERE delivery_id=$1`, [deliveryId],
     )).rows).toHaveLength(0);
+  });
+
+  /**
+   * A default `runtime_native` Run names no model: the Profile snapshot carries
+   * none and there is no per-run override, because an ACP session picks the
+   * model only after it starts. Planning therefore writes a null window-plan
+   * model, and the reconciliation row has to store it — a NOT NULL column
+   * failed every such Run with 23502 at the first Delivery.
+   */
+  it("records the window plan of a native runtime Run that names no model", async () => {
+    if (!db.available) return;
+    const decisionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO policy_decision_records (
+         id,space_id,actor_type,actor_id,action,resource_type,resource_id,
+         decision,risk_level,policy_source,metadata_json,created_at
+       ) VALUES ($1,$2,'user',$3,'work_context_setup.change','work_context_setup',$4,
+                 'allow','medium','test','{}',now())`,
+      [decisionId, SPACE, USER, SETUP],
+    );
+    await db.pool.query(
+      `INSERT INTO work_context_setups (
+         id,space_id,work_context_scope_id,scope_kind,version,user_id,
+         project_id,project_folder_id,agent_id,runtime_ref_json,pinned_refs_json,
+         excluded_refs_json,retrieval_preferences_json,continuity_preferences_json,
+         project_brief_version_id,project_instruction_version_id,project_instruction_enabled,
+         governing_policy_refs_json,setup_fingerprint,base_version,typed_diff_json,reason,
+         policy_decision_record_id,created_by_user_id,created_at
+       ) VALUES ($1,$2,$3,'root_task',1,$4,NULL,NULL,$5,NULL,'[]','[]',
+                 '{"enabled":false}','{}',NULL,NULL,TRUE,'[]','native-setup',NULL,'{}',
+                 'test',$6,$4,now())`,
+      [SETUP, SPACE, RUN, USER, AGENT, decisionId],
+    );
+    await db.pool.query(`UPDATE runs SET prompt='Native question' WHERE id=$1`, [RUN]);
+    const authoritative = control();
+    authoritative.work_context_setup_ref = { type: "work_context_setup", id: SETUP, version: "1" };
+    authoritative.egress = {
+      destination_type: "local_cli",
+      destination_id: "opencode",
+      sensitivity_ceiling: "highly_restricted",
+      external_egress_allowed: true,
+      allowed_provider_ids: [],
+    };
+    authoritative.readable_scope.sensitivity_ceiling = "highly_restricted";
+    await db.pool.query(
+      `UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`,
+      [CONTROL, JSON.stringify(authoritative)],
+    );
+
+    const delivery = await createProductionRuntimeContextInvocationGateway(db.pool).prepareInvocation({
+      identity: { spaceId: SPACE, userId: USER },
+      invocationId: RUN,
+      executionControlSnapshotId: CONTROL,
+      runtimeKey: "opencode",
+      usageSourceId: `run:${RUN}:native`,
+      turn: {
+        work_context_scope_id: RUN,
+        expected_setup_version: 1,
+        current_message_ref: { type: "run_request", id: RUN },
+        one_off_refs: [],
+        invocation_purpose: "agent_task",
+      },
+    });
+
+    expect(delivery.model).toBeNull();
+    expect((await db.pool.query<{ model: string | null }>(
+      `SELECT model FROM context_window_reconciliations WHERE delivery_id=$1`,
+      [delivery.id],
+    )).rows).toEqual([{ model: null }]);
   });
 
   it("fails closed when retention disables raw persistence and deletes expired ciphertext", async () => {
@@ -1429,7 +1413,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       invocationId: RUN,
       envelope: envelope(),
       control: control(0),
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       providerId: PROVIDER,
       model: "gpt-4o",
       usageSourceId: "usage-disabled",
@@ -1446,7 +1430,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       invocationId: RUN,
       envelope: envelope(),
       control: control(60),
-      adapterType: "model_api",
+      runtimeKey: "opencode",
       providerId: PROVIDER,
       model: "gpt-4o",
       usageSourceId: "usage-expiring",

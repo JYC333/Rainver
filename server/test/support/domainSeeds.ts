@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
+import { assertAgentRuntimeDefinition } from "../../src/modules/runtimeAdapters/runtimeDefinitions.js";
+import type { RuntimeKey } from "../../src/modules/runtimeAdapters/specs.js";
 
 /**
  * The rows almost every Project-domain test needs before it can do anything:
@@ -161,6 +163,119 @@ export async function seedRoomManager(
   }
 }
 
+/**
+ * The default Profile row low-level fixtures need when they insert Agents
+ * directly. Tests that exercise dispatch should use the Agent service so its
+ * Server Host and installation provisioning path is included as well.
+ *
+ * `runtimeKey` is a registered runtime and is checked against the registry
+ * before the insert: nothing in the schema rejects a retired key such as
+ * `model_api`, so a seed naming one produced a Profile production can no
+ * longer select, and whatever read it fed then failed somewhere far from the
+ * fixture. Fail where the wrong key was written instead.
+ */
+export async function ensureDefaultRuntimeProfile(
+  pool: Pool,
+  input: {
+    profileId?: string;
+    agent: string;
+    space: string;
+    runtimeKey?: RuntimeKey;
+    executionHostId?: string;
+    workspaceLocationId?: string;
+    workspaceMode?: "location" | "managed";
+    runtimeInstallation?: string;
+    runtimeConfig?: Record<string, unknown>;
+    now?: string;
+  },
+): Promise<string> {
+  const id = input.profileId ?? randomUUID();
+  const now = input.now ?? new Date().toISOString();
+  const runtimeKey = input.runtimeKey ?? "opencode";
+  assertAgentRuntimeDefinition(runtimeKey);
+  const inserted = await pool.query<{ id: string }>(
+    `INSERT INTO agent_runtime_profiles (
+       id, space_id, agent_id, execution_host_id, workspace_location_id,
+       workspace_mode, runtime_installation, name, runtime_key, backend_mode,
+       runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,'Default',$8,'runtime_native',$9::jsonb,'{}'::jsonb,true,true,$10,$10)
+     ON CONFLICT (agent_id) WHERE is_default = TRUE DO NOTHING`,
+    [
+      id,
+      input.space,
+      input.agent,
+      input.executionHostId ?? null,
+      input.workspaceLocationId ?? null,
+      input.workspaceMode ?? null,
+      input.runtimeInstallation ?? null,
+      runtimeKey,
+      JSON.stringify(input.runtimeConfig ?? {}),
+      now,
+    ],
+  );
+  if (inserted.rows[0]) return inserted.rows[0].id;
+  const existing = await pool.query<{ id: string }>(
+    `SELECT id FROM agent_runtime_profiles WHERE agent_id = $1 AND is_default = TRUE`,
+    [input.agent],
+  );
+  if (!existing.rows[0]) throw new Error("Default Runtime Profile insert conflicted but no default Profile exists");
+  return existing.rows[0].id;
+}
+
+/** A healthy Server-hosted Profile for tests that exercise real Run routing. */
+export async function seedServerRuntimeProfile(
+  pool: Pool,
+  input: {
+    profileId?: string;
+    agent: string;
+    space: string;
+    hostId: string;
+    runtimeKey?: RuntimeKey;
+    runtimeInstallation?: string;
+    workspaceLocationId?: string;
+    runtimeConfig?: Record<string, unknown>;
+    now?: string;
+  },
+): Promise<string> {
+  const runtimeKey = input.runtimeKey ?? "opencode";
+  const runtimeInstallation = input.runtimeInstallation ?? "managed:1.0.0";
+  const now = input.now ?? new Date().toISOString();
+  const host = await pool.query<{ id: string }>(
+    `SELECT id FROM hosts WHERE id = $1 AND kind = 'server'`,
+    [input.hostId],
+  );
+  if (!host.rows[0]) {
+    const version = runtimeInstallation.startsWith("managed:")
+      ? runtimeInstallation.slice("managed:".length)
+      : null;
+    await seedServerHost(pool, {
+      id: input.hostId,
+      now,
+      installations: {
+        [runtimeKey]: [{
+          id: runtimeInstallation,
+          version,
+          logged_in: true,
+          options: null,
+          health_check_protocol: "acp",
+        }],
+      },
+    });
+  }
+  return ensureDefaultRuntimeProfile(pool, {
+    profileId: input.profileId,
+    agent: input.agent,
+    space: input.space,
+    runtimeKey,
+    executionHostId: input.hostId,
+    runtimeInstallation,
+    workspaceMode: input.workspaceLocationId ? "location" : "managed",
+    workspaceLocationId: input.workspaceLocationId,
+    runtimeConfig: input.runtimeConfig,
+    now,
+  });
+}
+
 /** An active agent with one version bound as current, as research tests need. */
 export async function seedAgentWithVersion(
   pool: Pool,
@@ -171,6 +286,7 @@ export async function seedAgentWithVersion(
     owner: string;
     name?: string;
     systemPrompt?: string;
+    seedDefaultRuntimeProfile?: boolean;
     now?: string;
   },
 ): Promise<void> {
@@ -182,13 +298,23 @@ export async function seedAgentWithVersion(
   );
   await pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1,$2,$3,'v1',$4,'{}','{}','{}','{}','[]','{}','{}',$5)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES ($1, $2, $3, 'v1', $4, '{}', '{}', '[]', '{}', $5)`,
     [input.version, input.agent, input.space, input.systemPrompt ?? "Test research agent.", now],
   );
   await pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [input.agent, input.version]);
+  if (input.seedDefaultRuntimeProfile !== false) {
+    await ensureDefaultRuntimeProfile(pool, { agent: input.agent, space: input.space, now });
+  }
 }
 
 /** A finished agent Run in the Space, with the agent and version it needs. */
@@ -198,10 +324,40 @@ export async function seedRun(
 ): Promise<void> {
   const now = input.now ?? new Date().toISOString();
   await seedAgentWithVersion(pool, { agent: input.agent, version: input.version, space: input.space, owner: input.owner, name: "Run Agent", now });
+  const profile = await pool.query<{
+    id: string;
+    runtime_key: string;
+    backend_mode: string;
+    model_provider_id: string | null;
+    model_name: string | null;
+    runtime_config_json: Record<string, unknown>;
+    runtime_policy_json: Record<string, unknown>;
+  }>(
+    `SELECT id, runtime_key, backend_mode, model_provider_id, model_name,
+            runtime_config_json, runtime_policy_json
+       FROM agent_runtime_profiles
+      WHERE space_id=$1 AND agent_id=$2 AND is_default=TRUE AND enabled=TRUE`,
+    [input.space, input.agent],
+  );
+  const selected = profile.rows[0];
+  if (!selected) throw new Error("seedRun requires an enabled default Runtime Profile");
+  const snapshot = {
+    id: selected.id,
+    runtime_key: selected.runtime_key,
+    backend_mode: selected.backend_mode,
+    model_provider_id: selected.model_provider_id,
+    model_name: selected.model_name,
+    runtime_config_json: selected.runtime_config_json,
+    runtime_policy_json: selected.runtime_policy_json,
+  };
   await pool.query(
-    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, owner_user_id, visibility, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,'space_shared',$6,$6)`,
-    [input.id, input.space, input.agent, input.version, input.owner, now],
+    `INSERT INTO runs (
+       id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+       runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+       owner_user_id, visibility, created_at, updated_at, execution_kind
+     ) VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,'default',$6,$7::jsonb,
+       $8,'space_shared',$9,$9,'agent')`,
+    [input.id, input.space, input.agent, input.version, selected.id, selected.runtime_key, JSON.stringify(snapshot), input.owner, now],
   );
 }
 
@@ -217,7 +373,13 @@ export async function seedRun(
 export async function seedServerHost(pool: Pool, input: {
   id: string;
   now?: string;
-  installations?: Record<string, Array<{ id: string; version: string | null; logged_in: boolean | null; options: null }>>;
+  installations?: Record<string, Array<{
+    id: string;
+    version: string | null;
+    logged_in: boolean | null;
+    options: null;
+    health_check_protocol?: "acp" | null;
+  }>>;
 }): Promise<void> {
   const now = input.now ?? new Date().toISOString();
   // One adapter by default: enough for the host to be a usable backend, and
@@ -229,7 +391,13 @@ export async function seedServerHost(pool: Pool, input: {
   // there is one its daemon installed. Seeding `own` would model a state a
   // real strict host cannot report.
   const installations = input.installations ?? {
-    claude_code: [{ id: "managed:1.0.0", version: "1.0.0", logged_in: true, options: null }],
+    claude_code: [{
+      id: "managed:1.0.0",
+      version: "1.0.0",
+      logged_in: true,
+      options: null,
+      health_check_protocol: "acp",
+    }],
   };
   await pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)

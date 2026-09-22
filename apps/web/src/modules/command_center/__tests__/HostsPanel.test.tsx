@@ -2,21 +2,20 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import HostsPanel from '../HostsPanel'
-import { hostsApi, providersApi, type ModelProviderOut } from '../../../api/client'
+import { hostsApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
-vi.mock('../../../contexts/AuthContext', () => ({ useAuth: () => ({ currentUser: null }) }))
+const authState = vi.hoisted(() => ({ currentUser: null as null | { is_instance_admin: boolean } }))
+vi.mock('../../../contexts/AuthContext', () => ({ useAuth: () => authState }))
 vi.mock('../../../api/client', () => ({
   acpAgentsApi: { list: vi.fn().mockResolvedValue({ items: [] }), registry: vi.fn().mockResolvedValue({ items: [] }) },
   hostsApi: {
-    list: vi.fn(), pairingCode: vi.fn(), revoke: vi.fn(), listRuntimeAdapters: vi.fn(),
-    // The per-host model-backend selector mounts inside each remote host card.
-    listProviderBindings: vi.fn(), setProviderBinding: vi.fn(), clearProviderBinding: vi.fn(),
+    list: vi.fn(), pairingCode: vi.fn(), revoke: vi.fn(), listRuntimeDefinitions: vi.fn(),
     // Subscription quota is read on the host and cached server-side; the card
     // reads the cache when it mounts.
     usage: vi.fn(), refreshUsage: vi.fn(), installRuntime: vi.fn(), rollbackRuntime: vi.fn(),
+    serverRuntimeProvisioning: vi.fn(), retryServerRuntimeProvisioning: vi.fn(),
   },
-  providersApi: { list: vi.fn() },
 }))
 
 const SERVER_HOST = {
@@ -31,46 +30,94 @@ const REMOTE_HOST = {
   daemon_version: '0.1.0', capabilities_json: { runtimes: ['claude', 'git'], versions: {}, installations: { claude_code: [{ id: 'own', version: null, logged_in: null, options: null }] } }, created_at: '', updated_at: '',
 }
 
-const CLAUDE_ADAPTER = { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true, reports_managed_cli_version: true, provider_api: 'claude_compatible' as const }
+const CLAUDE_ADAPTER = { runtime_key: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true, reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false, provider_api: 'claude_compatible' as const }
 // ACP runtime replatform P3: codex_cli's own executable is the pinned
 // codex-acp adapter, not the vendor `codex` binary a host's capability probe
 // reports — capability_probe carries that distinction.
-const CODEX_ADAPTER = { adapter_type: 'codex_cli', display_name: 'Codex', command: 'codex-acp', capability_probe: 'codex', remote_eligible: true, reports_managed_cli_version: true, provider_api: 'openai_compatible' as const }
-const CLAUDE_PROVIDER = {
-  id: 'provider-1', space_id: 'space-1', name: 'Claude proxy', provider_type: 'anthropic', base_url: 'https://example.test',
-  network_profile_id: null, claude_compatible_base_url: 'https://example.test', openai_compatible_base_url: null,
-  default_model: 'claude-sonnet', available_models: ['claude-sonnet'], enabled: true, is_default: false,
-  has_api_key: true, has_subscription: false, grant_enabled: true, created_at: '', updated_at: '',
-} satisfies ModelProviderOut
-
+const CODEX_ADAPTER = { runtime_key: 'codex_cli', display_name: 'Codex', command: 'codex-acp', capability_probe: 'codex', remote_eligible: true, reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false, provider_api: 'openai_compatible' as const }
 beforeEach(() => {
+  authState.currentUser = null
   vi.mocked(hostsApi.list).mockResolvedValue({ items: [SERVER_HOST, REMOTE_HOST] })
-  vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER] })
-  vi.mocked(hostsApi.listProviderBindings).mockResolvedValue({ items: [] })
+  vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER] })
   vi.mocked(hostsApi.usage).mockResolvedValue({ items: [] })
-  vi.mocked(providersApi.list).mockResolvedValue([])
+  vi.mocked(hostsApi.serverRuntimeProvisioning).mockResolvedValue({
+    host_id: SERVER_HOST.id,
+    runtime_key: 'opencode',
+    installation: { state: 'ready', desired_version: '1.2.3', installed_version: '1.2.3', active_version: '1.2.3', error: null, attempts: 1 },
+    native_account: { installation_id: 'managed:1.2.3', logged_in: false, accounts: [] },
+  })
 })
 
 describe('HostsPanel', () => {
   it('lists hosts without duplicating the Agent inventory above it, and only offers Revoke for a remote host', async () => {
     render(<HostsPanel />)
     expect(await screen.findByText('Laptop')).toBeInTheDocument()
+    expect(await screen.findByText('ACP health passed')).toBeInTheDocument()
+    expect(screen.getByText(/Rainver-pinned/)).toBeInTheDocument()
     expect(screen.getAllByText('server').length).toBeGreaterThan(0)
     expect(screen.getByText(/Built-in execution host/)).toBeInTheDocument()
     expect(screen.getByTestId('host-agent-host-1-claude_code')).toHaveTextContent('Claude Code')
-    expect(screen.getByTestId('host-agent-host-1-claude_code')).toHaveTextContent('Model source')
-    expect(screen.getByLabelText('Model source for Claude Code on Laptop')).toBeInTheDocument()
+    expect(screen.queryByLabelText(/^Model source for/)).toBeNull()
     expect(screen.queryByText('Model backend')).toBeNull()
     expect(screen.queryByText('git')).toBeNull()
     expect(screen.getAllByRole('button', { name: 'Revoke' })).toHaveLength(1)
+  })
+
+  it('shows Server provisioning failure and lets an instance admin retry it', async () => {
+    authState.currentUser = { is_instance_admin: true }
+    vi.mocked(hostsApi.serverRuntimeProvisioning)
+      .mockResolvedValueOnce({
+        host_id: SERVER_HOST.id,
+        runtime_key: 'opencode',
+        installation: { state: 'failed', desired_version: '1.2.3', installed_version: '1.2.2', active_version: null, error: 'ACP health check failed', attempts: 2 },
+        native_account: { installation_id: null, logged_in: null, accounts: null },
+      })
+      .mockResolvedValueOnce({
+        host_id: SERVER_HOST.id,
+        runtime_key: 'opencode',
+        installation: { state: 'queued', desired_version: '1.2.3', installed_version: '1.2.2', active_version: null, error: null, attempts: 2 },
+        native_account: { installation_id: null, logged_in: null, accounts: null },
+      })
+    vi.mocked(hostsApi.retryServerRuntimeProvisioning).mockResolvedValue({
+      host_id: SERVER_HOST.id, runtime_key: 'opencode', state: 'queued', desired_version: '1.2.3',
+    })
+    render(<HostsPanel />)
+
+    expect(await screen.findByText('Provisioning failed')).toBeInTheDocument()
+    expect(screen.getByText('ACP health check failed')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Server Runtime provisioning' }))
+    await waitFor(() => expect(hostsApi.retryServerRuntimeProvisioning).toHaveBeenCalledWith(SERVER_HOST.id))
+    expect(await screen.findByText('Provisioning: queued')).toBeInTheDocument()
+  })
+
+  it('marks a loaded Server Runtime status as stale when the next read fails', async () => {
+    // The panel keeps the last good status on a failed read, so the "could not
+    // load" branch is unreachable once one has landed and the badge silently
+    // claimed to be current. The indicator is what says otherwise.
+    vi.useFakeTimers()
+    try {
+      render(<HostsPanel />)
+      await act(async () => { await Promise.resolve() })
+      expect(screen.getByText('ACP health passed')).toBeInTheDocument()
+      expect(screen.queryByText(/Status stale/)).toBeNull()
+
+      vi.mocked(hostsApi.serverRuntimeProvisioning).mockRejectedValue(new Error('server runtime unreachable'))
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+
+      expect(screen.getByText(/Status stale: server runtime unreachable/)).toBeInTheDocument()
+      // The status it had is still on screen — a failed read is not a missing copy.
+      expect(screen.getByText('ACP health passed')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('shows versions on installed Agent rows and omits uninstalled runtime badges', async () => {
     // ACP runtime replatform P3: codex_cli is remote-eligible now (its own
     // adapter is codex-acp), so a still-genuinely-ineligible adapter
     // (gemini_cli, implementation_status "planned") exercises this case.
-    const GEMINI_ADAPTER = { adapter_type: 'gemini_cli', display_name: 'Gemini CLI', command: 'gemini', capability_probe: 'gemini', remote_eligible: false }
-    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, GEMINI_ADAPTER] })
+    const GEMINI_ADAPTER = { runtime_key: 'gemini_cli', display_name: 'Gemini CLI', command: 'gemini', capability_probe: 'gemini', remote_eligible: false, supports_runtime_native: false, supports_model_provider: false }
+    vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, GEMINI_ADAPTER] })
     vi.mocked(hostsApi.list).mockResolvedValue({
       items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: ['claude', 'gemini'], versions: { claude: '1.2.3' }, installations: { claude_code: [{ id: 'own', version: '1.2.3 (Claude Code)', logged_in: null, options: null }] } } }],
     })
@@ -84,28 +131,15 @@ describe('HostsPanel', () => {
     // A registry agent's managed copy is installable and managed on the host
     // while `remote_eligible` stays false (no login/state-root contract yet).
     // Filtering the host list by eligibility hid the copy right after install.
-    const CURSOR_ADAPTER = { adapter_type: 'acp_cursor', display_name: 'Cursor', command: 'acp_cursor', capability_probe: 'acp_cursor', remote_eligible: false, provider_binding: false }
-    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, CURSOR_ADAPTER] })
+    const CURSOR_ADAPTER = { runtime_key: 'acp_cursor', display_name: 'Cursor', command: 'acp_cursor', capability_probe: 'acp_cursor', remote_eligible: false, supports_runtime_native: true, supports_model_provider: false }
+    vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, CURSOR_ADAPTER] })
     vi.mocked(hostsApi.list).mockResolvedValue({
       items: [{ ...REMOTE_HOST, capabilities_json: { runtimes: [], versions: {}, installations: { acp_cursor: [{ id: 'managed:2.0.0', version: '2.0.0', logged_in: false, options: null }] } } }],
     })
     render(<HostsPanel />)
     expect(await screen.findByTestId('host-agent-host-1-acp_cursor')).toHaveTextContent('managed · 2.0.0')
-    // Not offered as the host's default adapter: that choice is dispatch.
+    // Runtime copies are visible here even when dispatch is disabled for them.
     expect(screen.queryByRole('option', { name: 'Cursor' })).toBeNull()
-  })
-
-  it('changes a supported Agent model source from inside that Agent row', async () => {
-    vi.mocked(providersApi.list).mockResolvedValue([CLAUDE_PROVIDER])
-    vi.mocked(hostsApi.setProviderBinding).mockResolvedValue({
-      host_id: 'host-1', adapter_type: 'claude_code', model_provider_id: CLAUDE_PROVIDER.id, model: null, updated_at: '',
-    })
-    render(<HostsPanel />)
-    const modelSource = await screen.findByLabelText('Model source for Claude Code on Laptop')
-    await userEvent.click(modelSource)
-    await userEvent.click(await screen.findByRole('option', { name: 'Claude proxy · claude-sonnet' }))
-    await waitFor(() => expect(hostsApi.setProviderBinding).toHaveBeenCalledWith('host-1', 'claude_code', 'provider-1'))
-    expect(modelSource).toHaveTextContent('Claude proxy · claude-sonnet')
   })
 
   it('issues a pairing code and shows it for copying', async () => {
@@ -151,10 +185,49 @@ describe('HostsPanel', () => {
     }
   })
 
+  it('does not stack provisioning reads while one is still in flight', async () => {
+    // The 3s tick is shorter than a slow provisioning read. Without a guard
+    // each tick opened another request and merged whatever came back last, so
+    // an older answer could overwrite a newer one.
+    vi.useFakeTimers()
+    try {
+      type ProvisioningStatus = Awaited<ReturnType<typeof hostsApi.serverRuntimeProvisioning>>
+      let release: (status: ProvisioningStatus) => void = () => undefined
+      const provisioningCalls = () => vi.mocked(hostsApi.serverRuntimeProvisioning).mock.calls.length
+      const before = provisioningCalls()
+      vi.mocked(hostsApi.serverRuntimeProvisioning).mockImplementationOnce(
+        () => new Promise(resolve => { release = resolve }) as ReturnType<typeof hostsApi.serverRuntimeProvisioning>,
+      )
+      render(<HostsPanel />)
+      await act(async () => { await Promise.resolve() })
+      expect(provisioningCalls()).toBe(before + 1)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(9_000) })
+      expect(provisioningCalls()).toBe(before + 1)
+
+      await act(async () => {
+        release({
+          host_id: SERVER_HOST.id,
+          runtime_key: 'opencode',
+          installation: { state: 'ready', desired_version: '4.5.6', installed_version: '4.5.6', active_version: '4.5.6', error: null, attempts: 1 },
+          native_account: { installation_id: 'managed:4.5.6', logged_in: true, accounts: [] },
+        })
+        await Promise.resolve()
+      })
+      expect(screen.getByText(/Rainver-pinned 4\.5\.6/)).toBeInTheDocument()
+
+      // The next tick is free to read again once that one settled.
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+      expect(provisioningCalls()).toBeGreaterThan(before + 1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('uses the unified Agents empty state when no runtime has been reported', async () => {
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [{ ...REMOTE_HOST, capabilities_json: null }] })
     render(<HostsPanel />)
-    expect(await screen.findByText('No agent on this host yet.')).toBeInTheDocument()
+    expect(await screen.findByText('No runtime copies are reported on this host yet.')).toBeInTheDocument()
     expect(screen.queryByText('Model backend')).toBeNull()
   })
 
@@ -166,6 +239,83 @@ describe('HostsPanel', () => {
     render(<HostsPanel />)
     expect(await screen.findByText(/every Run is isolated in its own namespace/)).toBeInTheDocument()
     expect(screen.getByText(/up to 3 runs execute at once/)).toBeInTheDocument()
+  })
+
+  it('says the Server Runtime login is instance-wide where that login happens', async () => {
+    // Plan Phase 4 §8: an administrator signing the Server copy into a paid
+    // account spends it on behalf of everyone allowed to run Agents there.
+    render(<HostsPanel />)
+    expect(await screen.findByText(/This login is instance-wide: every person authorized to run Agents on the Server Runtime spends this account\./))
+      .toBeInTheDocument()
+  })
+
+  it('leaves the Rainver-pinned Server OpenCode copy to the provisioner, and still manages other agents there', async () => {
+    authState.currentUser = { is_instance_admin: true }
+    const OPENCODE_ADAPTER = {
+      runtime_key: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode',
+      remote_eligible: true, latest_managed_version: '9.9.9', supports_runtime_native: true, supports_model_provider: true,
+    }
+    const CURSOR_ADAPTER = {
+      runtime_key: 'acp_cursor', display_name: 'Cursor', command: 'acp_cursor', capability_probe: 'acp_cursor',
+      remote_eligible: false, supports_runtime_native: true, supports_model_provider: false,
+    }
+    vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [OPENCODE_ADAPTER, CURSOR_ADAPTER] })
+    vi.mocked(hostsApi.list).mockResolvedValue({ items: [{
+      ...SERVER_HOST,
+      capabilities_json: {
+        runtimes: [], versions: {},
+        installations: {
+          opencode: [{ id: 'managed:1.2.3', version: '1.2.3', logged_in: true, options: null, rollback_version: '1.2.2' }],
+          acp_cursor: [{ id: 'managed:2.0.0', version: '2.0.0', logged_in: true, options: null, rollback_version: '1.0.0' }],
+        },
+      },
+    }] })
+    render(<HostsPanel />)
+
+    await screen.findByTestId('host-agent-host-server-opencode')
+    expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('Managed by Rainver')
+    // The Retry only exists for a failed install, so a healthy one must not
+    // point at a button that is not on the page.
+    expect(screen.getByTestId('host-agent-host-server-opencode')).not.toHaveTextContent('use Retry above')
+    expect(screen.queryByRole('button', { name: /Remove managed:1\.2\.3 of OpenCode/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Upgrade OpenCode/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Roll OpenCode on .* back to/ })).toBeNull()
+    // A registry agent an admin added to the server host stays theirs to manage.
+    expect(screen.getByRole('button', { name: /Remove managed:2\.0\.0 of Cursor/ })).toBeInTheDocument()
+  })
+
+  it('points at the provisioner\u2019s Retry only when there is one to press', async () => {
+    const SERVER_WITH_OPENCODE = {
+      ...SERVER_HOST,
+      capabilities_json: {
+        runtimes: [], versions: {},
+        installations: { opencode: [{ id: 'managed:1.2.3', version: '1.2.3', logged_in: true, options: null }] },
+      },
+    }
+    const OPENCODE_ADAPTER = {
+      runtime_key: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode',
+      remote_eligible: true, supports_runtime_native: true, supports_model_provider: true,
+    }
+    vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [OPENCODE_ADAPTER] })
+    vi.mocked(hostsApi.list).mockResolvedValue({ items: [SERVER_WITH_OPENCODE] })
+    vi.mocked(hostsApi.serverRuntimeProvisioning).mockResolvedValue({
+      host_id: SERVER_HOST.id,
+      runtime_key: 'opencode',
+      installation: { state: 'failed', desired_version: '1.2.3', installed_version: null, active_version: null, error: 'install failed', attempts: 2 },
+      native_account: { installation_id: null, logged_in: null, accounts: null },
+    })
+
+    // A member sees who owns the copy but no Retry, so no hint either.
+    const member = render(<HostsPanel />)
+    await waitFor(() => expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('Managed by Rainver'))
+    expect(screen.getByTestId('host-agent-host-server-opencode')).not.toHaveTextContent('use Retry above')
+    expect(screen.queryByRole('button', { name: 'Retry Server Runtime provisioning' })).toBeNull()
+    member.unmount()
+
+    authState.currentUser = { is_instance_admin: true }
+    render(<HostsPanel />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Retry Server Runtime provisioning' })).toBeInTheDocument())
+    expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('Managed by Rainver — use Retry above')
   })
 
   it('shows a member the built-in host\'s copies without the controls that would 403', async () => {
@@ -182,10 +332,7 @@ describe('HostsPanel', () => {
     expect(screen.getByText(/Installing and logging in its agents is instance-admin work/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Log in/ })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Add agent…' })).toBeNull()
-    // The built-in host has no host×adapter model source and its bindings
-    // route answers 404, so asking would put a "Host not found" toast in front
-    // of every member the moment an admin installed a bindable copy on it.
-    expect(vi.mocked(hostsApi.listProviderBindings)).not.toHaveBeenCalledWith('host-server')
+    // Host account setup is not a second provider/backend authority.
     expect(screen.queryByLabelText(/^Model source for/)).toBeNull()
   })
 })
@@ -211,11 +358,15 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     },
   }
 
-  it('shows what a copy has left, and offers a fresh reading before one is cached', async () => {
+  it('keeps an explicit refresh when the slower cached usage read finishes afterward', async () => {
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [CLAUDE_HOST] })
-    vi.mocked(hostsApi.usage).mockResolvedValue({ items: [] })
+    let resolveCachedUsage!: (value: Awaited<ReturnType<typeof hostsApi.usage>>) => void
+    const cachedUsage = new Promise<Awaited<ReturnType<typeof hostsApi.usage>>>(resolve => {
+      resolveCachedUsage = resolve
+    })
+    vi.mocked(hostsApi.usage).mockReturnValue(cachedUsage)
     vi.mocked(hostsApi.refreshUsage).mockResolvedValue({
-      host_id: 'host-1', adapter_type: 'claude_code', installation: 'managed:2.0.0',
+      host_id: 'host-1', runtime_key: 'claude_code', installation: 'managed:2.0.0',
       quota: { available: true, session_pct: 61, session_resets: null, week_pct: 18, week_resets: null, error: null },
       checked_at: '2026-09-08T00:00:00.000Z',
     })
@@ -225,16 +376,26 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     // moment someone wants it, and the scheduled sweep is up to three hours
     // away.
     const refresh = await screen.findByRole('button', { name: /refresh usage for managed:2\.0\.0 of claude code/i })
-    fireEvent.click(refresh)
+    await userEvent.click(refresh)
 
     await waitFor(() => expect(hostsApi.refreshUsage).toHaveBeenCalledWith('host-1', 'claude_code', 'managed:2.0.0'))
     expect(await screen.findByText('session 61% · week 18%')).toBeInTheDocument()
+
+    await act(async () => {
+      resolveCachedUsage({ items: [{
+        host_id: 'host-1', runtime_key: 'claude_code', installation: 'managed:2.0.0',
+        quota: { available: true, session_pct: 10, session_resets: null, week_pct: 5, week_resets: null, error: null },
+        checked_at: '2026-09-07T00:00:00.000Z',
+      }] })
+      await cachedUsage
+    })
+    expect(screen.getByText('session 61% · week 18%')).toBeInTheDocument()
   })
 
   it('says a copy could not be read instead of leaving it looking healthy', async () => {
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [CLAUDE_HOST] })
     vi.mocked(hostsApi.usage).mockResolvedValue({ items: [{
-      host_id: 'host-1', adapter_type: 'claude_code', installation: 'managed:2.0.0',
+      host_id: 'host-1', runtime_key: 'claude_code', installation: 'managed:2.0.0',
       quota: { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: 'Log in to Claude Code on this host before reading usage.' },
       checked_at: '2026-09-08T00:00:00.000Z',
     }] })
@@ -248,7 +409,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [CLAUDE_HOST] })
     vi.mocked(hostsApi.usage).mockResolvedValue({ items: [] })
     vi.mocked(hostsApi.rollbackRuntime).mockResolvedValue({
-      host_id: 'host-1', adapter_type: 'claude_code', ok: true, error: null, installation: 'managed:1.0.0',
+      host_id: 'host-1', runtime_key: 'claude_code', ok: true, error: null, installation: 'managed:1.0.0',
     })
     render(<HostsPanel />)
 
@@ -258,7 +419,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
   })
 
   it('shows only the vendor CLI version, and offers upgrade when the internal package has changed', async () => {
-    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({
+    vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({
       items: [{ ...CLAUDE_ADAPTER, latest_managed_version: '3.0.0', reports_managed_cli_version: true }],
     })
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [{
@@ -272,7 +433,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
       },
     }] })
     vi.mocked(hostsApi.installRuntime).mockResolvedValue({
-      host_id: 'host-1', adapter_type: 'claude_code', ok: true, error: null, installation: 'managed:3.0.0',
+      host_id: 'host-1', runtime_key: 'claude_code', ok: true, error: null, installation: 'managed:3.0.0',
     })
     render(<HostsPanel />)
 
@@ -283,7 +444,7 @@ describe('HostAgentRow subscription and upgrade controls', () => {
   })
 
   it('hides the upgrade icon when the managed package is current', async () => {
-    vi.mocked(hostsApi.listRuntimeAdapters).mockResolvedValue({
+    vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({
       items: [{ ...CLAUDE_ADAPTER, latest_managed_version: '2.0.0', reports_managed_cli_version: true }],
     })
     vi.mocked(hostsApi.list).mockResolvedValue({ items: [CLAUDE_HOST] })

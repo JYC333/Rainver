@@ -23,17 +23,16 @@ const MANAGED_ASSISTANT_PROMPT_KEY = "agent_template.personal_assistant.system";
 // The server-host CLIs only: a remote-only adapter (ACP registry agent) has
 // no runtime tool or credential profile on the server for this to provision.
 //
-// In preference order for the no-provider fallback (`model_api` still wins
-// whenever a ModelProvider exists): OpenCode first, because it takes any
-// OpenAI-compatible endpoint and so works where the vendor-locked CLIs'
-// accounts are hard to obtain; Codex last for the same reason.
+// OpenCode first because it takes any OpenAI-compatible endpoint and so works
+// where the vendor-locked CLIs' accounts are hard to obtain; Codex last for
+// the same reason.
 const CLI_FALLBACK_PREFERENCE = ["opencode", "claude_code", "codex_cli"];
 const MANAGED_ASSISTANT_CLI_ADAPTERS = listRuntimeAdapterSpecs()
-  .filter((spec) => isVendorCliAdapter(spec.adapter_type) && !spec.invocation?.remote_host_only)
-  .map((spec) => spec.adapter_type)
+  .filter((spec) => isVendorCliAdapter(spec.runtime_key) && !spec.invocation?.remote_host_only)
+  .map((spec) => spec.runtime_key)
   .sort((a, b) => rank(a) - rank(b));
-function rank(adapterType: string): number {
-  const index = CLI_FALLBACK_PREFERENCE.indexOf(adapterType);
+function rank(runtimeKey: string): number {
+  const index = CLI_FALLBACK_PREFERENCE.indexOf(runtimeKey);
   return index === -1 ? CLI_FALLBACK_PREFERENCE.length : index;
 }
 const ROOM_MANAGER_POLICY = `
@@ -70,10 +69,10 @@ interface ProviderRow {
 interface ManagedAssistantSeed {
   name: string;
   description: string | null;
-  modelConfigJson: Record<string, unknown>;
+  riskLevel: "low" | "medium" | "high" | "critical";
+  maxRunTimeSeconds: number;
   contextPolicyJson: Record<string, unknown>;
   memoryPolicyJson: Record<string, unknown>;
-  runtimePolicyJson: Record<string, unknown>;
   toolPolicyJson: Record<string, unknown>;
   outputPolicyJson: Record<string, unknown>;
   scheduleConfigJson: Record<string, unknown>;
@@ -88,7 +87,7 @@ export interface ManagedAssistantPreparation {
    * only on a host, so this is the whole CLI side of Assistant provisioning —
    * there is no server-side copy to fall back to.
    */
-  hostBackends: Array<{ hostId: string; hostName: string; adapterType: string; installation: string }>;
+  hostBackends: Array<{ hostId: string; hostName: string; runtimeKey: string; installation: string }>;
 }
 
 /**
@@ -125,48 +124,9 @@ export class SpaceAssistantService {
   }
 
   /**
-   * Keep an already-provisioned Assistant's persisted model profiles aligned
-   * with provider/grant mutations. This path is deliberately model-only:
-   * provider changes do not require filesystem or CLI discovery, so the
-   * reconciliation remains a short database transaction.
-   */
-  static async reconcileModelApiProfiles(
-    pool: Pool,
-    spaceId: string,
-  ): Promise<void> {
-    await withTransaction(pool, async (client) => {
-      const space = await client.query<{ id: string }>(
-        "SELECT id FROM spaces WHERE id = $1 FOR UPDATE",
-        [spaceId],
-      );
-      if (!space.rows[0]) return;
-      // Every managed Assistant in the Space. `model_api` is the default
-      // adapter for a provisioned instance, so reconciling only the oldest
-      // would leave every other Project's Assistant bound to a provider that
-      // is no longer granted.
-      const assistants = await client.query<{ id: string }>(
-        `SELECT id
-           FROM agents
-          WHERE space_id = $1
-            AND agent_kind = 'system_assistant'
-            AND status = 'active'
-          ORDER BY created_at ASC, id ASC`,
-        [spaceId],
-      );
-      if (assistants.rows.length === 0) return;
-      const providers = await listChatProviderDefinitions(client, spaceId);
-      const service = new SpaceAssistantService(client, pool);
-      for (const { id: agentId } of assistants.rows) {
-        await service.ensureModelApiProfiles(agentId, spaceId, providers, false);
-      }
-    });
-  }
-
-  /**
    * Reconcile the managed Assistant's CLI profiles after runtime-tool
-   * installation, activation, or Space-policy changes. Runtime-tool
-   * discovery is intentionally performed before the transaction because it
-   * reads the host runtime-tool registry; the transaction only persists the
+   * installation or activation. Runtime-tool discovery is intentionally
+   * performed before the transaction; the transaction only persists the
    * resulting profile state.
    */
   static async reconcileCliProfiles(
@@ -306,41 +266,22 @@ export class SpaceAssistantService {
 
     const { seed } = preparation;
     const providers = await this.listEligibleProviderDefinitions(identity.spaceId);
-    // Admission must be decided before creating the managed identity. A fresh
-    // Space has no runtime profile to inspect yet, and creating a model_api
-    // version without a provider would fail with a generic validation error
-    // before the caller could receive actionable setup targets.
-    const defaultProvider = await this.requireEligibleBackend(identity, preparation, providers);
-    // Admission has already established that at least one eligible provider or
-    // execution-host backend exists, so the canonical adapter follows the
-    // provisioned backend candidates instead of manufacturing a placeholder.
-    const defaultHostBackend = defaultProvider ? null : preparation.hostBackends[0] ?? null;
-    const defaultAdapter = defaultProvider ? "model_api" : defaultHostBackend?.adapterType ?? "model_api";
-    const runtimePolicyJson = {
-      ...seed.runtimePolicyJson,
-      allowed_adapter_types: ["model_api", ...MANAGED_ASSISTANT_CLI_ADAPTERS],
-      default_adapter_type: defaultAdapter,
-    };
-    const runtimeConfigJson = {
-      risk_level: seed.runtimePolicyJson.risk_level ?? "low",
-      max_run_time_seconds: seed.runtimePolicyJson.max_run_time_seconds ?? 120,
-      adapter_type: defaultAdapter,
-    };
+    await this.requireEligibleBackend(identity, preparation, providers);
+    // The managed Assistant follows the same Space provisioning template as
+    // every new Agent. With no template row, the repository chooses the
+    // Server/OpenCode/runtime_native product default.
     const canonical = {
       systemPrompt: `${resolved.system.trim()}${ROOM_MANAGER_POLICY}`,
       promptProvenanceJson: {
         ...promptProvenanceOf(resolved.resolveResult),
         room_manager_policy_version: "room-manager-policy.v3",
       },
-      modelProviderId: defaultAdapter === "model_api" ? defaultProvider?.id ?? null : null,
-      modelName: defaultAdapter === "model_api" ? defaultProvider?.default_model ?? null : null,
-      modelConfigJson: seed.modelConfigJson,
-      runtimeConfigJson,
+      riskLevel: seed.riskLevel,
+      maxRunTimeSeconds: seed.maxRunTimeSeconds,
       contextPolicyJson: seed.contextPolicyJson,
       memoryPolicyJson: seed.memoryPolicyJson,
       capabilitiesJson: [] as unknown[],
       toolPermissionsJson: {},
-      runtimePolicyJson,
       toolPolicyJson: seed.toolPolicyJson,
       outputPolicyJson: seed.outputPolicyJson,
       scheduleConfigJson: seed.scheduleConfigJson,
@@ -369,7 +310,7 @@ export class SpaceAssistantService {
         reconciled.id,
         reconciled.name,
       );
-      await this.ensureRuntimeProfiles(reconciled.id, identity, providers, preparation.hostBackends, false);
+      await this.ensureRuntimeProfiles(reconciled.id, identity, preparation.hostBackends, false);
       // The pointer names the Space's Assistant, which backs personal
       // preferences and `/home` chat. Repointing it at whichever Project a
       // Room happened to be created in would silently move the Space's chat.
@@ -391,24 +332,12 @@ export class SpaceAssistantService {
       agentKind: "system_assistant",
       systemPrompt: canonical.systemPrompt,
       promptProvenanceJson: canonical.promptProvenanceJson,
-      defaultModelProviderId: canonical.modelProviderId,
-      defaultModel: canonical.modelName,
-      adapterType: defaultAdapter,
-      // A host-only Assistant must be born on the host profile it was
-      // admitted with: a CLI adapter names no runnable copy on its own.
-      ...(defaultHostBackend ? {
-        executionHostId: defaultHostBackend.hostId,
-        workspaceLocationId: null,
-        workspaceMode: "managed" as const,
-        runtimeInstallation: defaultHostBackend.installation,
-      } : {}),
-      modelConfigJson: canonical.modelConfigJson,
-      runtimeConfigJson: canonical.runtimeConfigJson,
+      riskLevel: canonical.riskLevel,
+      maxRunTimeSeconds: canonical.maxRunTimeSeconds,
       contextPolicyJson: canonical.contextPolicyJson,
       memoryPolicyJson: canonical.memoryPolicyJson,
       capabilitiesJson: canonical.capabilitiesJson,
       toolPermissionsJson: canonical.toolPermissionsJson,
-      runtimePolicyJson: canonical.runtimePolicyJson,
       toolPolicyJson: canonical.toolPolicyJson,
       outputPolicyJson: canonical.outputPolicyJson,
       scheduleConfigJson: canonical.scheduleConfigJson,
@@ -421,7 +350,7 @@ export class SpaceAssistantService {
       created.id,
       created.name,
     );
-    await this.ensureRuntimeProfiles(created.id, identity, providers, preparation.hostBackends, true, defaultHostBackend !== null);
+    await this.ensureRuntimeProfiles(created.id, identity, preparation.hostBackends, false);
     if (!projectId) {
       await this.agents.ensureAssistantSettingsPointerInTransaction(this.client, identity.spaceId, created.id);
     }
@@ -459,12 +388,9 @@ export class SpaceAssistantService {
   private async ensureRuntimeProfiles(
     agentId: string,
     identity: { spaceId: string; userId: string },
-    providers: ProviderRow[],
     hostBackends: ManagedAssistantPreparation["hostBackends"] = [],
-    initializeDefaults = false,
     makeHostDefault = false,
   ): Promise<void> {
-    await this.ensureModelApiProfiles(agentId, identity.spaceId, providers, initializeDefaults);
     const orderedHostBackends = await this.prioritizeCurrentHostBackend(
       agentId,
       identity.spaceId,
@@ -482,10 +408,10 @@ export class SpaceAssistantService {
   ): Promise<ManagedAssistantPreparation["hostBackends"]> {
     const current = await this.client.query<{
       execution_host_id: string;
-      adapter_type: string;
+      runtime_key: string;
       runtime_installation: string;
     }>(
-      `SELECT execution_host_id, adapter_type, runtime_installation
+      `SELECT execution_host_id, runtime_key, runtime_installation
          FROM agent_runtime_profiles
         WHERE space_id = $1 AND agent_id = $2
           AND enabled = true AND is_default = true
@@ -497,7 +423,7 @@ export class SpaceAssistantService {
     if (!binding) return hostBackends;
     const preferredIndex = hostBackends.findIndex((backend) =>
       backend.hostId === binding.execution_host_id
-      && backend.adapterType === binding.adapter_type
+      && backend.runtimeKey === binding.runtime_key
       && backend.installation === binding.runtime_installation);
     if (preferredIndex <= 0) return hostBackends;
     return [hostBackends[preferredIndex]!, ...hostBackends.filter((_, index) => index !== preferredIndex)];
@@ -513,50 +439,15 @@ export class SpaceAssistantService {
   ): Promise<void> {
     for (const [index, backend] of hostBackends.entries()) {
       await this.agents.ensureRuntimeProfileInTransaction(this.client, spaceId, agentId, {
-        name: `On ${backend.hostName} · ${backend.adapterType}`,
-        adapterType: backend.adapterType,
+        name: `On ${backend.hostName} · ${backend.runtimeKey}`,
+        runtimeKey: backend.runtimeKey,
         executionHostId: backend.hostId,
         workspaceMode: "managed",
         runtimeInstallation: backend.installation,
-        runtimeConfigJson: { risk_level: "low", max_run_time_seconds: 120 },
-        runtimePolicyJson: { default_adapter_type: backend.adapterType, allowed_adapter_types: [backend.adapterType] },
+        runtimeConfigJson: {},
+        runtimePolicyJson: {},
         isDefault: options.makeFirstDefault && index === 0 ? true : undefined,
         actorUserId,
-      });
-    }
-  }
-
-  private async ensureModelApiProfiles(
-    agentId: string,
-    spaceId: string,
-    providers: ProviderRow[],
-    initializeDefault: boolean,
-  ): Promise<void> {
-    const providerIds = providers.map((provider) => provider.id);
-    await this.client.query(
-      `UPDATE agent_runtime_profiles
-          SET enabled = false,
-              is_default = false,
-              updated_at = now()
-        WHERE space_id = $1
-          AND agent_id = $2
-          AND adapter_type = 'model_api'
-          AND model_provider_id IS NOT NULL
-          AND NOT (model_provider_id = ANY($3::varchar[]))`,
-      [spaceId, agentId, providerIds],
-    );
-    for (const [index, provider] of providers.entries()) {
-      await this.agents.ensureRuntimeProfileInTransaction(this.client, spaceId, agentId, {
-        name: `Model API · ${provider.id}`,
-        adapterType: "model_api",
-        modelProviderId: provider.id,
-        modelName: provider.default_model,
-        runtimeConfigJson: { risk_level: "low", max_run_time_seconds: 120 },
-        runtimePolicyJson: { default_adapter_type: "model_api", allowed_adapter_types: ["model_api"] },
-        // The Space grant ordering is the source of truth only while the
-        // Assistant is being created. Reconciliation leaves an existing
-        // user's runtime default untouched.
-        isDefault: initializeDefault && index === 0 ? true : undefined,
       });
     }
   }
@@ -574,7 +465,7 @@ export class SpaceAssistantService {
           SET enabled = false, updated_at = now()
         WHERE space_id = $1
           AND agent_id = $2
-          AND adapter_type = ANY($3::text[])
+          AND runtime_key = ANY($3::text[])
           AND execution_host_id IS NULL
           AND enabled = true`,
       [spaceId, agentId, [...MANAGED_ASSISTANT_CLI_ADAPTERS]],
@@ -626,22 +517,16 @@ export class SpaceAssistantService {
     const eligibleProvider = providers.find(({ id }) => eligibleProviderIds.has(id)) ?? null;
     if (eligibleProvider) return eligibleProvider;
 
-    // An execution host with a logged-in CLI is the other eligible backend:
-    // the Assistant provisions with a host-bound managed-workspace profile, so
-    // a Space with no provider still gets a working Room instead of a refusal.
-    if (preparation.hostBackends.length > 0) return null;
-    throw new HttpError(409, "No eligible conversation backend is available for this user", {
-      code: "conversation_backend_required",
-      detail: "Configure an eligible Space API provider, or log a CLI in on an execution host, before creating a Room.",
-      setup_targets: setupTargetsForMissingBackend(),
-    });
+    // The Server/OpenCode Profile is provisioned independently from current
+    // Provider grants and paired-Host login state.
+    return null;
   }
 
 }
 
 /**
  * Every online execution host this creator can dispatch to with a logged-in
- * CLI, one entry per (host, adapter), preferred adapters first.
+ * ACP runtime, one entry per (host, runtime), preferred runtimes first.
  *
  * The instance's built-in host is included alongside the creator's own paired
  * machines: it has no owner and serves every Space (B63), and it is the only
@@ -651,8 +536,8 @@ async function listHostBackends(
   db: Queryable,
   userId: string,
 ): Promise<ManagedAssistantPreparation["hostBackends"]> {
-  const hosts = await db.query<{ id: string; name: string; capabilities_json: unknown; last_heartbeat_at: string | null; default_adapter_type: string | null }>(
-    `SELECT id, name, capabilities_json, last_heartbeat_at, default_adapter_type
+  const hosts = await db.query<{ id: string; name: string; capabilities_json: unknown; last_heartbeat_at: string | null }>(
+    `SELECT id, name, capabilities_json, last_heartbeat_at
        FROM hosts
       WHERE (owner_user_id = $1 OR kind = 'server') AND status = 'online'
       ORDER BY name ASC, id ASC`,
@@ -662,14 +547,13 @@ async function listHostBackends(
   for (const host of hosts.rows) {
     if (isStale(host.last_heartbeat_at)) continue;
     const capabilities = normalizeHostCapabilities(host.capabilities_json);
-    // The host's own configured default CLI leads; the built-in preference
-    // ordering is only the tiebreak for hosts that never chose one.
-    const adapterTypes = Object.keys(capabilities.installations).sort((a, b) =>
-      Number(b === host.default_adapter_type) - Number(a === host.default_adapter_type) || rank(a) - rank(b));
-    for (const adapterType of adapterTypes) {
-      const installation = capabilities.installations[adapterType]?.find((copy) => copy.logged_in === true);
+    // Runtime selection belongs to an Agent Profile, not a Host-global value
+    // that would leak across Spaces.
+    const runtimeKeys = Object.keys(capabilities.installations).sort((a, b) => rank(a) - rank(b));
+    for (const runtimeKey of runtimeKeys) {
+      const installation = capabilities.installations[runtimeKey]?.find((copy) => copy.logged_in === true);
       if (!installation) continue;
-      backends.push({ hostId: host.id, hostName: host.name, adapterType, installation: installation.id });
+      backends.push({ hostId: host.id, hostName: host.name, runtimeKey, installation: installation.id });
     }
   }
   return backends;
@@ -710,15 +594,27 @@ async function loadManagedAssistantSeed(config: ServerConfig): Promise<ManagedAs
   return {
     name: stringField(document.name) ?? "Personal Assistant",
     description: stringField(document.description),
-    modelConfigJson: objectRecord(document.model_config) ?? {},
     contextPolicyJson: objectRecord(document.context_policy) ?? {},
     memoryPolicyJson: objectRecord(document.memory_policy) ?? {},
-    runtimePolicyJson: objectRecord(document.runtime_policy) ?? {},
+    riskLevel: riskLevelField(objectRecord(document.execution_constraints)?.risk_level),
+    maxRunTimeSeconds: boundedDurationField(objectRecord(document.execution_constraints)?.max_run_time_seconds),
     toolPolicyJson: objectRecord(document.tool_policy) ?? {},
     outputPolicyJson: objectRecord(document.output_policy) ?? {},
     scheduleConfigJson: objectRecord(document.schedule_defaults) ?? {},
     outputSchemaJson: objectRecord(document.output_schema) ?? {},
   };
+}
+
+function riskLevelField(value: unknown): ManagedAssistantSeed["riskLevel"] {
+  return value === "low" || value === "medium" || value === "high" || value === "critical"
+    ? value
+    : "medium";
+}
+
+function boundedDurationField(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 3600
+    ? value
+    : 300;
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | null {

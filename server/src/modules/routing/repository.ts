@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
+import { stripSecretFields, type JsonValue } from "@rainver/protocol";
+import { getRuntimeAdapterSpec, isLocalCliRuntimeAdapter, isRunnableAgentRuntime } from "../runtimeAdapters/index.js";
 import {
   effectiveProviderDefault,
   isProviderEligibleForUser,
@@ -7,21 +8,27 @@ import {
   type ProviderEligibilityRow,
 } from "../providers/eligibility.js";
 import { contractRecord } from "../runs/contractSnapshot.js";
-import type { RunRecord } from "../runs/runRepositoryTypes.js";
+import type { AgentRunRecord, RunRecord } from "../runs/runRepositoryTypes.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { loadSystemActionRegistry } from "../systemActions/registry.js";
-import { DeterministicRouteSelector, mergeRouteHints } from "./router.js";
+import { normalizeHostCapabilities } from "../hosts/capabilities.js";
+import { projectRunRuntimeProfileSnapshot } from "../sessions/runtimeProfileSnapshot.js";
+import { candidateForPersistedDecision, DeterministicRouteSelector, mergeRouteHints } from "./router.js";
 import type { RouteCandidate, RouteHints } from "./types.js";
 
 interface RuntimeCandidateRow extends ProviderEligibilityRow {
   agent_kind: string;
   runtime_profile_id: string;
   profile_name: string;
-  adapter_type: string;
+  runtime_key: string;
   execution_host_id: string | null;
+  execution_host_kind: string | null;
+  execution_host_owner_user_id: string | null;
+  host_capabilities_json: unknown;
   workspace_location_id: string | null;
   workspace_mode: "location" | "managed" | null;
   runtime_installation: string | null;
+  backend_mode: "runtime_native" | "model_provider";
   model_provider_id: string | null;
   provider_type: string | null;
   provider_credential_type: string | null;
@@ -39,6 +46,7 @@ interface RuntimeCandidateRow extends ProviderEligibilityRow {
 
 interface ConversationBindingSnapshot extends ProviderEligibilityRow {
   runtime_profile_id: string;
+  backend_mode: "runtime_native" | "model_provider";
   model_name: string | null;
   model_provider_id: string | null;
   runtime_config_json: unknown;
@@ -58,8 +66,7 @@ export class PgRouteDecisionRepository {
     private readonly selector = new DeterministicRouteSelector(),
   ) {}
 
-  async routeRun(run: RunRecord): Promise<RunRecord> {
-    if (run.run_type === "system" || run.run_type === "validation") return run;
+  async routeRun(run: AgentRunRecord): Promise<AgentRunRecord> {
     const hints = routeHintsForRun(run);
     const requiredCapabilities = await runtimeRequiredCapabilities(run.capabilities_json);
     const rawCandidates = await this.listCandidates(
@@ -77,40 +84,61 @@ export class PgRouteDecisionRepository {
     // host-bound candidate out of a direct chat, which then failed routing
     // with an empty candidate set.
     const hostBoundRun = hostThread.schema_version === "host_thread.v1";
-    const pinnedHostThread = hostBoundRun
+    // Conversation-bound Room Runs also retain the generic thread FK for
+    // continuity/event projection. The host_thread override identifies that
+    // shared Conversation thread; only a Run without that host-bound pin is
+    // required to reference a Task-owned thread here.
+    const taskThreadRun = !hostBoundRun && Boolean(run.host_task_thread_id);
+    const pinnedHostThread = hostBoundRun || taskThreadRun
       ? (await this.db.query<{
           execution_host_id: string;
           workspace_mode: "location" | "managed";
           workspace_location_id: string | null;
-          adapter_type: string;
+          runtime_key: string;
           runtime_installation: string;
           status: "active" | "session_reset" | "closed";
           container_kind: "conversation" | "direct" | null;
           container_user_id: string | null;
           session_id: string | null;
+          task_id: string | null;
         }>(
           `SELECT execution_host_id, workspace_mode, workspace_location_id,
-                  adapter_type, runtime_installation, status,
-                  container_kind, container_user_id, session_id
+                  runtime_key, runtime_installation, status,
+                  container_kind, container_user_id, session_id, task_id
              FROM host_threads
-            WHERE id = $1 AND space_id = $2
+            WHERE id = $1
               AND (
-                (container_kind = 'conversation' AND session_id = $3)
-                OR (container_kind = 'direct' AND container_user_id = $4)
+                (task_id IS NULL AND space_id = $2 AND (
+                  (container_kind = 'conversation' AND session_id = $3)
+                  OR (container_kind = 'direct' AND container_user_id = $4)
+                ))
+                OR (task_id IS NOT NULL AND EXISTS (
+                  SELECT 1
+                    FROM task_runs task_run
+                    JOIN tasks task ON task.id = task_run.task_id
+                   WHERE task_run.run_id = $5
+                     AND task_run.task_id = host_threads.task_id
+                     AND task.space_id = $2
+                ))
               )
             LIMIT 1`,
-          [hostThread.thread_id, run.space_id, run.session_id, run.owner_user_id ?? run.instructed_by_user_id ?? null],
+          [run.host_task_thread_id ?? hostThread.thread_id, run.space_id, run.session_id,
+            run.owner_user_id ?? run.instructed_by_user_id ?? null, run.id],
         )).rows[0] ?? null
       : null;
-    if (hostBoundRun && (!pinnedHostThread || pinnedHostThread.status === "closed")) {
+    const pinnedThreadUnavailable = !pinnedHostThread || pinnedHostThread.status === "closed";
+    if ((hostBoundRun || taskThreadRun) && pinnedThreadUnavailable) {
       throw new RouteSelectionError(
-        "conversation_runtime_continuity_missing",
-        "The Conversation runtime thread is unavailable; the Run cannot be dispatched.",
+        taskThreadRun ? "task_runtime_thread_unavailable" : "conversation_runtime_continuity_missing",
+        taskThreadRun
+          ? "The Task runtime thread is unavailable; the Run cannot be dispatched."
+          : "The Conversation runtime thread is unavailable; the Run cannot be dispatched.",
       );
     }
     const conversationSnapshot = hostBoundRun && pinnedHostThread?.container_kind === "conversation"
       ? (await this.db.query<ConversationBindingSnapshot>(
           `SELECT binding.runtime_profile_id,
+                  binding.backend_mode_snapshot AS backend_mode,
                   binding.model_name_snapshot AS model_name,
                   binding.model_provider_id_snapshot AS model_provider_id,
                   binding.runtime_config_snapshot_json AS runtime_config_json,
@@ -161,15 +189,35 @@ export class PgRouteDecisionRepository {
     }
     const allCandidates = conversationSnapshot
       ? rawCandidates.map((candidate) => candidate.runtime_profile_id === conversationSnapshot.runtime_profile_id
-          ? applyConversationSnapshot(candidate, conversationSnapshot)
+          ? applyConversationSnapshot(
+              candidate,
+              conversationSnapshot,
+              run.owner_user_id ?? run.instructed_by_user_id ?? null,
+            )
           : candidate)
       : rawCandidates;
-    const candidates = allCandidates.filter((candidate) => hostBoundRun
+    if (taskThreadRun && (
+      !pinnedHostThread?.task_id
+      || pinnedHostThread.workspace_location_id !== run.workspace_location_id
+    )) {
+      throw new RouteSelectionError(
+        "task_runtime_location_mismatch",
+        "The Task Run Workspace Location does not match its pinned runtime thread.",
+      );
+    }
+    // An unpinned Run needs a complete execution target, not the Server Host
+    // specifically: the ACP runtime-authority cutover only removed the
+    // Conversation HostThread from that path. A Profile whose deployment
+    // authority names a paired Host stays admissible, and
+    // `host_dispatch_permitted` — not this filter — decides whether the
+    // responsible user may dispatch there, so the refusal appears in the
+    // persisted decision instead of an empty candidate set.
+    const candidates = allCandidates.filter((candidate) => pinnedHostThread
       ? candidate.host_bound === true
         && candidate.execution_host_id === pinnedHostThread!.execution_host_id
         && candidate.workspace_mode === pinnedHostThread!.workspace_mode
         && candidate.workspace_location_id === pinnedHostThread!.workspace_location_id
-      : candidate.host_bound !== true);
+      : candidate.host_bound === true);
     const attemptNumber = await this.currentAttemptNumber(run);
     const retryRoute = attemptNumber > 1 ? await this.retryRouteContext(run, attemptNumber) : null;
     const decision = this.selector.select({
@@ -182,7 +230,7 @@ export class PgRouteDecisionRepository {
       required_sandbox_level: routeSandboxLevel(run.required_sandbox_level),
       execution_mode: run.mode === "dry_run" ? "dry_run" : "live",
       risk_level: riskLevel(contractRecord(run.contract_snapshot_json).risk_level),
-      workspace_available: Boolean(run.project_folder_id || allCandidates.some((candidate) => candidate.host_bound)),
+      workspace_available: Boolean(run.project_folder_id || candidates.some((candidate) => candidate.host_bound)),
       hints,
     }, candidates);
     const now = new Date().toISOString();
@@ -201,7 +249,7 @@ export class PgRouteDecisionRepository {
       if (existing.rows[0].status !== "selected") {
         throw new RouteSelectionError("route_no_candidate", "The persisted route decision has no eligible candidate.");
       }
-      selected = candidates.find((candidate) => candidate.runtime_profile_id === existing.rows[0]?.selected_runtime_profile_id) ?? null;
+      selected = candidateForPersistedDecision(decision, existing.rows[0].selected_runtime_profile_id ?? "");
       if (!selected) {
         throw new RouteSelectionError("route_selected_profile_unavailable", "The persisted route profile is no longer available.");
       }
@@ -210,7 +258,7 @@ export class PgRouteDecisionRepository {
       await this.db.query(
         `INSERT INTO route_decisions (
            id, space_id, run_id, attempt_number, status,
-           selected_runtime_profile_id, selected_adapter_type, selected_model_provider_id,
+           selected_runtime_profile_id, selected_runtime_key, selected_model_provider_id,
            reason, hints_json, candidates_json, rejected_json, fallback_chain_json,
            score_trace_json, created_at
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb,
@@ -222,13 +270,13 @@ export class PgRouteDecisionRepository {
           attemptNumber,
           selected ? "selected" : "no_route",
           selected?.runtime_profile_id ?? null,
-          pinnedHostThread?.adapter_type ?? selected?.adapter_type ?? null,
+          pinnedHostThread?.runtime_key ?? selected?.runtime_key ?? null,
           selected?.model_provider_id ?? null,
           decision.reason,
           JSON.stringify(hints),
           JSON.stringify(decision.candidates.map((item) => ({
             runtime_profile_id: item.candidate.runtime_profile_id,
-            adapter_type: item.candidate.adapter_type,
+            runtime_key: item.candidate.runtime_key,
             model_provider_id: item.candidate.model_provider_id,
             baseline_trust_level: item.candidate.baseline_trust_level,
             effective_trust_level: item.candidate.effective_trust_level,
@@ -255,24 +303,26 @@ export class PgRouteDecisionRepository {
     if (!persistedDecisionId) {
       throw new RouteSelectionError("route_decision_not_persisted", "Route decision could not be persisted.");
     }
-    if (hostBoundRun && pinnedHostThread && (
+    if (pinnedHostThread && (
       selected.runtime_profile_id !== run.requested_runtime_profile_id
       || selected.execution_host_id !== pinnedHostThread.execution_host_id
       || selected.workspace_mode !== pinnedHostThread.workspace_mode
       || selected.workspace_location_id !== pinnedHostThread.workspace_location_id
-      || selected.adapter_type !== pinnedHostThread.adapter_type
+      || selected.runtime_key !== pinnedHostThread.runtime_key
       || selected.runtime_installation !== pinnedHostThread.runtime_installation
     )) {
       throw new RouteSelectionError(
-        "conversation_runtime_profile_changed",
-        "The pinned Conversation CLI runtime is no longer available; start a new Conversation to change it.",
+        taskThreadRun ? "task_runtime_profile_changed" : "conversation_runtime_profile_changed",
+        taskThreadRun
+          ? "The Task runtime Profile no longer matches its pinned thread; start a new thread to change it."
+          : "The pinned Conversation runtime Profile is no longer available; start a new Conversation to change it.",
       );
     }
-    const selectedAdapterType = pinnedHostThread?.adapter_type ?? selected.adapter_type;
-    const selectedExecutionHostId = pinnedHostThread?.execution_host_id ?? selected.execution_host_id;
-    const selectedWorkspaceLocationId = pinnedHostThread?.workspace_location_id ?? selected.workspace_location_id;
-    const selectedWorkspaceMode = pinnedHostThread?.workspace_mode ?? selected.workspace_mode;
-    const selectedRuntimeInstallation = pinnedHostThread?.runtime_installation ?? selected.runtime_installation;
+    const selectedRuntimeKey = pinnedHostThread?.runtime_key ?? selected.runtime_key;
+    const selectedExecutionHostId = pinnedHostThread?.execution_host_id ?? selected.execution_host_id ?? null;
+    const selectedWorkspaceLocationId = pinnedHostThread?.workspace_location_id ?? selected.workspace_location_id ?? null;
+    const selectedWorkspaceMode = pinnedHostThread?.workspace_mode ?? selected.workspace_mode ?? null;
+    const selectedRuntimeInstallation = pinnedHostThread?.runtime_installation ?? selected.runtime_installation ?? null;
 
     const modelOverride = {
       ...record(run.model_override_json),
@@ -280,21 +330,23 @@ export class PgRouteDecisionRepository {
       route_decision_id: persistedDecisionId,
       route_source: "deterministic_policy",
     };
-    const routed = await this.db.query<RunRecord>(
+    const routed = await this.db.query<AgentRunRecord>(
       `UPDATE runs SET
          route_decision_id = $3,
          runtime_profile_id = $4,
-         adapter_type = $5,
+         runtime_key = $5,
          model_provider_id = $6,
          model_override_json = $7::jsonb,
          runtime_profile_snapshot_json = $8::jsonb,
          updated_at = $9
-       WHERE space_id = $1 AND id = $2
+       WHERE space_id = $1 AND id = $2 AND execution_kind = 'agent'
        RETURNING id, space_id, agent_id, agent_version_id, run_role,
                  requested_runtime_profile_id, runtime_profile_id,
+                 execution_kind, runtime_key,
                  run_type, status, mode, prompt, instruction,
-                 project_folder_id, session_id, parent_run_id, root_run_id, run_group_id,
-                 delegation_id, project_id, scheduled_at, adapter_type, capability_id,
+                 project_folder_id, workspace_location_id, trust_mode, host_task_thread_id,
+                 session_id, parent_run_id, root_run_id, run_group_id,
+                 delegation_id, project_id, scheduled_at, capability_id,
                  capabilities_json, model_provider_id, model_override_json,
                  runtime_profile_snapshot_json, required_sandbox_level,
                  contract_snapshot_json, workflow_version_id, route_decision_id, trigger_origin,
@@ -307,32 +359,30 @@ export class PgRouteDecisionRepository {
         run.id,
         persistedDecisionId,
         selected.runtime_profile_id,
-        selectedAdapterType,
+        selectedRuntimeKey,
         selected.model_provider_id,
         JSON.stringify(modelOverride),
-        JSON.stringify({
+        // One projection, so the Run snapshot and a Conversation's frozen
+        // binding carry the same keys — `backend_mode` above all, which the
+        // provider lease, the execution-control gate and Runtime Context
+        // planning each branch on.
+        JSON.stringify(projectRunRuntimeProfileSnapshot({
           id: selected.runtime_profile_id,
           name: selected.profile_name,
-          adapter_type: selectedAdapterType,
+          runtime_key: selectedRuntimeKey,
+          backend_mode: selected.backend_mode,
           model_provider_id: selected.model_provider_id,
           model_name: selected.model_name,
           execution_host_id: selectedExecutionHostId,
           workspace_location_id: selectedWorkspaceLocationId,
           workspace_mode: selectedWorkspaceMode,
           runtime_installation: selectedRuntimeInstallation,
-          // Also inside the adapter config, because that is what a Run's
-          // `adapter_config` is built from — the execution-control snapshot,
-          // the CLI continuity fingerprint and the usage record all read the
-          // copy from there. The retired `credential_profile_id` was merged
-          // in exactly here, and nothing replaced the merge when it went.
-          runtime_config_json: selectedRuntimeInstallation
-            ? { ...selected.runtime_config_json, runtime_installation: selectedRuntimeInstallation }
-            : selected.runtime_config_json,
+          runtime_config_json: selected.runtime_config_json,
           runtime_policy_json: selected.runtime_policy_json,
           ...(override.workspace ? { workspace: override.workspace } : {}),
           ...(workspaceAccess !== null ? { workspace_access: workspaceAccess } : {}),
           is_default: selected.is_default,
-        }),
+        })),
         now,
       ],
     );
@@ -379,7 +429,7 @@ export class PgRouteDecisionRepository {
             AND vh.created_at >= now() - interval '90 days'
           GROUP BY vr.run_id
        ), history AS (
-         SELECT h.adapter_type,
+         SELECT h.runtime_key,
                 avg(usage.estimated_cost_usd)::float8 AS estimated_cost_usd,
                 avg(h.runtime_seconds * 1000)::float8 AS estimated_latency_ms,
                 CASE WHEN count(*) >= 3 THEN avg(CASE WHEN v.passed THEN 1.0 ELSE 0.0 END)::float8 ELSE NULL END AS historical_verification_pass_rate
@@ -393,12 +443,15 @@ export class PgRouteDecisionRepository {
           WHERE h.space_id = $1 AND h.agent_id = $2
             AND h.created_at >= now() - interval '90 days'
             AND h.status IN ('succeeded', 'degraded', 'failed')
-          GROUP BY h.adapter_type
+          GROUP BY h.runtime_key
        )
       SELECT a.agent_kind,
              arp.id AS runtime_profile_id, arp.name AS profile_name,
-              arp.adapter_type, arp.model_provider_id, arp.model_name,
+              arp.runtime_key, arp.backend_mode, arp.model_provider_id, arp.model_name,
               arp.execution_host_id, arp.workspace_location_id, arp.workspace_mode, arp.runtime_installation,
+              execution_host.kind AS execution_host_kind,
+              execution_host.owner_user_id AS execution_host_owner_user_id,
+              execution_host.capabilities_json AS host_capabilities_json,
               mp.provider_type,
               mp.enabled AS provider_enabled,
               mpg.enabled AS provider_grant_enabled,
@@ -409,11 +462,11 @@ export class PgRouteDecisionRepository {
               mpg.is_default AS provider_is_default,
               arp.enabled, arp.is_default, arp.runtime_config_json,
               arp.runtime_policy_json,
+              -- Capabilities are AgentVersion authority: a deployment Profile
+              -- never declares what the Agent may be asked to do, and no
+              -- production writer fills a Profile capability bag. Reading one
+              -- made every Version-declared capability unroutable.
               CASE
-                WHEN jsonb_typeof(arp.runtime_config_json->'capabilities') = 'array'
-                  THEN arp.runtime_config_json->'capabilities'
-                WHEN jsonb_typeof(arp.runtime_policy_json->'capabilities') = 'array'
-                  THEN arp.runtime_policy_json->'capabilities'
                 WHEN jsonb_typeof(av.capabilities_json) = 'array'
                   THEN av.capabilities_json
                 ELSE '[]'::jsonb
@@ -427,13 +480,14 @@ export class PgRouteDecisionRepository {
            ON av.id = a.current_version_id
           AND av.space_id = a.space_id
           AND av.agent_id = a.id
+         LEFT JOIN hosts execution_host ON execution_host.id = arp.execution_host_id
          LEFT JOIN model_providers mp ON mp.id = arp.model_provider_id
          LEFT JOIN model_provider_space_grants mpg
            ON mpg.provider_id = arp.model_provider_id
           AND mpg.space_id = arp.space_id
          LEFT JOIN credentials provider_credential
            ON provider_credential.id = mp.credential_id
-         LEFT JOIN history ON history.adapter_type = arp.adapter_type
+         LEFT JOIN history ON history.runtime_key = arp.runtime_key
         WHERE arp.space_id = $1 AND arp.agent_id = $2
         ORDER BY CASE WHEN a.agent_kind = 'system_assistant'
                       THEN COALESCE(mpg.is_default, false)
@@ -447,7 +501,7 @@ export class PgRouteDecisionRepository {
   async getDecision(spaceId: string, runId: string) {
     const result = await this.db.query(
       `SELECT id, space_id, run_id, attempt_number, status,
-              selected_runtime_profile_id, selected_adapter_type,
+              selected_runtime_profile_id, selected_runtime_key,
               selected_model_provider_id, reason, hints_json, candidates_json,
               rejected_json, fallback_chain_json, score_trace_json, created_at
          FROM route_decisions WHERE space_id = $1 AND run_id = $2
@@ -542,43 +596,56 @@ function candidateFromRow(
   row: RuntimeCandidateRow,
   userId: string | null,
 ): RouteCandidate {
-  const spec = getRuntimeAdapterSpec(row.adapter_type);
+  const runtimeKey = row.runtime_key;
+  const spec = getRuntimeAdapterSpec(runtimeKey);
   const hostBound = isHostBoundRuntime(row);
-  const runtimeConfig = record(row.runtime_config_json);
-  const runtimePolicy = record(row.runtime_policy_json);
+  const hostInstallationReady = isRuntimeInstallationReady({
+    execution_host_kind: row.execution_host_kind,
+    host_capabilities_json: row.host_capabilities_json,
+    runtime_key: runtimeKey,
+    runtime_installation: row.runtime_installation,
+  });
+  const runtimeConfig = secretFreeRecord(row.runtime_config_json);
+  const runtimePolicy = secretFreeRecord(row.runtime_policy_json);
   const providerAvailable = row.model_provider_id !== null &&
     isProviderEligibleForUser(row, userId);
   const isDefault = row.agent_kind === "system_assistant"
     ? effectiveProviderDefault(row.provider_is_default, row.is_default)
     : row.is_default;
-  // A host-bound profile carries its own login on the host; a CLI profile
-  // that names no host has nowhere to run at all (ADR 0016), and everything
-  // else needs an eligible ModelProvider.
-  const credentialAvailable = hostBound
-    ? true
-    : spec?.credentials.credential_mode === "none"
-    ? true
-    : isLocalCliRuntimeAdapter(row.adapter_type)
-      ? false
-      : providerAvailable;
+  const credentialAvailable = backendCredentialAvailable({
+    backendMode: row.backend_mode,
+    providerAvailable,
+    hostBound,
+    runtimeKey,
+  });
+  // One ownership fact, two consumers: whether the responsible user may
+  // dispatch to this Host, and — on a paired Host — whether this Run is the
+  // owner's own and therefore carries the owner's trust in their machine.
+  const hostDispatchPermitted = row.execution_host_kind === "server"
+    || (row.execution_host_owner_user_id !== null && row.execution_host_owner_user_id === userId);
   return {
     runtime_profile_id: row.runtime_profile_id,
     profile_name: row.profile_name,
-    adapter_type: row.adapter_type,
+    runtime_key: runtimeKey,
     host_bound: hostBound,
     workspace_location_id: row.workspace_location_id,
     execution_host_id: row.execution_host_id,
+    execution_host_kind: row.execution_host_kind,
     workspace_mode: row.workspace_mode,
     runtime_installation: row.runtime_installation,
+    backend_mode: row.backend_mode === "model_provider" ? "model_provider" : "runtime_native",
     model_provider_id: row.model_provider_id,
     model_name: row.model_name,
     runtime_config_json: runtimeConfig,
     runtime_policy_json: runtimePolicy,
-    enabled: row.enabled && spec?.implementation_status === "implemented",
+    enabled: row.enabled,
+    runtime_runnable: isRunnableAgentRuntime(runtimeKey),
+    installation_ready: hostInstallationReady,
+    host_dispatch_permitted: hostDispatchPermitted,
     is_default: isDefault,
     credential_available: credentialAvailable,
     capabilities: stringArray(row.capabilities_json),
-    tools: stringArray(runtimeConfig.tools ?? runtimeConfig.tool_ids ?? runtimePolicy.tools),
+    tools: stringArray(runtimeConfig.tools ?? runtimeConfig.tool_ids),
     minimum_sandbox_level: sandboxLevel(spec?.sandbox.minimum_sandbox_level),
     requires_file_access: Boolean(spec?.sandbox.requires_file_access),
     requires_workspace_for_execution: Boolean(spec?.sandbox.requires_workspace_for_execution),
@@ -587,7 +654,7 @@ function candidateFromRow(
     supports_live: runtimeConfig.supports_live !== false,
     supports_dry_run: runtimeConfig.supports_dry_run !== false,
     baseline_trust_level: trustLevel(spec?.baseline_trust_level),
-    effective_trust_level: effectiveTrustLevel(spec),
+    effective_trust_level: effectiveTrustLevel(spec, row.execution_host_kind, hostDispatchPermitted),
     subagent_disable_mechanism: spec?.subagent_disable_mechanism ?? "unknown",
     estimated_cost_usd: numberOrNull(row.estimated_cost_usd),
     estimated_latency_ms: numberOrNull(row.estimated_latency_ms),
@@ -595,34 +662,115 @@ function candidateFromRow(
   };
 }
 
+/**
+ * Whether the execution Host reports a usable installed copy of the Profile's
+ * runtime. Only the Server Runtime's copies are Rainver-managed and checked
+ * here: a paired Host's installations are its owner's own, installed by an
+ * explicit action rather than an asynchronous provisioner.
+ *
+ * Exported because Automation preflight must answer readiness exactly as
+ * routing does — a preflight that reported `executable: true` for a Server
+ * copy still installing produced a Run that died `route_no_candidate`.
+ */
+export function isRuntimeInstallationReady(target: {
+  execution_host_kind: string | null;
+  host_capabilities_json: unknown;
+  runtime_key: string;
+  runtime_installation: string | null;
+}): boolean {
+  if (target.execution_host_kind !== "server") return true;
+  const installationId = target.runtime_installation;
+  if (!installationId || installationId === "managed:pending") return false;
+  try {
+    const installation = normalizeHostCapabilities(target.host_capabilities_json).installations[target.runtime_key]
+      ?.find((copy) => copy.id === installationId);
+    return Boolean(installation && (installationId === "own" || installation.health_check_protocol === "acp"));
+  } catch {
+    return false;
+  }
+}
+
 function isHostBoundRuntime(row: Pick<RuntimeCandidateRow, "execution_host_id" | "workspace_mode" | "runtime_installation">): boolean {
   return Boolean(row.execution_host_id && row.workspace_mode && row.runtime_installation);
+}
+
+/**
+ * Which credential the Run will actually spend, from the backend mode that
+ * decides it. A `model_provider` binding is always host-bound, so asking the
+ * Host first would skip Provider eligibility entirely and leave a disabled
+ * Provider or a withdrawn Space grant to surface at launch, after dispatch, as
+ * `model_provider_not_found`. A `runtime_native` binding carries its own login
+ * on the host; one that names no host has nowhere to run at all (ADR 0016,
+ * B46). Shared with `applyConversationSnapshot` because a Conversation's frozen
+ * backend mode has to answer this question the same way the Profile's does.
+ */
+function backendCredentialAvailable(input: {
+  backendMode: "runtime_native" | "model_provider";
+  providerAvailable: boolean;
+  hostBound: boolean;
+  runtimeKey: string;
+}): boolean {
+  if (input.backendMode === "model_provider") return input.providerAvailable;
+  if (input.hostBound) return true;
+  if (getRuntimeAdapterSpec(input.runtimeKey)?.credentials.credential_mode === "none") return true;
+  return isLocalCliRuntimeAdapter(input.runtimeKey) ? false : input.providerAvailable;
 }
 
 function applyConversationSnapshot(
   candidate: RouteCandidate,
   snapshot: ConversationBindingSnapshot,
+  userId: string | null,
 ): RouteCandidate {
-  const runtimeConfig = record(snapshot.runtime_config_json);
-  const runtimePolicy = record(snapshot.runtime_policy_json);
-  const rawSnapshotCapabilities = runtimeConfig.capabilities ?? runtimePolicy.capabilities;
-  const hasSnapshotCapabilities = Array.isArray(rawSnapshotCapabilities);
-  const spec = getRuntimeAdapterSpec(candidate.adapter_type);
+  const runtimeConfig = secretFreeRecord(snapshot.runtime_config_json);
+  const runtimePolicy = secretFreeRecord(snapshot.runtime_policy_json);
+  const spec = getRuntimeAdapterSpec(candidate.runtime_key);
+  // The column is a varchar the Profile's own CHECK shape is mirrored onto, so
+  // an unrecognized mode is a corrupt binding, not a `runtime_native` one.
+  // Coercing it here would have spent whichever credential the Profile still
+  // named while claiming the Conversation's frozen deployment decided it.
+  if (snapshot.backend_mode !== "model_provider" && snapshot.backend_mode !== "runtime_native") {
+    throw new RouteSelectionError(
+      "conversation_backend_mode_invalid",
+      "The pinned Conversation backend mode is not a recognized mode; the Run cannot be dispatched.",
+    );
+  }
   return {
     ...candidate,
+    // A Conversation freezes its deployment inputs, not the Agent's
+    // capabilities: those stay AgentVersion authority for every Run.
+    backend_mode: snapshot.backend_mode,
     model_name: snapshot.model_name,
     model_provider_id: snapshot.model_provider_id,
+    // Recomputed from the snapshot, never inherited: the candidate's value
+    // answered for the Profile's current backend mode and Provider, which is
+    // exactly what the Conversation is pinned against.
+    credential_available: backendCredentialAvailable({
+      backendMode: snapshot.backend_mode,
+      providerAvailable: snapshot.model_provider_id !== null
+        && isProviderEligibleForUser(snapshot, userId),
+      hostBound: candidate.host_bound === true,
+      runtimeKey: candidate.runtime_key,
+    }),
     runtime_config_json: runtimeConfig,
     runtime_policy_json: runtimePolicy,
-    capabilities: hasSnapshotCapabilities ? stringArray(rawSnapshotCapabilities) : candidate.capabilities,
-    tools: stringArray(runtimeConfig.tools ?? runtimeConfig.tool_ids ?? runtimePolicy.tools),
+    tools: stringArray(runtimeConfig.tools ?? runtimeConfig.tool_ids),
     supports_live: runtimeConfig.supports_live !== false,
     supports_dry_run: runtimeConfig.supports_dry_run !== false,
-    effective_trust_level: effectiveTrustLevel(spec),
+    // `host_dispatch_permitted` carries the ownership fact `candidateFromRow`
+    // already computed for this same responsible user, so the pinned path
+    // derives the same trust as the unpinned one instead of asking again.
+    effective_trust_level: effectiveTrustLevel(
+      spec,
+      candidate.execution_host_kind ?? null,
+      candidate.host_dispatch_permitted === true,
+    ),
   };
 }
 
 function record(value: unknown): Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function secretFreeRecord(value: unknown): Record<string, unknown> {
+  return stripSecretFields(record(value) as JsonValue) as Record<string, unknown>;
+}
 function workspaceAccessFromOverride(
   value: unknown,
 ): Array<{ workspace_location_id: string; access_mode: "read" | "write" }> | null {
@@ -679,18 +827,36 @@ function routeSandboxLevel(value: unknown): "none" | "dry_run" | "ephemeral" | "
 }
 function trustLevel(value: unknown): "low" | "medium" | "high" { return value === "medium" || value === "high" ? value : "low"; }
 /**
- * A CLI's trust is what its own spec declares, capped by what it can control.
+ * Trust is based on controls the current dispatch actually enforces, and the
+ * thing that enforces them is the execution target, not the runtime registry.
+ * A registry declaration that a vendor supports a setting is not evidence that
+ * this Run received it — the ACP Host-daemon path never applied the legacy
+ * subagent-deny config — so a runtime's own declarations never raise it.
  *
- * It used to be raised to `medium` by a passing conformance suite. With the
- * suite gone the declaration is the whole answer: a runtime that cannot say it
- * can stop its own delegation stays `low`, which is what its
- * `subagent_disable_mechanism` was always asserting on its own.
+ * What is enforced is the built-in strict Server Host: every Run it accepts
+ * runs in a fresh rootless bubblewrap namespace built from an empty root and
+ * an explicit bind allowlist (B62, ADR 0016 section 2). That containment is
+ * the control behind its `medium`.
+ *
+ * A paired Host reaches `medium` for a different reason and only for its own
+ * owner: it is that owner's machine, and a Run they are responsible for
+ * carries the trust they already extend to it by running an agent there
+ * themselves (ADR 0016 section 3 and its 2026-09-21 owner-trust amendment).
+ * That is a statement about who bears the risk, not about containment — the
+ * spawn is still native with no namespace (B62). A Run on that Host by anyone
+ * else is not the owner's own and stays at the runtime's baseline, as does an
+ * unbound Profile with no execution target at all. Nothing here reaches
+ * `high`, so `high`/`critical`-risk Agents still have no candidate anywhere.
  */
 function effectiveTrustLevel(
   spec: ReturnType<typeof getRuntimeAdapterSpec>,
+  executionHostKind: string | null,
+  hostDispatchPermitted: boolean,
 ): "low" | "medium" | "high" {
   const baseline = trustLevel(spec?.baseline_trust_level);
-  if (!spec || !isLocalCliRuntimeAdapter(spec.adapter_type)) return baseline;
-  return spec.subagent_disable_mechanism === "runtime_config" ? "medium" : "low";
+  if (baseline === "high") return "high";
+  if (executionHostKind === "server") return "medium";
+  if (executionHostKind === "remote" && hostDispatchPermitted) return "medium";
+  return baseline;
 }
 function riskLevel(value: unknown): "low" | "medium" | "high" | "critical" { return value === "medium" || value === "high" || value === "critical" ? value : "low"; }

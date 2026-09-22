@@ -1,5 +1,5 @@
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
-import { HOST_BINDING_MODEL_SOURCE } from "./remoteProviderBinding.js";
+import { RUNTIME_PROFILE_MODEL_SOURCE } from "./remoteProviderBinding.js";
 import type {
   ArtifactSummaryRecord,
   ModelProviderSummaryRecord,
@@ -34,6 +34,8 @@ export function runToOut(
     space_id: run.space_id,
     agent_id: run.agent_id,
     agent_version_id: run.agent_version_id,
+    execution_kind: run.execution_kind,
+    runtime_key: run.runtime_key ?? null,
     run_role: run.run_role ?? "execution",
     requested_runtime_profile_id: run.requested_runtime_profile_id ?? null,
     selected_runtime_profile_id: run.runtime_profile_id ?? null,
@@ -69,7 +71,7 @@ export function runToOut(
     error_json: bodyWithheld(run.effective_access_level) ? null : run.error_json ?? null,
     output_json: bodyWithheld(run.effective_access_level) ? null : run.output_json ?? null,
     usage: runUsageToOut(run.usage),
-    selected_adapter_type: run.adapter_type ?? null,
+    selected_runtime_key: run.runtime_key ?? null,
     capability_id: run.capability_id ?? null,
     capabilities_json: Array.isArray(run.capabilities_json) ? run.capabilities_json : [],
     selected_model_provider_id: run.model_provider_id ?? null,
@@ -105,6 +107,8 @@ export function runStatusToOut(run: VisibleRunRecord): Record<string, unknown> {
     status: run.status,
     mode: run.mode,
     run_type: run.run_type ?? "agent",
+    execution_kind: run.execution_kind,
+    runtime_key: run.runtime_key ?? null,
     trigger_origin: run.trigger_origin,
     started_at: run.started_at ?? null,
     ended_at: run.ended_at ?? null,
@@ -305,19 +309,17 @@ function buildResolvedModel(
   const source = normalizeSource(stringValue(override.source));
   const model = stringValue(override.model);
   const hasRecordedModel = Boolean(run.model_provider_id || model);
-  const spec = getRuntimeAdapterSpec(run.adapter_type);
-  const behavior = spec?.model.model_config_behavior ?? "unknown";
-  // For a remote run, a recorded provider means one of two very different
-  // things. The router stamps one at run start for any routed run — a
-  // prediction the remote path does not honor. The remote adapter then
-  // overwrites it with what it actually bound (or clears it, for a run on the
-  // machine's own login), marking that with `source: "host_binding"`. Only the
-  // second is evidence the adapter used it, which is what this field claims.
+  const spec = run.execution_kind === "agent" ? getRuntimeAdapterSpec(run.runtime_key) : null;
+  const behavior = run.execution_kind === "agent"
+    ? spec?.model.model_config_behavior ?? "unknown"
+    : "not_applicable";
+  // For remote execution only a Profile-backed dispatch marker proves the
+  // selected backend reached the runtime; a router candidate alone is not
+  // evidence of consumption.
   //
-  // Remoteness means a remote Location **and** a `local_cli` adapter — only
-  // those are dispatched to a daemon; a `model_api` run on a remote
-  // Folder executes on the server against the provider it recorded. It is
-  // decided there rather than from `trust_mode`, which only the
+  // Every Agent Run is handed to its Profile's Host daemon. ProviderTask Runs
+  // have no Agent runtime identity and are completed by bounded provider
+  // invocation. Remoteness is decided there rather than from `trust_mode`, which only the
   // thread-dispatch path writes, so an Automation, Room, Workflow or evolution
   // run has it null and still runs remotely. Resolving a Location needs a query, so every
   // read path that renders a Run passes `executes_remotely` — use
@@ -325,8 +327,11 @@ function buildResolvedModel(
   // and skips runs with nothing recorded to qualify. `trust_mode` is only a
   // floor for a caller that has not been given the answer.
   const executesRemotely = options.executes_remotely ?? run.trust_mode === "trusted_host";
-  const consumedByRuntime = !executesRemotely || source === HOST_BINDING_MODEL_SOURCE;
-  const usedByAdapter = behavior === "uses_model" && hasRecordedModel && consumedByRuntime;
+  const consumedByRuntime = !executesRemotely || source === RUNTIME_PROFILE_MODEL_SOURCE;
+  const usedByAdapter = run.execution_kind === "agent"
+    && behavior === "uses_model"
+    && hasRecordedModel
+    && consumedByRuntime;
   return {
     provider_id: run.model_provider_id ?? null,
     provider_name: provider?.name ?? null,
@@ -334,9 +339,9 @@ function buildResolvedModel(
     model,
     source,
     used_by_adapter: usedByAdapter,
-    adapter_model_support: behavior,
+    adapter_model_support: run.execution_kind === "agent" ? behavior : "not_applicable",
     disclosure_note:
-      !hasRecordedModel || usedByAdapter
+      run.execution_kind === "provider_task" || !hasRecordedModel || usedByAdapter
         ? null
         : consumedByRuntime
           ? "Recorded model configuration is not used by this runtime adapter."
@@ -355,7 +360,7 @@ function computeExpired(
 }
 
 function normalizeSource(value: string | null): string {
-  return value === HOST_BINDING_MODEL_SOURCE ||
+  return value === RUNTIME_PROFILE_MODEL_SOURCE ||
     value === "request" ||
     value === "runtime_profile" ||
     value === "agent_default" ||

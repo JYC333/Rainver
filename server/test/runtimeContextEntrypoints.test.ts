@@ -13,7 +13,6 @@ const PROVIDER_INVOCATION_EXPORTS = new Set(
     .map((match) => match[1]!),
 );
 const cliExecutorName = String.raw`(?:RemoteWsCliCommandExecutor)`;
-const agentInvocationExportName = String.raw`(?:executeManagedApiNoToolAdapter|executeRemoteHostCliAdapter|executeRuntimeHost)`;
 
 function importsCliTransportConsumer(source: string): boolean {
   const cliModule = String.raw`[^"']*runs/remoteHostCliAdapter`;
@@ -167,23 +166,6 @@ function importsProviderInvocation(source: string): boolean {
   return false;
 }
 
-function importsAgentInvocation(source: string, relativeFile: string): boolean {
-  const namedPatterns = [
-    /import\s*\{[^}]*\bexecuteManagedApiNoToolAdapter\b[^}]*\}\s*from\s*["'][^"']*managedApiAdapter(?:\.js)?["']/s,
-    /import\s*\{[^}]*\bexecuteRemoteHostCliAdapter\b[^}]*\}\s*from\s*["'][^"']*remoteHostCliAdapter(?:\.js)?["']/s,
-    /import\s*\{[^}]*\bexecuteRuntimeHost\b[^}]*\}\s*from\s*["'][^"']*(?:runtimeHost(?:\/index)?|\.\/service)(?:\.js)?["']/s,
-  ];
-  if (namedPatterns.some((pattern) => pattern.test(source))) return true;
-  const modulePattern = String.raw`[^"']*(?:managedApiAdapter|remoteHostCliAdapter|runtimeHost(?:\/index)?)(?:\.js)?`;
-  if (new RegExp(String.raw`import\s*\*\s*as\s+\w+\s*from\s*["']${modulePattern}["']`).test(source)) return true;
-  if (new RegExp(String.raw`(?:import\s*\(|require\s*\()\s*["']${modulePattern}["']\s*\)`).test(source)) return true;
-  if (relativeFile.startsWith("runtimeHost/")
-    && /(?:import\s*\*\s*as\s+\w+\s*from|(?:import|require)\s*\()\s*["']\.\/service(?:\.js)?["']/.test(source)) {
-    return true;
-  }
-  return false;
-}
-
 function agentInvocationCallsites(source: string, relativeFile: string): string[] {
   const localHelpers = new Map<string, string>();
   const namespaces = new Set<string>();
@@ -193,14 +175,10 @@ function agentInvocationCallsites(source: string, relativeFile: string): string[
   // first cut did, made the scanner return nothing for the entire CLI path, so
   // an unregistered CLI callsite anywhere under `server/src/modules` would have
   // passed the guard below unnoticed.
-  const exportedHelpers = [
-    "executeManagedApiNoToolAdapter",
-    "executeRemoteHostCliAdapter",
-    "executeRuntimeHost",
-  ];
+  const exportedHelpers = ["executeRemoteHostCliAdapter"];
   const helperPattern = exportedHelpers.join("|");
   const isAgentModule = (modulePath: string) =>
-    /(?:managedApiAdapter|remoteHostCliAdapter|runtimeHost(?:\/index)?|\.\/service)(?:\.js)?$/.test(modulePath);
+    /(?:remoteHostCliAdapter)(?:\.js)?$/.test(modulePath);
 
   for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/gs)) {
     if (!isAgentModule(match[2] ?? "")) continue;
@@ -238,28 +216,6 @@ function agentInvocationCallsites(source: string, relativeFile: string): string[
     ordinals.set(helper, ordinal);
     return `${relativeFile}#${helper}:${ordinal}`;
   });
-}
-
-function reExportsAgentInvocation(source: string): boolean {
-  const agentModule = String.raw`[^"']*(?:managedApiAdapter|remoteHostCliAdapter|runtimeHost(?:\/index)?|\.\/service)(?:\.js)?`;
-  if (new RegExp(
-    String.raw`export\s*\{[^}]*\b${agentInvocationExportName}\b[^}]*\}\s*from\s*["']${agentModule}["']`,
-    "s",
-  ).test(source)) return true;
-  if (new RegExp(String.raw`export\s*\*\s*from\s*["']${agentModule}["']`).test(source)) return true;
-
-  const importedLocals = new Set<string>();
-  for (const match of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["']([^"']+)["']/gs)) {
-    if (!new RegExp(`(?:managedApiAdapter|remoteHostCliAdapter|runtimeHost(?:/index)?|\\./service)(?:\\.js)?$`).test(match[2] ?? "")) continue;
-    for (const binding of (match[1] ?? "").split(",")) {
-      const parsed = /^(\w+)(?:\s+as\s+(\w+))?$/.exec(binding.trim());
-      if (parsed && new RegExp(`^${agentInvocationExportName}$`).test(parsed[1]!)) {
-        importedLocals.add(parsed[2] ?? parsed[1]!);
-      }
-    }
-  }
-  return [...source.matchAll(/export\s*\{([^}]*)\}(?!\s*from)/gs)].some((match) =>
-    [...importedLocals].some((local) => new RegExp(String.raw`\b${local}\b`).test(match[1] ?? "")));
 }
 
 describe("Runtime Context invocation entrypoint inventory", () => {
@@ -403,7 +359,7 @@ describe("Runtime Context invocation entrypoint inventory", () => {
     expect(registered).toEqual(discovered);
   });
 
-  it("registers every Agent runtime-host and CLI adapter invoker", () => {
+  it("registers the single Agent invocation boundary", () => {
     const discovered = tsFiles(modulesRoot)
       .flatMap((file) => agentInvocationCallsites(
         readFileSync(file, "utf8"),
@@ -413,42 +369,12 @@ describe("Runtime Context invocation entrypoint inventory", () => {
     const entries = new Map(RUNTIME_INVOCATION_INVENTORY.map((item) => [item.entrypoint, item]));
     const invalid = discovered.filter((entrypoint) => {
       const item = entries.get(entrypoint);
-      return !item || !(
-        (item.classification === "agent_task_gateway" && item.targetBoundary === "runtime_context_gateway")
-        || (item.classification === "agent_task_renderer" && item.targetBoundary === "delivery_renderer")
-      );
+      return !item || item.classification !== "agent_task_renderer" || item.targetBoundary !== "delivery_renderer";
     });
     expect(invalid).toEqual([]);
     expect(discovered).toEqual([
-      "runs/managedApiAdapter.ts#executeRuntimeHost:1",
-      "runs/orchestrationService.ts#executeManagedApiNoToolAdapter:1",
       "runs/orchestrationService.ts#executeRemoteHostCliAdapter:1",
     ]);
-  });
-
-  it("detects Agent runtime bypasses across supported import syntax", () => {
-    expect(importsAgentInvocation('import * as host from "../runtimeHost";', "runs/newAdapter.ts")).toBe(true);
-    expect(importsAgentInvocation('const host = await import("../runtimeHost");', "runs/newAdapter.ts")).toBe(true);
-    expect(importsAgentInvocation('const host = require("../runtimeHost");', "runs/newAdapter.ts")).toBe(true);
-    expect(importsAgentInvocation('import * as host from "./service";', "runtimeHost/routes.ts")).toBe(true);
-    expect(agentInvocationCallsites(
-      'import { executeRuntimeHost as invoke } from "../runtimeHost"; await invoke(config, input);',
-      "runs/newAdapter.ts",
-    )).toEqual(["runs/newAdapter.ts#executeRuntimeHost:1"]);
-  });
-
-  it("allows only the canonical Agent invocation re-export facade", () => {
-    const discovered = tsFiles(modulesRoot)
-      .filter((file) => reExportsAgentInvocation(readFileSync(file, "utf8")))
-      .map((file) => relative(modulesRoot, file))
-      .sort();
-    expect(discovered).toEqual(["runtimeHost/index.ts"]);
-    expect(reExportsAgentInvocation(
-      'export { executeRuntimeHost as runAgent } from "../runtimeHost";',
-    )).toBe(true);
-    expect(reExportsAgentInvocation(
-      'import { executeRuntimeHost as runAgent } from "../runtimeHost"; export { runAgent };',
-    )).toBe(true);
   });
 
   it("classifies every local CLI transport consumer at its owning boundary", () => {
@@ -517,17 +443,17 @@ describe("Runtime Context invocation entrypoint inventory", () => {
     }
   });
 
-  it("separates Agent task context from bounded owning-domain Provider tasks", () => {
+  it("separates ACP Agent rendering from bounded owning-domain Provider tasks", () => {
     const bounded = RUNTIME_INVOCATION_INVENTORY.filter(
       (item) => item.classification === "bounded_provider_task",
     );
     expect(bounded.length).toBeGreaterThan(0);
     expect(bounded.every((item) => item.targetBoundary === "provider_task")).toBe(true);
-    expect(
-      RUNTIME_INVOCATION_INVENTORY.some(
-        (item) => item.classification === "agent_task_gateway" && item.targetBoundary === "runtime_context_gateway",
-      ),
-    ).toBe(true);
+    expect(RUNTIME_INVOCATION_INVENTORY).toContainEqual(expect.objectContaining({
+      classification: "agent_task_renderer",
+      targetBoundary: "delivery_renderer",
+      source: "runs/remoteHostCliAdapter.ts",
+    }));
   });
 
   it("exposes only the Runtime Context public port outside its module", () => {

@@ -93,6 +93,21 @@ with a route-specific maximum.
 
 **Ordering:** `?order_by=created_at&desc=true`
 
+## Run read model (`runs/runReadModel.ts`, `runToOut`)
+
+A Run DTO carries `execution_kind` — `agent` or `provider_task` — and the
+client branches on it rather than on a missing field. For a `provider_task`
+Run, `agent_id` and `agent_version_id` are **null by construction**: a bounded
+Server-side model call has no Agent, AgentVersion or runtime snapshot, and the
+database CHECK on `runs` forbids them. `capability_id` is on the same DTO and
+names the bounded operation (for example `research.adhoc_analyze`).
+
+The web types say the same (`apps/web/src/types/api.ts`, `Run`), and the Runs
+page uses the pair: `runActorLabel` renders a `provider_task` Run as
+"Bounded provider task · <capability_id>" with a `provider task` badge, instead
+of the "Agent unavailable" it shows for an `agent` Run whose Agent name did not
+resolve. A null Agent on a `provider_task` Run is not a missing name.
+
 ## Current: Run Event SSE
 
 Run event streaming is implemented as:

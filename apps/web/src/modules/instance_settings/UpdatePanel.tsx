@@ -363,7 +363,7 @@ function RuntimeChangeLog() {
         {changes.map(change => (
           <li key={change.id} className="flex items-center justify-between gap-3 py-1 text-xs">
             <span>
-              <span className="font-medium">{change.adapter_type}</span>
+              <span className="font-medium">{change.runtime_key}</span>
               {' on '}{change.host_name}
               {' — '}{change.action}
               {change.from_version && change.to_version

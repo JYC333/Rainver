@@ -14,6 +14,7 @@ function run(contract_snapshot_json: unknown): RunRecord {
   return {
     id: "run-1",
     space_id: "space-1",
+    execution_kind: "agent",
     agent_id: "agent-1",
     agent_version_id: "version-1",
     status: "succeeded",
@@ -23,7 +24,7 @@ function run(contract_snapshot_json: unknown): RunRecord {
     project_folder_id: null,
     session_id: null,
     project_id: null,
-    adapter_type: "model_api",
+    runtime_key: "opencode",
     model_provider_id: null,
     required_sandbox_level: "none",
     trigger_origin: "manual",

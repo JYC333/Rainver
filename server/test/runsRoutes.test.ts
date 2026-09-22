@@ -4,7 +4,7 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { runsModule } from "../src/modules/runs/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setRunsCommandServicesFactoryForTests, __setRunsIdentityForTests, __setRunsReadResponseForTests } from "../src/modules/runs/routes.js";
-import type { VisibleRunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord, VisibleRunRecord } from "../src/modules/runs/repository.js";
 
 let app: FastifyInstance;
 
@@ -15,12 +15,13 @@ afterEach(async () => {
   await app?.close();
 });
 
-function run(overrides: Partial<VisibleRunRecord> = {}): VisibleRunRecord {
+function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord & Pick<VisibleRunRecord, "effective_access_level"> {
   return {
     id: "run-1",
     space_id: "space-1",
     agent_id: "agent-1",
     agent_version_id: "agent-version-1",
+    execution_kind: "agent",
     run_type: "agent",
     status: "running",
     mode: "live",
@@ -29,7 +30,7 @@ function run(overrides: Partial<VisibleRunRecord> = {}): VisibleRunRecord {
     project_folder_id: null,
     session_id: null,
     project_id: null,
-    adapter_type: "model_api",
+    runtime_key: "opencode",
     model_provider_id: "provider-1",
     required_sandbox_level: "none",
     trigger_origin: "manual",

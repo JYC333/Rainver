@@ -90,10 +90,10 @@ export function retrievalProviderEgressDestination(provider: {
 
 /** Classify the actual upstream used by a provider-bound runtime adapter. */
 export function runtimeProviderEgressDestination(
-  adapterType: string | null | undefined,
+  runtimeKey: string | null | undefined,
   provider: { provider_type: string; base_url?: string | null; config_json?: unknown },
 ): RetrievalEgressDestination {
-  const providerApi = getRuntimeAdapterSpec(adapterType)?.model.provider_api;
+  const providerApi = getRuntimeAdapterSpec(runtimeKey)?.model.provider_api;
   const compatibleUrlKey = providerApi ? `${providerApi}_base_url` : null;
   if (!compatibleUrlKey) return retrievalProviderEgressDestination(provider);
   const config = provider.config_json !== null

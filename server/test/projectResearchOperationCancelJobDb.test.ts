@@ -51,11 +51,7 @@ async function seedRun(operationId: string, status: string, stageKey = "synthesi
   const runId = randomUUID();
   const now = new Date().toISOString();
   await db.pool.query(
-    `INSERT INTO runs (
-       id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-       created_at, updated_at, owner_user_id, visibility, access_level, project_id,
-       instructed_by_user_id, contract_snapshot_json
-     ) VALUES ($1,$2,$3,$4,'agent','system',$5,'live',$6,$6,$7,'space_shared','full',$8,$7,$9::jsonb)`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, contract_snapshot_json, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'system', $5, 'live', $6, $6, $7, 'space_shared', 'full', $8, $7, $9::jsonb, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [
       runId, SPACE, AGENT, AGENT_VERSION, status, now, OWNER, PROJECT,
       JSON.stringify({ workflow_input_json: { project_research: { operation_id: operationId, stage_key: stageKey } } }),

@@ -89,13 +89,13 @@ describe('Decision and Knowledge Review Project surfaces', () => {
 
   it('selects Knowledge extraction source and Agent by name', async () => {
     vi.mocked(inquiryApi.listThreads).mockResolvedValue([{ id: 'thread-1', kind: 'question', statement: 'What changed?' } as never])
-    vi.mocked(agentsApi.list).mockResolvedValue([{ id: 'agent-1', name: 'Knowledge curator', status: 'active', current_version_id: 'v1', adapter_type: 'model_api' } as never])
+    vi.mocked(agentsApi.list).mockResolvedValue([{ id: 'agent-1', name: 'Knowledge curator', status: 'active', current_version_id: 'v1', runtime_key: 'opencode' } as never])
     renderPage('/projects/project-1/knowledge-review', <KnowledgeReviewPage />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Extraction source' }))
     expect(await screen.findByRole('option', { name: 'Question · What changed?' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Extraction agent' }))
-    expect(await screen.findByRole('option', { name: 'Knowledge curator · model api' })).toBeInTheDocument()
+    expect(await screen.findByRole('option', { name: 'Knowledge curator · opencode' })).toBeInTheDocument()
     expect(screen.queryByPlaceholderText(/Source ID|Agent ID/i)).not.toBeInTheDocument()
   })
 })

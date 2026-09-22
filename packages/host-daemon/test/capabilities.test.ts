@@ -13,14 +13,14 @@ import { toolsDir } from "../src/tools.js";
 
 /** What the server names in `hello_ack`; the daemon looks for nothing else but git. */
 const VENDORS: RuntimeLookup[] = [
-  { adapter_type: "claude_code", runtime: "claude", login: null },
-  { adapter_type: "codex_cli", runtime: "codex", login: null },
-  { adapter_type: "opencode", runtime: "opencode", login: null },
+  { runtime_key: "claude_code", runtime: "claude", login: null },
+  { runtime_key: "codex_cli", runtime: "codex", login: null },
+  { runtime_key: "opencode", runtime: "opencode", login: null },
 ];
 
 /** The machine's own copy of an adapter, if this machine has the binary. */
-function own(capabilities: Awaited<ReturnType<typeof detectCapabilities>>, adapterType: string) {
-  return capabilities.installations[adapterType]?.find((entry) => entry.id === "own") ?? null;
+function own(capabilities: Awaited<ReturnType<typeof detectCapabilities>>, runtimeKey: string) {
+  return capabilities.installations[runtimeKey]?.find((entry) => entry.id === "own") ?? null;
 }
 
 describe("capability discovery", () => {
@@ -31,7 +31,7 @@ describe("capability discovery", () => {
   });
 
   it("looks only for the runtimes the server named, plus git", async () => {
-    const capabilities = await detectCapabilities(undefined, [{ adapter_type: "x", runtime: "definitely-not-a-binary-on-path", login: null }]);
+    const capabilities = await detectCapabilities(undefined, [{ runtime_key: "x", runtime: "definitely-not-a-binary-on-path", login: null }]);
     expect(capabilities.runtimes).toEqual(["git"]);
     expect(capabilities.installations).toEqual({});
   });
@@ -43,13 +43,13 @@ describe("capability discovery", () => {
     for (const lookup of VENDORS) {
       if (!capabilities.runtimes.includes(lookup.runtime!)) {
         expect(capabilities.versions[lookup.runtime!]).toBeUndefined();
-        expect(capabilities.installations[lookup.adapter_type]).toBeUndefined();
+        expect(capabilities.installations[lookup.runtime_key]).toBeUndefined();
       }
     }
   });
 
   it("does not advertise a vendor runtime until its adapter is ready", async () => {
-    const lookup: RuntimeLookup[] = [{ adapter_type: "test_adapter", runtime: "git", login: null }];
+    const lookup: RuntimeLookup[] = [{ runtime_key: "test_adapter", runtime: "git", login: null }];
     const unavailable = await detectCapabilities(undefined, lookup, async () => false);
     expect(unavailable.installations.test_adapter).toBeUndefined();
 
@@ -86,7 +86,7 @@ describe("what a runtime says it can be set to", () => {
 
   it("retries failed option probes after a control-plane reconnect", async () => {
     __clearRuntimeOptionsCache();
-    const installedLookup: RuntimeLookup[] = [{ adapter_type: "test", runtime: "git", login: null }];
+    const installedLookup: RuntimeLookup[] = [{ runtime_key: "test", runtime: "git", login: null }];
     let available = false;
     let asks = 0;
     const ask = async () => {
@@ -111,7 +111,7 @@ describe("what a runtime says it can be set to", () => {
     // Keep this cache assertion independent of the real host's managed tools.
     // Other capability/install tests may run in parallel and add a managed
     // copy while the two heartbeats below are in flight.
-    const lookup: RuntimeLookup[] = [{ adapter_type: "capability_cache_test", runtime: "git", login: null }];
+    const lookup: RuntimeLookup[] = [{ runtime_key: "capability_cache_test", runtime: "git", login: null }];
     let asks = 0;
     const ask = async () => {
       asks += 1;
@@ -128,7 +128,7 @@ describe("what a runtime says it can be set to", () => {
 
   it("reports generic ACP authentication state and refreshes it after login", async () => {
     __clearRuntimeOptionsCache();
-    const lookup: RuntimeLookup[] = [{ adapter_type: "test", runtime: "git", login: null }];
+    const lookup: RuntimeLookup[] = [{ runtime_key: "test", runtime: "git", login: null }];
     let authenticated = false;
     let asks = 0;
     const ask = async () => {
@@ -154,7 +154,7 @@ describe("what a runtime says it can be set to", () => {
       config_options: [],
       auth_methods: [{ id: "generic", name: "Generic", description: null, type: "agent" as const, args: [], env: {} }],
       authenticated: true,
-    }), [{ adapter_type: "test", runtime: "git", login }]), "test");
+    }), [{ runtime_key: "test", runtime: "git", login }]), "test");
     expect(copy?.logged_in).toBe(false);
     expect(copy?.options?.auth_methods).toEqual([]);
   });
@@ -171,14 +171,14 @@ describe("what a runtime says it can be set to", () => {
       await mkdir(home, { recursive: true });
       await writeFile(script, "process.exit(process.argv[2] === 'login' && process.argv[3] === '--help' ? 0 : 1)\n");
       await writeFile(join(dir, "manifest.json"), JSON.stringify({
-        adapter_type: "cli_login_test", version: "1.0.0", command: process.execPath,
+        runtime_key: "cli_login_test", version: "1.0.0", command: process.execPath,
         args: [script, "acp"], entry_args: [script], env: {}, home, login_command: null, login: null, installed_at: "",
       }));
       __clearRuntimeOptionsCache();
       const capabilities = await detectCapabilities(async () => ({
         config_options: [], authenticated: false,
         auth_methods: [{ id: "existing", name: "Existing login", description: null, type: "agent", args: [], env: {} }],
-      }), [{ adapter_type: "cli_login_test", runtime: null, login: null }]);
+      }), [{ runtime_key: "cli_login_test", runtime: null, login: null }]);
       expect(capabilities.installations.cli_login_test?.[0]?.options).toMatchObject({
         auth_methods: [expect.objectContaining({ id: "existing", name: "Existing login", type: "agent" })],
         cli_login_available: true,

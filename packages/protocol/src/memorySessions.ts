@@ -270,7 +270,7 @@ export type ConversationRetryResponse = z.infer<typeof ConversationRetryResponse
 
 export const ConversationBackendBindingSchema = z.object({
   runtime_profile_id: IdSchema,
-  adapter_type: z.string().trim().min(1),
+  runtime_key: z.string().trim().min(1),
 }).strict();
 export type ConversationBackendBinding = z.infer<
   typeof ConversationBackendBindingSchema
@@ -279,7 +279,7 @@ export type ConversationBackendBinding = z.infer<
 export const ConversationBackendOptionSchema = z.object({
   runtime_profile_id: IdSchema,
   name: z.string().trim().min(1),
-  adapter_type: z.string().trim().min(1),
+  runtime_key: z.string().trim().min(1),
   model_name: z.string().nullish(),
   usable: z.boolean().optional(),
   reason: z.string().nullish().optional(),

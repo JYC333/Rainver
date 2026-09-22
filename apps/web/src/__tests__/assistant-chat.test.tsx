@@ -9,8 +9,8 @@ const { agent, getMock, messagesMock, backendsMock, hostsMock, turnMock, runGetM
     id: 'a1', space_id: 'personal-1', created_by_user_id: 'u1', name: 'Assistant',
     description: null, visibility: 'private', role_instruction: null, status: 'active',
     agent_kind: 'system_assistant', current_version_id: 'v1', source_template_id: null,
-    source_template_version_id: null, model: null, adapter_type: 'model_api',
-    requires_model_provider: true, system_prompt: null, created_at: '', updated_at: '',
+    source_template_version_id: null, model: null, runtime_key: 'opencode',
+    system_prompt: null, created_at: '', updated_at: '',
   },
   getMock: vi.fn(),
   messagesMock: vi.fn(),
@@ -76,7 +76,7 @@ describe('AssistantChatPage conversation backends', () => {
     backendsMock.mockResolvedValue({ options: [{
       runtime_profile_id: 'runtime-1',
       name: 'Managed',
-      adapter_type: 'model_api',
+      runtime_key: 'opencode',
       model_name: 'gpt-test',
     }], binding: null })
     hostsMock.mockResolvedValue({ items: [] })
@@ -242,8 +242,10 @@ describe('AssistantChatPage conversation backends', () => {
   it('shows the selected eligible backend and enables chat', async () => {
     renderPage()
     expect(await screen.findByPlaceholderText(/ask your assistant/i)).toBeInTheDocument()
+    // The backend picker is the shared `Select` (a listbox trigger), so what
+    // is selected is what the trigger shows.
     await waitFor(() => {
-      expect(screen.getByRole('combobox', { name: /conversation backend/i })).toHaveValue('runtime-1')
+      expect(screen.getByRole('button', { name: /conversation backend/i })).toHaveTextContent('Managed · gpt-test')
     })
   })
 
@@ -251,21 +253,21 @@ describe('AssistantChatPage conversation backends', () => {
     backendsMock.mockResolvedValue({ options: [{
       runtime_profile_id: 'runtime-managed',
       name: 'Managed',
-      adapter_type: 'model_api',
+      runtime_key: 'opencode',
       model_name: 'gpt-test',
     }, {
       runtime_profile_id: 'runtime-cli',
       name: 'Subscription',
-      adapter_type: 'claude_code',
+      runtime_key: 'claude_code',
       model_name: null,
     }], binding: {
       runtime_profile_id: 'runtime-cli',
-      adapter_type: 'claude_code',
+      runtime_key: 'claude_code',
     } })
     renderPage('/agents/a1/chat?session=s1')
     expect(await screen.findByPlaceholderText(/ask your assistant/i)).toBeInTheDocument()
     await waitFor(() => {
-      expect(screen.getByRole('combobox', { name: /conversation backend/i })).toHaveValue('runtime-cli')
+      expect(screen.getByRole('button', { name: /conversation backend/i })).toHaveTextContent('Subscription · claude_code')
     })
     expect(backendsMock).toHaveBeenCalledWith('a1', {
       spaceId: 'personal-1',
@@ -293,7 +295,7 @@ describe('AssistantChatPage conversation backends', () => {
       options: [{
         runtime_profile_id: 'runtime-1',
         name: 'Managed',
-        adapter_type: 'model_api',
+        runtime_key: 'opencode',
         model_name: 'gpt-test',
       }],
       binding: null,
@@ -344,7 +346,7 @@ describe('AssistantChatPage conversation backends', () => {
         event_stream_url: '/api/v1/runs/run-1/turn/stream',
         backend: {
           runtime_profile_id: 'runtime-1',
-          adapter_type: 'model_api',
+          runtime_key: 'opencode',
         },
       })
       options?.onTurn?.({
@@ -387,7 +389,7 @@ describe('AssistantChatPage conversation backends', () => {
         user_message_id: 'message-1',
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-done/turn/stream',
-        backend: { runtime_profile_id: 'runtime-1', adapter_type: 'model_api' },
+        backend: { runtime_profile_id: 'runtime-1', runtime_key: 'opencode' },
       })
       options?.onTurn?.({
         schema_version: 'run_turn.v1',
@@ -442,7 +444,7 @@ describe('AssistantChatPage conversation backends', () => {
         user_message_id: 'message-1',
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-fail/turn/stream',
-        backend: { runtime_profile_id: 'runtime-1', adapter_type: 'model_api' },
+        backend: { runtime_profile_id: 'runtime-1', runtime_key: 'opencode' },
       })
       options?.onTurn?.({
         schema_version: 'run_turn.v1',
@@ -496,7 +498,7 @@ describe('AssistantChatPage conversation backends', () => {
         user_message_id: 'message-1',
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-blocked/turn/stream',
-        backend: { runtime_profile_id: 'runtime-1', adapter_type: 'model_api' },
+        backend: { runtime_profile_id: 'runtime-1', runtime_key: 'opencode' },
       })
       options?.onTurn?.({
         schema_version: 'run_turn.v1',
@@ -638,7 +640,7 @@ describe('AssistantChatPage conversation backends', () => {
     backendsMock.mockResolvedValue({ options: [{
       runtime_profile_id: 'runtime-host',
       name: 'Host runtime',
-      adapter_type: 'claude_code',
+      runtime_key: 'claude_code',
       model_name: null,
       usable: true,
       host_bound: true,

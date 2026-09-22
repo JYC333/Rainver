@@ -98,7 +98,7 @@ function reconcileInput(overrides: Partial<Parameters<PgImportedSessionRepositor
     workspaceLocationId: LOCATION,
     executionHostId: HOST,
     ownerUserId: OWNER,
-    adapterType: "claude_code",
+    runtimeKey: "claude_code",
     installation: "own",
     visibility: "space_shared",
     session: { session_id: "sess-1", cwd: "/home/me/project", title: "Branch review", updated_at: "2026-08-20T10:00:00.000Z" },
@@ -220,7 +220,7 @@ describe("imported session reconciliation", () => {
     const marked = await repository.markMissingAsGone({
       spaceId: SPACE,
       workspaceLocationId: LOCATION,
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       installation: "own",
       listedVendorSessionIds: [],
     });
@@ -245,12 +245,12 @@ expect((await repository.records(SPACE, first.session.id)).records).toHaveLength
     await repository.reconcile(reconcileInput({ loadState: "partial", error: "interrupted" }));
     // A partial session is never reported as held: the next sync must retry it.
     expect(await repository.heldSessions({
-      spaceId: SPACE, workspaceLocationId: LOCATION, adapterType: "claude_code", installation: "own",
+      spaceId: SPACE, workspaceLocationId: LOCATION, runtimeKey: "claude_code", installation: "own",
     })).toHaveLength(0);
 
     await repository.reconcile(reconcileInput());
     const held = await repository.heldSessions({
-      spaceId: SPACE, workspaceLocationId: LOCATION, adapterType: "claude_code", installation: "own",
+      spaceId: SPACE, workspaceLocationId: LOCATION, runtimeKey: "claude_code", installation: "own",
     });
     expect(held).toEqual([{ session_id: "sess-1", updated_at: "2026-08-20T10:00:00.000Z" }]);
   });

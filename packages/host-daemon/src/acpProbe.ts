@@ -112,6 +112,87 @@ export function parseAcpSessionOptions(resultValue: unknown): RuntimeOptions {
 
 export { isAcpAuthRequiredError } from "@rainver/protocol";
 
+/**
+ * Checks that a newly materialized executable can answer ACP initialize.
+ * It deliberately does not open a Session: installation readiness must not
+ * depend on a native account being logged in or a Rainver provider existing.
+ */
+export function probeAcpHealth(
+  command: string,
+  args: string[],
+  env: Record<string, string>,
+  cwd: string,
+  timeoutMs = 15_000,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let buffer = "";
+    let child: ReturnType<typeof spawn>;
+    const finish = (healthy: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { child.kill(); } catch { /* already exited */ }
+      resolve(healthy);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref?.();
+    try {
+      child = spawn(command, args, {
+        cwd,
+        stdio: ["pipe", "pipe", "ignore"],
+        env: { ...helperProcessEnv(process.env), ...env },
+      });
+    } catch {
+      clearTimeout(timer);
+      resolve(false);
+      return;
+    }
+    child.stdout?.on("data", (chunk: Buffer) => {
+      buffer = (buffer + chunk.toString("utf8")).slice(-64 * 1024);
+      let at = buffer.indexOf("\n");
+      while (at !== -1) {
+        const line = buffer.slice(0, at);
+        buffer = buffer.slice(at + 1);
+        at = buffer.indexOf("\n");
+        if (!line.trim()) continue;
+        let message: Record<string, unknown>;
+        try {
+          const parsed: unknown = JSON.parse(line);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+          message = parsed as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+        if (message.id !== 1) continue;
+        const result = message.result && typeof message.result === "object" && !Array.isArray(message.result)
+          ? message.result as Record<string, unknown>
+          : null;
+        finish(
+          message.jsonrpc === "2.0"
+          && message.error === undefined
+          && result !== null
+          && result.protocolVersion === 1,
+        );
+        return;
+      }
+    });
+    child.once("error", () => finish(false));
+    child.once("close", () => finish(false));
+    child.stdin?.once("error", () => finish(false));
+    child.stdin?.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: 1,
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+        clientInfo: { name: "rainver-host-health", version: "1" },
+      },
+    })}\n`);
+  });
+}
+
 export function parseAcpSessionProbeResult(
   result: unknown,
   error: unknown,
@@ -163,7 +244,7 @@ export function probeAcpOptions(
    * button and no explanation anywhere; the reason goes to the daemon log.
    */
   onFailure?: (reason: string) => void,
-  adapterType?: string,
+  runtimeKey?: string,
 ): Promise<RuntimeOptions | null> {
   return new Promise((resolve) => {
     let authMethods: RuntimeAuthMethod[] = [];
@@ -200,7 +281,7 @@ export function probeAcpOptions(
       child = spawn(command, args, {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...helperProcessEnv(process.env, adapterType ?? ""), ...env },
+        env: { ...helperProcessEnv(process.env, runtimeKey ?? ""), ...env },
       });
     } catch (error) {
       clearTimeout(timer);

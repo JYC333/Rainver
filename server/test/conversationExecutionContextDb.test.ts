@@ -90,7 +90,10 @@ beforeEach(async () => {
      VALUES ($1, $2, $3, $4, 'server', '/workspace/repo', true, 'active', $5, $5)`,
     [LOCATION, SPACE, FOLDER, HOST, now],
   );
-  await seedAgentWithVersion(db.pool, { agent: AGENT, version: VERSION, space: SPACE, owner: OWNER, now });
+  await seedAgentWithVersion(db.pool, { agent: AGENT, version: VERSION, space: SPACE, owner: OWNER, seedDefaultRuntimeProfile: false, now });
+  // The ACP adapter's effective trust is intentionally low until host-side
+  // subagent restrictions are enforced; this is a low-risk conversation test.
+  await db.pool.query(`UPDATE agent_versions SET risk_level = 'low' WHERE id = $1`, [VERSION]);
   await db.pool.query(
     `UPDATE agents
         SET project_id = $1, agent_kind = 'system_assistant'
@@ -100,10 +103,22 @@ beforeEach(async () => {
   await seedRoomManager(db.pool, { space: SPACE, room: room.rows[0]!.id, agent: AGENT, now });
   await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, execution_host_id,
-       workspace_mode, runtime_installation, runtime_config_json, runtime_policy_json,
-       enabled, is_default, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'Host CLI', 'claude_code', $4, 'managed', 'managed:1.0.0', '{}', '{}', true, true, $5, $5)`,
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES ($1, $2, $3, 'Host CLI', 'claude_code', 'runtime_native', $4, 'managed', 'managed:1.0.0', '{}', '{}', true, true, $5, $5)`,
     [RUNTIME, SPACE, AGENT, HOST, now],
   );
 });
@@ -178,7 +193,7 @@ describe("Conversation execution schema", () => {
         runtime: {
           agent_id: AGENT,
           runtime_profile_id: RUNTIME,
-          adapter_type: "claude_code",
+          runtime_key: "claude_code",
           runtime_installation: "managed:1.0.0",
         },
       },
@@ -194,11 +209,11 @@ describe("Conversation execution schema", () => {
       blocked_reason: null,
       runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME },
     });
-    await db.pool.query(`UPDATE agent_runtime_profiles SET adapter_type = 'codex_cli' WHERE id = $1`, [RUNTIME]);
+    await db.pool.query(`UPDATE agent_runtime_profiles SET runtime_key = 'codex_cli' WHERE id = $1`, [RUNTIME]);
     const preflight = await service.preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
     expect(preflight.summary).toMatchObject({
       state: "initialized",
-      runtime: { agent_id: AGENT, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
+      runtime: { agent_id: AGENT, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
       can_send: false,
       blocked_reason: expect.stringContaining("no longer matches the pinned Host, CLI, or Primary Workspace"),
     });
@@ -210,7 +225,7 @@ describe("Conversation execution schema", () => {
         runtime: {
           agent_id: AGENT,
           runtime_profile_id: RUNTIME,
-          adapter_type: "codex_cli",
+          runtime_key: "codex_cli",
           runtime_installation: "own",
         },
       },
@@ -253,11 +268,40 @@ describe("Conversation execution schema", () => {
     );
     await db.pool.query(
       `INSERT INTO agent_runtime_profiles (
-         id, space_id, agent_id, name, adapter_type, execution_host_id,
-         workspace_location_id, workspace_mode, runtime_installation,
-         runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
-       ) VALUES ($1, $2, $3, 'Project setting', 'claude_code', $4,
-         $5, 'location', 'own', '{}', '{}', true, true, now(), now())`,
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       execution_host_id,
+       workspace_location_id,
+       workspace_mode,
+       runtime_installation,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'Project setting',
+       'claude_code',
+       'runtime_native',
+       $4,
+       $5,
+       'location',
+       'own',
+       '{}',
+       '{}',
+       true,
+       true,
+       now(),
+       now()
+     )`,
       [existing, SPACE, AGENT, OTHER_HOST, REMOTE_LOCATION],
     );
 
@@ -266,7 +310,7 @@ describe("Conversation execution schema", () => {
     expect(preflight.summary).toMatchObject({
       host: { host_id: OTHER_HOST },
       primary: { kind: "location", workspace_location_id: REMOTE_LOCATION },
-      runtime: { runtime_profile_id: existing, adapter_type: "claude_code", runtime_installation: "own" },
+      runtime: { runtime_profile_id: existing, runtime_key: "claude_code", runtime_installation: "own" },
     });
     expect(preflight.available_runtime_profiles).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -274,7 +318,7 @@ describe("Conversation execution schema", () => {
         runtime_profile_id: existing,
         execution_host_id: OTHER_HOST,
         workspace_location_id: REMOTE_LOCATION,
-        adapter_type: "claude_code",
+        runtime_key: "claude_code",
         runtime_installation: "own",
         usable: true,
       }),
@@ -283,7 +327,7 @@ describe("Conversation execution schema", () => {
         runtime_profile_id: null,
         execution_host_id: OTHER_HOST,
         workspace_location_id: REMOTE_LOCATION,
-        adapter_type: "codex_cli",
+        runtime_key: "codex_cli",
         runtime_installation: "own",
         usable: true,
       }),
@@ -297,7 +341,7 @@ describe("Conversation execution schema", () => {
         runtime: {
           agent_id: AGENT,
           runtime_profile_id: null,
-          adapter_type: "codex_cli",
+          runtime_key: "codex_cli",
           runtime_installation: "own",
         },
       },
@@ -306,12 +350,12 @@ describe("Conversation execution schema", () => {
       state: "initialized",
       host: { host_id: OTHER_HOST },
       primary: { kind: "location", workspace_location_id: REMOTE_LOCATION },
-      runtime: { agent_id: AGENT, adapter_type: "codex_cli", runtime_installation: "own" },
+      runtime: { agent_id: AGENT, runtime_key: "codex_cli", runtime_installation: "own" },
     });
     const profiles = await db.pool.query<{ id: string }>(
       `SELECT id FROM agent_runtime_profiles
         WHERE space_id = $1 AND agent_id = $2 AND execution_host_id = $3
-          AND workspace_location_id = $4 AND adapter_type = 'codex_cli'
+          AND workspace_location_id = $4 AND runtime_key = 'codex_cli'
           AND runtime_installation = 'own'`,
       [SPACE, AGENT, OTHER_HOST, REMOTE_LOCATION],
     );
@@ -319,13 +363,12 @@ describe("Conversation execution schema", () => {
     expect(initialized.runtime?.runtime_profile_id).toBe(profiles.rows[0]!.id);
   });
 
-  it("routes with the initialization-time runtime configuration snapshot after profile edits", async (ctx) => {
+  it("routes with the initialization-time config snapshot, stripping legacy credentials after profile edits", async (ctx) => {
     if (!db.available) return ctx.skip();
     await db.pool.query(
       `UPDATE agent_runtime_profiles
-          SET model_name = 'initial-model',
-              runtime_config_json = '{"effort":"medium","supports_live":true}',
-              runtime_policy_json = '{"network":"deny"}'
+          SET runtime_config_json = '{"effort":"medium","supports_live":true,"provider":{"vendorApiKey":"legacy-secret","keep":true}}',
+              runtime_policy_json = '{"network":"deny","nested":{"credential_profile_id":"legacy-credential","keep":true}}'
         WHERE id = $1`,
       [RUNTIME],
     );
@@ -335,7 +378,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "managed" } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
+      runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
     const thread = await db.pool.query<{ id: string }>(
@@ -344,16 +387,38 @@ describe("Conversation execution schema", () => {
           AND container_kind = 'conversation'`,
       [SPACE, SESSION, AGENT],
     );
+    const binding = await db.pool.query<{
+      runtime_key_snapshot: string;
+      backend_mode_snapshot: string;
+      runtime_config_snapshot_json: Record<string, unknown>;
+      runtime_policy_snapshot_json: Record<string, unknown>;
+    }>(
+      `SELECT runtime_key_snapshot, backend_mode_snapshot,
+              runtime_config_snapshot_json, runtime_policy_snapshot_json
+         FROM session_conversation_backends
+        WHERE space_id = $1 AND session_id = $2 AND agent_id = $3`,
+      [SPACE, SESSION, AGENT],
+    );
+    expect(binding.rows[0]).toEqual({
+      runtime_key_snapshot: "claude_code",
+      backend_mode_snapshot: "runtime_native",
+      runtime_config_snapshot_json: {
+        effort: "medium",
+        supports_live: true,
+        provider: { keep: true },
+      },
+      runtime_policy_snapshot_json: { network: "deny", nested: { keep: true } },
+    });
     await db.pool.query(
       `UPDATE agent_runtime_profiles
-          SET model_name = 'changed-model',
-              runtime_config_json = '{"effort":"high","supports_live":false}',
+          SET runtime_config_json = '{"effort":"high","supports_live":false}',
               runtime_policy_json = '{"network":"allow"}'
         WHERE id = $1`,
       [RUNTIME],
     );
     const runs = new PgRunRepository(db.pool);
     const queued = await runs.createQueuedRun({
+      execution_kind: "agent",
       agent_id: AGENT,
       space_id: SPACE,
       user_id: OWNER,
@@ -371,11 +436,11 @@ describe("Conversation execution schema", () => {
       },
     });
     const routed = await new PgRouteDecisionRepository(db.pool).routeRun(queued);
-    expect(routed.model_override_json).toMatchObject({ model: "initial-model" });
+    expect(routed.model_override_json).not.toHaveProperty("model");
     expect(routed.runtime_profile_snapshot_json).toMatchObject({
-      model_name: "initial-model",
-      runtime_config_json: { effort: "medium", supports_live: true },
-      runtime_policy_json: { network: "deny" },
+      model_name: null,
+      runtime_config_json: { effort: "medium", supports_live: true, provider: { keep: true } },
+      runtime_policy_json: { network: "deny", nested: { keep: true } },
     });
   });
 
@@ -422,7 +487,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "managed" } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
 
@@ -473,7 +538,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "managed" } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
 
@@ -529,14 +594,14 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "managed" } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
     await expect(db.pool.query(
       `INSERT INTO session_conversation_backends (
          id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
-         runtime_state_key, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`,
+         runtime_key_snapshot, backend_mode_snapshot, runtime_state_key, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'claude_code', 'runtime_native', $7, $8, $8)`,
       [randomUUID(), SPACE, SESSION, VIEWER, AGENT, RUNTIME, randomUUID(), now],
     )).rejects.toMatchObject({ code: "23505" });
     const constraints = await db.pool.query<{ conname: string; confdeltype: string }>(
@@ -566,7 +631,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "location", workspace_location_id: LOCATION } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
     await db.pool.query(
@@ -648,7 +713,7 @@ describe("Conversation execution schema", () => {
       SESSION,
       {
         selection: { execution_host_id: HOST, primary: { kind: "managed" } },
-        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, adapter_type: "claude_code", runtime_installation: "managed:1.0.0" },
+        runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
       },
     );
     const mutation = { action: "attach" as const, mutation_id: randomUUID(), project_folder_id: ATTACHED_FOLDER, workspace_location_id: ATTACHED_LOCATION, access_mode: "read" as const };

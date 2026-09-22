@@ -7,7 +7,7 @@ import { normalizeUsageObservation } from "../src/modules/usage/normalizer.js";
 import { PgUsageRepository } from "../src/modules/usage/repository.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // The project research review read model must use the canonical usage ledger.
 // Provider-reported usage must remain visible in the review UI through the
@@ -62,23 +62,33 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt,
-       model_config_json, runtime_config_json, context_policy_json,
-       memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, created_at
-     ) VALUES ($1,$2,$3,'v1','Test agent.',
-       '{}'::jsonb,'{}'::jsonb,'{}'::jsonb,'{}'::jsonb,
-       '[]'::jsonb,'{}'::jsonb,'{}'::jsonb,$4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'Test agent.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $4
+     )`,
     [VERSION, AGENT, SPACE, now],
   );
+  await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT, space: SPACE, now });
   await db.pool.query(
-    `INSERT INTO runs (
-       id, space_id, agent_id, agent_version_id, run_type, trigger_origin,
-       status, mode, adapter_type, instructed_by_user_id,
-       owner_user_id, project_id, contract_snapshot_json,
-       created_at, updated_at, started_at, ended_at
-     ) VALUES ($1,$2,$3,$4,'agent','system','succeeded','live','model_api',
-       $5,$5,$6,'{}'::jsonb,$7,$7,$7,$7)`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, instructed_by_user_id, owner_user_id, project_id, contract_snapshot_json, created_at, updated_at, started_at, ended_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'system', 'succeeded', 'live', $5, $5, $6, '{}'::jsonb, $7, $7, $7, $7, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [RUN, SPACE, AGENT, VERSION, OWNER, PROJECT, now],
   );
   await insertResearchWorkflowFixture(db.pool, {

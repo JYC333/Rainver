@@ -665,8 +665,8 @@ describe("deployment authority", () => {
       const id = randomUUID();
       await db.pool.query(
         `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin,
-                           status, mode, owner_user_id, visibility, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,'agent',$5,'queued','live',$6,'space_shared',$7,$7)`,
+                           status, mode, owner_user_id, visibility, created_at, updated_at, execution_kind)
+         VALUES ($1,$2,$3,$4,'agent',$5,'queued','live',$6,'space_shared',$7,$7, 'agent')`,
         [id, SPACE, AGENT, AGENT_VERSION, triggerOrigin, owner, now],
       );
       return id;
@@ -674,9 +674,8 @@ describe("deployment authority", () => {
 
     const automationRun = await seedQueuedRun("automation");
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin,
-                         status, mode, owner_user_id, visibility, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'agent','manual','running','live',$5,'space_shared',$6,$6)`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, owner_user_id, visibility, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'running', 'live', $5, 'space_shared', $6, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [randomUUID(), SPACE, AGENT, AGENT_VERSION, owner, now],
     );
     expect(await service().drain()).toEqual({ running_runs: 1 });
@@ -719,8 +718,8 @@ describe("deployment authority", () => {
       await db.pool.query(
         `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin,
                            status, mode, owner_user_id, visibility, root_run_id, parent_run_id,
-                           created_at, updated_at)
-         VALUES ($1,$2,$3,$4,'agent','delegation','queued','live',$5,'space_shared',$6,$6,$7,$7)`,
+                           created_at, updated_at, execution_kind)
+         VALUES ($1,$2,$3,$4,'agent','delegation','queued','live',$5,'space_shared',$6,$6,$7,$7, 'agent')`,
         [child, SPACE, AGENT, AGENT_VERSION, owner, root, now],
       );
       return child;

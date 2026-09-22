@@ -245,6 +245,7 @@ export class AutonomyService {
         now,
       });
       const coordinator = await new PgRunRepository(client).createCoordinatorRun({
+        execution_kind: "agent",
         space_id: input.automation.space_id,
         user_id: input.automation.owner_user_id,
         agent_id: input.automation.agent_id,
@@ -272,6 +273,7 @@ export class AutonomyService {
       );
       const automationRunId = await new PgAutomationRepository(client).createAutomationRun({
         automationId: input.automation.id,
+        targetType: "autonomous_tick",
         runId: coordinator.id,
         triggeredByUserId: input.automation.owner_user_id,
         triggerType: input.triggerType,
@@ -399,6 +401,7 @@ export class AutonomyService {
             : null;
           if (!launchSpec) throw new Error(`No autonomous launch handler for candidate '${candidateId}'`);
           const run = await new PgRunRepository(db).createQueuedRun({
+            execution_kind: "agent",
             space_id: input.automation.space_id,
             user_id: input.automation.owner_user_id,
             agent_id: input.automation.agent_id,

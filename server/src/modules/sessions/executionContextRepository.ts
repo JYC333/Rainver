@@ -8,7 +8,8 @@ import type {
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { isStale } from "../hosts/repository.js";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { loadRuntimeProfileSnapshot } from "./runtimeProfileSnapshot.js";
 
 export interface ExecutionSessionRow {
   id: string;
@@ -90,7 +91,7 @@ export interface RuntimeProfileRow {
   id: string;
   agent_id: string;
   agent_name: string;
-  adapter_type: string;
+  runtime_key: string;
   runtime_installation: string | null;
   execution_host_id: string | null;
   workspace_mode: "location" | "managed" | null;
@@ -104,7 +105,7 @@ export interface ConversationRuntimeThreadRow {
   execution_host_id: string;
   workspace_mode: "managed" | "location";
   workspace_location_id: string | null;
-  adapter_type: string;
+  runtime_key: string;
   runtime_installation: string;
   status: "active" | "session_reset" | "closed";
 }
@@ -324,7 +325,7 @@ export class PgConversationExecutionContextRepository {
   async getRuntimeProfile(spaceId: string, agentId: string, profileId: string): Promise<RuntimeProfileRow | null> {
     const result = await this.db.query<RuntimeProfileRow>(
       `SELECT profile.id, profile.agent_id, agent.name AS agent_name,
-              profile.adapter_type, profile.runtime_installation,
+              profile.runtime_key, profile.runtime_installation,
               profile.execution_host_id, profile.workspace_mode,
               profile.workspace_location_id, profile.enabled, profile.is_default
          FROM agent_runtime_profiles profile
@@ -407,7 +408,7 @@ export class PgConversationExecutionContextRepository {
   async listRuntimeProfiles(spaceId: string, agentId: string): Promise<RuntimeProfileRow[]> {
     const result = await this.db.query<RuntimeProfileRow>(
       `SELECT profile.id, profile.agent_id, agent.name AS agent_name,
-              profile.adapter_type, profile.runtime_installation,
+              profile.runtime_key, profile.runtime_installation,
               profile.execution_host_id, profile.workspace_mode,
               profile.workspace_location_id, profile.enabled, profile.is_default
          FROM agent_runtime_profiles profile
@@ -468,7 +469,7 @@ export class PgConversationExecutionContextRepository {
   async getConversationThread(spaceId: string, sessionId: string, agentId: string): Promise<ConversationRuntimeThreadRow | null> {
     const result = await this.db.query<ConversationRuntimeThreadRow>(
       `SELECT agent_id, execution_host_id, workspace_mode, workspace_location_id,
-              adapter_type, runtime_installation, status
+              runtime_key, runtime_installation, status
          FROM host_threads
         WHERE space_id = $1 AND session_id = $2 AND agent_id = $3
           AND container_kind = 'conversation' AND status IN ('active', 'session_reset')
@@ -486,34 +487,59 @@ export class PgConversationExecutionContextRepository {
     profileId: string;
   }): Promise<void> {
     const now = new Date().toISOString();
-    await this.db.query(
-      `INSERT INTO session_conversation_backends (
-         id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
-         model_name_snapshot, model_provider_id_snapshot,
-         runtime_config_snapshot_json, runtime_policy_snapshot_json,
-         runtime_state_key, created_at, updated_at
-       ) SELECT $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::varchar,
-                profile.id, profile.model_name, profile.model_provider_id,
-                profile.runtime_config_json, profile.runtime_policy_json,
-                $7::varchar, $8::timestamptz, $8::timestamptz
-           FROM agent_runtime_profiles profile
-          WHERE profile.id = $6 AND profile.space_id = $2 AND profile.agent_id = $5
-       ON CONFLICT ON CONSTRAINT uq_session_conversation_backends_session_agent
-       DO UPDATE SET
-         runtime_profile_id = EXCLUDED.runtime_profile_id,
-         model_name_snapshot = EXCLUDED.model_name_snapshot,
-         model_provider_id_snapshot = EXCLUDED.model_provider_id_snapshot,
-         runtime_config_snapshot_json = EXCLUDED.runtime_config_snapshot_json,
-         runtime_policy_snapshot_json = EXCLUDED.runtime_policy_snapshot_json,
-         runtime_state_key = EXCLUDED.runtime_state_key,
-         runtime_session_id = NULL,
-         runtime_context_fingerprint = NULL,
-         runtime_message_cursor_id = NULL,
-         runtime_session_updated_at = NULL,
-         updated_at = EXCLUDED.updated_at`,
-      [randomUUID(), input.spaceId, input.sessionId, input.userId, input.agentId,
-        input.profileId, randomUUID(), now],
-    );
+    await withQueryableTransaction(this.db, async (db) => {
+      const profile = await loadRuntimeProfileSnapshot(db, {
+        spaceId: input.spaceId,
+        agentId: input.agentId,
+        profileId: input.profileId,
+      });
+      if (!profile) throw new Error("conversation runtime profile was not found");
+
+      await db.query(
+        `INSERT INTO session_conversation_backends (
+           id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
+           runtime_key_snapshot, backend_mode_snapshot,
+           model_name_snapshot, model_provider_id_snapshot,
+           runtime_config_snapshot_json, runtime_policy_snapshot_json,
+           runtime_state_key, created_at, updated_at
+         ) VALUES (
+           $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::varchar, $6::varchar,
+           $7::varchar(128), $8::varchar(32), $9, $10, $11::jsonb, $12::jsonb,
+           $13::varchar, $14::timestamptz, $14::timestamptz
+         )
+         ON CONFLICT ON CONSTRAINT uq_session_conversation_backends_session_agent
+         DO UPDATE SET
+           runtime_profile_id = EXCLUDED.runtime_profile_id,
+           runtime_key_snapshot = EXCLUDED.runtime_key_snapshot,
+           backend_mode_snapshot = EXCLUDED.backend_mode_snapshot,
+           model_name_snapshot = EXCLUDED.model_name_snapshot,
+           model_provider_id_snapshot = EXCLUDED.model_provider_id_snapshot,
+           runtime_config_snapshot_json = EXCLUDED.runtime_config_snapshot_json,
+           runtime_policy_snapshot_json = EXCLUDED.runtime_policy_snapshot_json,
+           runtime_state_key = EXCLUDED.runtime_state_key,
+           runtime_session_id = NULL,
+           runtime_context_fingerprint = NULL,
+           runtime_message_cursor_id = NULL,
+           runtime_session_updated_at = NULL,
+           updated_at = EXCLUDED.updated_at`,
+        [
+          randomUUID(),
+          input.spaceId,
+          input.sessionId,
+          input.userId,
+          input.agentId,
+          input.profileId,
+          profile.runtime_key,
+          profile.backend_mode,
+          profile.model_name,
+          profile.model_provider_id,
+          JSON.stringify(profile.runtime_config_json),
+          JSON.stringify(profile.runtime_policy_json),
+          randomUUID(),
+          now,
+        ],
+      );
+    });
   }
 
   async listAttachments(spaceId: string, sessionId: string): Promise<ExecutionAttachmentRow[]> {

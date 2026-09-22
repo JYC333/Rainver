@@ -107,8 +107,8 @@ async function launchTickConfig(
   if (!policy) throw new HttpError(422, "Autonomous launch policy is invalid");
   const pool = getDbPool(config.databaseUrl);
   const configuredProfileId = stringValue(automation.config_json?.runtime_profile_id);
-  const profile = await pool.query<{ id: string; adapter_type: string; execution_host_id: string | null; runtime_installation: string | null }>(
-    `SELECT id, adapter_type, execution_host_id, runtime_installation
+  const profile = await pool.query<{ id: string; runtime_key: string; execution_host_id: string | null; runtime_installation: string | null }>(
+    `SELECT id, runtime_key, execution_host_id, runtime_installation
        FROM agent_runtime_profiles
       WHERE space_id = $1 AND agent_id = $2 AND enabled = true
         AND ($3::varchar IS NOT NULL AND id = $3 OR $3::varchar IS NULL AND is_default = true)
@@ -118,7 +118,7 @@ async function launchTickConfig(
   );
   const runtimeProfile = profile.rows[0];
   if (!runtimeProfile) throw new HttpError(422, "Autonomous launch requires an enabled Agent runtime profile");
-  const runtime = runtimeProfile.adapter_type;
+  const runtime = runtimeProfile.runtime_key;
   if (runtime !== "claude_code" && runtime !== "codex_cli") {
     return { policy, runtimeProfileId: runtimeProfile.id, quota: unavailableQuota(runtime) };
   }
@@ -130,7 +130,7 @@ async function launchTickConfig(
     return { policy, runtimeProfileId: runtimeProfile.id, quota: unavailableQuota(runtime) };
   }
   const cached = (await readHostUsage(pool, runtimeProfile.execution_host_id))
-    .find((row) => row.adapter_type === runtime && row.installation === runtimeProfile.runtime_installation);
+    .find((row) => row.runtime_key === runtime && row.installation === runtimeProfile.runtime_installation);
   const values = [cached?.quota.session_pct, cached?.quota.week_pct]
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   return {

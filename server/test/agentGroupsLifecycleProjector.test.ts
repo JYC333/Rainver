@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups/lifecycleProjector.js";
 import type { ServerConfig } from "../src/config.js";
 import type { Pool, PoolClient } from "../src/db/pool.js";
-import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord, RunRecord } from "../src/modules/runs/repository.js";
 import type {
   AgentRunGroupRecord,
   AgentRunMessageRecord,
@@ -10,12 +10,13 @@ import type {
 } from "../src/modules/agentGroups/repository.js";
 import type { JobRecord } from "../src/modules/jobs/repository.js";
 
-function childRun(overrides: Partial<RunRecord> = {}): RunRecord {
+function childRun(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   return {
     id: "run-child",
     space_id: "space-1",
     agent_id: "agent-worker",
     agent_version_id: "agent-version-worker",
+    execution_kind: "agent",
     status: "running",
     mode: "live",
     prompt: null,
@@ -27,7 +28,7 @@ function childRun(overrides: Partial<RunRecord> = {}): RunRecord {
     root_run_id: "run-root",
     run_group_id: "group-1",
     delegation_id: "delegation-1",
-    adapter_type: "model_api",
+    runtime_key: "opencode",
     model_provider_id: null,
     required_sandbox_level: "none",
     trigger_origin: "delegation",
@@ -309,7 +310,7 @@ class FakeClient {
           space_id: "space-1",
           agent_id: "agent-manager",
           name: "Model API",
-          adapter_type: "model_api",
+          runtime_key: "opencode",
           model_provider_id: "provider-1",
           model_name: "gpt-test",
           runtime_config_json: {},

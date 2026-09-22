@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
@@ -16,7 +17,6 @@ import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { getProjectUpdates } from "../src/modules/projectWork/updatesReadModel.js";
 import { THREAD_FAN_OUT_PER_TURN } from "../src/modules/inquiry/threadFanOut.js";
 import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
-import type { RuntimeHostExecuteRequest } from "@rainver/protocol";
 
 // Real-Postgres coverage for the two Inquiry writes that stopped being
 // proposals (ADR 0017 §2), and the one that did not. A person asking in the
@@ -60,22 +60,33 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions
-       (id, agent_id, space_id, version_label, system_prompt, model_config_json, runtime_config_json,
-        context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, runtime_policy_json, created_at)
-     VALUES ($1, $2, $3, 'v1', 'Test', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
+       (
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     )
+     VALUES ($1, $2, $3, 'v1', 'Test', '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, $4)`,
     [AGENT_VERSION_ID, AGENT_ID, SPACE, now],
   );
   await db.pool.query("UPDATE agents SET current_version_id = $2 WHERE id = $1", [AGENT_ID, AGENT_VERSION_ID]);
+  await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT_ID, space: SPACE, now });
   const project = await new PgProjectRepository(db.pool).create({ spaceId: SPACE, userId: OWNER }, { name: "Inquiry Conclusion Project" });
   PROJECT = project.id as string;
   await db.pool.query(
-    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id)
-     VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,$5,$6,'private','full',$7,$6)`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+     VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $5, $6, 'private', 'full', $7, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [RUN_ID, SPACE, AGENT_ID, AGENT_VERSION_ID, now, OWNER, PROJECT],
   );
   await db.pool.query(
-    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id)
-     VALUES ($1,$2,$3,$4,'agent','manual','succeeded','live',$5,$5,$6,'private','full',$7,$6)`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+     VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $5, $6, 'private', 'full', $7, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [SECOND_RUN_ID, SPACE, AGENT_ID, AGENT_VERSION_ID, now, OWNER, PROJECT],
   );
   await db.pool.query(
@@ -110,12 +121,11 @@ describe("inquiry.create_thread, direct (real Postgres)", () => {
   // the per-turn bound, and Updates.
   it("opens the Thread in the turn, with no proposal, and records it for the person", async () => {
     if (!db.available) return;
-    const run = await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID);
+    const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
     if (!run) throw new Error("Test Run was not created");
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
-      run,
-      {} as RuntimeHostExecuteRequest,
+      run
     );
 
     const result = await dispatcher.dispatch({
@@ -145,12 +155,11 @@ describe("inquiry.create_thread, direct (real Postgres)", () => {
 
   it("stops at the per-turn bound and tells the Agent to continue next turn", async () => {
     if (!db.available) return;
-    const run = await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID);
+    const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
     if (!run) throw new Error("Test Run was not created");
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
-      run,
-      {} as RuntimeHostExecuteRequest,
+      run
     );
     const open = (index: number) => dispatcher.dispatch({
       id: `create-thread-bound-${index}`,
@@ -175,8 +184,7 @@ describe("inquiry.create_thread, direct (real Postgres)", () => {
     // permanent — the opposite of "costs a turn, not a decision".
     const nextTurn = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
-      { ...run, id: SECOND_RUN_ID },
-      {} as RuntimeHostExecuteRequest,
+      { ...run, id: SECOND_RUN_ID }
     );
     const afterTurn = await nextTurn.dispatch({
       id: "create-thread-next-turn",
@@ -203,8 +211,7 @@ describe("inquiry.create_thread, direct (real Postgres)", () => {
     // duplicate is durable and the person has to archive it.
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
-      (await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID))!,
-      {} as RuntimeHostExecuteRequest,
+      (await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID))!
     );
     const ask = (callId: string) => dispatcher.dispatch({
       id: callId,
@@ -234,8 +241,7 @@ describe("inquiry.create_thread, direct (real Postgres)", () => {
     // identical question and spent the bound on it.
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
-      (await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID))!,
-      {} as RuntimeHostExecuteRequest,
+      (await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID))!
     );
     const call = {
       id: "create-thread-retried",
@@ -259,12 +265,11 @@ describe("inquiry.record_conclusion, direct (real Postgres)", () => {
     const thread = await new InquiryThreadService(db.pool).createThread(ownerIdentity(), PROJECT, {
       kind: "question", statement: "Does layering help recall?",
     });
-    const run = await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID);
+    const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
     if (!run) throw new Error("Test Run was not created");
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
-      run,
-      {} as RuntimeHostExecuteRequest,
+      run
     );
 
     const result = await dispatcher.dispatch({
@@ -354,12 +359,11 @@ describe("Undo, once the Thread has moved on elsewhere (real Postgres)", () => {
   // but only where it would actually fail.
   it("stops offering to reopen a Thread the person archived and then resolved", async () => {
     if (!db.available) return;
-    const run = await new PgRunRepository(db.pool).getRun(SPACE, RUN_ID);
+    const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
     if (!run) throw new Error("Test Run was not created");
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
-      run,
-      {} as RuntimeHostExecuteRequest,
+      run
     );
     await dispatcher.dispatch({
       id: "create-thread-undo-scope",

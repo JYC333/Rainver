@@ -5,6 +5,7 @@ import { PgJobQueueRepository } from "./repository.js";
 import { JobWorker } from "./worker.js";
 import { waitForJobWake, wakeJobWorkers } from "./wakeSignal.js";
 import { registerAgentRunHandler } from "../runs/agentRunHandler.js";
+import { registerProviderTaskRunHandler } from "../runs/providerTaskRunHandler.js";
 import { registerMemoryConsolidationHandler } from "../activity/consolidationJob.js";
 import { registerDailyCaptureReportHandler } from "../dailyReports/jobHandler.js";
 import { registerSourceExtractionHandler } from "../sources/extractionJob.js";
@@ -25,7 +26,6 @@ import { registerProjectResearchHandler } from "../projectResearch/index.js";
 import { registerKnowledgeExtractionHandler } from "../knowledgePromotion/extractionJob.js";
 import { registerInquiryAdviceHandler } from "../inquiry/adviceJob.js";
 import { registerExperimentReconcileHandler } from "../experiments/reconcileJob.js";
-import type { RuntimeHostLogger } from "../runtimeHost/index.js";
 import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { finalizeChatTurn } from "../runs/chatTurnFinalizer.js";
@@ -91,10 +91,10 @@ function deferWhileInstanceUpdates(config: ServerConfig, registry: JobHandlerReg
 export function buildJobHandlerRegistry(
   config: ServerConfig,
   pluginHost?: PluginHost,
-  runtimeHostLogger?: RuntimeHostLogger,
 ): JobHandlerRegistry {
   const registry = new JobHandlerRegistry();
-  registerAgentRunHandler(registry, config, runtimeHostLogger);
+  registerAgentRunHandler(registry, config);
+  registerProviderTaskRunHandler(registry, config);
   registerMemoryConsolidationHandler(registry, config);
   registerDailyCaptureReportHandler(registry, config);
   registerSourceExtractionHandler(registry, config);
@@ -128,14 +128,7 @@ export function startJobsWorker(
 
   const queue = PgJobQueueRepository.fromConfig(config);
   const runs = PgRunRepository.fromConfig(config);
-  const runtimeHostLogger: RuntimeHostLogger | undefined = log
-    ? {
-        error(details, message) {
-          log.error(`${message} ${JSON.stringify(details)}`);
-        },
-      }
-    : undefined;
-  const registry = buildJobHandlerRegistry(config, pluginHost, runtimeHostLogger);
+  const registry = buildJobHandlerRegistry(config, pluginHost);
   const claimableJobTypes = registry.registeredJobTypes();
   if (claimableJobTypes.length === 0) {
     throw new Error("Job worker started with zero registered handlers");

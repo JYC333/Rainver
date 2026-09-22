@@ -34,7 +34,7 @@ vi.mock('../api/client', () => ({
   },
   hostsApi: {
     list: listHostsMock,
-    listRuntimeAdapters: vi.fn(async () => ({ items: [] })),
+    listRuntimeDefinitions: vi.fn(async () => ({ items: [] })),
   },
 }))
 
@@ -68,7 +68,7 @@ function agent(overrides: Partial<AgentOut> = {}): AgentOut {
     description: 'desc', visibility: 'private', access_level: 'full', role_instruction: null,
     status: 'active', agent_kind: 'standard', current_version_id: 'v1',
     source_template_id: null, source_template_version_id: null, model: null,
-    adapter_type: 'model_api', requires_model_provider: true,
+    runtime_key: 'opencode',
     system_prompt: null, created_at: '', updated_at: '', ...overrides,
   }
 }

@@ -18,6 +18,7 @@ import {
 import { runOutputResult } from "./orchestrationResults.js";
 import {
   PgRunRepository,
+  type AgentRunRecord,
   type RunRecord,
 } from "./repository.js";
 import { requestRoomConversationSummary } from "../rooms/conversationSummaryService.js";
@@ -57,6 +58,7 @@ export async function finalizeChatTurn(
   run: RunRecord,
   deps: ChatTurnFinalizerDeps = {},
 ): Promise<ChatTurnCompletion | null> {
+  if (run.execution_kind !== "agent") return null;
   const metadata = chatTurnMetadata(run.model_override_json);
   if (!metadata) return null;
   if (run.status === "waiting_for_review") {
@@ -277,7 +279,7 @@ function requiredRoomMessageWriter(
   return sessions.addRoomAgentMessageForRun.bind(sessions);
 }
 
-function isRoomConversationRun(run: RunRecord): boolean {
+function isRoomConversationRun(run: AgentRunRecord): boolean {
   return recordValue(run.model_override_json).execution_mode
     === "room_conversation.v1";
 }
@@ -308,7 +310,7 @@ function chatTurnMetadata(value: unknown): ChatTurnMetadata | null {
 }
 
 function chatOutcome(
-  run: RunRecord,
+  run: AgentRunRecord,
 ): { ok: true; reply: string } | {
   ok: false;
   error: string;
@@ -338,7 +340,7 @@ function chatOutcome(
   return { ok: true, reply };
 }
 
-function roomReviewReply(run: RunRecord): string {
+function roomReviewReply(run: AgentRunRecord): string {
   const errorJson = recordValue(run.error_json);
   const reason = stringValue(errorJson.error_text)
     ?? stringValue(errorJson.error)

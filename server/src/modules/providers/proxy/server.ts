@@ -403,7 +403,7 @@ function providerProxyUsageObservation(
     project_id: lease.project_id,
     project_folder_id: lease.project_folder_id,
     trigger_origin: lease.trigger_origin,
-    adapter_type: lease.adapter_type,
+    runtime_key: lease.runtime_key,
     provider_id: lease.provider_id,
     provider_type: lease.provider_type ?? lease.route,
     provider_name_snapshot: lease.provider_name_snapshot,

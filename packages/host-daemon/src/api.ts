@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { detectCapabilities, type AskRuntimeOptions } from "./capabilities.js";
 import { ambientSessionCounts } from "./ambientCounts.js";
 import { probeAcpOptions } from "./acpProbe.js";
-import { adapterIsBeingReplaced, holdingAdapter, resolveAcpLaunch, substituteCwd } from "./execution.js";
+import { isRuntimeKeyBeingReplaced, withRuntimeKeyHeld, resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { collectWorkspaceStatus } from "./workspaceStatus.js";
 import { listManagedWorkspaces } from "./managedWorkspaces.js";
 import { daemonVersion } from "./version.js";
@@ -64,13 +64,13 @@ const reportedProbeFailures = new Map<string, string>();
 
 function askRuntimeOptions(probes: RuntimeProbe[], log?: (line: string) => void): AskRuntimeOptions {
   return async (lookup, installation) => {
-    const probe = probes.find((candidate) => candidate.adapter_type === lookup.adapter_type);
+    const probe = probes.find((candidate) => candidate.runtime_key === lookup.runtime_key);
     if (!probe) return null;
     // A heartbeat probe launches the copy, so it must not run against a
     // directory being renamed away. Returning null leaves the previous answer
     // in the cache rather than caching a failure for this copy.
-    if (adapterIsBeingReplaced(lookup.adapter_type)) return null;
-    const key = `${lookup.adapter_type}@${installation}`;
+    if (isRuntimeKeyBeingReplaced(lookup.runtime_key)) return null;
+    const key = `${lookup.runtime_key}@${installation}`;
     const failed = (reason: string) => {
       if (reportedProbeFailures.get(key) === reason) return;
       reportedProbeFailures.set(key, reason);
@@ -79,12 +79,12 @@ function askRuntimeOptions(probes: RuntimeProbe[], log?: (line: string) => void)
     const cwd = await mkdtemp(join(tmpdir(), "rainver-acp-probe-"));
     try {
       const [rawCommand, ...args] = probe.argv.map((arg) => substituteCwd(arg, cwd));
-      const launch = resolveAcpLaunch(rawCommand!, args, installation, probe.adapter_type);
+      const launch = resolveAcpLaunch(rawCommand!, args, installation, probe.runtime_key);
       // Held for the probe's duration, so a replacement waits for it rather
       // than deleting the tree it is executing from.
-      const options = await holdingAdapter(
-        lookup.adapter_type,
-        () => probeAcpOptions(launch.command, launch.args, launch.env, cwd, undefined, failed, lookup.adapter_type),
+      const options = await withRuntimeKeyHeld(
+        lookup.runtime_key,
+        () => probeAcpOptions(launch.command, launch.args, launch.env, cwd, undefined, failed, lookup.runtime_key),
       );
       if (options !== null && reportedProbeFailures.delete(key)) log?.(`${key}: login methods and options read successfully`);
       return options;
@@ -111,7 +111,7 @@ async function helloInfo(
     probes ? askRuntimeOptions(probes, log) : undefined,
     probes ?? [],
     async (lookup) => {
-      const command = probes?.find(candidate => candidate.adapter_type === lookup.adapter_type)?.argv[0];
+      const command = probes?.find(candidate => candidate.runtime_key === lookup.runtime_key)?.argv[0];
       return command ? ensurePackagedAdapter(command) : true;
     },
   );

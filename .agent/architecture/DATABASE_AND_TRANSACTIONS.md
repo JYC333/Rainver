@@ -306,7 +306,10 @@ successful commit and never participate in the critical write outcome.
   `server/migrations/` is both the drizzle-kit output directory (`meta/`
   journal and snapshots) and the **append-only chain** the server migration
   runner applies: the frozen `0000_baseline.sql` followed by one numbered file
-  per schema change. Edit the Drizzle schema, then
+  per schema change. That baseline starts the 2026-09-21 ACP runtime-authority
+  schema epoch (ADR 0022 §5, B59) — a pre-epoch database has no upgrade path
+  and must be recreated from it; within the epoch an older build's database is
+  brought forward by the normal migrate step. Edit the Drizzle schema, then
   `pnpm run schema:generate -- --name <name>` appends the diff (`--custom`
   for an empty file when drizzle-kit cannot derive the change); review the SQL
   and add data backfills before it is applied anywhere. A file any database has
@@ -583,7 +586,8 @@ changes.
 3. Review the generated SQL. Add data backfills or ordering fixes to that
    file if the plain DDL is not enough; it is editable until it has been
    applied somewhere, and never afterwards — the runner refuses a changed
-   applied file, and `baselineSchema.test.ts` pins the frozen baseline's hash.
+   applied file, and `baselineSchema.test.ts` pins the frozen baseline's hash
+   and the current epoch's chain shape.
 4. `pnpm run schema:check` (CI-safe, no database needed) fails if the chain
    is malformed, if a declared extension has no migration, or if schema TS was
    edited without generating a migration — it prints the SQL that is missing.

@@ -8,7 +8,7 @@ import { HttpError, objectValue } from "../routeUtils/common.js";
 export function rejectLegacyResearchRuntimeFields(body: Record<string, unknown>): void {
   const execution = objectValue(body.execution);
   const legacyTopLevel = [
-    "adapter_type",
+    "runtime_key",
     "credential_profile_id",
     "agent_id",
     "runtime_profile_id",
@@ -16,7 +16,7 @@ export function rejectLegacyResearchRuntimeFields(body: Record<string, unknown>)
     "model_name",
   ];
   const legacyExecution = [
-    "adapter_type",
+    "runtime_key",
     "credential_profile_id",
     "agent_id",
     "runtime_profile_id",

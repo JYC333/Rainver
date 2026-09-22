@@ -52,7 +52,7 @@ vi.mock('../../../components/ContentAccessControl', () => ({ ContentAccessContro
 import RunDetailPage from '../RunDetailPage'
 
 const run = {
-  id: 'run-1', status: 'succeeded', mode: 'live', run_type: 'task',
+  id: 'run-1', status: 'succeeded', mode: 'live', run_type: 'agent',
   trigger_origin: 'user', space_id: 'space-1', project_folder_id: null,
   agent_id: 'agent-1', agent_version_id: 'agent-version-1',
   instructed_by_user_id: 'user-1', instructed_by_agent_id: null, owner_user_id: 'user-1',
@@ -104,6 +104,40 @@ describe('RunDetailPage route decision panel', () => {
     runsApiMock.evaluations.mockResolvedValue([])
     runsApiMock.verifications.mockResolvedValue([])
     runsApiMock.finalizations.mockResolvedValue([])
+  })
+
+  it('names a bounded provider task instead of leaving the Agent identifiers blank', async () => {
+    // A `provider_task` Run has no Agent, AgentVersion or runtime snapshot by
+    // construction, so these fields were rendering as empty strings with
+    // nothing on the page saying what kind of Run it is.
+    useRunMock.mockReturnValue({
+      run: {
+        ...(run as unknown as Record<string, unknown>),
+        execution_kind: 'provider_task',
+        agent_id: null,
+        agent_version_id: null,
+        capability_id: 'research.adhoc_analyze',
+      } as never,
+      loading: false,
+      error: null,
+    })
+    runsApiMock.routeDecision.mockResolvedValue({})
+    renderPage()
+
+    expect(await screen.findByText('provider task')).toBeInTheDocument()
+    expect(screen.getByText(/Bounded provider task · research\.adhoc_analyze/)).toBeInTheDocument()
+    expect(screen.getByText('agent_id').closest('p')).toHaveTextContent('—')
+    expect(screen.getByText('agent_version_id').closest('p')).toHaveTextContent('—')
+  })
+
+  it('leaves an Agent Run unmarked and keeps its identifiers', async () => {
+    runsApiMock.routeDecision.mockResolvedValue({})
+    renderPage()
+
+    expect(await screen.findByText('agent_id')).toBeInTheDocument()
+    expect(screen.getByText('agent_id').closest('p')).toHaveTextContent('agent-1')
+    expect(screen.queryByText('provider task')).toBeNull()
+    expect(screen.queryByText(/Bounded provider task/)).toBeNull()
   })
 
   it('renders the persisted decision when the route API returns one', async () => {

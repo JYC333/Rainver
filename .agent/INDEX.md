@@ -256,6 +256,7 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0019](decisions/0019-project-has-no-type-field.md) | A Project has no type field; its kind is derived from the goal and what it holds, and the conversation advances one step at a time |
 | [0020](decisions/0020-instance-update-through-deployer-pull.md) | Instance update runs through a deployer pull loop: the server keeps a job table and never gains Docker authority; the instance administrator's request is the ADR 0017 approval (no Proposal, no second confirmation); update = latest on the configured channel; soft drain of automation Runs; a failed stage stops the job with no automatic rollback; the deployer never recreates itself |
 | [0021](decisions/0021-files-code-codemirror-drafts-and-input-resources.md) | Files & Code uses CodeMirror for complete text files; PostgreSQL recovery drafts remain private pending state while the Project Folder stays canonical; sent file state freezes as an immutable message resource read lazily through Run-scoped governed tools |
+| [0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) | AgentRuntimeProfile is the mutable Agent deployment/backend authority; Agent loops use the single ACP adapter, bounded provider work has explicit execution shape, and the pre-release schema epoch is reset once after cutover |
 
 ---
 

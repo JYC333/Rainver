@@ -21,7 +21,7 @@ export type RuntimeRenderMode = "render_skill" | "inline_prompt" | "native_execu
 export interface CapabilityRuntimeBinding {
   id: string;
   capability_id: string;
-  runtime_adapter_type: string;
+  runtime_key: string;
   render_mode: RuntimeRenderMode;
   binding_json: Record<string, unknown>;
   enabled: boolean;
@@ -153,7 +153,7 @@ export interface RuntimeRenderedFile {
 }
 
 export interface RuntimeRenderedSkill {
-  runtime_adapter_type: string;
+  runtime_key: string;
   render_mode: RuntimeRenderMode;
   root_path: string | null;
   files: RuntimeRenderedFile[];

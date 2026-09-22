@@ -140,8 +140,14 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
       suggested_questions: expect.arrayContaining([expect.stringContaining("tool-using coding agents")]),
       clarifying_questions: [{ question: "Which runtime should be studied?", options: ["Sandboxed CLI", "Managed API"], allow_multiple: false }],
     });
+    // ADR 0022 §2/§3: question refinement is an incidental bounded call. It
+    // selects a provider and nothing else — it used to manufacture the managed
+    // Research Agent and a Runtime Profile purely to hand an `agentId` to the
+    // prompt resolver, for an `agent`-scoped prompt attempt nothing writes.
     const managedAgent = await db.pool.query(`SELECT id FROM agents WHERE space_id=$1 AND agent_kind='system_research'`, [SPACE]);
-    expect(managedAgent.rows).toHaveLength(1);
+    expect(managedAgent.rows).toHaveLength(0);
+    const profiles = await db.pool.query(`SELECT id FROM agent_runtime_profiles WHERE space_id=$1`, [SPACE]);
+    expect(profiles.rows).toHaveLength(0);
     const contexts = await db.pool.query(`SELECT objective,context_json,assessment_json FROM project_research_context_versions WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
     expect(contexts.rows).toHaveLength(1);
     expect(contexts.rows[0]).toMatchObject({

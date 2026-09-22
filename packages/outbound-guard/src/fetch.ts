@@ -1,6 +1,8 @@
 import { readBodyUpTo } from "./body.js";
 import { OutboundGuardError } from "./errors.js";
 import { parseOutboundHttpUrl, type OutboundGuard, type PinnedAddress } from "./guard.js";
+import { pinnedAddressLookup } from "./pinnedLookup.js";
+import { Agent } from "undici";
 
 /**
  * How long a whole fetch — name resolution, every redirect hop, and the body —
@@ -44,8 +46,36 @@ export type PinnedFetch = (
   pinned: readonly PinnedAddress[],
 ) => Promise<Response>;
 
+/**
+ * Shared Node/undici transport for an address the guard has already approved.
+ *
+ * `globalThis.fetch` reads `dispatcher` from its init, so pinning needs no
+ * second HTTP client — and a test that replaces `globalThis.fetch` still
+ * intercepts this.
+ *
+ * `pipelining: 0` is doing two jobs and both are load-bearing. It stops a
+ * connection kept alive for one pinned address from being handed to the next
+ * request for the same name, whose pin may legitimately differ. And because
+ * this dispatcher is per request and nothing closes it — the response body is
+ * read after this returns — it is also what releases the socket: with
+ * keep-alive left on, twenty sequential fetches leave twenty sockets open for
+ * the Agent's idle timeout. Do not remove it as tidying.
+ */
+export const undiciPinnedFetch: PinnedFetch = (url, init, pinned) => {
+  const request: RequestInit & { dispatcher?: unknown } = {
+    method: init.method,
+    headers: init.headers,
+    signal: init.signal,
+    redirect: init.redirect,
+    dispatcher: new Agent({ connect: { lookup: pinnedAddressLookup(pinned) }, pipelining: 0 }),
+  };
+  return globalThis.fetch(url, request);
+};
+
 export interface GuardedRequest {
   url: string;
+  /** Reject both a non-HTTPS initial URL and any redirect hop that downgrades to HTTP. */
+  requireHttps?: boolean;
   method?: string;
   /** Sent on every hop, including after a redirect to another origin. */
   headers?: Record<string, string>;
@@ -97,6 +127,9 @@ export async function guardedFetch(
   deps: { guard: OutboundGuard; fetch: PinnedFetch },
 ): Promise<GuardedResponse> {
   const start = parseOutboundHttpUrl(request.url);
+  if (request.requireHttps && start.protocol !== "https:") {
+    throw new OutboundGuardError(422, "Outbound URL must use HTTPS");
+  }
   const safeHeaders = lowerCaseHeaders(request.headers);
   const credentialHeaders = lowerCaseHeaders(request.credentialHeaders);
   const carriesCredentials = Object.keys(credentialHeaders).length > 0
@@ -108,6 +141,9 @@ export async function guardedFetch(
 
   let current = start;
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
+    if (request.requireHttps && current.protocol !== "https:") {
+      throw new OutboundGuardError(422, "Outbound redirect must use HTTPS");
+    }
     const sameOrigin = current.origin === start.origin;
     if (carriesCredentials && !sameOrigin && start.protocol === "https:" && current.protocol === "http:") {
       // The path and query of a credentialed request are as sensitive as the

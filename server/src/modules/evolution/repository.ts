@@ -423,7 +423,7 @@ export class EvolutionRepository {
               et.target_type,
               et.capability_key,
               esa.strategy_key,
-              r.adapter_type AS engine,
+              r.runtime_key AS engine,
               r.status,
               r.created_at,
               r.started_at,
@@ -535,6 +535,7 @@ export class EvolutionRepository {
       selection,
     });
     const run = await this.runRepository.createQueuedRun({
+      execution_kind: "agent",
       agent_id: agentId,
       space_id: identity.spaceId,
       user_id: identity.userId,

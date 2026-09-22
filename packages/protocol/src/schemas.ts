@@ -118,7 +118,7 @@ export const RunDTOSchema = z.object({
   instructed_by_user_id: IdSchema.nullish(),
   instructed_by_agent_id: IdSchema.nullish(),
   prompt: z.string().nullish(),
-  selected_adapter_type: z.string().nullish(),
+  selected_runtime_key: z.string().nullish(),
   capability_id: IdSchema.nullish(),
   capabilities_json: z.array(z.string().min(1)).default([]),
   selected_model_provider_id: IdSchema.nullish(),

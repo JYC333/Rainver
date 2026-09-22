@@ -11,6 +11,8 @@ import {
   PgConversationRuntimeSessionRepository,
 } from "../src/modules/sessions/conversationRuntimeSessionRepository.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { PgAgentRepository } from "../src/modules/agents/repository.js";
+import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 
 let repository: PgConversationBackendRepository | undefined;
 
@@ -62,33 +64,108 @@ beforeEach(async () => {
        capabilities_json, last_heartbeat_at, created_at, updated_at
      ) VALUES (
        'host-1', NULL, 'machine-1', 'Server', 'server', 'server', 'online',
-       '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true}]}}'::jsonb,
+       '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true,"health_check_protocol":"acp"}]}}'::jsonb,
        $1, $1, $1
      )`,
     [now],
   );
   await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, execution_host_id,
-       workspace_mode, runtime_installation, runtime_config_json,
-       runtime_policy_json, enabled, is_default, created_at, updated_at
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
      ) VALUES (
-       'runtime-cli', 'space-1', 'agent-1', 'Subscription',
-       'claude_code', 'host-1', 'managed', 'managed:1.0.0', '{}'::jsonb, '{}'::jsonb,
-       true, true, $1, $1
+       'runtime-cli',
+       'space-1',
+       'agent-1',
+       'Subscription',
+       'claude_code',
+       'runtime_native',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       true,
+       $1,
+       $1
+     )`,
+    [now],
+  );
+  await db.pool.query(
+    `INSERT INTO agent_runtime_profiles (
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       execution_host_id,
+       workspace_mode,
+       runtime_installation,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       'runtime-cli-standby',
+       'space-1',
+       'agent-1',
+       'Subscription standby',
+       'claude_code',
+       'runtime_native',
+       'host-1',
+       'managed',
+       'managed:1.0.0',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       false,
+       $1,
+       $1
      )`,
     [now],
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt,
-       model_config_json, runtime_config_json, context_policy_json,
-       memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, created_at
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       risk_level,
+       created_at
      ) VALUES (
-       'version-1', 'agent-1', 'space-1', 'v1', 'Be useful.',
-       '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-       '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $1
+       'version-1',
+       'agent-1',
+       'space-1',
+       'v1',
+       'Be useful.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       'low',
+       $1
      )`,
     [now],
   );
@@ -157,8 +234,8 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
 
     await db.pool.query(
       `UPDATE agent_runtime_profiles
-          SET model_name = 'initial-model', runtime_config_json = '{"effort":"medium"}',
-              runtime_policy_json = '{"network":"deny"}'
+          SET runtime_config_json = '{"effort":"medium","provider":{"vendorApiKey":"legacy-secret","keep":true}}',
+              runtime_policy_json = '{"network":"deny","nested":{"credential_profile_id":"legacy-credential","keep":true}}'
         WHERE id = 'runtime-cli'`,
     );
 
@@ -171,10 +248,26 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
         runtime_profile_id: "runtime-cli",
       },
     });
+    expect(binding).toMatchObject({
+      runtime_config_json: { effort: "medium", provider: { keep: true } },
+      runtime_policy_json: { network: "deny", nested: { keep: true } },
+    });
+    const persistedBinding = await db.pool.query<{
+      runtime_config_snapshot_json: Record<string, unknown>;
+      runtime_policy_snapshot_json: Record<string, unknown>;
+    }>(
+      `SELECT runtime_config_snapshot_json, runtime_policy_snapshot_json
+         FROM session_conversation_backends
+        WHERE space_id = 'space-1' AND session_id = 'session-1' AND agent_id = 'agent-1'`,
+    );
+    expect(persistedBinding.rows[0]).toEqual({
+      runtime_config_snapshot_json: { effort: "medium", provider: { keep: true } },
+      runtime_policy_snapshot_json: { network: "deny", nested: { keep: true } },
+    });
     await db.pool.query(
       `INSERT INTO host_threads (
          id, space_id, execution_host_id, workspace_mode, session_id, agent_id,
-         container_kind, adapter_type, runtime_installation, status,
+         container_kind, runtime_key, runtime_installation, status,
          created_by_user_id, created_at, updated_at
        ) VALUES (
          'thread-context', 'space-1', 'host-1', 'managed', 'session-1', 'agent-1',
@@ -190,7 +283,7 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     );
     await db.pool.query(
       `UPDATE agent_runtime_profiles
-          SET model_name = 'changed-model', runtime_config_json = '{"effort":"high"}',
+          SET runtime_config_json = '{"effort":"high"}',
               runtime_policy_json = '{"network":"allow"}'
         WHERE id = 'runtime-cli'`,
     );
@@ -200,15 +293,20 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
       session_id: "session-1",
       agent_id: "agent-1",
     })).resolves.toMatchObject({
-      model_name: "initial-model",
-      runtime_config_json: { effort: "medium" },
-      runtime_policy_json: { network: "deny" },
+      model_name: null,
+      runtime_config_json: { effort: "medium", provider: { keep: true } },
+      runtime_policy_json: { network: "deny", nested: { keep: true } },
     });
-    await db.pool.query(
-      `UPDATE agent_runtime_profiles
-          SET enabled = false
-        WHERE id = 'runtime-cli'`,
-    );
+    const agents = new PgAgentRepository(db.pool);
+    await agents.updateRuntimeProfile("space-1", "agent-1", "runtime-cli-standby", {
+      isDefault: true,
+      actorUserId: "user-1",
+    });
+    await agents.updateRuntimeProfile("space-1", "agent-1", "runtime-cli", {
+      isDefault: false,
+      enabled: false,
+      actorUserId: "user-1",
+    });
 
     await expect(repository.resolveBinding({
       space_id: "space-1",
@@ -242,7 +340,7 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     await db.pool.query(
       `INSERT INTO host_threads (
          id, execution_host_id, workspace_mode, agent_id,
-         container_kind, container_user_id, adapter_type, runtime_installation,
+         container_kind, container_user_id, runtime_key, runtime_installation,
          status, created_by_user_id, created_at, updated_at
        ) VALUES (
          'thread-direct', 'host-1', 'managed', 'agent-1',
@@ -258,7 +356,7 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     })).resolves.toMatchObject({
       binding_id: binding.binding_id,
       runtime_profile_id: "runtime-cli",
-      adapter_type: "claude_code",
+      runtime_key: "claude_code",
     });
   });
 
@@ -327,6 +425,7 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     if (!db.available) return ctx.skip();
     const runs = new PgRunRepository(db.pool);
     await runs.createQueuedRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-2",
@@ -375,6 +474,7 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     });
     const runs = new PgRunRepository(db.pool);
     const queued = await runs.createQueuedRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -443,6 +543,9 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
       reason_code: "test_failure",
       attempt_number: 2,
     });
+    const retryRun = await runs.getAgentRun("space-1", queued.id);
+    if (!retryRun) throw new Error("requeued Conversation Run disappeared before routing");
+    await new PgRouteDecisionRepository(db.pool).routeRun(retryRun);
     await runs.markRunRunning({
       run_id: queued.id,
       space_id: "space-1",
@@ -495,6 +598,7 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     });
     const runs = new PgRunRepository(db.pool);
     const queued = await runs.createQueuedRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -507,6 +611,8 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
       prompt: "racing turn",
     });
     const completedAt = new Date().toISOString();
+    await new PgRouteDecisionRepository(db.pool).routeRun(queued);
+    await runs.markRunRunning({ run_id: queued.id, space_id: "space-1", started_at: completedAt });
     const [success, cancellation] = await Promise.all([
       runs.markRunTerminalWithConversationSession({
         run_id: queued.id,
@@ -578,6 +684,7 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     });
     const runs = new PgRunRepository(db.pool);
     const queued = await runs.createQueuedRun({
+      execution_kind: "agent",
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
@@ -630,6 +737,32 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     });
   });
 
-
-
+  // Routing applies this snapshot over the Profile and decides from it which
+  // credential the Run will spend, so the snapshot has to carry the same
+  // backend shape `agent_runtime_profiles` enforces. Without these, a binding
+  // could name `model_provider` with no Provider, or a mode routing does not
+  // recognize at all.
+  it("refuses a Conversation backend snapshot the Profile's own CHECKs would refuse", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const refused: Array<{ label: string; mode: string; providerId: string | null; modelName: string | null }> = [
+      { label: "an unrecognized backend mode", mode: "proxy_mode", providerId: null, modelName: null },
+      { label: "model_provider with no Provider", mode: "model_provider", providerId: null, modelName: "some-model" },
+      { label: "model_provider with no model", mode: "model_provider", providerId: "provider-1", modelName: null },
+      { label: "model_provider with a blank model", mode: "model_provider", providerId: "provider-1", modelName: "  " },
+      { label: "runtime_native carrying a Provider", mode: "runtime_native", providerId: "provider-1", modelName: null },
+      { label: "runtime_native carrying a model", mode: "runtime_native", providerId: null, modelName: "some-model" },
+    ];
+    for (const shape of refused) {
+      await expect(db.pool.query(
+        `INSERT INTO session_conversation_backends (
+           id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
+           runtime_key_snapshot, backend_mode_snapshot, model_name_snapshot,
+           model_provider_id_snapshot, runtime_config_snapshot_json,
+           runtime_policy_snapshot_json, runtime_state_key, created_at, updated_at
+         ) VALUES ($1,'space-1','session-1','user-1','agent-1','runtime-cli',
+           'claude_code',$2,$3,$4,'{}'::jsonb,'{}'::jsonb,$5, now(), now())`,
+        [randomUUID(), shape.mode, shape.modelName, shape.providerId, randomUUID()],
+      ), shape.label).rejects.toMatchObject({ code: "23514" });
+    }
+  });
 });

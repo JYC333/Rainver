@@ -7,6 +7,7 @@ import {
 } from "./agentGroupRuns.js";
 import { ConversationMessageInputPartsSchema, MessageMetadataSchema } from "./memorySessions.js";
 import { RuntimeSessionConfigSelectionSchema } from "./hosts.js";
+import { RuntimeKeySchema } from "./runtimeAuthority.js";
 
 export const RoomSchema = z.object({
   id: IdSchema,
@@ -131,10 +132,18 @@ export const RoomAgentPresetRequestSchema = z.object({
   confirm_room_share: z.boolean().default(false),
   execution: z.object({
     host_id: IdSchema,
-    workspace_location_id: IdSchema,
-    adapter_type: z.string().trim().min(1),
+    workspace_location_id: IdSchema.nullable(),
+    workspace_mode: z.enum(["location", "managed"]),
+    runtime_key: RuntimeKeySchema,
     installation: z.string().trim().min(1),
-  }).strict().nullish(),
+  }).strict().superRefine((value, ctx) => {
+    if (value.workspace_mode === "location" && !value.workspace_location_id) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspace_location_id"], message: "Location execution requires a Workspace Location" });
+    }
+    if (value.workspace_mode === "managed" && value.workspace_location_id) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["workspace_location_id"], message: "Managed execution cannot include a Workspace Location" });
+    }
+  }).nullish(),
 }).strict();
 export type RoomAgentPresetRequest = z.infer<typeof RoomAgentPresetRequestSchema>;
 

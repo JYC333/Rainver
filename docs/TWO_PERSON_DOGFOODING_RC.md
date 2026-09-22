@@ -3,6 +3,11 @@
 **RC declared:** 2026-05-16
 **Scope:** Local two-person dogfooding only.
 
+> Historical snapshot: this runbook predates the 2026-09 ACP Runtime Authority
+> reset. Its old `model_api` / `adapter_type` examples and test commands are not
+> current execution guidance. Use the current-state module guides and
+> `.agent/COMMANDS.md` for present interfaces and test names.
+
 ---
 
 ## A. RC Purpose

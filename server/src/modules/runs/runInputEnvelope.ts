@@ -105,7 +105,7 @@ function executionShape(
 }
 
 /**
- * Mirrors managedApiAdapter.ts's own message-shape validation exactly (all-
+ * Applies the canonical message-shape validation (all-
  * or-nothing on an invalid item; null content coerced to "" rather than
  * dropping the message) so the audited run_input.v1 view can never silently
  * diverge from what the Managed API adapter actually sends to the model —

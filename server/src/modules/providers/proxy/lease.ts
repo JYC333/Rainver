@@ -12,7 +12,7 @@ export interface ProviderProxyLeaseInput {
   route?: ProviderProxyRoute;
   upstream_base_url: string;
   model?: string | null;
-  adapter_type?: string | null;
+  runtime_key?: string | null;
   session_id?: string | null;
   parent_run_id?: string | null;
   root_run_id?: string | null;
@@ -47,7 +47,7 @@ export interface ProviderProxyLease {
   route: ProviderProxyRoute;
   upstream_base_url: string;
   model: string | null;
-  adapter_type: string | null;
+  runtime_key: string | null;
   session_id: string | null;
   parent_run_id: string | null;
   root_run_id: string | null;
@@ -73,7 +73,7 @@ export interface ResolvedProviderProxyLease {
   route: ProviderProxyRoute;
   upstream_base_url: string;
   model: string | null;
-  adapter_type: string | null;
+  runtime_key: string | null;
   session_id: string | null;
   parent_run_id: string | null;
   root_run_id: string | null;
@@ -165,7 +165,7 @@ export class ProviderProxyLeaseRegistry {
       route: input.route ?? "anthropic",
       upstream_base_url: normalizeBaseUrl(input.upstream_base_url),
       model: input.model ?? null,
-      adapter_type: input.adapter_type ?? null,
+      runtime_key: input.runtime_key ?? null,
       session_id: input.session_id ?? null,
       parent_run_id: input.parent_run_id ?? null,
       root_run_id: input.root_run_id ?? null,
@@ -192,7 +192,7 @@ export class ProviderProxyLeaseRegistry {
       route: record.route,
       upstream_base_url: record.upstream_base_url,
       model: record.model,
-      adapter_type: record.adapter_type,
+      runtime_key: record.runtime_key,
       session_id: record.session_id,
       parent_run_id: record.parent_run_id,
       root_run_id: record.root_run_id,

@@ -1,7 +1,6 @@
 import type { Pool } from "../../db/pool.js";
 import { PgAgentRepository } from "../agents/repository.js";
 import { HttpError } from "../routeUtils/common.js";
-import { defaultModelProviderForSpace } from "../sources/postProcessing/service.js";
 
 export const SOURCE_ANNOTATOR_AGENT_KIND = "system_source_annotator";
 
@@ -29,10 +28,6 @@ export async function ensureSourceAnnotatorAgent(pool: Pool, spaceId: string): P
     await refreshSourceAnnotatorAgentPrompt(pool, spaceId, existing.rows[0].id);
     return existing.rows[0];
   }
-  const provider = await defaultModelProviderForSpace(pool, spaceId);
-  if (!provider) {
-    throw new HttpError(409, "Configure a default model provider before running source annotation.");
-  }
   const agents = new PgAgentRepository(pool);
   const created = await agents.create({
     spaceId,
@@ -41,9 +36,6 @@ export async function ensureSourceAnnotatorAgent(pool: Pool, spaceId: string): P
     description: "System-managed agent that classifies incoming source material for the digest pipeline.",
     visibility: "space_shared",
     systemPrompt: sourceAnnotatorSystemPrompt(),
-    adapterType: "model_api",
-    defaultModelProviderId: provider.id,
-    defaultModel: provider.default_model,
   });
   await pool.query(
     `UPDATE agents

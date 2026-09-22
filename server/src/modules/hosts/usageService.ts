@@ -1,5 +1,6 @@
 import type { HostUsageQuota } from "@rainver/protocol";
 import type { Pool } from "../../db/pool.js";
+import type { Queryable } from "../routeUtils/common.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry } from "./connectionRegistry.js";
 import { hasSubscriptionQuota, normalizeHostCapabilities } from "./capabilities.js";
 export { hasSubscriptionQuota };
@@ -16,7 +17,7 @@ import { acpRuntimeProbe } from "./runtimeProbes.js";
  */
 export interface HostUsageRow {
   host_id: string;
-  adapter_type: string;
+  runtime_key: string;
   installation: string;
   quota: HostUsageQuota;
   checked_at: string;
@@ -45,34 +46,34 @@ function quotaOf(value: unknown): HostUsageQuota {
 export async function readHostUsage(pool: Pool, hostId: string): Promise<HostUsageRow[]> {
   const result = await pool.query<{
     host_id: string;
-    adapter_type: string;
+    runtime_key: string;
     installation: string;
     quota_json: unknown;
     checked_at: string;
   }>(
-    `SELECT host_id, adapter_type, installation, quota_json, checked_at
+    `SELECT host_id, runtime_key, installation, quota_json, checked_at
        FROM host_runtime_usage
       WHERE host_id = $1
-      ORDER BY adapter_type, installation`,
+      ORDER BY runtime_key, installation`,
     [hostId],
   );
   return result.rows.map((row) => ({
     host_id: row.host_id,
-    adapter_type: row.adapter_type,
+    runtime_key: row.runtime_key,
     installation: row.installation,
     quota: quotaOf(row.quota_json),
     checked_at: row.checked_at,
   }));
 }
 
-async function writeHostUsage(pool: Pool, hostId: string, adapterType: string, installation: string, quota: HostUsageQuota): Promise<string> {
+async function writeHostUsage(pool: Pool, hostId: string, runtimeKey: string, installation: string, quota: HostUsageQuota): Promise<string> {
   const checkedAt = new Date().toISOString();
   await pool.query(
-    `INSERT INTO host_runtime_usage (host_id, adapter_type, installation, quota_json, checked_at)
+    `INSERT INTO host_runtime_usage (host_id, runtime_key, installation, quota_json, checked_at)
      VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (host_id, adapter_type, installation)
+     ON CONFLICT (host_id, runtime_key, installation)
      DO UPDATE SET quota_json = EXCLUDED.quota_json, checked_at = EXCLUDED.checked_at`,
-    [hostId, adapterType, installation, JSON.stringify(quota), checkedAt],
+    [hostId, runtimeKey, installation, JSON.stringify(quota), checkedAt],
   );
   return checkedAt;
 }
@@ -85,18 +86,18 @@ async function writeHostUsage(pool: Pool, hostId: string, adapterType: string, i
 export async function refreshHostUsage(
   pool: Pool,
   hostId: string,
-  adapterType: string,
+  runtimeKey: string,
   installation: string,
   registry: HostConnectionRegistry = sharedHostConnectionRegistry,
 ): Promise<HostUsageRow> {
-  const quota = hasSubscriptionQuota(adapterType)
+  const quota = hasSubscriptionQuota(runtimeKey)
     ? await registry.requestUsageProbe(hostId, {
-      adapter_type: adapterType,
+      runtime_key: runtimeKey,
       installation,
       // The adapter spec is the source for where a runtime keeps its
       // credential; a managed copy's manifest has it too, but the machine's
       // own installation has no manifest to read it from.
-      login: acpRuntimeProbe(adapterType)?.login ?? null,
+      login: acpRuntimeProbe(runtimeKey)?.login ?? null,
     })
     : {
       available: false,
@@ -104,10 +105,10 @@ export async function refreshHostUsage(
       session_resets: null,
       week_pct: null,
       week_resets: null,
-      error: `${adapterType} reports no subscription quota.`,
+      error: `${runtimeKey} reports no subscription quota.`,
     };
-  const checkedAt = await writeHostUsage(pool, hostId, adapterType, installation, quota);
-  return { host_id: hostId, adapter_type: adapterType, installation, quota, checked_at: checkedAt };
+  const checkedAt = await writeHostUsage(pool, hostId, runtimeKey, installation, quota);
+  return { host_id: hostId, runtime_key: runtimeKey, installation, quota, checked_at: checkedAt };
 }
 
 /**
@@ -126,11 +127,11 @@ export async function refreshAllHostUsage(
   for (const host of hosts.rows) {
     if (!registry.isOnline(host.id)) continue;
     const capabilities = normalizeHostCapabilities(host.capabilities_json);
-    for (const [adapterType, copies] of Object.entries(capabilities.installations)) {
-      if (!hasSubscriptionQuota(adapterType)) continue;
+    for (const [runtimeKey, copies] of Object.entries(capabilities.installations)) {
+      if (!hasSubscriptionQuota(runtimeKey)) continue;
       for (const copy of copies) {
         if (copy.logged_in === false) continue;
-        await refreshHostUsage(pool, host.id, adapterType, copy.id, registry);
+        await refreshHostUsage(pool, host.id, runtimeKey, copy.id, registry);
         probed += 1;
       }
     }
@@ -149,7 +150,7 @@ export interface HostRuntimeChange {
   id: string;
   host_id: string;
   host_name: string;
-  adapter_type: string;
+  runtime_key: string;
   action: "install" | "upgrade" | "rollback" | "remove";
   from_version: string | null;
   to_version: string | null;
@@ -157,19 +158,20 @@ export interface HostRuntimeChange {
   created_at: string;
 }
 
-export async function recordHostRuntimeChange(pool: Pool, input: {
+/** The one writer for `host_runtime_changes`; takes a transaction as readily as a pool. */
+export async function recordHostRuntimeChange(db: Queryable, input: {
   hostId: string;
-  adapterType: string;
+  runtimeKey: string;
   action: HostRuntimeChange["action"];
   fromVersion: string | null;
   toVersion: string | null;
   actorUserId: string | null;
 }): Promise<void> {
-  await pool.query(
+  await db.query(
     `INSERT INTO host_runtime_changes
-       (id, host_id, adapter_type, action, from_version, to_version, actor_user_id, created_at)
+       (id, host_id, runtime_key, action, from_version, to_version, actor_user_id, created_at)
      VALUES (gen_random_uuid()::varchar, $1, $2, $3, $4, $5, $6, now())`,
-    [input.hostId, input.adapterType, input.action, input.fromVersion, input.toVersion, input.actorUserId],
+    [input.hostId, input.runtimeKey, input.action, input.fromVersion, input.toVersion, input.actorUserId],
   );
 }
 
@@ -182,7 +184,7 @@ export async function recordHostRuntimeChange(pool: Pool, input: {
  */
 export async function listHostRuntimeChanges(pool: Pool, viewerUserId: string, limit = 20): Promise<HostRuntimeChange[]> {
   const result = await pool.query<HostRuntimeChange>(
-    `SELECT change.id, change.host_id, host.name AS host_name, change.adapter_type,
+    `SELECT change.id, change.host_id, host.name AS host_name, change.runtime_key,
             change.action, change.from_version, change.to_version,
             change.actor_user_id, change.created_at
        FROM host_runtime_changes change
@@ -205,13 +207,13 @@ export async function listHostRuntimeChanges(pool: Pool, viewerUserId: string, l
  */
 export async function mergeRunQuota(pool: Pool, input: {
   hostId: string;
-  adapterType: string;
+  runtimeKey: string;
   installation: string;
   quota: { rate_limit_type: string; utilization: number; resets_at: number };
 }): Promise<void> {
-  if (!hasSubscriptionQuota(input.adapterType)) return;
+  if (!hasSubscriptionQuota(input.runtimeKey)) return;
   const cached = (await readHostUsage(pool, input.hostId))
-    .find((row) => row.adapter_type === input.adapterType && row.installation === input.installation);
+    .find((row) => row.runtime_key === input.runtimeKey && row.installation === input.installation);
   const pct = Math.max(0, Math.min(100, Math.round(input.quota.utilization * 100)));
   const resets = Number.isFinite(input.quota.resets_at) && input.quota.resets_at > 0
     ? `Resets ${new Date(input.quota.resets_at * 1000).toISOString()}`
@@ -230,5 +232,5 @@ export async function mergeRunQuota(pool: Pool, input: {
     error: null,
   };
   quota.available = quota.session_pct !== null || quota.week_pct !== null;
-  await writeHostUsage(pool, input.hostId, input.adapterType, input.installation, quota);
+  await writeHostUsage(pool, input.hostId, input.runtimeKey, input.installation, quota);
 }

@@ -23,7 +23,7 @@ const MAX_SESSIONS = 50;
 
 export interface AmbientSessionCount {
   location_id: string;
-  adapter_type: string;
+  runtime_key: string;
   installation: string;
   session_count: number;
   oldest_updated_at: string | null;
@@ -34,7 +34,7 @@ export interface AmbientSessionCount {
 
 /** The subset of a server runtime probe this module needs. */
 export interface AmbientProbe {
-  adapter_type: string;
+  runtime_key: string;
   argv: string[];
   remote_host_only: boolean;
 }
@@ -47,8 +47,8 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 let refreshing = false;
 
-function cacheKey(locationId: string, adapterType: string, installation: string): string {
-  return `${locationId} ${adapterType} ${installation}`;
+function cacheKey(locationId: string, runtimeKey: string, installation: string): string {
+  return `${locationId} ${runtimeKey} ${installation}`;
 }
 
 /** The counts as last measured; never blocks a heartbeat on a measurement. */
@@ -83,7 +83,7 @@ export async function refreshAmbientSessionCounts(
     for (const [locationId, cwd] of Object.entries(workspaces)) {
       for (const probe of probes) {
         if (probe.remote_host_only) continue;
-        const key = cacheKey(locationId, probe.adapter_type, OWN_INSTALLATION);
+        const key = cacheKey(locationId, probe.runtime_key, OWN_INSTALLATION);
         const existing = cache.get(key);
         const interval = existing?.count.error ? FAILURE_INTERVAL_MS : REFRESH_INTERVAL_MS;
         if (existing && now - existing.refreshedAt < interval) continue;
@@ -101,10 +101,10 @@ async function measure(
   probe: AmbientProbe,
   resolveLaunch: AcpLaunchResolver,
 ): Promise<AmbientSessionCount> {
-  const base = { location_id: locationId, adapter_type: probe.adapter_type, installation: OWN_INSTALLATION };
+  const base = { location_id: locationId, runtime_key: probe.runtime_key, installation: OWN_INSTALLATION };
   try {
     const result = await countAmbientSessions(
-      { adapter_type: probe.adapter_type, installation: OWN_INSTALLATION, argv: probe.argv },
+      { runtime_key: probe.runtime_key, installation: OWN_INSTALLATION, argv: probe.argv },
       cwd,
       WINDOW_DAYS,
       MAX_SESSIONS,

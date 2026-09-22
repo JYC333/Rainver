@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Copy } from 'lucide-react'
-import { hostsApi, providersApi, type ModelProviderOut } from '../../api/client'
+import { hostsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { Host, HostPairingCode, HostRuntimeAdapterOption } from '../../types/api'
+import type { Host, HostPairingCode, HostRuntimeDefinitionOption, HostRuntimeProvisioningStatus } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -14,6 +14,7 @@ import { EmptyState } from '../../components/ui/empty-state'
 import HostAgents from './HostAgents'
 import { useAuth } from '../../contexts/AuthContext'
 import HostProxyAddress from './HostProxyAddress'
+import ServerRuntimeProvisioningPanel from './ServerRuntimeProvisioningPanel'
 
 const HOST_REFRESH_INTERVAL_MS = 3_000
 
@@ -35,9 +36,12 @@ export default function HostsPanel() {
   const [pairing, setPairing] = useState<HostPairingCode | null>(null)
   const [pairingName, setPairingName] = useState('')
   const [issuing, setIssuing] = useState(false)
-  const [runtimeAdapters, setRuntimeAdapters] = useState<HostRuntimeAdapterOption[]>([])
-  // Fetched once for the whole panel; every host card offers the same providers.
-  const [providers, setProviders] = useState<ModelProviderOut[]>([])
+  const [runtimeAdapters, setRuntimeAdapters] = useState<HostRuntimeDefinitionOption[]>([])
+  // One refresh loop for the page: the host list and each server host's
+  // provisioning status come from the same tick, instead of every panel
+  // running a timer of its own.
+  const [provisioning, setProvisioning] = useState<Record<string, { status: HostRuntimeProvisioningStatus | null; error: string | null }>>({})
+  const [provisioningLoading, setProvisioningLoading] = useState(true)
   const machineGroups = useMemo(() => {
     const groups = new Map<string, Host[]>()
     for (const host of hosts) {
@@ -49,7 +53,7 @@ export default function HostsPanel() {
 
   const loadAdapters = useCallback(async () => {
     try {
-      const result = await hostsApi.listRuntimeAdapters()
+      const result = await hostsApi.listRuntimeDefinitions()
       setRuntimeAdapters(result.items)
     } catch (error) {
       toast.error(errMsg(error))
@@ -57,14 +61,47 @@ export default function HostsPanel() {
   }, [])
   useEffect(() => {
     loadAdapters()
-    providersApi.list().then(setProviders).catch(error => toast.error(errMsg(error)))
   }, [loadAdapters])
+
+  // One fan-out at a time. A 3s tick is shorter than a slow provisioning read,
+  // so an unguarded loop stacked requests whose responses could land out of
+  // order; a caller that arrives mid-flight joins that read instead of opening
+  // a second one.
+  const provisioningInFlight = useRef<Promise<void> | null>(null)
+  const loadProvisioning = useCallback((serverHosts: Host[]): Promise<void> => {
+    if (provisioningInFlight.current) return provisioningInFlight.current
+    if (serverHosts.length === 0) {
+      setProvisioningLoading(false)
+      setProvisioning(previous => (Object.keys(previous).length === 0 ? previous : {}))
+      return Promise.resolve()
+    }
+    const read = (async () => {
+      const entries = await Promise.all(serverHosts.map(async host => {
+        try {
+          return [host.id, { status: await hostsApi.serverRuntimeProvisioning(host.id), error: null }] as const
+        } catch (error) {
+          return [host.id, { status: null, error: errMsg(error) }] as const
+        }
+      }))
+      // Rebuilt from this tick's own answers, so a host that has gone away
+      // leaves no entry behind. A failed read keeps the last status it had,
+      // because "could not ask again" is not "the copy disappeared".
+      setProvisioning(previous => Object.fromEntries(entries.map(([hostId, entry]) => [
+        hostId,
+        entry.error === null ? entry : { status: previous[hostId]?.status ?? null, error: entry.error },
+      ])))
+      setProvisioningLoading(false)
+    })()
+    provisioningInFlight.current = read.finally(() => { provisioningInFlight.current = null })
+    return provisioningInFlight.current
+  }, [])
 
   const load = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true)
     try {
       const result = await hostsApi.list()
       setHosts(result.items)
+      await loadProvisioning(result.items.filter(host => host.kind === 'server'))
     } catch (error) {
       // Background refreshes should not produce a toast every few seconds
       // while the server is temporarily unavailable. The initial load still
@@ -73,7 +110,7 @@ export default function HostsPanel() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [loadProvisioning])
 
   useEffect(() => {
     void load(true)
@@ -93,16 +130,6 @@ export default function HostsPanel() {
       toast.error(errMsg(error))
     } finally {
       setIssuing(false)
-    }
-  }
-
-  async function setDefaultAdapter(hostId: string, adapterType: string | null) {
-    try {
-      await hostsApi.setDefaultAdapter(hostId, adapterType)
-      toast.success(adapterType ? `Default CLI set to ${adapterType}` : 'Default CLI cleared')
-      await load()
-    } catch (e) {
-      toast.error(errMsg(e))
     }
   }
 
@@ -173,7 +200,7 @@ export default function HostsPanel() {
                 <div className="flex flex-wrap items-center gap-2">
                   {/* The row is seeded as `server`; the card names it the way
                       the product talks about it. */}
-                  <span className="text-sm font-medium">{host.kind === 'server' ? 'Server' : host.name}</span>
+                  <span className="text-sm font-medium">{host.kind === 'server' ? 'Server Runtime' : host.name}</span>
                   <Badge variant={HOST_STATUS_VARIANT[host.status]}>{host.status}</Badge>
                   <Badge variant="outline">{host.kind}</Badge>
                   <Badge variant="outline">{host.environment_kind ?? host.platform ?? 'unknown environment'}</Badge>
@@ -200,39 +227,32 @@ export default function HostsPanel() {
                   {currentUser?.is_instance_admin ? '' : ' Installing and logging in its agents is instance-admin work.'}
                 </p>
               )}
-              {/* Every adapter, not only the dispatch-eligible ones: a
+              {host.kind === 'server' && (
+                <ServerRuntimeProvisioningPanel
+                  hostId={host.id}
+                  canRetry={Boolean(currentUser?.is_instance_admin)}
+                  status={provisioning[host.id]?.status ?? null}
+                  error={provisioning[host.id]?.error ?? null}
+                  loading={provisioningLoading}
+                  onRefresh={() => load()}
+                />
+              )}
+              {/* Every runtime definition, not only the dispatch-eligible ones: a
                   registry agent is installable and managed here even while
                   `remote_eligible` is false (hosts.md, profile isolation), and
                   filtering it out hid the copy that had just been installed.
-                  Eligibility gates dispatch and the default-adapter choice
-                  below, not this list. */}
+                  Eligibility gates dispatch, not installation visibility. */}
               {host.status !== 'revoked' && (
                 <HostAgents
                   host={host}
                   adapters={runtimeAdapters}
-                  providers={providers}
                   isInstanceAdmin={Boolean(currentUser?.is_instance_admin)}
                   manageable={host.kind === 'remote' || Boolean(currentUser?.is_instance_admin)}
+                  provisioningFailed={provisioning[host.id]?.status?.installation.state === 'failed'}
                   onChanged={async () => {
                     await Promise.all([load(), loadAdapters()])
                   }}
                 />
-              )}
-              {host.kind === 'remote' && host.status !== 'revoked' && (
-                <div className="w-full flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground shrink-0">Default CLI</span>
-                  <select
-                    aria-label={`Default CLI on ${host.name}`}
-                    value={host.default_adapter_type ?? ''}
-                    onChange={e => { void setDefaultAdapter(host.id, e.target.value || null) }}
-                    className="h-8 rounded-md border border-border bg-input px-2 text-xs"
-                  >
-                    <option value="">Automatic (OpenCode preferred)</option>
-                    {runtimeAdapters.filter(adapter => adapter.remote_eligible).map(adapter => (
-                      <option key={adapter.adapter_type} value={adapter.adapter_type}>{adapter.display_name}</option>
-                    ))}
-                  </select>
-                </div>
               )}
               {host.kind === 'remote' && host.status !== 'revoked' && (
                 <div className="w-full">

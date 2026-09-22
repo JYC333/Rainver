@@ -429,10 +429,37 @@ Later report snapshots never overwrite evolved notes; legacy projects with
 reports but no notebook are seeded from the latest non-rejected report on first
 Area initialization. Area initialization also adopts pre-role starter notes by
 title once — the only legitimate title match left, because it reconstructs the
-binding the old resolver created rather than being a binding of its own. The Ask-AI entry is separately budgeted: at most
-`RESEARCH_ADHOC_DAILY_RUN_LIMIT` `research.adhoc_analyze` runs per project per
-UTC day, enforced at queue time. Its output contract is a `notebook_update` ops
-document applied by the research reconciler on run completion. `POST
+binding the old resolver created rather than being a binding of its own. The
+two notebook analysis entries — Ask-AI (`research.adhoc_analyze`) and notebook
+chat (`research.ask`) — are bounded single-shot structured generations with no
+tools and no turns of their own. Under ADR 0022 they are ProviderTask
+infrastructure, not Agent runtimes: each records an `execution_kind =
+provider_task` Run carrying the ProviderTask control/delivery/snapshot
+references, selects no Agent, AgentVersion or Runtime Profile, and is performed
+in-process by the providers module rather than dispatched to an execution Host.
+Because they route to no Agent, their capability ids are not required on the
+system-managed research Agent. They are separately budgeted: at most
+`RESEARCH_ADHOC_DAILY_RUN_LIMIT` of those Runs per project per UTC day, counted
+per bounded task rather than per provider attempt.
+
+The two differ in who performs the task. Notebook chat is a turn the person is
+waiting for, so its reply is produced on the request. Ask-AI writes to a Note,
+so it is queued: the request admits the Run (`queued`, with no ModelProvider or
+ProviderTask references yet), freezes the rendered instruction, the output
+contract and the resolved provider/model on its contract, enqueues one
+`provider_task_run` job, and answers `{ run_id, job_id, status: "queued" }`.
+The worker rebuilds the request from that contract — never from the job payload,
+so a re-resolved space default cannot change what a queued Run runs on — and
+applies the block ops before the Run goes terminal. It used to run inline on the
+request: a provider failure surfaced as a 502 with no worker retry behind it,
+and a crash between the Run going terminal and the ops being applied left an
+edit nothing would ever finish. Ask-AI's output contract is a `notebook_update`
+ops document, applied through the same applier the research reconciler uses, so
+the ops land on the target note as an `ai_adhoc` revision attributed to the
+bounded Run; that applier is idempotent on the Run, so the reconciler remains a
+safety net rather than a second writer. Question refinement stays an incidental
+bounded call with no Run of its own, and resolves a provider only — it does not
+manufacture the managed Research Agent or a Runtime Profile. `POST
 .../research/reports` queues a `synthesis_only` operation over the current
 reviewed corpus to create a new immutable snapshot. Materialization creates the
 normal domain-owned `idea_review` checkpoint. Under the checkpoint policy
@@ -593,10 +620,11 @@ Once a Project Research operation exists, its
 project-owned Source backfill plans link to that operation and do not mirror
 the total in `strategy_json`. Standalone Source backfill plans retain their
 own plan-level budget. The research execution-profile service resolves the
-selected Model Provider/model and
-automatically reuses or provisions the system-managed research Agent/profile;
-Research does not expose runtime adapter, CLI credential, Agent, or profile
-overrides. It reuses or creates the selected monitor's project binding,
+selected Model Provider/model; for the Agent stages (screening, synthesis,
+critique, monitoring comparison) it also reuses or provisions the
+system-managed research Agent and its Runtime Profile, and for bounded
+ProviderTask stages it resolves the provider and model alone. Research does not
+expose runtime adapter, CLI credential, Agent, or profile overrides. It reuses or creates the selected monitor's project binding,
 post-processing rule, and history plan. Research screening recovery batches
 are high-priority Source jobs. Each managed structured-output execution has a
 two-minute adapter deadline and at most two job attempts. Managed provider

@@ -851,10 +851,10 @@ async function insertRuntimeBindingsWithDb(input: {
   now: string;
   db: Queryable;
 }): Promise<CapabilityRuntimeBinding[]> {
-  const specs: Array<Pick<CapabilityRuntimeBinding, "runtime_adapter_type" | "render_mode" | "binding_json">> = [
-    { runtime_adapter_type: "model_api", render_mode: "inline_prompt", binding_json: {} },
-    { runtime_adapter_type: "claude_code", render_mode: "render_skill", binding_json: {} },
-    { runtime_adapter_type: "codex_cli", render_mode: "render_skill", binding_json: {} },
+  const specs: Array<Pick<CapabilityRuntimeBinding, "runtime_key" | "render_mode" | "binding_json">> = [
+    { runtime_key: "opencode", render_mode: "inline_prompt", binding_json: {} },
+    { runtime_key: "claude_code", render_mode: "render_skill", binding_json: {} },
+    { runtime_key: "codex_cli", render_mode: "render_skill", binding_json: {} },
   ];
   const bindings: CapabilityRuntimeBinding[] = [];
   for (const spec of specs) {
@@ -865,14 +865,14 @@ async function insertRuntimeBindingsWithDb(input: {
     await input.db.query(
       `INSERT INTO capability_runtime_bindings (
          id, space_id, capability_key, capability_version_id,
-         runtime_adapter_type, render_mode, binding_json, enabled, created_at, updated_at
+         runtime_key, render_mode, binding_json, enabled, created_at, updated_at
        ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, false, $8, $8)`,
       [
         id,
         input.spaceId,
         input.capabilityId,
         input.capabilityVersionId,
-        spec.runtime_adapter_type,
+        spec.runtime_key,
         spec.render_mode,
         JSON.stringify(spec.binding_json),
         input.now,
@@ -881,7 +881,7 @@ async function insertRuntimeBindingsWithDb(input: {
     bindings.push({
       id,
       capability_id: input.capabilityId,
-      runtime_adapter_type: spec.runtime_adapter_type,
+      runtime_key: spec.runtime_key,
       render_mode: spec.render_mode,
       binding_json: spec.binding_json,
       enabled: false,
@@ -1122,9 +1122,9 @@ function capabilityDefinitionFromNormalized(input: {
     supported_execution_modes: ["runtime_rendered"],
     default_runtime_bindings: [
       {
-        id: `${input.capabilityId}:model_api:inline_prompt`,
+        id: `${input.capabilityId}:opencode:inline_prompt`,
         capability_id: input.capabilityId,
-        runtime_adapter_type: "model_api",
+        runtime_key: "opencode",
         render_mode: "inline_prompt",
         binding_json: {},
         enabled: false,
@@ -1132,7 +1132,7 @@ function capabilityDefinitionFromNormalized(input: {
       {
         id: `${input.capabilityId}:claude_code:render_skill`,
         capability_id: input.capabilityId,
-        runtime_adapter_type: "claude_code",
+        runtime_key: "claude_code",
         render_mode: "render_skill",
         binding_json: {},
         enabled: false,
@@ -1140,7 +1140,7 @@ function capabilityDefinitionFromNormalized(input: {
       {
         id: `${input.capabilityId}:codex_cli:render_skill`,
         capability_id: input.capabilityId,
-        runtime_adapter_type: "codex_cli",
+        runtime_key: "codex_cli",
         render_mode: "render_skill",
         binding_json: {},
         enabled: false,

@@ -19,7 +19,7 @@ import {
   IDENTIFIER_POLICY,
 } from "../src/modules/systemActions/conversationPolicy.js";
 import { requireProjectTask } from "../src/modules/projectWork/taskActions.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * Real-Postgres coverage for the surface a dispatched agent works through.
@@ -52,10 +52,7 @@ async function makeTask(taskId: string, requiredOutputs: string[] | null = null)
 
 async function makeRun(runId: string, taskId: string, status = "running"): Promise<void> {
   await db.pool!.query(
-    `INSERT INTO runs (
-       id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type,
-       trigger_origin, status, mode, owner_user_id, instructed_by_user_id, created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, 'trusted_host', 'system', 'manual', $6, 'live', $7, $7, now(), now())`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, instructed_by_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, $5, 'trusted_host', 'system', 'manual', $6, 'live', $7, $7, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [runId, SPACE, AGENT, VERSION, PROJECT, status, USER],
   );
   await db.pool!.query(
@@ -153,13 +150,20 @@ beforeEach(async () => {
   );
   await db.pool!.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, model_config_json, runtime_config_json,
-       context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, created_at
-     ) VALUES ($1, $2, $3, 'v1', '{}', '{}', '{}', '{}', '[]', '{}', '{}', now())`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES ($1, $2, $3, 'v1', '{}', '{}', '[]', '{}', now())`,
     [VERSION, AGENT, SPACE],
   );
   await db.pool!.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
+  await ensureDefaultRuntimeProfile(db.pool!, { agent: AGENT, space: SPACE });
 });
 
 describe("run tool identity", () => {

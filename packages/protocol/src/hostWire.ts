@@ -30,6 +30,7 @@ import {
 } from "./ambientSessions.js";
 import { LaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema, RuntimeAuthMethodSchema } from "./hosts.js";
 import { ConversationInputResourceSchema } from "./conversationInput.js";
+import { RuntimeKeySchema } from "./runtimeAuthority.js";
 
 /**
  * The most a single `login_input` frame may carry. Keystrokes are bytes; a
@@ -110,7 +111,7 @@ export type RuntimeDistribution = z.infer<typeof RuntimeDistributionSchema>;
  * how to look for, ask, install, and log into.
  */
 export const RuntimeProbeSchema = z.object({
-  adapter_type: z.string().min(1),
+  runtime_key: RuntimeKeySchema,
   /** The PATH binary of the machine's own install; null for a managed-only runtime. */
   runtime: z.string().nullable(),
   /** The launch argv, with the daemon's cwd placeholder where a workspace path goes. */
@@ -165,7 +166,7 @@ export type HostHelloInfo = z.infer<typeof HostHelloInfoSchema>;
  */
 export const HostLaunchProviderBindingSchema = z.object({
   /**
-   * `agents/<agent_id>/<container_kind>/<container_id>/<adapter_type>/<provider_id|ambient>`:
+   * `agents/<agent_id>/<container_kind>/<container_id>/<runtime_key>/<provider_id|ambient>`:
    * which profile directory on the host the runtime uses. The container is the
    * Conversation for a Room turn, the owner for a direct chat, and the
    * WorkspaceLocation for everything else.
@@ -334,7 +335,7 @@ export const HostLaunchFrameSchema = z.object({
   keep_stdin_open: z.boolean().optional(),
   /** Which copy of the runtime: `own` or `managed:<version>`. */
   installation: z.string().optional(),
-  adapter_type: z.string().optional(),
+  runtime_key: RuntimeKeySchema.optional(),
   provider_binding: HostLaunchProviderBindingSchema.optional(),
   /**
    * How this run calls back into Rainver: its identity, the control-plane
@@ -388,10 +389,10 @@ export const HostCommandRunFrameSchema = z.object({
    * `command` as its arguments — so the thing that runs is one the daemon
    * installed, and the control plane names only the arguments.
    */
-  adapter_type: z.string().min(1).optional(),
+  runtime_key: RuntimeKeySchema.optional(),
   installation: z.string().min(1).optional(),
-  /** A managed runtime whose read-only tree should be visible; unlike `adapter_type`, this does not alter `command`. */
-  runtime_adapter_type: z.string().min(1).optional(),
+  /** A managed runtime whose read-only tree should be visible; unlike `runtime_key`, this does not alter `command`. */
+  runtime_tree_key: RuntimeKeySchema.optional(),
   runtime_installation: z.string().min(1).optional(),
   command: z.array(z.string().min(1)).min(1),
   stdin: z.string().nullable().optional(),
@@ -411,7 +412,7 @@ export const HostCommandRunFrameSchema = z.object({
 export const HostUsageProbeFrameSchema = z.object({
   type: z.literal("usage_probe"),
   request_id: IdSchema,
-  adapter_type: z.string().min(1),
+  runtime_key: RuntimeKeySchema,
   installation: z.string().min(1),
   /**
    * Where this runtime keeps its credential inside a login home. The daemon
@@ -442,29 +443,31 @@ export type HostUsageQuota = z.infer<typeof HostUsageQuotaSchema>;
 export const HostRollbackToolFrameSchema = z.object({
   type: z.literal("rollback_tool"),
   request_id: IdSchema,
-  adapter_type: z.string().min(1),
+  runtime_key: RuntimeKeySchema,
 });
 
 export const HostInstallToolFrameSchema = z.object({
   type: z.literal("install_tool"),
   request_id: IdSchema,
-  adapter_type: z.string().min(1),
+  runtime_key: RuntimeKeySchema,
   version: z.string().min(1),
   distribution: RuntimeDistributionSchema,
   login: RuntimeLoginSpecSchema.nullable(),
   /** Fixed argv for reading the bundled vendor CLI version after installation. */
   runtime_version_command: z.array(z.string()).nullable().optional(),
+  /** The daemon must complete this protocol's health handshake before activation. */
+  health_check_protocol: z.enum(["acp"]).nullable().optional(),
 });
 export const HostUninstallToolFrameSchema = z.object({
   type: z.literal("uninstall_tool"),
   request_id: IdSchema,
-  adapter_type: z.string().min(1),
+  runtime_key: RuntimeKeySchema,
   version: z.string().min(1),
 });
 export const HostLoginOpenFrameSchema = z.object({
   type: z.literal("login_open"),
   session_id: IdSchema,
-  adapter_type: z.string().min(1),
+  runtime_key: RuntimeKeySchema,
   installation: z.string().min(1),
   login: RuntimeLoginSpecSchema.nullable(),
   /** Normal ACP launch program; required when a machine-owned copy uses ACP auth. */
@@ -478,7 +481,7 @@ export const HostAmbientImportFrameSchema = z.object({
   type: z.literal("ambient_import"),
   request_id: IdSchema,
   workspace_location_id: IdSchema,
-  adapter_type: z.string().min(1),
+  runtime_key: RuntimeKeySchema,
   installation: z.string().min(1),
   /** Null replays every session in the window; a list replays only those. */
   session_ids: z.array(z.string()).nullable(),

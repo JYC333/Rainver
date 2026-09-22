@@ -47,7 +47,7 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	toolKind: varchar("tool_kind", { length: 32 }),
 	// ACP runtime replatform P3 (A9): bounded tool-result content, set on
 	// tool_activity_finished only. Populated for claude and opencode;
-	// codex-acp 1.6.2 reports no result content (a known adapter asymmetry,
+	// codex-acp currently reports no result content (a known adapter asymmetry,
 	// not a bug — see the ACP runtime replatform plan §4).
 	toolResultSummary: text("tool_result_summary"),
 	// tool activity: 'pending' | 'succeeded' | 'failed' | 'in_progress' (ACP's

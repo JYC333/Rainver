@@ -69,7 +69,7 @@ export interface UsageObservation {
   meter_subject_id?: string | null;
   subject_user_id?: string | null;
   subject_team_id?: string | null;
-  adapter_type?: string | null;
+  runtime_key?: string | null;
   runtime_tool_version?: string | null;
   provider_id?: string | null;
   provider_type?: string | null;
@@ -127,7 +127,7 @@ export interface NormalizedUsageObservation {
   meter_subject_id: string;
   subject_user_id: string | null;
   subject_team_id: string | null;
-  adapter_type: string | null;
+  runtime_key: string | null;
   runtime_tool_version: string | null;
   provider_id: string | null;
   provider_type: string | null;

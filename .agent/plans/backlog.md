@@ -163,31 +163,12 @@ registry and its API are current-state authority; see
 
 ### G1.4 — A managed run cannot produce an artifact
 
-Found 2026-08-15 during the routing plan review. Both artifact materialisation
-paths require a sandbox working directory: `produced_artifact_paths` and
-`exchange_artifact_paths` are read from `sandbox_cwd` / `exchange_output_cwd`,
-and `materializationService.ts:285` throws without one. `managedApiAdapter.ts`
-contains no artifact reference at all — a managed run's entire output surface is
-`output_text` and `output_json`.
-
-The consequence is a real limit on what the managed path can produce: anything
-durable needs a domain service and a domain table to receive it. Project
-Research works this way, writing to `project_research_reports.content_json`. So
-the set of things a managed agent can produce equals the set of things someone
-has already written a table for; it cannot produce something whose shape was not
-anticipated.
-
-- [ ] Decide whether a managed run may declare an artifact (type plus content)
-  directly, materialised without a sandbox cwd.
-- [ ] If so, route it through the same provenance, policy, and visibility path
-  as a sandbox-produced artifact, so the two do not become separate lifecycles.
-
-Constraint: this is a materialisation question, not a sandbox one. Giving the
-managed path a working directory is a separate and much larger decision, and
-routing deliberately does not take it: a provider API has no file primitive, and
-a server-side `file.write` tool is a worse version of what a CLI runtime does
-natively while turning an ungated mutation surface loose in the one path that
-currently has none.
+Closed by the 2026-09 ACP Runtime Authority cutover (ADR 0022). The former
+managed Agent loop no longer exists: autonomous Agent Runs use ACP and the
+normal Run materialization path. Bounded `provider_task` Runs deliberately do
+not gain a general Agent artifact surface; a future bounded operation that
+needs durable output must use its owning domain service and provenance policy,
+not revive a second Agent loop.
 
 ### R1.2 — Research start parameters should be auto-selected, not fixed defaults
 
@@ -274,35 +255,12 @@ current-state architecture, not backlog work.
 
 ### H1 — Managed tool families cannot contribute to the system prompt
 
-Found during Step 0's discovery review, 2026-08-13.
-
-`managedApiAdapter.ts:128` overwrites `system_prompt` with the
-InvocationDelivery's system content on every dispatch, and `baseExecute` refuses
-to run without the delivery's `invocation_audit_refs`. Anything a tool loop
-writes to `system_prompt` is therefore discarded before the provider call.
-
-The concrete casualty was Agent room delegation. `delegationSystemPrompt()`
-built guidance — when to delegate, that every room agent may delegate rather
-than only the manager, that several `agent.delegate` calls may run in one turn,
-that `agent.wait_for_results` is the alternative to guessing, and that the model
-must not invent the delegated agent's answer — and none of it has ever reached a
-model. Step 0 deleted the builder rather than leave code that looks live and is
-not; recover it from Git when this is implemented.
-
-Valid `target_agent_id` values are unaffected: they reach the model through the
-tool schema's `enum`, not the prompt. What is missing is behavioural guidance,
-of which "do not invent the delegated agent's answer" is the one with
-correctness weight.
-
-- [ ] Decide where a tool family contributes instructions, given that the
-  delivery owns the system prompt. The Runtime Context render path is the
-  candidate; the loop is not.
-- [ ] Restore the delegation guidance through that seam.
-- [ ] Cover it with a test that fails if the contribution is dropped before the
-  provider call, rather than one that asserts the loop's own input.
-
-Constraint: the delivery is immutable audit evidence. A contribution has to be
-part of what the delivery renders, not a mutation applied after it.
+Closed by the ACP cutover. Room delegation and wait behavior are exposed as
+canonical ACP tool definitions; their descriptions carry usage guidance,
+target schemas constrain delegation to active Room members, and the Runtime
+Context Delivery remains the authoritative instruction source. The former
+managed-loop prompt override is not retained. `managedAgentDelegationTools`
+tests assert both tool behavior and the guidance delivered with those tools.
 - [ ] Focus areas: classify from where content lives. The first slice shipped
   ([ADR 0015](../decisions/0015-focus-area-classification.md)) with
   classification available only from a focus area's own page, through pickers
@@ -316,51 +274,24 @@ part of what the delivery renders, not a mutation applied after it.
   items collapse the implementation to
   `SkillPackage + SkillBinding + SkillPolicy`.
 
-### H2 — Two prompt-assembly paths
+### H2 — Prompt provenance across ACP and conversation inputs
 
 From the agent-identity-and-memory-boundary plan's decision 8, recorded in its
 P5 (2026-09-06); that plan is retired and the surviving statement of the split
 is [modules/rooms.md](../modules/rooms.md)'s host-bound section.
 
-A Run's prompt is assembled twice over, by two mechanisms that answer the same
-question. One is brokered: `runs/runtimeContextAttempts.ts` opens an invocation
-authority through `RuntimeContextInvocationGateway`, which resolves a Delivery,
-seals a snapshot, and writes Semantic and Micro Checkpoints. The other is
-direct: a Room turn and a direct chat assemble the conversation increment, the
-Project state and the Agent's identity block themselves and send that text as
-prompt content. The identity work had to say which one applied before it could
-add anything to either.
+The 2026-09 cutover now routes every Agent Host dispatch through
+`RuntimeContextInvocationGateway`; `remoteHostCliAdapter` projects that
+Delivery into the ACP prompt. Structured conversation input is still hydrated
+by `ConversationInputService` and supplied as a separate content source to the
+same projection. Keep this distinction explicit: it is not a second runtime
+authority, but omission or duplicate delivery at the join would affect the
+user's actual turn.
 
-Where the line actually runs is the audit's first question, because it is not
-where the prose in either document suggests. The gateway is skipped on exactly
-one condition — `execution_port.hostKind === "remote"`
-(`runs/orchestrationService.ts`) — so a Room turn or direct chat dispatched to
-the **server** host is assembled directly *and* brokered, and the module's own
-boundary inventory records both conversation entrypoints as
-`targetBoundary: "runtime_context_gateway"`
-(`runtimeContext/invocationInventory.ts`, asserted by
-`test/runtimeContextEntrypoints.test.ts`). Nor is the module reachable only
-from the brokered path: `modules/runtimeContext/` is about 8k lines, and
-outside `runtimeContextAttempts.ts` nine files import it. Seven are the ones
-you would expect: `gateway/routeRegistry.ts` mounting the module's own HTTP
-routes, `jobs/workerRuntime.ts` registering the checkpoint job handler,
-`importedSessions/extraction.ts` taking one prompt constant,
-`managedApiAdapter.ts` and `vendorCliAdapter.ts`, `runs/routes.ts`, and
-`orchestrationService.ts`. The other two are the ones that matter here: `chatTurnFinalizer.ts`, which calls `finalizeChatTurn` on
-**every** chat turn, host-bound included (it swallows
-`InvocationAuthorityNotFoundError` when there is no authority), and
-`agentGroups/service.ts`, which deliberately shares
-`runtimeContext/conversationContinuity.ts` so the two replays cannot drift into
-two fixed-size history implementations.
-
-- [ ] Establish which turns are brokered in practice, then which parts the
-  brokered path actually needs — sealed replay, CLI cursor continuity, and the
-  two checkpoint kinds — and which are carried only because the gateway exists.
-  Decide what to shrink from that evidence, not from the line count.
-
-The order matters: delivering the identity block to managed Agents
-([section 10](#10-agent-identity)) lands on whichever path this audit leaves
-standing, so doing it first would build against a surface that may not survive.
+This remains a final-integration review item, not a deferred implementation
+project. Verify the current-user message is neither lost nor duplicated across
+Delivery projection and conversation-input hydration; compare Room/direct-chat
+transcript continuity with the immutable Runtime Context snapshot.
 
 ## 8. Execution Runtime
 
@@ -514,6 +445,61 @@ What would actually raise the bar, in order of cost:
 Constraint: keep the honesty boundary — do not describe the runner as
 OS-sandboxed until one of the above is in place. Do the ESM port, if ever,
 only as part of such a rewrite, never on its own.
+
+### Queued research stages still run as Agent Runs
+
+Recorded 2026-09-21 by the ACP runtime-authority review. Monitoring
+comparison (`research.monitor_compare`), brief synthesis and its critique
+(`research.brief_synthesize`) are single-shot structured generation with no
+tools and no turns, so ADR 0022 classifies them as `provider_task` Runs. They
+still create `agent` Runs through `ProjectResearchExecutionProfileService`,
+which manufactures a `system_research` Agent and a `Research · OpenCode`
+`model_provider` Profile, and dispatch an ACP session to produce JSON. Ad-hoc
+analysis and notebook chat already moved to `runs/boundedProviderTaskRun.ts`.
+
+Why they did not move with them: the three stages consume
+`output_json.result.materialization` (the `research_report.archive.v1`
+artifact written by `RunMaterializationService` during agent-run
+orchestration) and the declared-output verification / Supervisor retry path.
+
+- [ ] Give `runBoundedProviderTask` a materialization step that writes the
+  same declared artifacts and evidence a bounded contract names, reusing
+  `RunMaterializationService` rather than a second writer.
+- [ ] Move all three writers (`monitorComparisonService`,
+  `pipeline/synthesisCoordinator` both sites, `orchestrator.startInitialIntake`
+  and `standingComparisonService`) to `createQueuedProviderTaskRun` +
+  `provider_task_run` in one change; register their preparers by
+  `capability_id`.
+- [ ] Delete the Agent/Profile manufacturing in `executionProfileService.ts`
+  and shrink `RESEARCH_AGENT_CAPABILITY_IDS` to nothing, then remove the
+  `system_research` Agent kind if no consumer remains.
+
+Constraint: no half-migrated writer; every research Run must satisfy
+`ck_runs_execution_shape` at every step.
+
+### `high`-trust execution needs an enforced control, not a run-time confirmation
+
+Recorded 2026-09-21. No execution target reaches `high` effective trust
+(`routing/repository.ts` `effectiveTrustLevel`), so an Agent whose risk is
+`high` or `critical` has no candidate anywhere; the creation form disables
+those levels. Owner-triggered Runs on a paired Host are `medium`
+(ADR 0016 amendment of 2026-09-21).
+
+Decision recorded with the product owner: do not gate `high` behind a
+per-Run confirmation dialog. A confirmation nobody reads is not a control,
+and ADR 0017 / B70 already prefer review-after with undo over pre-approval.
+
+- [ ] Define `high` as an explicit, revocable, scoped grant the Host owner
+  makes once in the Host settings (which Agents or Projects, for how long),
+  visible in the Host status and audit, never a modal at dispatch time.
+- [ ] Pair it with review-after: a `high`-risk Run's effects go through the
+  existing proposal-gated writers and artifacts so they are visible and
+  undoable; irreversible actions keep their existing policy gates.
+- [ ] Only then enable `high` / `critical` in the Agent form and add
+  `high` to the routing trust table with the grant as its evidence.
+
+Constraint: routing must derive the trust from the stored grant, never from a
+registry declaration or a UI label (plan decision recorded in ROUTING.md).
 
 ## 9. Imported CLI History
 

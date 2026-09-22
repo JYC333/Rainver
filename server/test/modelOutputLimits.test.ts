@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { effectiveMaxOutputTokens, recommendedMaxOutputTokens } from "../src/modules/providers/modelOutputLimits.js";
-import { DEFAULT_MODEL_CONFIG, defaultModelConfigFor } from "../src/modules/agents/agentRepositoryHelpers.js";
 
 // max_tokens caps the completion, not the context window; reasoning models
 // spend their thinking inside the same budget. The registry keeps per-model
@@ -36,16 +35,5 @@ describe("effectiveMaxOutputTokens", () => {
   it("falls back to the recommendation alone, or null when neither side has one", () => {
     expect(effectiveMaxOutputTokens("MiniMax-M3", null)).toBe(131_072);
     expect(effectiveMaxOutputTokens("claude-sonnet-4-6", undefined)).toBeNull();
-  });
-});
-
-describe("defaultModelConfigFor", () => {
-  it("stamps the recommended output budget for known models", () => {
-    expect(defaultModelConfigFor("MiniMax-M3")).toEqual({ model: "MiniMax-M3", max_tokens: 131_072 });
-  });
-
-  it("falls back to the generic default for unknown or missing models", () => {
-    expect(defaultModelConfigFor("some-model")).toEqual({ model: "some-model", max_tokens: DEFAULT_MODEL_CONFIG.max_tokens });
-    expect(defaultModelConfigFor(null)).toEqual(DEFAULT_MODEL_CONFIG);
   });
 });

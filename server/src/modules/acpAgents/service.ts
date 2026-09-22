@@ -5,7 +5,7 @@ import { AcpRegistryError, fetchAcpRegistry, setResolvedRegistryEntries } from "
 import { ACP_AGENTS_SCOPE_ID, ACP_AGENTS_SETTINGS, ACP_REGISTRY_CACHE_SETTINGS, type EnabledAcpAgent } from "./settings.js";
 
 /** `acp_<registry id>`, in the same character set the id is validated to. */
-export function acpAgentAdapterType(registryId: string): string {
+export function acpAgentRuntimeKey(registryId: string): string {
   return `acp_${registryId.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
 }
 
@@ -20,9 +20,9 @@ export function acpAgentAdapterType(registryId: string): string {
 export function acpAgentRuntimeAdapterSpec(agent: EnabledAcpAgent): RuntimeAdapterSpec {
   // A registry agent has no machine-own install: its command *is* its
   // adapter type, which the daemon resolves to a managed installation.
-  const command = acpAgentAdapterType(agent.id);
+  const command = acpAgentRuntimeKey(agent.id);
   return {
-    adapter_type: command,
+    runtime_key: command,
     display_name: agent.name,
     runtime_kind: "local_cli",
     executor_family: "local_cli",
@@ -58,7 +58,6 @@ export function acpAgentRuntimeAdapterSpec(agent: EnabledAcpAgent): RuntimeAdapt
       requires_workspace_for_execution: false,
     },
     model: {
-      model_provider_mode: "none",
       supports_model_override: true,
       model_config_behavior: "uses_model",
     },
@@ -99,13 +98,13 @@ export class AcpAgentService {
    * removed.
    */
   async installedOn(registryId: string): Promise<Array<{ host_id: string; name: string }>> {
-    const adapterType = acpAgentAdapterType(registryId);
+    const runtimeKey = acpAgentRuntimeKey(registryId);
     const result = await this.db.query<{ id: string; name: string }>(
       `SELECT id, name FROM hosts
         WHERE status <> 'revoked'
           AND jsonb_array_length(COALESCE(capabilities_json -> 'installations' -> $1, '[]'::jsonb)) > 0
         ORDER BY name`,
-      [adapterType],
+      [runtimeKey],
     );
     return result.rows.map((row) => ({ host_id: row.id, name: row.name }));
   }

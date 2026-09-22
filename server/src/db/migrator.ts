@@ -18,8 +18,8 @@
  *   instances starting at once cannot apply the same migration twice.
  * - Each migration runs in its own transaction. After a migration's SQL we
  *   `RESET search_path` and reference the tracking table fully-qualified, so a
- *   migration that changes `search_path` (e.g. a `pg_dump` baseline does
- *   `set_config('search_path','')`) cannot break version recording.
+ *   migration that changes `search_path` — any migration may, and the runner
+ *   does not read the SQL to find out — cannot break version recording.
  */
 
 import { createHash } from "node:crypto";
@@ -163,8 +163,8 @@ export async function migrate(
       await client.query("BEGIN");
       try {
         await client.query(file.sql);
-        // A migration may have changed search_path (pg_dump baselines do); reset
-        // before touching the fully-qualified tracking table.
+        // A migration may have changed search_path; reset before touching the
+        // fully-qualified tracking table.
         await client.query("RESET search_path");
         await client.query(
           `INSERT INTO ${MIGRATIONS_TABLE} (version, name, checksum) VALUES ($1, $2, $3)`,

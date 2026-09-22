@@ -137,7 +137,7 @@ export function createThreadEventNormalizer(): {
           tool_input_summary: toolInput,
           tool_kind: toolKind,
           status: acpToolStatus(status),
-          // A9: absorbed for claude/opencode; codex-acp 1.6.2 reports none
+          // A9: absorbed for claude/opencode; codex-acp currently reports none
           // (a known adapter asymmetry, not a bug).
           tool_result_summary: toolOutput,
         },

@@ -23,7 +23,7 @@ const detail = {
 } as unknown as RoomDetail
 const profile = {
   id: 'runtime-1', space_id: 'space-1', agent_id: 'agent-1', name: 'Claude on Laptop',
-  adapter_type: 'claude_cli', execution_host_id: 'host-1', workspace_location_id: null,
+  runtime_key: 'claude_cli', execution_host_id: 'host-1', workspace_location_id: null,
   workspace_mode: 'managed', runtime_installation: 'claude', model: null,
   runtime_config_json: {}, runtime_policy_json: {}, enabled: true, is_default: true,
   created_at: '2026-08-31T00:00:00.000Z', updated_at: '2026-08-31T00:00:00.000Z',
@@ -43,7 +43,7 @@ function draftResponse(
       agent_id: profile.agent_id,
       agent_name: profile.name,
       runtime_profile_id: profile.id,
-      adapter_type: profile.adapter_type,
+      runtime_key: profile.runtime_key,
       runtime_installation: profile.runtime_installation,
       execution_host_id: profile.execution_host_id,
       workspace_mode: profile.workspace_mode as 'managed',
@@ -61,9 +61,9 @@ function initializedResponse(online = true) {
     summary: {
       session_id: 'session-1', state: 'initialized',
       host: { ...host, online },
-      runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', adapter_type: 'claude_cli', runtime_installation: 'claude' },
+      runtime: { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', runtime_key: 'claude_cli', runtime_installation: 'claude' },
       runtimes: [
-        { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', adapter_type: 'claude_cli', runtime_installation: 'claude' },
+        { agent_id: 'agent-1', runtime_profile_id: 'runtime-1', runtime_key: 'claude_cli', runtime_installation: 'claude' },
       ],
       primary: { kind: 'managed', managed_workspace_id: 'session-1', display_path: null },
       attachments: [], dispatch_locked: false, queue_paused_at: null,
@@ -73,7 +73,7 @@ function initializedResponse(online = true) {
       agent_id: profile.agent_id,
       agent_name: profile.name,
       runtime_profile_id: profile.id,
-      adapter_type: profile.adapter_type,
+      runtime_key: profile.runtime_key,
       runtime_installation: profile.runtime_installation,
       execution_host_id: profile.execution_host_id,
       workspace_mode: profile.workspace_mode,
@@ -122,7 +122,7 @@ describe('ConversationExecutionPreflight', () => {
     response.available_runtime_profiles.push({
       ...response.available_runtime_profiles[0]!,
       runtime_profile_id: null,
-      adapter_type: 'codex_cli',
+      runtime_key: 'codex_cli',
       runtime_installation: 'codex',
       preferred: false,
     })
@@ -142,7 +142,7 @@ describe('ConversationExecutionPreflight', () => {
       selection: { execution_host_id: 'host-1', primary: { kind: 'managed' } },
       runtime: {
         agent_id: 'agent-1', runtime_profile_id: 'runtime-1',
-        adapter_type: 'claude_cli', runtime_installation: 'claude',
+        runtime_key: 'claude_cli', runtime_installation: 'claude',
       },
     }))
   })
@@ -171,7 +171,7 @@ describe('ConversationExecutionPreflight', () => {
       selection: { execution_host_id: 'host-1', primary: { kind: 'location', workspace_location_id: 'location-1' } },
       runtime: {
         agent_id: 'agent-1', runtime_profile_id: null,
-        adapter_type: 'claude_cli', runtime_installation: 'claude',
+        runtime_key: 'claude_cli', runtime_installation: 'claude',
       },
     }))
   })
@@ -243,7 +243,7 @@ describe('ConversationExecutionPreflight', () => {
       ...specialistProfile,
       id: 'runtime-research-backup',
       name: 'Research Codex on Laptop',
-      adapter_type: 'codex_cli',
+      runtime_key: 'codex_cli',
       runtime_installation: 'codex',
     }
     vi.mocked(sessionsApi.executionContext).mockResolvedValue({
@@ -266,7 +266,7 @@ describe('ConversationExecutionPreflight', () => {
     await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1', expect.objectContaining({
       additional_runtimes: [{
         agent_id: 'agent-2', runtime_profile_id: 'runtime-research-backup',
-        adapter_type: 'codex_cli', runtime_installation: 'codex',
+        runtime_key: 'codex_cli', runtime_installation: 'codex',
       }],
     })))
   })

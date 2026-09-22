@@ -19,7 +19,7 @@ export interface RuntimeContextPreviewInput {
 export interface RuntimeContextInvocationInput extends RuntimeContextPreviewInput {
   invocationId: string;
   executionControlSnapshotId: string;
-  adapterType: string;
+  runtimeKey: string;
   providerId?: string | null;
   model?: string | null;
   usageSourceId: string;

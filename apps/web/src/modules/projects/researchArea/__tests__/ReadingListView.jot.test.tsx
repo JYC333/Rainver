@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { toast } from 'sonner'
 import { ReadingListView } from '../ReadingListView'
 import type { ResearchReadingList } from '../../../../types/api'
 
@@ -10,13 +11,15 @@ import type { ResearchReadingList } from '../../../../types/api'
 // the two-step version (leave for Notes, create, come back for the id) is why
 // the connection was never made in practice.
 
-const { jot, linkingTo } = vi.hoisted(() => ({ jot: vi.fn(), linkingTo: vi.fn() }))
+const { jot, linkingTo, askAi, listProviders } = vi.hoisted(() => ({
+  jot: vi.fn(), linkingTo: vi.fn(), askAi: vi.fn(), listProviders: vi.fn(),
+}))
 
 vi.mock('../../../../api/client', () => ({
   notesApi: { jot, linkingTo },
-  projectResearchApi: { updateEvidenceCard: vi.fn(), askAi: vi.fn() },
+  projectResearchApi: { updateEvidenceCard: vi.fn(), askAi },
   projectsApi: { updateCorpusItem: vi.fn() },
-  providersApi: { list: vi.fn().mockResolvedValue([]) },
+  providersApi: { list: listProviders },
 }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../../core/spaceNav', async () => {
@@ -52,7 +55,11 @@ function renderView(value: ResearchReadingList) {
 beforeEach(() => {
   jot.mockReset()
   linkingTo.mockReset()
+  askAi.mockReset()
+  listProviders.mockReset()
   linkingTo.mockResolvedValue([])
+  listProviders.mockResolvedValue([])
+  vi.mocked(toast.success).mockReset()
 })
 
 describe('ReadingListView jot a note', () => {
@@ -93,5 +100,35 @@ describe('ReadingListView jot a note', () => {
     renderView(readingList({ object_id: null, object: null }))
     await waitFor(() => expect(linkingTo).not.toHaveBeenCalled())
     expect(screen.queryByRole('button', { name: 'Jot a note' })).toBeNull()
+  })
+})
+
+describe('ReadingListView ask AI to compare', () => {
+  it('reports that the comparison was queued, not that the note already has it', async () => {
+    // `ask-ai` answers 201 `queued`: a `provider_task_run` job applies the
+    // block ops to the understanding note afterwards. The panel does not
+    // render that note and has nothing to refetch here, so the only honest
+    // thing it can say is that the work was queued.
+    listProviders.mockResolvedValue([
+      { id: 'prov-1', name: 'OpenAI', enabled: true, is_default: true } as never,
+    ])
+    askAi.mockResolvedValue({
+      run_id: 'run-abcdef12', job_id: 'job-1', status: 'queued', daily_limit: 20, daily_used: 1,
+    })
+    renderView(readingList({ source_item_id: 'item-1' }))
+    const user = userEvent.setup({ delay: null })
+
+    await user.click(await screen.findByRole('checkbox', { name: 'Select Attention Is All You Need' }))
+    const compare = screen.getByRole('button', { name: 'Ask AI to compare' })
+    await waitFor(() => expect(compare).toBeEnabled())
+    await user.click(compare)
+
+    await waitFor(() => expect(askAi).toHaveBeenCalledWith('project-1', expect.objectContaining({
+      section_key: 'understanding',
+      source_item_ids: ['item-1'],
+      execution: { model_provider_id: 'prov-1' },
+    })))
+    expect(toast.success).toHaveBeenCalledWith('Comparison queued · run run-abcd')
+    expect(vi.mocked(toast.success).mock.calls.flat().join(' ')).not.toMatch(/added to the current understanding/)
   })
 })

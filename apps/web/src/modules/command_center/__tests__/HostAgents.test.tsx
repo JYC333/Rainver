@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import HostAgents from '../HostAgents'
-import type { Host, HostRuntimeAdapterOption } from '../../../types/api'
+import type { Host, HostRuntimeDefinitionOption } from '../../../types/api'
 
 const { enable, disable, installRuntime, uninstallRuntime, loginInput, loginStream, goose, enabledGoose } = vi.hoisted(() => {
   const goose = {
@@ -11,7 +11,7 @@ const { enable, disable, installRuntime, uninstallRuntime, loginInput, loginStre
   }
   return {
     enable: vi.fn(), disable: vi.fn(), installRuntime: vi.fn(), uninstallRuntime: vi.fn(), loginInput: vi.fn(), loginStream: vi.fn(), goose,
-    enabledGoose: { ...goose, enabled_at: '', enabled_by_user_id: null, adapter_type: 'acp_goose', installed_on: [{ host_id: 'h1', name: 'Laptop' }] },
+    enabledGoose: { ...goose, enabled_at: '', enabled_by_user_id: null, runtime_key: 'acp_goose', installed_on: [{ host_id: 'h1', name: 'Laptop' }] },
   }
 })
 
@@ -24,16 +24,16 @@ vi.mock('../../../api/client', async importOriginal => {
     ...original,
     acpAgentsApi: {
       registry: vi.fn(async () => ({ items: [goose, { ...goose, id: 'kilo', name: 'Kilo' }, { ...goose, id: 'opencode', name: 'OpenCode' }, { ...goose, id: 'claude-acp', name: 'Claude Code' }] })),
-      list: vi.fn(async () => ({ items: [enabledGoose, { ...enabledGoose, id: 'crow', name: 'crow', adapter_type: 'acp_crow', installed_on: [] }] })),
-      enable: enable.mockImplementation(async (id: string) => ({ ...enabledGoose, id, name: 'Kilo', adapter_type: `acp_${id}`, installed_on: [] })),
+      list: vi.fn(async () => ({ items: [enabledGoose, { ...enabledGoose, id: 'crow', name: 'crow', runtime_key: 'acp_crow', installed_on: [] }] })),
+      enable: enable.mockImplementation(async (id: string) => ({ ...enabledGoose, id, name: 'Kilo', runtime_key: `acp_${id}`, installed_on: [] })),
       disable: disable.mockResolvedValue(null),
     },
     hostsApi: {
       ...original.hostsApi,
-      installRuntime: installRuntime.mockImplementation(async (hostId: string, adapterType: string) => ({ host_id: hostId, adapter_type: adapterType, ok: true, error: null, installation: 'managed:1.2.3' })),
-      uninstallRuntime: uninstallRuntime.mockImplementation(async (hostId: string, adapterType: string, installation: string) => ({ host_id: hostId, adapter_type: adapterType, ok: true, error: null, installation })),
+      installRuntime: installRuntime.mockImplementation(async (hostId: string, runtimeKey: string) => ({ host_id: hostId, runtime_key: runtimeKey, ok: true, error: null, installation: 'managed:1.2.3' })),
+      uninstallRuntime: uninstallRuntime.mockImplementation(async (hostId: string, runtimeKey: string, installation: string) => ({ host_id: hostId, runtime_key: runtimeKey, ok: true, error: null, installation })),
       // The fake daemon: prompts, waits for what is typed, then exits logged in.
-      loginStream: loginStream.mockImplementation(async function* (_hostId: string, _adapterType: string, _installation: string, target?: { kind: string } | null) {
+      loginStream: loginStream.mockImplementation(async function* (_hostId: string, _runtimeKey: string, _installation: string, target?: { kind: string } | null) {
         yield { type: 'hint', text: 'Follow the prompts.' }
         yield { type: 'output', data: '\u001b[32mcode? \u001b[0mhttps://login.example.test/device?id=abc\n' }
         if (target) {
@@ -49,15 +49,15 @@ vi.mock('../../../api/client', async importOriginal => {
   }
 })
 
-const ADAPTERS: HostRuntimeAdapterOption[] = [
-  { adapter_type: 'claude_code', display_name: 'Claude Code', command: 'claude-agent-acp', capability_probe: 'claude', remote_eligible: true, registry_id: 'claude-acp', reports_managed_cli_version: true },
-  { adapter_type: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true, registry_id: 'opencode', provider_binding: true, provider_api: 'openai_compatible' },
-  { adapter_type: 'acp_goose', display_name: 'goose', command: 'acp_goose', capability_probe: 'acp_goose', remote_eligible: true },
+const ADAPTERS: HostRuntimeDefinitionOption[] = [
+  { runtime_key: 'claude_code', display_name: 'Claude Code', command: 'claude-agent-acp', capability_probe: 'claude', remote_eligible: true, registry_id: 'claude-acp', reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false },
+  { runtime_key: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true, registry_id: 'opencode', supports_runtime_native: true, supports_model_provider: true, provider_api: 'openai_compatible' },
+  { runtime_key: 'acp_goose', display_name: 'goose', command: 'acp_goose', capability_probe: 'acp_goose', remote_eligible: true, supports_runtime_native: true, supports_model_provider: false },
   // What the server really reports for a registry agent: installable and
   // managed on a host, but not dispatch-eligible until its entry can name a
   // login/state-root contract. It must still be listed here.
-  { adapter_type: 'acp_dynamic', display_name: 'Cursor', command: 'acp_dynamic', capability_probe: 'acp_dynamic', remote_eligible: false, provider_binding: false },
-  { adapter_type: 'acp_browser_only', display_name: 'Kite', command: 'acp_browser_only', capability_probe: 'acp_browser_only', remote_eligible: false, provider_binding: false },
+  { runtime_key: 'acp_dynamic', display_name: 'Cursor', command: 'acp_dynamic', capability_probe: 'acp_dynamic', remote_eligible: false, supports_runtime_native: true, supports_model_provider: false },
+  { runtime_key: 'acp_browser_only', display_name: 'Kite', command: 'acp_browser_only', capability_probe: 'acp_browser_only', remote_eligible: false, supports_runtime_native: true, supports_model_provider: false },
 ]
 const HOST = {
   id: 'h1', name: 'Laptop', kind: 'remote', status: 'online',
@@ -90,7 +90,7 @@ const HOST = {
 describe('HostAgents', () => {
   it("lists only the agents this host has a copy of, with log-in and remove, and adds a managed copy", async () => {
     const onChanged = vi.fn()
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+    render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={onChanged} />)
     expect(screen.getByTestId('host-agent-h1-opencode').textContent).toContain('own · 1.18.11 · 1 account')
     expect(screen.getByTestId('host-agent-h1-opencode').textContent).not.toContain('opencode 1.18.11')
@@ -116,7 +116,7 @@ describe('HostAgents', () => {
   })
 
   it('logs a copy in through the terminal, relaying the PTY stream and typed input', async () => {
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+    render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={vi.fn()} />)
     await userEvent.click(screen.getByRole('button', { name: 'Log in managed:1.2.3 of goose on Laptop' }))
     const terminal = await screen.findByTestId('runtime-login-terminal')
@@ -133,10 +133,8 @@ describe('HostAgents', () => {
   })
 
   it('shows every authentication method advertised by an ACP agent that has no CLI login fallback', async () => {
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+    render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={vi.fn()} />)
-    expect(screen.getByTestId('host-agent-h1-acp_dynamic')).toHaveTextContent('Model source')
-    expect(screen.getByTestId('host-agent-h1-acp_dynamic')).toHaveTextContent('Agent-managed · no Rainver override')
     expect(screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Device login for managed:3.0.0 of Kite on Laptop' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Log in managed:3.0.0 of Kite on Laptop' })).toBeNull()
@@ -147,7 +145,7 @@ describe('HostAgents', () => {
   })
 
   it('shows a multi-account CLI by account count, adds one, and removes one through the vendor logout', async () => {
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+    render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={vi.fn()} />)
     const row = screen.getByTestId('host-agent-h1-opencode')
     // The count in the row, the names on hover, never a secret.
@@ -156,7 +154,6 @@ describe('HostAgents', () => {
     await userEvent.hover(screen.getByText('own · 1.18.11 · 1 account'))
     const tooltip = await screen.findByRole('tooltip')
     expect(tooltip).toHaveTextContent('yitang · api')
-    expect(screen.getByLabelText('Model source for OpenCode on Laptop').textContent).toContain('Agent-managed (1 account)')
     // Login adds an account here, so the button says so and stays prominent.
     expect(screen.getByRole('button', { name: 'Add account to own of OpenCode on Laptop' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Log in again/ })).toBeNull()
@@ -169,7 +166,7 @@ describe('HostAgents', () => {
 
   it('offers Log out on a single-account copy that is logged in', async () => {
     const host = { ...HOST, capabilities_json: { runtimes: ['claude'], installations: { claude_code: [{ id: 'own', version: '1.2.3', logged_in: true }] } } } as unknown as Host
-    render(<HostAgents host={host} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+    render(<HostAgents host={host} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={vi.fn()} />)
     expect(screen.getByRole('button', { name: 'Log in own of Claude Code on Laptop' })).toHaveTextContent('Log in again')
     const before = loginStream.mock.calls.length
@@ -179,7 +176,7 @@ describe('HostAgents', () => {
   })
 
   it('starts a fresh session when the same copy is logged in again while its last panel is still open', async () => {
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+    render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={vi.fn()} />)
     const button = screen.getByRole('button', { name: 'Browser login for managed:3.0.0 of Kite on Laptop' })
     const before = loginStream.mock.calls.length
@@ -191,7 +188,7 @@ describe('HostAgents', () => {
   })
 
   it('offers one Log in, the managed CLI login, when the Agent needs its own CLI login before its Agent Auth', async () => {
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+    render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={vi.fn()} />)
     // The advertised Agent-Auth method is not a second button: the daemon and
     // every Run session authenticate with it unattended once the CLI is logged in.
@@ -203,13 +200,13 @@ describe('HostAgents', () => {
   })
 
   it('keeps each install spinning until its own request settles when two start back to back', async () => {
-    const pending = new Map<string, (value: { host_id: string; adapter_type: string; ok: boolean; error: null; installation: string }) => void>()
-    installRuntime.mockImplementation((hostId: string, adapterType: string) => new Promise(resolve => {
-      pending.set(adapterType, resolve)
+    const pending = new Map<string, (value: { host_id: string; runtime_key: string; ok: boolean; error: null; installation: string }) => void>()
+    installRuntime.mockImplementation((hostId: string, runtimeKey: string) => new Promise(resolve => {
+      pending.set(runtimeKey, resolve)
     }))
     const onChanged = vi.fn(async () => undefined)
     const hostWithoutOpenCode = { ...HOST, capabilities_json: { runtimes: [], installations: { acp_goose: HOST.capabilities_json!.installations!.acp_goose } } } as unknown as Host
-    render(<HostAgents host={hostWithoutOpenCode} adapters={ADAPTERS} providers={[]} isInstanceAdmin={false}
+    render(<HostAgents host={hostWithoutOpenCode} adapters={ADAPTERS} isInstanceAdmin={false}
           manageable onChanged={onChanged} />)
     await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
     const claude = await screen.findByRole('button', { name: 'Install Claude Code on Laptop' })
@@ -222,7 +219,7 @@ describe('HostAgents', () => {
     expect(opencode).toBeDisabled()
     expect(claude.querySelector('.animate-spin')).not.toBeNull()
     expect(opencode.querySelector('.animate-spin')).not.toBeNull()
-    pending.get('claude_code')!({ host_id: 'h1', adapter_type: 'claude_code', ok: true, error: null, installation: 'managed:1.2.3' })
+    pending.get('claude_code')!({ host_id: 'h1', runtime_key: 'claude_code', ok: true, error: null, installation: 'managed:1.2.3' })
     // A finished entry turns into its Installed badge; the button is gone.
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Install Claude Code on Laptop' })).toBeNull())
     // goose was already on the host; Claude joins it.
@@ -230,19 +227,19 @@ describe('HostAgents', () => {
     // The first finishing must not clear the second's spinner.
     expect(opencode).toBeDisabled()
     expect(opencode.querySelector('.animate-spin')).not.toBeNull()
-    pending.get('opencode')!({ host_id: 'h1', adapter_type: 'opencode', ok: true, error: null, installation: 'managed:1.2.3' })
+    pending.get('opencode')!({ host_id: 'h1', runtime_key: 'opencode', ok: true, error: null, installation: 'managed:1.2.3' })
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Install OpenCode on Laptop' })).toBeNull())
     expect(screen.getAllByText('Installed')).toHaveLength(3)
-    installRuntime.mockImplementation(async (hostId: string, adapterType: string) => ({ host_id: hostId, adapter_type: adapterType, ok: true, error: null, installation: 'managed:1.2.3' }))
+    installRuntime.mockImplementation(async (hostId: string, runtimeKey: string) => ({ host_id: hostId, runtime_key: runtimeKey, ok: true, error: null, installation: 'managed:1.2.3' }))
   })
 
   it('lets an instance admin enable and install an agent directly from the ACP registry', async () => {
-    let finishInstall!: (value: { host_id: string; adapter_type: string; ok: boolean; error: null; installation: string }) => void
-    installRuntime.mockImplementationOnce((hostId: string, adapterType: string) => new Promise(resolve => {
+    let finishInstall!: (value: { host_id: string; runtime_key: string; ok: boolean; error: null; installation: string }) => void
+    installRuntime.mockImplementationOnce((hostId: string, runtimeKey: string) => new Promise(resolve => {
       finishInstall = resolve
     }))
     const onChanged = vi.fn(async () => undefined)
-    render(<HostAgents host={HOST} adapters={ADAPTERS} providers={[]} isInstanceAdmin manageable onChanged={onChanged} />)
+    render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin manageable onChanged={onChanged} />)
     await userEvent.click(screen.getByRole('button', { name: 'Add agent…' }))
     expect(await screen.findByRole('button', { name: 'Install Claude Code on Laptop' })).toBeInTheDocument()
     const search = await screen.findByLabelText('Search agent registry')
@@ -257,7 +254,7 @@ describe('HostAgents', () => {
     await waitFor(() => expect(installRuntime).toHaveBeenCalledWith('h1', 'acp_kilo'))
     expect(screen.getByRole('button', { name: 'Install Kilo on Laptop' })).toHaveTextContent('Installing…')
     expect(screen.getByText('Kilo')).toBeInTheDocument()
-    finishInstall({ host_id: 'h1', adapter_type: 'acp_kilo', ok: true, error: null, installation: 'managed:1.2.3' })
+    finishInstall({ host_id: 'h1', runtime_key: 'acp_kilo', ok: true, error: null, installation: 'managed:1.2.3' })
     await waitFor(() => expect(screen.getAllByText('Installed')).toHaveLength(3))
     expect(onChanged).toHaveBeenCalled()
   })

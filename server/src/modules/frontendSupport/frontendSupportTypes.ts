@@ -38,7 +38,7 @@ export interface HomeSummaryOut {
   };
   runtime_status: {
     real_adapters_configured_count: number;
-    configured_adapter_types: string[];
+    configured_runtime_keys: string[];
     message: string;
   };
   model_provider_status: {

@@ -863,7 +863,11 @@ flow.
   belongs in database-backed personal content. File-level ACLs are
   intentionally not a second source of truth for an externally mutable
   filesystem.
-- `PathPolicy` (`@rainver/folder-read`) is enforced before any disk access.
+- `PathPolicy` (`@rainver/folder-read`) is enforced before control-plane- or
+  folder-channel-mediated disk access. An ACP subprocess can access its mounted
+  workspace directly: the strict built-in Host limits mounts with its per-Run
+  namespace, while a trusted paired Host runs natively under its owner's OS
+  permissions. `PathPolicy` is not a per-file sandbox for that subprocess.
 - `project_folder.read` policy is enforced before tree/file/status/diff reads.
 - Project-writer Save to Folder uses the `project_folder.apply_patch` policy
   action, an exact draft version plus existence/SHA-256 precondition, atomic
@@ -1241,17 +1245,17 @@ server-side. Avatar images accept `http(s)` and refuse `data:`.
   daemon's non-vendor spawns — `git`, `systemctl`, the installer shell script a
   person typed — take the machine's environment as it is: fixed arguments,
   trusted binaries, and nothing that echoes an environment back.
-- **The daemon refuses a redirect** on every call that carries a credential:
-  the control-plane calls, each carrying this host's bearer token — registration
-  exchanges a pairing code for a long-lived one — and the Claude usage probe,
-  which carries the owner's OAuth access token. The one deliberate exception is
-  the adapter *download*: an archive comes from a third-party publisher through
-  the ACP registry, and a GitHub release asset always 302s to
-  `objects.githubusercontent.com`, so refusing would break the ordinary case.
-  Nothing of ours travels with it, and the https requirement is re-applied to
-  where the download actually landed. Its config's `server_url` is re-checked on
-  read, not only at pairing time — plain HTTP only for an address that is this
-  machine. "This machine" is judged as an address: `startsWith("127.")` was true
+- **Credential-bearing daemon requests do not follow redirects**: the
+  control-plane calls each carry this host's bearer token (registration
+  exchanges a pairing code for a long-lived one), and the Claude usage probe
+  carries the owner's OAuth access token. Runtime artifact downloads are
+  credential-free and may follow publisher redirects such as GitHub's
+  `objects.githubusercontent.com` handoff, but each hop is resolved, checked
+  against the private-address block list and pinned before connecting; every
+  hop must remain HTTPS, and the response body has a hard size ceiling. Its
+  config's `server_url` is re-checked on read, not only at pairing time — plain
+  HTTP only for an address that is this machine. "This machine" is judged as an
+  address: `startsWith("127.")` was true
   of `127.evil.com`. The built-in host is exempt, because it adopts a credential
   the instance published to it over the Compose network, where the control plane
   is `http://server:8010` and there is no pairing at all; the exemption is

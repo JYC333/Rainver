@@ -69,9 +69,11 @@ SERVER_DATABASE_URL=postgresql://... pnpm run migrate:status
 SERVER_DATABASE_URL=postgresql://... pnpm run migrate
 
 # Schema changes: edit server/src/db/schema/, then append the migration
-# drizzle-kit derives from the diff. server/migrations/ is an append-only
-# chain — 0000_baseline.sql is frozen, and a file any database has applied is
-# never edited (the runner records checksums and refuses a changed one).
+# drizzle-kit derives from the diff. This epoch starts from the single
+# server/migrations/0000_baseline.sql; after release it is frozen and future
+# migrations append to it. A file any database has applied is never edited.
+# Databases/backups from the previous schema epoch cannot be upgraded or
+# restored into this one; instances must be recreated from the new baseline.
 # Review the generated SQL and add data backfills to it before it is applied
 # anywhere; use --custom for an empty file when drizzle-kit cannot derive the
 # change (extension, backfill). schema:check is no-write: chain shape,
@@ -150,8 +152,9 @@ PRE_MIGRATION_BACKUP=1 ./ops/scripts/db/migrate.sh --mode dev
 ./ops/scripts/db/save-dev-setup.sh
 
 # Drop + restore the private dev setup baseline when present + migrate.
-# Test/prod never consume the dev baseline. Use --no-dev-setup for a genuinely
-# empty dev database.
+# Test/prod never consume the dev baseline. After the schema-epoch reset, a
+# pre-epoch saved baseline is incompatible: use --no-dev-setup when explicitly
+# recreating an empty dev database (only with separate operator authorization).
 ./ops/scripts/db/reset-postgres.sh [--mode dev|test|prod]
 ./ops/scripts/db/reset-postgres.sh --mode dev --no-dev-setup
 
@@ -335,11 +338,16 @@ adapter catalog are fixed server authorities.
 
 ## Focused Runs Verification
 
-Focused verification commands from repo root:
+Focused verification commands from repo root. The server's `pretest`,
+`pretypecheck` and `prebuild` already run `build:workspace-deps`
+(`@rainver/protocol`, `@rainver/outbound-guard`, `@rainver/folder-read`; the
+host-daemon's adds `@rainver/agent-cli`), so a server step never needs the
+protocol built by hand first. Run the protocol's own checks when the change
+touches the contract, not as a build step for the server:
 
 ```bash
 cd packages/protocol
-pnpm run typecheck && pnpm test && pnpm run build
+pnpm run typecheck && pnpm test          # contract change only
 
 cd ../server
 pnpm run typecheck
@@ -347,10 +355,9 @@ pnpm exec vitest run \
   test/evidenceRedaction.test.ts \
   test/runOrchestrationService.test.ts \
   test/runMaterializationService.test.ts \
-  test/runManagedApiAdapter.test.ts \
-  test/runVendorCliAdapter.test.ts \
+  test/remoteHostCliAdapter.test.ts \
   test/runsRoutes.test.ts \
-  test/runtimeHost.test.ts \
+  test/runtimeAuthority.test.ts \
   test/config.test.ts \
   test/features.test.ts \
   test/boundaries.test.ts
@@ -431,11 +438,12 @@ curl http://localhost:3000/api/v1/runs/<run_id>/turn/stream \
 
 ## Focused Policy/Proposals Verification
 
-Focused verification commands from repo root:
+Focused verification commands from repo root; as above, the server steps build
+their own workspace dependencies:
 
 ```bash
 cd packages/protocol
-pnpm run typecheck && pnpm test && pnpm run build
+pnpm run typecheck && pnpm test          # contract change only
 
 cd ../server
 pnpm run typecheck

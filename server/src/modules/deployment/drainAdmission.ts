@@ -33,12 +33,10 @@ export const INSTANCE_UPDATE_PENDING = "instance_update_pending";
  * cannot be read off a Run that does not exist yet; `agent_run` is decided by
  * the Run's own trigger origin.
  *
- * Together with the automation scheduler these stop every unattended Run that
- * would occupy the instance for any length of time. They are deliberately not
- * a claim that no row appears in `runs`: a workflow action node still records
- * its own already-terminal Run through `createRunningSystemRun`, and a
- * research pipeline job still creates the queued Runs whose dispatch then
- * defers. Neither keeps the drain from converging.
+ * Together with the automation scheduler these stop every unattended Agent
+ * Run that would occupy the instance for any length of time. Deterministic
+ * Workflow Actions own their outcome records and bounded ProviderTasks are
+ * short-lived; research pipeline Agent Runs still defer at dispatch.
  */
 export const UNATTENDED_RUN_JOB_TYPES: readonly string[] = [
   "daily_capture_report",

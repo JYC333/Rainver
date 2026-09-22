@@ -16,7 +16,7 @@ describe("Project Research execution input", () => {
 
   it("rejects runtime and credential fields at the public boundary", () => {
     expect(() => rejectLegacyResearchRuntimeFields({
-      adapter_type: "model_api",
+      runtime_key: "opencode",
     })).toThrow(/managed Model Provider/);
     expect(() => rejectLegacyResearchRuntimeFields({
       execution: { runtime_profile_id: "profile-1" },

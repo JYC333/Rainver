@@ -12,7 +12,7 @@ import { RESEARCH_OPERATION_FAILURE_NOTIFY_JOB } from "../src/modules/projectRes
 import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import { HttpError, type SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
-import { seedAgentWithVersion, seedSpaceOwnerProject, seedRoomManager } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedServerHost, seedSpaceOwnerProject, seedRoomManager } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../src/modules/projectResearch/researchCheckpointPolicy.js";
@@ -43,6 +43,7 @@ describe("researchAcquisitionPipelineDb", () => {
   const PROVIDER = "39999999-9999-4999-8999-999999999997";
   const ROOM = "37777777-7777-4777-8777-777777777777";
   const SESSION = "38888888-8888-4888-8888-888888888888";
+  const SERVER_HOST = "39999999-9999-4999-8999-999999999995";
 
   let config: ReturnType<typeof loadConfig> | undefined;
 
@@ -59,11 +60,18 @@ describe("researchAcquisitionPipelineDb", () => {
     if (!db.available) return;
     await resetTables(
       db.pool,
-      ["messages", "sessions", "room_user_members", "rooms", "jobs", "project_research_reports", "project_research_checkpoints", "research_query_strategies", "project_research_context_versions", "project_research_question_assessment_sessions", "project_operations", "project_research_workflows", "artifacts", "project_members", "projects", "space_memberships", "users", "spaces", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors"],
+      ["messages", "sessions", "room_user_members", "rooms", "jobs", "project_research_reports", "project_research_checkpoints", "research_query_strategies", "project_research_context_versions", "project_research_question_assessment_sessions", "project_operations", "project_research_workflows", "artifacts", "project_members", "projects", "agent_runtime_profiles", "space_memberships", "hosts", "machines", "users", "spaces", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors"],
       { cascade: true },
     );
     const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
-    await seedAgentWithVersion(db.pool, { agent: AGENT, version: AGENT_VERSION, space: SPACE, owner: OWNER, now });
+    await seedAgentWithVersion(db.pool, { agent: AGENT, version: AGENT_VERSION, space: SPACE, owner: OWNER, seedDefaultRuntimeProfile: false, now });
+    await seedServerHost(db.pool, {
+      id: SERVER_HOST,
+      now,
+      installations: {
+        opencode: [{ id: "managed:1.0.0", version: "1.0.0", logged_in: true, options: null, health_check_protocol: "acp" }],
+      },
+    });
     await db.pool.query(
       `INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at)
        VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`,
@@ -75,9 +83,15 @@ describe("researchAcquisitionPipelineDb", () => {
       [randomUUID(), PROVIDER, SPACE, OWNER, now],
     );
     await db.pool.query(
-      `INSERT INTO agent_runtime_profiles (id,space_id,agent_id,name,adapter_type,model_provider_id,model_name,runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at)
-       VALUES ($1,$2,$3,'Default','model_api',$4,'test-model','{}'::jsonb,'{}'::jsonb,true,true,$5,$5)`,
-      [randomUUID(), SPACE, AGENT, PROVIDER, now],
+      `INSERT INTO agent_runtime_profiles (
+         id, space_id, agent_id, execution_host_id, workspace_mode, runtime_installation,
+         name, runtime_key, backend_mode, model_provider_id, model_name,
+         runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
+       ) VALUES (
+         $1, $2, $3, $4, 'managed', 'managed:1.0.0', 'Default', 'opencode',
+         'model_provider', $5, 'test-model', '{}'::jsonb, '{}'::jsonb, true, true, $6, $6
+       )`,
+      [randomUUID(), SPACE, AGENT, SERVER_HOST, PROVIDER, now],
     );
     await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
     for (const providerKey of ["arxiv", "openalex"]) {

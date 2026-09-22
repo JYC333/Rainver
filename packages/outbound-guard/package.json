@@ -17,6 +17,9 @@
     "src",
     "dist"
   ],
+  "dependencies": {
+    "undici": "^6.21.0"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",

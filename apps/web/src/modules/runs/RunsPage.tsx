@@ -16,6 +16,7 @@ import { Skeleton } from '../../components/ui/skeleton'
 import { PreviewBadge } from '../../components/PreviewBadge'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
+import { ProviderTaskBadge, runActorLabel } from './runActor'
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
@@ -29,12 +30,13 @@ function RunRow({ r, agentName, onRefresh }: { r: Run; agentName: string | null;
           <StatusBadge status={r.status} />
           <Badge variant="secondary">{r.mode}</Badge>
           {r.run_type && <Badge variant="outline">{r.run_type}</Badge>}
+          <ProviderTaskBadge run={r} />
           {r.mode === 'dry_run' && <PreviewBadge />}
           <ScopeBadge visibility={r.visibility} omitShared />
         </div>
         {(r.instruction || r.prompt) && <p className="text-sm font-medium">{r.instruction ?? r.prompt}</p>}
         <p className="text-xs text-muted-foreground">
-          {agentName ?? 'Agent unavailable'} · created {fmt(r.created_at)}
+          {runActorLabel(r, agentName)} · created {fmt(r.created_at)}
           {r.started_at && ` · started ${fmt(r.started_at)}`}
           {r.ended_at && ` · ended ${fmt(r.ended_at)}`}
         </p>

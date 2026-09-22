@@ -2,14 +2,14 @@ import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { SystemActionExecutor } from "../systemActions/gateway.js";
-import type { RunRecord } from "../runs/repository.js";
+import type { AgentRunRecord } from "../runs/repository.js";
 import { PgPlanRepository } from "./repository.js";
 
 /** `task.plan.propose` (action authority consolidation plan, P1.5). */
 export function registerPlansSystemActionExecutors(
   executors: Map<SystemActionId, SystemActionExecutor>,
   config: ServerConfig,
-  run: RunRecord,
+  run: AgentRunRecord,
 ): void {
   const db = getDbPool(config.databaseUrl!);
   const identity = { spaceId: run.space_id, userId: run.instructed_by_user_id! };

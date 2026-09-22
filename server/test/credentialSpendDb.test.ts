@@ -42,8 +42,8 @@ async function insertRun(origin: string, root: string | null = null): Promise<Cr
   const id = randomUUID();
   await db.pool.query(
     `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-       owner_user_id, root_run_id, parent_run_id, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,'agent',$5,'queued','live',$6,$7,$7,now(),now())`,
+       owner_user_id, root_run_id, parent_run_id, created_at, updated_at, execution_kind)
+     VALUES ($1,$2,$3,$4,'agent',$5,'queued','live',$6,$7,$7,now(),now(), 'agent')`,
     [id, SPACE, AGENT, VERSION, origin, OWNER, root],
   );
   return { id, space_id: SPACE, parent_run_id: root, trigger_origin: origin, contract_snapshot_json: null };
@@ -58,8 +58,8 @@ async function automationFired(runId: string): Promise<{ grant: string }> {
     [automation, SPACE, OWNER, AGENT],
   );
   await db.pool.query(
-    `INSERT INTO automation_runs (id, automation_id, run_id, triggered_by_user_id, trigger_type, created_at)
-     VALUES ($1,$2,$3,$4,'schedule',now())`,
+    `INSERT INTO automation_runs (id, automation_id, target_type, run_id, triggered_by_user_id, trigger_type, created_at)
+     VALUES ($1,$2,'agent_run',$3,$4,'schedule',now())`,
     [randomUUID(), automation, runId, OWNER],
   );
   const grant = randomUUID();

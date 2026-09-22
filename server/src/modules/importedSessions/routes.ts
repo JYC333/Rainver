@@ -63,11 +63,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const body = jsonBody(request);
-      const adapterType = body.adapter_type;
-      if (typeof adapterType !== "string" || !adapterType) throw new HttpError(422, "adapter_type is required");
+      const runtimeKey = body.runtime_key;
+      if (typeof runtimeKey !== "string" || !runtimeKey) throw new HttpError(422, "runtime_key is required");
       if (typeof body.sync !== "boolean") throw new HttpError(422, "sync must be a boolean");
       return reply.send(await service().setPolicy(identity, locationId(request), {
-        adapter_type: adapterType,
+        runtime_key: runtimeKey,
         installation: typeof body.installation === "string" ? body.installation : undefined,
         sync: body.sync,
         default_visibility: visibility(body.default_visibility),
@@ -103,13 +103,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const body = jsonBody(request);
-      const adapterType = body.adapter_type;
-      if (typeof adapterType !== "string" || !adapterType) throw new HttpError(422, "adapter_type is required");
+      const runtimeKey = body.runtime_key;
+      if (typeof runtimeKey !== "string" || !runtimeKey) throw new HttpError(422, "runtime_key is required");
       const sessionIds = Array.isArray(body.session_ids)
         ? body.session_ids.filter((value): value is string => typeof value === "string")
         : null;
       return reply.send(await service().sync(identity, locationId(request), {
-        adapter_type: adapterType,
+        runtime_key: runtimeKey,
         installation: typeof body.installation === "string" ? body.installation : undefined,
         session_ids: sessionIds,
         visibility: visibility(body.visibility),

@@ -98,46 +98,48 @@ Responses transport and uses the protocol-native `tool_choice: "required"`;
 ordinary OpenAI-compatible chat retains the Chat Completions function-choice
 shape.
 
-Source post-processing and Project Research synthesis are server-managed runs;
-Project Research uses only the managed `model_api` provider path and never a CLI
-credential profile. They are not user Automations. When their rule/setup was explicitly configured by the
-user, the trusted internal run creator records that scope in the immutable run
-contract through the typed managed-execution policy. The credential policy can
-then allow the corresponding `job` or `system` run without a second approval
-prompt, and the run failure policy keeps provider/CLI failures on the owning
-Source or Research operation instead of converting them into a generic
-Supervisor review. This does not grant the same exception to
+Source post-processing and Project Research synthesis are server-managed work,
+not user Automations. Project Research stage executions are ordinary Agent
+Runs pinned to the selected AgentRuntimeProfile; bounded provider operations
+use ProviderTask policy and accounting rather than a managed API Agent runtime.
+When their rule/setup was explicitly configured by the user, the trusted
+internal run creator records that scope in the immutable run contract through
+the typed managed-execution policy. The credential policy can then allow the
+corresponding `job` or `system` Run without a second approval prompt, and the
+failure policy keeps provider/CLI failures on the owning Source or Research
+operation instead of converting them into a generic Supervisor review. This
+does not grant the same exception to
 `trigger_origin='automation'`; ordinary unattended Automations still require
 their own pre-authorization.
 
-Claude Code can optionally bind to a configured ModelProvider for
-Claude-compatible endpoints. The Provider row remains the source of truth:
-`config_json.claude_compatible_base_url` stores the Anthropic-compatible base
-URL, and `default_model` / `available_models` store model choices. The server
-creates a short-lived per-run provider proxy lease and renders only that lease
-into the Claude CLI subprocess environment (`ANTHROPIC_BASE_URL`,
-`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL`,
-`ANTHROPIC_DEFAULT_SONNET_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`,
-and `ANTHROPIC_DEFAULT_HAIKU_MODEL`) only for that run. If no provider is
-selected for Claude Code, the server does not set `ANTHROPIC_BASE_URL`; Claude
-Code uses its normal default endpoint/login state. Provider API keys are never
-released to CLI subprocess environment variables; the provider proxy resolves
-the real key server-side and forwards requests to the configured compatible URL
-using the selected provider grant's NetworkProfile.
+The AgentRuntimeProfile owns runtime backend selection, and which runtimes may
+be Provider-backed is a registry fact, not a Host fact. A Profile may choose
+`backend_mode = "model_provider"` only when its runtime's
+`AgentRuntimeDefinition` reports `supports_model_provider`, which comes from
+the spec's `credentials.credential_mode`
+(`runtimeAdapters/runtimeDefinitions.ts`). **Only OpenCode declares
+`cli_profile_or_model_provider` today.** Claude Code and Codex CLI declare
+`cli_profile`: they run on the execution Host's own vendor login, and
+`assertBackendModeBinding` refuses a `model_provider` Profile for them with
+422. `server/test/runtimeAuthority.test.ts` pins the registry fact that refusal
+reads — `supportsRuntimeBackendMode("claude_code", "model_provider")` is
+`false` — not the route's status code. The frames that
+would render an Anthropic or Codex provider binding still exist in
+`runs/remoteProviderBinding.ts`, but no Profile can select the mode that
+reaches them.
 
-Codex CLI can optionally bind to a configured ModelProvider for OpenAI
-Responses-compatible endpoints. The Provider row remains the source of truth:
-`config_json.openai_compatible_base_url` stores the OpenAI-compatible base URL,
-and `default_model` / `available_models` store model choices. The server creates
-a short-lived per-run provider proxy lease, materializes the run's temporary
-`CODEX_HOME` directory from the managed Codex profile, and writes a run-scoped
-`config.toml` plus `model-catalogs/rainver-provider.json` there. The
-generated Codex config points at the provider proxy with
-`wire_api = "responses"` and stores only the lease token as
-`experimental_bearer_token`. If no provider is selected for Codex CLI, the
-server still sets `CODEX_HOME` to the run's temporary Codex profile path but
-does not write a provider override; Codex uses its normal CLI login/config
-state and the selected CLI credential profile's NetworkProfile, if configured.
+For an OpenCode `model_provider` Profile the Provider row remains the source of
+truth: `config_json.openai_compatible_base_url` stores the OpenAI-compatible
+base URL, and `default_model` / `available_models` store model choices. The
+server creates a short-lived per-run provider proxy lease and writes a
+Run-scoped `opencode.json` into the Run's isolated runtime profile
+(`OPENCODE_CONFIG`) containing the proxy address, the lease token and the
+selected model — never the upstream key. The Profile must also name an
+execution Host and installation; either Host kind qualifies, since the daemon
+receives a lease address rather than a credential. Provider API keys are never
+released into a runtime subprocess environment: the provider proxy resolves the
+real key server-side and forwards requests to the configured compatible URL
+using the selected provider grant's NetworkProfile.
 
 NetworkProfiles are space-scoped reusable routing profiles. They support
 `direct` and `http_proxy` modes. HTTP proxy URLs are not credential carriers;
@@ -151,18 +153,18 @@ path. Both normalize into mutually exclusive token buckets. Prompts,
 completions, request/response bodies, credentials, and raw CLI transcripts are
 excluded. See `docs/TOKEN_USAGE_METERING.md`.
 
-## Per-agent model config
+## Agent Runtime Profile model binding
 
-Agent records carry `model_config_json` — the model used for a specific agent can differ from the system default:
+`AgentVersion` contains no provider/model deployment binding. An
+`AgentRuntimeProfile` may select a same-Space ModelProvider and explicit model
+when the runtime supports that protocol and the Profile executes on the built-in
+Server Runtime. Native mode instead uses the runtime's login on the selected
+Host. The Profile snapshot is frozen into each Run, so changing a live Profile
+does not rebind an existing Run or conversation.
 
-```json
-{
-  "model": "claude-opus-4-7",
-  "max_tokens": 8192
-}
-```
-
-This is the only per-agent provider customization implemented now. It covers the personal/family use case (e.g. use a cheaper model for routine tasks).
+The optional Space provisioning template is a separate choice for future
+default Profiles; it never changes existing Profiles or supplies a dispatch
+fallback.
 
 ## What We Have NOT Built
 

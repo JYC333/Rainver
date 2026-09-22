@@ -198,7 +198,7 @@ export async function refreshImportedHistorySummary(
     system: SYSTEM_PROMPT,
     user: JSON.stringify({
       input_kind: "imported_cli_session",
-      runtime: session.adapter_type,
+      runtime: session.runtime_key,
       cwd: session.cwd,
       record_count: session.record_count,
       truncated,

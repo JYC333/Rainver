@@ -50,9 +50,9 @@ external webhook/cron marketplace.
 - Capture destinations via `POST /api/v1/captures`.
 - Chat sessions (`POST /api/v1/sessions`) and Rooms.
 - Memory / Knowledge proposal review and apply.
-- Runs through the server runtime adapter path (`model_api` and
-  spec-driven local CLI runtimes). The native `capability` adapter is
-  disabled.
+- Agent Runs use an ACP runtime through an execution Host. Bounded
+  ProviderTask calls remain a separate Server-owned path; the native
+  `capability` runtime entry is disabled.
 - RunStep replay, artifacts, task boards, Home / Today aggregates.
 - Automatic local backups when `BACKUP_ENABLED=true`.
 - Manual backup/restore scripts; allowlisted deployer flow.

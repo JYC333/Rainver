@@ -16,6 +16,7 @@
  */
 
 import { z } from "zod";
+import { RuntimeKeySchema } from "./runtimeAuthority.js";
 
 /**
  * Retained kinds. `unknown` is not a failure: an ACP update this version does
@@ -136,7 +137,7 @@ export const AMBIENT_TRIM_LIMITS: AmbientTrimLimits = {
 /** Per (Location, adapter, installation) counts, refreshed on a slow interval and reported in heartbeats. */
 export const AmbientSessionCountSchema = z.object({
   location_id: z.string().min(1).max(36),
-  adapter_type: z.string().min(1).max(64),
+  runtime_key: RuntimeKeySchema,
   installation: z.string().min(1).max(64),
   session_count: z.number().int().min(0),
   oldest_updated_at: z.string().max(64).nullable(),
@@ -153,7 +154,7 @@ export type AmbientSessionCount = z.infer<typeof AmbientSessionCountSchema>;
  * the banner asks for; without it an import happens once and stops.
  */
 export const AmbientImportPolicyEntrySchema = z.object({
-  adapter_type: z.string().min(1).max(64),
+  runtime_key: RuntimeKeySchema,
   installation: z.string().min(1).max(64),
   sync: z.boolean(),
   /** Visibility new sessions land with; inherited by their records. */
@@ -196,7 +197,7 @@ export const ImportedSessionSchema = z.object({
   workspace_location_id: z.string().nullable(),
   execution_host_id: z.string().nullable(),
   owner_user_id: z.string(),
-  adapter_type: z.string(),
+  runtime_key: z.string(),
   installation: z.string(),
   vendor_session_id: z.string(),
   cwd: z.string().nullable(),
@@ -248,7 +249,7 @@ export type ImportedSessionRecord = z.infer<typeof ImportedSessionRecordSchema>;
  */
 export const AmbientSyncReportSchema = z.object({
   location_id: z.string(),
-  adapter_type: z.string(),
+  runtime_key: z.string(),
   installation: z.string(),
   sessions_seen: z.number().int().nonnegative(),
   sessions_written: z.number().int().nonnegative(),

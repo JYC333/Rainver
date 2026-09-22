@@ -68,7 +68,7 @@ export type AmbientUsage = ProtocolAmbientUsage;
 export type AmbientSessionImport = ProtocolAmbientSessionImport;
 
 export interface AmbientRuntimeTarget {
-  adapter_type: string;
+  runtime_key: string;
   installation: string;
   /** Resolved by the server from the adapter spec; the daemon adds no runtime knowledge. */
   argv: string[];
@@ -90,7 +90,7 @@ class AcpProcess {
   private closed: Error | null = null;
   private updates: Record<string, unknown>[] = [];
 
-  constructor(command: string, args: string[], env: Record<string, string>, cwd: string, adapterType: string) {
+  constructor(command: string, args: string[], env: Record<string, string>, cwd: string, runtimeKey: string) {
     this.child = spawn(command, args, {
       cwd,
       stdio: ["pipe", "pipe", "ignore"],
@@ -106,7 +106,7 @@ class AcpProcess {
       // Rainver will not itself continue. That is the honest answer for a
       // feature whose subject is "this machine's own history"; the alternative
       // is to import nothing.
-      env: { ...helperProcessEnv(process.env, adapterType, { keepStateRoots: true }), ...env },
+      env: { ...helperProcessEnv(process.env, runtimeKey, { keepStateRoots: true }), ...env },
     });
     this.child.stdout?.on("data", (chunk: Buffer) => this.consume(chunk.toString("utf8")));
     this.child.on("error", (error) => this.fail(error instanceof Error ? error : new Error(String(error))));
@@ -231,8 +231,8 @@ async function openRuntime(
 ): Promise<AcpProcess | null> {
   const [rawCommand, ...rest] = target.argv;
   if (!rawCommand) return null;
-  const launch = resolveLaunch(rawCommand, rest, target.installation, target.adapter_type);
-  const runtime = new AcpProcess(launch.command, launch.args, launch.env, cwd, target.adapter_type);
+  const launch = resolveLaunch(rawCommand, rest, target.installation, target.runtime_key);
+  const runtime = new AcpProcess(launch.command, launch.args, launch.env, cwd, target.runtime_key);
   try {
     const result = await runtime.request("initialize", {
       protocolVersion: 1,
@@ -254,7 +254,7 @@ export type AcpLaunchResolver = (
   rawCommand: string,
   args: string[],
   installation: string,
-  adapterType: string,
+  runtimeKey: string,
 ) => { command: string; args: string[]; env: Record<string, string> };
 
 function parseSessionList(result: Record<string, unknown>): { sessions: AmbientSessionSummary[]; cursor: string | null } {
@@ -443,7 +443,7 @@ export async function importAmbientSessions(
   log: (line: string) => void,
 ): Promise<{ sessions: AmbientSessionImport[]; enumeration: AmbientEnumeration }> {
   const runtime = await openRuntime(request.target, request.cwd, resolveLaunch);
-  if (!runtime) throw new Error(`${request.target.adapter_type} does not support listing and loading sessions`);
+  if (!runtime) throw new Error(`${request.target.runtime_key} does not support listing and loading sessions`);
   try {
     const keepIds = new Set([...(request.session_ids ?? []), ...request.retry_session_ids]);
     const enumeration = await listSessions(runtime, request.cwd, request.max_sessions, request.window_days, keepIds);

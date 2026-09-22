@@ -86,26 +86,30 @@ function threadUndoStillApplies(
 /**
  * The cursor carries both ordering columns, because neither alone is a key.
  *
- * `project_work_events.id` is a v4 UUID with no time component, so a keyset
- * predicate on the id alone cuts the stream at a random point: half of the
- * page just read comes back, and everything older whose id sorts above the
- * cursor becomes unreachable for good.
+ * The tiebreak is `seq`, the stream's own insert sequence, not the row id:
+ * `project_work_events.id` is a v4 UUID with no time component, so ordering on
+ * it put same-millisecond events — two events of one advancement chain, written
+ * in one transaction — in a random order, and a keyset predicate on it cuts the
+ * stream at a random point: half of the page just read comes back, and
+ * everything older whose id sorts above the cursor becomes unreachable for good.
  */
-function encodeCursor(occurredAt: string, id: string): string {
-  return `${occurredAt}|${id}`;
+function encodeCursor(occurredAt: string, seq: string): string {
+  return `${occurredAt}|${seq}`;
 }
 
-function decodeCursor(cursor: string | null): { occurredAt: string; id: string } | null {
+function decodeCursor(cursor: string | null): { occurredAt: string; seq: string } | null {
   if (!cursor) return null;
   const at = cursor.indexOf("|");
   const occurredAt = at < 0 ? "" : cursor.slice(0, at);
-  const id = at < 0 ? "" : cursor.slice(at + 1);
+  const seq = at < 0 ? "" : cursor.slice(at + 1);
   // A malformed cursor silently restarting the list would make "load more"
   // loop over page one forever, which reads as data rather than a bug.
-  if (!occurredAt || !id || Number.isNaN(Date.parse(occurredAt))) {
+  // `seq` stays a decimal string: it is `bigint` in the database, and parsing
+  // it through a JS number would lose precision past 2^53.
+  if (!occurredAt || !/^\d+$/.test(seq) || Number.isNaN(Date.parse(occurredAt))) {
     throw new HttpError(422, "Invalid updates cursor");
   }
-  return { occurredAt, id };
+  return { occurredAt, seq };
 }
 
 interface UpdateRow {
@@ -115,6 +119,7 @@ interface UpdateRow {
   subject_id: string;
   occurred_at: string;
   cursor_at: string;
+  seq: string;
   data_json: Record<string, unknown>;
   actor_user_id: string | null;
   actor_agent_id: string | null;
@@ -279,7 +284,7 @@ export async function getProjectUpdates(
             -- through a JS Date truncates to milliseconds, and a writer using
             -- SQL now() would then make every row inside the truncated window
             -- unreachable — the same failure the composite key exists to fix.
-            e.occurred_at::text AS cursor_at, e.data_json,
+            e.occurred_at::text AS cursor_at, e.seq::text AS seq, e.data_json,
             a.user_id AS actor_user_id, a.agent_id AS actor_agent_id,
             au.display_name AS actor_user_name, ag.name AS actor_agent_name,
             a.service_name AS actor_service,
@@ -328,12 +333,12 @@ export async function getProjectUpdates(
         AND (e.subject_type <> 'inquiry_thread' OR tho.id IS NOT NULL)
         AND (e.subject_type <> 'memory_entry' OR me.id IS NOT NULL)
         AND ($5::timestamptz IS NULL
-             OR (e.occurred_at, e.id) < ($5::timestamptz, $6::text))
-      ORDER BY e.occurred_at DESC, e.id DESC
+             OR (e.occurred_at, e.seq) < ($5::timestamptz, $6::bigint))
+      ORDER BY e.occurred_at DESC, e.seq DESC
       LIMIT $7::int`,
     [
       identity.spaceId, identity.userId, projectId, UPDATE_KINDS,
-      after?.occurredAt ?? null, after?.id ?? null, pageSize + 1,
+      after?.occurredAt ?? null, after?.seq ?? null, pageSize + 1,
     ],
   );
 
@@ -344,7 +349,7 @@ export async function getProjectUpdates(
     items,
     viewer_can_write: await canWriteProject(db, identity.spaceId, projectId, identity.userId),
     next_cursor: rows.rows.length > pageSize && last
-      ? encodeCursor(last.cursor_at, last.id)
+      ? encodeCursor(last.cursor_at, last.seq)
       : null,
   };
 }

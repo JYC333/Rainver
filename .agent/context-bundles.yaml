@@ -89,7 +89,6 @@ runtime-agent:
     - server/src/modules/agents
     - server/src/modules/runs
     - server/src/modules/runtimeAdapters
-    - server/src/modules/runtimeHost
     - server/src/modules/projectFolders
     - server/test/runOrchestrationService.test.ts
     - server/test/runsWorkerRuntime.test.ts
@@ -117,7 +116,6 @@ runtime-context:
     - server/src/modules/rooms
     - server/src/modules/sessions
     - server/src/modules/runtimeAdapters
-    - server/src/modules/runtimeHost
     - server/src/modules/projectFolders
     - server/src/db/schema
     - packages/protocol/src
@@ -234,7 +232,7 @@ capability:
     - catalog/capabilities
     - server/src/modules/catalog
     - server/src/modules/runtimeAdapters
-    - server/test/runtimeHost.test.ts
+    - server/test/capabilityProposalApplier.test.ts
 
 proposals:
   docs:
@@ -416,7 +414,6 @@ credentials:
     - .agent/BOUNDARIES.md
   code_roots:
     - server/src/modules/providers
-    - server/src/modules/runtimeHost
     - server/src/modules/runs
     - server/src/modules/projectFolders
 

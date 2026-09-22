@@ -154,7 +154,7 @@ describe("Context Review Cycle (real Postgres)", () => {
         memory_max_findings: 100,
         max_claim_candidates: 40,
       },
-      runId: null,
+      automationRunId: null,
     });
 
     expect(result.degraded).toBe(false);

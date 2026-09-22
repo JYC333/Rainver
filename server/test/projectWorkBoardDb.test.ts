@@ -13,7 +13,7 @@ import { appendProjectWorkEvent } from "../src/modules/projectWork/eventWriter.j
 import { resolveUserActorId } from "../src/db/actorResolver.js";
 import { HttpError, withDbTransaction } from "../src/modules/routeUtils/common.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../src/modules/projects/access.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * Real-Postgres coverage for the Board read model and the manual close gate.
@@ -66,10 +66,7 @@ async function makeRunWithEvaluation(
 ): Promise<string> {
   const runId = randomUUID();
   await db.pool!.query(
-    `INSERT INTO runs (
-       id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type,
-       trigger_origin, status, mode, owner_user_id, visibility, created_at, updated_at
-     ) VALUES ($1, $2, $3, $4, $5, 'sandboxed', 'agent', 'manual', $7, 'live', $6, $8, now(), now())`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, visibility, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, $5, 'sandboxed', 'agent', 'manual', $7, 'live', $6, $8, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [
       runId, SPACE, AGENT, VERSION, PROJECT, OWNER,
       options.status ?? "succeeded", options.visibility ?? "space_shared",
@@ -159,13 +156,20 @@ beforeEach(async () => {
   );
   await db.pool!.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, model_config_json, runtime_config_json,
-       context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json,
-       runtime_policy_json, created_at
-     ) VALUES ($1, $2, $3, 'v1', '{}', '{}', '{}', '{}', '[]', '{}', '{}', now())`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES ($1, $2, $3, 'v1', '{}', '{}', '[]', '{}', now())`,
     [VERSION, AGENT, SPACE],
   );
   await db.pool!.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
+  await ensureDefaultRuntimeProfile(db.pool!, { agent: AGENT, space: SPACE });
 });
 
 describe("project board read model", () => {
@@ -421,7 +425,7 @@ describe("manual close gate", () => {
 
     const events = await db.pool!.query<{ event_kind: string; data_json: Record<string, unknown> }>(
       `SELECT event_kind, data_json FROM project_work_events
-        WHERE subject_id = $1 ORDER BY created_at, id`,
+        WHERE subject_id = $1 ORDER BY created_at, seq`,
       [task],
     );
     expect(events.rows.map((row) => row.event_kind)).toEqual(["task.flow_changed", "task.accepted"]);
@@ -514,7 +518,7 @@ describe("stage control", () => {
     const events = await db.pool!.query<{ data_json: Record<string, unknown> }>(
       `SELECT data_json FROM project_work_events
         WHERE subject_id = $1 AND event_kind = 'task.stage_changed'
-        ORDER BY created_at, id`,
+        ORDER BY created_at, seq`,
       [task],
     );
     expect(events.rowCount).toBe(2);
@@ -980,10 +984,7 @@ describe("inquiry advancement in the Project's account", () => {
   beforeEach(async () => {
     if (!db.available) return;
     await db.pool!.query(
-      `INSERT INTO runs (
-         id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type,
-         trigger_origin, status, mode, owner_user_id, visibility, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, 'sandboxed', 'agent', 'manual', 'succeeded', 'live', $6, 'space_shared', now(), now())
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, visibility, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, $5, 'sandboxed', 'agent', 'manual', 'succeeded', 'live', $6, 'space_shared', now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))
        ON CONFLICT (id) DO NOTHING`,
       [run.runId, SPACE, AGENT, VERSION, PROJECT, OWNER],
     );

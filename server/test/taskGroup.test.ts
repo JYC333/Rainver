@@ -114,7 +114,7 @@ describe("taskContractDb", () => {
     );
   });
 
-  describe("task contract persistence (real Postgres)", () => {
+describe("task contract persistence (real Postgres)", () => {
     it("creates and updates the A1 contract fields through the repository boundary", async () => {
       if (!db.available) return;
       const repository = new PgTaskRepository(db.pool);
@@ -183,5 +183,17 @@ describe("taskContractDb", () => {
       });
       expect(task.status).toBe("waiting_for_review");
     });
+  });
+});
+
+describe("Task Run runtime authority", () => {
+  it("rejects deployment and backend fields outside the selected Runtime Profile", async () => {
+    const repository = new PgTaskRepository({} as never);
+    const identity = { spaceId: "space-1", userId: "user-1" };
+
+    for (const field of ["runtime_key", "installation", "model_provider_id", "model", "reasoning_effort"]) {
+      await expect(repository.createTaskRun(identity, "task-1", { [field]: "caller-value" }))
+        .rejects.toThrow(`${field} is owned by the selected Runtime Profile`);
+    }
   });
 });

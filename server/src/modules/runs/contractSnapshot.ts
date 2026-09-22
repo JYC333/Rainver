@@ -7,7 +7,8 @@ export type RunContractSourceKind =
   | "automation"
   | "workflow"
   | "delegation"
-  | "plan";
+  | "plan"
+  | "agent_version";
 
 export interface RunContractSource {
   kind: RunContractSourceKind;
@@ -59,6 +60,11 @@ export interface RunContractSnapshotInput {
   required_outputs_json?: unknown;
   structured_output_json?: unknown;
   risk_level?: string | null;
+  agent_constraints?: {
+    agent_version_id: string;
+    risk_level: "low" | "medium" | "high" | "critical";
+    max_run_time_seconds: number;
+  } | null;
   max_runs?: number | null;
   max_attempts?: number | null;
   max_cost?: number | null;
@@ -85,6 +91,7 @@ export interface RunContractSnapshot {
   required_outputs_json: unknown;
   structured_output_json: unknown;
   risk_level: string | null;
+  agent_constraints: RunContractSnapshotInput["agent_constraints"];
   max_runs: number | null;
   max_attempts: number | null;
   max_cost: number | null;
@@ -108,6 +115,30 @@ export function createRunContractSnapshot(
   const source = input?.source ?? { kind: "direct" as const, id: null };
   const budgetSources = normalizeBudgetSources(input, source);
   const budget = resolveBudget(budgetSources);
+  const agentConstraintSource = input?.agent_constraints
+    ? { kind: "agent_version" as const, id: input.agent_constraints.agent_version_id }
+    : null;
+  const effectiveBudget = { ...budget.effective };
+  const selectedSourceByDimension = { ...budget.resolution.selected_source_by_dimension };
+  const recordedBudgetSources = [...budget.sources];
+  if (input?.agent_constraints) {
+    const { max_run_time_seconds: maxRunTimeSeconds } = input.agent_constraints;
+    recordedBudgetSources.push({
+      source: agentConstraintSource!,
+      max_duration_seconds: maxRunTimeSeconds,
+    });
+    if (effectiveBudget.max_duration_seconds === null || maxRunTimeSeconds <= effectiveBudget.max_duration_seconds) {
+      effectiveBudget.max_duration_seconds = maxRunTimeSeconds;
+      selectedSourceByDimension.max_duration_seconds = agentConstraintSource;
+    }
+  }
+  const budgetResolution: RunBudgetResolution = {
+    ...budget.resolution,
+    mode: budget.resolution.mode === "none" && input?.agent_constraints
+      ? "strictest_of_all"
+      : budget.resolution.mode,
+    selected_source_by_dimension: selectedSourceByDimension,
+  };
   return {
     contract_version: RUN_CONTRACT_VERSION,
     source: {
@@ -120,14 +151,15 @@ export function createRunContractSnapshot(
     definition_of_done: input?.definition_of_done ?? null,
     required_outputs_json: cloneJson(input?.required_outputs_json),
     structured_output_json: cloneJson(input?.structured_output_json),
-    risk_level: input?.risk_level ?? null,
-    max_runs: budget.effective.max_runs,
-    max_attempts: budget.effective.max_attempts,
-    max_cost: budget.effective.max_cost,
-    max_duration_seconds: budget.effective.max_duration_seconds,
-    budget_sources: budget.sources,
-    effective_budget: budget.effective,
-    budget_resolution: budget.resolution,
+    risk_level: stricterRiskLevel(input?.risk_level, input?.agent_constraints?.risk_level),
+    agent_constraints: input?.agent_constraints ? { ...input.agent_constraints } : null,
+    max_runs: effectiveBudget.max_runs,
+    max_attempts: effectiveBudget.max_attempts,
+    max_cost: effectiveBudget.max_cost,
+    max_duration_seconds: effectiveBudget.max_duration_seconds,
+    budget_sources: recordedBudgetSources,
+    effective_budget: effectiveBudget,
+    budget_resolution: budgetResolution,
     workflow_input_json: cloneJson(input?.workflow_input_json),
     upstream_inputs_json: cloneJson(input?.upstream_inputs_json),
     attachment_manifest_json: cloneJson(input?.attachment_manifest_json),
@@ -164,8 +196,20 @@ export function budgetSourcesFromPolicy(value: unknown): RunBudgetSource[] {
       || kind === "automation"
       || kind === "workflow"
       || kind === "delegation"
-      || kind === "plan";
+      || kind === "plan"
+      || kind === "agent_version";
   });
+}
+
+const RISK_LEVEL_ORDER = ["low", "medium", "high", "critical"] as const;
+
+function stricterRiskLevel(left: string | null | undefined, right: string | null | undefined): string | null {
+  if (!left) return right ?? null;
+  if (!right) return left;
+  const leftIndex = RISK_LEVEL_ORDER.indexOf(left as typeof RISK_LEVEL_ORDER[number]);
+  const rightIndex = RISK_LEVEL_ORDER.indexOf(right as typeof RISK_LEVEL_ORDER[number]);
+  if (leftIndex < 0 || rightIndex < 0) return "critical";
+  return RISK_LEVEL_ORDER[Math.max(leftIndex, rightIndex)]!;
 }
 
 function cloneJson(value: unknown): unknown {

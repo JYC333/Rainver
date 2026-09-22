@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunMaterializationItemSummary } from "@rainver/protocol";
-import type { Queryable, RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord, Queryable } from "../src/modules/runs/repository.js";
 import {
   PgVerificationEngine,
   buildVerificationDeclarations,
@@ -8,12 +8,13 @@ import {
   summarizeVerificationResults,
 } from "../src/modules/runs/verification/index.js";
 
-function run(overrides: Partial<RunRecord> = {}): RunRecord {
+function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   return {
     id: "run-1",
     space_id: "space-1",
     agent_id: "agent-1",
     agent_version_id: "version-1",
+    execution_kind: "agent",
     status: "succeeded",
     mode: "live",
     prompt: null,
@@ -21,7 +22,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     project_folder_id: null,
     session_id: null,
     project_id: null,
-    adapter_type: "model_api",
+    runtime_key: "opencode",
     model_provider_id: null,
     required_sandbox_level: "none",
     trigger_origin: "manual",
@@ -178,7 +179,7 @@ describe("verification engine", () => {
       execution_target: {
         host_id: "host-1",
         workspace_location_id: "loc-1",
-        adapter_type: "codex_cli",
+        runtime_tree_key: "codex_cli",
         installation: "managed:1.11.0",
       },
       base_commit_sha: null,
@@ -195,7 +196,7 @@ describe("verification engine", () => {
       target: {
         host_id: "host-1",
         workspace_location_id: "loc-1",
-        adapter_type: "codex_cli",
+        runtime_tree_key: "codex_cli",
         installation: "managed:1.11.0",
       },
     });

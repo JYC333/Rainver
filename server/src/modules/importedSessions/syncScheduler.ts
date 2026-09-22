@@ -41,7 +41,7 @@ interface ConsentedLocation {
   location_id: string;
   space_id: string;
   owner_user_id: string;
-  adapter_type: string;
+  runtime_key: string;
   installation: string;
 }
 
@@ -60,7 +60,7 @@ export function scheduleAmbientSyncs(db: Queryable, config: ServerConfig, hostId
   void (async () => {
     const due = await consentedLocations(db, hostId);
     for (const location of due) {
-      const key = `${location.location_id} ${location.adapter_type} ${location.installation}`;
+      const key = `${location.location_id} ${location.runtime_key} ${location.installation}`;
       if (inFlight.has(key)) continue;
       const last = lastRunAt.get(key) ?? 0;
       if (Date.now() - last < SYNC_INTERVAL_MS) continue;
@@ -73,7 +73,7 @@ export function scheduleAmbientSyncs(db: Queryable, config: ServerConfig, hostId
         await new ImportedSessionService(db, config).sync(
           { spaceId: location.space_id, userId: location.owner_user_id },
           location.location_id,
-          { adapter_type: location.adapter_type, installation: location.installation, initiator: "schedule" },
+          { runtime_key: location.runtime_key, installation: location.installation, initiator: "schedule" },
         );
       } catch {
         // Recorded by the next interactive sync's report; a heartbeat has no
@@ -111,7 +111,7 @@ async function consentedLocations(db: Queryable, hostId: string): Promise<Consen
         location_id: row.id,
         space_id: row.space_id,
         owner_user_id: row.owner_user_id!,
-        adapter_type: entry.adapter_type,
+        runtime_key: entry.runtime_key,
         installation: entry.installation,
       }));
   });

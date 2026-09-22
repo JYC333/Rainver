@@ -131,6 +131,7 @@ export class ProjectResearchSynthesisCoordinator {
           return false;
         }
         const run = await new PgRunRepository(db).createQueuedRunWithBudgetAdmission({
+          execution_kind: "agent",
           agent_id: current.agent_id,
           space_id: spaceId,
           user_id: userId,
@@ -243,6 +244,7 @@ export class ProjectResearchSynthesisCoordinator {
         });
         if (!resolved) throw new HttpError(500, "Project Research synthesis critique prompt is not resolvable");
         const run = await new PgRunRepository(db).createQueuedRunWithBudgetAdmission({
+          execution_kind: "agent",
           agent_id: state.agent_id,
           space_id: input.spaceId,
           user_id: input.userId,

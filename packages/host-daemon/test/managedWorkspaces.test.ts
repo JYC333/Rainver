@@ -133,6 +133,11 @@ describe("managed workspaces", () => {
     expect(existsSync(archived)).toBe(false);
   });
 
+  it("stores an ordinary Agent runtime profile under a stable Agent scope", () => {
+    expect(runtimeProfileContainerPath(AGENT_ID, "agent", AGENT_ID))
+      .toBe(join(stateDir, "agents", AGENT_ID, "profiles", "agent", AGENT_ID));
+  });
+
   it("archives the pre-Agent-keyed profiles tree and sweeps it on the same clock", async () => {
     // The old `profiles/<adapter>/<provider>` tree held one login and one
     // session store shared by every Agent on the machine, plus dead lease

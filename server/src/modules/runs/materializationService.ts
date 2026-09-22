@@ -154,7 +154,7 @@ export class RunMaterializationService {
           run: input.run,
           entry,
           exchangeOutputCwd: input.exchange_output_cwd ?? null,
-          adapterType: input.adapterResult.adapter_type,
+          runtimeKey: input.adapterResult.runtime_key,
           proposalStatus: options.proposal_status ?? "pending",
         });
         for (const proposal of captured) collect(proposal, items, errors);
@@ -166,7 +166,7 @@ export class RunMaterializationService {
       const item = await this.persistOutputArtifact({
         run: input.run,
         artifact,
-        adapterType: input.adapterResult.adapter_type,
+        runtimeKey: input.adapterResult.runtime_key,
         label: `output_artifact_${index}`,
       });
       collect(item, items, errors);
@@ -176,7 +176,7 @@ export class RunMaterializationService {
       const item = await this.persistProposal({
         run: input.run,
         proposal,
-        adapterType: input.adapterResult.adapter_type,
+        runtimeKey: input.adapterResult.runtime_key,
         label: `output_proposal_${index}`,
         proposalStatus: options.proposal_status ?? "pending",
       });
@@ -199,7 +199,7 @@ export class RunMaterializationService {
 
   async finalizeRun(run: RunRecord): Promise<RunMaterializationItemSummary> {
     try {
-      if (run.status === "succeeded" || run.status === "degraded") {
+      if (run.execution_kind === "agent" && (run.status === "succeeded" || run.status === "degraded")) {
         const delegated = await this.runtimeDelegationMaterializer.materialize({
           run,
           output_json: runOutputResult(run.output_json),
@@ -238,7 +238,7 @@ export class RunMaterializationService {
     run: RunRecord;
     entry: unknown;
     exchangeOutputCwd: string | null;
-    adapterType: string;
+    runtimeKey: string;
     proposalStatus: "pending" | "staged";
   }): Promise<RunMaterializationItemSummary[]> {
     if (!input.exchangeOutputCwd) return [];
@@ -257,7 +257,7 @@ export class RunMaterializationService {
         results.push(await this.persistProposal({
           run: input.run,
           proposal,
-          adapterType: input.adapterType,
+          runtimeKey: input.runtimeKey,
           label: `conversation_capture_proposal_${index}`,
           proposalStatus: input.proposalStatus,
         }));
@@ -338,7 +338,7 @@ export class RunMaterializationService {
   private async persistOutputArtifact(input: {
     run: RunRecord;
     artifact: unknown;
-    adapterType: string;
+    runtimeKey: string;
     label: string;
   }): Promise<RunMaterializationItemSummary> {
     try {
@@ -348,7 +348,7 @@ export class RunMaterializationService {
       const artifactId = await this.insertArtifact({
         run: input.run,
         artifactType: stringValue(spec.artifact_type) ?? "adapter_output",
-        title: stringValue(spec.title) ?? `Adapter artifact (${input.adapterType})`,
+        title: stringValue(spec.title) ?? `Adapter artifact (${input.runtimeKey})`,
         content,
         storagePath: null,
         mimeType: stringValue(spec.mime_type) ?? "text/plain; charset=utf-8",
@@ -357,7 +357,7 @@ export class RunMaterializationService {
         projectFolderId: stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
         metadata: {
           source: "adapter_output",
-          adapter_type: input.adapterType,
+          runtime_key: input.runtimeKey,
           ...recordValue(spec.metadata_json),
         },
       });
@@ -369,7 +369,7 @@ export class RunMaterializationService {
           label: input.label,
           operation: "artifact.persist",
           artifact_type: stringValue(spec.artifact_type) ?? "adapter_output",
-          title: stringValue(spec.title) ?? `Adapter artifact (${input.adapterType})`,
+          title: stringValue(spec.title) ?? `Adapter artifact (${input.runtimeKey})`,
         },
       };
     } catch (error) {
@@ -380,7 +380,7 @@ export class RunMaterializationService {
   private async persistProposal(input: {
     run: RunRecord;
     proposal: unknown;
-    adapterType: string;
+    runtimeKey: string;
     label: string;
     proposalStatus: "pending" | "staged";
   }): Promise<RunMaterializationItemSummary> {
@@ -430,11 +430,11 @@ export class RunMaterializationService {
         context: {
           proposal_type: proposalType,
           project_folder_id: stringValue(spec.project_folder_id) ?? input.run.project_folder_id,
-          adapter_type: input.adapterType,
+          runtime_key: input.runtimeKey,
         },
         metadata_json: {
           proposal_type: proposalType,
-          adapter_type: input.adapterType,
+          runtime_key: input.runtimeKey,
           label: input.label,
         },
         force_record: true,
@@ -448,7 +448,7 @@ export class RunMaterializationService {
         title: stringValue(spec.title) ?? stringValue(spec.proposed_title) ?? titleForProposal(proposalType),
         summary: stringValue(spec.summary),
         payload,
-        rationale: stringValue(spec.rationale) ?? `Proposed by run output (${input.adapterType}).`,
+        rationale: stringValue(spec.rationale) ?? `Proposed by run output (${input.runtimeKey}).`,
         riskLevel: normalizeRisk(stringValue(spec.risk_level), proposalType),
         urgency: normalizeUrgency(stringValue(spec.urgency)),
         preview: booleanValue(spec.preview) ?? input.run.mode === "dry_run",

@@ -7,14 +7,11 @@ import {
   type AutomationTargetPreflightContext,
 } from "../automations/targetRegistry.js";
 import {
-  automationContract,
   lockAndCheckAutomationBudget,
   markAutomationScheduleHandled,
   recordValue,
 } from "../automations/targetSupport.js";
 import { HttpError } from "../routeUtils/common.js";
-import { canonicalRunOutput } from "../runs/orchestrationResults.js";
-import { PgRunRepository } from "../runs/repository.js";
 import { InformationDigestService } from "./service.js";
 import { BraveSerendipityProbeProvider, SerendipityProbeService } from "./serendipityProbe.js";
 
@@ -66,31 +63,15 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
   const date = dateFromContext(fireInput.triggerContext);
   const started = await withTransaction(pool, async (client) => {
     await lockAndCheckAutomationBudget(client, automation);
-    const run = await new PgRunRepository(client).createRunningSystemRun({
-      space_id: fireInput.spaceId,
-      user_id: fireInput.actorUserId,
-      agent_id: automation.agent_id,
-      project_folder_id: automation.project_folder_id,
-      trigger_origin: "automation",
-      prompt: request.operation === "probe"
-        ? "Run the bounded weekly serendipity discovery probe."
-        : `Build ${request.scope} information digest for ${date}.`,
-      instruction: request.operation === "probe"
-        ? "Fill the private standby pool from outside subscriptions without changing the interest profile."
-        : "Rank already-annotated material deterministically and persist inspectable slot attribution.",
-      capability_id: "library.information_digest",
-      capabilities_json: ["library.information_digest"],
-      source: triggerType === "schedule" ? "scheduled" : "managed",
-      contract_snapshot: automationContract(automation),
-    });
     const automationRunId = await new PgAutomationRepository(client).createAutomationRun({
       automationId: automation.id,
-      runId: run.id,
+      targetType: TARGET_TYPE,
+      runId: null,
       triggeredByUserId: fireInput.actorUserId,
       triggerType,
       preflightSnapshot,
     });
-    return { runId: run.id, automationRunId };
+    return { automationRunId };
   });
 
   try {
@@ -102,32 +83,25 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
       : null;
     const digest = request.operation === "daily"
       ? request.scope === "personal"
-        ? await new InformationDigestService(pool).personal(fireInput.spaceId, automation.owner_user_id, date, started.runId)
-        : await new InformationDigestService(pool).project(fireInput.spaceId, request.project_id!, fireInput.actorUserId, date, started.runId)
+        ? await new InformationDigestService(pool).personal(fireInput.spaceId, automation.owner_user_id, date, started.automationRunId)
+        : await new InformationDigestService(pool).project(fireInput.spaceId, request.project_id!, fireInput.actorUserId, date, started.automationRunId)
       : null;
-    const outputText = probe
-      ? `Serendipity probe ${probe.status} with ${probe.external_result_count + probe.source_recommendation_count} candidate(s).`
-      : `Information digest completed with ${digest!.items.length} item(s).`;
     await withTransaction(pool, async (client) => {
-      await new PgRunRepository(client).markRunTerminal({
-        run_id: started.runId,
-        space_id: fireInput.spaceId,
+      await new PgAutomationRepository(client).completeNativeAutomationRun({
+        automationRunId: started.automationRunId,
         status: probe?.status === "degraded" ? "degraded" : "succeeded",
-        output_text: outputText,
-        output_json: canonicalRunOutput({
-          success: true,
-          outputText,
-          outputJson: probe
-            ? { automation_target: TARGET_TYPE, operation: "probe", serendipity_probe: probe }
-            : { automation_target: TARGET_TYPE, operation: "daily", digest_id: digest!.id, digest_date: date, item_count: digest!.items.length },
-        }),
-        exit_code: 0,
-        completed_at: new Date().toISOString(),
+        result: probe
+          ? {
+              operation: "probe",
+              status: probe.status,
+              external_result_count: probe.external_result_count,
+              source_recommendation_count: probe.source_recommendation_count,
+            }
+          : { operation: "daily", digest_id: digest!.id, digest_date: date, item_count: digest!.items.length },
       });
       if (context.advanceSchedule) await new PgAutomationRepository(client).advanceSchedule(automation);
     });
     return {
-      run_id: started.runId,
       automation_run_id: started.automationRunId,
       target_type: TARGET_TYPE,
       operation: request.operation,
@@ -139,15 +113,13 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
     };
   } catch (error) {
     await withTransaction(pool, async (client) => {
-      await new PgRunRepository(client).markRunTerminal({
-        run_id: started.runId,
-        space_id: fireInput.spaceId,
+      await new PgAutomationRepository(client).completeNativeAutomationRun({
+        automationRunId: started.automationRunId,
         status: "failed",
-        output_text: "Information digest operation failed.",
-        output_json: canonicalRunOutput({ success: false, outputText: "Information digest operation failed.", outputJson: { automation_target: TARGET_TYPE, operation: request.operation } }),
-        error_json: { error_code: "information_digest_automation_failed", error_text: error instanceof Error ? error.message : "Digest generation failed" },
-        exit_code: 1,
-        completed_at: new Date().toISOString(),
+        error: {
+          error_code: "information_digest_automation_failed",
+          error_text: error instanceof Error ? error.message : "Digest generation failed",
+        },
       });
       if (context.advanceSchedule) await new PgAutomationRepository(client).advanceSchedule(automation);
     });

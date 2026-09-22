@@ -22,8 +22,8 @@ const db = useTestDatabase(import.meta.filename);
 function registry(answers: Record<string, unknown>, online = true): HostConnectionRegistry {
   return {
     isOnline: () => online,
-    requestUsageProbe: (_hostId: string, frame: { adapter_type: string }) =>
-      Promise.resolve(answers[frame.adapter_type] ?? {
+    requestUsageProbe: (_hostId: string, frame: { runtime_key: string }) =>
+      Promise.resolve(answers[frame.runtime_key] ?? {
         available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null,
         error: "no answer",
       }),
@@ -72,7 +72,7 @@ describe("host subscription quota cache (real Postgres)", () => {
 
     expect(answered.quota).toMatchObject({ available: true, session_pct: 61, week_pct: 18 });
     const [cached] = await readHostUsage(db.pool, "host-1");
-    expect(cached).toMatchObject({ adapter_type: "claude_code", installation: "own" });
+    expect(cached).toMatchObject({ runtime_key: "claude_code", installation: "own" });
     expect(cached!.quota.session_pct).toBe(61);
   });
 
@@ -98,8 +98,8 @@ describe("host subscription quota cache (real Postgres)", () => {
     const asked: string[] = [];
     const watching = {
       isOnline: () => true,
-      requestUsageProbe: (_hostId: string, frame: { adapter_type: string; installation: string }) => {
-        asked.push(`${frame.adapter_type}:${frame.installation}`);
+      requestUsageProbe: (_hostId: string, frame: { runtime_key: string; installation: string }) => {
+        asked.push(`${frame.runtime_key}:${frame.installation}`);
         return Promise.resolve({
           available: true, session_pct: 5, session_resets: null, week_pct: null, week_resets: null, error: null,
         });
@@ -128,7 +128,7 @@ describe("host subscription quota cache (real Postgres)", () => {
 
     await mergeRunQuota(db.pool, {
       hostId: "host-1",
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       installation: "own",
       quota: { rate_limit_type: "five_hour", utilization: 0.72, resets_at: 1_800_000_000 },
     });
@@ -149,7 +149,7 @@ describe("host subscription quota cache (real Postgres)", () => {
 
     await mergeRunQuota(db.pool, {
       hostId: "host-1",
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       installation: "own",
       quota: { rate_limit_type: "some_new_window", utilization: 0.99, resets_at: 1 },
     });
@@ -163,15 +163,15 @@ describe("host runtime change log (real Postgres)", () => {
   it("records what changed, newest first, with the host it changed on", async (ctx) => {
     if (!db.available) return ctx.skip();
     await recordHostRuntimeChange(db.pool, {
-      hostId: "host-1", adapterType: "codex_cli", action: "install",
+      hostId: "host-1", runtimeKey: "codex_cli", action: "install",
       fromVersion: null, toVersion: "1.0.0", actorUserId: "user-1",
     });
     await recordHostRuntimeChange(db.pool, {
-      hostId: "host-1", adapterType: "codex_cli", action: "upgrade",
+      hostId: "host-1", runtimeKey: "codex_cli", action: "upgrade",
       fromVersion: "1.0.0", toVersion: "2.0.0", actorUserId: "user-1",
     });
     await recordHostRuntimeChange(db.pool, {
-      hostId: "host-1", adapterType: "codex_cli", action: "rollback",
+      hostId: "host-1", runtimeKey: "codex_cli", action: "rollback",
       fromVersion: "2.0.0", toVersion: "1.0.0", actorUserId: null,
     });
 
@@ -184,20 +184,20 @@ describe("host runtime change log (real Postgres)", () => {
   it("keeps the record when the person who made the change is gone", async (ctx) => {
     if (!db.available) return ctx.skip();
     await recordHostRuntimeChange(db.pool, {
-      hostId: "host-1", adapterType: "claude_code", action: "upgrade",
+      hostId: "host-1", runtimeKey: "claude_code", action: "upgrade",
       fromVersion: "1.0.0", toVersion: "2.0.0", actorUserId: "user-1",
     });
     await db.pool.query("DELETE FROM users WHERE id = 'user-1'");
 
     // The point of the log is answering "since when" long after the fact.
     const [change] = await listHostRuntimeChanges(db.pool, "user-1");
-    expect(change).toMatchObject({ adapter_type: "claude_code", actor_user_id: null });
+    expect(change).toMatchObject({ runtime_key: "claude_code", actor_user_id: null });
   });
 
   it("goes with the host it belongs to", async (ctx) => {
     if (!db.available) return ctx.skip();
     await recordHostRuntimeChange(db.pool, {
-      hostId: "host-1", adapterType: "claude_code", action: "install",
+      hostId: "host-1", runtimeKey: "claude_code", action: "install",
       fromVersion: null, toVersion: "1.0.0", actorUserId: null,
     });
     await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({}));

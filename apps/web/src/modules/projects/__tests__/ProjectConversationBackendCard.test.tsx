@@ -9,7 +9,7 @@ const mockedApi = vi.hoisted(() => ({
   updateRuntimeProfile: vi.fn(),
   resolveHostRuntimeProfile: vi.fn(),
   executionTargets: vi.fn(),
-  listRuntimeAdapters: vi.fn(),
+  listRuntimeDefinitions: vi.fn(),
 }))
 
 vi.mock('../../../api/client', () => ({
@@ -21,7 +21,7 @@ vi.mock('../../../api/client', () => ({
   },
   hostsApi: {
     executionTargets: mockedApi.executionTargets,
-    listRuntimeAdapters: mockedApi.listRuntimeAdapters,
+    listRuntimeDefinitions: mockedApi.listRuntimeDefinitions,
   },
 }))
 vi.mock('../../../contexts/SpaceContext', () => ({
@@ -36,7 +36,7 @@ describe('ProjectConversationBackendCard', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     mockedApi.executionTargets.mockResolvedValue({ targets: [] })
-    mockedApi.listRuntimeAdapters.mockResolvedValue({ items: [] })
+    mockedApi.listRuntimeDefinitions.mockResolvedValue({ items: [] })
   })
 
   it('offers backend setup before the Project Assistant exists', async () => {
@@ -55,8 +55,8 @@ describe('ProjectConversationBackendCard', () => {
   it('lists the Project Assistant profiles and sets a new default', async () => {
     mockedApi.getSystemAssistant.mockResolvedValue({ assistant: { id: 'assistant-1', name: 'ttt Assistant' } })
     mockedApi.listRuntimeProfiles.mockResolvedValue([
-      { id: 'p-api', name: 'Default', adapter_type: 'model_api', execution_host_id: null, is_default: true },
-      { id: 'p-host', name: 'On host', adapter_type: 'claude_code', execution_host_id: 'host-1', workspace_mode: 'managed', is_default: false },
+      { id: 'p-api', name: 'Default', runtime_key: 'opencode', execution_host_id: null, is_default: true },
+      { id: 'p-host', name: 'On host', runtime_key: 'claude_code', execution_host_id: 'host-1', workspace_mode: 'managed', is_default: false },
     ])
     mockedApi.updateRuntimeProfile.mockResolvedValue({})
     renderCard()
@@ -75,13 +75,14 @@ describe('ProjectConversationBackendCard', () => {
       targets: [{
         host_id: 'host-1',
         host_name: 'test',
+        host_kind: 'remote',
         host_online: true,
         locations: [{
           id: 'location-1', project_folder_id: 'folder-1', folder_name: 'Financial-System',
           display_path: '/home/yuchuan/Financial-System', execution_ready: true,
         }],
-        adapters: [{
-          adapter_type: 'claude_code',
+        runtimes: [{
+          runtime_key: 'claude_code',
           display_name: 'Claude Code',
           installations: [{ id: 'own', version: '1.0.0', logged_in: true }],
         }],
@@ -99,7 +100,7 @@ describe('ProjectConversationBackendCard', () => {
       execution_host_id: 'host-1',
       workspace_location_id: 'location-1',
       workspace_mode: 'location',
-      adapter_type: 'claude_code',
+      runtime_key: 'claude_code',
       runtime_installation: 'own',
     })))
   })

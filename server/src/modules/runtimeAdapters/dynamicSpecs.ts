@@ -16,11 +16,11 @@ const dynamicSpecs = new Map<string, RuntimeAdapterSpec>();
 
 export function setDynamicRuntimeAdapterSpecs(specs: readonly RuntimeAdapterSpec[]): void {
   dynamicSpecs.clear();
-  for (const spec of specs) dynamicSpecs.set(spec.adapter_type, spec);
+  for (const spec of specs) dynamicSpecs.set(spec.runtime_key, spec);
 }
 
-export function getDynamicRuntimeAdapterSpec(adapterType: string): RuntimeAdapterSpec | null {
-  return dynamicSpecs.get(adapterType) ?? null;
+export function getDynamicRuntimeAdapterSpec(runtimeKey: string): RuntimeAdapterSpec | null {
+  return dynamicSpecs.get(runtimeKey) ?? null;
 }
 
 export function listDynamicRuntimeAdapterSpecs(): RuntimeAdapterSpec[] {

@@ -32,13 +32,13 @@ afterEach(async () => {
 
 const LOGIN = { command: ["goose", "login"], home_subdir: ".goose", credential_file: "auth.json" };
 
-async function writeManifest(adapterType: string, version: string, command: string, login = LOGIN) {
-  const dir = join(toolsDir(), adapterType, version);
-  const home = join(configDir, "managed-state", adapterType, "home");
+async function writeManifest(runtimeKey: string, version: string, command: string, login = LOGIN) {
+  const dir = join(toolsDir(), runtimeKey, version);
+  const home = join(configDir, "managed-state", runtimeKey, "home");
   await mkdir(dir, { recursive: true });
   await mkdir(home, { recursive: true });
   await writeFile(join(dir, "manifest.json"), JSON.stringify({
-    adapter_type: adapterType, version, command, args: ["acp"], env: { TOOL_HOME: dir }, home,
+    runtime_key: runtimeKey, version, command, args: ["acp"], env: { TOOL_HOME: dir }, home,
     login_command: [command, "login"], login, installed_at: "2026-08-26T00:00:00.000Z",
   }));
   return dir;
@@ -75,6 +75,30 @@ describe("managed installations", () => {
     expect(resolveAcpLaunch("opencode", ["acp"])).toEqual({ command: "opencode", args: ["acp"], env: {} });
   });
 
+  it("reads a manifest only when it names runtime_key, and only the key its path declares", async () => {
+    const dir = join(toolsDir(), "acp_goose", "1.2.3");
+    const home = join(configDir, "managed-state", "acp_goose", "home");
+    await mkdir(dir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    const manifestPath = join(dir, "manifest.json");
+    const manifest = {
+      runtime_key: "acp_goose", version: "1.2.3", command: "/opt/goose/bin/goose",
+      args: ["acp"], env: {}, home, login_command: null, login: null,
+      installed_at: "2026-08-26T00:00:00.000Z",
+    };
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    expect(readToolManifestSync("acp_goose", "managed:1.2.3")).toMatchObject({ runtime_key: "acp_goose" });
+
+    // `runtime_key` is the only identity on this wire: a manifest that names
+    // the runtime under any other field is unreadable, not aliased.
+    const { runtime_key: runtimeKey, ...withoutRuntimeKey } = manifest;
+    await writeFile(manifestPath, JSON.stringify({ ...withoutRuntimeKey, adapter_type: runtimeKey }));
+    expect(readToolManifestSync("acp_goose", "managed:1.2.3")).toBeNull();
+
+    await writeFile(manifestPath, JSON.stringify({ ...manifest, runtime_key: "other_runtime" }));
+    expect(readToolManifestSync("acp_goose", "managed:1.2.3")).toBeNull();
+  });
+
   it("reports every copy with its login state, and a managed-only runtime under its adapter type", async () => {
     await writeManifest("acp_goose", "1.2.3", "/opt/goose/bin/goose");
     const home = join(configDir, "managed-state", "acp_goose", "home");
@@ -87,30 +111,38 @@ describe("managed installations", () => {
     expect(loggedIn(home, null)).toBeNull();
 
     const capabilities = await detectCapabilities(undefined, [
-      { adapter_type: "acp_goose", runtime: null, login: LOGIN },
-      { adapter_type: "acp_other", runtime: null, login: null },
+      { runtime_key: "acp_goose", runtime: null, login: LOGIN },
+      { runtime_key: "acp_other", runtime: null, login: null },
     ]);
     // `rollback_version: null` because this is the first version installed:
     // there is nothing behind it to undo an upgrade to (ADR 0016 §9).
     expect(capabilities.installations).toEqual({
-      acp_goose: [{ id: "managed:1.2.3", version: "1.2.3", runtime_version: null, logged_in: true, options: null, rollback_version: null }],
+      acp_goose: [{
+        id: "managed:1.2.3",
+        version: "1.2.3",
+        runtime_version: null,
+        health_check_protocol: null,
+        logged_in: true,
+        options: null,
+        rollback_version: null,
+      }],
     });
     // A managed copy is not a PATH binary; it exists only under its adapter.
     expect(capabilities.runtimes).not.toContain("acp_goose");
     expect(capabilities.installations.acp_other).toBeUndefined();
   });
 
-  it("refuses an adapter or version that could escape the tools directory, and removes what it installed", async () => {
+  it("refuses a runtime key or version that could escape the tools directory, and removes what it installed", async () => {
     // The wire shape is the contract's (`HostServerFrameSchema`); what stays
     // here is the path policy, which no schema can know.
     await expect(installTool({
-      request_id: "r1", adapter_type: "../x", version: "1",
+      request_id: "r1", runtime_key: "../x", version: "1",
       distribution: { kind: "npx", package: "goose@1", args: [], env: {} }, login: LOGIN,
-    }, () => {})).rejects.toThrow(/Unusable adapter or version/);
+    }, () => {})).rejects.toThrow(/Unusable runtime key or version/);
 
     await writeManifest("acp_goose", "1.2.3", "/opt/goose/bin/goose");
-    expect(await uninstallTool({ request_id: "r2", adapter_type: "acp_goose", version: "1.2.3" })).toBe(true);
-    expect(await uninstallTool({ request_id: "r2", adapter_type: "acp_goose", version: "1.2.3" })).toBe(false);
+    expect(await uninstallTool({ request_id: "r2", runtime_key: "acp_goose", version: "1.2.3" })).toBe(true);
+    expect(await uninstallTool({ request_id: "r2", runtime_key: "acp_goose", version: "1.2.3" })).toBe(false);
     expect((await installedTools()).size).toBe(0);
   });
 });

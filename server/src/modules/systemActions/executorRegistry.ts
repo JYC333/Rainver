@@ -1,7 +1,7 @@
 import { registerProposalDecisionExecutor } from "../proposals/proposalDecisionExecutor.js";
 import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
-import type { RunRecord } from "../runs/repository.js";
+import type { AgentRunRecord } from "../runs/repository.js";
 import type { SystemActionExecutor } from "./gateway.js";
 import { registerInquirySystemActionExecutors } from "../inquiry/inquirySystemActionExecutors.js";
 import { registerMemoryDirectWriteExecutors } from "../memory/memoryDirectWriteExecutors.js";
@@ -29,7 +29,7 @@ import { registerConversationInputResourceExecutors } from "../sessions/conversa
 export function registerModuleSystemActionExecutors(
   executors: Map<SystemActionId, SystemActionExecutor>,
   config: ServerConfig,
-  run: RunRecord,
+  run: AgentRunRecord,
   granted: { generic: boolean; researchAcquisition: boolean },
   context: { messageId: string | null } = { messageId: null },
 ): void {

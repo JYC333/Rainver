@@ -160,7 +160,7 @@ export class RuntimeContextInvocationGateway implements RuntimeContextInvocation
       invocationId: input.invocationId,
       envelope,
       control,
-      adapterType: input.adapterType,
+      runtimeKey: input.runtimeKey,
       providerId: input.providerId ?? null,
       // Planning owns the authoritative model binding. Callers may repeat it,
       // but worker inputs are not required to rediscover AgentVersion config.
@@ -276,7 +276,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     );
     if (!spaceMember.rows[0]) throw new HttpError(404, "Runtime Context Space authority is no longer readable");
     const runResult = await db.query<{
-      adapter_type: string | null;
+      runtime_key: string | null;
       model_provider_id: string | null;
       owner_user_id: string | null;
       instructed_by_user_id: string | null;
@@ -291,7 +291,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       capability_id: string | null;
       capabilities_json: unknown;
     }>(
-      `SELECT run.adapter_type,run.model_provider_id,run.owner_user_id,run.instructed_by_user_id,
+      `SELECT run.runtime_key,run.model_provider_id,run.owner_user_id,run.instructed_by_user_id,
               run.prompt,run.instruction,run.error_json,run.run_group_id,
               run.session_id,run.model_override_json,run.agent_id,run.project_id,
               run.capability_id,run.capabilities_json
@@ -305,7 +305,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     if (!run || (run.owner_user_id !== input.viewerUserId && run.instructed_by_user_id !== input.viewerUserId)) {
       throw new HttpError(404, "Runtime Context Run authority is no longer readable");
     }
-    if (run.adapter_type !== input.adapterType) {
+    if (run.runtime_key !== input.runtimeKey) {
       throw new HttpError(409, "Invocation Delivery adapter does not match the persisted Run");
     }
     if ((run.model_provider_id ?? null) !== input.providerId) {
@@ -331,12 +331,12 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     const result = await db.query(
       `SELECT 1 FROM runtime_context_cli_bindings
         WHERE id=$1 AND space_id=$2 AND work_context_scope_id=$3
-          AND user_id=$4 AND agent_id=$5 AND adapter_type=$6
+          AND user_id=$4 AND agent_id=$5 AND runtime_key=$6
           AND runtime_state_key=$7 AND generation=$8
           AND vendor_session_id IS NOT DISTINCT FROM $9 AND cli_known_cursor=$10
           AND status='active' FOR SHARE`,
       [session.binding_ref.id, input.spaceId, control.work_context_scope_id,
-        viewerUserId, control.agent_id, input.adapterType,
+        viewerUserId, control.agent_id, input.runtimeKey,
         session.runtime_state_key, generation, session.vendor_session_id,
         session.cursor_from],
     );
@@ -447,13 +447,13 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     db: Queryable,
     input: InvocationAttemptInput,
     control: ExecutionControlSnapshot,
-    run: { adapter_type: string | null; model_provider_id: string | null },
+    run: { runtime_key: string | null; model_provider_id: string | null },
   ): Promise<{ destination: RetrievalEgressDestination; externalEgressEnabled: boolean }> {
-    let external = isVendorCliAdapter(run.adapter_type);
+    let external = isVendorCliAdapter(run.runtime_key);
     let destination: RetrievalEgressDestination = external ? "external_provider" : "internal_process";
     if (external && !run.model_provider_id
       && (control.egress.destination_type !== "local_cli"
-        || control.egress.destination_id !== run.adapter_type)) {
+        || control.egress.destination_id !== run.runtime_key)) {
       throw new HttpError(409, "Invocation Delivery CLI egress authority no longer matches the adapter");
     }
     if (run.model_provider_id) {
@@ -471,7 +471,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         || !control.egress.allowed_provider_ids.includes(run.model_provider_id)) {
         throw new HttpError(409, "Invocation Delivery provider grant is no longer active");
       }
-      destination = runtimeProviderEgressDestination(run.adapter_type, provider);
+      destination = runtimeProviderEgressDestination(run.runtime_key, provider);
       external = destination === "external_provider";
     }
     if (!external) return { destination, externalEgressEnabled: true };
@@ -497,7 +497,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       agent_name: string | null;
       session_id: string | null;
       model_override_json: unknown;
-      adapter_type?: string | null;
+      runtime_key?: string | null;
       agent_id?: string | null;
       project_id?: string | null;
       capability_id?: string | null;
@@ -662,7 +662,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     input: InvocationAttemptInput,
     item: ContextItem,
     _run: {
-      adapter_type?: string | null;
+      runtime_key?: string | null;
     },
   ): Promise<void> {
     const run = await new PgRuntimeContextAcquisitionRepository(db).loadRun(
@@ -673,7 +673,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     const candidates = await new PgRuntimeSkillProvider(db).loadCandidatesForRun({
       space_id: input.spaceId,
       run_id: input.invocationId,
-      adapter_type: run.adapter_type ?? null,
+      runtime_key: run.runtime_key ?? null,
       capability_id: run.capability_id,
       agent_id: run.agent_id,
       project_id: run.project_id,
@@ -710,11 +710,11 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       const binding = await db.query<{
         capability_key: string;
         capability_version_id: string | null;
-        runtime_adapter_type: string;
+        runtime_key: string;
         render_mode: string;
         enabled: boolean;
       }>(
-        `SELECT capability_key,capability_version_id,runtime_adapter_type,render_mode,enabled
+        `SELECT capability_key,capability_version_id,runtime_key,render_mode,enabled
            FROM capability_runtime_bindings
           WHERE id=$1 AND space_id=$2
           FOR SHARE`,
@@ -729,7 +729,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       const bound = binding.rows[0];
       if (!bound?.enabled || bound.capability_key !== candidate.capability_id
         || bound.capability_version_id !== candidate.capability_version_id
-        || bound.runtime_adapter_type !== candidate.runtime_adapter_type
+        || bound.runtime_key !== candidate.runtime_key
         || bound.render_mode !== candidate.render_mode
         || version.rows[0]?.status !== "available") {
         throw new HttpError(409, "Invocation Delivery Runtime Skill binding changed after planning");
@@ -738,7 +738,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     const authorizedCandidates = await new PgRuntimeSkillProvider(db).loadCandidatesForRun({
       space_id: input.spaceId,
       run_id: input.invocationId,
-      adapter_type: run.adapter_type ?? null,
+      runtime_key: run.runtime_key ?? null,
       capability_id: run.capability_id,
       agent_id: run.agent_id,
       project_id: run.project_id,
@@ -762,7 +762,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       resource_id: authorizedCandidate.binding_id,
       run_id: input.invocationId,
       context: {
-        adapter_type: authorizedCandidate.runtime_adapter_type,
+        runtime_key: authorizedCandidate.runtime_key,
         render_mode: authorizedCandidate.render_mode,
         capability_id: authorizedCandidate.capability_id,
         capability_version_id: authorizedCandidate.capability_version_id,
@@ -775,7 +775,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         capability_id: authorizedCandidate.capability_id,
         capability_version_id: authorizedCandidate.capability_version_id,
         capability_enablement_id: authorizedCandidate.capability_enablement_id,
-        adapter_type: authorizedCandidate.runtime_adapter_type,
+        runtime_key: authorizedCandidate.runtime_key,
         render_mode: authorizedCandidate.render_mode,
         risk_level: authorizedCandidate.risk_level,
       },

@@ -42,8 +42,7 @@ describe('agentsApi.chat', () => {
         event_stream_url: '/api/v1/runs/run-1/turn/stream',
         backend: {
           runtime_profile_id: 'runtime-profile-1',
-          adapter_type: 'model_api',
-          credential_profile_id: null,
+          runtime_key: 'opencode',
         },
       }, 202))
       .mockResolvedValueOnce(sse([
@@ -141,7 +140,7 @@ describe('agentsApi.chat', () => {
         user_message_id: 'message-user-3',
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-3/turn/stream',
-        backend: { runtime_profile_id: 'p', adapter_type: 'model_api', credential_profile_id: null },
+        backend: { runtime_profile_id: 'p', runtime_key: 'opencode' },
       }, 202))
       .mockResolvedValueOnce(sse([
         {
@@ -211,7 +210,7 @@ describe('agentsApi.chat', () => {
         user_message_id: 'message-user-4',
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-4/turn/stream',
-        backend: { runtime_profile_id: 'p', adapter_type: 'model_api', credential_profile_id: null },
+        backend: { runtime_profile_id: 'p', runtime_key: 'opencode' },
       }, 202))
       .mockResolvedValueOnce(sse([
         {
@@ -256,7 +255,7 @@ describe('agentsApi.chat', () => {
         user_message_id: 'message-user-2',
         status: 'queued',
         event_stream_url: '/api/v1/runs/run-2/turn/stream',
-        backend: { runtime_profile_id: 'p', adapter_type: 'model_api', credential_profile_id: null },
+        backend: { runtime_profile_id: 'p', runtime_key: 'opencode' },
       }, 202))
       .mockResolvedValueOnce(sse([{
         event: 'turn.snapshot',

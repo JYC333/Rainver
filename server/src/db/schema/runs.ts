@@ -19,8 +19,13 @@ import { evolvableAssetVersions } from "./evolvableAssets.js";
 export const runs = pgTable("runs", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	agentId: varchar("agent_id", { length: 36 }).notNull(),
-	agentVersionId: varchar("agent_version_id", { length: 36 }).notNull(),
+	agentId: varchar("agent_id", { length: 36 }),
+	agentVersionId: varchar("agent_version_id", { length: 36 }),
+	executionKind: varchar("execution_kind", { length: 32 }).notNull(),
+	runtimeKey: varchar("runtime_key", { length: 64 }),
+	providerTaskControlId: varchar("provider_task_control_id", { length: 36 }),
+	providerTaskDeliveryId: varchar("provider_task_delivery_id", { length: 36 }),
+	providerTaskSnapshotId: varchar("provider_task_snapshot_id", { length: 36 }),
 	runRole: varchar("run_role", { length: 32 }).default('execution').notNull(),
 	requestedRuntimeProfileId: varchar("requested_runtime_profile_id", { length: 36 }),
 	selectedRuntimeProfileId: varchar("runtime_profile_id", { length: 36 }),
@@ -67,7 +72,6 @@ export const runs = pgTable("runs", {
 	errorMessage: text("error_message"),
 	errorJson: jsonb("error_json"),
 	outputJson: jsonb("output_json"),
-	selectedAdapterType: varchar("adapter_type", { length: 64 }),
 	capabilityId: varchar("capability_id", { length: 128 }),
 	capabilitiesJson: jsonb("capabilities_json").default([]).notNull(),
 	modelSelectionMode: varchar("model_selection_mode", { length: 32 }).default('cli_default').notNull(),
@@ -95,6 +99,8 @@ export const runs = pgTable("runs", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_runs_agent_id").using("btree", table.agentId.asc().nullsLast()),
 	index("ix_runs_agent_version_id").using("btree", table.agentVersionId.asc().nullsLast()),
+	index("ix_runs_execution_kind").using("btree", table.executionKind.asc().nullsLast()),
+	index("ix_runs_provider_task_control_id").using("btree", table.providerTaskControlId.asc().nullsLast()),
 	index("ix_runs_delegation_id").using("btree", table.spaceId.asc().nullsLast(), table.delegationId.asc().nullsLast()),
 	index("ix_runs_group_id").using("btree", table.spaceId.asc().nullsLast(), table.runGroupId.asc().nullsLast()),
 	index("ix_runs_instructed_by_agent_id").using("btree", table.spaceId.asc().nullsLast(), table.instructedByAgentId.asc().nullsLast()),
@@ -258,6 +264,44 @@ export const runs = pgTable("runs", {
 	check("ck_runs_externality_level", sql`(externality_level IS NULL) OR ((externality_level)::text = ANY (ARRAY[('native'::character varying)::text, ('local_external'::character varying)::text, ('remote_external'::character varying)::text, ('hybrid'::character varying)::text, ('manual'::character varying)::text]))`),
 	check("ck_runs_mode", sql`(mode)::text = ANY (ARRAY[('live'::character varying)::text, ('dry_run'::character varying)::text])`),
 	check("ck_runs_run_role", sql`(run_role)::text = ANY (ARRAY[('execution'::character varying)::text, ('coordinator'::character varying)::text])`),
+	check("ck_runs_execution_kind", sql`execution_kind IN ('agent', 'provider_task')`),
+	check("ck_runs_execution_shape", sql`(
+	  (execution_kind = 'agent'
+	    AND agent_id IS NOT NULL AND agent_version_id IS NOT NULL
+	    AND provider_task_control_id IS NULL AND provider_task_delivery_id IS NULL AND provider_task_snapshot_id IS NULL
+	    AND (
+	      (runtime_profile_id IS NOT NULL AND runtime_profile_selection_source IS NOT NULL AND runtime_key IS NOT NULL AND runtime_profile_snapshot_json IS NOT NULL)
+	      OR (runtime_profile_id IS NULL AND runtime_key IS NULL AND runtime_profile_snapshot_json IS NULL
+	        AND started_at IS NULL AND status IN ('queued', 'cancelling', 'failed', 'cancelled', 'orphaned'))
+	      OR (run_role = 'coordinator' AND runtime_profile_id IS NULL AND runtime_key IS NULL
+	        AND runtime_profile_snapshot_json IS NULL AND started_at IS NULL
+	        AND status IN ('waiting_for_dependency', 'succeeded', 'degraded'))
+	    ))
+	  OR
+	  (execution_kind = 'provider_task'
+	    AND agent_id IS NULL AND agent_version_id IS NULL
+	    AND requested_runtime_profile_id IS NULL AND runtime_profile_id IS NULL AND runtime_profile_selection_source IS NULL
+	    AND runtime_key IS NULL AND runtime_profile_snapshot_json IS NULL
+	    AND workspace_location_id IS NULL AND host_task_thread_id IS NULL
+	    AND (
+	      -- Dispatched: the bounded task has picked its provider and opened
+	      -- its ledger records, so all four are present for the rest of the
+	      -- Run's life, terminal states included.
+	      (model_provider_id IS NOT NULL
+	        AND provider_task_control_id IS NOT NULL AND provider_task_delivery_id IS NOT NULL
+	        AND provider_task_snapshot_id IS NOT NULL)
+	      -- Queued, the same "snapshot required before dispatch" rule the
+	      -- agent shape states one arm above: a ProviderTask Run may exist
+	      -- before its first attempt exists, and a queued Run that is
+	      -- cancelled or never starts stays without ledger references. What it
+	      -- must never do is *start* without them.
+	      OR (model_provider_id IS NULL
+	        AND provider_task_control_id IS NULL AND provider_task_delivery_id IS NULL
+	        AND provider_task_snapshot_id IS NULL
+	        AND started_at IS NULL
+	        AND status IN ('queued', 'cancelling', 'failed', 'cancelled', 'orphaned'))
+	    ))
+	)`),
 	check("ck_runs_observability_level", sql`(observability_level IS NULL) OR ((observability_level)::text = ANY (ARRAY[('full_trace'::character varying)::text, ('structured_events'::character varying)::text, ('artifacts_only'::character varying)::text, ('final_output_only'::character varying)::text, ('black_box'::character varying)::text]))`),
 	check("ck_runs_required_sandbox_level", sql`(required_sandbox_level)::text = ANY (ARRAY[('none'::character varying)::text, ('dry_run'::character varying)::text, ('ephemeral'::character varying)::text, ('read_only'::character varying)::text, ('worktree'::character varying)::text, ('one_shot_docker'::character varying)::text])`),
 	check("ck_runs_run_type", sql`(run_type)::text = ANY (ARRAY[('agent'::character varying)::text, ('planning'::character varying)::text, ('system'::character varying)::text, ('workflow'::character varying)::text, ('validation'::character varying)::text, ('reflection'::character varying)::text, ('export'::character varying)::text, ('evolution'::character varying)::text])`),
@@ -307,7 +351,7 @@ export const runAttempts = pgTable("run_attempts", {
 		name: "run_attempts_run_space_fkey",
 	}).onDelete("cascade"),
 	check("ck_run_attempts_attempt_number", sql`attempt_number > 0`),
-	check("ck_run_attempts_status", sql`(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text, ('cancelling'::character varying)::text, ('succeeded'::character varying)::text, ('degraded'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('orphaned'::character varying)::text, ('waiting_for_review'::character varying)::text])`),
+	check("ck_run_attempts_status", sql`(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text, ('cancelling'::character varying)::text, ('succeeded'::character varying)::text, ('degraded'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('orphaned'::character varying)::text, ('waiting_for_review'::character varying)::text, ('waiting_for_dependency'::character varying)::text])`),
 ]);
 
 export const runSupervisorDecisions = pgTable("run_supervisor_decisions", {
@@ -349,7 +393,7 @@ export const externalRunRecords = pgTable("external_run_records", {
 	runId: varchar("run_id", { length: 36 }).notNull(),
 	vendor: varchar({ length: 64 }).notNull(),
 	vendorRunId: varchar("vendor_run_id", { length: 256 }),
-	runtimeAdapterType: varchar("runtime_adapter_type", { length: 64 }),
+	runtimeKey: varchar("runtime_key", { length: 64 }),
 	externalUrl: text("external_url"),
 	observabilityLevel: varchar("observability_level", { length: 64 }).default('black_box').notNull(),
 	dataExposureLevel: varchar("data_exposure_level", { length: 64 }).default('unknown').notNull(),
@@ -363,7 +407,6 @@ export const externalRunRecords = pgTable("external_run_records", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_external_run_records_run_id").using("btree", table.runId.asc().nullsLast()),
-	index("ix_external_run_records_runtime_adapter_type").using("btree", table.runtimeAdapterType.asc().nullsLast()),
 	index("ix_external_run_records_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.runId],
@@ -516,7 +559,7 @@ export const runSteps = pgTable("run_steps", {
 			name: "run_steps_project_folder_id_fkey"
 		}),
 	unique("uq_run_steps_run_step_index").on(table.runId, table.stepIndex),
-	check("ck_run_steps_status", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('running'::character varying)::text, ('succeeded'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text, ('cancelled'::character varying)::text])`),
+	check("ck_run_steps_status", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('running'::character varying)::text, ('succeeded'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text, ('cancelled'::character varying)::text, ('waiting_for_dependency'::character varying)::text])`),
 	check("ck_run_steps_step_type", sql`(step_type)::text = ANY (ARRAY[('run_created'::character varying)::text, ('queued'::character varying)::text, ('runtime_selected'::character varying)::text, ('adapter_started'::character varying)::text, ('adapter_completed'::character varying)::text, ('artifact_created'::character varying)::text, ('proposal_created'::character varying)::text, ('failed'::character varying)::text, ('completed'::character varying)::text, ('validation_started'::character varying)::text, ('validation_completed'::character varying)::text, ('cancelled'::character varying)::text])`),
 ]);
 

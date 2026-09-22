@@ -61,7 +61,10 @@ for each.
 - `CapabilityRegistry.reload()` reads only from `catalog/capabilities/` (not agent-writable at runtime).
 - `Capability.status` lifecycle: `draft → proposed → testing → enabled`; agents cannot jump to `enabled`.
 - `CapabilityVersion` + `CapabilityTest` require passing tests before promotion.
-- `PathPolicy` prevents agents from writing `.py`/`.sh` files directly.
+- These controls govern Rainver capability installation, not files an ACP
+  runtime writes directly. A runtime can create scripts in a read-write
+  workspace; the built-in Host's namespace and the paired Host's machine-owner
+  trust boundary constrain what those scripts can reach.
 
 ---
 
@@ -74,7 +77,14 @@ for each.
 **Mitigations**:
 - `Agent.tool_permissions_json` whitelists allowed tools per agent.
 - `PolicyEngine.rule_tool_permission` denies any tool not in the whitelist.
-- `runtime_policy_json.sandbox_required = true` can mandate sandbox execution.
+- Rainver System Actions are authorized against the Run's persisted tool grants
+  and PolicyGateway decision; prompt text cannot grant a tool.
+- System Action authorization covers Rainver's exposed application tools; it
+  does not authorize or intercept shell commands the runtime can execute on
+  its Host.
+- The Run's resolved `required_sandbox_level` is carried to its execution Host.
+  Do not treat `runtime_policy_json.sandbox_required` as an active control: it
+  is not a supported Profile option.
 - All tool calls are logged in `ToolCall` with `status` and `policy_decision_id`.
 
 ---
@@ -86,10 +96,18 @@ for each.
 **Impact**: Credential theft; unauthorized external access.
 
 **Mitigations**:
-- `PathPolicy` forbids access to `.env`, `.ssh`, `instance/secrets`, `.aws`.
+- `PathPolicy` checks Rainver-mediated folder and file operations. It does not
+  mediate direct filesystem access by the ACP runtime: a read-write workspace
+  can contain `.env` or other credentials that the runtime process can read.
 - `Credential.encrypted_secret_ref` — raw secrets are never stored in the DB.
-- Agents never receive raw credentials; `ToolRunner` uses them internally and returns only the result.
-- `CredentialAccessLog` records every credential use with agent_id and tool_call_id.
+- For `model_provider` Profiles, the upstream Provider key stays in the Server's
+  Provider boundary; the runtime receives a short-lived proxy lease, not that
+  key. A runtime's `runtime_native` login is different: its credential state
+  lives on the execution Host and is available to that runtime under the Host's
+  OS/namespace permissions. The Server Host account is shared by authorized
+  Server-Runtime users; a paired Host's native account belongs to its owner.
+- Provider spend and proxy use are authorized and recorded by the Provider
+  subsystem; do not infer filesystem credential isolation from that audit.
 
 ---
 
@@ -100,9 +118,16 @@ for each.
 **Impact**: Host compromise; data exfiltration.
 
 **Mitigations**:
-- `PathPolicy.validate()` resolves all paths and checks them against the allowed root before any access.
-- Sandbox roots come from `settings.sandbox_root` — not agent-controllable.
-- `runtime_policy_json.sandbox_required = true` forces isolation for high-risk agents.
+- `PathPolicy.validate()` resolves paths for Rainver-mediated operations such
+  as bounded folder reads. It does not constrain the ACP child process's own
+  filesystem calls.
+- The built-in Host's daemon constructs the Run namespace; the paired-Host
+  trust boundary is the paired machine itself (ADR 0016).
+- Only `read_only` currently narrows a daemon Run's workspace access; higher
+  risk-specific CLI containment is not implemented. `worktree` and
+  `one_shot_docker` do not currently add a daemon isolation layer. See the
+  [deferred register](../.agent/tasks/deferred-register.md) before treating
+  these levels as stronger containment.
 - Prefer git worktree sandboxes (copy-on-write) over full repo clones.
 
 ---

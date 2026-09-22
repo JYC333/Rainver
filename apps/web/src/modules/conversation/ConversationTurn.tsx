@@ -66,7 +66,9 @@ export function ConversationTurn({
   const [showWork, setShowWork] = useState(false)
   const stepsOpen = working || blocked || turn.state === 'failed' || showWork
   const presentedParts = presentTurnParts(turn.parts, {
-    groupCompletedTools: working || blocked || turn.state === 'failed',
+    // Only a live turn summarizes successful calls. Blocked/failed turns keep
+    // their steps visible as the explanation for why they stopped.
+    groupCompletedTools: working,
   })
 
   return (

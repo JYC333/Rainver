@@ -65,7 +65,7 @@ describe("test hygiene", () => {
       "claimSourcesSourcePolicy.test.ts", "contextOpsRoutes.test.ts",
       "evolutionRoutes.test.ts", "jobsSchedulers.test.ts", "knowledgeRetrievalEvalRoutes.test.ts",
       "knowledgeRetrievalExplainRoutes.test.ts", "knowledgeRetrievalRoutes.test.ts", "memoryMaintenanceRoutes.test.ts",
-      "objectProfileRegistry.test.ts", "publicationsRoutes.test.ts", "runManagedApiAdapter.test.ts",
+      "objectProfileRegistry.test.ts", "publicationsRoutes.test.ts",
     ])).toEqual([]);
   });
 
@@ -137,7 +137,6 @@ describe("test hygiene", () => {
       "objectProfileRegistry.test.ts",
       "publicationsRoutes.test.ts",
       "retrievalReranker.test.ts",
-      "runManagedApiAdapter.test.ts",
       "systemActionDispatcher.test.ts",
       "systemActionRegistry.test.ts",
     ])).toEqual([]);

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { listTsFiles } from "./support/sourceFiles.js";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 
 const srcDir = join(import.meta.dirname, "..", "src");
@@ -25,7 +25,6 @@ const ALLOWED_BARE = new Set(["fastify", "fast-xml-parser", "undici", "yaml", "z
 const ALLOWED_BARE_BY_FILE = new Map<string, string>([
   ["pg", join("src", "db")],
   ["@earendil-works/pi-ai", join("src", "modules", "providers", "invocation", "piAiChat.ts")],
-  ["@earendil-works/pi-agent-core", join("src", "modules", "runs", "piManagedAgentLoop.ts")],
   ["unpdf", join("src", "modules", "sources", "pdfExtract.ts")],
   // ADR 0016: the only WebSocket endpoint in the server, the hosts
   // hello/heartbeat channel — confined here so a second module cannot grow
@@ -76,7 +75,7 @@ const importRe = /\b(?:from|import)\s+["']([^"']+)["']/g;
 /**
  * `import("pkg")` and the inline type form `typeof import("pkg")`. Both are
  * invisible to `importRe`, which requires whitespace before the quote, and
- * lazily loaded packages such as `@earendil-works/pi-agent-core` appear in
+ * lazily loaded packages such as `@earendil-works/pi-ai` appear in
  * `src` in no other form. Without this pattern the file-scoped allowances
  * below cannot fire for them at all, and a boundary violation lands with every
  * assertion green.
@@ -121,75 +120,23 @@ describe("server import boundaries", () => {
     expect(offenders, `unexpected imports:\n${offenders.join("\n")}`).toEqual([]);
   });
 
-  it("the managed agent loop port declares a contract and never an implementation", () => {
-    // The port exists so that replacing the loop implementation is not an edit
-    // to the module every caller imports. A port that reaches for the
-    // implementation — or for a vendor loop package — has given that back.
-    const port = join(srcDir, "modules", "runs", "managedAgentLoopPort.ts");
-    const portSpecs = importSpecifiers(readFileSync(port, "utf8"));
-    expect(portSpecs.filter((spec) => spec.includes("pi-agent-core") || spec.includes("pi-ai"))).toEqual([]);
-
-    // Only the binding chooses an implementation; production callers go
-    // through it rather than naming the implementation themselves. This sweep
-    // covers the port too, so no separate assertion for it is needed.
-    const offenders: string[] = [];
-    const binding = join(srcDir, "modules", "runs", "managedAgentLoopBinding.ts");
-    for (const file of listTsFiles(srcDir)) {
-      if (file === binding || file.endsWith(join("runs", "piManagedAgentLoop.ts"))) continue;
-      for (const spec of importSpecifiers(readFileSync(file, "utf8"))) {
-        if (spec.includes("piManagedAgentLoop")) offenders.push(`${file}: ${spec}`);
-      }
-    }
-    expect(offenders, `direct implementation imports:\n${offenders.join("\n")}`).toEqual([]);
-  });
-
-  it("the generic managed tool loop is owned by no tool family", () => {
-    // The loop used to live inside the Retrieval domain. A run carrying only
-    // delegation or a proposal action had to fabricate an empty retrieval
-    // binding to reach it, and every tool summary it produced was filed as a
-    // retrieval call. Neither direction of that dependency may come back.
-    const loop = join(srcDir, "modules", "runs", "managedToolLoop.ts");
-    const loopSpecs = importSpecifiers(readFileSync(loop, "utf8"));
-    expect(
-      loopSpecs.filter((spec) => spec.includes("retrieval") || spec.includes("Retrieval")),
-      "the generic tool loop must not depend on any tool family",
-    ).toEqual([]);
-
-    // Retrieval may name the loop's *contract* — it has to, to describe what it
-    // contributes — but must never import a value from it. A `managedToolLoop`
-    // specifier is therefore permanently present and cannot itself be the
-    // assertion; the ownership inversion this gate exists to prevent is
-    // Retrieval calling `executeManagedToolLoop`.
-    const retrievalText = readFileSync(join(srcDir, "modules", "runs", "managedRetrievalTools.ts"), "utf8");
-    const valueImports = [...retrievalText.matchAll(/^import\s+(?!type\s)[\s\S]*?from\s+["']([^"']+)["']/gm)]
-      .map((match) => match[1]);
-    expect(
-      valueImports.filter((spec) => spec.includes("managedToolLoop") || spec.includes("managedAgentLoop")),
-      "Retrieval contributes tools; it does not drive the loop",
-    ).toEqual([]);
-
-    // The fabricated carrier itself. `{} as never` in a resolved binding is how
-    // a run with no retrieval tool used to reach the loop at all.
-    const offenders = listTsFiles(srcDir)
-      .filter((file) => /service:\s*\{\}\s*as\s+never/.test(readFileSync(file, "utf8")));
-    expect(offenders, "no module may fabricate an empty tool-family binding").toEqual([]);
-  });
-
-  it("the managed Pi loop never enables Pi-owned compaction", () => {
-    const loop = join(srcDir, "modules", "runs", "piManagedAgentLoop.ts");
-    const text = readFileSync(loop, "utf8");
-    expect(text).toContain("new Agent({");
-    expect(
-      text.match(/\b(?:compact|compaction|shouldCompact|prepareCompaction|DEFAULT_COMPACTION_SETTINGS)\b/gi) ?? [],
-      "Runtime Context owns model-visible windowing; the Pi loop must not configure or import a second compactor",
-    ).toEqual([]);
-
+  it("contains no in-server autonomous Agent loop implementation", () => {
+    const retiredFiles = [
+      "modules/runs/piManagedAgentLoop.ts",
+      "modules/runs/managedAgentLoopBinding.ts",
+      "modules/runs/managedAgentLoopPort.ts",
+      "modules/runs/managedToolLoop.ts",
+      "modules/runs/managedApiAdapter.ts",
+      "modules/runtimeHost/service.ts",
+      "modules/systemActions/managedAgentToolSurface.ts",
+    ];
+    expect(retiredFiles.filter((path) => existsSync(join(srcDir, path)))).toEqual([]);
     const offenders = listTsFiles(srcDir).filter((file) => {
       const source = readFileSync(file, "utf8");
       return importSpecifiers(source).some((specifier) => specifier.includes("pi-agent-core"))
-        && /\b(?:compact|compaction|shouldCompact|prepareCompaction|DEFAULT_COMPACTION_SETTINGS)\b/i.test(source);
+        || /executeManagedToolLoop|executeManagedApiNoToolAdapter|executeRuntimeHost/.test(source);
     });
-    expect(offenders, "no server Pi import site may import a compaction export").toEqual([]);
+    expect(offenders, `legacy Agent execution paths remain:\n${offenders.join("\n")}`).toEqual([]);
   });
 
   it("plugin files do not import from server modules", () => {

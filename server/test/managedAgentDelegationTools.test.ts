@@ -4,29 +4,17 @@ import type { Pool } from "../src/db/pool.js";
 import {
   resolveAgentDelegationToolBinding,
   runAgentRoomToolCall,
-  type AgentDelegationToolBinding,
 } from "../src/modules/runs/managedAgentDelegationTools.js";
-import type { RuntimeHostExecutor } from "../src/modules/runs/managedRetrievalTools.js";
-import {
-  executeManagedToolLoop,
-  mergeManagedToolContributions,
-} from "../src/modules/runs/managedToolLoop.js";
-import { ManagedAgentToolSurface } from "../src/modules/systemActions/managedAgentToolSurface.js";
-import type { RunRecord } from "../src/modules/runs/repository.js";
-import type {
-  CanonicalToolCall,
-  RuntimeHostExecuteRequest,
-  RuntimeHostExecuteResponse,
-} from "@rainver/protocol";
-import type { ManagedToolDispatchResult } from "../src/modules/runs/managedAgentLoopPort.js";
+import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 
-function run(overrides: Partial<RunRecord> = {}): RunRecord {
+function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   return {
     id: "run-manager-turn",
     space_id: "space-1",
     agent_id: "agent-manager",
     agent_version_id: "version-manager",
     runtime_profile_id: "profile-manager",
+    execution_kind: "agent",
     run_type: "agent",
     status: "running",
     mode: "live",
@@ -40,12 +28,12 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     delegation_id: null,
     project_id: null,
     scheduled_at: null,
-    adapter_type: "model_api",
+    runtime_key: "codex_cli",
     capability_id: null,
     capabilities_json: [],
-    model_provider_id: "provider-1",
+    model_provider_id: null,
     model_override_json: null,
-    runtime_profile_snapshot_json: {},
+    runtime_profile_snapshot_json: { runtime_key: "codex_cli", backend_mode: "runtime_native" },
     required_sandbox_level: "none",
     trigger_origin: "manual",
     instructed_by_user_id: "user-1",
@@ -62,231 +50,110 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
   };
 }
 
-function response(input: Partial<RuntimeHostExecuteResponse>): RuntimeHostExecuteResponse {
-  return {
-    success: true,
-    stdout: input.output_text ?? "",
-    stderr: "",
-    output_text: "",
-    output_json: {},
-    exit_code: 0,
-    error_text: null,
-    error_code: null,
-    started_at: "2026-07-05T00:00:00.000Z",
-    completed_at: "2026-07-05T00:00:01.000Z",
-    model: "gpt-test",
-    usage: null,
-    events: [],
-    adapter_metadata: {},
-    adapter_log_json: null,
-    ...input,
-  };
-}
+const config = loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" });
 
-function request(): RuntimeHostExecuteRequest {
-  return {
-    run_input: {
-      schema_version: "run_input.v1",
-      run_id: "run-manager-turn",
-      space_id: "space-1",
-      instruction: "Coordinate review work.",
-      task_goal: "Ask two reviewers.",
-      messages: [],
-      inputs: { direct: null, workflow: null, upstream: null },
-      attachments: [],
-      project_folder_access: null,
-      output_contract: {
-        schema_version: "run_output_contract.v1",
-        structured_output: null,
-        required_outputs: [],
-      },
-      tool_grants: [],
-      execution: {
-        shape: "conversational",
-        risk_level: "low",
-        required_sandbox_level: "none",
-        policy_ref: "run_permission_snapshot:run-manager-turn",
-        budget_ref: "run_contract:run-manager-turn",
-      },
-    },
-    run_id: "run-manager-turn",
-    space_id: "space-1",
-    model_provider_id: "provider-1",
-    model: "gpt-test",
-    system_prompt: "You are the manager.",
-    prompt: "Ask two code reviewers to answer 1+1 independently.",
-    mode: "live",
-    instruction: "Coordinate review work.",
-    project_id: null,
-    project_folder_id: null,
-    capability_id: null,
-    tool_mode: "disabled",
-    tool_bindings: [],
-  };
-}
-
-/**
- * A delegation-only run contributes delegation and nothing else. There is no
- * retrieval carrier: constructing one was the shape this loop ownership move
- * removed, and its absence is what makes these cases delegation tests rather
- * than retrieval tests wearing a delegation hat.
- */
-function delegationOnlyToolSet(
-  binding: AgentDelegationToolBinding,
-  dispatch: (call: CanonicalToolCall) => Promise<ManagedToolDispatchResult>,
-) {
-  return mergeManagedToolContributions(
-    [null, { definitions: binding.toolDefinitions, bindings: binding.toolBindings }, null],
-    dispatch,
-  );
-}
-
-describe("managed agent delegation tools", () => {
-  it("turns model agent.delegate calls into auditable child-run requests", async () => {
+describe("ACP agent delegation tools", () => {
+  it("dispatches auditable child-run requests as bounded tool calls", async () => {
     const spawnCalls: unknown[] = [];
     const managerRun = run();
-    const binding = await resolveAgentDelegationToolBinding(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
-      managerRun,
-      {
-        targets: [
-          {
-            agent_id: "agent-reviewer-a",
-            name: "Reviewer A",
-            role: "worker",
-            capabilities_json: { capabilities: ["code_review"], description: "Reviews code changes." },
-          },
-          {
-            agent_id: "agent-reviewer-b",
-            name: "Reviewer B",
-            role: "worker",
-            capabilities_json: { capabilities: ["test_review"], description: "Reviews test coverage." },
-          },
-        ],
-        service: {
-          async spawnChildRun(identity, input) {
-            spawnCalls.push({ identity, input });
-            const suffix = input.target_agent_id.endsWith("a") ? "a" : "b";
-            return {
-              delegation: {
-                id: `delegation-${suffix}`,
-                space_id: input.space_id,
-                group_id: input.group_id,
-                parent_run_id: input.parent_run_id,
-                child_run_id: `run-child-${suffix}`,
-                request_message_id: null,
-                requesting_agent_id: input.requesting_agent_id,
-                target_agent_id: input.target_agent_id,
-                requested_by_user_id: identity.userId,
-                policy_decision_record_id: `policy-${suffix}`,
-                status: "queued",
-                instruction: input.instruction,
-                reason: input.reason ?? null,
-                budget_json: input.budget_json ?? null,
-                context_policy_json: input.context_policy_json ?? null,
-                result_summary: null,
-                tool_call_id: null,
-                created_at: "2026-07-05T00:00:00.000Z",
-                updated_at: "2026-07-05T00:00:00.000Z",
-                completed_at: null,
-              },
+    const binding = await resolveAgentDelegationToolBinding(config, managerRun, {
+      targets: [
+        { agent_id: "agent-reviewer-a", name: "Reviewer A", role: "worker", capabilities_json: { capabilities: ["code_review"] } },
+        { agent_id: "agent-reviewer-b", name: "Reviewer B", role: "worker", capabilities_json: { capabilities: ["test_review"] } },
+      ],
+      service: {
+        async spawnChildRun(identity, input) {
+          spawnCalls.push({ identity, input });
+          const suffix = input.target_agent_id.endsWith("a") ? "a" : "b";
+          return {
+            delegation: {
+              id: `delegation-${suffix}`,
+              space_id: input.space_id,
+              group_id: input.group_id,
+              parent_run_id: input.parent_run_id,
               child_run_id: `run-child-${suffix}`,
+              request_message_id: null,
+              requesting_agent_id: input.requesting_agent_id,
+              target_agent_id: input.target_agent_id,
+              requested_by_user_id: identity.userId,
               policy_decision_record_id: `policy-${suffix}`,
-            };
-          },
+              status: "queued",
+              instruction: input.instruction,
+              reason: input.reason ?? null,
+              budget_json: input.budget_json ?? null,
+              context_policy_json: input.context_policy_json ?? null,
+              result_summary: null,
+              tool_call_id: null,
+              created_at: "2026-07-05T00:00:00.000Z",
+              updated_at: "2026-07-05T00:00:00.000Z",
+              completed_at: null,
+            },
+            child_run_id: `run-child-${suffix}`,
+            policy_decision_record_id: `policy-${suffix}`,
+          };
         },
-      },
-    );
-    expect(binding).not.toBeNull();
-    expect(binding?.toolDefinitions[0].input_schema).toMatchObject({
-      properties: {
-        target_agent_id: { enum: ["agent-reviewer-a", "agent-reviewer-b"] },
-        // D8: agent.delegate's registry Zod (RuntimeDelegationOutputItemSchema)
-        // rejects an empty-string `reason` (`.min(1)`); the shown schema must
-        // say so too, or a model sending `reason: ""` gets rejected by the
-        // gateway's input validation for a constraint it was never told about.
-        reason: { minLength: 1 },
       },
     });
 
-    const hostRequests: RuntimeHostExecuteRequest[] = [];
-    const execute: RuntimeHostExecutor = async (_config, hostRequest) => {
-      hostRequests.push(hostRequest);
-      if (hostRequests.length === 1) {
-        return response({
-          output_json: {
-            tool_calls: [
-              {
-                id: "tool-call-a",
-                name: "agent.delegate",
-                arguments_json: JSON.stringify({
-                  target_agent_id: "agent-reviewer-a",
-                  instruction: "Answer 1+1 independently.",
-                }),
-              },
-              {
-                id: "tool-call-b",
-                name: "agent.delegate",
-                arguments_json: JSON.stringify({
-                  target_agent_id: "agent-reviewer-b",
-                  instruction: "Answer 1+1 independently.",
-                }),
-              },
-            ],
-          },
-        });
-      }
-      return response({
-        output_text: "Delegated both reviewer checks and will wait for their results.",
-        output_json: {},
-      });
-    };
-
-    const result = await executeManagedToolLoop(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
-      request(),
-      execute,
-      delegationOnlyToolSet(binding!, (call) => runAgentRoomToolCall(call, binding!, managerRun, request())),
-    );
+    expect(binding?.toolDefinitions[0]?.input_schema).toMatchObject({
+      properties: { target_agent_id: { enum: ["agent-reviewer-a", "agent-reviewer-b"] } },
+    });
+    expect(binding?.toolDefinitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "agent.delegate",
+        description: expect.stringContaining("Do not simulate the target agent's result"),
+      }),
+      expect.objectContaining({
+        name: "agent.wait_for_results",
+        description: expect.stringContaining("Use scope=own_delegations"),
+      }),
+    ]));
+    const results = await Promise.all(["a", "b"].map((suffix) => runAgentRoomToolCall({
+      id: `tool-call-${suffix}`,
+      name: "agent.delegate",
+      arguments_json: JSON.stringify({
+        target_agent_id: `agent-reviewer-${suffix}`,
+        instruction: "Answer 1+1 independently.",
+      }),
+    }, binding!, managerRun)));
 
     expect(spawnCalls).toHaveLength(2);
     expect(spawnCalls[0]).toMatchObject({
       identity: { spaceId: "space-1", userId: "user-1" },
-      input: {
-        parent_run_id: "run-manager-turn",
-        root_run_id: "run-root",
-        requesting_agent_id: "agent-manager",
-        target_agent_id: "agent-reviewer-a",
-      },
+      input: { parent_run_id: "run-manager-turn", root_run_id: "run-root", target_agent_id: "agent-reviewer-a" },
     });
-    expect(hostRequests[0]).toMatchObject({
-      tool_mode: "authorized_bindings",
-      tools: expect.arrayContaining([expect.objectContaining({ name: "agent.delegate" })]),
-    });
-    expect(hostRequests[1].messages?.filter((message) => message.role === "tool")).toHaveLength(2);
-    expect(result.output_json).toMatchObject({
-      managed_tool_calls: [
-        expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-a", child_run_id: "run-child-a" }),
-        expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-b", child_run_id: "run-child-b" }),
-      ],
-    });
+    expect(results.map((result) => result.modelResult)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-a", child_run_id: "run-child-a" }),
+      expect.objectContaining({ ok: true, target_agent_id: "agent-reviewer-b", child_run_id: "run-child-b" }),
+    ]));
   });
 
-  it("pauses the current run when agent.wait_for_results finds unfinished dependencies", async () => {
+  it("returns pending dependency information in one bounded tool result", async () => {
     const managerRun = run();
     const dependencyRun = run({
       id: "run-reviewer",
       agent_id: "agent-reviewer-a",
       agent_name: "Reviewer A",
       status: "running",
-      parent_run_id: "run-root",
-      root_run_id: "run-root",
-      run_group_id: "group-1",
       prompt: "Answer 1+1.",
     });
     const queriedRunIds: unknown[] = [];
+    let parkedSqlSeen = false;
     const pool = {
       async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
+        if (sql.includes("SELECT id, status") && sql.includes("FOR UPDATE")) {
+          return { rows: [{ id: "run-reviewer", status: "running" }] as Row[], rowCount: 1 };
+        }
+        if (sql.includes("SELECT status, run_group_id")) {
+          return { rows: [{ status: "running", run_group_id: "group-1" }] as Row[], rowCount: 1 };
+        }
+        if (sql.includes("FROM run_attempts") && sql.includes("FOR UPDATE")) {
+          return { rows: [{ id: "attempt-manager" }] as Row[], rowCount: 1 };
+        }
+        if (sql.includes("WITH parked AS")) {
+          parkedSqlSeen = true;
+          return { rows: [{ id: managerRun.id }] as Row[], rowCount: 1 };
+        }
         if (sql.includes("FROM runs r") && sql.includes("WHERE r.space_id = $1 AND r.id = $2")) {
           queriedRunIds.push(params[1]);
           const row = params[1] === "run-reviewer" ? dependencyRun : null;
@@ -309,147 +176,115 @@ describe("managed agent delegation tools", () => {
         throw new Error(`Unexpected SQL: ${sql}`);
       },
     } as unknown as Pool;
-    const binding = await resolveAgentDelegationToolBinding(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
-      managerRun,
-      {
-        pool,
-        targets: [],
-        service: {
-          async spawnChildRun() {
-            throw new Error("delegate should not be called");
-          },
-        },
-      },
-    );
-    expect(binding).not.toBeNull();
-    expect(binding?.toolDefinitions.map((tool) => tool.name)).toEqual(["agent.wait_for_results"]);
-    expect(binding?.toolDefinitions[0]?.input_schema).toMatchObject({
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        scope: { enum: ["current_turn", "own_delegations", "run_ids"] },
-        run_ids: { type: "array", items: { type: "string" } },
-      },
+    const binding = await resolveAgentDelegationToolBinding(config, managerRun, {
+      pool,
+      targets: [],
+      service: { async spawnChildRun() { throw new Error("delegate should not be called"); } },
     });
-    const blankRunIds = await runAgentRoomToolCall({
-      id: "wait-call-blank",
+
+    expect(binding?.toolDefinitions.map((tool) => tool.name)).toEqual(["agent.wait_for_results"]);
+    const invalid = await runAgentRoomToolCall({
+      id: "wait-call-invalid",
       name: "agent.wait_for_results",
       arguments_json: JSON.stringify({ scope: "run_ids", run_ids: ["   ", ""] }),
-    }, binding!, managerRun, request());
-    expect(blankRunIds.summary).toMatchObject({
-      ok: false,
-      error_code: "agent_wait_for_results_tool_call_failed",
-      error_message: "run_ids is required when scope is run_ids.",
-    });
+    }, binding!, managerRun);
+    expect(invalid.summary).toMatchObject({ ok: false, error_code: "agent_wait_for_results_tool_call_failed" });
     expect(queriedRunIds).toEqual([]);
 
-    const hostRequests: RuntimeHostExecuteRequest[] = [];
-    const execute: RuntimeHostExecutor = async (_config, hostRequest) => {
-      hostRequests.push(hostRequest);
-      return response({
-        output_json: {
-          tool_calls: [{
-            id: "wait-call-1",
-            name: "agent.wait_for_results",
-            arguments_json: JSON.stringify({
-              scope: "run_ids",
-              run_ids: [" run-reviewer ", "run-reviewer", "   "],
-              target_agent_ids: [" agent-reviewer-a ", "agent-reviewer-a", ""],
-              reason: "  Need reviewer result before summarizing.  ",
-              resume_instruction: "  Summarize the reviewer result.  ",
-            }),
-          }],
-        },
-      });
-    };
-
-    const result = await executeManagedToolLoop(
-      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
-      request(),
-      execute,
-      delegationOnlyToolSet(binding!, (call) => runAgentRoomToolCall(call, binding!, managerRun, request())),
-    );
-
-    expect(hostRequests).toHaveLength(1);
-    expect(result.output_json).toMatchObject({
-      waiting_for_results: {
-        status: "waiting",
+    const result = await runAgentRoomToolCall({
+      id: "wait-call-1",
+      name: "agent.wait_for_results",
+      arguments_json: JSON.stringify({
         scope: "run_ids",
-        depends_on_run_ids: ["run-reviewer"],
-        pending_run_ids: ["run-reviewer"],
-        reason: "Need reviewer result before summarizing.",
-        resume_instruction: "Summarize the reviewer result.",
-      },
-      managed_tool_calls: [
-        expect.objectContaining({
-          tool_name: "agent.wait_for_results",
-          ok: true,
-          status: "waiting",
-        }),
-      ],
+        run_ids: [" run-reviewer ", "run-reviewer", "   "],
+        reason: "  Need reviewer result before summarizing.  ",
+        resume_instruction: "  Summarize the reviewer result.  ",
+      }),
+    }, binding!, managerRun);
+    expect(result.modelResult).toMatchObject({
+      status: "waiting",
+      scope: "run_ids",
+      depends_on_run_ids: ["run-reviewer"],
+      pending_run_ids: ["run-reviewer"],
+      reason: "Need reviewer result before summarizing.",
+      resume_instruction: "Summarize the reviewer result.",
     });
+    expect(result.summary).toMatchObject({ tool_name: "agent.wait_for_results", ok: true, status: "waiting" });
     expect(queriedRunIds).toEqual(["run-reviewer"]);
-    expect(result.output_text).toBe("");
+    // `waiting` is a claim about a durable transition, not about this reply:
+    // the park write is what the Run resumes from.
+    expect(parkedSqlSeen).toBe(true);
   });
-  it("routes a delegation-only run through the general tool loop and offers it the delegation tools", async () => {
-    // Gate 5. A run with delegation and no retrieval-domain tool reaches the
-    // general loop as a delegation contribution — no carrier binding is
-    // fabricated for it, and none exists to fabricate. Driving
-    // `ManagedAgentToolSurface` rather than the loop directly is the point: it
-    // is the surface's assembly that must offer the tools.
-    const managerRun = run({
-      // The gateway offers only granted actions, so the grants are part of what
-      // makes this case reachable at all.
-      permission_snapshot_json: {
-        tool_grants: [
-          { action_id: "agent.delegate" },
-          { action_id: "agent.wait_for_results" },
-        ],
-      },
-    } as Partial<RunRecord>);
-    const offered: string[][] = [];
-    const systemPrompts: string[] = [];
-    const surface = new ManagedAgentToolSurface(
-      // No database URL: a delegation-only run reads no space retrieval
-      // settings, and the model turn below produces no tool call, so policy and
-      // dispatch are never reached.
-      loadConfig({}),
-    );
 
-    const result = await surface.execute(
-      managerRun,
-      request(),
-      async (_config, hostRequest) => {
-        offered.push((hostRequest.tools ?? []).map((tool) => tool.name));
-        systemPrompts.push(hostRequest.system_prompt ?? "");
-        return response({ output_text: "Nothing to delegate.", output_json: {} });
+  it("reports a failed park as governed-tool degradation rather than an ordinary tool failure", async () => {
+    const managerRun = run();
+    const dependencyRun = run({
+      id: "run-reviewer",
+      agent_id: "agent-reviewer-a",
+      agent_name: "Reviewer A",
+      status: "running",
+      prompt: "Answer 1+1.",
+    });
+    let parkedSqlSeen = false;
+    const pool = {
+      async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
+        if (sql.includes("SELECT id, status") && sql.includes("FOR UPDATE")) {
+          return { rows: [{ id: "run-reviewer", status: "running" }] as Row[], rowCount: 1 };
+        }
+        if (sql.includes("SELECT status, run_group_id")) {
+          return { rows: [{ status: "running", run_group_id: "group-1" }] as Row[], rowCount: 1 };
+        }
+        if (sql.includes("FROM run_attempts") && sql.includes("FOR UPDATE")) {
+          return { rows: [{ id: "attempt-manager" }] as Row[], rowCount: 1 };
+        }
+        if (sql.includes("WITH parked AS")) {
+          parkedSqlSeen = true;
+          throw new Error("deadlock detected");
+        }
+        if (sql.includes("FROM runs r") && sql.includes("WHERE r.space_id = $1 AND r.id = $2")) {
+          const row = params[1] === "run-reviewer" ? dependencyRun : null;
+          return { rows: row ? [row as Row] : [], rowCount: row ? 1 : 0 };
+        }
+        if (sql.includes("WITH scoped_runs AS")) {
+          return {
+            rows: [{
+              agent_run_count: 1,
+              completed_agent_run_count: 0,
+              input_tokens: null,
+              output_tokens: null,
+              total_tokens: null,
+              estimated_cost_usd: null,
+              model_names: [],
+            }] as Row[],
+            rowCount: 1,
+          };
+        }
+        throw new Error(`Unexpected SQL: ${sql}`);
       },
-      {
-        agentDelegationTools: {
-          targets: [
-            {
-              agent_id: "agent-reviewer-a",
-              name: "Reviewer A",
-              role: "worker",
-              capabilities_json: { capabilities: ["code_review"] },
-            },
-          ],
-          service: {
-            async spawnChildRun() {
-              throw new Error("no delegation call is expected in this test");
-            },
-          },
-        },
-      },
-    );
+    } as unknown as Pool;
+    const binding = await resolveAgentDelegationToolBinding(config, managerRun, {
+      pool,
+      targets: [],
+      service: { async spawnChildRun() { throw new Error("delegate should not be called"); } },
+    });
 
-    expect(offered).toHaveLength(1);
-    expect(offered[0]).toEqual(
-      expect.arrayContaining(["agent.delegate", "agent.wait_for_results"]),
-    );
-    expect(systemPrompts[0]).toContain("Do not print raw action arguments, JSON schemas");
-    expect(systemPrompts[0]).toContain("call the action instead of simulating it in prose");
-    expect(result.success).toBe(true);
+    const result = await runAgentRoomToolCall({
+      id: "wait-call-park-failed",
+      name: "agent.wait_for_results",
+      arguments_json: JSON.stringify({ scope: "run_ids", run_ids: ["run-reviewer"] }),
+    }, binding!, managerRun);
+
+    expect(parkedSqlSeen).toBe(true);
+    // The Run was never paused, so its dependencies are still unresolved. The
+    // `ok: false` summary is what the dispatcher records as a failed
+    // `action_completed` Run event, which settles the Run `degraded` instead of
+    // letting it answer as though it had waited.
+    expect(result.summary).toMatchObject({
+      tool_name: "agent.wait_for_results",
+      ok: false,
+      error_code: "agent_wait_for_results_park_failed",
+      depends_on_run_ids: ["run-reviewer"],
+    });
+    expect(result.modelResult).toMatchObject({ ok: false, status: "park_failed" });
   });
 });

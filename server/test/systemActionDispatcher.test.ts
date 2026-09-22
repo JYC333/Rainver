@@ -1,11 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  RuntimeHostExecuteRequest,
   SystemActionDefinition,
   SystemActionId,
 } from "@rainver/protocol";
 import { loadConfig } from "../src/config.js";
-import type { RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 
 const registryState = vi.hoisted(() => ({
   registry: new Map<SystemActionId, SystemActionDefinition>(),
@@ -16,9 +15,10 @@ vi.mock("../src/modules/systemActions/registry.js", () => ({
 }));
 
 import * as protocol from "@rainver/protocol";
+import type { CanonicalToolCall } from "@rainver/protocol";
 import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
 
-describe("SystemActionDispatcher tool binding projection", () => {
+describe("SystemActionDispatcher ACP tool projection", () => {
   beforeEach(async () => {
     const research = protocol.SYSTEM_ACTION_REGISTRY.find(
       (definition) => definition.id === "research.start_acquisition",
@@ -31,12 +31,14 @@ describe("SystemActionDispatcher tool binding projection", () => {
     }]]);
   });
 
-  it("derives research binding side effects and approval metadata from the registry", async () => {
-    const run = {
+  function testRun(): AgentRunRecord {
+    return {
       id: "run-research-1",
       space_id: "space-1",
       agent_id: "agent-1",
       agent_version_id: "version-1",
+      execution_kind: "agent",
+      runtime_key: "opencode",
       run_type: "agent",
       status: "running",
       mode: "live",
@@ -50,7 +52,6 @@ describe("SystemActionDispatcher tool binding projection", () => {
       delegation_id: null,
       project_id: "project-1",
       scheduled_at: null,
-      adapter_type: "model_api",
       capability_id: null,
       capabilities_json: ["research.start_acquisition"],
       model_provider_id: "provider-1",
@@ -71,20 +72,54 @@ describe("SystemActionDispatcher tool binding projection", () => {
       permission_snapshot_json: {
         tool_grants: [{ action_id: "research.start_acquisition" }],
       },
-    } as RunRecord;
+    } as AgentRunRecord;
+  }
+
+  it("exposes only granted research actions as ACP tool definitions", async () => {
+    const run = testRun();
 
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({}),
-      run,
-      {} as RuntimeHostExecuteRequest,
+      run
     );
 
-    expect(dispatcher.researchBindings).toEqual([
-      expect.objectContaining({
-        id: "research.start_acquisition",
-        side_effect_level: "proposal",
-        approval_required: true,
-      }),
-    ]);
+    expect(dispatcher.researchDefinitions.map((tool) => tool.name)).toEqual(["research.start_acquisition"]);
+  });
+
+  it("records a failed action_completed event when a Run calls a tool it was never granted", async () => {
+    // Without this event `governedToolDegradation` sees nothing and a Run that
+    // asked for a tool it never held finishes clean.
+    const events: Array<{
+      eventType: string;
+      call: CanonicalToolCall;
+      metadata?: Record<string, unknown>;
+    }> = [];
+
+    const dispatcher = await SystemActionDispatcher.create(loadConfig({}), testRun(), {
+      actionEventSink: async (eventType, call, metadata) => {
+        events.push({ eventType, call, metadata });
+      },
+    });
+
+    const result = await dispatcher.dispatch({
+      id: "call-ungranted-1",
+      name: "memory.propose",
+      arguments_json: "{}",
+    });
+
+    expect(result.modelResult).toMatchObject({
+      ok: false,
+      tool: "memory.propose",
+      error_code: "system_action_not_granted",
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      eventType: "action_completed",
+      // `defaultActionEventSink` derives `status: "failed"` from `ok === false`
+      // and `metadata_json.action_id` from the call name, which is exactly what
+      // `governedToolDegradation` reads back.
+      call: { id: "call-ungranted-1", name: "memory.propose" },
+      metadata: { ok: false, error_code: "system_action_not_granted" },
+    });
   });
 });

@@ -238,15 +238,17 @@ and fails closed on workspace, namespace or connection failure; the application
 server has no subprocess fallback and no vendor CLI of its own.
 
 **B14** — Runtime Context Delivery is the only model-visible context input for
-a Run the server executes in-process. A Run handed to a host daemon — every
-CLI runtime, on the built-in host as much as a paired one — uses ADR 0016's
-prompt plus work-surface delivery without server-brokered Runtime Context, and
-pulls what else it needs through the `rainver` command. The distinction is the
-runtime, not the machine: a runtime with a subprocess can pull, and one the
-server calls itself has no process to pull with, so its context is assembled
-and pushed. An in-process adapter may not use the daemon exception. Adapters may render an accepted Delivery at
-their invocation boundary but must not fetch, reorder, rebudget, cache, or copy
-it into vendor context files. Vendor control files used solely to disable an
+an Agent Run. Every Agent Run — on the built-in Server Host as much as on a
+paired one — is authorized, planned and recorded by the server's Runtime
+Context Gateway before dispatch, and its semantic sections are projected into
+ACP's single user-prompt channel, which has no separate system-message role
+(ADR 0016's amendment of 2026-09-21, which supersedes the earlier daemon
+exception; a Run dispatched without that Delivery fails as
+`runtime_context_authority_missing`). The `rainver` work surface is a separate
+reachability, not a second context channel: it is how a Run takes live
+governed actions, not where a runtime fetches its context from. Adapters may
+render an accepted Delivery at their invocation boundary but must not fetch,
+reorder, rebudget, cache, or copy it into vendor context files. Vendor control files used solely to disable an
 unsupported runtime feature may exist only in the private execution sandbox;
 real Project Folder files such as `CLAUDE.md` and `AGENTS.md` are never runtime
 context outputs or sources of truth.
@@ -262,7 +264,7 @@ launcher/control panel. See [ADR 0005](decisions/0005-desktop-runtime.md).
 
 ## Project Folder Boundaries
 
-**B17** — Project Folder file access must go through `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`. Adapters must not access arbitrary host paths.
+**B17** — Control-plane-mediated Project Folder access must go through `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`; server-side adapters must not resolve host paths. An ACP process accesses files directly inside the workspace mounted by its execution Host: the built-in strict Host bounds that access with its per-Run namespace, while a trusted paired Host uses native OS permissions without namespace containment (ADR 0016, B62/B64).
 
 **B18** — Sandboxes are short-lived execution areas. Long-term records are: artifacts, diffs, logs, and approved proposals. Sandbox directories may be cleaned up after artifact collection.
 
@@ -289,8 +291,8 @@ write active memory, or auto-enable a capability. Vendor declarations of tools,
 hooks, scripts, dependencies, or MCP servers are requests only and grant no
 callable or execution authority.
 
-**B21B** — Runtime skill files for Claude Code, Codex, `model_api`, and future
-runtimes are generated adapter artifacts, not a second content authority.
+**B21B** — Runtime skill files for Claude Code, Codex, OpenCode, and future
+ACP runtimes are generated artifacts, not a second content authority.
 Rainver owns package provenance and snapshot identity, trust and policy,
 scope/Agent binding, pinned-version selection, runtime compatibility, Runtime
 Context Delivery authorization, and audit. The current normalized conversion,
@@ -626,19 +628,31 @@ names for one thing, or two documents claiming the same authority, is the defect
 this rule exists to prevent — not a migration convenience.
 
 **B59** — `server/migrations/` is an append-only chain. `0000_baseline.sql`
-is frozen (a deployment has carried data since 2026-09-06), and every schema
-change after it is a new numbered file appended by
+is frozen, and every schema change after it is a new numbered file appended by
 `pnpm run schema:generate -- --name <name>` from the Drizzle schema, with data
 backfills written into that same file. A migration that any database has
 applied is never edited, renamed, or removed — the runner records checksums
 and refuses a changed one, and `baselineSchema.test.ts` pins the baseline's
 hash. Do not fold a change into an earlier file, and do not add compatibility
-shims in application code for a shape a migration has already replaced. A release's
-migrations run while the build they replace is still serving (ADR 0020 §5 puts
+shims in application code for a shape a migration has already replaced. A
+release's migrations run while the build they replace is still serving (ADR 0020 §5 puts
 `migrate` before `recreate`), so each one must leave the schema readable by the
 previous build — expand in the release that needs the new shape, contract in a
 later one. That is a constraint on what a single release may drop or rename, not
 a licence for compatibility code: B58 still applies to the application.
+
+The chain has been folded exactly once, and that fold is the only authorized
+one: the **2026-09-21 ACP runtime-authority schema epoch**
+([ADR 0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) §5)
+replaced the prior baseline and its numbered files with one newly generated
+`0000_baseline.sql`. A database from before that epoch has no upgrade path and
+no compatible backup restore: it must be recreated from the new baseline, which
+is why the reset needed its own accepted decision and its own authorization to
+delete data. `server/migrations/README.md` states the epoch beside the chain,
+and `baselineSchema.test.ts` pins the new baseline's hash and the one-migration
+chain shape. Everything after that baseline is append-only again on the terms
+above; a new epoch is not a repeatable maintenance technique, and nothing in
+this paragraph licenses folding an ordinary change back into the baseline.
 
 The exception is an **offline maintenance migration**, and it is marked as one:
 `-- rainver:maintenance` on a line of its own within the first 20 lines of the SQL file. Such a

@@ -171,4 +171,26 @@ describe("Room contracts", () => {
     expect(invitation.approvals[0]?.owner_user_id).toBe("user-2");
     expect(() => RoomInvitationSchema.parse({ ...invitation, approvals: [{ ...invitation.approvals[0], leaked_prompt: "no" }] })).toThrow();
   });
+
+  it("requires a coherent workspace target for an explicitly host-bound preset", () => {
+    const base = {
+      preset_id: "research-analyst",
+      execution: {
+        host_id: "host-1",
+        workspace_location_id: "location-1",
+        workspace_mode: "location" as const,
+        runtime_key: "claude_code",
+        installation: "managed:1.0.0",
+      },
+    };
+    expect(RoomAgentPresetRequestSchema.safeParse(base).success).toBe(true);
+    expect(RoomAgentPresetRequestSchema.safeParse({
+      ...base,
+      execution: { ...base.execution, workspace_location_id: null },
+    }).success).toBe(false);
+    expect(RoomAgentPresetRequestSchema.safeParse({
+      ...base,
+      execution: { ...base.execution, workspace_mode: "managed", workspace_location_id: "location-1" },
+    }).success).toBe(false);
+  });
 });

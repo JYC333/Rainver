@@ -123,17 +123,19 @@ class PgAuthorityProvider implements RuntimeContextAuthorityPort {
       [setup.agent_id, request.identity.spaceId, request.identity.userId, setup.scope_kind, request.turn.work_context_scope_id],
     );
     if (!agent.rows[0]) throw new Error("Runtime Context Agent authority is no longer active or readable");
-    const egressDestination = await revalidateExecutionDestination(this.db, control, run.adapter_type ?? null);
+    const egressDestination = await revalidateExecutionDestination(this.db, control, run.runtime_key ?? null);
     const modelOverride = record(run.model_override_json);
-    const modelConfig = record(run.model_config_json);
-    // Keep planning authority aligned with runtimeProviderBinding.modelFromRun:
-    // a per-run override wins over the immutable AgentVersion default.
-    const model = stringValue(modelOverride.model)
-      ?? stringValue(modelConfig.model)
-      ?? (control.egress.destination_type === "model_provider"
-        ? await providerDefaultModel(this.db, run.space_id, control.egress.destination_id)
-        : null);
-    if (!model) throw new Error("Runtime Context planning requires a resolved model");
+    const profileSnapshot = record(run.runtime_profile_snapshot_json);
+    // The AgentVersion no longer carries a deployment model. A per-run model
+    // override is honored only when present in the admitted Run; otherwise
+    // the immutable Profile snapshot is authoritative. Native runtimes may
+    // not expose their model before the ACP session starts.
+    const model = profileSnapshot.backend_mode === "model_provider"
+      ? stringValue(profileSnapshot.model_name)
+      : stringValue(modelOverride.model);
+    if (profileSnapshot.backend_mode === "model_provider" && !model) {
+      throw new Error("Runtime Context planning requires the model selected by the Runtime Profile");
+    }
     return {
       executionControlSnapshotId: control.id,
       setupRef: { type: "work_context_setup", id: setup.id, version: String(setup.version) },
@@ -146,19 +148,6 @@ class PgAuthorityProvider implements RuntimeContextAuthorityPort {
       egressDestination,
     };
   }
-}
-
-async function providerDefaultModel(db: Pool, spaceId: string, providerId: string | null): Promise<string | null> {
-  if (!providerId) return null;
-  const result = await db.query<{ default_model: string | null }>(
-    `SELECT provider.default_model
-       FROM model_provider_space_grants provider_grant
-       JOIN model_providers provider ON provider.id=provider_grant.provider_id
-      WHERE provider_grant.space_id=$1 AND provider_grant.provider_id=$2
-        AND provider_grant.enabled=TRUE AND provider.enabled=TRUE`,
-    [spaceId, providerId],
-  );
-  return stringValue(result.rows[0]?.default_model);
 }
 
 class PgDirectProvider implements RuntimeContextChannelProvider {
@@ -382,11 +371,11 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
     request: RuntimeContextPlanningRequest,
     authority: RuntimeContextAuthoritySnapshot,
   ): Promise<ContextItem[]> {
-    if (!run.adapter_type) return [];
+    if (!run.runtime_key) return [];
     const candidates = await new PgRuntimeSkillProvider(this.db).loadCandidatesForRun({
       space_id: run.space_id,
       run_id: run.id,
-      adapter_type: run.adapter_type,
+      runtime_key: run.runtime_key,
       capability_id: run.capability_id,
       agent_id: run.agent_id,
       project_id: run.project_id,
@@ -417,7 +406,7 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
           capability_id: candidate.capability_id,
           capability_version_id: candidate.capability_version_id,
           capability_enablement_id: candidate.capability_enablement_id,
-          runtime_adapter_type: candidate.runtime_adapter_type,
+          runtime_key: candidate.runtime_key,
           render_mode: candidate.render_mode,
         },
       }));
@@ -840,7 +829,7 @@ async function enforceRuntimeSkillRender(
     resource_id: candidate.binding_id,
     run_id: runId,
     context: {
-      adapter_type: candidate.runtime_adapter_type,
+      runtime_key: candidate.runtime_key,
       render_mode: candidate.render_mode,
       capability_id: candidate.capability_id,
       capability_version_id: candidate.capability_version_id,
@@ -853,7 +842,7 @@ async function enforceRuntimeSkillRender(
       capability_id: candidate.capability_id,
       capability_version_id: candidate.capability_version_id,
       capability_enablement_id: candidate.capability_enablement_id,
-      adapter_type: candidate.runtime_adapter_type,
+      runtime_key: candidate.runtime_key,
       render_mode: candidate.render_mode,
       risk_level: candidate.risk_level,
     },
@@ -1139,13 +1128,13 @@ function effectiveRetrievalMaximum(setupValue: unknown, controlValue: number | n
 export async function revalidateExecutionDestination(
   db: Pool,
   control: Pick<RuntimeContextAuthoritySnapshot["controlSnapshot"], "space_id" | "egress">,
-  adapterType: string | null,
+  runtimeKey: string | null,
 ): Promise<RetrievalEgressDestination> {
   if (control.egress.destination_type !== "model_provider") {
-    const cli = isVendorCliAdapter(adapterType);
+    const cli = isVendorCliAdapter(runtimeKey);
     if (cli) {
       if (control.egress.destination_type !== "local_cli"
-        || control.egress.destination_id !== adapterType
+        || control.egress.destination_id !== runtimeKey
         || !control.egress.external_egress_allowed) {
         throw new Error("Execution CLI adapter is not authorized by the control snapshot");
       }
@@ -1178,7 +1167,7 @@ export async function revalidateExecutionDestination(
   );
   const provider = result.rows[0];
   if (!provider) throw new Error("Execution model-provider grant is no longer active");
-  const destination = runtimeContextProviderDestination(adapterType, provider);
+  const destination = runtimeContextProviderDestination(runtimeKey, provider);
   if (destination === "external_provider") {
     const settings = await readSpaceRetrievalSettings(db, control.space_id);
     if (!settings.externalEgressEnabled || !control.egress.external_egress_allowed) {
@@ -1189,10 +1178,10 @@ export async function revalidateExecutionDestination(
 }
 
 export function runtimeContextProviderDestination(
-  adapterType: string | null,
+  runtimeKey: string | null,
   provider: { provider_type: string; base_url: string | null; config_json: unknown },
 ): RetrievalEgressDestination {
-  return runtimeProviderEgressDestination(adapterType, provider);
+  return runtimeProviderEgressDestination(runtimeKey, provider);
 }
 
 function refKey(ref: { type: string; id: string }): string {

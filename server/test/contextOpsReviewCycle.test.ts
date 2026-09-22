@@ -189,7 +189,7 @@ describe("Context Review Cycle service", () => {
         memory_max_findings: 100,
         max_claim_candidates: 40,
       },
-      runId: "run-1",
+      automationRunId: "automation-run-1",
     });
 
     expect(createRetrievalMaintenancePacketMock).not.toHaveBeenCalled();
@@ -225,7 +225,7 @@ describe("Context Review Cycle service", () => {
         memory_max_findings: 100,
         max_claim_candidates: 40,
       },
-      runId: "run-1",
+      automationRunId: "automation-run-1",
     });
 
     expect(createRetrievalMaintenancePacketMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -281,7 +281,7 @@ describe("Context Review Cycle service", () => {
         memory_max_findings: 100,
         max_claim_candidates: 40,
       },
-      runId: "run-1",
+      automationRunId: "automation-run-1",
     });
 
     expect(createClaimCandidatePacketMock).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -315,7 +315,7 @@ describe("Context Review Cycle service", () => {
         memory_max_findings: 100,
         max_claim_candidates: 40,
       },
-      runId: "run-1",
+      automationRunId: "automation-run-1",
     });
 
     expect(result.degraded).toBe(true);

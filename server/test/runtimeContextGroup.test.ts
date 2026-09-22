@@ -16,7 +16,7 @@ import { createProductionRetrievalAuthorization, revalidateExecutionDestination 
 import { persistRunContextTaint } from "../src/modules/runs/contextTaint.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { seedConversationMessages } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedConversationMessages } from "./support/domainSeeds.js";
 
 describe("runtimeContextCliContinuityDb", () => {
   const SPACE = "71000000-0000-4000-8000-000000000001";
@@ -46,14 +46,14 @@ describe("runtimeContextCliContinuityDb", () => {
       [AGENT, SPACE, USER],
     );
     await db.pool.query(
-      `INSERT INTO agent_versions (id,agent_id,space_id,version_label,system_prompt,model_config_json,runtime_config_json,context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,runtime_policy_json,created_at)
-       VALUES ($1,$2,$3,'v1','Act','{}','{}','{}','{}','[]','{}','{}',now())`,
+      `INSERT INTO agent_versions (id, agent_id, space_id, version_label, system_prompt, context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, created_at)
+       VALUES ($1, $2, $3, 'v1', 'Act', '{}', '{}', '[]', '{}', now())`,
       [VERSION, AGENT, SPACE],
     );
     await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
     await db.pool.query(
-      `INSERT INTO agent_runtime_profiles (id,space_id,agent_id,name,adapter_type,runtime_config_json,runtime_policy_json,enabled,is_default,created_at,updated_at)
-       VALUES ($1,$2,$3,'Codex','codex_cli','{}','{}',TRUE,TRUE,now(),now())`,
+      `INSERT INTO agent_runtime_profiles (id, space_id, agent_id, name, runtime_key, backend_mode, runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at)
+       VALUES ($1, $2, $3, 'Codex', 'codex_cli', 'runtime_native', '{}', '{}', TRUE, TRUE, now(), now())`,
       [RUNTIME, SPACE, AGENT],
     );
     await db.pool.query(
@@ -62,8 +62,8 @@ describe("runtimeContextCliContinuityDb", () => {
       [SESSION, SPACE, USER, AGENT],
     );
     await db.pool.query(
-      `INSERT INTO runs (id,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,adapter_type,required_sandbox_level,instructed_by_user_id,owner_user_id,requested_runtime_profile_id,session_id,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,'agent','manual','running','live','codex_cli','ephemeral',$5,$5,$6,$7,now(),now())`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, required_sandbox_level, instructed_by_user_id, owner_user_id, requested_runtime_profile_id, session_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'running', 'live', 'ephemeral', $5, $5, $6, $7, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.id = $6::varchar(36) AND p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36)), 'explicit', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.id = $6::varchar(36) AND p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36)), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.id = $6::varchar(36) AND p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36)))`,
       [RUN, SPACE, AGENT, VERSION, USER, RUNTIME, SESSION],
     );
     await db.pool.query(
@@ -205,7 +205,7 @@ describe("runtimeContextCliContinuityDb", () => {
         invocationId: RUN,
         envelope: envelope(firstMessage),
         control: control(),
-        adapterType: "codex_cli",
+        runtimeKey: "codex_cli",
         providerId: null,
         model: "gpt-4o",
         usageSourceId: "cli-continuity:first",
@@ -417,6 +417,31 @@ describe("runtimeContextCliContinuityDb", () => {
         generation: 4,
         rotation_reason: "egress_policy_changed",
       });
+      await cli.recordVendorSession({
+        bindingId: egressRotated.id,
+        runtimeStateKey: egressRotated.runtime_state_key,
+        vendorSessionId: "thread-4",
+      });
+      await expect(cli.prepareBinding({
+        ...bindingInput(control()),
+        agentVersionId: "71000000-0000-4000-8000-000000000099",
+        expectedVendorSessionId: "thread-4",
+      })).resolves.toMatchObject({ id: egressRotated.id, generation: 4 });
+      const sessionMismatch = await cli.prepareBinding({
+        ...bindingInput(control()),
+        agentVersionId: "71000000-0000-4000-8000-000000000099",
+        expectedVendorSessionId: "thread-reset",
+      });
+      expect(sessionMismatch).toMatchObject({
+        vendor_session_id: null,
+        generation: 5,
+        rotation_reason: "vendor_session_mismatch",
+      });
+      expect(sessionMismatch.id).not.toBe(egressRotated.id);
+      await expect(db.pool.query<{ status: string }>(
+        `SELECT status FROM runtime_context_cli_bindings WHERE id=$1`,
+        [egressRotated.id],
+      )).resolves.toMatchObject({ rows: [{ status: "rotated" }] });
     });
 
     it("binds provider generations through the target Space grant", async () => {
@@ -522,7 +547,7 @@ describe("runtimeContextCliContinuityDb", () => {
       userId: USER,
       agentId: AGENT,
       runtimeProfileId: RUNTIME,
-      adapterType: "codex_cli",
+      runtimeKey: "codex_cli",
       providerId: null,
       model: "gpt-4o",
       agentVersionId: VERSION,
@@ -776,7 +801,7 @@ describe("runtimeContextDelivery", () => {
         control: control(),
         invocationId: INVOCATION,
         attempt: 1,
-        adapterType: "model_api",
+        runtimeKey: "opencode",
         providerId: "20000000-0000-4000-8000-000000000008",
         model: "gpt-4o",
         usageSourceId: `run:${INVOCATION}:attempt:1`,
@@ -810,7 +835,7 @@ describe("runtimeContextDelivery", () => {
         control: control(),
         invocationId: INVOCATION,
         attempt: 1,
-        adapterType: "model_api",
+        runtimeKey: "opencode",
         providerId: "20000000-0000-4000-8000-000000000008",
         model: "gpt-4o",
         usageSourceId: "usage",
@@ -826,7 +851,7 @@ describe("runtimeContextDelivery", () => {
         control: { ...control(), id: "20000000-0000-4000-8000-000000000099" },
         invocationId: INVOCATION,
         attempt: 1,
-        adapterType: "model_api",
+        runtimeKey: "opencode",
         providerId: null,
         model: "gpt-4o",
         usageSourceId: "usage",
@@ -836,7 +861,7 @@ describe("runtimeContextDelivery", () => {
         control: control(),
         invocationId: INVOCATION,
         attempt: 1,
-        adapterType: "model_api",
+        runtimeKey: "opencode",
         providerId: "20000000-0000-4000-8000-000000000099",
         model: "gpt-4o",
         usageSourceId: "usage",
@@ -846,7 +871,7 @@ describe("runtimeContextDelivery", () => {
         control: control(),
         invocationId: INVOCATION,
         attempt: 1,
-        adapterType: "model_api",
+        runtimeKey: "opencode",
         providerId: "20000000-0000-4000-8000-000000000008",
         model: "gpt-4o-mini",
         usageSourceId: "usage",
@@ -858,7 +883,7 @@ describe("runtimeContextDelivery", () => {
         control: control(),
         invocationId: INVOCATION,
         attempt: 1,
-        adapterType: "model_api",
+        runtimeKey: "opencode",
         providerId: "20000000-0000-4000-8000-000000000008",
         model: "gpt-4o",
         usageSourceId: "usage",
@@ -870,7 +895,7 @@ describe("runtimeContextDelivery", () => {
         control: control(),
         invocationId: INVOCATION,
         attempt: 1,
-        adapterType: "model_api",
+        runtimeKey: "opencode",
         providerId: "20000000-0000-4000-8000-000000000008",
         model: "gpt-4o",
         usageSourceId: "usage",
@@ -882,7 +907,7 @@ describe("runtimeContextDelivery", () => {
         control: control(),
         invocationId: INVOCATION,
         attempt: 1,
-        adapterType: "model_api",
+        runtimeKey: "opencode",
         providerId: "20000000-0000-4000-8000-000000000008",
         model: "gpt-4o",
         usageSourceId: "usage",
@@ -905,7 +930,7 @@ describe("runtimeContextDelivery", () => {
         control: cliControl,
         invocationId: INVOCATION,
         attempt: 1,
-        adapterType: "opencode",
+        runtimeKey: "opencode",
         providerId: null,
         model: "gpt-4o",
         usageSourceId: "usage",
@@ -915,11 +940,11 @@ describe("runtimeContextDelivery", () => {
         control: cliControl,
         invocationId: INVOCATION,
         attempt: 1,
-        adapterType: "codex_cli",
+        runtimeKey: "codex_cli",
         providerId: null,
         model: "gpt-4o",
         usageSourceId: "usage",
-      })).resolves.toMatchObject({ adapter_type: "codex_cli" });
+      })).resolves.toMatchObject({ runtime_key: "codex_cli" });
     });
 
     it("encrypts sealed replay payloads with authenticated encryption", () => {
@@ -1294,14 +1319,15 @@ describe("runtimeContextRetrievalAttributionDb", () => {
       [AGENT, SPACE, ADMIN],
     );
     await db.pool.query(
-      `INSERT INTO agent_versions (id, agent_id, space_id, version_label, system_prompt, model_config_json, runtime_config_json, context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, runtime_policy_json, created_at)
-       VALUES ($1,$2,$3,'v1','test','{}','{}','{}','{}','[]','{}','{}',now())`,
+      `INSERT INTO agent_versions (id, agent_id, space_id, version_label, system_prompt, context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, created_at)
+       VALUES ($1, $2, $3, 'v1', 'test', '{}', '{}', '[]', '{}', now())`,
       [VERSION, AGENT, SPACE],
     );
     await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, VERSION]);
+    await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT, space: SPACE });
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, adapter_type, required_sandbox_level, instructed_by_user_id, owner_user_id, visibility, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,'agent','manual','running','live','model_api','none',$5,$5,'private',now(),now())`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, required_sandbox_level, instructed_by_user_id, owner_user_id, visibility, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'running', 'live', 'none', $5, $5, 'private', now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [RUN, SPACE, AGENT, VERSION, ADMIN],
     );
     await db.pool.query(

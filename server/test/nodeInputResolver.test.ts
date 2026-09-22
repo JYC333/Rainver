@@ -50,4 +50,34 @@ describe("node input resolver", () => {
     const optional = await resolveNodeInputs(db, { ...common, bindings: [{ name: "optional", from_node: "source", source: "output_text", required: false }] });
     expect(optional.bindings[0]?.missing_reason).toBe("passed_source_run_missing");
   });
+
+  it("resolves Workflow Action output from its owner without fabricating a Run", async () => {
+    const db = {
+      async query<Row>() {
+        return { rows: [{
+          node_id: "action-node",
+          run_id: null,
+          output_json: null,
+          action_attempt_id: "action-attempt-1",
+          action_output_text: "Workflow action completed.",
+          action_output_json: { value: "owned-by-workflow" },
+        }] as Row[], rowCount: 1 };
+      },
+    };
+    const result = await resolveNodeInputs(db, {
+      spaceId: "space-1",
+      bindings: [
+        { name: "summary", from_node: "action", source: "output_text", required: true },
+        { name: "value", from_node: "action", source: "output_json", json_pointer: "/value", required: true },
+      ],
+      sourceTable: "workflow_execution_nodes",
+      linkTable: "workflow_execution_node_runs",
+      linkNodeColumn: "node_id",
+      scopeColumn: "execution_id",
+      scopeId: "execution-1",
+    });
+
+    expect(result.values).toEqual({ summary: "Workflow action completed.", value: "owned-by-workflow" });
+    expect(result.bindings.map((binding) => binding.source_run_id)).toEqual([null, null]);
+  });
 });

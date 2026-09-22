@@ -1,3 +1,5 @@
+import { scheduleEditorFromConfig } from './scheduleEditorState'
+
 /**
  * Translate an AgentVersion / template-version policy + config JSON into the
  * product-level cards the Agent configuration UI renders. This is the single
@@ -8,7 +10,7 @@
  * into an AgentVersion:
  *   - context_policy_json.allowed_input_contexts / default_input_contexts
  *   - output_policy_json.allowed_output_types / default_review_mode / proposal_only
- *   - memory_policy_json, tool_policy_json, schedule_*_json, model_config_json
+ *   - memory_policy_json, tool_policy_json, schedule_*_json
  *
  * The model selects which output(s) to emit inside the allowed set at run time
  * (classification_mode: model_selects); durable changes are proposal-only.
@@ -260,43 +262,22 @@ export function scheduleSummary(version: { schedule_config_json?: unknown; sched
   const timezone = typeof sched.timezone === 'string' ? sched.timezone : undefined
   const enabled = asBool(sched.enabled)
   const manualRunAllowed = sched.manual_run_allowed !== false
-  const everyHours = sched.every_hours ?? sched.interval_hours
-
-  if (everyHours != null) {
-    return { kind: 'interval', label: `Every ${String(everyHours)} hours`, enabled, timezone, manualRunAllowed }
+  const editor = scheduleEditorFromConfig(sched)
+  if (editor.mode === 'interval') {
+    return {
+      kind: 'interval',
+      label: `Every ${editor.intervalHours} hours`,
+      enabled,
+      ...(editor.intervalStorage.kind === 'cron' && cron ? { cron } : {}),
+      timezone,
+      manualRunAllowed,
+    }
   }
-  if (cron) {
-    const daily = /^0 (\d{1,2}) \* \* \*$/.exec(cron)
-    if (daily) {
-      const hh = daily[1].padStart(2, '0')
-      return { kind: 'daily', label: `Daily at ${hh}:00`, enabled, cron, timezone, manualRunAllowed }
-    }
-    const interval = /^0 \*\/(\d{1,2}) \* \* \*$/.exec(cron)
-    if (interval) {
-      return { kind: 'interval', label: `Every ${interval[1]} hours`, enabled, cron, timezone, manualRunAllowed }
-    }
+  if (editor.mode === 'daily') {
+    return { kind: 'daily', label: `Daily at ${editor.dailyHour}:00`, enabled, cron, timezone, manualRunAllowed }
+  }
+  if (editor.mode === 'cron') {
     return { kind: 'cron', label: `Custom schedule (${cron})`, enabled, cron, timezone, manualRunAllowed }
   }
   return { kind: 'manual', label: 'Manual only', enabled: false, manualRunAllowed }
-}
-
-// ── Model ─────────────────────────────────────────────────────────────────────
-
-export interface ModelFields {
-  model?: string
-  temperature?: number
-  max_tokens?: number
-  reasoning_effort?: string
-  fallback?: string
-}
-
-export function modelFields(version: { model_config_json?: unknown }): ModelFields {
-  const m = asObj(version.model_config_json)
-  return {
-    model: typeof m.model === 'string' ? m.model : undefined,
-    temperature: typeof m.temperature === 'number' ? m.temperature : undefined,
-    max_tokens: typeof m.max_tokens === 'number' ? m.max_tokens : undefined,
-    reasoning_effort: typeof m.reasoning_effort === 'string' ? m.reasoning_effort : undefined,
-    fallback: typeof m.fallback === 'string' ? m.fallback : undefined,
-  }
 }

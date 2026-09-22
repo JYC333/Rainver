@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isRevocationClose, parseServerFrame } from "../src/commands/run.js";
+import { isOutdatedDaemonClose, isRevocationClose, parseServerFrame } from "../src/commands/run.js";
 
 // `hello_ack.runtime_probes` is what decides which binary this daemon spawns
 // for an adapter; the shape is the shared contract's, not a local parser's.
 describe("runtime probes from the control plane", () => {
   const probe = {
-    adapter_type: "opencode",
+    runtime_key: "opencode",
     runtime: "opencode",
     argv: ["opencode", "acp", "--cwd", "rainver:remote-workspace-cwd"],
     distribution: null,
@@ -29,7 +29,7 @@ describe("runtime probes from the control plane", () => {
     for (const malformed of [
       { ...probe, argv: [] as unknown },        // an empty argv is a probe that names no command
       { ...probe, argv: ["claude-agent-acp", 3] },
-      { ...probe, adapter_type: 7 },
+      { ...probe, runtime_key: 7 },
       null,
     ]) {
       const parsed = parseServerFrame({ type: "hello_ack", host_id: "host-1", runtime_probes: [malformed] });
@@ -50,5 +50,20 @@ describe("terminal WebSocket closes", () => {
     expect(isRevocationClose(1008, "invalid_token")).toBe(true);
     expect(isRevocationClose(1008, "not_authenticated")).toBe(false);
     expect(isRevocationClose(1000, "host_revoked")).toBe(false);
+  });
+
+  // A version the control plane will not admit is its own outcome, not
+  // revocation and not an ordinary drop. Without this the close fell through
+  // to the reconnect loop's ≤30s backoff, which reconnected forever — no
+  // update can arrive during a retry — and made the server re-record the
+  // incompatible version on every attempt.
+  it("separates an outdated-daemon refusal from revocation and from an ordinary close", () => {
+    expect(isOutdatedDaemonClose(1008, "daemon_outdated")).toBe(true);
+    expect(isOutdatedDaemonClose(1008, "host_revoked")).toBe(false);
+    expect(isOutdatedDaemonClose(1008, "not_authenticated")).toBe(false);
+    expect(isOutdatedDaemonClose(1000, "daemon_outdated")).toBe(false);
+    // Being outdated leaves the registration valid, so it must not take the
+    // revocation path that deletes this machine's credentials.
+    expect(isRevocationClose(1008, "daemon_outdated")).toBe(false);
   });
 });

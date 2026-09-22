@@ -1,4 +1,4 @@
-import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, timestamp, integer, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { agents } from "./agents.js";
 import { users } from "./auth.js";
@@ -212,11 +212,39 @@ export const workflowExecutionNodeRuns = pgTable("workflow_execution_node_runs",
 	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "workflow_execution_node_runs_space_id_fkey" }),
 ]);
 
+export const workflowExecutionActionAttempts = pgTable("workflow_execution_action_attempts", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	nodeId: varchar("node_id", { length: 36 }).notNull(),
+	attemptNumber: integer("attempt_number").notNull(),
+	actionKey: varchar("action_key", { length: 256 }),
+	status: varchar({ length: 32 }).notNull(),
+	resolvedInputsJson: jsonb("resolved_inputs_json").default({}).notNull(),
+	outputText: text("output_text"),
+	outputJson: jsonb("output_json"),
+	errorJson: jsonb("error_json"),
+	startedAt: timestamp("started_at", { withTimezone: true, mode: 'string' }).notNull(),
+	endedAt: timestamp("ended_at", { withTimezone: true, mode: 'string' }),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_workflow_execution_action_attempts_node_started").using("btree", table.spaceId.asc().nullsLast(), table.nodeId.asc().nullsLast(), table.startedAt.desc().nullsLast()),
+	unique("uq_workflow_execution_action_attempts_node_number").on(table.nodeId, table.attemptNumber),
+	foreignKey({ columns: [table.nodeId, table.spaceId], foreignColumns: [workflowExecutionNodes.id, workflowExecutionNodes.spaceId], name: "workflow_execution_action_attempts_node_space_fkey" }),
+	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "workflow_execution_action_attempts_space_id_fkey" }),
+	check("ck_workflow_execution_action_attempts_number", sql`attempt_number > 0`),
+	check("ck_workflow_execution_action_attempts_status", sql`(status = 'running' AND ended_at IS NULL AND output_text IS NULL AND output_json IS NULL AND error_json IS NULL) OR (status = 'succeeded' AND ended_at IS NOT NULL AND output_text IS NOT NULL AND output_json IS NOT NULL AND error_json IS NULL) OR (status = 'failed' AND ended_at IS NOT NULL AND error_json IS NOT NULL)`),
+]);
+
 export const automationRuns = pgTable("automation_runs", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	automationId: varchar("automation_id", { length: 36 }).notNull(),
-	runId: varchar("run_id", { length: 36 }).notNull(),
+	targetType: varchar("target_type", { length: 128 }).notNull(),
+	runId: varchar("run_id", { length: 36 }),
 	workflowExecutionId: varchar("workflow_execution_id", { length: 36 }),
+	nativeStatus: varchar("native_status", { length: 32 }),
+	nativeResultJson: jsonb("native_result_json"),
+	nativeErrorJson: jsonb("native_error_json"),
+	nativeStartedAt: timestamp("native_started_at", { withTimezone: true, mode: 'string' }),
+	nativeEndedAt: timestamp("native_ended_at", { withTimezone: true, mode: 'string' }),
 	triggeredByUserId: varchar("triggered_by_user_id", { length: 36 }),
 	triggerType: varchar("trigger_type", { length: 64 }).default('manual').notNull(),
 	preflightSnapshotJson: jsonb("preflight_snapshot_json"),
@@ -243,9 +271,18 @@ export const automationRuns = pgTable("automation_runs", {
 			foreignColumns: [workflowExecutions.id, workflowExecutions.automationId],
 			name: "automation_runs_workflow_execution_automation_fkey"
 		}).onDelete("set null"),
-	foreignKey({
+		foreignKey({
 			columns: [table.triggeredByUserId],
 			foreignColumns: [users.id],
 			name: "automation_runs_triggered_by_user_id_fkey"
 		}),
+	check("ck_automation_runs_execution_owner", sql`(
+	  (run_id IS NOT NULL AND target_type IN ('agent_run', 'workflow', 'autonomous_tick') AND ((target_type = 'workflow' AND workflow_execution_id IS NOT NULL) OR (target_type <> 'workflow' AND workflow_execution_id IS NULL)) AND native_status IS NULL AND native_result_json IS NULL AND native_error_json IS NULL AND native_started_at IS NULL AND native_ended_at IS NULL)
+	  OR
+	  (run_id IS NULL AND workflow_execution_id IS NULL AND target_type IN ('knowledge_retrieval_maintenance', 'context_ops_review_cycle', 'information_digest') AND native_status IS NOT NULL AND native_status IN ('running', 'succeeded', 'degraded', 'failed', 'skipped') AND native_started_at IS NOT NULL AND (
+	    (native_status = 'running' AND native_ended_at IS NULL AND native_result_json IS NULL AND native_error_json IS NULL)
+	    OR (native_status IN ('succeeded', 'degraded', 'skipped') AND native_ended_at IS NOT NULL AND native_result_json IS NOT NULL AND native_error_json IS NULL)
+	    OR (native_status = 'failed' AND native_ended_at IS NOT NULL AND native_error_json IS NOT NULL)
+	  ))
+	)`),
 ]);

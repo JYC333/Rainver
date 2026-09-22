@@ -32,7 +32,7 @@ describe("run evidence redaction", () => {
   it("removes raw evidence fields recursively from persisted metadata", () => {
     expect(
       sanitizeEvidenceJson({
-        adapter_type: "codex_cli",
+        runtime_key: "codex_cli",
         stdout: "raw output",
         nested: {
           api_key: "sk-1234567890abcdef",
@@ -41,7 +41,7 @@ describe("run evidence redaction", () => {
         events: [{ stderr: "raw error" }, "Bearer rawsecrettokenvalue"],
       }),
     ).toEqual({
-      adapter_type: "codex_cli",
+      runtime_key: "codex_cli",
       stdout: "[REDACTED_EVIDENCE_FIELD]",
       nested: {
         api_key: "[REDACTED_EVIDENCE_FIELD]",

@@ -327,7 +327,7 @@ preflight.
 | `project.summary.brief` | `server/src/modules/retrieval/tool/service.ts` + `server/src/modules/systemActions/agentToolGateway.ts` via `enforce()` | Before explicitly opted-in managed-run Project public-summary Context Brief execution; disabled-domain calls are denied/audited |
 
 **runtime.execute context fields**: Rule-relevant fields (`agent_status`, `agent_tool_permissions`,
-`tool_name`, `adapter_type`, `trigger_origin`, `risk_level`, etc.) are passed in
+`tool_name`, `runtime_key`, `trigger_origin`, `risk_level`, etc.) are passed in
 `PolicyCheckRequest.context` so `PolicyEngine` rules can read them. Safe copies are
 kept in `metadata_json` for audit only.
 

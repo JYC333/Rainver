@@ -3,7 +3,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for the ADR 0016 D7 upload path: a remote host may
 // only upload diff/output artifacts for a Run bound to its own Folder, and
@@ -80,15 +80,24 @@ beforeEach(async () => {
     [AGENT, SPACE, now],
   );
   await db.pool.query(
-    `INSERT INTO agent_versions (id, agent_id, space_id, version_label, system_prompt, model_config_json, runtime_config_json, context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, runtime_policy_json, created_at)
-     VALUES ($1, $2, $3, 'v1', 'x', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
+    `INSERT INTO agent_versions (id, agent_id, space_id, version_label, system_prompt, context_policy_json, memory_policy_json, capabilities_json, tool_permissions_json, created_at)
+     VALUES ($1, $2, $3, 'v1', 'x', '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, $4)`,
     [AGENT_VERSION, AGENT, SPACE, now],
   );
   await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, AGENT_VERSION]);
+  await ensureDefaultRuntimeProfile(db.pool, {
+    agent: AGENT,
+    space: SPACE,
+    runtimeKey: "claude_code",
+    executionHostId: HOST_A,
+    workspaceLocationId: "location-a",
+    workspaceMode: "location",
+    runtimeInstallation: "managed:1.0.0",
+    now,
+  });
   await db.pool.query(
-    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
-       project_folder_id, workspace_location_id, trust_mode, adapter_type, owner_user_id, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $6, 'trusted_host', 'claude_code', $7, $8, $8)`,
+    `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, project_folder_id, workspace_location_id, trust_mode, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+     VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $6, 'trusted_host', $7, $8, $8, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [RUN_A, SPACE, AGENT, AGENT_VERSION, FOLDER_A, "location-a", OWNER, now],
   );
 });

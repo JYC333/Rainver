@@ -1,4 +1,4 @@
-import type { RoomDetail } from "@rainver/protocol";
+import type { RoomAgentPresetRequest, RoomDetail } from "@rainver/protocol";
 import { createHash, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
@@ -167,12 +167,7 @@ export class RoomRosterService {
     name?: string | null;
     idempotency_key?: string | null;
     confirm_room_share?: boolean;
-    execution?: {
-      host_id: string;
-      workspace_location_id: string;
-      adapter_type: string;
-      installation: string;
-    } | null;
+    execution?: RoomAgentPresetRequest["execution"];
   }) {
     return this.withRoomWriter(identity, roomId, async (client, room) => {
       const preset = roomAgentPresetById(input.preset_id);
@@ -215,14 +210,6 @@ export class RoomRosterService {
       const runtimeProfiles = input.execution
         ? []
         : await this.presetRuntimeProfiles(client, identity.spaceId, room.id);
-      const primaryProfile = runtimeProfiles[0];
-      if (!primaryProfile && !input.execution) {
-        throw new HttpError(409, "Room has no executable backend for preset Agents", {
-          code: "conversation_backend_required",
-          detail: "Configure an eligible API or CLI backend before adding a preset specialist.",
-          setup_targets: ["model_providers", "execution_hosts"],
-        });
-      }
       const agentInput: AgentCreateInput = {
         spaceId: identity.spaceId,
         projectId: input.execution ? room.project_id : null,
@@ -233,29 +220,32 @@ export class RoomRosterService {
         visibility: "private",
         roleInstruction: preset.role_instruction,
         systemPrompt: preset.system_prompt,
-        adapterType: input.execution?.adapter_type ?? primaryProfile!.adapter_type,
-        defaultModelProviderId: input.execution ? null : primaryProfile!.model_provider_id,
-        defaultModel: input.execution ? null : primaryProfile!.model_name,
-        runtimeConfigJson: input.execution ? {} : primaryProfile!.runtime_config_json,
-        runtimePolicyJson: input.execution
-          ? { default_adapter_type: input.execution.adapter_type }
-          : primaryProfile!.runtime_policy_json,
         capabilitiesJson: [],
         toolPermissionsJson: {},
-        executionHostId: input.execution?.host_id ?? null,
-        workspaceLocationId: input.execution?.workspace_location_id ?? null,
-        runtimeInstallation: input.execution?.installation ?? null,
       };
       const agent = await agentRepository.createInTransaction(client, agentInput);
       for (const profile of runtimeProfiles) {
         await agentRepository.ensureRuntimeProfileInTransaction(client, identity.spaceId, agent.id, {
           name: profile.name,
-          adapterType: profile.adapter_type,
+          runtimeKey: profile.runtime_key,
           modelProviderId: profile.model_provider_id,
           modelName: profile.model_name,
           runtimeConfigJson: profile.runtime_config_json,
           runtimePolicyJson: profile.runtime_policy_json,
           isDefault: profile.is_default,
+        });
+      }
+      if (input.execution) {
+        await agentRepository.ensureRuntimeProfileInTransaction(client, identity.spaceId, agent.id, {
+          name: `Room · ${input.execution.runtime_key}`,
+          runtimeKey: input.execution.runtime_key,
+          backendMode: "runtime_native",
+          executionHostId: input.execution.host_id,
+          workspaceLocationId: input.execution.workspace_location_id,
+          workspaceMode: input.execution.workspace_mode,
+          runtimeInstallation: input.execution.installation,
+          actorUserId: identity.userId,
+          isDefault: true,
         });
       }
       await roster.upsertSpecialistMember({
@@ -951,7 +941,7 @@ export class RoomRosterService {
 
   private async presetRuntimeProfiles(client: PoolClient, spaceId: string, roomId: string): Promise<Array<{
     name: string;
-    adapter_type: string;
+    runtime_key: string;
     model_provider_id: string | null;
     model_name: string | null;
     runtime_config_json: Record<string, unknown>;
@@ -960,14 +950,14 @@ export class RoomRosterService {
   }>> {
     const result = await client.query<{
       name: string;
-      adapter_type: string;
+      runtime_key: string;
       model_provider_id: string | null;
       model_name: string | null;
       runtime_config_json: Record<string, unknown>;
       runtime_policy_json: Record<string, unknown>;
       is_default: boolean;
     }>(
-      `SELECT profile.name, profile.adapter_type, profile.model_provider_id,
+      `SELECT profile.name, profile.runtime_key, profile.model_provider_id,
               profile.model_name, profile.runtime_config_json,
               profile.runtime_policy_json, profile.is_default
          FROM room_agent_members member
@@ -979,12 +969,11 @@ export class RoomRosterService {
           AND member.room_id = $2
           AND member.role = 'manager'
           AND member.status = 'active'
-        ORDER BY CASE WHEN profile.adapter_type = 'model_api' THEN 0 ELSE 1 END,
-                 profile.is_default DESC, profile.created_at ASC, profile.id ASC`,
+        ORDER BY profile.is_default DESC, profile.created_at ASC, profile.id ASC`,
       [spaceId, roomId],
     );
     return result.rows
-      .filter((profile) => getRuntimeAdapterSpec(profile.adapter_type)?.implementation_status === "implemented");
+      .filter((profile) => getRuntimeAdapterSpec(profile.runtime_key)?.implementation_status === "implemented");
   }
 
   /**

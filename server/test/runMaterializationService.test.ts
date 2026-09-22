@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../src/config.js";
 import { RunMaterializationService } from "../src/modules/runs/materializationService.js";
-import type { QueryResult, Queryable, RunRecord } from "../src/modules/runs/repository.js";
+import type { AgentRunRecord, QueryResult, Queryable } from "../src/modules/runs/repository.js";
 import type { RunFinalizationRecord } from "../src/modules/runs/repository.js";
 
 let tempRoots: string[] = [];
@@ -14,12 +14,13 @@ afterEach(async () => {
   tempRoots = [];
 });
 
-function run(overrides: Partial<RunRecord> = {}): RunRecord {
+function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   return {
     id: "run-1",
     space_id: "space-1",
     agent_id: "agent-1",
     agent_version_id: "agent-version-1",
+    execution_kind: "agent",
     status: "running",
     mode: "live",
     prompt: "Say hello",
@@ -27,7 +28,7 @@ function run(overrides: Partial<RunRecord> = {}): RunRecord {
     project_folder_id: "workspace-1",
     session_id: null,
     project_id: "project-1",
-    adapter_type: "model_api",
+    runtime_key: "opencode",
     model_provider_id: "provider-1",
     required_sandbox_level: "none",
     trigger_origin: "manual",
@@ -109,7 +110,7 @@ describe("RunMaterializationService", () => {
       async () => ({ status: "allow" }),
     );
     const adapterResult = {
-      adapter_type: "model_api",
+      runtime_key: "opencode",
       adapter_kind: "managed_api" as const,
       success: true,
       output_text: "",
@@ -156,7 +157,7 @@ describe("RunMaterializationService", () => {
     const result = await service.materializeAdapterResult({
       run: run({ has_context_taint: true, context_taint_json: { schema_version: 99 } }),
       adapterResult: {
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         adapter_kind: "managed_api",
         success: true,
         output_text: "",
@@ -199,7 +200,7 @@ describe("RunMaterializationService", () => {
       },
     );
     const adapterResult = {
-      adapter_type: "model_api",
+      runtime_key: "opencode",
       adapter_kind: "managed_api" as const,
       success: true,
       output_text: "done",
@@ -268,7 +269,7 @@ describe("RunMaterializationService", () => {
     const result = await service.materializeAdapterResult({
       run: run(),
       adapterResult: {
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         adapter_kind: "managed_api",
         success: true,
         output_text: "",
@@ -334,7 +335,7 @@ describe("RunMaterializationService", () => {
     );
 
     const adapterResult = {
-      adapter_type: "model_api",
+      runtime_key: "opencode",
       adapter_kind: "managed_api" as const,
       success: true,
       output_text: "",
@@ -393,7 +394,7 @@ describe("RunMaterializationService", () => {
       run: run(),
       sandbox_cwd: sandboxRoot,
       adapterResult: {
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         adapter_kind: "managed_api",
         success: true,
         output_text: "hello token=secret",
@@ -522,7 +523,7 @@ describe("RunMaterializationService", () => {
       }),
       exchange_output_cwd: exchangeRoot,
       adapterResult: {
-        adapter_type: "claude_code",
+        runtime_key: "claude_code",
         adapter_kind: "local_cli",
         success: true,
         output_text: "Captured the decision for review.",
@@ -568,7 +569,7 @@ describe("RunMaterializationService", () => {
     const result = await service.materializeAdapterResult({
       run: run({ visibility: "private" }),
       adapterResult: {
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         adapter_kind: "managed_api",
         success: true,
         output_text: "",
@@ -602,7 +603,7 @@ describe("RunMaterializationService", () => {
     const result = await service.materializeAdapterResult({
       run: run({ visibility: "space_shared" }),
       adapterResult: {
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         adapter_kind: "managed_api",
         success: true,
         output_text: "",
@@ -650,7 +651,7 @@ describe("RunMaterializationService", () => {
       }),
       exchange_output_cwd: exchangeRoot,
       adapterResult: {
-        adapter_type: "claude_code",
+        runtime_key: "claude_code",
         adapter_kind: "local_cli",
         success: true,
         output_text: "",
@@ -684,7 +685,7 @@ describe("RunMaterializationService", () => {
     const result = await service.materializeAdapterResult({
       run: run(),
       adapterResult: {
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         adapter_kind: "managed_api",
         success: true,
         output_text: "A normal chat reply.",
@@ -709,7 +710,7 @@ describe("RunMaterializationService", () => {
     const result = await service.materializeAdapterResult({
       run: run(),
       adapterResult: {
-        adapter_type: "model_api", adapter_kind: "managed_api", success: true, output_text: "", exit_code: 0,
+        runtime_key: "opencode", adapter_kind: "local_cli", success: true, output_text: "", exit_code: 0,
         output_json: { proposed_changes: [{
           proposal_type: "research_notebook_update", title: "Update understanding", rationale: "New comparison",
           payload: { project_id: "project-1", section_key: "understanding", base_version: 3, new_content_md: "Revised understanding", refs: [] },
@@ -736,7 +737,7 @@ describe("RunMaterializationService", () => {
     const result = await service.materializeAdapterResult({
       run: run(),
       adapterResult: {
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         adapter_kind: "managed_api",
         success: true,
         output_text: "",
@@ -784,7 +785,7 @@ describe("RunMaterializationService", () => {
     const result = await service.materializeAdapterResult({
       run: run(),
       adapterResult: {
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         adapter_kind: "managed_api",
         success: true,
         output_text: "",
@@ -859,7 +860,7 @@ describe("RunMaterializationService", () => {
     const result = await service.materializeAdapterResult({
       run: run(),
       adapterResult: {
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         adapter_kind: "managed_api",
         success: true,
         output_text: "blocked artifact",
@@ -901,7 +902,7 @@ describe("RunMaterializationService", () => {
     const result = await service.materializeAdapterResult({
       run: run(),
       adapterResult: {
-        adapter_type: "model_api",
+        runtime_key: "opencode",
         adapter_kind: "managed_api",
         success: true,
         output_text: "",

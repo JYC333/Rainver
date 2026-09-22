@@ -14,6 +14,7 @@ export type CliRotationReason =
   | "new_scope"
   | "user_reset"
   | "vendor_state_missing"
+  | "vendor_session_mismatch"
   | "runtime_changed"
   | "credential_changed"
   | "sandbox_changed"
@@ -72,7 +73,7 @@ interface BindingFingerprint {
   };
   runtime: {
     runtime_profile_id: string;
-    adapter_type: string;
+    runtime_key: string;
     provider_id: string | null;
     model: string | null;
     /** Which copy on the host ran it (`own` / `managed:<version>`), the successor to the brokered credential profile. */
@@ -94,12 +95,14 @@ export class RuntimeContextCliContinuityService {
     userId: string;
     agentId: string;
     runtimeProfileId: string;
-    adapterType: string;
+    runtimeKey: string;
     providerId: string | null;
     model: string | null;
     agentVersionId: string;
     runtimeInstallation: string | null;
     control: ExecutionControlSnapshot;
+    /** Present for HostThread dispatches; the context cursor must follow this exact ACP session. */
+    expectedVendorSessionId?: string | null;
   }): Promise<PreparedCliBinding> {
     return withQueryableTransaction(this.db, async (db) => {
       await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
@@ -119,13 +122,19 @@ export class RuntimeContextCliContinuityService {
       const authorityFingerprint = hash(fingerprint.authority);
       const runtimeFingerprint = hash(fingerprint.runtime);
       const existing = await this.activeBinding(db, input);
+      const vendorSessionMismatch = existing !== null
+        && input.expectedVendorSessionId !== undefined
+        && existing.vendor_session_id !== input.expectedVendorSessionId;
       if (existing
         && existing.authority_fingerprint === authorityFingerprint
-        && existing.runtime_fingerprint === runtimeFingerprint) {
+        && existing.runtime_fingerprint === runtimeFingerprint
+        && !vendorSessionMismatch) {
         return bindingOut(existing);
       }
       const reason = existing
-        ? rotationReason(existing.fingerprint_json, fingerprint)
+        ? vendorSessionMismatch
+          ? "vendor_session_mismatch"
+          : rotationReason(existing.fingerprint_json, fingerprint)
         : "new_scope";
       if (existing) {
         await db.query(
@@ -138,7 +147,7 @@ export class RuntimeContextCliContinuityService {
       const created = await db.query<BindingRow>(
         `INSERT INTO runtime_context_cli_bindings (
            id,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
-           runtime_profile_id,adapter_type,provider_id,model,
+           runtime_profile_id,runtime_key,provider_id,model,
            runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
            fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
            status,rotation_reason,created_at,updated_at
@@ -149,7 +158,7 @@ export class RuntimeContextCliContinuityService {
                    acknowledged_item_ids_json,generation,rotation_reason`,
         [randomUUID(), input.spaceId, input.workContextScopeId, scopeKind,
           input.userId, input.agentId, input.runtimeProfileId,
-          input.adapterType, input.providerId, input.model,
+          input.runtimeKey, input.providerId, input.model,
           randomUUID(), authorityFingerprint, runtimeFingerprint,
           JSON.stringify(fingerprint), (existing?.generation ?? 0) + 1, reason],
       );
@@ -175,12 +184,12 @@ export class RuntimeContextCliContinuityService {
       const created = await db.query<BindingRow>(
         `INSERT INTO runtime_context_cli_bindings (
            id,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
-           runtime_profile_id,adapter_type,provider_id,model,
+           runtime_profile_id,runtime_key,provider_id,model,
            runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
            fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
            status,rotation_reason,execution_lease_id,execution_lease_expires_at,created_at,updated_at
          ) SELECT $2,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
-                  runtime_profile_id,adapter_type,provider_id,model,
+                  runtime_profile_id,runtime_key,provider_id,model,
                   $3,NULL,authority_fingerprint,runtime_fingerprint,fingerprint_json,
                   0,'[]'::jsonb,generation+1,'active','vendor_state_missing',
                   execution_lease_id,execution_lease_expires_at,now(),now()
@@ -313,12 +322,12 @@ export class RuntimeContextCliContinuityService {
         const replacement = await db.query<BindingRow & { work_context_scope_id: string; space_id: string; status: string }>(
           `INSERT INTO runtime_context_cli_bindings (
              id,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
-             runtime_profile_id,adapter_type,provider_id,model,
+             runtime_profile_id,runtime_key,provider_id,model,
              runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
              fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
              status,rotation_reason,execution_lease_id,execution_lease_expires_at,created_at,updated_at
            ) SELECT $2,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
-                    runtime_profile_id,adapter_type,provider_id,model,
+                    runtime_profile_id,runtime_key,provider_id,model,
                     $3,NULL,authority_fingerprint,runtime_fingerprint,fingerprint_json,
                     0,'[]'::jsonb,generation+1,'active','overflow_reconstruction',$4,$5,now(),now()
                FROM runtime_context_cli_bindings
@@ -640,7 +649,7 @@ function bindingFingerprint(input: {
   userId: string;
   agentId: string;
   runtimeProfileId: string;
-  adapterType: string;
+  runtimeKey: string;
   providerId: string | null;
   model: string | null;
   agentVersionId: string;
@@ -668,7 +677,7 @@ function bindingFingerprint(input: {
     },
     runtime: {
       runtime_profile_id: input.runtimeProfileId,
-      adapter_type: input.adapterType,
+      runtime_key: input.runtimeKey,
       provider_id: input.providerId,
       model: input.model,
       runtime_installation: input.runtimeInstallation,
@@ -733,7 +742,7 @@ async function loadBindingGenerations(db: Queryable, input: {
       [input.spaceId],
     ),
     db.query(
-      `SELECT updated_at,adapter_type,model_provider_id,model_name,
+      `SELECT updated_at,runtime_key,model_provider_id,model_name,
               runtime_config_json,runtime_policy_json,enabled
          FROM agent_runtime_profiles
         WHERE id=$1 AND space_id=$2 AND agent_id=$3`,

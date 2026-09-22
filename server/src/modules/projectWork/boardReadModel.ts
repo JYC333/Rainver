@@ -313,7 +313,11 @@ export async function getTaskWorkView(
          LEFT JOIN agents ag ON ag.id = a.agent_id
         WHERE e.space_id = $1 AND e.subject_type = 'task' AND e.subject_id = $2
           AND ${runInheritedReadSql("e.data_json->>'run_id'", "e.space_id", "$3")}
-        ORDER BY e.occurred_at DESC, e.id DESC
+        -- seq, not id: two events of one advancement chain are written in the
+        -- same transaction and share a millisecond, and a v4 UUID tiebreak
+        -- would order them at random, so the tab could call the earlier one
+        -- the latest.
+        ORDER BY e.occurred_at DESC, e.seq DESC
         LIMIT ${WORK_VIEW_EVENT_LIMIT}`,
       [identity.spaceId, taskId, identity.userId],
     ),

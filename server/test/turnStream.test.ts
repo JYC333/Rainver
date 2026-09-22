@@ -228,7 +228,7 @@ describe("run turn", () => {
     await db.pool!.query(
       // The `direct` shape: an Agent chat on a paired host, which is exactly
       // the surface this terminal ordering affects.
-      `INSERT INTO host_threads (id, workspace_mode, adapter_type, runtime_installation,
+      `INSERT INTO host_threads (id, workspace_mode, runtime_key, runtime_installation,
                                  agent_id, container_kind, container_user_id,
                                  retired_vendor_session_ids, status, created_by_user_id, created_at, updated_at)
        VALUES ('thread-7', 'managed', 'claude_code', 'own', $1, 'direct', $2,

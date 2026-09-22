@@ -150,7 +150,7 @@ it('lists an imported CLI session beside the Project\'s own conversations, marke
   vi.mocked(ambientSessionsApi.listForProject).mockResolvedValue({
     sessions: [{
       id: 'imported-1', project_id: 'project-1', workspace_location_id: 'loc-1', execution_host_id: 'host-1',
-      owner_user_id: 'user-1', adapter_type: 'claude_code', installation: 'own', vendor_session_id: 'sess-1',
+      owner_user_id: 'user-1', runtime_key: 'claude_code', installation: 'own', vendor_session_id: 'sess-1',
       cwd: '/home/me/project', title: 'Branch review', visibility: 'space_shared', source_state: 'present',
       load_state: 'complete', last_error: null, record_count: 12, first_record_at: null,
       last_record_at: '2026-08-27T10:00:00.000Z', vendor_updated_at: null, last_synced_at: null,

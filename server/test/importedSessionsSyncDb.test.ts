@@ -134,31 +134,31 @@ describe("ambient session sync", () => {
   it("spends a scheduled extraction only while the Location's auto-extract switch is on", async () => {
     if (!db.available) return;
     const identity = { spaceId: SPACE, userId: OWNER };
-    const policy = await service().setPolicy(identity, LOCATION, { adapter_type: "claude_code", sync: true, auto_extract: true });
-    const entry = policy.entries.find((candidate) => candidate.adapter_type === "claude_code")!;
+    const policy = await service().setPolicy(identity, LOCATION, { runtime_key: "claude_code", sync: true, auto_extract: true });
+    const entry = policy.entries.find((candidate) => candidate.runtime_key === "claude_code")!;
     const spend = () => authorizeCredentialSpend(serverConfig(), {
       space_id: SPACE,
       provider_id: null,
       basis: scheduledExtractionSpend(db.pool, {
-        userId: OWNER, locationId: LOCATION, adapterType: entry.adapter_type, installation: entry.installation,
+        userId: OWNER, locationId: LOCATION, runtimeKey: entry.runtime_key, installation: entry.installation,
       }),
     });
     await expect(spend()).resolves.toMatchObject({ trigger_origin: "job" });
-    await service().setPolicy(identity, LOCATION, { adapter_type: "claude_code", sync: true, auto_extract: false });
+    await service().setPolicy(identity, LOCATION, { runtime_key: "claude_code", sync: true, auto_extract: false });
     await expect(spend()).rejects.toBeInstanceOf(CredentialSpendDeniedError);
   });
 
   it("marks a session gone when the host stops listing it, even though the server still holds it", async () => {
     const identity = { spaceId: SPACE, userId: OWNER };
     const first = stubHost([replay("sess-1")], ["sess-1"]);
-    await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
     first.mockRestore();
 
     // The second sync sends nothing back because the host no longer has it.
     // Deciding "gone" from the server's own held set would keep it present
     // forever — the server always holds the session in question.
     stubHost([], []);
-    const report = await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    const report = await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
     expect(report.marked_gone).toBe(1);
 
     const rows = await new PgImportedSessionRepository(db.pool).listForLocation(SPACE, LOCATION);
@@ -168,12 +168,12 @@ describe("ambient session sync", () => {
   it("marks nothing gone when the enumeration itself failed", async () => {
     const identity = { spaceId: SPACE, userId: OWNER };
     stubHost([replay("sess-1")], ["sess-1"]);
-    await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
 
     // An empty list from a host that could not answer is evidence of nothing.
     vi.restoreAllMocks();
     stubHost([], null);
-    const report = await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    const report = await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
     expect(report.error).toBe("host_offline");
     expect(report.marked_gone).toBe(0);
   });
@@ -181,11 +181,11 @@ describe("ambient session sync", () => {
   it("marks nothing gone when the request named only some sessions", async () => {
     const identity = { spaceId: SPACE, userId: OWNER };
     stubHost([replay("sess-1")], ["sess-1"]);
-    await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
 
     vi.restoreAllMocks();
     stubHost([replay("sess-2")], ["sess-2"]);
-    const report = await service().sync(identity, LOCATION, { adapter_type: "claude_code", session_ids: ["sess-2"] });
+    const report = await service().sync(identity, LOCATION, { runtime_key: "claude_code", session_ids: ["sess-2"] });
     expect(report.marked_gone).toBe(0);
   });
 
@@ -202,7 +202,7 @@ describe("ambient session sync", () => {
       reasoning_tokens: 0,
     }];
     stubHost([replay("sess-1", { usage })], ["sess-1"]);
-    const first = await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    const first = await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
     expect(first.usage_events).toBe(1);
     expect(first.usage_failures).toBe(0);
 
@@ -215,7 +215,7 @@ describe("ambient session sync", () => {
 
     vi.restoreAllMocks();
     stubHost([replay("sess-1", { usage })], ["sess-1"]);
-    await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
     const after = await db.pool.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM token_usage_events WHERE space_id = $1`,
       [SPACE],
@@ -225,7 +225,7 @@ describe("ambient session sync", () => {
 
   it("writes one Activity pointer per sync, carrying counts rather than content", async () => {
     stubHost([replay("sess-1")], ["sess-1"]);
-    await service().sync({ spaceId: SPACE, userId: OWNER }, LOCATION, { adapter_type: "claude_code" });
+    await service().sync({ spaceId: SPACE, userId: OWNER }, LOCATION, { runtime_key: "claude_code" });
     const rows = await db.pool.query<{ title: string; content: string; source_kind: string }>(
       `SELECT title, content, source_kind FROM activity_records WHERE space_id = $1`,
       [SPACE],
@@ -238,14 +238,14 @@ describe("ambient session sync", () => {
   it("refuses a sync requested by someone who does not own the host", async () => {
     await seedSpaceMember(db.pool, { space: SPACE, user: OTHER, role: "admin" });
     stubHost([replay("sess-1")], ["sess-1"]);
-    await expect(service().sync({ spaceId: SPACE, userId: OTHER }, LOCATION, { adapter_type: "claude_code" }))
+    await expect(service().sync({ spaceId: SPACE, userId: OTHER }, LOCATION, { runtime_key: "claude_code" }))
       .rejects.toThrow(/host owner/i);
   });
 
   it("keeps administering a session possible after its Location is unregistered", async () => {
     const identity = { spaceId: SPACE, userId: OWNER };
     stubHost([replay("sess-1")], ["sess-1"]);
-    await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
     const [session] = await new PgImportedSessionRepository(db.pool).listForLocation(SPACE, LOCATION);
 
     // Unbinding the folder must not destroy the history — by now the vendor
@@ -276,7 +276,7 @@ describe("ambient session sync", () => {
       workspaceLocationId: LOCATION,
       executionHostId: HOST,
       ownerUserId: OWNER,
-      adapterType: "claude_code",
+      runtimeKey: "claude_code",
       installation: "own",
       visibility: "private",
       session: { session_id: "sess-secret", cwd: "/home/me/project", title: "Private", updated_at: null },
@@ -295,7 +295,7 @@ describe("ambient session sync", () => {
   it("re-adopts its history when the same folder is bound again, instead of importing a second copy", async () => {
     const identity = { spaceId: SPACE, userId: OWNER };
     stubHost([replay("sess-1")], ["sess-1"]);
-    await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
 
     // Unregistering nulls the location, and Postgres treats nulls as distinct,
     // so the source-identity constraint stops constraining. Without adoption a
@@ -312,7 +312,7 @@ describe("ambient session sync", () => {
 
     vi.restoreAllMocks();
     stubHost([replay("sess-1")], ["sess-1"]);
-    await service().sync(identity, REBOUND, { adapter_type: "claude_code" });
+    await service().sync(identity, REBOUND, { runtime_key: "claude_code" });
 
     const all = await db.pool.query<{ total: string }>(
       `SELECT count(*)::text AS total FROM imported_sessions WHERE space_id = $1`,
@@ -333,7 +333,7 @@ describe("ambient session sync", () => {
       records: [{ ...replay("sess-bad").records[0]!, record_key: "k".repeat(300) }],
     });
     stubHost([replay("sess-good"), oversized], ["sess-good", "sess-bad"]);
-    const report = await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    const report = await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
 
     expect(report.sessions_written).toBe(1);
     expect(report.malformed_sessions).toBe(1);
@@ -367,7 +367,7 @@ describe("ambient session sync", () => {
     );
     await db.pool.query(
       `INSERT INTO host_threads (
-         id, space_id, execution_host_id, workspace_location_id, workspace_mode, session_id, agent_id, container_kind, adapter_type,
+         id, space_id, execution_host_id, workspace_location_id, workspace_mode, session_id, agent_id, container_kind, runtime_key,
          runtime_installation, vendor_session_id, status, created_by_user_id,
          created_at, updated_at
        ) VALUES ($1, $2, $3, $4, 'location', $5, $6, 'conversation', 'claude_code', 'own', 'agent-session-1', 'active', $7, now(), now())`,
@@ -375,7 +375,7 @@ describe("ambient session sync", () => {
     );
     stubHost([replay("agent-session-1")], ["agent-session-1"]);
 
-    const report = await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    const report = await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
 
     expect(report.sessions_seen).toBe(0);
     expect(report.sessions_written).toBe(0);
@@ -405,7 +405,7 @@ describe("ambient session sync", () => {
     const threadId = randomUUID();
     await db.pool.query(
       `INSERT INTO host_threads (
-         id, space_id, execution_host_id, workspace_location_id, workspace_mode, session_id, agent_id, container_kind, adapter_type,
+         id, space_id, execution_host_id, workspace_location_id, workspace_mode, session_id, agent_id, container_kind, runtime_key,
          runtime_installation, vendor_session_id, status, created_by_user_id,
          created_at, updated_at
        ) VALUES ($1, $2, $3, $4, 'location', $5, $6, 'conversation', 'claude_code', 'own', 'agent-session-old', 'active', $7, now(), now())`,
@@ -424,7 +424,7 @@ describe("ambient session sync", () => {
     )).resolves.toMatchObject({ rows: [{ vendor_session_id: null, retired: ["agent-session-old", "agent-session-mid"] }] });
 
     stubHost([replay("agent-session-old"), replay("agent-session-mid")], ["agent-session-old", "agent-session-mid"]);
-    const report = await service().sync(identity, LOCATION, { adapter_type: "claude_code" });
+    const report = await service().sync(identity, LOCATION, { runtime_key: "claude_code" });
 
     expect(report.sessions_written).toBe(0);
     await expect(db.pool.query<{ count: string }>(

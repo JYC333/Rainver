@@ -1,27 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { acpAgentsApi, hostsApi, type AcpAgentOut, type AcpRegistryEntry, type ModelProviderOut } from '../../api/client'
+import { acpAgentsApi, hostsApi, type AcpAgentOut, type AcpRegistryEntry } from '../../api/client'
 import { Input } from '../../components/ui/input'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { errMsg } from '../../lib/utils'
-import type { Host, HostRuntimeAdapterOption, HostRuntimeUsage, RuntimeInstallation } from '../../types/api'
-import HostAgentRow, { agentAcceptsProviderBinding, type HostAgentLoginTarget } from './HostAgentRow'
+import type { Host, HostRuntimeDefinitionOption, HostRuntimeUsage, RuntimeInstallation } from '../../types/api'
+import HostAgentRow, { type HostAgentLoginTarget } from './HostAgentRow'
 import RuntimeLoginTerminal from './RuntimeLoginTerminal'
-import { useHostProviderBindings } from './useHostProviderBindings'
 
 /** The copies of an adapter a host reports (the server has already normalized older daemons' reports). */
 /** How long a finished, successful login stays on screen before the panel closes itself. */
 export const LOGIN_PANEL_AUTO_CLOSE_MS = 3_000
 
-export function installationsOn(host: Host, adapter: HostRuntimeAdapterOption): RuntimeInstallation[] {
-  return host.capabilities_json?.installations?.[adapter.adapter_type] ?? []
+export function installationsOn(host: Host, adapter: HostRuntimeDefinitionOption): RuntimeInstallation[] {
+  return host.capabilities_json?.installations?.[adapter.runtime_key] ?? []
 }
 
 /** The quota rows for one adapter, re-keyed by installation id for the row. */
-function usageFor(usage: ReadonlyMap<string, HostRuntimeUsage>, adapterType: string): ReadonlyMap<string, HostRuntimeUsage> {
-  const prefix = `${adapterType}:`
+function usageFor(usage: ReadonlyMap<string, HostRuntimeUsage>, runtimeKey: string): ReadonlyMap<string, HostRuntimeUsage> {
+  const prefix = `${runtimeKey}:`
   return new Map(
     [...usage.entries()]
       .filter(([key]) => key.startsWith(prefix))
@@ -29,8 +28,18 @@ function usageFor(usage: ReadonlyMap<string, HostRuntimeUsage>, adapterType: str
   )
 }
 
-function usageBusyFor(busy: ReadonlySet<string>, adapterType: string): ReadonlySet<string> {
-  const prefix = `${adapterType}:`
+/**
+ * The Server Runtime's OpenCode copy is pinned, installed and rolled back by
+ * Rainver's provisioner, so install/upgrade/remove/rollback belong to the
+ * provisioning panel rather than to this card. Module-level so a `useMemo`
+ * that reads it has a stable dependency instead of a suppressed lint rule.
+ */
+export function isRainverPinned(hostKind: Host['kind'], runtimeKey: string): boolean {
+  return hostKind === 'server' && runtimeKey === 'opencode'
+}
+
+function usageBusyFor(busy: ReadonlySet<string>, runtimeKey: string): ReadonlySet<string> {
+  const prefix = `${runtimeKey}:`
   return new Set([...busy].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length)))
 }
 
@@ -44,15 +53,16 @@ function usageBusyFor(busy: ReadonlySet<string>, adapterType: string): ReadonlyS
 export default function HostAgents({
   host,
   adapters,
-  providers,
   isInstanceAdmin,
   manageable,
+  provisioningFailed = false,
   onChanged,
 }: {
   host: Host
-  adapters: HostRuntimeAdapterOption[]
-  providers: ModelProviderOut[]
+  adapters: HostRuntimeDefinitionOption[]
   isInstanceAdmin: boolean
+  /** Whether the Rainver-managed install on this host is in its `failed` state, i.e. whether the panel's Retry is on screen. */
+  provisioningFailed?: boolean
   /**
    * Whether this viewer may change what is installed on this host. A paired
    * host is its owner's, so this is true wherever the card is shown at all;
@@ -83,7 +93,7 @@ export default function HostAgents({
   const [loginOpen, setLoginOpen] = useState<{
     /** Increments per click so the same copy's Log in always starts a fresh session, even while its last one is still on screen. */
     attempt: number
-    adapterType: string
+    runtimeKey: string
     installation: string
     target: HostAgentLoginTarget
   } | null>(null)
@@ -94,7 +104,7 @@ export default function HostAgents({
   const [registryError, setRegistryError] = useState<string | null>(null)
   const [registryQuery, setRegistryQuery] = useState('')
   const [installedRegistryIds, setInstalledRegistryIds] = useState<Set<string>>(() => new Set())
-  // Subscription quota per `<adapter_type>:<installation>`, read from the
+  // Subscription quota per `<runtime_key>:<installation>`, read from the
   // server's cache. Never probed on render: the numbers live on the host and
   // reading them costs a network call or a CLI launch there.
   const [usage, setUsage] = useState<ReadonlyMap<string, HostRuntimeUsage>>(() => new Map())
@@ -106,7 +116,17 @@ export default function HostAgents({
     void hostsApi.usage(host.id)
       .then(result => {
         if (cancelled) return
-        setUsage(new Map(result.items.map(item => [`${item.adapter_type}:${item.installation}`, item])))
+        setUsage(previous => {
+          const next = new Map(previous)
+          for (const item of result.items) {
+            const key = `${item.runtime_key}:${item.installation}`
+            const current = next.get(key)
+            if (!current || Date.parse(item.checked_at) > Date.parse(current.checked_at)) {
+              next.set(key, item)
+            }
+          }
+          return next
+        })
       })
       // A missing quota panel is not worth a toast: the copies, their logins
       // and every control on this card work without it.
@@ -114,11 +134,11 @@ export default function HostAgents({
     return () => { cancelled = true }
   }, [host.id])
 
-  async function refreshUsage(adapterType: string, installation: string) {
-    const key = `${adapterType}:${installation}`
+  async function refreshUsage(runtimeKey: string, installation: string) {
+    const key = `${runtimeKey}:${installation}`
     setUsageBusy(previous => new Set(previous).add(key))
     try {
-      const item = await hostsApi.refreshUsage(host.id, adapterType, installation)
+      const item = await hostsApi.refreshUsage(host.id, runtimeKey, installation)
       setUsage(previous => new Map(previous).set(key, item))
       if (!item.quota.available && item.quota.error) toast.message(item.quota.error)
     } catch (error) {
@@ -133,13 +153,6 @@ export default function HostAgents({
   }
 
   const present = useMemo(() => adapters.filter(adapter => installationsOn(host, adapter).length > 0), [adapters, host])
-  // Only a paired host has a host×adapter model source. The built-in host's
-  // Runs are not provider-bound, and `/hosts/:id/runtime-provider-bindings`
-  // answers 404 for it — asking anyway put a "Host not found" toast in front of
-  // every member the moment an admin installed a bindable copy on it.
-  const providerBindingsSupported = host.kind === 'remote'
-  const providerBindingsEnabled = providerBindingsSupported && present.some(agentAcceptsProviderBinding)
-  const providerBindings = useHostProviderBindings(host.id, providerBindingsEnabled)
   const builtinAdaptersByRegistryId = useMemo(
     () => new Map(adapters.flatMap(adapter => adapter.registry_id ? [[adapter.registry_id, adapter] as const] : [])),
     [adapters],
@@ -156,8 +169,12 @@ export default function HostAgents({
     const needle = registryQuery.trim().toLowerCase()
     return (registry ?? [])
       .filter(entry => isInstanceAdmin || enabledRegistryById.has(entry.id) || builtinAdaptersByRegistryId.has(entry.id))
+      .filter(entry => {
+        const runtimeKey = enabledRegistryById.get(entry.id)?.runtime_key ?? builtinAdaptersByRegistryId.get(entry.id)?.runtime_key
+        return !(runtimeKey && isRainverPinned(host.kind, runtimeKey))
+      })
       .filter(entry => !needle || entry.name.toLowerCase().includes(needle) || entry.id.toLowerCase().includes(needle))
-  }, [registry, registryQuery, isInstanceAdmin, enabledRegistryById, builtinAdaptersByRegistryId])
+  }, [registry, registryQuery, isInstanceAdmin, enabledRegistryById, builtinAdaptersByRegistryId, host.kind])
 
   async function loadRegistry() {
     if (registryLoading) return
@@ -196,8 +213,8 @@ export default function HostAgents({
     }
   }
 
-  const install = (adapter: HostRuntimeAdapterOption) => withBusy(adapter.adapter_type, async () => {
-    const result = await hostsApi.installRuntime(host.id, adapter.adapter_type)
+  const install = (adapter: HostRuntimeDefinitionOption) => withBusy(adapter.runtime_key, async () => {
+    const result = await hostsApi.installRuntime(host.id, adapter.runtime_key)
     if (!result.ok) throw new Error(result.error ?? 'install failed')
     toast.success(`${adapter.display_name} ${result.installation ?? ''} installed on ${host.name}`)
   })
@@ -220,9 +237,9 @@ export default function HostAgents({
           enabledAgent!,
         ])
       }
-      const adapterType = enabledAgent?.adapter_type ?? builtinAdapter?.adapter_type
-      if (!adapterType) throw new Error(`No runtime adapter is available for ${entry.name}`)
-      const result = await hostsApi.installRuntime(host.id, adapterType)
+      const runtimeKey = enabledAgent?.runtime_key ?? builtinAdapter?.runtime_key
+      if (!runtimeKey) throw new Error(`No runtime adapter is available for ${entry.name}`)
+      const result = await hostsApi.installRuntime(host.id, runtimeKey)
       if (!result.ok) throw new Error(result.error ?? 'install failed')
       changed = true
       setInstalledRegistryIds(previous => new Set(previous).add(entry.id))
@@ -247,15 +264,15 @@ export default function HostAgents({
     }
   }
 
-  const uninstall = (adapter: HostRuntimeAdapterOption, entry: RuntimeInstallation) =>
-    withBusy(`${adapter.adapter_type}:${entry.id}`, async () => {
-      const result = await hostsApi.uninstallRuntime(host.id, adapter.adapter_type, entry.id)
+  const uninstall = (adapter: HostRuntimeDefinitionOption, entry: RuntimeInstallation) =>
+    withBusy(`${adapter.runtime_key}:${entry.id}`, async () => {
+      const result = await hostsApi.uninstallRuntime(host.id, adapter.runtime_key, entry.id)
       if (!result.ok) throw new Error(result.error ?? 'uninstall failed')
     })
 
-  const rollback = (adapter: HostRuntimeAdapterOption) =>
-    withBusy(`${adapter.adapter_type}:rollback`, async () => {
-      const result = await hostsApi.rollbackRuntime(host.id, adapter.adapter_type)
+  const rollback = (adapter: HostRuntimeDefinitionOption) =>
+    withBusy(`${adapter.runtime_key}:rollback`, async () => {
+      const result = await hostsApi.rollbackRuntime(host.id, adapter.runtime_key)
       // The daemon drains the copy's Runs first and refuses rather than
       // killing one, so "still in use" is an ordinary answer, not a fault.
       if (!result.ok) throw new Error(result.error ?? 'rollback failed')
@@ -272,32 +289,29 @@ export default function HostAgents({
         )}
       </div>
       {present.length === 0 && !adding && (
-        <p className="text-xs text-muted-foreground">No agent on this host yet.</p>
+        <p className="text-xs text-muted-foreground">No runtime copies are reported on this host yet.</p>
       )}
       <ul className="space-y-1">
         {present.map(adapter => (
           <HostAgentRow
-            key={adapter.adapter_type}
+            key={adapter.runtime_key}
             host={host}
             adapter={adapter}
             copies={installationsOn(host, adapter)}
-            providers={providers}
-            binding={providerBindings.bindings.find(binding => binding.adapter_type === adapter.adapter_type) ?? null}
             installBusy={busy}
-            providerBusy={providerBindings.loading || providerBindings.busyAdapter === adapter.adapter_type}
             manageable={manageable}
-            providerBindingSupported={providerBindingsSupported}
-            usage={usageFor(usage, adapter.adapter_type)}
-            usageBusy={usageBusyFor(usageBusy, adapter.adapter_type)}
+            rainverPinned={isRainverPinned(host.kind, adapter.runtime_key)}
+            provisioningFailed={provisioningFailed}
+            usage={usageFor(usage, adapter.runtime_key)}
+            usageBusy={usageBusyFor(usageBusy, adapter.runtime_key)}
             onInstall={() => { void install(adapter) }}
             onUninstall={entry => { void uninstall(adapter, entry) }}
             onRollback={() => { void rollback(adapter) }}
             onLogin={(installation, target) => {
               clearLoginCloseTimer()
-              setLoginOpen(previous => ({ attempt: (previous?.attempt ?? 0) + 1, adapterType: adapter.adapter_type, installation, target }))
+              setLoginOpen(previous => ({ attempt: (previous?.attempt ?? 0) + 1, runtimeKey: adapter.runtime_key, installation, target }))
             }}
-            onRefreshUsage={installation => { void refreshUsage(adapter.adapter_type, installation) }}
-            onChooseProvider={providerId => { void providerBindings.choose(adapter.adapter_type, providerId) }}
+            onRefreshUsage={installation => { void refreshUsage(adapter.runtime_key, installation) }}
           />
         ))}
       </ul>
@@ -330,7 +344,7 @@ export default function HostAgents({
                     {registryCandidates.map(entry => {
                       const enabledAgent = enabledRegistryById.get(entry.id)
                       const adapter = enabledAgent
-                        ? adapters.find(candidate => candidate.adapter_type === enabledAgent.adapter_type)
+                        ? adapters.find(candidate => candidate.runtime_key === enabledAgent.runtime_key)
                         : builtinAdaptersByRegistryId.get(entry.id)
                       const installed = installedRegistryIds.has(entry.id)
                         || enabledAgent?.installed_on.some(item => item.host_id === host.id) === true
@@ -371,13 +385,13 @@ export default function HostAgents({
       {loginOpen && (
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs">
-            <span>{loginOpen.target.kind === 'logout' ? 'Logout' : 'Login'} · {adapters.find(adapter => adapter.adapter_type === loginOpen.adapterType)?.display_name ?? loginOpen.adapterType} · {loginOpen.installation}</span>
+            <span>{loginOpen.target.kind === 'logout' ? 'Logout' : 'Login'} · {adapters.find(adapter => adapter.runtime_key === loginOpen.runtimeKey)?.display_name ?? loginOpen.runtimeKey} · {loginOpen.installation}</span>
             <Button size="sm" variant="ghost" onClick={() => setLoginOpen(null)}>Close</Button>
           </div>
           <RuntimeLoginTerminal
-            key={`${loginOpen.attempt}:${loginOpen.adapterType}:${loginOpen.installation}:${loginOpen.target.kind === 'acp' ? loginOpen.target.method.id : loginOpen.target.kind}`}
+            key={`${loginOpen.attempt}:${loginOpen.runtimeKey}:${loginOpen.installation}:${loginOpen.target.kind === 'acp' ? loginOpen.target.method.id : loginOpen.target.kind}`}
             hostId={host.id}
-            adapterType={loginOpen.adapterType}
+            runtimeKey={loginOpen.runtimeKey}
             installation={loginOpen.installation}
             target={loginOpen.target.kind === 'acp'
               ? { kind: 'acp', methodId: loginOpen.target.method.id }

@@ -60,7 +60,7 @@ describe("conversation input capability admission", () => {
   });
 
   it("admits immutable resources only on a runtime with the governed tool surface", () => {
-    expect(() => assertConversationInputResourceTools([resource], "model_api")).not.toThrow();
+    expect(() => assertConversationInputResourceTools([resource], "opencode")).not.toThrow();
     expect(() => assertConversationInputResourceTools([resource], "custom_runtime")).toThrow(/cannot lazily read attached resources/);
     expect(() => assertConversationInputResourceTools([file], "custom_runtime")).not.toThrow();
   });

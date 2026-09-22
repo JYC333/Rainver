@@ -73,17 +73,12 @@ describe("Retrieval egress governance (real Postgres)", () => {
     expect(created.retrieval_tool_mode).toBe("off"); // default
 
     const updated = await updateSpaceRetrievalSettings(db.pool, SPACE, {
-      retrieval_tool_mode: "preflight_brief",
+      retrieval_tool_mode: "manual_tool_only",
     });
-    expect(updated.retrieval_tool_mode).toBe("preflight_brief");
+    expect(updated.retrieval_tool_mode).toBe("manual_tool_only");
 
     const resolved = await readSpaceRetrievalSettings(db.pool, SPACE);
-    expect(resolved.retrievalToolMode).toBe("preflight_brief");
-
-    const searchMode = await updateSpaceRetrievalSettings(db.pool, SPACE, {
-      retrieval_tool_mode: "preflight_search",
-    });
-    expect(searchMode.retrieval_tool_mode).toBe("preflight_search");
+    expect(resolved.retrievalToolMode).toBe("manual_tool_only");
   });
 
   it("skips the embedding backfill entirely when external egress is disabled", async () => {

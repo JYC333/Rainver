@@ -57,11 +57,28 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1, $2, $3, 'v1', 'test', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-               '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'test',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $4
+     )`,
     [VERSION, AGENT, SPACE, NOW.toISOString()],
   );
   await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
@@ -82,8 +99,8 @@ describeWithPostgres("autonomous admission transaction", () => {
              id, space_id, agent_id, agent_version_id, run_role, run_type,
              trigger_origin, status, mode, owner_user_id, visibility,
              contract_snapshot_json, created_at, updated_at
-           ) VALUES ($1, $2, $3, $4, 'execution', 'system', 'autonomous',
-                     'queued', 'live', $5, 'private', $6::jsonb, $7, $7)`,
+           , execution_kind) VALUES ($1, $2, $3, $4, 'execution', 'system', 'autonomous',
+                     'queued', 'live', $5, 'private', $6::jsonb, $7, $7, 'agent')`,
           [runId, SPACE, AGENT, VERSION, USER, JSON.stringify({ autonomous_admission: trace }), NOW.toISOString()],
         );
         await db.query(

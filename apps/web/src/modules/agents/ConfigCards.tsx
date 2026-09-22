@@ -1,7 +1,7 @@
 import { Check, X, Inbox, FileOutput, Clock, ShieldCheck } from 'lucide-react'
 import { Badge } from '../../components/ui/badge'
 import {
-  inputCards, outputCards, safetySummary, scheduleSummary, modelFields,
+  inputCards, outputCards, safetySummary, scheduleSummary,
   OUTPUT_MODE_LABEL,
 } from './policyMap'
 
@@ -11,10 +11,10 @@ export interface VersionLike {
   memory_policy_json?: unknown
   output_policy_json?: unknown
   tool_policy_json?: unknown
-  runtime_policy_json?: unknown
+  risk_level?: 'low' | 'medium' | 'high' | 'critical'
+  max_run_time_seconds?: number
   schedule_config_json?: unknown
   schedule_defaults_json?: unknown
-  model_config_json?: unknown
 }
 
 function Row({ enabled, label, detail }: { enabled: boolean; label: string; detail?: string }) {
@@ -92,6 +92,9 @@ export function SafetyView({ version }: { version: VersionLike }) {
     <div>
       <div className="flex items-center gap-2 mb-2 text-sm font-medium"><ShieldCheck className="size-4" /> Review &amp; safety</div>
       <p className="text-xs text-muted-foreground mb-3">Review posture: <Badge variant="secondary">{s.posture}</Badge></p>
+      <p className="text-xs text-muted-foreground mb-3">
+        Run constraints: risk <span className="font-medium text-foreground">{version.risk_level ?? 'medium'}</span> · maximum duration <span className="font-medium text-foreground">{version.max_run_time_seconds ?? 300}s</span>.
+      </p>
       <p className="text-xs font-medium text-foreground">This agent can</p>
       <ul className="mt-1 mb-3 space-y-0.5">
         {s.can.length ? s.can.map((c, i) => <li key={i} className="text-sm text-foreground">· {c}</li>)
@@ -101,19 +104,6 @@ export function SafetyView({ version }: { version: VersionLike }) {
       <ul className="mt-1 space-y-0.5">
         {s.cannot.map((c, i) => <li key={i} className="text-sm text-muted-foreground">· {c}</li>)}
       </ul>
-    </div>
-  )
-}
-
-export function ModelView({ version }: { version: VersionLike }) {
-  const m = modelFields(version)
-  return (
-    <div className="text-sm space-y-1">
-      <p>Model: <span className="font-mono">{m.model ?? 'System default model'}</span></p>
-      {m.temperature != null && <p>Temperature: <span className="font-mono">{m.temperature}</span></p>}
-      {m.max_tokens != null && <p>Max tokens: <span className="font-mono">{m.max_tokens}</span></p>}
-      {m.reasoning_effort && <p>Reasoning effort: <span className="font-mono">{m.reasoning_effort}</span></p>}
-      {m.fallback && <p>Fallback: <span className="font-mono">{m.fallback}</span></p>}
     </div>
   )
 }

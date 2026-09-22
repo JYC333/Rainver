@@ -1,21 +1,26 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { HttpError } from "../routeUtils/common.js";
 import type { PgAgentRepository } from "./repository.js";
+import {
+  AgentExecutionConstraintsPatchSchema,
+  AgentExecutionConstraintsSchema,
+  type AgentExecutionConstraints,
+  type AgentExecutionConstraintsPatch,
+} from "@rainver/protocol";
 
 export interface AgentConfigPatch {
   userId: string;
   name?: string | null;
   description?: string | null;
   systemPrompt?: string | null;
-  modelProviderId?: string | null;
-  modelName?: string | null;
-  modelConfigJson?: Record<string, unknown> | null;
   contextPolicyJson?: Record<string, unknown> | null;
   memoryPolicyJson?: Record<string, unknown> | null;
+  toolPolicyJson?: Record<string, unknown> | null;
   outputPolicyJson?: Record<string, unknown> | null;
   scheduleConfigJson?: Record<string, unknown> | null;
   outputSchemaJson?: Record<string, unknown> | null;
-  runtimeConfigJson?: Record<string, unknown> | null;
+  riskLevel?: "low" | "medium" | "high" | "critical";
+  maxRunTimeSeconds?: number;
 }
 
 export function params(request: FastifyRequest): Record<string, string | undefined> {
@@ -44,6 +49,7 @@ export async function applyAgentIdentityPatch(
   agentId: string,
   body: Record<string, unknown>,
 ) {
+  rejectRetiredAgentDeploymentFields(body);
   const patch: {
     name?: string;
     description?: string | null;
@@ -70,6 +76,7 @@ export function configPatch(
   body: Record<string, unknown>,
   userId: string,
 ): AgentConfigPatch {
+  rejectRetiredAgentDeploymentFields(body);
   const patch: AgentConfigPatch = { userId };
   if (Object.hasOwn(body, "name")) patch.name = requiredBodyString(body, "name");
   if (Object.hasOwn(body, "description")) {
@@ -78,43 +85,85 @@ export function configPatch(
   if (Object.hasOwn(body, "system_prompt")) {
     patch.systemPrompt = nullableBodyString(body, "system_prompt");
   }
-  if (Object.hasOwn(body, "model_provider_id") || Object.hasOwn(body, "default_model_provider_id")) {
-    patch.modelProviderId = nullableBodyString(
-      body,
-      Object.hasOwn(body, "model_provider_id") ? "model_provider_id" : "default_model_provider_id",
-    );
-  }
-  if (Object.hasOwn(body, "model_name") || Object.hasOwn(body, "default_model")) {
-    patch.modelName = nullableBodyString(
-      body,
-      Object.hasOwn(body, "model_name") ? "model_name" : "default_model",
-    );
-  }
-  assignRecordPatch(patch, body, "model_config_json", "modelConfigJson");
   assignRecordPatch(patch, body, "context_policy_json", "contextPolicyJson");
   assignRecordPatch(patch, body, "memory_policy_json", "memoryPolicyJson");
+  assignRecordPatch(patch, body, "tool_policy_json", "toolPolicyJson");
   assignRecordPatch(patch, body, "output_policy_json", "outputPolicyJson");
   assignRecordPatch(patch, body, "schedule_config_json", "scheduleConfigJson");
   assignRecordPatch(patch, body, "output_schema_json", "outputSchemaJson");
-  assignRecordPatch(patch, body, "runtime_config_json", "runtimeConfigJson");
+  if (Object.hasOwn(body, "execution_constraints")) {
+    const constraints = parseExecutionConstraintsPatch(body.execution_constraints);
+    if (constraints.risk_level !== undefined) patch.riskLevel = constraints.risk_level;
+    if (constraints.max_run_time_seconds !== undefined) {
+      patch.maxRunTimeSeconds = constraints.max_run_time_seconds;
+    }
+  }
   return patch;
+}
+
+export function parseExecutionConstraints(value: unknown): AgentExecutionConstraints {
+  const parsed = AgentExecutionConstraintsSchema.safeParse(value ?? {});
+  if (!parsed.success) {
+    throw new HttpError(422, `Invalid execution_constraints: ${parsed.error.issues[0]?.message ?? "invalid value"}`);
+  }
+  return parsed.data;
+}
+
+export function parseExecutionConstraintsPatch(value: unknown): AgentExecutionConstraintsPatch {
+  const parsed = AgentExecutionConstraintsPatchSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new HttpError(422, `Invalid execution_constraints: ${parsed.error.issues[0]?.message ?? "invalid value"}`);
+  }
+  return parsed.data;
 }
 
 export function hasConfigPatch(body: Record<string, unknown>): boolean {
   return [
     "system_prompt",
-    "default_model_provider_id",
-    "default_model",
-    "model_provider_id",
-    "model_name",
-    "model_config_json",
     "context_policy_json",
     "memory_policy_json",
+    "tool_policy_json",
     "output_policy_json",
     "schedule_config_json",
     "output_schema_json",
-    "runtime_config_json",
+    "execution_constraints",
   ].some((key) => Object.hasOwn(body, key));
+}
+
+/**
+ * Agent definition writes never carry deployment or backend selection.
+ *
+ * This is the Agent-definition body, which has no protocol schema of its own;
+ * the names below are not "retired" here but owned by a different resource, so
+ * the message points at the Runtime Profile API rather than rejecting them as
+ * unknown. Profile bodies get the same answer out of
+ * `AgentRuntimeProfile{Create,Update}BodySchema.strict()` instead.
+ *
+ * Every name here is one the Runtime Profile API actually owns. `adapter_type`
+ * is not among them: it names nothing in this epoch, so pointing its author at
+ * the Profile API would be directing them at a field that does not exist
+ * there either.
+ */
+export function rejectRetiredAgentDeploymentFields(body: Record<string, unknown>): void {
+  const retiredFields = [
+    "runtime_key",
+    "backend_mode",
+    "model_provider_id",
+    "model_name",
+    "default_model_provider_id",
+    "default_model",
+    "model_config_json",
+    "runtime_config_json",
+    "runtime_policy_json",
+    "execution_host_id",
+    "workspace_location_id",
+    "workspace_mode",
+    "runtime_installation",
+  ];
+  const retired = retiredFields.find((field) => Object.hasOwn(body, field));
+  if (retired) {
+    throw new HttpError(422, `${retired} is Runtime Profile authority; configure it through the Runtime Profile API`);
+  }
 }
 
 export function requiredBodyString(body: Record<string, unknown>, key: string): string {
@@ -206,13 +255,12 @@ function assignRecordPatch(
   body: Record<string, unknown>,
   sourceKey: string,
   targetKey:
-    | "modelConfigJson"
     | "contextPolicyJson"
     | "memoryPolicyJson"
+    | "toolPolicyJson"
     | "outputPolicyJson"
     | "scheduleConfigJson"
-    | "outputSchemaJson"
-    | "runtimeConfigJson",
+    | "outputSchemaJson",
 ): void {
   if (Object.hasOwn(body, sourceKey)) {
     target[targetKey] = nullableRecordBody(body, sourceKey);

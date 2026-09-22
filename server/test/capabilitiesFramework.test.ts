@@ -270,10 +270,10 @@ describe("runtime skill renderers", () => {
     const capability = listBuiltInCapabilityDefinitions().find((item) => item.id === "research.brief_synthesize")!;
     const rendered = renderAllRuntimeSkills({ capability, profile: { z: 1, a: 2 } });
 
-    expect(rendered.map((item) => item.runtime_adapter_type)).toEqual([
+    expect(rendered.map((item) => item.runtime_key)).toEqual([
       "claude_code",
       "codex_cli",
-      "model_api",
+      "opencode",
     ]);
     expect(rendered[0]!.files[0]!.content).toContain("Treat this file as generated adapter content");
     expect(rendered[1]!.files.map((file) => file.path)).toContain(

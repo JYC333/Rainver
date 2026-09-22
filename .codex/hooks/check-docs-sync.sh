@@ -47,7 +47,7 @@ case "$file_path" in
     *server/src/db/*|*server/migrations/*)
         relevant_docs="architecture/DATABASE_AND_TRANSACTIONS.md, architecture/SERVER_FOUNDATION.md"
         ;;
-    *server/src/modules/runs/*|*server/src/modules/runtimeHost/*|*server/src/modules/runtimeAdapters/*)
+    *server/src/modules/runs/*|*server/src/modules/runtimeAdapters/*)
         relevant_docs="architecture/EXECUTION_MODEL.md, architecture/RUNS_AND_OUTPUTS.md, architecture/RUNTIME_ADAPTER_STANDARD.md, modules/runtime-adapters.md, modules/agents.md, architecture/MODULES.md"
         ;;
     *server/src/modules/runtimeContext/*)

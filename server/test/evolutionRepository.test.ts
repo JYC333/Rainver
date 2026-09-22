@@ -267,12 +267,28 @@ async function seedAgent(identity: SpaceUserIdentity): Promise<string> {
   );
   await db.pool.query(
     `INSERT INTO agent_versions (
-       id, agent_id, space_id, version_label, system_prompt, model_config_json,
-       runtime_config_json, context_policy_json, memory_policy_json,
-       capabilities_json, tool_permissions_json, runtime_policy_json, created_at
-     ) VALUES ($1, $2, $3, 'v1', 'Review evolution plans.',
-       '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-       '[]'::jsonb, '{}'::jsonb, '{}'::jsonb, $4)`,
+       id,
+       agent_id,
+       space_id,
+       version_label,
+       system_prompt,
+       context_policy_json,
+       memory_policy_json,
+       capabilities_json,
+       tool_permissions_json,
+       created_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'v1',
+       'Review evolution plans.',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       '[]'::jsonb,
+       '{}'::jsonb,
+       $4
+     )`,
     [versionId, agentId, identity.spaceId, now],
   );
   await db.pool.query(
@@ -281,10 +297,32 @@ async function seedAgent(identity: SpaceUserIdentity): Promise<string> {
   );
   await db.pool.query(
     `INSERT INTO agent_runtime_profiles (
-       id, space_id, agent_id, name, adapter_type, runtime_config_json,
-       runtime_policy_json, enabled, is_default, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'Default', 'capability',
-       '{"adapter_type":"capability"}'::jsonb, '{}'::jsonb, true, true, $4, $4)`,
+       id,
+       space_id,
+       agent_id,
+       name,
+       runtime_key,
+       backend_mode,
+       runtime_config_json,
+       runtime_policy_json,
+       enabled,
+       is_default,
+       created_at,
+       updated_at
+     ) VALUES (
+       $1,
+       $2,
+       $3,
+       'Default',
+       'opencode',
+       'runtime_native',
+       '{}'::jsonb,
+       '{}'::jsonb,
+       true,
+       true,
+       $4,
+       $4
+     )`,
     [runtimeProfileId, identity.spaceId, agentId, now],
   );
   return agentId;

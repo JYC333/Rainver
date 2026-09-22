@@ -75,6 +75,7 @@ export class WorkflowExecutionService {
         input.researchOperationId ?? null, now],
     );
     const root = await new PgRunRepository(input.db).createCoordinatorRun({
+      execution_kind: "agent",
       agent_id: input.automation.agent_id,
       space_id: input.identity.spaceId,
       user_id: input.identity.userId,
@@ -329,7 +330,6 @@ export class WorkflowExecutionService {
         scheduled.push(node.id);
         continue;
       }
-      const childAgentId = node.assigned_agent_id ?? input.automation.agent_id;
       let resolvedInputs;
       try {
         resolvedInputs = await resolveNodeInputs(input.db, {
@@ -352,11 +352,13 @@ export class WorkflowExecutionService {
         continue;
       }
       if (node.node_kind === "action") {
-        await this.runActionNode(input, context, node, childAgentId, resolvedInputs);
+        await this.runActionNode(input, context, node, resolvedInputs);
         scheduled.push(node.id);
         continue;
       }
+      const childAgentId = node.assigned_agent_id ?? input.automation.agent_id;
       const child = await new PgRunRepository(input.db).createQueuedRun({
+        execution_kind: "agent",
         agent_id: childAgentId,
         space_id: input.identity.spaceId,
         user_id: input.identity.userId,
@@ -403,65 +405,52 @@ export class WorkflowExecutionService {
     return scheduled;
   }
 
-  // Deterministic-handler dispatch for `node_kind: "action"` (plan section
-  // 17.1-17.2, ADR 0011): no LLM run, so completion is synchronous rather
-  // than job-queued. Still creates a `runs` row and a passing
-  // `run_evaluations` row so the generic `resolveNodeInputs` binding
-  // mechanism (which reads exclusively from `runs.output_json` behind a
-  // passed evaluation) works identically for downstream Model/Action nodes.
+  // Deterministic Workflow Actions own their attempts and outputs. They do
+  // not create Agent Runs; only a real delegated Run is linked in
+  // workflow_execution_node_runs.
   private async runActionNode(
     input: WorkflowExecutionStartInput,
-    context: { executionId: string; rootRunId: string; nodeIds: Map<string, string> },
+    context: { executionId: string },
     node: {
       id: string; node_key: string; title: string; description: string | null;
-      capability_id: string | null; metadata_json: Record<string, unknown>; contract_json: Record<string, unknown>;
+      metadata_json: Record<string, unknown>; contract_json: Record<string, unknown>;
     },
-    childAgentId: string,
     resolvedInputs: ResolvedNodeInputs,
   ): Promise<void> {
     const now = new Date().toISOString();
-    const runRepo = new PgRunRepository(input.db);
     const actionKey = stringValue(node.metadata_json.action_key);
     const handler = actionKey ? actionNodeHandlerRegistry.get(actionKey) : null;
-    if (!actionKey || !handler) {
-      await input.db.query(
-        `UPDATE workflow_execution_nodes SET status = 'failed', blocked_reason = $3, updated_at = $4 WHERE id = $1 AND space_id = $2`,
-        [node.id, input.identity.spaceId, actionKey ? `action_handler_not_registered:${actionKey}` : "action_key_missing", now],
-      );
-      return;
-    }
     await input.db.query(
       `UPDATE workflow_execution_nodes
           SET status='in_progress', updated_at=$3
         WHERE id=$1 AND space_id=$2`,
       [node.id, input.identity.spaceId, now],
     );
-    const run = await runRepo.createRunningSystemRun({
-      space_id: input.identity.spaceId,
-      user_id: input.identity.userId,
-      agent_id: childAgentId,
-      project_folder_id: input.automation.project_folder_id,
-      project_id: input.automation.project_id,
-      trigger_origin: "job",
-      prompt: input.prompt ?? node.title,
-      instruction: node.description ? `Workflow Action: ${node.title}\n\n${node.description}` : `Workflow Action: ${node.title}`,
-      capability_id: node.capability_id,
-      workflow_version_id: input.target.versionId,
-      contract_snapshot: {
-        source: { kind: "workflow", id: input.target.versionId },
-        project_id: input.automation.project_id,
-        project_folder_id: input.automation.project_folder_id,
-        ...workflowContract(node.contract_json),
-        budget_sources: input.budgetSources,
-        workflow_input_json: input.inputJson,
-        upstream_inputs_json: resolvedInputs,
-        route_hints_json: { workflow_execution_id: context.executionId, node_id: node.id, node_key: node.node_key, action_key: actionKey },
-      },
-    });
+    const attemptNumber = await nodeAttemptCount(input.db, input.identity.spaceId, node.id) + 1;
+    const attemptId = randomUUID();
     await input.db.query(
-      `INSERT INTO workflow_execution_node_runs (id, space_id, node_id, run_id, role, resolved_inputs_json, created_at) VALUES ($1, $2, $3, $4, 'primary', $5::jsonb, $6)`,
-      [randomUUID(), input.identity.spaceId, node.id, run.id, JSON.stringify(resolvedInputs), now],
+      `INSERT INTO workflow_execution_action_attempts (
+         id, space_id, node_id, attempt_number, action_key, status,
+         resolved_inputs_json, started_at
+       ) VALUES ($1, $2, $3, $4, $5, 'running', $6::jsonb, $7)`,
+      [attemptId, input.identity.spaceId, node.id, attemptNumber, actionKey, JSON.stringify(resolvedInputs), now],
     );
+    if (!handler) {
+      const failedAt = new Date().toISOString();
+      const reason = actionKey ? `action_handler_not_registered:${actionKey}` : "action_key_missing";
+      await input.db.query(
+        `UPDATE workflow_execution_action_attempts
+            SET status='failed', error_json=$3::jsonb, ended_at=$4
+          WHERE id=$1 AND space_id=$2 AND status='running'`,
+        [attemptId, input.identity.spaceId, JSON.stringify({ error_code: reason, error_text: reason }), failedAt],
+      );
+      await input.db.query(
+        `UPDATE workflow_execution_nodes SET status='failed', blocked_reason=$3, updated_at=$4
+          WHERE id=$1 AND space_id=$2`,
+        [node.id, input.identity.spaceId, reason, failedAt],
+      );
+      return;
+    }
     // Action handlers execute inside the WorkflowExecution transaction. A
     // PostgreSQL statement error aborts that transaction until rollback; the
     // failure recorder below must therefore have a savepoint to roll back to,
@@ -497,18 +486,6 @@ export class WorkflowExecutionService {
           );
         }
       }
-      await runRepo.markRunTerminal({
-        run_id: run.id,
-        space_id: input.identity.spaceId,
-        status: "succeeded",
-        output_json: canonicalRunOutput({
-          success: true,
-          outputText: "Workflow action completed.",
-          outputJson: result.output,
-        }),
-        completed_at: completedAt,
-      });
-      await runRepo.insertRunEvaluation({ space_id: input.identity.spaceId, run_id: run.id, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: completedAt });
       if (result.delegatedRunId) {
         await input.db.query(
           `INSERT INTO workflow_execution_node_runs (
@@ -523,6 +500,14 @@ export class WorkflowExecutionService {
             completedAt,
           ],
         );
+      }
+      await input.db.query(
+        `UPDATE workflow_execution_action_attempts
+            SET status='succeeded', output_text=$3, output_json=$4::jsonb, ended_at=$5
+          WHERE id=$1 AND space_id=$2 AND status='running'`,
+        [attemptId, input.identity.spaceId, "Workflow action completed.", JSON.stringify(result.output), completedAt],
+      );
+      if (result.delegatedRunId) {
         await input.db.query(
           `UPDATE workflow_execution_nodes
               SET status='in_progress', blocked_reason=NULL, updated_at=$3
@@ -547,19 +532,16 @@ export class WorkflowExecutionService {
       const failedAt = new Date().toISOString();
       const message = error instanceof Error ? error.message : String(error);
       const outputJson = error instanceof ActionNodeHandlerError ? error.outputJson : {};
-      await runRepo.markRunTerminal({
-        run_id: run.id,
-        space_id: input.identity.spaceId,
-        status: "failed",
-        output_json: canonicalRunOutput({
-          success: false,
-          outputText: "",
-          outputJson,
-        }),
-        error_json: { error_code: "action_node_failed", error_text: message },
-        completed_at: failedAt,
-      });
-      await runRepo.insertRunEvaluation({ space_id: input.identity.spaceId, run_id: run.id, outcome_status: "failed", trajectory_status: "incomplete", evaluated_at: failedAt, notes: message });
+      await input.db.query(
+        `UPDATE workflow_execution_action_attempts
+            SET status='failed', error_json=$3::jsonb, ended_at=$4
+          WHERE id=$1 AND space_id=$2 AND status='running'`,
+        [attemptId, input.identity.spaceId, JSON.stringify({
+          error_code: error instanceof ActionNodeHandlerError ? "action_handler_failed" : "action_node_failed",
+          error_text: message,
+          ...(Object.keys(outputJson).length > 0 ? { partial_output: outputJson } : {}),
+        }), failedAt],
+      );
       const attempts = await nodeAttemptCount(input.db, input.identity.spaceId, node.id);
       const nextStatus = attempts < nodeMaxAttempts(node.contract_json) ? "ready" : "failed";
       await input.db.query(`UPDATE workflow_execution_nodes SET status = $3, blocked_reason = $4, updated_at = $5 WHERE id = $1 AND space_id = $2`, [node.id, input.identity.spaceId, nextStatus, `action_handler_error:${message}`, failedAt]);
@@ -582,8 +564,13 @@ function nodeMaxAttempts(contractJson: Record<string, unknown>): number {
 
 async function nodeAttemptCount(db: Queryable, spaceId: string, nodeId: string): Promise<number> {
   const result = await db.query<{ count: number }>(
-    `SELECT count(*)::int AS count FROM workflow_execution_node_runs
-      WHERE space_id=$1 AND node_id=$2 AND role='primary'`,
+    `SELECT (
+       (SELECT count(*) FROM workflow_execution_node_runs
+         WHERE space_id=$1 AND node_id=$2 AND role='primary')
+       +
+       (SELECT count(*) FROM workflow_execution_action_attempts
+         WHERE space_id=$1 AND node_id=$2)
+     )::int AS count`,
     [spaceId, nodeId],
   );
   return result.rows[0]?.count ?? 0;
@@ -597,9 +584,11 @@ async function projectLatestWorkflowNodeRuns(client: Queryable, spaceId: string,
   }>(
     `SELECT n.id AS node_id, link.run_id, link.role AS link_role,
             r.status AS run_status, evaluation.outcome_status,
-            (SELECT count(*)::int FROM workflow_execution_node_runs wr2
-              WHERE wr2.node_id = n.id AND wr2.space_id = n.space_id
-                AND wr2.role='primary') AS attempt_count,
+            ((SELECT count(*) FROM workflow_execution_node_runs wr2
+                WHERE wr2.node_id = n.id AND wr2.space_id = n.space_id
+                  AND wr2.role='primary')
+             + (SELECT count(*) FROM workflow_execution_action_attempts action_attempt
+                  WHERE action_attempt.node_id = n.id AND action_attempt.space_id = n.space_id))::int AS attempt_count,
             n.contract_json
        FROM workflow_execution_nodes n
        JOIN LATERAL (

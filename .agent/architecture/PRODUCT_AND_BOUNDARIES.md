@@ -59,23 +59,25 @@ capture / trigger
   describes a vendor's models is the adapter's own fact, not the registry's.
   Configurable endpoint and NetworkProfile routing remain Rainver authority.
 - Configured per space via `GET/POST/PATCH /api/v1/providers`. API keys are encrypted server-side; responses expose `has_api_key` only.
-- `RuntimeAdapter` = execution loop/tool environment (capability, model_api, claude_code, codex_cli, etc.).
-- Agents select a default provider/model on `AgentVersion` (`model_provider_id`, `model_name`); runs resolve provider at creation time.
-- **Canonical path for new adapters:** add a validated `RuntimeAdapterSpec` in `server/src/modules/runtimeAdapters/` and implement server adapter behavior when generic CLI execution is insufficient.
+- `AgentRuntimeProfile` = mutable deployment authority: ACP `runtime_key`, backend mode, execution Host/installation, optional ModelProvider/model, and runtime-specific options.
+- `AgentVersion` = immutable Agent behavior and constraint authority; it has no runtime/model fallback.
+- One `AcpRuntimeAdapter` implementation dispatches selectable Agent runtimes through the Host daemon. Add a validated ACP runtime definition/spec to `server/src/modules/runtimeAdapters/`; do not add a private Server Agent loop.
 
 ### Credential resolution boundary
 
-- The `model_api` runtime obtains credentials through `server/src/modules/providers/`. A CLI runtime obtains none from here: it uses the login held by its copy on the execution host that runs it (ADR 0016).
+- Bounded ProviderTask calls resolve credentials through `server/src/modules/providers/`. An ACP `runtime_native` Profile uses the login held by its copy on the execution Host; an eligible `model_provider` Profile uses the short-lived proxy lease (ADR 0008).
 - Raw secret values must never appear in adapter config outputs, run steps, artifacts, or logs.
 - Direct env-variable credential reads in adapters are not allowed for new work.
 
 ### Sandbox and path policy boundary
 
-- On the server host, all file access from agent execution is mediated by `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`. **Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):** a Project Folder row bound to a remote trusted host never reaches this mediation — the control plane holds no path for it and `PathPolicy` is never invoked; see [SECURITY_AND_ACCESS_BOUNDARIES.md](SECURITY_AND_ACCESS_BOUNDARIES.md) §10.
+- The control plane's Project Folder operations use `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`; ACP subprocesses access their mounted workspace directly. The built-in strict Host limits that access with a per-Run namespace, while a trusted paired Host runs natively under the owner's OS permissions. **Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):** the control plane holds no path to a remote Folder and `PathPolicy` is never invoked for that Location; see [SECURITY_AND_ACCESS_BOUNDARIES.md](SECURITY_AND_ACCESS_BOUNDARIES.md) §10.
 - Server-host file access for managed/code-patch paths still uses worktree
   helpers. CLI Runs execute on a host daemon (ADR 0016). `one_shot_docker` is
   not a product CLI path; high/critical-risk work that requires it fails closed.
-- Adapters must not access arbitrary host paths.
+- Server-side adapters must not resolve arbitrary host paths. ACP subprocesses
+  access the workspace mounted by their execution Host, under that Host's
+  trust-mode boundary.
 
 ### Proposal-first for durable change
 
@@ -135,10 +137,11 @@ capture / trigger
 | Memory write boundary | server proposal apply service; no public direct active-memory mutation | Active |
 | Knowledge write boundary | `knowledge.*` actions wired via `proposal.apply`; `knowledge_*` handlers in ProposalApplyService | Active |
 | Policy proposal apply | Proposal gate creates active Policy row | Active |
-| Runtime execution | Runtime policy JSON, adapter resolver, credential resolver | Active |
+| Agent runtime execution | Selected Profile snapshot, execution-Host ACP adapter, Run policy and Host trust boundary | Active |
 | Runtime credential use | Credential resolver + secret redaction | Active |
 | Project Folder file read | `project_folder.read` route check + `PathPolicy` | Active |
-| Project Folder Agent file write / code patch | Approved `code_patch` proposal gate + `PathPolicy` | Active |
+| ACP workspace filesystem access | Direct access to the workspace assigned by the execution Host; strict-host namespace or trusted-host OS permissions, not a per-file Proposal/PathPolicy gate | Active |
+| Canonical `code_patch` apply | Approved `code_patch` Proposal gate + `PathPolicy` | Active |
 | Project Folder human File-page save | Draft-backed Save to Folder + `project_folder.apply_patch` audit + `PathPolicy` + optimistic draft/Host precondition; history is restore-as-draft only | Active |
 | Sandbox path access | Execution Project Folder boundary, worktree root validation | Active |
 | Deployment / deployer calls | Instance-admin job records + internal-token pull channel; operator-only deployer socket allowlist | Active |

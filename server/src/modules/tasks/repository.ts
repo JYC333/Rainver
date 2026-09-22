@@ -16,7 +16,6 @@ import {
   type Queryable, dateIso } from "../routeUtils/common.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { PERSON_STARTED_TRIGGER_ORIGIN, assertPersonStartedRunRequest } from "../runs/runRepositoryHelpers.js";
-import { dispatchesToHostDaemon } from "../runs/runRemoteness.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
 import { contractRouteHints, budgetSourcesFromPolicy, type RunBudgetSource } from "../runs/contractSnapshot.js";
@@ -41,10 +40,6 @@ import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocati
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { dispatchToolAllowance } from "../systemActions/scenarioToolAllowance.js";
 import { isTerminalRunStatus } from "../runs/orchestrationResults.js";
-import {
-  resolveHostProviderBinding,
-  type ProviderLookupPort,
-} from "../hosts/runtimeProviderBindingResolution.js";
 import {
 } from "./taskRunStatusProjection.js";
 import { responsibleUserSql } from "../projectWork/responsibility.js";
@@ -95,41 +90,54 @@ import {
   type TaskRunListRow,
 } from "./taskRepositoryRows.js";
 
-/**
- * The backend a thread last ran against, read from its own Runs.
- *
- * A thread keeps its backend across dispatches: re-resolving the Host default
- * every time would move every existing thread onto a new backend the moment
- * that default changed, and since the vendor session lives inside the
- * provider's profile, each of them would silently lose its conversation.
- *
- * Read from the Run rather than from a message ledger, which is what the
- * per-thread queue used to provide. `model_provider_id` is stamped on the Run
- * at launch by `recordRemoteRunBackend` — the backend actually used, not the
- * one predicted — so this inherits what really ran.
- */
+/** The latest Run pins the Runtime Profile that owns a Task thread's session. */
 async function threadRunBinding(
   db: Queryable,
   threadId: string,
-): Promise<{ provider_id: string | null; model: string | null; reasoning_effort: string | null } | null> {
+): Promise<{ agent_id: string | null; runtime_profile_id: string | null; status: string } | null> {
   const result = await db.query<{
-    model_provider_id: string | null;
-    model_override_json: Record<string, unknown> | null;
+    agent_id: string | null;
+    runtime_profile_id: string | null;
+    status: string;
   }>(
-    `SELECT model_provider_id, model_override_json FROM runs
+    `SELECT agent_id, runtime_profile_id, status FROM runs
       WHERE host_task_thread_id = $1
       ORDER BY created_at DESC, id DESC
       LIMIT 1`,
     [threadId],
   );
-  const row = result.rows[0];
-  if (!row) return null;
-  const override = row.model_override_json ?? {};
-  return {
-    provider_id: row.model_provider_id,
-    model: typeof override.model === "string" ? override.model : null,
-    reasoning_effort: typeof override.reasoning_effort === "string" ? override.reasoning_effort : null,
-  };
+  return result.rows[0] ?? null;
+}
+
+interface TaskRuntimeProfile {
+  id: string;
+  runtime_key: string;
+  execution_host_id: string | null;
+  workspace_location_id: string | null;
+  workspace_mode: "location" | "managed" | null;
+  runtime_installation: string | null;
+  enabled: boolean;
+}
+
+async function requireTaskRuntimeProfile(
+  db: Queryable,
+  spaceId: string,
+  agentId: string,
+  runtimeProfileId: string | null,
+): Promise<TaskRuntimeProfile> {
+  const result = await db.query<TaskRuntimeProfile>(
+    `SELECT id, runtime_key, execution_host_id, workspace_location_id,
+            workspace_mode, runtime_installation, enabled
+       FROM agent_runtime_profiles
+      WHERE space_id = $1 AND agent_id = $2
+        AND (($3::varchar IS NULL AND is_default = true) OR id = $3)
+      LIMIT 1`,
+    [spaceId, agentId, runtimeProfileId],
+  );
+  const profile = result.rows[0];
+  if (!profile) throw new HttpError(404, "Runtime Profile not found for this Agent in this Space");
+  if (!profile.enabled) throw new HttpError(409, "Runtime Profile is disabled");
+  return profile;
 }
 
 /**
@@ -158,15 +166,7 @@ async function assertNotRoomConversationSession(
 }
 
 export class PgTaskRepository {
-  /**
-   * `providers` is only consulted when a remote dispatch actually resolves a
-   * ModelProvider binding, so callers that never dispatch remotely (Decision
-   * cases, for one) may leave it unset.
-   */
-  constructor(
-    private readonly pool: Pool,
-    private readonly providers: ProviderLookupPort | null = null,
-  ) {}
+  constructor(private readonly pool: Pool) {}
 
   async listBoards(identity: SpaceUserIdentity, filters: { projectFolderId: string | null; projectId: string | null; status: string | null; limit: number; offset: number }) {
     const params: unknown[] = [identity.spaceId];
@@ -682,6 +682,11 @@ export class PgTaskRepository {
     transactionClient?: Queryable,
   ) {
     assertPersonStartedRunRequest(body);
+    for (const key of ["runtime_key", "installation", "model_provider_id", "model", "reasoning_effort"]) {
+      if (Object.hasOwn(body, key)) {
+        throw new HttpError(422, `${key} is owned by the selected Runtime Profile`);
+      }
+    }
     const execute = async (client: Queryable) => {
       const task = await getVisibleTaskRow(client, identity, taskId);
       if (!task) throw new HttpError(404, "Task not found");
@@ -740,13 +745,11 @@ export class PgTaskRepository {
       if (target && (target.space_id !== identity.spaceId || target.project_folder_id !== task.project_folder_id || target.project_id !== task.project_id)) {
         throw new HttpError(409, "Workspace Location does not belong to this Task's Project Folder");
       }
-      // Which path executes this dispatch is the runtime's question, not the
-      // machine's: every CLI runtime runs on a host daemon now, the built-in
-      // host's as much as a paired machine's. A dispatch naming a CLI adapter
-      // therefore takes the host path whatever kind of host holds the Location,
-      // and everything else stays in-process here.
-      if (target && (target.execution_host_kind === "remote" || dispatchesToHostDaemon(optionalString(body.adapter_type)))) {
-        return await this.prepareRemoteTaskRun(client, identity, task, target, body, {
+      const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
+      if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
+      await assertRunnableAgent(client, identity.spaceId, agentId);
+      if (target?.execution_host_kind === "remote") {
+        return await this.prepareRemoteTaskRun(client, identity, task, target, agentId, body, {
           maxRuns,
           taskPolicy,
         });
@@ -754,25 +757,29 @@ export class PgTaskRepository {
       if (target && !target.execution_ready) {
         throw new HttpError(409, "Workspace Location is not execution-ready");
       }
-      // A host×adapter binding is a remote-host concept: a server-host run
-      // picks its provider through routing. Accepting either override here and
-      // ignoring it would run on a backend the caller did not ask for, which
-      // is the substitution this whole path exists to prevent.
-      for (const key of ["model_provider_id", "model", "reasoning_effort"]) {
-        if (Object.hasOwn(body, key)) {
-          throw new HttpError(422, `${key} applies only to a remote Workspace Location`);
-        }
+      const runtimeProfile = await requireTaskRuntimeProfile(
+        client,
+        identity.spaceId,
+        agentId,
+        optionalString(body.runtime_profile_id),
+      );
+      if (target && runtimeProfile.execution_host_id !== target.host_id) {
+        throw new HttpError(409, "Task Workspace Location does not match the selected Runtime Profile Host");
       }
-      const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
-      if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
-      await assertRunnableAgent(client, identity.spaceId, agentId);
+      if (target && runtimeProfile.workspace_mode === "location"
+        && runtimeProfile.workspace_location_id !== target.location_id) {
+        throw new HttpError(409, "Task Workspace Location does not match the selected Runtime Profile");
+      }
       const run = await new PgRunRepository(client).createQueuedRun({
+        execution_kind: "agent",
         agent_id: agentId,
         space_id: identity.spaceId,
         user_id: identity.userId,
         mode: optionalString(body.mode) ?? "live",
-        run_type: optionalString(body.run_type) ?? "agent",
+        run_type: "agent",
         trigger_origin: PERSON_STARTED_TRIGGER_ORIGIN,
+        runtime_profile_id: runtimeProfile.id,
+        runtime_profile_selection_source: optionalString(body.runtime_profile_id) ? "explicit" : "default",
         session_id: optionalString(body.session_id),
         project_folder_id: task.project_folder_id,
         workspace_location_id: target?.location_id ?? null,
@@ -842,9 +849,8 @@ export class PgTaskRepository {
    * The remote-host half of the merged dispatch endpoint (D5).
    *
    * It creates one Run synchronously, exactly as the server branch above
-   * does — the two differ in what they stamp on the Run (the thread, the
-   * adapter, the installation and the vendor session to resume), not in
-   * when the Run comes into being.
+   * does. The Profile is the deployment authority; this path adds only the
+   * Host thread and vendor session continuity data.
    *
    * It used to enqueue a message on the Task's HostThread and let a queue
    * create the Run once nothing blocked it. That queue existed for the
@@ -857,6 +863,7 @@ export class PgTaskRepository {
     identity: SpaceUserIdentity,
     task: TaskRow,
     target: NonNullable<Awaited<ReturnType<PgWorkspaceLocationRepository["resolveDispatchTarget"]>>>,
+    agentId: string,
     body: Record<string, unknown>,
     /**
      * The Task's budget inputs, resolved once by the admission above so both
@@ -885,13 +892,6 @@ export class PgTaskRepository {
     if (!target.host_online) throw new HttpError(409, "Host is offline");
     if (!target.execution_ready) throw new HttpError(409, "Workspace Location is not execution-ready");
 
-    const adapterType = optionalString(body.adapter_type);
-    if (!adapterType) throw new HttpError(422, "adapter_type is required for a remote Workspace Location");
-    const spec = getLocalCliRuntimeAdapterSpec(adapterType);
-    if (!spec) throw new HttpError(422, `Unknown runtime adapter '${adapterType}'`);
-    if (spec.implementation_status !== "implemented" || spec.invocation.protocol !== "acp") {
-      throw new HttpError(422, `Runtime adapter '${adapterType}' is not supported for remote dispatch`);
-    }
     const prompt = optionalString(body.prompt);
     if (!prompt) throw new HttpError(422, "prompt is required");
 
@@ -899,96 +899,45 @@ export class PgTaskRepository {
     const threadId = optionalString(body.thread_id);
     let thread = threadId ? await threads.getForLocation(threadId, target.location_id, task.id) : null;
     if (threadId && !thread) throw new HttpError(404, "Task thread not found for this Workspace Location");
-    if (thread && thread.adapter_type !== adapterType) {
-      throw new HttpError(409, "Task thread is pinned to a different runtime adapter");
+    const previousRun = thread ? await threadRunBinding(client, thread.id) : null;
+    const inheritedProfileId = previousRun?.agent_id === agentId ? previousRun.runtime_profile_id : null;
+    const requestedProfileId = optionalString(body.runtime_profile_id) ?? inheritedProfileId;
+    const runtimeProfile = await requireTaskRuntimeProfile(client, identity.spaceId, agentId, requestedProfileId);
+    if (runtimeProfile.execution_host_id !== target.host_id
+      || runtimeProfile.workspace_mode !== "location"
+      || runtimeProfile.workspace_location_id !== target.location_id
+      || !runtimeProfile.runtime_installation) {
+      throw new HttpError(409, "Task Workspace Location does not match the selected Runtime Profile");
     }
-    // Which copy of the runtime on the host. A thread keeps the one it was
-    // opened on — the vendor session lives in that copy's login state.
-    const requestedInstallation = optionalString(body.installation);
-    if (thread && requestedInstallation && thread.runtime_installation !== requestedInstallation) {
-      throw new HttpError(409, "Task thread is pinned to a different installation of this runtime");
+    const runtimeKey = runtimeProfile.runtime_key;
+    const installation = runtimeProfile.runtime_installation;
+    const spec = getLocalCliRuntimeAdapterSpec(runtimeKey);
+    if (!spec || spec.implementation_status !== "implemented" || spec.invocation.protocol !== "acp") {
+      throw new HttpError(422, `Runtime Profile '${runtimeProfile.id}' does not select a supported ACP runtime`);
     }
-    const installation = thread?.runtime_installation ?? requestedInstallation ?? "own";
-    const available = hostInstallationIds(target.capabilities_json, spec.adapter_type);
+    if (thread && thread.runtime_key !== runtimeKey) {
+      throw new HttpError(409, "Task thread is pinned to a different runtime; start a new thread to change it");
+    }
+    if (thread && thread.runtime_installation !== installation) {
+      throw new HttpError(409, "Task thread is pinned to a different installation; start a new thread to change it");
+    }
+    const available = hostInstallationIds(target.capabilities_json, runtimeKey);
     if (!available.includes(installation)) {
-      throw new HttpError(422, `Host does not report installation '${installation}' of '${adapterType}'`);
+      throw new HttpError(422, `Host does not report installation '${installation}' of '${runtimeKey}'`);
     }
     if (!thread) {
       thread = await threads.create({
         workspaceLocationId: target.location_id,
-        adapterType,
+        runtimeKey,
         runtimeInstallation: installation,
         createdByUserId: identity.userId,
         taskId: task.id,
       });
     }
 
-    // A thread keeps the backend it last ran against. Without this, resolution
-    // re-reads the Host x adapter default every dispatch, so changing that
-    // default moves every existing thread on the host onto a new backend —
-    // and since the vendor session lives inside the new provider's profile,
-    // each of them silently loses its conversation too. The Host default
-    // decides a thread's first backend; after that the thread is explicit.
-    //
-    // An explicit override still wins and becomes what the thread inherits
-    // next time, which is how a user changes a thread's backend.
-    //
-    // Read from the thread's own last Run now that there is no message
-    // ledger to read it from.
-    const inherited = Object.hasOwn(body, "model_provider_id")
-      ? null
-      : await threadRunBinding(client, thread.id);
-
-    // Resolve and validate the model backend before the message is queued, so
-    // an unusable provider fails this request rather than a run on someone's
-    // laptop minutes later.
-    const binding = await resolveHostProviderBinding({
-      db: client,
-      providers: this.providers,
-      spaceId: identity.spaceId,
-      hostId: target.host_id,
-      adapterType,
-      override: inherited
-        ? {
-            model_provider_id: inherited.provider_id,
-            // Key presence again, for the same reason it governs the provider:
-            // `{ model: null }` is "drop the pinned model and let the endpoint
-            // choose", and coalescing it into the inherited value would make
-            // that request unexpressible.
-            model: Object.hasOwn(body, "model") ? optionalString(body.model) : inherited.model,
-            reasoning_effort: Object.hasOwn(body, "reasoning_effort")
-              ? optionalString(body.reasoning_effort)
-              : inherited.reasoning_effort,
-            provenance: "thread",
-          }
-        : {
-            // Raw, not `optionalString`: that maps an empty or malformed value
-            // to null, which resolution must be able to tell apart from the
-            // explicit null that means "ambient login for this dispatch".
-            model_provider_id: body.model_provider_id,
-            model: optionalString(body.model),
-            reasoning_effort: optionalString(body.reasoning_effort),
-          },
-      overrideProvided: Object.hasOwn(body, "model_provider_id") || inherited !== null,
-      // Only read on the non-override branch, which inheritance never takes;
-      // the inherited model travels in `override.model` above.
-      modelOverrideProvided: Object.hasOwn(body, "model") || Object.hasOwn(body, "reasoning_effort"),
-    });
-
-    // One Run at a time on a thread. Two concurrent Runs would both resume
-    // the same vendor session — the thread's whole reason to exist — and the
-    // second would corrupt what the first is holding. The queue enforced this
-    // by refusing to advance while the thread's latest Run was non-terminal;
-    // with the queue gone the admission is the only place left to say it.
-    //
-    // `isTerminalRunStatus` rather than a hand-rolled list, and only the
-    // latest Run: a hand-rolled copy here once missed `waiting_for_review`
-    // and deadlocked the thread after any Run that landed in review.
-    const latestRun = await client.query<{ status: string; agent_id: string | null }>(
-      `SELECT status, agent_id FROM runs WHERE host_task_thread_id = $1 ORDER BY created_at DESC LIMIT 1`,
-      [thread.id],
-    );
-    const latestStatus = latestRun.rows[0]?.status;
+    // A thread has one vendor session, so serialize dispatch admission and
+    // refuse to resume that session while its prior Run is still active.
+    const latestStatus = previousRun?.status;
     if (latestStatus && !isTerminalRunStatus(latestStatus)) {
       throw new HttpError(409, "This thread already has a Run in flight; wait for it to finish");
     }
@@ -997,10 +946,6 @@ export class PgTaskRepository {
     // selects on `agent_id IS NULL`, and `create` above never sets one — so
     // reading it would imply a case that cannot occur. A Room specialist's
     // Agent identity lives on its own Conversation thread, never this one.
-    const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
-    if (!agentId) throw new HttpError(422, "agent_id is required when task has no assigned_agent_id");
-    await assertRunnableAgent(client, identity.spaceId, agentId);
-
     // The thread is the Location's, but the vendor session lives in the
     // profile of the Agent that last ran here (`resolveRuntimeProfileScope`).
     // A different Agent cannot resume it — the runtime would report no such
@@ -1008,9 +953,14 @@ export class PgTaskRepository {
     // made at admission, where it is a recorded retirement rather than a
     // failure the next turn discovers.
     let resumeVendorSessionId = thread.vendor_session_id ?? null;
-    const previousAgentId = latestRun.rows[0]?.agent_id ?? null;
-    if (resumeVendorSessionId && previousAgentId && previousAgentId !== agentId) {
-      await threads.retireLocationSessionForAgentChange(thread.id);
+    const profileChanged = previousRun !== null
+      && previousRun.agent_id === agentId
+      && previousRun.runtime_profile_id !== runtimeProfile.id;
+    if (resumeVendorSessionId && previousRun?.agent_id && previousRun.agent_id !== agentId) {
+      await threads.resetLocationSession(thread.id);
+      resumeVendorSessionId = null;
+    } else if (resumeVendorSessionId && profileChanged) {
+      await threads.resetLocationSession(thread.id);
       resumeVendorSessionId = null;
     }
 
@@ -1026,49 +976,25 @@ export class PgTaskRepository {
     const allowance = dispatchToolAllowance(trustMode);
 
     const run = await new PgRunRepository(client).createQueuedRun({
+      execution_kind: "agent",
       agent_id: agentId,
       space_id: identity.spaceId,
       user_id: identity.userId,
       mode: "live",
-      // `system`, as the queue wrote it — and not decoration: `routeRun`
-      // skips this run_type, which is what keeps the router from stamping
-      // its own predicted provider over the backend this dispatch already
-      // resolved and validated.
-      run_type: "system",
+      run_type: "agent",
       trigger_origin: "manual",
+      runtime_profile_id: runtimeProfile.id,
+      runtime_profile_selection_source: optionalString(body.runtime_profile_id) || inheritedProfileId ? "explicit" : "default",
       project_folder_id: task.project_folder_id,
       workspace_location_id: target.location_id,
       trust_mode: trustMode,
       host_task_thread_id: thread.id,
-      // Chosen and validated above; `remoteHostCliAdapter` reads it back off
-      // the Run to pick the runtime spec.
-      adapter_type: adapterType,
-      // Resolved above too. `resolveRemoteRunBinding` reads this back before
-      // launch to decide what the host is leased; left null it would fall
-      // through to the Host default the dispatch may have overridden.
-      model_provider_id: binding.provider_id ?? null,
       project_id: task.project_id,
       prompt,
       instruction: optionalString(body.instruction) ?? defaultTaskInstruction(task),
       scenario_tool_allowance: [...allowance],
       capabilities_json: [...allowance],
       model_override_json: {
-        ...(binding.model ? { model: binding.model } : {}),
-        // Beside the model, never inside it: a model id can carry brackets of
-        // its own, so the pair cannot be recovered from one string.
-        ...(binding.reasoning_effort ? { reasoning_effort: binding.reasoning_effort } : {}),
-        // Which copy of the runtime on the host, from the thread's pin — only
-        // when it is not the machine's own.
-        ...(installation !== "own" ? { installation } : {}),
-        // Always, even when the decision was "no provider at all". This says
-        // the backend came from the dispatch rather than from a routing
-        // decision, and it is what `resolveRemoteRunBinding` reads to tell an
-        // admission that deliberately chose ambient login apart from a Run
-        // that never chose and should fall back to the Host default.
-        source: "request",
-        // The same shape the Room, delegation and direct-chat paths write:
-        // the Run is the one place the job handler reads its thread and the
-        // vendor session to resume from (`hostThreadDispatchInputs`).
         host_thread: {
           schema_version: "host_thread.v1",
           thread_id: thread.id,
@@ -1135,6 +1061,12 @@ export class PgTaskRepository {
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required when the Task has no assigned agent");
       await assertRunnableAgent(client, identity.spaceId, agentId, "Planning Agent not found or inactive in this Space");
+      const runtimeProfile = await requireTaskRuntimeProfile(
+        client,
+        identity.spaceId,
+        agentId,
+        optionalString(body.runtime_profile_id),
+      );
       const referenceWorkflowVersionId = optionalString(body.reference_workflow_version_id);
       if (referenceWorkflowVersionId) {
         const reference = await client.query<{ id: string }>(
@@ -1162,12 +1094,15 @@ export class PgTaskRepository {
       }];
       await assertBudgetSourcesAvailable(client, identity.spaceId, budgetSources);
       const run = await new PgRunRepository(client).createQueuedRun({
+        execution_kind: "agent",
         agent_id: agentId,
         space_id: identity.spaceId,
         user_id: identity.userId,
         mode: "live",
         run_type: "planning",
         trigger_origin: "manual",
+        runtime_profile_id: runtimeProfile.id,
+        runtime_profile_selection_source: optionalString(body.runtime_profile_id) ? "explicit" : "default",
         project_folder_id: task.project_folder_id,
         project_id: task.project_id,
         prompt: optionalString(body.prompt) ?? `Plan Task: ${task.title}`,
@@ -1222,9 +1157,9 @@ export class PgTaskRepository {
     const rows = await this.pool.query<TaskRunListRow>(
       `SELECT tr.id AS task_run_id, tr.space_id AS task_run_space_id, tr.task_id AS task_run_task_id,
               tr.run_id AS task_run_run_id, tr.role AS task_run_role, tr.created_at AS task_run_created_at,
-              r.id, r.space_id, r.agent_id, r.agent_version_id, r.run_type,
+              r.id, r.space_id, r.agent_id, r.agent_version_id, r.execution_kind, r.run_type,
               r.status, r.mode, r.prompt, r.instruction, r.project_folder_id, r.workspace_location_id, r.trust_mode, r.session_id,
-              r.parent_run_id, r.project_id, r.scheduled_at, r.adapter_type, r.capability_id,
+              r.parent_run_id, r.project_id, r.scheduled_at, r.runtime_key, r.capability_id,
               r.model_provider_id, r.model_override_json, r.required_sandbox_level,
               r.contract_snapshot_json, r.workflow_version_id, r.trigger_origin,
               r.instructed_by_user_id, r.error_message, r.error_json, r.output_json,
