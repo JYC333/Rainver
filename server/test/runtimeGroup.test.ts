@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { InstanceOperationsSettingsService } from "../src/modules/settings/instanceOperations.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedAgentWithVersion, seedServerHost, seedSpaceOwnerProject } from "./support/domainSeeds.js";
@@ -314,6 +316,7 @@ describe("Server runtime provisioning against PostgreSQL", () => {
   beforeEach(async () => {
     if (!provisioningDb.available || !provisioningDb.pool) return;
     await resetTables(provisioningDb.pool, [
+      "settings",
       "host_runtime_provisioning",
       "agent_runtime_profiles",
       "agent_versions",
@@ -649,7 +652,11 @@ describe("Server runtime provisioning against PostgreSQL", () => {
       isOnline: vi.fn(() => true),
       requestToolAction,
     } as unknown as HostConnectionRegistry;
-    const provisioner = new ServerOpenCodeProvisioner(pool, registry);
+    const config = loadConfig({ SERVER_DATABASE_URL: provisioningDb.connectionUri });
+    await new InstanceOperationsSettingsService(config).update("92222222-2222-4222-8222-222222222222", {
+      managed_host_egress_mode: "system_tun",
+    });
+    const provisioner = new ServerOpenCodeProvisioner(pool, registry, undefined, config);
 
     await provisioner.reconcile();
     await provisioner.reconcile();
@@ -659,6 +666,7 @@ describe("Server runtime provisioning against PostgreSQL", () => {
       runtime_key: "opencode",
       version: SERVER_OPENCODE_RELEASE.version,
       health_check_protocol: "acp",
+      egress_transport: { mode: "system_tun" },
     }));
     expect(await new PgRuntimeProvisioningRepository(pool).get(hostId, "opencode")).toMatchObject({
       state: "failed",

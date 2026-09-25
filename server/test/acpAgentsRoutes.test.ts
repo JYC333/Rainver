@@ -100,7 +100,7 @@ beforeEach(async () => {
   const now = new Date().toISOString();
   for (const [id, email] of [[ADMIN, "admin@example.test"], [MEMBER, "member@example.test"]]) {
     await db.pool.query(
-      `INSERT INTO users (id, email, display_name, status, created_at, updated_at) VALUES ($1, $2, $1, 'active', $3, $3)`,
+      `INSERT INTO users (id, email, display_name, status, created_at, updated_at, registration_source) VALUES ($1, $2, $1, 'active', $3, $3, 'system')`,
       [id, email, now],
     );
   }
@@ -182,7 +182,7 @@ describe("ACP registry agents", () => {
     // The hosts module exposes it for installation, but does not offer it for
     // dispatch until the registry can describe an Agent-isolated login/state
     // root contract.
-    const adapters = await app.inject({ method: "GET", url: "/api/v1/hosts/runtime-definitions", headers: { cookie: `session_id=${ADMIN_TOKEN}` } });
+    const adapters = await app.inject({ method: "GET", url: "/api/v1/hosts/runtime-definitions", headers: { cookie: `better-auth.session_token=${ADMIN_TOKEN}` } });
     expect(adapters.json().items).toContainEqual(expect.objectContaining({
       runtime_key: "acp_goose", capability_probe: "acp_goose", remote_eligible: false,
       latest_managed_version: "1.2.3",
@@ -192,7 +192,7 @@ describe("ACP registry agents", () => {
     expect(listed.json().items).toEqual([expect.objectContaining({ id: "goose", installed_on: [] })]);
 
     // Still installed somewhere: refused, naming the host, until removed there.
-    const issued = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", headers: { cookie: `session_id=${ADMIN_TOKEN}` }, payload: { name: "Desk" } });
+    const issued = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", headers: { cookie: `better-auth.session_token=${ADMIN_TOKEN}` }, payload: { name: "Desk" } });
     const { host_id: deskId, pairing_code: deskCode } = issued.json();
     await app.inject({ method: "POST", url: "/api/v1/hosts/register", payload: { pairing_code: deskCode, ...HELLO_INFO, platform: "linux", arch: "x64" } });
     await db.pool.query(
@@ -221,7 +221,7 @@ describe("ACP registry agents", () => {
     asUser(ADMIN);
     await app.inject({ method: "PUT", url: "/api/v1/acp-agents/goose" });
 
-    const issue = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", headers: { cookie: `session_id=${ADMIN_TOKEN}` }, payload: { name: "Box" } });
+    const issue = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", headers: { cookie: `better-auth.session_token=${ADMIN_TOKEN}` }, payload: { name: "Box" } });
     const { host_id: hostId, pairing_code: pairingCode } = issue.json();
     const register = await app.inject({ method: "POST", url: "/api/v1/hosts/register", payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" } });
     const { token } = register.json();
@@ -261,7 +261,7 @@ describe("ACP registry agents", () => {
       `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
       [hostId, JSON.stringify({ runtimes: [], versions: {}, installations: { acp_goose: [{
         id: "managed:1.2.3", version: "1.2.3", logged_in: false,
-        options: { config_options: [], authenticated: false, auth_methods: [{
+        options: { config_options: [], session_available: false, auth_methods: [{
           id: "device", name: "Device login", description: null, type: "terminal", args: ["login"], env: {},
         }] },
       }] } })],
@@ -336,7 +336,7 @@ describe("ACP registry agents", () => {
     });
     const streamUrl = `${httpBaseUrl()}/api/v1/hosts/${hostId}/installations/acp_goose/managed:1.2.3/login/stream?auth_method_id=device`;
     const response = await fetch(streamUrl, {
-      headers: { cookie: `session_id=${ADMIN_TOKEN}`, "sec-fetch-site": "same-origin" },
+      headers: { cookie: `better-auth.session_token=${ADMIN_TOKEN}`, "sec-fetch-site": "same-origin" },
     });
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
@@ -386,7 +386,7 @@ describe("ACP registry agents", () => {
       `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
       [hostId, JSON.stringify({ runtimes: [], versions: {}, installations: { acp_goose: [{
         id: "managed:1.2.3", version: "1.2.3", logged_in: null,
-        options: { config_options: [], authenticated: null, auth_methods: [] },
+        options: { config_options: [], session_available: null, auth_methods: [] },
       }] } })],
     );
     const unsupportedLogin = await app.inject({

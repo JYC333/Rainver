@@ -33,9 +33,9 @@ describe("crossSpaceRetrievalDb", () => {
       { cascade: true },
     );
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ($1, 'Viewer', 'active', now(), now()),
-              ($2, 'Other', 'active', now(), now())`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Viewer', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system'),
+              ($2, 'Other', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [USER, OTHER],
     );
     await db.pool.query(

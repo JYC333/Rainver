@@ -77,12 +77,6 @@ function denyingAuth(): AuthRepository {
     async logout() {
       throw new Error("not used");
     },
-    async findOrCreateFromGoogle() {
-      throw new Error("not used");
-    },
-    async createSession() {
-      throw new Error("not used");
-    },
   };
 }
 
@@ -103,7 +97,7 @@ describe("providers read authority", () => {
     const list = await app.inject({
       method: "GET",
       url: "/api/v1/providers?space_id=space-1",
-      headers: { cookie: "session_id=abc" },
+      headers: { cookie: "better-auth.session_token=abc" },
     });
     expect(list.statusCode).toBe(200);
     expect(list.json().map((r: { id: string }) => r.id)).toEqual(["mp-2", "mp-1"]);

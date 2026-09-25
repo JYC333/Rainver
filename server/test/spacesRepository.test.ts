@@ -12,15 +12,63 @@ beforeAll(async () => {
   repo = new PgSpaceRepository(db.pool);
 });
 
-async function seedUser(): Promise<string> {
+async function seedUser(email = `${randomUUID()}@test.invalid`): Promise<string> {
   const id = randomUUID();
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
-     VALUES ($1, 'Creator', 'active', now(), now())`,
-    [id],
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+     VALUES ($1, 'Creator', 'active', now(), now(), $2, 'system')`,
+    [id, email],
   );
   return id;
 }
+
+describe("PgSpaceRepository.acceptInvitation", () => {
+  it("atomically admits the invited existing account exactly once", async () => {
+    if (!db.available || !repo) return;
+    const owner = await seedUser();
+    const invitee = await seedUser(`invitee-${randomUUID()}@test.invalid`);
+    const space = await repo.createSpace(owner, { name: "Invitation Team", type: "team" }) as SpaceResult;
+    const invitation = await repo.createInvitation(owner, space.id, {
+      email: (await db.pool.query<{ email: string }>("SELECT email FROM users WHERE id = $1", [invitee])).rows[0]!.email,
+      role: "member",
+    });
+    expect("token" in invitation).toBe(true);
+    if (!("token" in invitation)) return;
+
+    const results = await Promise.all([
+      repo.acceptInvitation(invitee, invitation.token),
+      repo.acceptInvitation(invitee, invitation.token),
+    ]);
+    expect(results.filter(result => "space_id" in result)).toEqual([{ space_id: space.id }]);
+    const membership = await db.pool.query<{ role: string; status: string }>(
+      "SELECT role, status FROM space_memberships WHERE space_id = $1 AND user_id = $2",
+      [space.id, invitee],
+    );
+    expect(membership.rows).toEqual([{ role: "member", status: "active" }]);
+    const state = await db.pool.query<{ status: string }>("SELECT status FROM space_invitations WHERE id = $1", [invitation.id]);
+    expect(state.rows[0]?.status).toBe("accepted");
+  });
+
+  it("rejects another account and an expired invitation without granting membership", async () => {
+    if (!db.available || !repo) return;
+    const owner = await seedUser();
+    const invitee = await seedUser(`invitee-${randomUUID()}@test.invalid`);
+    const other = await seedUser();
+    const space = await repo.createSpace(owner, { name: "Private Team", type: "team" }) as SpaceResult;
+    const email = (await db.pool.query<{ email: string }>("SELECT email FROM users WHERE id = $1", [invitee])).rows[0]!.email;
+    const invitation = await repo.createInvitation(owner, space.id, { email });
+    if (!("token" in invitation)) throw new Error("Invitation was not created");
+
+    expect(await repo.acceptInvitation(other, invitation.token)).toMatchObject({ statusCode: 400 });
+    await db.pool.query("UPDATE space_invitations SET expires_at = now() - interval '1 second' WHERE id = $1", [invitation.id]);
+    expect(await repo.acceptInvitation(invitee, invitation.token)).toMatchObject({ statusCode: 400 });
+    const memberships = await db.pool.query(
+      "SELECT id FROM space_memberships WHERE space_id = $1 AND user_id IN ($2, $3)",
+      [space.id, invitee, other],
+    );
+    expect(memberships.rowCount).toBe(0);
+  });
+});
 
 function isFailure(value: SpaceResult | SpaceFailure): value is SpaceFailure {
   return "statusCode" in value;

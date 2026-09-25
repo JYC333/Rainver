@@ -55,8 +55,8 @@ describe("projectPublicSummariesDb", () => {
     );
     for (const id of [OWNER, WRITER, VIEWER, READER]) {
       await db.pool.query(
-        `INSERT INTO users (id, display_name, status, created_at, updated_at)
-         VALUES ($1, 'U', 'active', now(), now())`,
+        `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+         VALUES ($1, 'U', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
         [id],
       );
       await db.pool.query(
@@ -330,12 +330,6 @@ describe("projectPublicSummaryRoutes", () => {
         throw new Error("not used");
       },
       async logout() {
-        throw new Error("not used");
-      },
-      async findOrCreateFromGoogle() {
-        throw new Error("not used");
-      },
-      async createSession() {
         throw new Error("not used");
       },
     } as unknown as AuthRepository;

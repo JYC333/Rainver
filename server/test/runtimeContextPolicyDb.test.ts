@@ -42,8 +42,8 @@ beforeEach(async () => {
   await seedServerHost(db.pool, { id: HOST });
   for (const id of [OWNER, ADMIN, MEMBER, OTHER]) {
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ($1, 'User', 'active', now(), now())`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'User', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [id],
     );
   }

@@ -64,7 +64,9 @@ import {
 } from "../capabilities/runtimeSkillProvider.js";
 import { enforce } from "../policy/service.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
-import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
+import { isAcpRuntimeAdapter, isVendorCliAdapter } from "../runtimeAdapters/specs.js";
+import { acpSessionConfigFromRunOverride } from "../runs/cliConversationProtocol.js";
+import { ACP_RUNTIME_MANAGED_WINDOW } from "../usage/modelCatalog.js";
 import {
   loadConversationInputResourceDescriptors,
   renderConversationInputResourceDescriptors,
@@ -130,9 +132,12 @@ class PgAuthorityProvider implements RuntimeContextAuthorityPort {
     // override is honored only when present in the admitted Run; otherwise
     // the immutable Profile snapshot is authoritative. Native runtimes may
     // not expose their model before the ACP session starts.
+    const selectedAcpModel = acpSessionConfigFromRunOverride(modelOverride)
+      .filter((option) => option.category === "model" && option.type === "select")
+      .at(-1)?.value;
     const model = profileSnapshot.backend_mode === "model_provider"
       ? stringValue(profileSnapshot.model_name)
-      : stringValue(modelOverride.model);
+      : typeof selectedAcpModel === "string" ? selectedAcpModel : stringValue(modelOverride.model);
     if (profileSnapshot.backend_mode === "model_provider" && !model) {
       throw new Error("Runtime Context planning requires the model selected by the Runtime Profile");
     }
@@ -141,7 +146,9 @@ class PgAuthorityProvider implements RuntimeContextAuthorityPort {
       setupRef: { type: "work_context_setup", id: setup.id, version: String(setup.version) },
       model,
       outputReserveTokens: control.output_contract.max_output_tokens,
-      modelWindowOverride: null,
+      modelWindowOverride: profileSnapshot.backend_mode === "runtime_native" && isAcpRuntimeAdapter(run.runtime_key)
+        ? ACP_RUNTIME_MANAGED_WINDOW
+        : null,
       agentId: setup.agent_id,
       projectId: setup.project_id,
       controlSnapshot: control,

@@ -7,6 +7,7 @@ export * from "./agents.js";
 export * from "./spaceAgentRuntimeDefaults.js";
 export * from "./artifacts.js";
 export * from "./auth.js";
+export * from "./authSecurity.js";
 export * from "./authorizationRequests.js";
 export * from "./automations.js";
 export * from "./autonomy.js";

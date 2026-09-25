@@ -28,7 +28,7 @@ describe('host capability normalization', () => {
       runtimes: [], versions: {}, installations: { acp_dynamic: [{
         id: 'managed:1', version: '1', logged_in: false,
         options: {
-          config_options: [], authenticated: false,
+          config_options: [], session_available: false,
           auth_methods: [
             { id: 'browser', name: 'Browser', description: 'Web flow', type: 'agent', args: [], env: {} },
             { id: 'device', name: 'Device', description: null, type: 'terminal', args: ['login'], env: { MODE: 'device' } },

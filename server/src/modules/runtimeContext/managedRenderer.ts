@@ -66,6 +66,8 @@ export async function renderManagedDelivery(input: ManagedDeliveryRenderInput): 
   }
   const decisions = new Map(envelope.window_plan.decisions.map((decision) => [decision.item_id, decision]));
   const accepted = envelope.items.filter((item) => decisions.get(item.id)?.decision !== "blocked");
+  const ordered = [...accepted]
+    .sort((left, right) => compareProviderOrder(left, right, envelope.turn_request.current_message_ref));
   const deliveryId = input.deliveryId ?? randomUUID();
   const snapshotId = input.snapshotId ?? randomUUID();
   return {
@@ -82,7 +84,7 @@ export async function renderManagedDelivery(input: ManagedDeliveryRenderInput): 
       semantic_role: item.semantic_role,
       required: item.selection !== "ranked",
     })),
-    message_blocks: [...accepted].sort(compareProviderOrder).map((item) => ({
+    message_blocks: ordered.map((item) => ({
       semantic_role: item.semantic_role,
       content: renderSemanticContent(item.semantic_role, contextItemText(item)),
       source_item_ids: [item.id],
@@ -116,11 +118,14 @@ export async function renderManagedDelivery(input: ManagedDeliveryRenderInput): 
 function compareProviderOrder(
   left: RuntimeContextEnvelope["items"][number],
   right: RuntimeContextEnvelope["items"][number],
+  currentMessageRef: RuntimeContextEnvelope["turn_request"]["current_message_ref"],
 ): number {
-  // Reference material, including conversation continuity, must precede the
-  // current user input. Delegated instructions are split into the provider's
-  // system channel by managedProviderMessages, so their relative position does
-  // not affect the user-message sequence.
+  // Reference material, including conversation continuity, precedes user
+  // input. Room recipient instructions can also be user_input, so keep the
+  // actual current message last within the Gateway-owned Delivery order.
+  const leftIsCurrent = sameRef(left.source_ref, currentMessageRef);
+  const rightIsCurrent = sameRef(right.source_ref, currentMessageRef);
+  if (leftIsCurrent !== rightIsCurrent) return leftIsCurrent ? 1 : -1;
   const order = { delegated_instruction: 0, reference_data: 1, user_input: 2 } as const;
   return order[left.semantic_role] - order[right.semantic_role];
 }

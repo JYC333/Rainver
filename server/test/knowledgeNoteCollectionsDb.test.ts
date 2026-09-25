@@ -22,7 +22,7 @@ beforeEach(async () => {
   await resetTables(db.pool, ["note_collections", "space_memberships", "users", "spaces"], { cascade: true });
   const now = new Date().toISOString();
   await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
-  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Owner','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER, now]);
   await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
 });
 
@@ -219,8 +219,8 @@ describe("PgKnowledgeRepository note collections (real Postgres)", () => {
     const now = new Date().toISOString();
     await db.pool.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
     await db.pool.query(
-      `INSERT INTO users (id,display_name,status,created_at,updated_at)
-       VALUES ($1,'Viewer','active',$2,$2)`,
+      `INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source)
+       VALUES ($1,'Viewer','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [viewer, now],
     );
     await db.pool.query(

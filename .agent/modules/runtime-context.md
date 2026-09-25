@@ -37,6 +37,21 @@ context, reorder items, change precedence, rebudget, or reuse a Delivery for a
 different physical call. It acknowledges delivery and finalizes the invocation;
 tool loops prepare a new Delivery for every physical provider request.
 
+An explicit native ACP model selection is read from the Run's session config
+before planning and recorded on the Delivery. ACP config options do not report
+model context limits, so every runtime-native ACP session uses a null window
+(`acp-runtime-managed.v1`) instead of a guessed 16K limit or per-model Rainver
+exceptions. Required and pinned content remains intact; optional ranked content
+has a separate 16,384-byte-estimate budget. The CLI enforces its actual model
+limit and any rejection is surfaced as a runtime error. A Profile bound to a
+Rainver ModelProvider still uses the shared model catalog and its numeric window
+plan, including the conservative unknown-model fallback.
+
+The Delivery renderer keeps delegated instructions and reference data before
+user input, and places the current message last even when a Room recipient
+instruction is another `user_input` item. The ACP adapter preserves that
+Gateway-owned order.
+
 ## Continuity
 
 Conversation and task continuity is an ordered ledger of canonical refs, not a

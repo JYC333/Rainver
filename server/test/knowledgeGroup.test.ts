@@ -45,7 +45,7 @@ describe("knowledgeNotePurgeDb", () => {
     );
     const now = new Date().toISOString();
     await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
-    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Owner','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER, now]);
     await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
   });
 
@@ -113,7 +113,7 @@ describe("knowledgeNoteScopeDb", () => {
     );
     const now = new Date().toISOString();
     await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
-    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',$2,$2)`, [USER, now]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Owner','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER, now]);
     await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
   });
 
@@ -210,7 +210,7 @@ describe("knowledgeNoteScopeDb", () => {
       if (!db.available || !app) return;
       const other = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
       const now = new Date().toISOString();
-      await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Other','active',$2,$2)`, [other, now]);
+      await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Other','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [other, now]);
       await db.pool.query(
         `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`,
         [randomUUID(), SPACE, other, now],
@@ -242,7 +242,7 @@ describe("knowledgeNoteScopeDb", () => {
       if (!db.available || !app) return;
       const other = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
       const now = new Date().toISOString();
-      await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Other','active',$2,$2)`, [other, now]);
+      await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Other','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [other, now]);
       await db.pool.query(
         `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`,
         [randomUUID(), SPACE, other, now],
@@ -307,8 +307,8 @@ describe("knowledgeRetrievalDb", () => {
       [SPACE],
     );
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ($1, 'Viewer', 'active', now(), now()), ($2, 'Other', 'active', now(), now())
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Viewer', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ($2, 'Other', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')
        ON CONFLICT (id) DO NOTHING`,
       [VIEWER, OTHER],
     );

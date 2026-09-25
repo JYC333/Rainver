@@ -46,8 +46,8 @@ beforeEach(async () => {
     [SPACE, now],
   );
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
-     VALUES ($1,$1,'active',$3,$3), ($2,$2,'active',$3,$3)`,
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+     VALUES ($1,$1,'active',$3,$3, lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ($2,$2,'active',$3,$3, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [OWNER, OTHER_USER, now],
   );
   await db.pool.query(

@@ -73,6 +73,8 @@ export interface ServerConfig {
   deployerSocketPath: string;
   /** Service-to-service token for internal providers/credentials ports. */
   internalToken: string | null;
+  /** Secret used by Better Auth for signing/encrypting auth state. */
+  betterAuthSecret: string | null;
   /** Google OAuth client id. Empty means Google login is disabled. */
   googleClientId: string;
   /** Google OAuth client secret. Redacted from diagnostics and snapshots. */
@@ -175,6 +177,7 @@ const KNOWN_ENV_KEYS = new Set([
   "ARTIFACT_STORAGE_ROOT",
   "DEPLOYER_SOCKET_PATH",
   "SERVER_INTERNAL_TOKEN",
+  "BETTER_AUTH_SECRET",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
   "GOOGLE_REDIRECT_URI",
@@ -397,6 +400,40 @@ function validateConfigSemantics(config: ServerConfig): void {
       "missing_notification_webhook_allowlist",
     );
   }
+  if (config.rainverEnv === "prod" && !config.betterAuthSecret) {
+    throw new ConfigError(
+      "BETTER_AUTH_SECRET is required in production",
+      "missing_better_auth_secret",
+    );
+  }
+  const frontend = new URL(config.frontendUrl);
+  if (config.rainverEnv === "prod" && frontend.protocol === "http:" && !isLocalHttpWebhookHost(frontend.hostname)) {
+    throw new ConfigError(
+      "FRONTEND_URL must use https in production unless it is loopback-bound",
+      "insecure_frontend_url",
+    );
+  }
+  let callback: URL;
+  try {
+    callback = new URL(config.googleRedirectUri);
+  } catch {
+    throw new ConfigError("GOOGLE_REDIRECT_URI is not a valid URL", "invalid_google_redirect_uri");
+  }
+  if (callback.protocol !== "http:" && callback.protocol !== "https:") {
+    throw new ConfigError("GOOGLE_REDIRECT_URI must be http(s)", "invalid_google_redirect_uri_protocol");
+  }
+  if (callback.username || callback.password || callback.hash) {
+    throw new ConfigError(
+      "GOOGLE_REDIRECT_URI must not include credentials or a fragment",
+      "unsafe_google_redirect_uri",
+    );
+  }
+  if (config.rainverEnv === "prod" && callback.protocol === "http:" && !isLocalHttpWebhookHost(callback.hostname)) {
+    throw new ConfigError(
+      "GOOGLE_REDIRECT_URI must use https in production unless it is loopback-bound",
+      "insecure_google_redirect_uri",
+    );
+  }
 }
 
 /**
@@ -513,11 +550,12 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     env.DEPLOYER_SOCKET_PATH?.trim() || resolve(rainverHome, "run", "deployer.sock"),
   );
   const internalToken = env.SERVER_INTERNAL_TOKEN?.trim() || null;
+  const betterAuthSecret = env.BETTER_AUTH_SECRET?.trim() || null;
   const googleClientId = env.GOOGLE_CLIENT_ID?.trim() || "";
   const googleClientSecret = env.GOOGLE_CLIENT_SECRET?.trim() || "";
   const googleRedirectUri =
     env.GOOGLE_REDIRECT_URI?.trim() ||
-    "http://localhost:5173/api/v1/auth/google/callback";
+    "http://localhost:5173/api/v1/auth/callback/google";
   const frontendUrl = validateHttpBaseUrl(
     env.FRONTEND_URL?.trim() || "http://localhost:5173",
     "FRONTEND_URL",
@@ -731,6 +769,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     artifactStorageRoot,
     deployerSocketPath,
     internalToken,
+    betterAuthSecret,
     googleClientId,
     googleClientSecret,
     googleRedirectUri,
@@ -801,6 +840,7 @@ export function describeConfig(config: ServerConfig): string {
     `artifactStorageRoot=${config.artifactStorageRoot}`,
     `deployerSocketPath=${config.deployerSocketPath}`,
     `internalTokenConfigured=${config.internalToken !== null}`,
+    `betterAuthConfigured=${config.betterAuthSecret !== null}`,
     `googleOAuthConfigured=${Boolean(config.googleClientId && config.googleClientSecret)}`,
     `frontendUrl=${config.frontendUrl}`,
     `trustedProxyHost=${config.trustedProxyHost ?? ""}`,
@@ -818,7 +858,7 @@ export function describeConfig(config: ServerConfig): string {
 // ---------------------------------------------------------------------------
 
 /** Bumped when the shape of {@link ServerConfig} changes incompatibly. */
-export const CONFIG_SCHEMA_VERSION = 23 as const;
+export const CONFIG_SCHEMA_VERSION = 24 as const;
 
 /**
  * An immutable, hash-identified view of the validated config. Built once at
@@ -840,7 +880,7 @@ function canonicalConfigJson(config: ServerConfig): string {
   const sorted: Record<string, unknown> = {};
   for (const key of Object.keys(record).sort()) {
     sorted[key] =
-      key === "internalToken" || key === "googleClientSecret" || key === "backupDatabaseUrl"
+      key === "internalToken" || key === "betterAuthSecret" || key === "googleClientSecret" || key === "backupDatabaseUrl"
         ? "<redacted>"
         : record[key];
   }

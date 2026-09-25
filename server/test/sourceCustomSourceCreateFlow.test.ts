@@ -110,8 +110,8 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
   it("createDraft enforces Space Custom Source creator roles", async () => {
     if (!db.available) return;
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ('member-1', 'Member', 'active', now(), now())`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ('member-1', 'Member', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     );
     await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
@@ -487,8 +487,8 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     if (!db.available) return;
     const memberIdentity = { spaceId: SPACE_A, userId: "member-1" };
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ($1, 'Member', 'active', now(), now())`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Member', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [memberIdentity.userId],
     );
     await db.pool.query(

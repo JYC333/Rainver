@@ -315,7 +315,17 @@ export function resolveAcpLaunch(
     // looked up on PATH (`tools.ts`).
     const tool = readToolManifestSync(runtimeKey, installation);
     if (!tool) throw new Error(`This daemon does not have ${runtimeKey} ${installation} installed.`);
-    return { command: tool.command, args: [...tool.args, ...args], env: { ...tool.env, HOME: tool.home } };
+    // The managed manifest already names the ACP entrypoint. A builtin's
+    // server-authored launch template can name the same prefix for the own
+    // copy; keep it once, then append only the template's extra arguments.
+    let shared = 0;
+    for (let length = Math.min(tool.args.length, args.length); length > 0; length -= 1) {
+      if (tool.args.slice(-length).every((value, index) => value === args[index])) {
+        shared = length;
+        break;
+      }
+    }
+    return { command: tool.command, args: [...tool.args, ...args.slice(shared)], env: { ...tool.env, HOME: tool.home } };
   }
   if (!isPackagedAdapter(rawCommand)) return { command: rawCommand, args, env: {} };
   const entrypoint = resolveAcpEntrypoint(rawCommand);

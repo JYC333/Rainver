@@ -26,6 +26,7 @@ SpaceMembership: id, space_id, user_id, role, status
 
 ## Main Flows
 - On first run, bootstrap seeds the default owner's personal space (a generated UUID, located by owner membership — no fixed/magic space id)
+- A non-personal Space owner/admin can create a seven-day email-bound invitation. The same fragment link authorizes a new account's registration and Space membership, or lets an existing active account with that email accept membership through an authenticated, atomic claim. Personal Spaces cannot invite additional members.
 - All API calls include `space_id` (from session / header / default)
 - Runtime Context requires explicit Space identity and raises on missing or drifting authority
 

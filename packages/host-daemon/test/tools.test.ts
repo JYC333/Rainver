@@ -65,6 +65,13 @@ describe("managed installations", () => {
       args: ["acp", "--cwd", "/w"],
       env: { TOOL_HOME: dir, HOME: join(configDir, "managed-state", "acp_goose", "home") },
     });
+    // The manifest and the own-copy template can name the same ACP entrypoint.
+    // The managed copy must receive that entrypoint exactly once on Runs and probes.
+    expect(resolveAcpLaunch("acp_goose", ["acp", "--cwd", "/w"], "managed:1.2.3")).toEqual({
+      command: "/opt/goose/bin/goose",
+      args: ["acp", "--cwd", "/w"],
+      env: { TOOL_HOME: dir, HOME: join(configDir, "managed-state", "acp_goose", "home") },
+    });
     expect(() => resolveAcpLaunch("acp_goose", [], "managed:9.9.9")).toThrow(/not have acp_goose managed:9.9.9 installed/);
     // A builtin's command name is its ACP adapter package, not its adapter
     // type; the managed copy is found by the adapter type the frame names.

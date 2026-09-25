@@ -5,7 +5,7 @@ import type { Duplex } from "node:stream";
 import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
-import { isBlockedAddress, isSyntheticDnsAddress } from "@rainver/outbound-guard";
+import { isBlockedAddress, isSyntheticDnsHostnameRoute } from "@rainver/outbound-guard";
 import type { HostEgressTransport } from "@rainver/protocol";
 
 /**
@@ -103,17 +103,7 @@ export function policyAllows(profile: EgressProfile, host: string): { allowed: b
  * may be dialled as a hostname route; a literal address, or any real private
  * answer mixed into the set, remains refused.
  */
-export function isSyntheticDnsHostnameRoute(
-  host: string,
-  answers: ReadonlyArray<{ address: string }>,
-  enabled: boolean,
-): boolean {
-  return enabled
-    && isIP(host) === 0
-    && answers.length > 0
-    && answers.some(({ address }) => isSyntheticDnsAddress(address))
-    && answers.every(({ address }) => !isBlockedAddress(address) || isSyntheticDnsAddress(address));
-}
+export { isSyntheticDnsHostnameRoute } from "@rainver/outbound-guard";
 
 export interface EgressProxyHandle {
   /** `host:port` a Run's `HTTP_PROXY` points at. */

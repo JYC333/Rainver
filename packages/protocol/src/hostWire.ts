@@ -265,7 +265,7 @@ export const HostLaunchIsolationSchema = z.object({
 });
 export type HostLaunchIsolation = z.infer<typeof HostLaunchIsolationSchema>;
 
-/** How the built-in host reaches public targets after applying Run egress policy. */
+/** Admin-selected public route for built-in Host Runs and verified runtime downloads. */
 export const HostEgressTransportSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("direct") }),
   z.object({ mode: z.literal("system_tun") }),
@@ -457,6 +457,8 @@ export const HostInstallToolFrameSchema = z.object({
   runtime_version_command: z.array(z.string()).nullable().optional(),
   /** The daemon must complete this protocol's health handshake before activation. */
   health_check_protocol: z.enum(["acp"]).nullable().optional(),
+  /** Instance-admin-selected network route for built-in host artifact downloads. */
+  egress_transport: HostEgressTransportSchema.optional(),
 });
 export const HostUninstallToolFrameSchema = z.object({
   type: z.literal("uninstall_tool"),

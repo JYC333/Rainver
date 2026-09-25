@@ -232,6 +232,57 @@ describe("Conversation execution schema", () => {
     )).rejects.toMatchObject({ statusCode: 409 });
   });
 
+  it("accepts an existing native profile when ACP opens anonymously, then blocks if that session stops opening", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const report = async (sessionAvailable: boolean) => db.pool.query(
+      "UPDATE hosts SET last_heartbeat_at = now(), capabilities_json = $2::jsonb WHERE id = $1",
+      [HOST, JSON.stringify({ installations: { claude_code: [{
+        id: "managed:1.0.0", version: "1.0.0", logged_in: false,
+        options: { session_available: sessionAvailable, config_options: [] },
+      }] } })],
+    );
+    await report(true);
+    const service = new ConversationExecutionContextService(db.pool);
+    const draft = await service.preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
+    expect(draft.available_runtime_profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runtime_profile_id: RUNTIME, usable: true }),
+    ]));
+    await service.initialize({ spaceId: SPACE, userId: OWNER }, SESSION, {
+      selection: { execution_host_id: HOST, primary: { kind: "managed" } },
+      runtime: { agent_id: AGENT, runtime_profile_id: RUNTIME, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
+    });
+    await report(false);
+    const blocked = await service.preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
+    expect(blocked.summary).toMatchObject({ can_send: false, blocked_reason: expect.stringContaining("no signed-in account or available ACP session") });
+  });
+
+  it("offers a newly discovered CLI with an anonymous ACP session as a selectable installation", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const report = async (sessionAvailable: boolean) => db.pool.query(
+      "UPDATE hosts SET last_heartbeat_at = now(), capabilities_json = $2::jsonb WHERE id = $1",
+      [HOST, JSON.stringify({ installations: { opencode: [{
+        id: "managed:1.18.31", version: "1.18.31", logged_in: false,
+        options: { session_available: sessionAvailable, config_options: [] },
+      }] } })],
+    );
+    const service = new ConversationExecutionContextService(db.pool);
+    await report(false);
+    const unavailable = await service.preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
+    expect(unavailable.available_runtime_profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runtime_key: "opencode", runtime_profile_id: null, usable: false }),
+    ]));
+    await report(true);
+    const ready = await service.preflight({ spaceId: SPACE, userId: OWNER }, SESSION);
+    expect(ready.available_runtime_profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runtime_key: "opencode", runtime_profile_id: null, usable: true }),
+    ]));
+    const initialized = await service.initialize({ spaceId: SPACE, userId: OWNER }, SESSION, {
+      selection: { execution_host_id: HOST, primary: { kind: "managed" } },
+      runtime: { agent_id: AGENT, runtime_profile_id: null, runtime_key: "opencode", runtime_installation: "managed:1.18.31" },
+    });
+    expect(initialized).toMatchObject({ state: "initialized", runtime: { runtime_key: "opencode", runtime_installation: "managed:1.18.31" } });
+  });
+
   it("uses Host-reported CLIs directly and reuses or creates the Agent profile in the same initialization", async (ctx) => {
     if (!db.available) return ctx.skip();
     await db.pool.query(
@@ -512,8 +563,8 @@ describe("Conversation execution schema", () => {
       [SESSION],
     );
     await db.pool.query(
-      `INSERT INTO users (id, email, display_name, status, created_at, updated_at)
-       VALUES ($1, 'viewer@example.test', 'Viewer', 'active', $2, $2)`,
+      `INSERT INTO users (id, email, display_name, status, created_at, updated_at, registration_source)
+       VALUES ($1, 'viewer@example.test', 'Viewer', 'active', $2, $2, 'system')`,
       [VIEWER, now],
     );
     await db.pool.query(
@@ -584,8 +635,8 @@ describe("Conversation execution schema", () => {
     if (!db.available) return ctx.skip();
     const now = new Date().toISOString();
     await db.pool.query(
-      `INSERT INTO users (id, email, display_name, status, created_at, updated_at)
-       VALUES ($1, 'viewer@example.test', 'Viewer', 'active', $2, $2)`,
+      `INSERT INTO users (id, email, display_name, status, created_at, updated_at, registration_source)
+       VALUES ($1, 'viewer@example.test', 'Viewer', 'active', $2, $2, 'system')`,
       [VIEWER, now],
     );
     const service = new ConversationExecutionContextService(db.pool);

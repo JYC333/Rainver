@@ -522,7 +522,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
        ) VALUES ($1,$2,$3,'space_shared',$4,'source_item',$4,'excerpt','Key finding','full_text','normal','candidate',$5,$5)`,
       [randomUUID(), SPACE, OWNER, sourceItemId, now],
     );
-    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$1,'active',$2,$2)`, [OTHER, now]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,$1,'active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [OTHER, now]);
     await db.pool.query(
       `INSERT INTO extracted_evidence (
          id,space_id,owner_user_id,visibility,source_item_id,source_object_type,source_object_id,evidence_type,title,
@@ -551,7 +551,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
   it("omits source-backed matrix rows whose object is readable but provenance is summary-only", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();
-    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$1,'active',$2,$2)`, [OTHER, now]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,$1,'active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [OTHER, now]);
     await db.pool.query(
       `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
        VALUES ($1,$2,$3,'member','active',$4,$4)`,

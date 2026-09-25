@@ -10,4 +10,3 @@ export {
   type AuthFailure,
   type AuthRepository,
 } from "./identity.js";
-export { __setGoogleOAuthClientForTests, type GoogleOAuthClient } from "./oauth.js";

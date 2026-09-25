@@ -1,8 +1,9 @@
+import { ACP_RUNTIME_MANAGED_CATALOG_VERSION } from "@rainver/protocol";
 import { modelSpec } from "../providers/modelSpecs.js";
 
 export interface ModelWindowSpec {
   model: string | null;
-  contextWindowTokens: number;
+  contextWindowTokens: number | null;
   defaultOutputReserveTokens: number;
   providerOverheadTokens: number;
   catalogVersion: string;
@@ -10,25 +11,34 @@ export interface ModelWindowSpec {
 }
 
 export interface ModelWindowOverride {
-  contextWindowTokens: number;
+  contextWindowTokens: number | null;
   defaultOutputReserveTokens: number;
   providerOverheadTokens: number;
   catalogVersion: string;
   tokenizerVersion?: string;
 }
 
-const CATALOG_VERSION = "model-catalog.2026-08-11";
+const CATALOG_VERSION = "model-catalog.2026-09-25";
 const TOKENIZER_VERSION = "utf8-byte-upper-bound.v1";
-// Used when a model is not in the shared registry. Deliberately conservative:
-// planning a large window for an unknown model would push the overflow to the
-// provider instead of the planner. Add the model to `modelSpecs` rather than
-// raising this.
+/** ACP does not advertise a model's context limit; the runtime owns that check. */
+export const ACP_RUNTIME_MANAGED_WINDOW: ModelWindowOverride = {
+  contextWindowTokens: null,
+  defaultOutputReserveTokens: 4_096,
+  providerOverheadTokens: 0,
+  catalogVersion: ACP_RUNTIME_MANAGED_CATALOG_VERSION,
+};
+// For Rainver-managed Provider calls whose model is not in the shared registry.
+// Native ACP sessions use a null window instead; this deliberately conservative
+// fallback must never become an invented CLI capacity. A Provider model with
+// verified limits can still be registered in modelSpecs.
 const GENERIC_MODEL_WINDOW = {
   contextWindowTokens: 16_384,
   defaultOutputReserveTokens: 4_096,
   providerOverheadTokens: 512,
 } as const;
 
+export function resolveModelWindow(model: string | null): ModelWindowSpec & { contextWindowTokens: number };
+export function resolveModelWindow(model: string | null, override: ModelWindowOverride | null | undefined): ModelWindowSpec;
 export function resolveModelWindow(model: string | null, override?: ModelWindowOverride | null): ModelWindowSpec {
   const normalized = model?.trim() || null;
   const matched = normalized ? modelSpec(normalized) ?? GENERIC_MODEL_WINDOW : GENERIC_MODEL_WINDOW;
@@ -40,13 +50,16 @@ export function resolveModelWindow(model: string | null, override?: ModelWindowO
     tokenizerVersion: TOKENIZER_VERSION,
   };
   for (const [key, value] of Object.entries({
-    contextWindowTokens: resolved.contextWindowTokens,
     defaultOutputReserveTokens: resolved.defaultOutputReserveTokens,
     providerOverheadTokens: resolved.providerOverheadTokens,
   })) {
-    if (!Number.isInteger(value) || value < 0 || (key === "contextWindowTokens" && value === 0)) {
+    if (!Number.isInteger(value) || value < 0) {
       throw new Error(`Invalid model window field ${key}`);
     }
+  }
+  if (resolved.contextWindowTokens !== null
+    && (!Number.isInteger(resolved.contextWindowTokens) || resolved.contextWindowTokens <= 0)) {
+    throw new Error("Invalid model window field contextWindowTokens");
   }
   return {
     model: normalized,

@@ -40,6 +40,11 @@ installation distribution, not in parallel Rainver Agent loops. Claude,
 Codex, and OpenCode all use ACP; Claude stream-JSON and Codex app-server are
 not current execution protocols.
 
+The shared controller accepts non-message session metadata between context
+and current-user prompts or just after a prompt response; message and thought
+chunks remain confined to an
+active prompt and updates from another session are rejected.
+
 ## Run and Host boundary
 
 1. Run creation identifies the Agent and immutable AgentVersion constraints.
@@ -68,9 +73,14 @@ to another copy.
 
 ## Credentials and backend modes
 
-`runtime_native` uses the runtime's own login on its execution Host. Server
-native state is instance-wide; paired-Host native state belongs to that Host's
-owner. This sharing must be disclosed for the Server Runtime.
+`runtime_native` uses the runtime's own provider/account state on its execution
+Host, when a selected model needs one. ACP `session/new` can also succeed with
+no native login and advertise model-category `configOptions`; the shared
+conversation selector offers those choices without a vendor-specific model
+catalog. `logged_in` remains account state, while ACP session availability is
+reported separately. Server native state is instance-wide; paired-Host native
+state belongs to that Host's owner. This sharing must be disclosed for the
+Server Runtime.
 
 `model_provider` is supported only by runtimes whose registry definition
 declares it. The declaration is the spec's `credentials.credential_mode`:

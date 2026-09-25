@@ -362,6 +362,7 @@ local_compose_ensure_server_database_env() {
   [[ -f "$ENV_FILE" ]] || return 0
 
   local_compose_ensure_env_secret SERVER_INTERNAL_TOKEN 32
+  local_compose_ensure_env_secret BETTER_AUTH_SECRET 32
 
   local current_url desired_url
   desired_url="$(local_compose_server_owner_database_url)"

@@ -49,8 +49,8 @@ beforeEach(async () => {
   const now = new Date().toISOString();
   await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
-     VALUES ($1, 'Owner', 'active', $3, $3), ($2, 'Member', 'active', $3, $3)`,
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+     VALUES ($1, 'Owner', 'active', $3, $3, lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ($2, 'Member', 'active', $3, $3, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [OWNER, MEMBER, now],
   );
   await db.pool.query(
@@ -455,7 +455,7 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
     const stranger = randomUUID();
     const now = new Date().toISOString();
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Stranger', 'active', $2, $2)`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1, 'Stranger', 'active', $2, $2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [stranger, now],
     );
     await expect(

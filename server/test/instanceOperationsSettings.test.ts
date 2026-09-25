@@ -36,9 +36,9 @@ beforeEach(async () => {
   await resetTables(db.pool, ["settings", "users"], { cascade: true });
   const now = new Date().toISOString();
   await db.pool.query(
-    `INSERT INTO users (id,email,display_name,status,created_at,updated_at) VALUES
-      ($1,'admin@example.test','Admin','active',$3,$3),
-      ($2,'member@example.test','Member','active',$3,$3)`,
+    `INSERT INTO users (id,email,display_name,status,created_at,updated_at, registration_source) VALUES
+      ($1,'admin@example.test','Admin','active',$3,$3, 'system'),
+      ($2,'member@example.test','Member','active',$3,$3, 'system')`,
     [ADMIN, MEMBER, now],
   );
   const users: Record<string, CurrentUser> = {

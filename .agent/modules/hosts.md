@@ -180,7 +180,9 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
   returned. Every target advertises the managed-workspace choice. This is the
   canonical Host/CLI/Workspace candidate projection for both Project Settings
   and Conversation first-Run setup; neither surface derives a separate list
-  from Agent runtime profiles.
+  from Agent runtime profiles. Conversation preflight resolves each target
+  against the Host's current capability report: native login or a successful
+  ACP session admits the installation, including anonymous model choices.
   Each target carries `host_kind` (`server` | `remote`,
   `HostExecutionTargetSchema` in `packages/protocol/src/hosts.ts`), and that
   field — never a label — is the lifecycle authority the composer and the
@@ -653,23 +655,23 @@ fresh heartbeat, so installing an agent never requires a daemon reconnect.
 A runtime on a host has **one identity: runtime key × copy**, and
 everything about a copy lives on the copy. The capability report is
 `{ runtimes, versions, installations }`: `installations[runtime_key]` holds
-one `{ id, version, logged_in, options }` per copy (`logged_in` comes from
-the configured credential file for built-ins, otherwise from whether ACP
-session setup succeeds when the Agent advertises authentication. ACP Agent
-Auth is per process, so the probe does what a Run's session controller does:
-when the first `session/new` answers "authenticate first" — the protocol's
-`auth_required` reason, or the message-only phrasing Cursor uses, both
-recognised by the protocol package's `isAcpAuthRequiredError` — it calls
-`authenticate` with the advertised Agent-Auth method once and opens the
-session again, so a copy logged in on its host reports `logged_in: true`
-rather than the protocol's first refusal. A refused `authenticate` reports
-`false`; any other session failure leaves it unknown but keeps the advertised
-methods, since they are a registry agent's only login path;
-`options.config_options` and `options.auth_methods` are the generic ACP
-capabilities that copy advertised; `options.cli_login_available` is a separate
-Rainver compatibility capability and is never represented as an ACP method).
-`runtimes`/`versions`
-are the plain PATH inventory (vendor binaries and git), for display only.
+one `{ id, version, logged_in, options }` per copy. `logged_in` describes
+native account state: the configured credential file for built-ins, or the
+ACP authentication result for an Agent without a login spec. Separately,
+`options.session_available` records whether `session/new` succeeded. It can
+be true while `logged_in` is false: a CLI can offer anonymous models through
+ACP without a native account. The ACP probe opens a temporary session and
+reads `configOptions`, including the generic `category: "model"` selector;
+Rainver does not maintain a CLI-specific model catalog. When session setup
+answers `auth_required`, it tries one advertised Agent-Auth method and asks
+again. A refused authenticate reports session unavailable; an unrelated
+failure is inconclusive and keeps advertised login methods. `options.auth_methods`
+holds ACP auth flows; `options.cli_login_available` is a separate verified
+Rainver compatibility capability, never an ACP method. The Space Assistant
+accepts a copy with either a signed-in native account or a successful ACP
+session, without assuming every advertised model is anonymously callable.
+`runtimes`/`versions` are the plain PATH inventory (vendor binaries and git),
+for display only.
 The shape is the protocol's (`packages/protocol/src/hosts.ts`:
 `HostCapabilitiesSchema`), so server and web share one definition and the
 server validates what it stores and serves. Daemon and server deploy together;
@@ -704,6 +706,24 @@ and a usage probe are all refused with "being upgraded, retry in a moment"
 rather than started against a directory about to be renamed away. Draining
 alone would not do it, because a drain reports quiet and the download that
 follows takes long enough for the next dispatch to arrive.
+Runtime artifact downloads stream into a temporary file, using one request
+while it succeeds. A broken connection retries within the bounded download
+deadline, resuming from the last written byte when a checksum or HTTP validator
+can protect the join; a publisher that ignores Range starts a fresh copy.
+Every retry repeats the guarded HTTPS/redirect/address checks. The shorter
+inactivity timeout resets on each received chunk, and the verified file is
+renamed into place only after the complete transfer and optional SHA-256 check.
+The control plane's install wait also covers the download budget and health
+check.
+
+The built-in Host also carries the instance-admin-selected network transport on
+`install_tool`; paired Hosts use direct download. `direct` keeps public-address
+pinning. `system_tun` accepts only hostname fake-IP answers with no real
+private/internal answer, and pins the selected fake address for the TUN.
+`http_proxy` uses the configured HTTP(S) CONNECT proxy unless a NO_PROXY
+exception selects direct; the upstream proxy owns final DNS resolution.
+Non-direct binary downloads require a pinned SHA-256. A saved mode change
+applies to the next install request, including an explicit OpenCode retry.
 
 **The Server Runtime's own copy reconciles itself.**
 `hosts/serverOpenCodeProvisioner.ts` runs every 15s
@@ -1539,8 +1559,9 @@ the daemon, which is not something it should ever hold.
 The built-in Host has one explicit instance-admin-selected transport: `direct`
 (the fail-closed default), `system_tun`, or `http_proxy`. It is stored with the
 other instance operations settings and copied into each strict Host launch
-frame, so a saved change applies to the next Run without changing environment
-variables or restarting containers. Paired trusted Hosts ignore the field.
+frame and built-in Host install request, so a saved change applies to the next
+Run or install without changing environment variables or restarting containers.
+Paired trusted Hosts ignore the field.
 `system_tun` lets RFC 2544 benchmarking addresses (`198.18.0.0/15`) returned
 for a hostname act as opaque fake-IP handles for the host's TUN. `http_proxy`
 chains through the configured HTTP(S) CONNECT endpoint and supports explicit

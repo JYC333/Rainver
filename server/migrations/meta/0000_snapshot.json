@@ -1,5 +1,5 @@
 {
-  "id": "42eb3e2c-6fcc-4a92-b48a-2c8efce569f9",
+  "id": "ca145e16-4c2c-41b6-a858-aee425f89950",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -4399,32 +4399,74 @@
           "primaryKey": true,
           "notNull": true
         },
+        "account_id": {
+          "name": "account_id",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_id": {
+          "name": "provider_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
         "user_id": {
           "name": "user_id",
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": true
         },
-        "provider": {
-          "name": "provider",
-          "type": "varchar(32)",
+        "access_token": {
+          "name": "access_token",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "provider_user_id": {
-          "name": "provider_user_id",
-          "type": "varchar(256)",
+        "refresh_token": {
+          "name": "refresh_token",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "email": {
-          "name": "email",
-          "type": "varchar(256)",
+        "id_token": {
+          "name": "id_token",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
+        },
+        "access_token_expires_at": {
+          "name": "access_token_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refresh_token_expires_at": {
+          "name": "refresh_token_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password": {
+          "name": "password",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
@@ -4468,11 +4510,76 @@
           "name": "uq_auth_accounts_provider_user",
           "nullsNotDistinct": false,
           "columns": [
-            "provider",
-            "provider_user_id"
+            "provider_id",
+            "account_id"
           ]
         }
       },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.auth_verifications": {
+      "name": "auth_verifications",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "identifier": {
+          "name": "identifier",
+          "type": "varchar(512)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_auth_verifications_identifier": {
+          "name": "ix_auth_verifications_identifier",
+          "columns": [
+            {
+              "expression": "identifier",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -4511,9 +4618,21 @@
           "primaryKey": false,
           "notNull": true
         },
-        "last_seen_at": {
-          "name": "last_seen_at",
+        "updated_at": {
+          "name": "updated_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ip_address": {
+          "name": "ip_address",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "user_agent": {
+          "name": "user_agent",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         }
@@ -4578,7 +4697,7 @@
           "name": "email",
           "type": "varchar(256)",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "display_name": {
           "name": "display_name",
@@ -4591,6 +4710,19 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "email_verified": {
+          "name": "email_verified",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "registration_source": {
+          "name": "registration_source",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
         },
         "status": {
           "name": "status",
@@ -4654,9 +4786,325 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "ck_users_email_normalized": {
+          "name": "ck_users_email_normalized",
+          "value": "email = lower(email) AND email = btrim(email)"
+        },
         "ck_users_status": {
           "name": "ck_users_status",
-          "value": "status IN ('active', 'disabled')"
+          "value": "status IN ('pending', 'active', 'disabled')"
+        },
+        "ck_users_registration_source": {
+          "name": "ck_users_registration_source",
+          "value": "registration_source IN ('bootstrap', 'space_invitation', 'admin_recovery', 'system')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.auth_security_events": {
+      "name": "auth_security_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subject_user_id": {
+          "name": "subject_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "event_type": {
+          "name": "event_type",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_ip": {
+          "name": "source_ip",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "details_json": {
+          "name": "details_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_auth_security_events_occurred_at": {
+          "name": "ix_auth_security_events_occurred_at",
+          "columns": [
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_auth_security_events_subject": {
+          "name": "ix_auth_security_events_subject",
+          "columns": [
+            {
+              "expression": "subject_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "auth_security_events_actor_user_id_fkey": {
+          "name": "auth_security_events_actor_user_id_fkey",
+          "tableFrom": "auth_security_events",
+          "tableTo": "users",
+          "columnsFrom": [
+            "actor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "auth_security_events_subject_user_id_fkey": {
+          "name": "auth_security_events_subject_user_id_fkey",
+          "tableFrom": "auth_security_events",
+          "tableTo": "users",
+          "columnsFrom": [
+            "subject_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ck_auth_security_events_outcome": {
+          "name": "ck_auth_security_events_outcome",
+          "value": "outcome IN ('success', 'failure', 'throttled', 'degraded')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.registration_intents": {
+      "name": "registration_intents",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "claim_secret_hash": {
+          "name": "claim_secret_hash",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority": {
+          "name": "authority",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invitation_id": {
+          "name": "invitation_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pending_user_id": {
+          "name": "pending_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_activity_at": {
+          "name": "last_activity_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ix_registration_intents_state_expiry": {
+          "name": "ix_registration_intents_state_expiry",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_registration_intents_email": {
+          "name": "ix_registration_intents_email",
+          "columns": [
+            {
+              "expression": "email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "registration_intents_invitation_id_fkey": {
+          "name": "registration_intents_invitation_id_fkey",
+          "tableFrom": "registration_intents",
+          "tableTo": "space_invitations",
+          "columnsFrom": [
+            "invitation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "registration_intents_pending_user_id_fkey": {
+          "name": "registration_intents_pending_user_id_fkey",
+          "tableFrom": "registration_intents",
+          "tableTo": "users",
+          "columnsFrom": [
+            "pending_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_registration_intents_claim_secret_hash": {
+          "name": "uq_registration_intents_claim_secret_hash",
+          "nullsNotDistinct": false,
+          "columns": [
+            "claim_secret_hash"
+          ]
+        },
+        "uq_registration_intents_pending_user": {
+          "name": "uq_registration_intents_pending_user",
+          "nullsNotDistinct": false,
+          "columns": [
+            "pending_user_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_registration_intents_authority": {
+          "name": "ck_registration_intents_authority",
+          "value": "authority IN ('bootstrap', 'space_invitation')"
+        },
+        "ck_registration_intents_state": {
+          "name": "ck_registration_intents_state",
+          "value": "state IN ('issued', 'claimed', 'provisioning', 'completed', 'expired')"
+        },
+        "ck_registration_intents_invitation_authority": {
+          "name": "ck_registration_intents_invitation_authority",
+          "value": "(authority = 'space_invitation' AND invitation_id IS NOT NULL) OR (authority = 'bootstrap' AND invitation_id IS NULL)"
         }
       },
       "isRLSEnabled": false
@@ -66725,6 +67173,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "reserved_by_intent_id": {
+          "name": "reserved_by_intent_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reserved_at": {
+          "name": "reserved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "invited_by_user_id": {
           "name": "invited_by_user_id",
           "type": "varchar(36)",
@@ -66780,6 +67240,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "ix_space_invitations_reservation": {
+          "name": "ix_space_invitations_reservation",
+          "columns": [
+            {
+              "expression": "reserved_by_intent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "reserved_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -66825,6 +67306,10 @@
         "ck_space_invitations_role": {
           "name": "ck_space_invitations_role",
           "value": "(role)::text = ANY (ARRAY[('owner'::character varying)::text, ('admin'::character varying)::text, ('reviewer'::character varying)::text, ('member'::character varying)::text, ('guest'::character varying)::text])"
+        },
+        "ck_space_invitations_status": {
+          "name": "ck_space_invitations_status",
+          "value": "status IN ('available', 'reserved', 'accepted', 'expired', 'revoked')"
         }
       },
       "isRLSEnabled": false

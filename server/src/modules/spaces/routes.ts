@@ -128,25 +128,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.code(201).send(result);
   });
 
-  app.post("/api/v1/invitations/:token/accept", async (request, reply) => {
+  app.post("/api/v1/invitations/accept", async (request, reply) => {
     const requestId = resolveRequestId(request);
     reply.header(REQUEST_ID_HEADER, requestId);
     const auth = authRepositoryFromConfig(context.config);
     const spaces = spaceRepositoryFromConfig(context.config);
     if (!auth || !spaces) {
-      return sendErrorEnvelope(
-        reply,
-        502,
-        errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId),
-      );
+      return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
     const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
-    const result = await spaces.acceptInvitation({
-      token: params(request).token ?? "",
-      userId: user.id,
-      userEmail: user.email,
-    });
+    const token = jsonBody(request).token;
+    if (typeof token !== "string") return reply.code(400).send({ detail: "Invalid invitation" });
+    const result = await spaces.acceptInvitation(user.id, token);
     if (isSpaceFailure(result)) return reply.code(result.statusCode).send({ detail: result.detail });
     return reply.send(result);
   });

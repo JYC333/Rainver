@@ -28,7 +28,7 @@ export interface RuntimeInstallation {
   /** Vendor CLI version, when the managed adapter bundles a separate CLI. */
   runtime_version: string | null;
   health_check_protocol?: "acp" | null;
-  /** Whether its login state exists; null when the runtime declares no login. */
+  /** Whether its native login state exists; ACP session availability lives in options. */
   logged_in: boolean | null;
   /** What this copy reports through ACP; null when it could not be asked. */
   options: RuntimeOptions | null;
@@ -125,7 +125,7 @@ export function clearRuntimeOptionsCache(runtimeKey: string, installation: strin
 function loginState(home: string, login: ToolLoginSpec | null, options: RuntimeOptions | null): boolean | null {
   const fileState = loggedIn(home, login);
   if (fileState !== null) return fileState;
-  return options?.auth_methods?.length ? options.authenticated ?? null : null;
+  return options?.auth_methods?.length ? options.session_available ?? null : null;
 }
 
 /** Built-ins with an explicit host login command keep that flow authoritative. */

@@ -105,8 +105,8 @@ describe("generateHandler rate limit", () => {
     const connectionA = await createDraftConnection();
     const identityB = { spaceId: SPACE_A, userId: "user-2" };
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ($1, 'Second User', 'active', now(), now())`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Second User', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [identityB.userId],
     );
     await db.pool.query(

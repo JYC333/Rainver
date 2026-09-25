@@ -38,7 +38,7 @@ beforeEach(async () => {
     { cascade: true },
   );
   await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'M','personal',now(),now())`, [SPACE]);
-  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'u','active',now(),now()), ('user-2','u2','active',now(),now())`, [USER]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'u','active',now(),now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ('user-2','u2','active',now(),now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER]);
   await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES (gen_random_uuid()::text,$1,$2,'owner','active',now(),now()),

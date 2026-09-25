@@ -43,8 +43,8 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(db.pool, ["spaces", "users"], { cascade: true });
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
-     VALUES ($1, 'Member One', 'active', $3, $3), ($2, 'Member Two', 'active', $3, $3)`,
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+     VALUES ($1, 'Member One', 'active', $3, $3, lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ($2, 'Member Two', 'active', $3, $3, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [MEMBER, OTHER_MEMBER, NOW],
   );
   await db.pool.query(

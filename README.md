@@ -145,8 +145,16 @@ See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the full threat analysis.
 
 ## Authentication
 
-Local development runs without authentication. Optional Google OAuth sign-in is supported when
-`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` are configured in the mode `.env`.
+The server uses email/password and optional Google sign-in through Better Auth.
+The first account must match `INSTANCE_ADMIN_EMAIL`; later accounts require a
+Space invitation. The same invitation lets an existing account join that Space
+when signed in; a signed-out account must sign in and reopen the original link.
+There is no open signup. Set `BETTER_AUTH_SECRET` (generated
+by the ops scripts) and optionally `GOOGLE_CLIENT_ID` /
+`GOOGLE_CLIENT_SECRET`. Password recovery is currently an instance-admin
+manual-copy link flow; `pnpm --dir server auth:recovery` is the local sole-admin
+recovery command. A future mail adapter can deliver the same Better Auth links
+without changing registration or recovery semantics.
 Persisted API keys are feature-gated and not enabled in the current build.
 
 ## Key Concepts

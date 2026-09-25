@@ -29,10 +29,10 @@ beforeEach(async () => {
   const now = new Date().toISOString();
   await resetTables(db.pool, ["spaces", "users", "hosts", "machines"], { cascade: true });
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
      VALUES
-       ('user-1', 'Conversation Owner', 'active', $1, $1),
-       ('user-2', 'Other Member', 'active', $1, $1)`,
+       ('user-1', 'Conversation Owner', 'active', $1, $1, lower(gen_random_uuid()::text || '@test.invalid'), 'system'),
+       ('user-2', 'Other Member', 'active', $1, $1, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [now],
   );
   await db.pool.query(
@@ -226,6 +226,30 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
         embedded_context: true,
         resource_link: true,
       },
+    });
+  });
+
+  it("offers ACP model choices from a session-ready native copy without a login", async (ctx) => {
+    if (!db.available || !repository) return ctx.skip();
+    await db.pool.query("UPDATE agent_runtime_profiles SET runtime_key = 'opencode' WHERE agent_id = 'agent-1'");
+    await db.pool.query(
+      `UPDATE hosts SET capabilities_json = $2::jsonb WHERE id = $1`,
+      ["host-1", JSON.stringify({ installations: { opencode: [{
+        id: "managed:1.0.0", version: "1.0.0", logged_in: false,
+        options: { session_available: true, config_options: [{
+          id: "model", name: "Model", category: "model", type: "select",
+          current_value: "vendor/free", options: [{
+            value: "vendor/free", name: "Free", description: null, group: null,
+          }],
+        }] },
+      }] } })],
+    );
+    const options = await repository.listOptions("space-1", "user-1", "agent-1");
+    expect(options[0]).toMatchObject({
+      runtime_key: "opencode", usable: true,
+      session_config_options: [expect.objectContaining({
+        category: "model", current_value: "vendor/free",
+      })],
     });
   });
 

@@ -60,6 +60,6 @@ describe('OperationsSettingsPanel', () => {
       managed_host_proxy_url: null,
       managed_host_no_proxy: null,
     })))
-    expect(screen.getByText(/next Run; no container restart/i)).toBeInTheDocument()
+    expect(screen.getByText(/next Run or install request; no container restart/i)).toBeInTheDocument()
   })
 })

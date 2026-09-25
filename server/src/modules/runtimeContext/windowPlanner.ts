@@ -12,6 +12,9 @@ import {
 } from "../usage/modelCatalog.js";
 import { contextItemText } from "./itemNormalizer.js";
 
+// A product-side cap on optional estimated context, not a claim about any ACP model.
+const RUNTIME_MANAGED_OPTIONAL_ESTIMATE_BUDGET = 16_384;
+
 export class RuntimeContextPlanningError extends Error {
   constructor(
     readonly code: "required_context_overflow" | "instruction_conflict" | "invalid_context_item",
@@ -40,15 +43,17 @@ export class ContextWindowPlanner {
     if (!Number.isInteger(reserve) || reserve < 0) {
       throw new RuntimeContextPlanningError("invalid_context_item", "Output reserve must be a non-negative integer");
     }
-    const available = spec.contextWindowTokens - reserve - spec.providerOverheadTokens;
-    if (available < 0) {
+    const available = spec.contextWindowTokens === null
+      ? null
+      : spec.contextWindowTokens - reserve - spec.providerOverheadTokens;
+    if (available !== null && available < 0) {
       throw new RuntimeContextPlanningError("required_context_overflow", "Output reserve exceeds the model context window");
     }
     const ordered = [...items].sort(compareItems);
     const mandatoryTokens = ordered
       .filter((item) => item.selection !== "ranked" && !conflicts.suppressed.has(item.id))
       .reduce((total, item) => total + item.token_estimate, 0);
-    if (mandatoryTokens > available) {
+    if (available !== null && mandatoryTokens > available) {
       throw new RuntimeContextPlanningError(
         "required_context_overflow",
         `Required and pinned context needs ${mandatoryTokens} tokens but only ${available} are available`
@@ -58,7 +63,9 @@ export class ContextWindowPlanner {
       );
     }
 
-    let remaining = available;
+    // ACP exposes model choice but no capacity. Never invent a model window;
+    // bound only optional context and let the runtime enforce its real limit.
+    let remaining = available ?? RUNTIME_MANAGED_OPTIONAL_ESTIMATE_BUDGET;
     const decisions: ContextWindowDecision[] = [];
     const allocations: ContextWindowAllocations = {};
     const deliveredItems: ContextItem[] = [];
@@ -96,11 +103,15 @@ export class ContextWindowPlanner {
       }
       decisions.push({ item_id: item.id, decision, reason, planned_tokens: plannedTokens });
       deliveredItems.push(item);
-      remaining -= decision === "blocked" ? 0 : plannedTokens;
+      if (available !== null || originalItem.selection === "ranked") {
+        remaining -= decision === "blocked" ? 0 : plannedTokens;
+      }
       const bucket = allocationBucket(item, input.currentMessageItemId);
       allocations[bucket] = (allocations[bucket] ?? 0) + (decision === "blocked" ? 0 : plannedTokens);
     }
-    const plannedPromptTokens = available - remaining;
+    const plannedPromptTokens = decisions
+      .filter((decision) => decision.decision !== "blocked")
+      .reduce((total, decision) => total + decision.planned_tokens, 0);
     return {
       items: deliveredItems,
       windowPlan: {

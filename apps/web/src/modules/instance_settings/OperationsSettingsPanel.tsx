@@ -130,7 +130,7 @@ export function OperationsSettingsPanel() {
           <section className="space-y-3 border-t border-border pt-4">
             <div>
               <h3 className="text-sm font-semibold">Built-in Host network</h3>
-              <p className="text-xs text-muted-foreground">Controls how Managed Runs reach public services after Rainver applies their egress policy. Changes apply to the next Run; no container restart is needed.</p>
+              <p className="text-xs text-muted-foreground">Controls how Managed Runs and verified built-in Host runtime downloads reach public services. Changes apply to the next Run or install request; no container restart is needed.</p>
             </div>
             <div className="max-w-md">
               <Label htmlFor="managed-host-egress-mode">Public network route</Label>
@@ -148,7 +148,7 @@ export function OperationsSettingsPanel() {
             </div>
             {draft.managed_host_egress_mode === 'system_tun' && (
               <p className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
-                Use this when the host proxy exposes public domains as RFC 2544 fake-IP addresses and routes those addresses through a system-level TUN adapter.
+                Use this when public domains resolve to RFC 2544 fake-IP addresses routed through a system-level TUN adapter. Runtime downloads still require a pinned SHA-256.
               </p>
             )}
             {draft.managed_host_egress_mode === 'http_proxy' && (

@@ -1,139 +1,86 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
-import { CheckCircle, XCircle, Loader } from 'lucide-react'
-import { spacesApi } from '../api/client'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { authApi, spacesApi } from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
 import { useSpace } from '../contexts/SpaceContext'
+import { spacePath } from '../core/navigation'
 import { Button } from '../components/ui/button'
-import { errMsg } from '../lib/utils'
+import { isPasswordLengthValid, useAuthConfiguration } from '../hooks/useAuthConfiguration'
 
-type State = 'loading' | 'confirm' | 'accepting' | 'done' | 'error'
-
+/** Invitation claim tokens live in the URL fragment and are erased before any request. */
 export default function AcceptInvitationPage() {
-  const { token } = useParams<{ token: string }>()
   const navigate = useNavigate()
-  const { currentUser, isLoading: authLoading } = useAuth()
+  const { currentUser, isLoading, reloadUser } = useAuth()
   const { reloadSpaces } = useSpace()
-  const [searchParams] = useSearchParams()
-  const autoAccept = searchParams.get('auto') === '1'
-
-  const [state, setState] = useState<State>('loading')
-  const [result, setResult] = useState<{ space_id: string; space_name: string; role: string } | null>(null)
-  const [errorText, setErrorText] = useState('')
-
-  const handleAccept = useCallback(async () => {
-    if (!token) return
-    setState('accepting')
-    try {
-      const res = await spacesApi.acceptInvite(token)
-      setResult(res)
-      await reloadSpaces()
-      setState('done')
-    } catch (e) {
-      setErrorText(errMsg(e))
-      setState('error')
-    }
-  }, [token, reloadSpaces])
+  const [token, setToken] = useState<string | null>(null)
+  const [email, setEmail] = useState('')
+  const [intent, setIntent] = useState<{ intentId: string; claimSecret: string } | null>(null)
+  const [password, setPassword] = useState('')
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const { google_auth_available: googleAvailable, password_min_length: passwordMinLength, password_max_length: passwordMaxLength } = useAuthConfiguration()
+  const passwordValid = isPasswordLengthValid(password, passwordMinLength, passwordMaxLength)
 
   useEffect(() => {
-    if (!authLoading && !currentUser) {
-      // Preserve the token and request auto-accept after login completes
-      const dest = encodeURIComponent(`/invitations/${token}?auto=1`)
-      navigate(`/login?redirect=${dest}`, { replace: true })
-    } else if (!authLoading && currentUser) {
-      if (autoAccept) {
-        handleAccept()
-      } else {
-        setState('confirm')
-      }
-    }
-  }, [authLoading, currentUser, token, navigate, autoAccept, handleAccept])
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+    const raw = params.get('token')
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+    setToken(raw)
+    if (!raw) setError('This invitation link is missing its claim token.')
+  }, [])
 
-  function goToSpace() {
-    if (result) {
-      navigate(`/spaces/${result.space_id}/today`, { replace: true })
-    }
+  async function acceptExistingAccount() {
+    if (!token) return
+    setBusy(true); setError('')
+    try {
+      const result = await spacesApi.acceptInvitation(token)
+      setToken(null)
+      await reloadSpaces()
+      navigate(spacePath(result.space_id, '/today'), { replace: true })
+    } catch { setError('This invitation is invalid, expired, already used, or assigned to another account.') }
+    finally { setBusy(false) }
   }
 
-  if (state === 'loading') {
-    return <PageFrame><Loader className="size-5 animate-spin text-muted-foreground" /></PageFrame>
+  async function claim() {
+    if (!token || !email) return
+    setBusy(true); setError('')
+    try {
+      const result = await authApi.registrationIntent({ email, invitation_token: token })
+      setIntent({ intentId: result.intentId, claimSecret: result.claimSecret })
+      setToken(null)
+    } catch { setError('This invitation is invalid, expired, revoked, or assigned to another email.') }
+    finally { setBusy(false) }
   }
 
-  if (state === 'confirm') {
-    return (
-      <PageFrame>
-        <div className="flex flex-col items-center gap-5 text-center">
-          <div className="w-12 h-12 rounded-full flex items-center justify-center"
-            style={{ background: 'color-mix(in oklch, var(--primary) 12%, transparent)' }}>
-            <CheckCircle className="size-6 text-accent-foreground" />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold text-foreground">You've been invited</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Accept this invitation to join a shared space.
-            </p>
-          </div>
-          <div className="flex gap-2 w-full">
-            <Button onClick={() => navigate('/')} variant="outline" className="flex-1">Cancel</Button>
-            <Button onClick={handleAccept} className="flex-1">Accept invitation</Button>
-          </div>
-        </div>
-      </PageFrame>
-    )
+  async function registerGoogle() {
+    if (!intent) return
+    setBusy(true); setError('')
+    try { const result = await authApi.registerGoogle({ intent_id: intent.intentId, claim_secret: intent.claimSecret }); window.location.href = result.url }
+    catch { setError('Google registration is unavailable. You can use a password instead.') }
+    finally { setBusy(false) }
   }
 
-  if (state === 'accepting') {
-    return (
-      <PageFrame>
-        <Loader className="size-5 animate-spin text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">Accepting invitation…</p>
-      </PageFrame>
-    )
+  async function register(event: FormEvent) {
+    event.preventDefault()
+    if (!intent || !passwordValid) return
+    setBusy(true); setError('')
+    try {
+      await authApi.register({ intent_id: intent.intentId, claim_secret: intent.claimSecret, email, password, name: name || undefined })
+      await reloadUser()
+      navigate('/', { replace: true })
+    } catch { setError('Registration could not be completed. You can safely retry with this invitation.') }
+    finally { setBusy(false) }
   }
 
-  if (state === 'done' && result) {
-    return (
-      <PageFrame>
-        <div className="flex flex-col items-center gap-5 text-center">
-          <div className="w-12 h-12 rounded-full flex items-center justify-center"
-            style={{ background: 'color-mix(in oklch, var(--success) 12%, transparent)' }}>
-            <CheckCircle className="size-6" style={{ color: 'var(--success)' }} />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold text-foreground">Joined!</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              You joined <strong>{result.space_name}</strong> as <strong>{result.role}</strong>.
-            </p>
-          </div>
-          <Button onClick={goToSpace} className="w-full">Go to space</Button>
-        </div>
-      </PageFrame>
-    )
-  }
-
-  return (
-    <PageFrame>
-      <div className="flex flex-col items-center gap-5 text-center">
-        <XCircle className="size-10" style={{ color: 'var(--destructive)' }} />
-        <div>
-          <h1 className="text-lg font-semibold text-foreground">Invitation failed</h1>
-          <p className="text-sm text-muted-foreground mt-1">{errorText}</p>
-        </div>
-        <Button onClick={() => navigate('/')} variant="outline">Go home</Button>
-      </div>
-    </PageFrame>
-  )
+  if (isLoading) return null
+  if (currentUser) return <Frame><h1 className="text-xl font-semibold text-foreground">Join Space</h1><p className="text-sm text-muted-foreground">Accept this invitation as {currentUser.email}.</p>{error && <p className="text-sm text-destructive">{error}</p>}<Button className="w-full h-10" disabled={!token || busy} onClick={() => void acceptExistingAccount()}>{busy ? 'Joining…' : 'Join Space'}</Button></Frame>
+  return <Frame>
+    <h1 className="text-xl font-semibold text-foreground">Join Rainver</h1>
+    <p className="text-sm text-muted-foreground">Create your account from this invitation.</p>
+    {error && <p className="w-full rounded-lg border border-destructive/30 p-3 text-sm text-destructive">{error}</p>}
+    {!intent ? <div className="w-full space-y-3"><input value={email} onChange={event => setEmail(event.target.value)} type="email" required placeholder="Invited email" className="w-full h-10 px-3 rounded-lg border border-border bg-background" /><Button disabled={busy || !token} onClick={() => void claim()} className="w-full h-10">{busy ? 'Checking…' : 'Create a new account'}</Button><p className="text-xs text-muted-foreground">Already have an account? Sign in first, then reopen this invitation link.</p><Button variant="outline" onClick={() => navigate('/login')} className="w-full h-10">Sign in</Button></div> : <><form onSubmit={register} className="w-full space-y-3"><input value={name} onChange={event => setName(event.target.value)} placeholder="Display name (optional)" className="w-full h-10 px-3 rounded-lg border border-border bg-background" /><input value={password} onChange={event => setPassword(event.target.value)} type="password" placeholder={`Password (${passwordMinLength}–${passwordMaxLength} characters)`} className="w-full h-10 px-3 rounded-lg border border-border bg-background" /><Button disabled={busy || !passwordValid} className="w-full h-10">{busy ? 'Creating account…' : 'Create with password'}</Button></form>{googleAvailable && <Button variant="outline" disabled={busy} onClick={() => void registerGoogle()} className="w-full h-10">Continue with Google</Button>}</>}
+  </Frame>
 }
 
-function PageFrame({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <div
-        className="flex flex-col items-center gap-6 p-10 rounded-2xl border border-border"
-        style={{ background: 'var(--card)', minWidth: 340, maxWidth: 400 }}
-      >
-        {children}
-      </div>
-    </div>
-  )
-}
+function Frame({ children }: { children: ReactNode }) { return <div className="min-h-screen flex items-center justify-center bg-background"><div className="w-full max-w-md space-y-5 p-8 rounded-2xl border border-border bg-card">{children}</div></div> }

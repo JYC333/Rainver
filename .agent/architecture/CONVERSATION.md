@@ -162,7 +162,10 @@ Conversation × Agent binding and Host thread. The current runtime-profile
 catalog remains the chooser for a new Conversation, not the authority for
 whether an existing pin survived a server or daemon restart. Current Host
 heartbeat, installation and workspace readiness are still checked before a
-send.
+send. A native copy with no signed-in account remains usable when its ACP
+`session/new` probe succeeded. Newly discovered choices and persisted runtime
+profiles use the same installation gate; an unavailable ACP session does not
+turn a signed-out copy into a selectable runtime.
 
 The execution context also stores the Primary Workspace Git baseline. Direct
 Host sends and Room dispatch compare the current branch, commit, and readiness

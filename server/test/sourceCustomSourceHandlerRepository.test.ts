@@ -35,7 +35,7 @@ beforeEach(async () => {
     ["source_handler_runs", "source_handler_versions", "source_connections", "settings", "space_memberships", "proposals", "source_provider_connectors", "source_providers", "source_connectors", "users", "spaces"],
     { cascade: true },
   );
-  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ('admin-1', 'admin-1', 'active', now(), now()), ('admin-2', 'admin-2', 'active', now(), now()), ('member-1', 'member-1', 'active', now(), now()), ('u', 'u', 'active', now(), now()), ('user-1', 'user-1', 'active', now(), now()) ON CONFLICT (id) DO NOTHING`);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ('admin-1', 'admin-1', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ('admin-2', 'admin-2', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ('member-1', 'member-1', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ('u', 'u', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ('user-1', 'user-1', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system') ON CONFLICT (id) DO NOTHING`);
   await db.pool.query(
     `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
      VALUES ($1, 'Space A', 'team', 'user-1', now(), now()), ($2, 'Space B', 'team', 'user-1', now(), now())`,

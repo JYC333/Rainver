@@ -18,13 +18,18 @@ All durable-data API routes require authentication via `get_identity()` or
 |---|---|
 | `GET /health` | Health probe for load balancers and monitoring |
 | `GET /api/v1/features` | Frontend feature-gating bootstrap |
-| `GET /api/v1/auth/google-configured` | OAuth login flow bootstrap (boolean only) |
-| `GET /auth/google` | OAuth redirect initiation |
-| `GET /auth/google/callback` | OAuth callback; CSRF state validated by cookie |
-| `POST /auth/logout` | Cookie deletion only; no secret access |
+| `GET /api/v1/auth/config` | OAuth, bootstrap-registration availability, and password policy (public booleans and numeric bounds only) |
+| `GET /api/v1/auth/google` | OAuth redirect initiation; Better Auth validates state/origin |
+| `GET /api/v1/auth/callback/google` | Explicit Better Auth callback adapter |
+| `POST /api/v1/auth/sign-in/email` | Generic email/password login with bounded IP/email throttling |
+| `POST /api/v1/auth/registration-intents` | Bootstrap or invitation admission; no open signup |
+| `POST /api/v1/auth/recovery/request` | Generic reset request; never returns a raw link |
+| `POST /api/v1/auth/logout` | Better Auth session termination |
 
 All other routes, including system-metadata endpoints, are auth-gated:
 
+- `GET /api/v1/auth/reauth/status` — reports only whether the current user's signed recent-auth grant remains valid and when it expires; the browser uses it to gate Security-page controls, while each sensitive mutation still enforces the grant server-side.
+- `POST /api/v1/invitations/accept` — an active account may consume only an unexpired, available invitation addressed to its own normalized email; membership and token consumption commit together.
 - `GET /capabilities`, `GET /capabilities/{id}`, `POST /capabilities/reload`
 - `GET /api/v1/server/catalog`, `/catalog/capabilities`, `/catalog/agent-templates`
 - `GET /api/v1/server/notifications/webhooks/policy`, `POST .../webhooks/dispatch`
@@ -1248,13 +1253,20 @@ server-side. Avatar images accept `http(s)` and refuse `data:`.
 - **Credential-bearing daemon requests do not follow redirects**: the
   control-plane calls each carry this host's bearer token (registration
   exchanges a pairing code for a long-lived one), and the Claude usage probe
-  carries the owner's OAuth access token. Runtime artifact downloads are
-  credential-free and may follow publisher redirects such as GitHub's
-  `objects.githubusercontent.com` handoff, but each hop is resolved, checked
-  against the private-address block list and pinned before connecting; every
-  hop must remain HTTPS, and the response body has a hard size ceiling. Its
-  config's `server_url` is re-checked on read, not only at pairing time — plain
-  HTTP only for an address that is this machine. "This machine" is judged as an
+  carries the owner's OAuth access token.
+- **Runtime artifact downloads are credential-free:** they may follow publisher
+  redirects, but every hop must remain HTTPS and pass the outbound URL guard.
+  Direct downloads pin the checked public address. On the built-in Host only,
+  the instance-admin-selected `system_tun` route may pin a synthetic RFC 2544
+  address for a hostname if no real private answer is present; a literal fake
+  IP is still refused. The `http_proxy` route uses an explicit HTTP(S) CONNECT
+  proxy, which owns final target resolution, with NO_PROXY exceptions returning
+  to direct pinning. Non-direct binary downloads require a pinned SHA-256.
+  Every mode retains the body-size ceiling, bounded whole-download deadline,
+  renewable inactivity timeout, temporary-file staging, and checked Range
+  retries. A publisher that ignores Range causes a fresh download.
+- **The daemon's `server_url` is re-checked on read**, not only at pairing time
+  — plain HTTP only for an address that is this machine. "This machine" is judged as an
   address: `startsWith("127.")` was true
   of `127.evil.com`. The built-in host is exempt, because it adopts a credential
   the instance published to it over the Compose network, where the control plane
@@ -1428,8 +1440,11 @@ on its own.
 | Family / shared-space dogfooding | **Ready** |
 | Internal team / workspace dogfooding | **Ready** |
 
-All durable-data API routes are authenticated and space-scoped. Session conversation history
-is protected by auth + space + user scoping. Activity → proposal → memory boundary is
+All durable-data API routes are authenticated and space-scoped. Authentication itself is
+Better Auth-backed: the Rainver facade rejects pending/disabled identities, keeps provider
+tokens out of persistence, stores only session digests, and exposes safe session ids for
+revocation. Registration links use URL fragments and are cleared before the first request.
+Session conversation history is protected by auth + space + user scoping. Activity → proposal → memory boundary is
 enforced. Project Folder path traversal is blocked. Artifact export is space- and
 visibility-gated. Credential secrets are not exposed in API responses. Egress approval for
 personal memory is enforced and tested.
@@ -1443,6 +1458,7 @@ durable-behaviour tests run against real PostgreSQL rather than a fake.
 
 ## See Also
 
+- `.agent/modules/auth.md` — Better Auth composition, registration, recovery and admin boundaries
 - `docs/POLICY_AND_PRIVACY_BOUNDARIES.md` — canonical stable policy reference
 - `docs/PERSONAL_MEMORY_GRANT.md` — personal memory grant lifecycle
 - `docs/THREAT_MODEL.md` — threat model

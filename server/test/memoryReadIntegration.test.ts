@@ -33,7 +33,7 @@ beforeEach(async () => {
     ["retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "extracted_evidence", "source_snapshots", "source_items", "provenance_links", "content_access_logs", "content_access_grants", "memory_entries", "project_folders", "projects", "project_members", "space_memberships", "spaces", "users"],
   );
   await db.pool.query("INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Main', 'household', now(), now())", [SPACE]);
-  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ('other', 'other', 'active', now(), now()), ('user-1', 'user-1', 'active', now(), now()) ON CONFLICT (id) DO NOTHING`);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ('other', 'other', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ('user-1', 'user-1', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system') ON CONFLICT (id) DO NOTHING`);
   for (const userId of [USER, "other"]) {
     await db.pool.query(
       `INSERT INTO space_memberships

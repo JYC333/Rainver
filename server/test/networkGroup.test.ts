@@ -102,12 +102,6 @@ describe("networkProfilesRoutes", () => {
       async logout() {
         throw new Error("not used");
       },
-      async findOrCreateFromGoogle() {
-        throw new Error("not used");
-      },
-      async createSession() {
-        throw new Error("not used");
-      },
     };
   }
 

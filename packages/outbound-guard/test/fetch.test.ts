@@ -154,6 +154,78 @@ describe("guardedFetch", () => {
     expect(result.truncated).toBe(true);
   });
 
+  it("renews the body idle timeout whenever another chunk arrives", async () => {
+    const encoder = new TextEncoder();
+    let chunk = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        controller.enqueue(encoder.encode(String(chunk)));
+        chunk += 1;
+        if (chunk === 4) controller.close();
+      },
+    });
+    const { fetch } = recorder([new Response(body)]);
+
+    const result = await guardedFetch({
+      url: "https://example.test/archive",
+      maxDownloadBytes: 1024,
+      deadlineMs: 2_000,
+      bodyIdleTimeoutMs: 25,
+    }, { guard: publicGuard, fetch });
+
+    expect(new TextDecoder().decode(result.bytes)).toBe("0123");
+  });
+
+  it("cancels a response body that stops making progress", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("partial"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { fetch } = recorder([new Response(body)]);
+
+    await expect(guardedFetch({
+      url: "https://example.test/archive",
+      maxDownloadBytes: 1024,
+      deadlineMs: 2_000,
+      bodyIdleTimeoutMs: 20,
+    }, { guard: publicGuard, fetch })).rejects.toMatchObject({
+      name: "TimeoutError",
+      message: "Response body made no progress for 20 ms",
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it("delivers a guarded response to the stream sink without buffering a second copy", async () => {
+    const events: string[] = [];
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("abc"));
+        controller.enqueue(new TextEncoder().encode("def"));
+        controller.close();
+      },
+    });
+    const { fetch } = recorder([new Response(body, { headers: { "content-length": "6" } })]);
+
+    const result = await guardedFetch(
+      { url: "https://example.test/archive", maxDownloadBytes: 6 },
+      { guard: publicGuard, fetch },
+      {
+        onResponse: ({ status }) => { events.push(String(status)); },
+        onChunk: (chunk) => { events.push(new TextDecoder().decode(chunk)); },
+      },
+    );
+
+    expect(events).toEqual(["200", "abc", "def"]);
+    expect(result.bytes).toHaveLength(0);
+    expect(result.truncated).toBe(false);
+  });
+
   it("uses its documented defaults when the caller names no budget", async () => {
     expect(DEFAULT_OUTBOUND_DEADLINE_MS).toBe(120_000);
     expect(DEFAULT_MAX_REDIRECTS).toBe(5);

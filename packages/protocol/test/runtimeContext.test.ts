@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   InvocationAuditRefsSchema,
+  ACP_RUNTIME_MANAGED_CATALOG_VERSION,
   InvocationDeliverySchema,
   InvocationSnapshotSafeSchema,
   ExecutionControlSnapshotSchema,
@@ -596,6 +597,18 @@ describe("runtime context contracts", () => {
       },
     };
     expect(RuntimeContextEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    expect(RuntimeContextEnvelopeSchema.safeParse({
+      ...envelope,
+      window_plan: {
+        ...envelope.window_plan,
+        model_catalog_version: ACP_RUNTIME_MANAGED_CATALOG_VERSION,
+        total_window_tokens: null,
+      },
+    }).success).toBe(true);
+    expect(RuntimeContextEnvelopeSchema.safeParse({
+      ...envelope,
+      window_plan: { ...envelope.window_plan, total_window_tokens: null },
+    }).success).toBe(false);
     expect(RuntimeContextEnvelopeSchema.safeParse({
       ...envelope,
       window_plan: { ...envelope.window_plan, total_window_tokens: 30, planned_prompt_tokens: 10 },

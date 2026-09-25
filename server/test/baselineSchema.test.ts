@@ -86,16 +86,13 @@ async function baselineTableNames(p: Pool): Promise<string[]> {
   return res.rows.map((r) => r.table_name);
 }
 
-// sha256 of the reset schema epoch's 0000 baseline, generated on 2026-09-21
-// by drizzle-kit from server/src/db/schema/ against an empty chain.
-// The new epoch deliberately has no upgrade path from the previous baseline;
-// after release, this baseline is frozen and future changes append migrations.
-const FROZEN_BASELINE_SHA256 = "f56f601904c122567264fefd808540371bf461eb8c99b521e6ddc1cd18b564e0";
+// sha256 of the frozen 0000 baseline, generated on 2026-09-23 by drizzle-kit
+// from server/src/db/schema/ against an empty chain. Later schema changes are
+// appended as immutable migrations.
+const FROZEN_BASELINE_SHA256 = "c9a1553d785601c9604e5b73cae3c988199913b97c0512b67c1e30ad75f4ebf7";
 
 describe("server runner applies the migration chain", () => {
-  // The reset ships one new-epoch baseline and no migration from the prior
-  // epoch. Future changes may append numbered migrations to this new chain.
-  it("starts the new schema epoch from one baseline", () => {
+  it("keeps the append-only migration chain contiguous", () => {
     const migrationFiles = readdirSync(MIGRATIONS_DIR)
       .filter((name) => /^\d+_.+\.sql$/.test(name))
       .sort();
@@ -358,10 +355,11 @@ describe("server runner applies the migration chain", () => {
     const result = await migrate(db.pool, MIGRATIONS_DIR);
     expect(result.all).toEqual(expectedVersions);
     expect(result.applied).toEqual(expectedVersions);
-    expect(expectedVersions[0]).toBe("0000");
+    expect(expectedVersions).toEqual(["0000"]);
 
     const recorded = await db.pool.query(
-      `SELECT version FROM public.${RUNNER_TABLE} WHERE version = '0000'`,
+      `SELECT version FROM public.${RUNNER_TABLE} WHERE version = ANY($1::text[])`,
+      [["0000"]],
     );
     expect(recorded.rowCount).toBe(1);
 
@@ -409,13 +407,13 @@ describe("server runner applies the migration chain", () => {
     await resetTables(db.pool, ["users", "spaces"], { cascade: true });
 
     await expect(db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ('invalid-user', 'Invalid', 'pending', now(), now())`,
+      `INSERT INTO users (id, email, display_name, email_verified, registration_source, status, created_at, updated_at)
+       VALUES ('invalid-user', 'invalid@example.test', 'Invalid', false, 'system', 'unknown', now(), now())`,
     )).rejects.toMatchObject({ code: "23514" });
 
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ('user-1', 'User', 'active', now(), now())`,
+      `INSERT INTO users (id, email, display_name, email_verified, registration_source, status, created_at, updated_at)
+       VALUES ('user-1', 'user@example.test', 'User', false, 'system', 'active', now(), now())`,
     );
     await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
@@ -459,8 +457,8 @@ describe("server runner applies the migration chain", () => {
     await migrate(db.pool, MIGRATIONS_DIR);
     await resetTables(db.pool, ["users", "spaces"], { cascade: true });
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ('user-1', 'User', 'active', now(), now())`,
+      `INSERT INTO users (id, email, display_name, email_verified, registration_source, status, created_at, updated_at)
+       VALUES ('user-1', 'user@example.test', 'User', false, 'system', 'active', now(), now())`,
     );
     await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)

@@ -41,7 +41,7 @@ beforeEach(async () => {
   );
   const now = new Date().toISOString();
   await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Household', 'household', $2, $2)`, [SPACE, now]);
-  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Owner', 'active', $2, $2)`, [OWNER, now]);
+  await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1, 'Owner', 'active', $2, $2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [OWNER, now]);
   await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
     [randomUUID(), SPACE, OWNER, now],
@@ -252,7 +252,7 @@ describe("follow-up Tasks from a Run's output (real Postgres)", () => {
   it("waits for the content owner when the turn was assembled from their private material", async () => {
     if (!db.available) return;
     const other = "4fffffff-ffff-4fff-8fff-ffffffffffff";
-    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Other', 'active', now(), now())`, [other]);
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1, 'Other', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [other]);
     await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'member', 'active', now(), now())`,
       [randomUUID(), SPACE, other],
@@ -308,7 +308,7 @@ describe("follow-up Tasks from a Run's output (real Postgres)", () => {
   it("refuses the write itself when the person cannot write into that Project", async () => {
     if (!db.available) return;
     const outsider = "4eeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Reviewer', 'active', now(), now())`, [outsider]);
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1, 'Reviewer', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [outsider]);
     await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'reviewer', 'active', now(), now())`,
       [randomUUID(), SPACE, outsider],

@@ -134,7 +134,8 @@ describe('HostExecutionTargetPicker', () => {
     fireEvent.click(screen.getByRole('option', { name: 'Workstation · online' }))
 
     await waitFor(() => expect(screen.getByLabelText('Execution Location')).toHaveTextContent('Financial System'))
-    expect(screen.getByText('Login required')).toBeInTheDocument()
+    expect(screen.getByText('Account not signed in')).toBeInTheDocument()
+    expect(screen.getByText(/Models reported by ACP may still work without an account/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Login' }))
     expect(await screen.findByTestId('runtime-login-terminal')).toBeInTheDocument()
     expect(mockedApi.loginStream).toHaveBeenCalledWith('host-1', 'claude_code', 'own', null, expect.any(AbortSignal))
@@ -157,7 +158,7 @@ describe('HostExecutionTargetPicker', () => {
     />)
 
     expect(await screen.findByLabelText('Runtime installation')).toHaveTextContent('managed:1.0.0')
-    expect(screen.queryByText('Login required')).not.toBeInTheDocument()
+    expect(screen.queryByText('Account not signed in')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Login' })).not.toBeInTheDocument()
   })
 
@@ -227,7 +228,7 @@ describe('HostExecutionTargetPicker', () => {
     const note = await screen.findByTestId('server-runtime-provisioning')
     expect(note).toHaveTextContent('installing')
     expect(note).toHaveTextContent(/Rainver is installing the Server Runtime.s OpenCode copy \(1\.0\.0\)/)
-    expect(screen.queryByText('Login required')).toBeNull()
+    expect(screen.queryByText('Account not signed in')).toBeNull()
   })
 
   it('shows a failed Server Runtime provisioning with its error and where to retry', async () => {

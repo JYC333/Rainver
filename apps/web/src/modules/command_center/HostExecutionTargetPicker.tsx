@@ -59,7 +59,7 @@ export default function HostExecutionTargetPicker({
   onChange: (value: HostExecutionSelection | null) => void
   onRuntimeChange?: (runtimeKey: string) => void
   disabled?: boolean
-  /** Provider mode uses Rainver's proxy and does not require the runtime's native login. */
+  /** Provider mode uses Rainver's proxy; native mode may also offer ACP models without a login. */
   backendMode?: 'runtime_native' | 'model_provider'
   /** Offer only managed workspaces when a caller explicitly needs a private, Location-independent directory. */
   managedOnly?: boolean
@@ -389,7 +389,7 @@ export default function HostExecutionTargetPicker({
                   : []),
                 ...installations.map(installation => ({
                   value: installation.id,
-                  label: `${installation.id}${installation.version ? ` · ${installation.version}` : ''}${backendMode === 'runtime_native' && installation.logged_in === false ? ' · login required' : backendMode === 'runtime_native' && installation.logged_in === true ? ' · logged in' : ''}`,
+                  label: `${installation.id}${installation.version ? ` · ${installation.version}` : ''}${backendMode === 'runtime_native' && installation.logged_in === false ? ' · account not signed in' : backendMode === 'runtime_native' && installation.logged_in === true ? ' · logged in' : ''}`,
                 })),
               ]}
               disabled={disabled}
@@ -428,11 +428,12 @@ export default function HostExecutionTargetPicker({
           {backendMode === 'runtime_native' && value && selectedInstallation?.logged_in === false && (
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2 text-xs">
-                <Badge variant="warning">Login required</Badge>
+                <Badge variant="warning">Account not signed in</Badge>
                 <Button type="button" size="sm" variant="outline" onClick={() => setLogin({ hostId: value.host_id, runtimeKey: value.runtime_key, installation: value.installation })}>
                   <LogIn className="mr-1 size-3.5" />Login
                 </Button>
               </div>
+              <p className="text-xs text-muted-foreground">Models reported by ACP may still work without an account; choose one in the conversation.</p>
               {login && <RuntimeLoginTerminal key={`${login.hostId}:${login.runtimeKey}:${login.installation}`} {...login} onDone={() => { void reload(); setLogin(null) }} />}
             </div>
           )}

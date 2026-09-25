@@ -29,6 +29,7 @@ import { DeploymentService } from "../deployment/service.js";
 import { ConversationInputService } from "../sessions/conversationInputService.js";
 import { PgProjectFileDraftRepository } from "../projectFolders/draftRepository.js";
 import { sharedServerOpenCodeProvisioner } from "../hosts/serverOpenCodeProvisioner.js";
+import { RegistrationService } from "../auth/registration.js";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -134,11 +135,21 @@ export function startBackgroundServices(
   ];
 
   if (config.databaseUrl) {
+    tasks.push({
+      name: "auth_registration_intent_reconciliation",
+      intervalSeconds: 300,
+      runOnStart: true,
+      awaitRunOnStart: false,
+      run: async () => {
+        const expired = await new RegistrationService(getDbPool(config.databaseUrl!), config).reapStale();
+        if (expired > 0) log?.info(`[scheduler] expired ${expired} stale registration intent(s)`);
+      },
+    });
     // The same instance the admin retry route wakes: a claim is heartbeated
     // only by the instance that took it.
     const serverOpenCodeProvisioner = sharedServerOpenCodeProvisioner(
       getDbPool(config.databaseUrl),
-      { log },
+      { log, config },
     );
     tasks.push({
       name: "server_opencode_provisioning",

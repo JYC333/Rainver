@@ -1,4 +1,9 @@
 import type {
+  AuthAccount,
+  AuthConfiguration,
+  AuthSession,
+  AdminAuthUser,
+  RegistrationIntentAdmin,
   AmbientImportPolicy,
   AmbientSessionCount,
   AmbientSyncReport,
@@ -3477,7 +3482,12 @@ export const deploymentApi = {
 export const authApi = {
   me:          ()                  => get<CurrentUser>('/me'),
   mySpaces:    ()                  => get<SpaceWithMembership[]>('/me/spaces'),
-  googleConfigured: ()            => get<{google_auth_available: boolean}>('/auth/google-configured'),
+  configuration: ()                 => get<AuthConfiguration>('/auth/config'),
+  passwordLogin: (body: { email: string; password: string; rememberMe: boolean }) => post<{ user: CurrentUser }>('/auth/sign-in/email', body),
+  registrationIntent: (body: { email: string; invitation_token?: string }) => post<{ intentId: string; claimSecret: string; authority: string; email: string }>('/auth/registration-intents', body),
+  register: (body: { intent_id: string; claim_secret: string; email: string; password: string; name?: string; remember_me?: boolean }) => post<{ ok: boolean; user_id: string }>('/auth/register', body),
+  registerGoogle: (body: { intent_id: string; claim_secret: string }) => post<{ url: string }>('/auth/register/google', body),
+  completeRegistration: (body: { intent_id: string; claim_secret?: string; name?: string }) => post<{ ok: boolean; userId: string }>('/auth/register/complete', body),
   logout:      ()                  => post<null>('/auth/logout'),
   googleLogin: (next?: string)     => {
     const url = next
@@ -3485,16 +3495,35 @@ export const authApi = {
       : '/api/v1/auth/google'
     window.location.href = url
   },
+  reauth: (password: string) => post<{ ok: boolean; expires_in: number }>('/auth/reauth', { password }),
+  reauthStatus: () => get<{ expires_at: string | null }>('/auth/reauth/status'),
+  googleReauth: () => post<{ url: string }>('/auth/reauth/google', {}),
+  completeGoogleReauth: () => post<{ ok: boolean; expires_in: number }>('/auth/reauth/google/complete', {}),
+  setPassword: (newPassword: string) => post<{ ok: boolean }>('/auth/password/set', { new_password: newPassword }),
+  changePassword: (body: { current_password: string; new_password: string; revoke_other_sessions?: boolean }) => post<{ ok: boolean }>('/auth/password/change', body),
+  accounts: () => get<AuthAccount[]>('/auth/accounts'),
+  sessions: () => get<AuthSession[]>('/auth/sessions'),
+  revokeSession: (sessionId: string) => post<{ ok: boolean }>(`/auth/sessions/${encodeURIComponent(sessionId)}/revoke`, {}),
+  revokeOtherSessions: () => post<{ ok: boolean }>('/auth/sessions/revoke-others', {}),
+  linkGoogle: () => post<{ url: string }>('/auth/google/link', {}),
+  unlinkGoogle: (accountId: string) => post<{ ok: boolean }>('/auth/google/unlink', { account_id: accountId }),
+  requestPasswordReset: (email: string) => post<{ ok: boolean }>('/auth/recovery/request', { email }),
+  completePasswordReset: (token: string, newPassword: string) => post<{ ok: boolean }>('/auth/recovery/complete', { token, new_password: newPassword }),
+  adminUsers: () => get<AdminAuthUser[]>('/auth/admin/users'),
+  adminDisableUser: (userId: string) => post<{ ok: boolean }>(`/auth/admin/users/${encodeURIComponent(userId)}/disable`, {}),
+  adminEnableUser: (userId: string) => post<{ ok: boolean }>(`/auth/admin/users/${encodeURIComponent(userId)}/enable`, {}),
+  adminResetLink: (userId: string) => post<{ reset_link: string }>(`/auth/admin/users/${encodeURIComponent(userId)}/reset-link`, {}),
+  adminRegistrationIntents: () => get<RegistrationIntentAdmin[]>('/auth/admin/registration-intents'),
 }
 
 // ── Spaces ────────────────────────────────────────────────────────────────
 export const spacesApi = {
+  acceptInvitation: (token: string) => post<{ space_id: string }>('/invitations/accept', { token }),
   create:               (data: { name: string; type: Exclude<SpaceWithMembership['type'], 'personal'>; oversight_mode?: SpaceOversightMode }) => post<SpaceWithMembership>('/spaces', data),
   get:                  (spaceId: string)                              => get<SpaceWithMembership>(`/spaces/${spaceId}`),
   members:              (spaceId: string)                              => get<SpaceMember[]>(`/spaces/${spaceId}/members`),
   invite:               (spaceId: string, data: { email: string; role: string }) =>
     post<SpaceInvitationOut>(`/spaces/${spaceId}/invitations`, data),
-  acceptInvite:         (token: string)                                => post<{ space_id: string; role: string; space_name: string }>(`/invitations/${token}/accept`),
   getSnapshotDefaults:  (spaceId: string)                              => get<SpaceSnapshotDefaults>(`/spaces/${spaceId}/snapshot-defaults`),
   updateSnapshotDefaults: (spaceId: string, data: SpaceSnapshotDefaults) => patch<SpaceSnapshotDefaults>(`/spaces/${spaceId}/snapshot-defaults`, data),
   getRetrievalSettings: (spaceId: string) =>

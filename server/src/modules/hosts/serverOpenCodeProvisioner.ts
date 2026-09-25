@@ -1,4 +1,6 @@
 import type { Pool } from "../../db/pool.js";
+import type { ServerConfig } from "../../config.js";
+import { managedHostEgressTransport, readInstanceOperationsPolicy } from "../settings/index.js";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { SERVER_OPENCODE_RELEASE } from "../runtimeAdapters/opencodeRelease.js";
 import { normalizeHostCapabilities } from "./capabilities.js";
@@ -38,6 +40,7 @@ export class ServerOpenCodeProvisioner {
     private readonly pool: Pool,
     private readonly registry: HostConnectionRegistry = sharedHostConnectionRegistry,
     private readonly log?: ServerOpenCodeProvisionerLogger,
+    private readonly config?: ServerConfig,
   ) {}
 
   async reconcile(): Promise<void> {
@@ -114,6 +117,9 @@ export class ServerOpenCodeProvisioner {
     }
     if (state.state !== "queued" || !this.registry.isOnline(hostId)) return;
 
+    const egressTransport = this.config
+      ? managedHostEgressTransport(await readInstanceOperationsPolicy(this.config))
+      : { mode: "direct" as const };
     const claimed = await provisioning.claim(hostId, RUNTIME_KEY, SERVER_OPENCODE_RELEASE.version);
     if (!claimed) return;
     const spec = getRuntimeAdapterSpec(RUNTIME_KEY);
@@ -127,6 +133,7 @@ export class ServerOpenCodeProvisioner {
         login: spec?.credentials.login ?? null,
         runtime_version_command: spec?.managed_runtime_version_command ?? null,
         health_check_protocol: "acp",
+        egress_transport: egressTransport,
       });
     } finally {
       this.ownedInstall = null;
@@ -171,12 +178,14 @@ export function sharedServerOpenCodeProvisioner(
   options: {
     registry?: HostConnectionRegistry;
     log?: ServerOpenCodeProvisionerLogger;
+    config?: ServerConfig;
   } = {},
 ): ServerOpenCodeProvisioner {
   shared ??= new ServerOpenCodeProvisioner(
     pool,
     options.registry ?? sharedHostConnectionRegistry,
     options.log,
+    options.config,
   );
   return shared;
 }

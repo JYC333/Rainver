@@ -76,12 +76,11 @@ function stubAuth(): AuthRepository {
     getUserSpaces: notImplemented,
     getSpaceForUser: notImplemented,
     logout: notImplemented,
-    findOrCreateFromGoogle: notImplemented,
   } as unknown as AuthRepository;
 }
 
 function authCookie(token: string): string {
-  return `session_id=${token}`;
+  return `better-auth.session_token=${token}`;
 }
 
 function httpBaseUrl(): string {
@@ -127,8 +126,8 @@ beforeEach(async () => {
     { cascade: true },
   );
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
-     VALUES ($1, 'Owner', 'active', now(), now()), ($2, 'Other', 'active', now(), now())`,
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+     VALUES ($1, 'Owner', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ($2, 'Other', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [OWNER, OTHER_USER],
   );
 });
@@ -749,7 +748,7 @@ describe("hosts routes", () => {
               }],
               auth_methods: [],
               cli_login_available: false,
-              authenticated: null,
+              session_available: null,
               prompt_capabilities: null,
             },
         }],

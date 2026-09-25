@@ -2,7 +2,7 @@ import { readBodyUpTo } from "./body.js";
 import { OutboundGuardError } from "./errors.js";
 import { parseOutboundHttpUrl, type OutboundGuard, type PinnedAddress } from "./guard.js";
 import { pinnedAddressLookup } from "./pinnedLookup.js";
-import { Agent } from "undici";
+import { Agent, ProxyAgent } from "undici";
 
 /**
  * How long a whole fetch — name resolution, every redirect hop, and the body —
@@ -34,11 +34,11 @@ export interface PinnedFetchInit {
 }
 
 /**
- * Performs one hop, connecting only to `pinned`.
+ * Performs one guarded hop. Direct transports connect only to `pinned`;
+ * an explicitly selected upstream proxy owns final target resolution.
  *
- * Supplied by the consumer because pinning is an HTTP-client concern: the
- * control plane builds a dispatcher from `pinnedAddressLookup`. The guard owns
- * *what* may be reached; this owns *how* the socket is opened.
+ * Supplied by the consumer because the guard owns which destinations may be
+ * attempted while the HTTP transport owns how the socket is opened.
  */
 export type PinnedFetch = (
   url: string,
@@ -72,6 +72,34 @@ export const undiciPinnedFetch: PinnedFetch = (url, init, pinned) => {
   return globalThis.fetch(url, request);
 };
 
+/**
+ * Explicit admin-selected HTTP CONNECT route. The proxy, not this process,
+ * resolves the final target, so its destination policy is a separate trust
+ * boundary; guardedFetch still validates each URL before handing it over.
+ */
+export function createUndiciProxyFetch(proxyUrl: string): { fetch: PinnedFetch; close: () => Promise<void> } {
+  const parsed = new URL(proxyUrl);
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:")
+    || !parsed.hostname || parsed.username || parsed.password || parsed.pathname !== "/"
+    || parsed.search || parsed.hash) {
+    throw new Error("Invalid managed-host HTTP proxy URL");
+  }
+  const agent = new ProxyAgent({ uri: parsed.toString(), pipelining: 0 });
+  return {
+    fetch: (url, init) => {
+      const request: RequestInit & { dispatcher?: unknown } = {
+        method: init.method,
+        headers: init.headers,
+        signal: init.signal,
+        redirect: init.redirect,
+        dispatcher: agent,
+      };
+      return globalThis.fetch(url, request);
+    },
+    close: () => agent.close(),
+  };
+}
+
 export interface GuardedRequest {
   url: string;
   /** Reject both a non-HTTPS initial URL and any redirect hop that downgrades to HTTP. */
@@ -89,6 +117,8 @@ export interface GuardedRequest {
   maxDownloadBytes: number;
   /** Whole-chain budget, name resolution included. */
   deadlineMs?: number;
+  /** Maximum wait between body chunks. Renewed whenever more bytes arrive. */
+  bodyIdleTimeoutMs?: number;
   signal?: AbortSignal;
   maxRedirects?: number;
 }
@@ -99,10 +129,19 @@ export interface GuardedResponse {
   status: number;
   ok: boolean;
   headers: Headers;
-  /** Never longer than `maxDownloadBytes`. Empty for 304 and for any non-OK status. */
+  /** Never longer than `maxDownloadBytes`. Empty for stream sinks, 304 and non-OK status. */
   bytes: Uint8Array;
   /** The body was longer than `maxDownloadBytes`, or the upstream declared that it was. */
   truncated: boolean;
+}
+
+/**
+ * Streams a large guarded response without buffering it in this package.
+ * Redirect, address, HTTPS and byte-limit checks still apply.
+ */
+export interface GuardedStreamSink {
+  onResponse?: (response: { url: string; status: number; headers: Headers }) => void | Promise<void>;
+  onChunk: (chunk: Uint8Array) => void | Promise<void>;
 }
 
 /**
@@ -125,6 +164,7 @@ function lowerCaseHeaders(headers: Record<string, string> | undefined): Record<s
 export async function guardedFetch(
   request: GuardedRequest,
   deps: { guard: OutboundGuard; fetch: PinnedFetch },
+  stream?: GuardedStreamSink,
 ): Promise<GuardedResponse> {
   const start = parseOutboundHttpUrl(request.url);
   if (request.requireHttps && start.protocol !== "https:") {
@@ -165,7 +205,13 @@ export async function guardedFetch(
     // 304 sits inside the redirect range but is an answer, not a hop: a
     // conditional request that is told "unchanged" has arrived.
     if (response.status === 304 || response.status < 300 || response.status >= 400) {
-      return await readGuardedBody(current.toString(), response, request.maxDownloadBytes);
+      return await readGuardedBody(
+        current.toString(),
+        response,
+        request.maxDownloadBytes,
+        request.bodyIdleTimeoutMs,
+        stream,
+      );
     }
     const location = response.headers.get("location");
     await response.body?.cancel().catch(() => undefined);
@@ -177,13 +223,29 @@ export async function guardedFetch(
   throw new OutboundGuardError(502, "Outbound URL redirected too many times");
 }
 
-async function readGuardedBody(url: string, response: Response, maxDownloadBytes: number): Promise<GuardedResponse> {
+async function readGuardedBody(
+  url: string,
+  response: Response,
+  maxDownloadBytes: number,
+  bodyIdleTimeoutMs: number | undefined,
+  stream: GuardedStreamSink | undefined,
+): Promise<GuardedResponse> {
   // A body nobody is going to read is still a transfer this process pays for,
   // and an upstream that answers an error with megabytes of HTML is ordinary.
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined);
     return { url, status: response.status, ok: false, headers: response.headers, bytes: new Uint8Array(0), truncated: false };
   }
-  const { bytes, truncated } = await readBodyUpTo(response, maxDownloadBytes);
+  try {
+    await stream?.onResponse?.({ url, status: response.status, headers: response.headers });
+  } catch (error) {
+    await response.body?.cancel().catch(() => undefined);
+    throw error;
+  }
+  const { bytes, truncated } = await readBodyUpTo(response, maxDownloadBytes, {
+    idleTimeoutMs: bodyIdleTimeoutMs,
+    onChunk: stream?.onChunk,
+    collectBytes: !stream,
+  });
   return { url, status: response.status, ok: true, headers: response.headers, bytes, truncated };
 }

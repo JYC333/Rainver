@@ -6,6 +6,7 @@ import { CustomSourceRunnerSettingsPanel } from './CustomSourceRunnerSettingsPan
 import { SourceCatalogPanel } from './SourceCatalogPanel'
 import { OperationsSettingsPanel } from './OperationsSettingsPanel'
 import { UpdatePanel } from './UpdatePanel'
+import { UsersSecurityPanel } from './UsersSecurityPanel'
 
 export default function InstanceSettingsPage() {
   const { currentUser } = useAuth()
@@ -45,6 +46,7 @@ export default function InstanceSettingsPage() {
           <SourceCatalogPanel />
           <CustomSourceRunnerSettingsPanel />
           <AcpRegistryPanel />
+          <UsersSecurityPanel />
         </>
       )}
     </div>

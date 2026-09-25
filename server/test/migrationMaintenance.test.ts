@@ -35,13 +35,16 @@ describe("maintenance-only migrations", () => {
     expect(requiresMaintenance(late)).toBe(false);
   });
 
-  it("keeps the new-epoch baseline out of maintenance-only handling", async () => {
+  it("keeps the current epoch as one ordinary baseline migration", async () => {
     const chain = loadMigrations(join(import.meta.dirname, "..", "migrations"));
     expect(chain.map(({ version, name }) => ({ version, name }))).toEqual([
       { version: "0000", name: "baseline" },
     ]);
     expect(requiresMaintenance(chain[0]!.sql)).toBe(false);
     expect(chain[0]!.sql).not.toContain("cli_credential_profiles");
+    expect(chain[0]!.sql).toContain('CREATE TABLE "auth_accounts"');
+    expect(chain[0]!.sql).toContain('CREATE TABLE "registration_intents"');
+    expect(chain[0]!.sql).not.toContain('CREATE TABLE "auth_action_tokens"');
   });
 
   it("reports the flag through the status the CLI prints", async () => {

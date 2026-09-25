@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { getContainerRuntimeClient } from "testcontainers";
 import { Pool } from "pg";
-import { loadMigrations, migrate } from "../src/db/migrator.js";
+import { loadMigrations, migrate, requiresMaintenance } from "../src/db/migrator.js";
 import type { SharedPostgresContext } from "./support/sharedPostgres.js";
 
 interface GlobalSetupProject {
@@ -57,7 +57,13 @@ const TEMPLATE_LOCK_KEY = 7263123498013;
 
 function migrationsFingerprint(dir: string): string {
   const hash = createHash("sha256");
-  for (const file of loadMigrations(dir)) hash.update(`${file.version}:${file.checksum}\n`);
+  // The shared template models the release that is still running while an
+  // offline maintenance migration is staged. Phase-specific DB tests create
+  // an empty database and apply the full chain explicitly.
+  for (const file of loadMigrations(dir)) {
+    if (requiresMaintenance(file.sql)) continue;
+    hash.update(`${file.version}:${file.checksum}\n`);
+  }
   return hash.digest("hex").slice(0, 16);
 }
 
@@ -84,7 +90,7 @@ async function ensureTemplateDatabase(
       await client.query(`CREATE DATABASE ${quoteIdentifier(templateDatabase)} TEMPLATE template0`);
       const templatePool = new Pool({ connectionString: databaseUri(adminUri, templateDatabase), max: 1 });
       try {
-        await migrate(templatePool, migrationsDir);
+        await migrate(templatePool, migrationsDir, { skipMaintenance: true });
       } catch (error) {
         await templatePool.end();
         // Never leave a half-migrated template for the next run to clone.

@@ -4,7 +4,6 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { spacesModule } from "../src/modules/spaces/index.js";
 import { authModule } from "../src/modules/auth/index.js";
 import { loadConfig } from "../src/config.js";
-import { __setGoogleOAuthClientForTests, type GoogleOAuthClient } from "../src/modules/auth/oauth.js";
 import { __setAuthRepositoryForTests, type AuthRepository, type AuthFailure } from "../src/modules/auth/identity.js";
 import { __setSpaceRepositoryForTests, type SpaceRepository } from "../src/modules/spaces/repository.js";
 
@@ -12,7 +11,6 @@ let app: FastifyInstance | undefined;
 
 afterEach(async () => {
   __setAuthRepositoryForTests(null);
-  __setGoogleOAuthClientForTests(null);
   __setSpaceRepositoryForTests(null);
   await app?.close();
   app = undefined;
@@ -64,26 +62,13 @@ function fakeRepo(overrides: Partial<AuthRepository> = {}): AuthRepository {
       };
     },
     async logout() {},
-    async findOrCreateFromGoogle() {
-      return {
-        id: "user-1",
-        email: "u@example.test",
-        display_name: "User One",
-        avatar_url: null,
-        created_at: "2026-06-15T12:00:00.000Z",
-        last_login_at: null,
-        is_instance_admin: false,
-      };
-    },
-    async createSession() {
-      return "raw-session";
-    },
     ...overrides,
   };
 }
 
 function fakeSpaceRepo(overrides: Partial<SpaceRepository> = {}): SpaceRepository {
   return {
+    async acceptInvitation() { return { space_id: "space-new" }; },
     async createSpace(_userId, input) {
       return {
         id: "space-new",
@@ -117,12 +102,9 @@ function fakeSpaceRepo(overrides: Partial<SpaceRepository> = {}): SpaceRepositor
         invited_email: input.email,
         role: input.role ?? "member",
         token: "raw-token",
-        status: "pending",
+        status: "available",
         expires_at: "2026-06-22T12:00:00.000Z",
       };
-    },
-    async acceptInvitation() {
-      return { space_id: "space-1", role: "member", space_name: "Team" };
     },
     async getSnapshotDefaults() {
       return {
@@ -267,11 +249,17 @@ describe("native server auth routes", () => {
     ]);
   });
 
-  it("serves Google OAuth configuration and login locally", async () => {
+  it("serves strict auth configuration and keeps Google OAuth disabled without a runtime", async () => {
     app = server();
-    const unavailable = await app.inject({ method: "GET", url: "/api/v1/auth/google-configured" });
+    const unavailable = await app.inject({ method: "GET", url: "/api/v1/auth/config" });
     expect(unavailable.statusCode).toBe(200);
-    expect(unavailable.json()).toEqual({ google_auth_available: false });
+    expect(unavailable.json()).toEqual({
+      google_auth_available: false,
+      bootstrap_registration_available: false,
+      password_min_length: 15,
+      password_max_length: 128,
+    });
+    expect((await app.inject({ method: "GET", url: "/api/v1/auth/google-configured" })).statusCode).toBe(404);
 
     const notConfigured = await app.inject({ method: "GET", url: "/api/v1/auth/google" });
     expect(notConfigured.statusCode).toBe(501);
@@ -280,60 +268,26 @@ describe("native server auth routes", () => {
     app = server({
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",
-      GOOGLE_REDIRECT_URI: "http://localhost:5173/api/v1/auth/google/callback",
+      GOOGLE_REDIRECT_URI: "http://localhost:5173/api/v1/auth/callback/google",
       SERVER_DEBUG: "true",
     });
     const configured = await app.inject({
       method: "GET",
       url: "/api/v1/auth/google?next=/invitations/tok123?auto=1",
     });
-    expect(configured.statusCode).toBe(307);
-    expect(configured.headers.location).toContain("https://accounts.google.com/o/oauth2/v2/auth");
-    expect(configured.headers.location).toContain("client_id=google-client");
-    expect(String(configured.headers["set-cookie"])).toContain("oauth_state=");
-    expect(String(configured.headers["set-cookie"])).toContain("post_login_next=");
+    expect(configured.statusCode).toBe(501);
   });
 
-  it("completes the Google OAuth callback, creates a server session, and redirects safely", async () => {
-    let createdProfile: unknown;
-    let sessionUser = "";
-    const googleClient: GoogleOAuthClient = {
-      async exchangeCode(_config, code) {
-        expect(code).toBe("oauth-code");
-        return { access_token: "access-token" };
-      },
-      async getUserInfo(accessToken) {
-        expect(accessToken).toBe("access-token");
-        return {
-          sub: "google-sub-1",
-          email: "new@example.test",
-          email_verified: true,
-          name: "New User",
-          picture: "https://avatar.example/p.png",
-        };
-      },
-    };
-    __setGoogleOAuthClientForTests(googleClient);
-    __setAuthRepositoryForTests(
-      fakeRepo({
-        async findOrCreateFromGoogle(input) {
-          createdProfile = input;
-          return {
-            id: "new-user",
-            email: input.email,
-            display_name: input.displayName,
-            avatar_url: input.avatarUrl ?? null,
-            created_at: "2026-06-15T12:00:00.000Z",
-            last_login_at: "2026-06-15T12:00:00.000Z",
-            is_instance_admin: false,
-          };
-        },
-        async createSession(userId) {
-          sessionUser = userId;
-          return "raw-session";
-        },
-      }),
-    );
+  it("advertises the relaxed password minimum only for development instances", async () => {
+    app = server({ RAINVER_ENV: "dev" });
+
+    const response = await app.inject({ method: "GET", url: "/api/v1/auth/config" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ password_min_length: 8, password_max_length: 128 });
+  });
+
+  it("does not expose the retired hand-written Google callback", async () => {
     app = server({
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",
@@ -349,20 +303,10 @@ describe("native server auth routes", () => {
       },
     });
 
-    expect(res.statusCode).toBe(307);
-    expect(res.headers.location).toBe("http://localhost:5173/invitations/tok123?auto=1");
-    expect(String(res.headers["set-cookie"])).toContain("session_id=raw-session");
-    expect(String(res.headers["set-cookie"])).toContain("Secure");
-    expect(String(res.headers["set-cookie"])).toContain("oauth_state=;");
-    expect(createdProfile).toMatchObject({
-      googleSub: "google-sub-1",
-      email: "new@example.test",
-      displayName: "New User",
-    });
-    expect(sessionUser).toBe("new-user");
+    expect(res.statusCode).toBe(404);
   });
 
-  it("rejects OAuth callback CSRF mismatch with the public redirect", async () => {
+  it("does not keep the retired OAuth callback CSRF surface", async () => {
     app = server({
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",
@@ -376,8 +320,7 @@ describe("native server auth routes", () => {
       headers: { cookie: "oauth_state=expected" },
     });
 
-    expect(res.statusCode).toBe(307);
-    expect(res.headers.location).toBe("http://localhost:5173/login?error=csrf");
+    expect(res.statusCode).toBe(404);
   });
 
   it("serves API-key routes locally as the canonical feature-gated response", async () => {
@@ -467,10 +410,28 @@ describe("native server auth routes", () => {
 
     const accepted = await app.inject({
       method: "POST",
-      url: "/api/v1/invitations/raw-token/accept",
+      url: "/api/v1/invitations/accept",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ token: "raw-token" }),
     });
     expect(accepted.statusCode).toBe(200);
-    expect(accepted.json()).toEqual({ space_id: "space-1", role: "member", space_name: "Team" });
+    expect(accepted.json()).toEqual({ space_id: "space-new" });
+  });
+
+  it("requires an authenticated account to accept a Space invitation", async () => {
+    __setAuthRepositoryForTests(fakeRepo({
+      async getCurrentUser() { return { statusCode: 401, detail: "Authentication required" }; },
+    }));
+    __setSpaceRepositoryForTests(fakeSpaceRepo());
+    app = server();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/invitations/accept",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ token: "raw-token" }),
+    });
+    expect(response.statusCode).toBe(401);
   });
 
   it("serves space retrieval settings locally", async () => {
@@ -555,12 +516,12 @@ describe("native server auth routes", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/auth/logout",
-      headers: { cookie: "session_id=raw-token" },
+      headers: { cookie: "better-auth.session_token=raw-token" },
     });
 
     expect(res.statusCode).toBe(204);
     expect(deleted).toBe(true);
-    expect(String(res.headers["set-cookie"])).toContain("session_id=;");
+    expect(String(res.headers["set-cookie"])).toContain("better-auth.session_token=;");
   });
 
   it("forwards repository auth failures from /me", async () => {

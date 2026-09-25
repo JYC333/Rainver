@@ -249,7 +249,7 @@ describe("Academic paper materialization from arXiv source items (real Postgres)
     if (!db.available) return;
     await db.pool.query("UPDATE spaces SET type = $2 WHERE id = $1", [SPACE, "team"]);
     const now = new Date().toISOString();
-    await db.pool.query("INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,$1,'active',$2,$2)", [OTHER, now]);
+    await db.pool.query("INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1,$1,'active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')", [OTHER, now]);
     await db.pool.query("INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)", [randomUUID(), SPACE, OTHER, now]);
     await seedBinding("generic_document_v1");
     const itemId = await seedGenericDocumentItem();

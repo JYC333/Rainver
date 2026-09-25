@@ -43,7 +43,7 @@ beforeEach(async () => {
   const now = `${DATE}T08:00:00.000Z`;
   await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Team','team',$2,$2)`, [SPACE, now]);
   for (const user of [OWNER, OTHER, THIRD]) {
-    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$1,'active',$2,$2)`, [user, now]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,$1,'active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [user, now]);
     await db.pool.query(
       `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
        VALUES ($1,$2,$3,'member','active',$4,$4)`,

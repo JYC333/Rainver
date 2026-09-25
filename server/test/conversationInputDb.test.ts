@@ -30,8 +30,8 @@ async function seedConversation(): Promise<{ spaceId: string; userId: string; ou
   const messageId = randomUUID();
   const now = new Date().toISOString();
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
-     VALUES ($1, 'Input Owner', 'active', $3, $3), ($2, 'Input Outsider', 'active', $3, $3)`,
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+     VALUES ($1, 'Input Owner', 'active', $3, $3, lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ($2, 'Input Outsider', 'active', $3, $3, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [userId, outsiderId, now],
   );
   await db.pool.query(

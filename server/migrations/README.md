@@ -1,26 +1,32 @@
 # Server Migrations
 
 Schema authoring starts in `server/src/db/schema/`. This directory is the
-append-only chain the server migration runner applies, and at the same time
-the drizzle-kit output directory: `NNNN_<name>.sql` files in order, plus
-`meta/` with the Drizzle journal and the snapshot each file was diffed from.
+append-only chain the server migration runner applies, and at the same time the
+drizzle-kit output directory: `NNNN_<name>.sql` files in order, plus `meta/`
+with the Drizzle journal and the snapshot each file was diffed from.
 
-**`0000_baseline.sql` starts the 2026-09-21 ACP runtime-authority schema epoch.**
-It is drizzle-kit output, generated from `src/db/schema/` against an empty
-chain, so every object in it has a Drizzle definition `schema:check` can see.
-Its one hand-added line is the `CREATE EXTENSION` at the top, which drizzle-kit
-does not model and the `vector` columns need first. Never regenerate it from a
-`pg_dump` of a migrated database: a dump carries catalog names — renamed
-columns' NOT NULL constraints, for one — that no Drizzle definition mentions,
-and every new instance would then be created carrying them.
-Databases from the prior epoch cannot be upgraded or restored into this epoch;
+**`0000_baseline.sql` starts the 2026-09-23 authentication-foundation schema
+epoch (ADR 0023).** It is drizzle-kit output generated from
+`src/db/schema/` against an empty chain, with the declared `vector` extension
+added at the top because drizzle-kit does not model extensions. The baseline
+contains the final Better Auth, registration, invitation-reservation, and
+security-event schema directly; it has no legacy authentication tables,
+backfill, or compatibility path.
+
+Databases from an earlier epoch cannot be upgraded or restored into this epoch;
 they must be recreated from this baseline. The reset intentionally does not
-preserve or transform prior-epoch rows. After release, this baseline is frozen
+preserve or transform earlier rows. After this change the baseline is frozen
 and every later schema change is a new numbered file. A file that a database
 has applied is never edited: the runner records each file's checksum in
 `public.server_schema_migrations` and refuses to start against a changed one.
-`server/test/baselineSchema.test.ts` pins the baseline hash and new-epoch chain
-shape so accidental drift fails in CI, not on an instance.
+`server/test/baselineSchema.test.ts` pins the baseline hash and the current
+one-migration chain shape so accidental drift fails in CI.
+
+Never regenerate the baseline from a `pg_dump` of a migrated database: a dump
+carries catalog names that no Drizzle definition mentions. A new baseline is a
+schema epoch, not an ordinary maintenance technique, and requires an accepted
+decision plus explicit acknowledgement that earlier databases have no upgrade
+path.
 
 ## Changing the schema
 
@@ -39,12 +45,12 @@ pnpm run schema:check
 `schema:check` fails when the chain is malformed (gap, duplicate, journal and
 files disagreeing, missing snapshot), when an extension declared in
 `src/db/schema/database-features.json` is created by no migration, or when
-`src/db/schema/` has changes no migration captures — it runs drizzle-kit
-against a scratch copy of the chain and prints the SQL that would be
-generated. Both `ops/scripts/db/migrate.sh` (dev/test) and the production
-server image build run it.
+`src/db/schema/` has changes no migration captures. It runs drizzle-kit
+against a scratch copy of the chain and prints the SQL that would be generated.
+Both `ops/scripts/db/migrate.sh` (dev/test) and the production server image
+build run it.
 
-Some changes drizzle-kit cannot derive — a new extension, a data backfill, a
+Some changes drizzle-kit cannot derive — a new extension, a data backfill, or a
 constraint that depends on existing rows. Start from an empty file:
 
 ```bash

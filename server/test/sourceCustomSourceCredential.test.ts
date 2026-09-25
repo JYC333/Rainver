@@ -57,8 +57,8 @@ describe("CustomSourceCredentialService", () => {
   it("rejects credential creation from a non-admin member", async () => {
     if (!db.available) return;
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ('member-1', 'Member', 'active', now(), now())`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ('member-1', 'Member', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     );
     await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)

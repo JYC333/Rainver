@@ -1,8 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
+import { hashOpaqueToken, normalizeAuthEmail } from "../auth/securityPolicy.js";
 import {
   getOrCreateSpaceRetrievalSettings,
   updateSpaceRetrievalSettings,
@@ -58,12 +59,6 @@ export interface InvitationResult {
   expires_at: string;
 }
 
-export interface InvitationAcceptResult {
-  space_id: string;
-  role: string;
-  space_name: string | null;
-}
-
 export interface SpaceFailure {
   statusCode: number;
   detail: string;
@@ -82,11 +77,7 @@ export interface SpaceRepository {
     spaceId: string,
     input: InvitationCreateInput,
   ): Promise<InvitationResult | SpaceFailure>;
-  acceptInvitation(input: {
-    token: string;
-    userId: string;
-    userEmail: string | null;
-  }): Promise<InvitationAcceptResult | SpaceFailure>;
+  acceptInvitation(userId: string, token: string): Promise<{ space_id: string } | SpaceFailure>;
   getSnapshotDefaults(userId: string, spaceId: string): Promise<SnapshotDefaults | SpaceFailure>;
   updateSnapshotDefaults(
     userId: string,
@@ -150,9 +141,7 @@ function asIso(value: Date | string): string {
   return new Date(value).toISOString();
 }
 
-function hashToken(raw: string): string {
-  return createHash("sha256").update(raw).digest("hex");
-}
+function hashToken(raw: string): string { return hashOpaqueToken(raw); }
 
 function normalizeRole(raw: string | null | undefined): string {
   const lower = (raw ?? "").trim().toLowerCase();
@@ -265,6 +254,7 @@ export class PgSpaceRepository implements SpaceRepository {
     }
 
     const roleToGrant = input.role ?? "member";
+    const invitedEmail = normalizeAuthEmail(input.email);
     const refusal = roleGrantRefusal(SPACE_ROLE_LADDER, role, roleToGrant);
     if (refusal) return refusal;
     const token = rawInvitationToken();
@@ -276,14 +266,14 @@ export class PgSpaceRepository implements SpaceRepository {
       `INSERT INTO space_invitations
          (id, space_id, invited_email, role, token_hash, status,
           invited_by_user_id, created_at, expires_at)
-       VALUES ($1, $2, $3, $4, $5, 'pending', $6, now(), now() + interval '7 days')
+       VALUES ($1, $2, $3, $4, $5, 'available', $6, now(), now() + interval '7 days')
        RETURNING status, expires_at`,
-      [id, spaceId, input.email, roleToGrant, hashToken(token), userId],
+      [id, spaceId, invitedEmail, roleToGrant, hashToken(token), userId],
     );
     return {
       id,
       space_id: spaceId,
-      invited_email: input.email,
+      invited_email: invitedEmail,
       role: roleToGrant,
       token,
       status: res.rows[0].status,
@@ -291,70 +281,39 @@ export class PgSpaceRepository implements SpaceRepository {
     };
   }
 
-  async acceptInvitation(input: {
-    token: string;
-    userId: string;
-    userEmail: string | null;
-  }): Promise<InvitationAcceptResult | SpaceFailure> {
+  async acceptInvitation(userId: string, token: string): Promise<{ space_id: string } | SpaceFailure> {
+    if (!token || token.length > 512) return { statusCode: 400, detail: "Invalid invitation" };
     return withTransaction(this.pool, async (client) => {
-      const inv = await client.query<{
-        id: string;
-        space_id: string;
-        invited_email: string;
-        role: string;
-        status: string;
-        expires_at: Date | string;
-      }>("SELECT id, space_id, invited_email, role, status, expires_at FROM space_invitations WHERE token_hash = $1 LIMIT 1", [
-        hashToken(input.token),
-      ]);
-      const invitation = inv.rows[0];
-      if (!invitation) return { statusCode: 404, detail: "Invitation not found" };
-      if (invitation.status !== "pending") {
-        return { statusCode: 409, detail: `Invitation is already ${invitation.status}` };
-      }
-      if (new Date(invitation.expires_at).getTime() < Date.now()) {
-        await client.query("UPDATE space_invitations SET status = 'expired' WHERE id = $1", [
-          invitation.id,
-        ]);
-        return { statusCode: 410, detail: "Invitation has expired" };
-      }
-      if (
-        !input.userEmail ||
-        input.userEmail.toLowerCase() !== invitation.invited_email.toLowerCase()
-      ) {
-        return {
-          statusCode: 403,
-          detail: "This invitation was sent to a different email address",
-        };
-      }
-      const existing = await client.query(
-        `SELECT 1 FROM space_memberships
-          WHERE space_id = $1 AND user_id = $2
-          LIMIT 1`,
-        [invitation.space_id, input.userId],
+      const user = await client.query<{ email: string }>(
+        "SELECT email FROM users WHERE id = $1 AND status = 'active' FOR UPDATE",
+        [userId],
       );
-      if (existing.rowCount) {
-        return { statusCode: 409, detail: "Already a member of this space" };
-      }
-      await client.query(
-        `INSERT INTO space_memberships
-           (id, space_id, user_id, role, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'active', now(), now())`,
-        [randomUUID(), invitation.space_id, input.userId, invitation.role],
+      if (!user.rows[0]) return { statusCode: 403, detail: "Account unavailable" };
+      const invitation = await client.query<{ id: string; space_id: string; invited_email: string; role: string }>(
+        `SELECT id, space_id, invited_email, role FROM space_invitations
+          WHERE token_hash = $1 AND status = 'available' AND expires_at > now()
+          FOR UPDATE`,
+        [hashToken(token)],
       );
+      const row = invitation.rows[0];
+      if (!row || normalizeAuthEmail(row.invited_email) !== normalizeAuthEmail(user.rows[0].email)) {
+        return { statusCode: 400, detail: "Invalid invitation" };
+      }
+      const membership = await client.query<{ id: string }>(
+        `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', now(), now())
+         ON CONFLICT (space_id, user_id) DO UPDATE
+           SET role = EXCLUDED.role, status = 'active', updated_at = now()
+           WHERE space_memberships.status <> 'active'
+         RETURNING id`,
+        [randomUUID(), row.space_id, userId, row.role],
+      );
+      if (!membership.rowCount) return { statusCode: 409, detail: "Already a member of this Space" };
       await client.query(
         "UPDATE space_invitations SET status = 'accepted', accepted_at = now() WHERE id = $1",
-        [invitation.id],
+        [row.id],
       );
-      const space = await client.query<{ name: string }>(
-        "SELECT name FROM spaces WHERE id = $1 LIMIT 1",
-        [invitation.space_id],
-      );
-      return {
-        space_id: invitation.space_id,
-        role: invitation.role,
-        space_name: space.rows[0]?.name ?? null,
-      };
+      return { space_id: row.space_id };
     });
   }
 

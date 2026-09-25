@@ -188,8 +188,8 @@ interface PendingLogin {
   onEvent: (event: LoginSessionEvent) => void;
 }
 
-/** An install is a download plus an `npm install`; minutes, not seconds. */
-const TOOL_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+/** Includes the artifact's 15-minute download budget and its health check. */
+const TOOL_INSTALL_TIMEOUT_MS = 20 * 60 * 1000;
 /** How much longer than the command's own budget the server waits, for the round trip and the daemon's own kill. */
 const HOST_COMMAND_GRACE_MS = 30 * 1000;
 /**

@@ -123,8 +123,8 @@ beforeEach(async () => {
     { cascade: true },
   );
   await db.pool!.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
-     VALUES ($1, 'Owner', 'active', now(), now())`,
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+     VALUES ($1, 'Owner', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [USER],
   );
   await db.pool!.query(
@@ -393,8 +393,8 @@ describe("declaring against a Task the Run may not write", () => {
     const outsider = randomUUID();
     await makeTask(task, ["report"]);
     await db.pool!.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ($1, 'Outsider', 'active', now(), now())`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Outsider', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [outsider],
     );
 

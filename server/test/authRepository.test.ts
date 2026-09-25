@@ -3,13 +3,16 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgAuthRepository } from "../src/modules/auth/identity.js";
+import { migrate } from "../src/db/migrator.js";
+import { join } from "node:path";
 
 let repo: PgAuthRepository | undefined;
 
-const db = useTestDatabase(import.meta.filename, { max: 10 });
+const db = useTestDatabase(import.meta.filename, { max: 10, empty: true });
 
 beforeAll(async () => {
   if (!db.available) return;
+  await migrate(db.pool, join(process.cwd(), "migrations"));
   repo = new PgAuthRepository(db.pool);
 });
 
@@ -17,15 +20,15 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["runtime_context_policy_audits", "runtime_context_policy_bindings", "runtime_context_policy_versions", "note_collections", "memory_entries", "auth_accounts", "user_sessions", "space_memberships", "spaces", "users"],
+    ["runtime_context_policy_audits", "runtime_context_policy_bindings", "runtime_context_policy_versions", "note_collections", "memory_entries", "auth_accounts", "user_sessions", "registration_intents", "space_memberships", "spaces", "users"],
     { cascade: true },
   );
   await db.pool.query(
     `INSERT INTO users
-       (id, email, display_name, status, avatar_url, last_login_at, created_at, updated_at)
+       (id, email, display_name, status, registration_source, email_verified, avatar_url, last_login_at, created_at, updated_at)
      VALUES
-       ('user-1', 'u@example.test', 'User One', 'active', NULL, NULL, now(), now()),
-       ('user-2', 'v@example.test', 'User Two', 'active', NULL, NULL, now(), now())`,
+       ('user-1', 'u@example.test', 'User One', 'active', 'system', true, NULL, NULL, now(), now()),
+       ('user-2', 'v@example.test', 'User Two', 'active', 'system', true, NULL, NULL, now(), now())`,
   );
   await db.pool.query(
     `INSERT INTO spaces
@@ -49,21 +52,21 @@ beforeEach(async () => {
 async function insertSession(raw: string, userId: string, id: string, expiresIn: string): Promise<void> {
   await db.pool.query(
     `INSERT INTO user_sessions
-       (id, user_id, token_hash, created_at, expires_at, last_seen_at)
-     VALUES ($1, $2, $3, now(), now() + ($4::interval), NULL)`,
+       (id, user_id, token_hash, created_at, expires_at, updated_at)
+     VALUES ($1, $2, $3, now(), now() + ($4::interval), now())`,
     [id, userId, createHash("sha256").update(raw).digest("hex"), expiresIn],
   );
 }
 
 describe("PgAuthRepository", () => {
-  it("resolves a session cookie to the default personal space and touches last_seen_at", async () => {
+  it("resolves a session cookie to the default personal space and touches updated_at", async () => {
     if (!db.available || !repo || !db.pool) return;
 
     const identity = await repo.resolveIdentity({ sessionToken: "raw-token" });
 
     expect(identity).toEqual({ ok: true, spaceId: "personal-1", userId: "user-1" });
-    const touched = await db.pool.query("SELECT last_seen_at FROM user_sessions WHERE id = 'session-1'");
-    expect(touched.rows[0].last_seen_at).not.toBeNull();
+    const touched = await db.pool.query("SELECT updated_at FROM user_sessions WHERE id = 'session-1'");
+    expect(touched.rows[0].updated_at).not.toBeNull();
   });
 
   it("honors requested space only when the session user is an active member", async () => {
@@ -104,44 +107,4 @@ describe("PgAuthRepository", () => {
     expect(space).toMatchObject({ id: "team-1", role: "admin" });
   });
 
-  it("creates a Google user with a personal space, default seeds, and a session", async () => {
-    if (!db.available || !repo || !db.pool) return;
-
-    const user = await repo.findOrCreateFromGoogle({
-      googleSub: "google-new",
-      email: "new@example.test",
-      displayName: "New User",
-      avatarUrl: "https://avatar.example/new.png",
-    });
-    const rawSession = await repo.createSession(user.id, 30);
-
-    expect(user).toMatchObject({
-      email: "new@example.test",
-      display_name: "New User",
-      avatar_url: "https://avatar.example/new.png",
-    });
-    expect(rawSession).toMatch(/^[0-9a-f]{64}$/);
-
-    const spaces = await db.pool.query("SELECT id, name, type, oversight_mode FROM spaces WHERE created_by_user_id = $1", [
-      user.id,
-    ]);
-    expect(spaces.rows).toHaveLength(1);
-    expect(spaces.rows[0]).toMatchObject({
-      name: "New User's Personal Space",
-      type: "personal",
-      // Personal Spaces are forced to 'none' — there is no request body in
-      // this bootstrap path, so the column default is the only enforcement.
-      oversight_mode: "none",
-    });
-    const spaceId = spaces.rows[0].id as string;
-    const membership = await db.pool.query(
-      "SELECT role, status FROM space_memberships WHERE user_id = $1 AND space_id = $2",
-      [user.id, spaceId],
-    );
-    expect(membership.rows[0]).toEqual({ role: "owner", status: "active" });
-    expect((await db.pool.query("SELECT count(*)::int AS count FROM memory_entries WHERE space_id = $1", [spaceId])).rows[0].count).toBe(0);
-    expect((await db.pool.query("SELECT count(*)::int AS count FROM note_collections WHERE space_id = $1", [spaceId])).rows[0].count).toBe(5);
-    expect((await db.pool.query("SELECT count(*)::int AS count FROM runtime_context_policy_versions WHERE space_id = $1", [spaceId])).rows[0].count).toBe(1);
-    expect((await db.pool.query("SELECT count(*)::int AS count FROM user_sessions WHERE user_id = $1", [user.id])).rows[0].count).toBe(1);
-  });
 });

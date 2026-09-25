@@ -129,18 +129,18 @@ describe("what a runtime says it can be set to", () => {
   it("reports generic ACP authentication state and refreshes it after login", async () => {
     __clearRuntimeOptionsCache();
     const lookup: RuntimeLookup[] = [{ runtime_key: "test", runtime: "git", login: null }];
-    let authenticated = false;
+    let session_available = false;
     let asks = 0;
     const ask = async () => {
       asks += 1;
       return {
         config_options: [],
         auth_methods: [{ id: "browser", name: "Browser", description: null, type: "agent" as const, args: [], env: {} }],
-        authenticated,
+        session_available,
       };
     };
     expect(own(await detectCapabilities(ask, lookup), "test")).toMatchObject({ logged_in: false });
-    authenticated = true;
+    session_available = true;
     expect(own(await detectCapabilities(ask, lookup), "test")).toMatchObject({ logged_in: false });
     clearRuntimeOptionsCache("test", "own");
     expect(own(await detectCapabilities(ask, lookup), "test")).toMatchObject({ logged_in: true });
@@ -153,7 +153,7 @@ describe("what a runtime says it can be set to", () => {
     const copy = own(await detectCapabilities(async () => ({
       config_options: [],
       auth_methods: [{ id: "generic", name: "Generic", description: null, type: "agent" as const, args: [], env: {} }],
-      authenticated: true,
+      session_available: true,
     }), [{ runtime_key: "test", runtime: "git", login }]), "test");
     expect(copy?.logged_in).toBe(false);
     expect(copy?.options?.auth_methods).toEqual([]);
@@ -176,7 +176,7 @@ describe("what a runtime says it can be set to", () => {
       }));
       __clearRuntimeOptionsCache();
       const capabilities = await detectCapabilities(async () => ({
-        config_options: [], authenticated: false,
+        config_options: [], session_available: false,
         auth_methods: [{ id: "existing", name: "Existing login", description: null, type: "agent", args: [], env: {} }],
       }), [{ runtime_key: "cli_login_test", runtime: null, login: null }]);
       expect(capabilities.installations.cli_login_test?.[0]?.options).toMatchObject({

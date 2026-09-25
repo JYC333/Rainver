@@ -5,6 +5,7 @@ import { RuntimeContextPlanner } from "../src/modules/runtimeContext/planner.js"
 import { RuntimeContextPlanningService } from "../src/modules/runtimeContext/planningService.js";
 import { contextItemText, normalizeContextItem } from "../src/modules/runtimeContext/itemNormalizer.js";
 import { runtimeContextProviderDestination } from "../src/modules/runtimeContext/productionAcquisition.js";
+import { ACP_RUNTIME_MANAGED_WINDOW } from "../src/modules/usage/modelCatalog.js";
 
 const SPACE_ID = "00000000-0000-4000-8000-000000000001";
 const CONTROL_ID = "00000000-0000-4000-8000-000000000002";
@@ -114,7 +115,7 @@ describe("Runtime Context common planner", () => {
       });
       expect(windowPlan.planned_prompt_tokens
         + windowPlan.reserved_output_tokens
-        + windowPlan.provider_overhead_tokens).toBeLessThanOrEqual(windowPlan.total_window_tokens);
+        + windowPlan.provider_overhead_tokens).toBeLessThanOrEqual(windowPlan.total_window_tokens ?? 0);
       expect(windowPlan.decisions.find((decision) => decision.item_id === current.id)?.decision).toBe("included");
     }
   });
@@ -321,6 +322,31 @@ describe("Runtime Context common planner", () => {
     const trimmed = result.items.find((candidate) => candidate.id === oversized.id)!;
     expect(contextItemText(trimmed)).not.toBe("界".repeat(100));
     expect(trimmed.token_estimate).toBeLessThanOrEqual(90);
+  });
+
+  it("lets an ACP runtime enforce an unpublished model window while bounding optional context", () => {
+    const current = currentMessage("x".repeat(20_000));
+    const ranked = item({ id: "optional", text: "y".repeat(20_000), acquisition: "retrieval" });
+    const result = new ContextWindowPlanner().plan({
+      model: "new-provider/new-model",
+      modelWindowOverride: ACP_RUNTIME_MANAGED_WINDOW,
+      items: [current, ranked],
+      currentMessageItemId: current.id,
+    });
+    expect(result.windowPlan).toMatchObject({
+      model: "new-provider/new-model",
+      model_catalog_version: "acp-runtime-managed.v1",
+      total_window_tokens: null,
+      planned_prompt_tokens: 36_384,
+    });
+    expect(result.windowPlan.decisions.find((decision) => decision.item_id === current.id)?.decision).toBe("included");
+    expect(result.windowPlan.decisions.find((decision) => decision.item_id === ranked.id))
+      .toMatchObject({ decision: "trimmed", planned_tokens: 16_384 });
+    expect(() => new ContextWindowPlanner().plan({
+      model: "new-provider/new-model",
+      items: [current],
+      currentMessageItemId: current.id,
+    })).toThrowError(expect.objectContaining({ code: "required_context_overflow" }));
   });
 
   it("uses a conservative catalog fallback for unknown models and CJK token estimates", () => {

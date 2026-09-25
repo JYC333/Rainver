@@ -69,6 +69,12 @@ lower-authority item cannot displace locked system/delegated instructions, and
 duplicate canonical refs collapse before rendering. Retrieval remains a
 candidate source and does not become an instruction authority.
 
+For native ACP, model selection is known but capacity is not: ACP exposes no
+standard window metadata. The plan records a null total and a runtime-managed
+catalog marker, limits optional ranked items independently, and leaves required
+items to the CLI's real capacity check. Numeric windows remain authoritative
+for Rainver-managed Provider calls.
+
 Taint is derived from accepted inputs and remains an output-publication ceiling.
 Cross-owner inputs therefore keep selected-user output restrictions and require
 the existing governed egress-review path before wider publication.

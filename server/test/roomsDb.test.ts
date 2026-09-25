@@ -113,11 +113,11 @@ beforeEach(async () => {
   );
   await syncBuiltinPrompts(db.pool, CATALOG_ROOT);
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
      VALUES
-       ('user-1', 'Room Owner', 'active', $1, $1),
-       ('user-2', 'Room Member', 'active', $1, $1),
-       ('user-3', 'Outside Member', 'active', $1, $1)`,
+       ('user-1', 'Room Owner', 'active', $1, $1, lower(gen_random_uuid()::text || '@test.invalid'), 'system'),
+       ('user-2', 'Room Member', 'active', $1, $1, lower(gen_random_uuid()::text || '@test.invalid'), 'system'),
+       ('user-3', 'Outside Member', 'active', $1, $1, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [now],
   );
   await db.pool.query(
@@ -4505,8 +4505,8 @@ describe("Room workflow (real Postgres)", () => {
     const created = await service.getProjectMainline(owner, "project-1");
     // A third person joins the Project after it exists.
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ('user-later', 'Later', 'active', now(), now())`);
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ('user-later', 'Later', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`);
     await db.pool.query(
       `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
        VALUES ($1, 'space-1', 'user-later', 'member', 'active', now(), now())`, [randomUUID()]);

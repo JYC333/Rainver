@@ -193,6 +193,8 @@ what is installed.
 | Database access | `pg` with hand-written SQL, confined to repositories | `server/src/db/`, module `repository.ts` |
 | Schema authoring | `drizzle-orm` — **declaration only, never a query layer** | `server/src/db/schema/` |
 | Migration artifacts | `drizzle-kit` generate appended to the committed chain | `server/migrations/`, `pnpm run schema:generate -- --name <name>` |
+| Authentication protocol, password/account/session primitives | `better-auth` through the Rainver auth facade; no public catch-all handler | `server/src/modules/auth/`, auth plan |
+| Password hashing | `@node-rs/argon2` Argon2id through the auth security policy module | `server/src/modules/auth/securityPolicy.ts` |
 | Transactions | `withTransaction`, `withQueryableTransaction` | `server/src/db/tx.ts`, `server/src/modules/routeUtils/common.ts` |
 | Visibility predicates, role helpers, content-access SQL | `access` support package | `server/src/modules/access/` |
 | Outbound HTTP to model providers and CLI runtimes | `undici` + `ProxyAgent` through the network-profile transport | `server/src/modules/networkProfiles/transport.ts` |

@@ -64,12 +64,6 @@ function auth(role: "owner" | "admin" | "reviewer" | "member" | "guest" = "admin
     async logout() {
       throw new Error("not used");
     },
-    async findOrCreateFromGoogle() {
-      throw new Error("not used");
-    },
-    async createSession() {
-      throw new Error("not used");
-    },
   };
 }
 

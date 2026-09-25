@@ -81,6 +81,7 @@ import { frontendSupportModule } from "../modules/frontendSupport/index.js";
 import { pluginsModule } from "../modules/plugins/index.js";
 import { plansModule } from "../modules/plans/index.js";
 import { routingModule } from "../modules/routing/index.js";
+import { createAuthRuntime, setAuthRuntimeForComposition, type AuthRuntime } from "../modules/auth/identity.js";
 // Plugin host — activates built-in official plugins after SERVER_MODULES.
 import type { PluginHost } from "../modules/plugins/host/index.js";
 import { registerGatewayConventions, registerUnknownApiRoute } from "./appShell.js";
@@ -92,6 +93,8 @@ export interface ModuleContext {
   snapshot: ConfigSnapshot;
   /** Built-in official plugin host for modules that own extension registries. */
   pluginHost?: PluginHost;
+  /** Composition-owned Better Auth instance and repository. */
+  authRuntime?: AuthRuntime | null;
 }
 
 /** Contract every server-owned backend module implements. */
@@ -183,7 +186,9 @@ export function registerServerRoutes(
   config: ServerConfig,
   pluginHost?: PluginHost,
 ): void {
-  const context: ModuleContext = { config, snapshot: createConfigSnapshot(config), pluginHost };
+  const authRuntime = createAuthRuntime(config);
+  setAuthRuntimeForComposition(authRuntime);
+  const context: ModuleContext = { config, snapshot: createConfigSnapshot(config), pluginHost, authRuntime };
 
   registerGatewayConventions(app, config);
 

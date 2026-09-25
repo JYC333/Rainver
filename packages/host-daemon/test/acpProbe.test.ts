@@ -23,13 +23,28 @@ describe('ACP authentication method parsing', () => {
   it('reports unauthenticated only for auth_required; another session failure keeps the advertised methods with the login state unknown', () => {
     const methods = parseAcpAuthMethods([{ id: 'browser', name: 'Browser' }])
     expect(parseAcpSessionProbeResult(undefined, { code: -32000, data: { reason: 'auth_required' } }, methods))
-      .toMatchObject({ authenticated: false, auth_methods: [expect.objectContaining({ id: 'browser' })] })
+      .toMatchObject({ session_available: false, auth_methods: [expect.objectContaining({ id: 'browser' })] })
     // The methods are the only login path a registry agent has, and not
     // every agent says auth_required when it is not logged in.
     expect(parseAcpSessionProbeResult(undefined, { code: -32000, message: 'workspace failed' }, methods))
-      .toEqual({ config_options: [], auth_methods: methods, authenticated: null })
+      .toEqual({ config_options: [], auth_methods: methods, session_available: null })
     // With nothing advertised there is nothing to keep: inconclusive.
     expect(parseAcpSessionProbeResult(undefined, { code: -32000, message: 'workspace failed' }, [])).toBeNull()
+  })
+
+  it('exposes model choices from a successful anonymous ACP session without calling auth', () => {
+    const result = parseAcpSessionProbeResult({
+      sessionId: 'anonymous',
+      configOptions: [{
+        id: 'model', name: 'Model', category: 'model', type: 'select',
+        currentValue: 'free', options: [{ value: 'free', name: 'Free model' }],
+      }],
+    }, undefined, [])
+    expect(result).toMatchObject({
+      session_available: true,
+      auth_methods: [],
+      config_options: [expect.objectContaining({ category: 'model', current_value: 'free' })],
+    })
   })
 })
 
@@ -119,6 +134,35 @@ describe('probeAcpOptions failure reporting', () => {
   })
 })
 
+describe('probeAcpOptions anonymous model discovery', () => {
+  it('reads model choices through session/new without an authenticate call', async () => {
+    const { probeAcpOptions } = await import('../src/acpProbe.js')
+    const script = `
+      const rl = require("node:readline").createInterface({ input: process.stdin });
+      setInterval(() => {}, 1000);
+      rl.on("line", (line) => {
+        if (!line.trim()) return;
+        const msg = JSON.parse(line);
+        const reply = (body) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...body }) + "\\n");
+        if (msg.method === "initialize") return reply({ result: { authMethods: [] } });
+        if (msg.method === "authenticate") return reply({ error: { code: -32000, message: "Unexpected authenticate" } });
+        if (msg.method === "session/new") return reply({ result: {
+          sessionId: "anonymous", configOptions: [{ id: "model", name: "Model", category: "model", type: "select",
+            currentValue: "free", options: [{ value: "free", name: "Free model" }] }],
+        } });
+      });
+    `
+    const result = await probeAcpOptions(process.execPath, ['-e', script], {}, process.cwd(), 10_000)
+    expect(result).toMatchObject({
+      session_available: true,
+      auth_methods: [],
+      config_options: [expect.objectContaining({
+        category: 'model', current_value: 'free',
+        options: [expect.objectContaining({ value: 'free' })],
+      })],
+    })
+  })
+})
 describe('probeAcpOptions authentication', () => {
   // A fake Cursor: advertises cursor_login, refuses the first session with the
   // message-only phrasing, accepts authenticate when told to, then opens.
@@ -147,12 +191,12 @@ describe('probeAcpOptions authentication', () => {
   it('authenticates with the advertised Agent-Auth method and reports a logged-in copy', async () => {
     const { probeAcpOptions } = await import('../src/acpProbe.js')
     const result = await probeAcpOptions(process.execPath, ['-e', fakeAgent(true)], {}, process.cwd(), 10_000)
-    expect(result).toMatchObject({ authenticated: true, auth_methods: [expect.objectContaining({ id: 'cursor_login' })] })
+    expect(result).toMatchObject({ session_available: true, auth_methods: [expect.objectContaining({ id: 'cursor_login' })] })
   })
 
   it('reports a copy whose authenticate is refused as not logged in, methods intact', async () => {
     const { probeAcpOptions } = await import('../src/acpProbe.js')
     const result = await probeAcpOptions(process.execPath, ['-e', fakeAgent(false)], {}, process.cwd(), 10_000)
-    expect(result).toEqual({ config_options: [], auth_methods: [expect.objectContaining({ id: 'cursor_login' })], authenticated: false })
+    expect(result).toEqual({ config_options: [], auth_methods: [expect.objectContaining({ id: 'cursor_login' })], session_available: false })
   })
 })

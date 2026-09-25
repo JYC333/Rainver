@@ -56,6 +56,26 @@ describe("createOutboundGuard", () => {
     await expect(guard.pin(new URL("https://empty.test/x"))).rejects.toMatchObject({ status: 422 });
   });
 
+  it("accepts synthetic DNS only under an explicit hostname transport policy", async () => {
+    const fake = [{ address: "198.18.0.66", family: 4 }];
+    const direct = createOutboundGuard({ lookup: async () => fake });
+    const tun = createOutboundGuard({
+      lookup: async () => fake,
+      allowSyntheticDnsHostname: () => true,
+    });
+    await expect(direct.pin(new URL("https://github.com/release"))).rejects.toMatchObject({ status: 422 });
+    await expect(tun.pin(new URL("https://github.com/release"))).resolves.toEqual(fake);
+    await expect(tun.pin(new URL("https://198.18.0.66/release"))).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("still refuses a private DNS answer mixed with a synthetic one", async () => {
+    const guard = createOutboundGuard({
+      lookup: async () => [{ address: "198.18.0.66", family: 4 }, { address: "10.0.0.5", family: 4 }],
+      allowSyntheticDnsHostname: () => true,
+    });
+    await expect(guard.pin(new URL("https://mixed.example/release"))).rejects.toMatchObject({ status: 422 });
+  });
+
   it("times out a resolver that never answers", async () => {
     const guard = createOutboundGuard({ lookup: () => new Promise(() => {}), dnsTimeoutMs: 20 });
     const started = Date.now();

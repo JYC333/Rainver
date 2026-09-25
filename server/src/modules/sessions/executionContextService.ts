@@ -497,8 +497,12 @@ export class ConversationExecutionContextService {
     for (const participant of participantAgents) {
       if (!visibleParticipantAgentIds.includes(participant.agent_id)) continue;
       for (const target of hostTargets) {
+        const reportedHost = hosts.find((host) => host.id === target.host_id) ?? null;
         for (const runtime of target.runtimes) {
           for (const installation of runtime.installations) {
+            const availability = reportedHost
+              ? hostInstallationAvailability(reportedHost, runtime.runtime_key, installation.id)
+              : { usable: false, reason: "The execution Host is unavailable" };
             const workspaceChoices = [
               ...(target.managed_workspace_available
                 ? [{ mode: "managed" as const, locationId: null, ready: true }]
@@ -519,7 +523,7 @@ export class ConversationExecutionContextService {
                 runtime_installation: installation.id,
               });
               if (existingTargets.has(candidateKey)) continue;
-              const usable = target.host_online && workspace.ready && installation.logged_in !== false;
+              const usable = target.host_online && workspace.ready && availability.usable;
               availableRuntimeProfiles.push({
                 agent_id: participant.agent_id,
                 agent_name: participant.agent_name,
@@ -535,9 +539,7 @@ export class ConversationExecutionContextService {
                   ? "The execution Host is offline"
                   : !workspace.ready
                     ? "The Workspace Location is not ready"
-                    : installation.logged_in === false
-                      ? "The CLI installation is not logged in"
-                      : null,
+                    : availability.reason,
               });
             }
           }
@@ -1055,6 +1057,8 @@ function hostInstallationAvailability(
   const installation = normalizeHostCapabilities(host.capabilities_json).installations[runtimeKey]
     ?.find((candidate) => candidate.id === installationId);
   if (!installation) return { usable: false, reason: "The CLI installation is unavailable on the Host" };
-  if (installation.logged_in === false) return { usable: false, reason: "The CLI installation is not logged in" };
+  if (installation.logged_in === false && installation.options?.session_available !== true) {
+    return { usable: false, reason: "The CLI installation has no signed-in account or available ACP session" };
+  }
   return { usable: true, reason: null };
 }

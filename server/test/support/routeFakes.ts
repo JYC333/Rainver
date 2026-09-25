@@ -23,8 +23,6 @@ export function fakeAuthRepository(role: "owner" | "admin" | "reviewer" | "membe
     async getCurrentUser() { throw new Error("not used"); },
     async getUserSpaces() { throw new Error("not used"); },
     async logout() { throw new Error("not used"); },
-    async findOrCreateFromGoogle() { throw new Error("not used"); },
-    async createSession() { throw new Error("not used"); },
   };
 }
 
@@ -38,8 +36,6 @@ export function deniedAuthRepository(): AuthRepository {
     async getCurrentUser() { throw new Error("not used"); },
     async getUserSpaces() { throw new Error("not used"); },
     async logout() { throw new Error("not used"); },
-    async findOrCreateFromGoogle() { throw new Error("not used"); },
-    async createSession() { throw new Error("not used"); },
   };
 }
 

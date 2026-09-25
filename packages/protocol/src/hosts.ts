@@ -109,8 +109,8 @@ export const RuntimeOptionsSchema = z.object({
   auth_methods: z.array(RuntimeAuthMethodSchema).optional(),
   /** Rainver verified that this managed copy supports its fixed top-level `login` command. */
   cli_login_available: z.boolean().optional(),
-  /** Whether the post-initialize session probe succeeded; null when not tested. */
-  authenticated: z.boolean().nullable().optional(),
+  /** Whether ACP session/new succeeded; independent of native account state. Null when inconclusive. */
+  session_available: z.boolean().nullable().optional(),
   /** ACP initialize prompt capabilities; null means the probe could not establish them. */
   prompt_capabilities: RuntimePromptCapabilitiesSchema.nullable().optional(),
 });

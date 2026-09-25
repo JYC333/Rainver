@@ -96,7 +96,7 @@ export default function SpaceSettingsPage() {
     try {
       const inv = await spacesApi.invite(activeSpaceId, { email: inviteEmail.trim(), role: inviteRole })
       toast.success(`Invitation sent to ${inv.invited_email}`)
-      const link = `${window.location.origin}/invitations/${inv.token}`
+      const link = `${window.location.origin}/invitations/claim#token=${encodeURIComponent(inv.token)}`
       await navigator.clipboard.writeText(link).catch(() => null)
       toast.info('Invite link copied to clipboard')
       setInviteEmail('')

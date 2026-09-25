@@ -167,8 +167,8 @@ describe("finding what a re-added Agent restores", () => {
     // machine is not this person's to ask for.
     const other = randomUUID();
     await db.pool.query(
-      `INSERT INTO users (id, email, display_name, status, created_at, updated_at)
-       VALUES ($1, 'other@example.com', 'Other', 'active', now(), now())`,
+      `INSERT INTO users (id, email, display_name, status, created_at, updated_at, registration_source)
+       VALUES ($1, 'other@example.com', 'Other', 'active', now(), now(), 'system')`,
       [other],
     );
     await db.pool.query(`UPDATE hosts SET owner_user_id = $2 WHERE id = $1`, [HOST, other]);

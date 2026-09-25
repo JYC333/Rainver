@@ -118,8 +118,8 @@ beforeEach(async () => {
   );
   for (const [id, name] of [[OWNER, "Owner"], [OTHER, "Teammate"]] as const) {
     await db.pool!.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ($1, $2, 'active', now(), now())`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, $2, 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [id, name],
     );
   }

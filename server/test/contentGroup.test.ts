@@ -40,8 +40,8 @@ describe("contentAccessDefencesDb", () => {
     );
     for (const [id, name] of [[OWNER, "Owner"], [VIEWER, "Viewer"]]) {
       await db.pool.query(
-        `INSERT INTO users (id, display_name, status, created_at, updated_at)
-         VALUES ($1, $2, 'active', now(), now())`,
+        `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+         VALUES ($1, $2, 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
         [id, name],
       );
     }
@@ -220,9 +220,9 @@ describe("contentCreationContextDb", () => {
       const now = new Date().toISOString();
       await resetTables(db.pool, ["spaces", "users"], { cascade: true });
       await db.pool.query(
-        `INSERT INTO users (id, display_name, status, created_at, updated_at)
-         VALUES ($1, 'Creator', 'active', $3, $3),
-                ($2, 'Viewer', 'active', $3, $3)`,
+        `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+         VALUES ($1, 'Creator', 'active', $3, $3, lower(gen_random_uuid()::text || '@test.invalid'), 'system'),
+                ($2, 'Viewer', 'active', $3, $3, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
         [userId, viewerId, now],
       );
       await db.pool.query(
@@ -346,10 +346,10 @@ describe("contentDerivationVisibilityDb", () => {
     const now = new Date().toISOString();
     await resetTables(db.pool, ["spaces", "users"], { cascade: true });
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at)
-       VALUES ($1, 'Owner', 'active', $4, $4),
-              ($2, 'Member', 'active', $4, $4),
-              ($3, 'Other member', 'active', $4, $4)`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Owner', 'active', $4, $4, lower(gen_random_uuid()::text || '@test.invalid'), 'system'),
+              ($2, 'Member', 'active', $4, $4, lower(gen_random_uuid()::text || '@test.invalid'), 'system'),
+              ($3, 'Other member', 'active', $4, $4, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [OWNER_ID, MEMBER_ID, OTHER_MEMBER_ID, now],
     );
     await db.pool.query(

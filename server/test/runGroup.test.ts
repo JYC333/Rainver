@@ -236,7 +236,7 @@ describe("runDelegationIdempotencyDb", () => {
       { cascade: true },
     );
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'User', 'active', $2, $2)`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1, 'User', 'active', $2, $2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [USER, now],
     );
     await db.pool.query(
@@ -365,7 +365,7 @@ describe("runDelegationIdempotencyDb", () => {
       const other = "user-2";
       const now = new Date().toISOString();
       await db.pool.query(
-        `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'Other', 'active', $2, $2)`,
+        `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1, 'Other', 'active', $2, $2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
         [other, now],
       );
       await db.pool.query(

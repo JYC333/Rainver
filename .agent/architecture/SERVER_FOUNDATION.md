@@ -61,7 +61,7 @@ command, not a startup hook.
 
 `server/migrations/` is the append-only migration chain: the frozen
 `0000_baseline.sql` plus one numbered file per schema change. That baseline
-starts the 2026-09-21 ACP runtime-authority schema epoch (ADR 0022 §5, B59):
+starts the 2026-09-23 authentication-foundation schema epoch (ADR 0023, B59):
 a pre-epoch database has no upgrade path and must be recreated from it, while
 everything after it is append-only. Ordinary schema
 changes start in `server/src/db/schema/`, run through
@@ -78,3 +78,12 @@ When adding a new configuration surface, update:
 - `ops/compose/docker-compose.{dev,test,prod}.yml` when the service needs it;
 - `ops/scripts/lib/local-compose.sh` when compose env generation changes;
 - [`SERVER_OWNERSHIP.md`](SERVER_OWNERSHIP.md).
+## Authentication composition
+
+Authentication is composed once in `routeRegistry.ts` as an `AuthRuntime`.
+The `auth` module exposes explicit Rainver facade routes and delegates identity,
+password, OAuth state, verification and sessions to Better Auth through the
+typed custom PostgreSQL adapter. No catch-all Better Auth handler or runtime
+Drizzle query adapter is mounted. Registration provisioning remains a Rainver
+transaction because Better Auth identity creation and Space membership have
+different authorities.

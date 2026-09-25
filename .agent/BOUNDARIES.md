@@ -641,18 +641,25 @@ previous build — expand in the release that needs the new shape, contract in a
 later one. That is a constraint on what a single release may drop or rename, not
 a licence for compatibility code: B58 still applies to the application.
 
-The chain has been folded exactly once, and that fold is the only authorized
-one: the **2026-09-21 ACP runtime-authority schema epoch**
+The chain has two explicitly authorized pre-release folds. The
+**2026-09-21 ACP runtime-authority schema epoch**
 ([ADR 0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) §5)
-replaced the prior baseline and its numbered files with one newly generated
-`0000_baseline.sql`. A database from before that epoch has no upgrade path and
-no compatible backup restore: it must be recreated from the new baseline, which
-is why the reset needed its own accepted decision and its own authorization to
-delete data. `server/migrations/README.md` states the epoch beside the chain,
-and `baselineSchema.test.ts` pins the new baseline's hash and the one-migration
-chain shape. Everything after that baseline is append-only again on the terms
-above; a new epoch is not a repeatable maintenance technique, and nothing in
-this paragraph licenses folding an ordinary change back into the baseline.
+first replaced the preceding chain. The **2026-09-23 authentication-foundation
+schema epoch**
+([ADR 0023](decisions/0023-authentication-foundation-schema-epoch.md)) then
+folded the provisional authentication add/correct/drop migrations into the
+current Drizzle-generated `0000_baseline.sql`, after the operator confirmed
+that no schema history or user data needed preservation. A database from before
+the current epoch has no upgrade path or compatible backup restore: it must be
+recreated from the baseline. Neither decision itself authorizes deleting a
+running database.
+
+`server/migrations/README.md` states the current epoch beside the chain, and
+`baselineSchema.test.ts` pins its hash and one-migration shape. Everything
+after the current baseline is append-only again on the terms above. A schema
+epoch is not a repeatable maintenance technique: any future fold needs its own
+accepted decision and explicit data-loss acknowledgement; nothing in this
+paragraph licenses folding an ordinary change back into the baseline.
 
 The exception is an **offline maintenance migration**, and it is marked as one:
 `-- rainver:maintenance` on a line of its own within the first 20 lines of the SQL file. Such a

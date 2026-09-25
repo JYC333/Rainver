@@ -434,11 +434,14 @@ export const ContextWindowAllocationsSchema = z.object({
 }).strict();
 export type ContextWindowAllocations = z.infer<typeof ContextWindowAllocationsSchema>;
 
+export const ACP_RUNTIME_MANAGED_CATALOG_VERSION = "acp-runtime-managed.v1";
+
 export const ContextWindowPlanSchema = z.object({
   model: z.string().min(1).nullable(),
   model_catalog_version: z.string().min(1),
   tokenizer_version: z.string().min(1),
-  total_window_tokens: z.number().int().positive(),
+  // Null means the ACP runtime, not Rainver, owns the model's unpublished limit.
+  total_window_tokens: z.number().int().positive().nullable(),
   reserved_output_tokens: z.number().int().nonnegative(),
   provider_overhead_tokens: z.number().int().nonnegative(),
   planned_prompt_tokens: z.number().int().nonnegative(),
@@ -446,6 +449,13 @@ export const ContextWindowPlanSchema = z.object({
   decisions: z.array(ContextWindowDecisionSchema),
   overflow_blockers: z.array(z.string()),
 }).strict().superRefine((plan, context) => {
+  if ((plan.total_window_tokens === null) !== (plan.model_catalog_version === ACP_RUNTIME_MANAGED_CATALOG_VERSION)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "An unpublished ACP window must use the runtime-managed catalog marker",
+      path: ["total_window_tokens"],
+    });
+  }
   const decisionIds = new Set<string>();
   for (const [index, decision] of plan.decisions.entries()) {
     if (decisionIds.has(decision.item_id)) {
@@ -460,7 +470,7 @@ export const ContextWindowPlanSchema = z.object({
   const committedTokens = plan.planned_prompt_tokens
     + plan.reserved_output_tokens
     + plan.provider_overhead_tokens;
-  if (committedTokens > plan.total_window_tokens) {
+  if (plan.total_window_tokens !== null && committedTokens > plan.total_window_tokens) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: "planned prompt, output reserve, and provider overhead exceed the model window",

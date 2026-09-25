@@ -567,6 +567,30 @@ describe("host_threads owner constraints", () => {
     expect(chosen.hostBackends[0]).toMatchObject({ hostId: HOST, runtimeKey: "opencode" });
   });
 
+  it("offers a session-ready CLI without a native login, but not one whose ACP session requires auth", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const { SpaceAssistantService } = await import("../src/modules/agents/spaceAssistantService.js");
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const report = async (sessionAvailable: boolean) => db.pool.query(
+      `UPDATE hosts SET last_heartbeat_at = now(), capabilities_json = $2::jsonb WHERE id = $1`,
+      [HOST, JSON.stringify({ installations: { opencode: [{
+        id: "own", version: "1.0.0", logged_in: false,
+        options: { session_available: sessionAvailable, config_options: [{
+          id: "model", name: "Model", category: "model", type: "select", current_value: "free",
+          options: [{ value: "free", name: "Free", description: null, group: null }],
+        }] },
+      }] } })],
+    );
+    await report(true);
+    const ready = await SpaceAssistantService.prepareForRoomCreator(db.pool, loadConfig({}), identity);
+    expect(ready.hostBackends).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hostId: HOST, runtimeKey: "opencode", installation: "own" }),
+    ]));
+    await report(false);
+    const authRequired = await SpaceAssistantService.prepareForRoomCreator(db.pool, loadConfig({}), identity);
+    expect(authRequired.hostBackends.find((backend) => backend.hostId === HOST)).toBeUndefined();
+  });
+
   it("records thread events for a managed direct thread that has no Project", async (ctx) => {
     if (!db.available) return ctx.skip();
     const threads = new PgHostThreadRepository(db.pool);

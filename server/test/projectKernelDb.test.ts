@@ -44,8 +44,8 @@ beforeEach(async () => {
   );
   await seedServerHost(db.pool, { id: HOST, now });
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES
-       ($1, 'Owner', 'active', $4, $4), ($2, 'Outsider', 'active', $4, $4), ($3, 'Viewer', 'active', $4, $4)`,
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES
+       ($1, 'Owner', 'active', $4, $4, lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ($2, 'Outsider', 'active', $4, $4, lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ($3, 'Viewer', 'active', $4, $4, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [OWNER, OUTSIDER, VIEWER, now],
   );
   await db.pool.query(

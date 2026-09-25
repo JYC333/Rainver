@@ -16,6 +16,7 @@ describe("backup policy guard", () => {
   it("fails fast in prod when backups are disabled and unacknowledged", () => {
     const config = loadConfig({
       RAINVER_ENV: "prod",
+      BETTER_AUTH_SECRET: "test-better-auth-secret",
       BACKUP_ENABLED: "false",
       BACKUP_ACCEPT_NO_BACKUP: "false",
     });
@@ -26,6 +27,7 @@ describe("backup policy guard", () => {
     const warn = vi.fn();
     const config = loadConfig({
       RAINVER_ENV: "prod",
+      BETTER_AUTH_SECRET: "test-better-auth-secret",
       BACKUP_ENABLED: "false",
       BACKUP_ACCEPT_NO_BACKUP: "true",
     });

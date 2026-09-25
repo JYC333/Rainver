@@ -144,8 +144,8 @@ export const contextWindowReconciliations = pgTable("context_window_reconciliati
   spaceId: varchar("space_id", { length: 36 }).notNull(),
   invocationId: varchar("invocation_id", { length: 36 }).notNull(),
   deliveryId: varchar("delivery_id", { length: 36 }),
-  // Nullable: a `runtime_native` Run has no model until its ACP session starts,
-  // so planning records the window plan with no model name for it.
+  // Nullable: a native ACP Run without an explicit model selection has no
+  // model name at planning time; an explicit ACP selection is recorded here.
   model: varchar({ length: 256 }),
   modelCatalogVersion: varchar("model_catalog_version", { length: 64 }).notNull(),
   tokenizerVersion: varchar("tokenizer_version", { length: 64 }).notNull(),

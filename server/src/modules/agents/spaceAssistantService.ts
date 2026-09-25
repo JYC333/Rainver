@@ -551,7 +551,8 @@ async function listHostBackends(
     // that would leak across Spaces.
     const runtimeKeys = Object.keys(capabilities.installations).sort((a, b) => rank(a) - rank(b));
     for (const runtimeKey of runtimeKeys) {
-      const installation = capabilities.installations[runtimeKey]?.find((copy) => copy.logged_in === true);
+      const installation = capabilities.installations[runtimeKey]?.find((copy) =>
+        copy.logged_in === true || copy.options?.session_available === true);
       if (!installation) continue;
       backends.push({ hostId: host.id, hostName: host.name, runtimeKey, installation: installation.id });
     }

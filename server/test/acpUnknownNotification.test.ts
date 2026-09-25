@@ -155,3 +155,59 @@ describe("the vendor session a failed turn leaves behind", () => {
     expect(acp.result().external_session_id).toBe("s-1");
   });
 });
+
+describe("ACP session updates between Delivery phases", () => {
+  it("accepts session metadata while acknowledging a prompt and after the final response", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const projected: Record<string, unknown>[] = [];
+    let acknowledge!: () => void;
+    const acknowledgement = new Promise<void>((resolve) => { acknowledge = resolve; });
+    const acp = createCliConversationController({
+      runtime_key: "opencode",
+      cwd: "/workspace",
+      prompts: ["context", "current user request"],
+      before_next_prompt: () => acknowledgement,
+      on_protocol_event: (event) => projected.push(event),
+    })!;
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    let closed = false;
+    const close = () => { closed = true; };
+    const update = (sessionId: string) => ({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { sessionId, update: { sessionUpdate: "available_commands_update", availableCommands: [] } },
+    });
+
+    acp.start(send);
+    await acp.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
+    await acp.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1", configOptions: [] } }, send, close);
+    await acp.receive({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } }, send, close);
+    await acp.receive(update("session-1"), send, close);
+    expect(acp.result().error).toBeNull();
+    expect(projected).toHaveLength(1); // initialize response only
+    expect(sent.filter((message) => message.method === "session/prompt")).toHaveLength(1);
+
+    acknowledge();
+    await Promise.resolve();
+    expect(sent.filter((message) => message.method === "session/prompt")).toHaveLength(2);
+    await acp.receive({ jsonrpc: "2.0", id: 5, result: { stopReason: "end_turn" } }, send, close);
+    await acp.receive(update("session-1"), send, close);
+    expect(acp.result().error).toBeNull();
+    expect(acp.result().completed).toBe(true);
+    expect(closed).toBe(true);
+    expect(projected).toHaveLength(1);
+  });
+
+  it("still rejects an out-of-scope update while waiting for a prompt", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const acp = createCliConversationController({ runtime_key: "opencode", cwd: "/workspace", prompt: "hello" })!;
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    acp.start(send);
+    await acp.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => {});
+    await acp.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1", configOptions: [] } }, send, () => {});
+    await acp.receive({ jsonrpc: "2.0", method: "session/update", params: {
+      sessionId: "another-session", update: { sessionUpdate: "available_commands_update", availableCommands: [] },
+    } }, send, () => {});
+    expect(acp.result().error).toContain("out-of-scope session update");
+  });
+});

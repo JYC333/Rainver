@@ -26,6 +26,12 @@ daemon contract serves the built-in Server Runtime and paired Hosts, with
 strict isolation on the built-in Host and owner-managed execution on paired
 Hosts. The application server never spawns a vendor process.
 
+ACP model selectors expose choices, not reliable context-window sizes. Native
+CLI Runs therefore retain a server-owned Delivery and bounded optional context
+without a fabricated per-model fit gate. The runtime reports actual capacity
+failures; Rainver does not infer a window from the model name or maintain a
+CLI-specific model table.
+
 **The tool surface is adapter-neutral.** When `run_input.v1` contains tool
 grants, the executing side puts the `rainver` command (`packages/agent-cli`)
 in front of the Run as an absolute path in `RAINVER_CLI`, writes the Rainver
@@ -45,9 +51,11 @@ runtime has on the host wire and in a managed installation's manifest; there is
 no second identity field. The `/runtime-adapters` and `/runtime-tools` instance
 APIs are both retired.
 
-What a host reports about a copy is non-mutating: its id, version, whether it
-is logged in, the accounts a multi-account CLI holds, and the version kept
-behind it. Reading it creates no run, sandbox, event or model call.
+What a host reports about a copy is non-mutating: its id, version, native
+account state, ACP session availability and options, held account names, and
+the version kept behind it. ACP `session/new` supplies a generic model
+selector when the runtime offers one, including without a native login.
+Reading it creates no Run, sandbox, event or model call.
 
 A runtime profile binds a copy by `execution_host_id` + `runtime_installation`;
 there is no credential profile to bind, because the copy's login lives on the

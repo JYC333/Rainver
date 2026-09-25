@@ -53,8 +53,8 @@ beforeEach(async () => {
   );
   const { now } = await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
   await db.pool.query(
-    `INSERT INTO users (id, email, display_name, status, created_at, updated_at)
-     VALUES ($1, 'other@example.com', 'Other', 'active', $2, $2)`,
+    `INSERT INTO users (id, email, display_name, status, created_at, updated_at, registration_source)
+     VALUES ($1, 'other@example.com', 'Other', 'active', $2, $2, 'system')`,
     [OTHER, now],
   );
   await db.pool.query(

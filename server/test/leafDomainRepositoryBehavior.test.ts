@@ -29,6 +29,7 @@ function sourcesConfig(): ServerConfig {
     deployerSocketPath: "/tmp/rainver/run/deployer.sock",
     artifactStorageRoot: "/tmp/rainver/storage/artifacts",
     internalToken: null,
+    betterAuthSecret: null,
     instanceAdminEmail: null,
     googleClientId: "",
     googleClientSecret: "",

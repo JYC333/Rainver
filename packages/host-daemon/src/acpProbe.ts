@@ -209,12 +209,12 @@ export function parseAcpSessionProbeResult(
     // dropping the methods here left such a copy with no Log in button and
     // no way to ever become logged in. Keep them; the login state is unknown.
     if (authMethods.length === 0) return null;
-    return { config_options: [], auth_methods: authMethods, authenticated: null, ...capabilityFields };
+    return { config_options: [], auth_methods: authMethods, session_available: null, ...capabilityFields };
   }
   return {
     ...parseAcpSessionOptions(result),
     auth_methods: authMethods,
-    authenticated: error === undefined,
+    session_available: error === undefined,
     ...capabilityFields,
   };
 }
@@ -227,8 +227,8 @@ export function parseAcpSessionProbeResult(
  * caller decides how often it is worth paying — the answer changes only when
  * the CLI is reconfigured or upgraded.
  *
- * A runtime that is not installed, not logged in, or slow to start yields null
- * rather than throwing: a probe that cannot answer must cost the option list,
+ * A runtime that is not installed or is slow to start yields null rather than
+ * throwing: a probe that cannot answer must cost the option list,
  * never the heartbeat that carries it.
  */
 export function probeAcpOptions(
@@ -254,8 +254,8 @@ export function probeAcpOptions(
     // ACP Agent Auth is per process: a copy that is logged in on this host
     // still answers its first session request with "authenticate first". Do
     // what a Run's session controller does — authenticate with the advertised
-    // Agent-Auth method once and ask again — so `authenticated` reports the
-    // copy's real state rather than the protocol's first refusal.
+    // Agent-Auth method once and ask again. `session_available` reports whether
+    // ACP session setup succeeded, independently of any native login file.
     let authenticateTried = false;
     let sessionRequestId = 2;
     const openSession = () => {
@@ -344,7 +344,7 @@ export function probeAcpOptions(
             finish({
               config_options: [],
               auth_methods: authMethods,
-              authenticated: false,
+              session_available: false,
               ...(promptCapabilities ? { prompt_capabilities: promptCapabilities } : {}),
             });
             continue;

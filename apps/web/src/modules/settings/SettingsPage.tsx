@@ -88,6 +88,13 @@ export default function SettingsPage() {
 
       {/* Model providers */}
       <Card>
+        <CardTitle className="flex items-center gap-2"><KeyRound className="size-3.5" /> Account security</CardTitle>
+        <p className="text-sm text-muted-foreground mb-3">Manage password, Google login, reauthentication, and active sessions.</p>
+        <Button asChild variant="outline" size="sm"><Link to="/settings/security">Open Security</Link></Button>
+      </Card>
+
+      {/* Model providers */}
+      <Card>
         <CardTitle className="flex items-center gap-2">
           <KeyRound className="size-3.5" /> Model Providers
         </CardTitle>

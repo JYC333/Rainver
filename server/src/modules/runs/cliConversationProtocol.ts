@@ -407,11 +407,16 @@ export class AcpController implements CliStdioController {
       if (update.sessionUpdate === "config_option_update") {
         this.captureConfigOptions(update);
       }
-      if (this.phase !== "set_config" && this.phase !== "prompt") {
+      // Session metadata notifications are not scoped to a prompt turn. An
+      // Agent may publish them while we acknowledge one prompt before sending
+      // the next, or just after its final prompt response. Message chunks
+      // remain turn-scoped and are rejected above outside `prompt`.
+      if (this.phase !== "set_config" && this.phase !== "prompt"
+        && this.phase !== "phase_acknowledge" && this.phase !== "terminal") {
         this.fail(`${this.label()} ACP returned an out-of-order session update`, closeStdin);
         return;
       }
-      if (this.promptIndex === this.promptCount() - 1) {
+      if (this.phase === "prompt" && this.promptIndex === this.promptCount() - 1) {
         this.input.on_protocol_event?.(message);
       }
       return;

@@ -114,12 +114,6 @@ function authWithRole(role: string): AuthRepository {
     async logout() {
       throw new Error("not used");
     },
-    async findOrCreateFromGoogle() {
-      throw new Error("not used");
-    },
-    async createSession() {
-      throw new Error("not used");
-    },
   };
 }
 

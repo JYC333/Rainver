@@ -94,12 +94,12 @@ export default function ServerRuntimeProvisioningPanel({
             Rainver-pinned {installation.desired_version}; installed {installation.installed_version ?? 'none'}; active {installation.active_version ?? 'not reported'}.
           </p>
           <p className="text-xs text-muted-foreground">
-            Native account {nativeAccountLabel(status.native_account.logged_in)}. ModelProvider Profiles use Rainver&apos;s proxy and do not require this login.
+            Native account {nativeAccountLabel(status.native_account.logged_in)}. ACP models may still work without an account; ModelProvider Profiles use Rainver&apos;s proxy.
           </p>
           {/* Plan Phase 4 §8: said where the login actually happens, not only
               on the Agent surfaces that consume it. */}
           <p className="text-xs text-muted-foreground">
-            This login is instance-wide: every person authorized to run Agents on the Server Runtime spends this account.
+            If signed in, this account is instance-wide: every person authorized to run Agents on the Server Runtime can use it.
           </p>
           {installation.error && <p className="text-xs text-destructive">{installation.error}</p>}
           {installation.state === 'failed' && canRetry && (

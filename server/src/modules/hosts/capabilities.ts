@@ -98,7 +98,7 @@ function options(value: unknown): RuntimeOptions | null {
         config_options: configOptions(entry.config_options),
         auth_methods: authMethods(entry.auth_methods),
         cli_login_available: entry.cli_login_available === true,
-        authenticated: typeof entry.authenticated === "boolean" ? entry.authenticated : null,
+        session_available: typeof entry.session_available === "boolean" ? entry.session_available : null,
         prompt_capabilities: promptCapabilities(entry.prompt_capabilities),
       }
     : null;

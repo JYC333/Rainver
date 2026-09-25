@@ -22,7 +22,7 @@ const ALLOWED_BARE = new Set(["fastify", "fast-xml-parser", "undici", "yaml", "z
  * ending in `.ts` matches that exact file; a directory value matches any file
  * beneath it.
  */
-const ALLOWED_BARE_BY_FILE = new Map<string, string>([
+const ALLOWED_BARE_BY_FILE = new Map<string, string | string[]>([
   ["pg", join("src", "db")],
   ["@earendil-works/pi-ai", join("src", "modules", "providers", "invocation", "piAiChat.ts")],
   ["unpdf", join("src", "modules", "sources", "pdfExtract.ts")],
@@ -45,6 +45,13 @@ const ALLOWED_BARE_BY_FILE = new Map<string, string>([
   // schedule façade so no second hand-rolled cron/DST implementation grows
   // elsewhere. See REUSE_AND_DEPENDENCY_POLICY.md's canonical mechanism row.
   ["cron-parser", join("src", "modules", "automations", "schedule.ts")],
+  // Argon2id is the password policy implementation and must not spread into
+  // unrelated server modules.
+  ["@node-rs/argon2", join("src", "modules", "auth")],
+  // Better Auth composition and its Rainver-specific PostgreSQL adapter are
+  // the only runtime auth integration points; no other server module may
+  // import the authentication framework.
+  ["better-auth", [join("src", "modules", "auth"), join("src", "db", "betterAuthPgAdapter.ts")]],
 ]);
 
 /** Substrings that must never appear in any import specifier. */
@@ -106,9 +113,10 @@ describe("server import boundaries", () => {
         const scopedAllowance = ALLOWED_BARE_BY_FILE.get(pkg);
         if (scopedAllowance) {
           // `.ts` value → exact file; directory value → any file beneath it.
-          const allowed = scopedAllowance.endsWith(".ts")
-            ? file.endsWith(scopedAllowance)
-            : file.includes(scopedAllowance + sep);
+          const allowedPaths = Array.isArray(scopedAllowance) ? scopedAllowance : [scopedAllowance];
+          const allowed = allowedPaths.some((path) => path.endsWith(".ts")
+            ? file.endsWith(path)
+            : file.includes(path + sep));
           if (!allowed) {
             offenders.push(`${file}: ${spec} (allowed only from ${scopedAllowance})`);
           }

@@ -71,14 +71,14 @@ const HOST = {
       // Rainver reports the CLI login fallback — the one button the person sees.
       acp_dynamic: [{
         id: 'managed:2.0.0', version: '2.0.0', logged_in: false,
-        options: { config_options: [], authenticated: false, auth_methods: [
+        options: { config_options: [], session_available: false, auth_methods: [
           { id: 'cursor_login', name: 'Cursor Login', description: 'Uses existing Cursor credentials', type: 'agent', args: [], env: {} },
         ], cli_login_available: true },
       }],
       // An Agent whose advertised methods are the whole login story.
       acp_browser_only: [{
         id: 'managed:3.0.0', version: '3.0.0', logged_in: false,
-        options: { config_options: [], authenticated: false, auth_methods: [
+        options: { config_options: [], session_available: false, auth_methods: [
           { id: 'browser', name: 'Browser login', description: 'Open a browser', type: 'agent', args: [], env: {} },
           { id: 'device', name: 'Device login', description: null, type: 'terminal', args: ['login'], env: {} },
         ] },

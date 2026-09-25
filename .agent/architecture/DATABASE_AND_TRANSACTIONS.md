@@ -306,18 +306,31 @@ successful commit and never participate in the critical write outcome.
   `server/migrations/` is both the drizzle-kit output directory (`meta/`
   journal and snapshots) and the **append-only chain** the server migration
   runner applies: the frozen `0000_baseline.sql` followed by one numbered file
-  per schema change. That baseline starts the 2026-09-21 ACP runtime-authority
-  schema epoch (ADR 0022 §5, B59) — a pre-epoch database has no upgrade path
-  and must be recreated from it; within the epoch an older build's database is
-  brought forward by the normal migrate step. Edit the Drizzle schema, then
+  per schema change. That baseline starts the 2026-09-23 authentication-
+  foundation schema epoch (ADR 0023, B59) — a pre-epoch database has no upgrade
+  path and must be recreated from it; within the epoch an older build's database
+  is brought forward by the normal migrate step. Edit the Drizzle schema, then
   `pnpm run schema:generate -- --name <name>` appends the diff (`--custom`
   for an empty file when drizzle-kit cannot derive the change); review the SQL
   and add data backfills before it is applied anywhere. A file any database has
   applied is never edited — the runner records checksums and refuses a changed
   one. `schema:check` (no-write) validates chain shape, declared extensions,
   and schema drift. See `server/migrations/README.md` and B59.
+  Maintenance-marked migrations are deliberately refused by the live-start
+  path once an instance already has an applied release; the offline migration
+  path applies them during a coordinated cutover. The completed authentication
+  foundation is part of the current `0000_baseline.sql` directly: the
+  provisional auth add/correct/drop migrations were retired by ADR 0023, with
+  no legacy backfill, dual read, or compatibility path.
   `ops/scripts/start.sh` never generates a migration; it applies the committed
   chain, so a host running the stack needs Docker but no Node toolchain.
+- Authentication provisioning is a transaction-owned boundary: Better Auth may
+  commit identity/session rows before Rainver creates Spaces and memberships, so
+  `registration_intents` records `pending_user_id` and `provisioning` and the
+  scheduler rechecks stale intents. A retry locks the intent, user and
+  invitation and is idempotent; no external OAuth, password or mail call runs
+  while that transaction is open. Better Auth verification rows are hashed and
+  remain the sole password-reset token issuer.
 - In bundled compose modes, server uses the Postgres owner/app role from
   `POSTGRES_USER`/`POSTGRES_PASSWORD`; ops scripts generate
   `SERVER_DATABASE_URL` from those values and do not maintain a separate

@@ -34,10 +34,10 @@ beforeEach(async () => {
     [SPACE, now],
   );
   await db.pool.query(
-    `INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES
-       ($1,'Owner','active',$4,$4),
-       ($2,'Project member','active',$4,$4),
-       ($3,'Space only','active',$4,$4)`,
+    `INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES
+       ($1,'Owner','active',$4,$4, lower(gen_random_uuid()::text || '@test.invalid'), 'system'),
+       ($2,'Project member','active',$4,$4, lower(gen_random_uuid()::text || '@test.invalid'), 'system'),
+       ($3,'Space only','active',$4,$4, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [OWNER, PROJECT_MEMBER, SPACE_ONLY, now],
   );
   for (const [userId, role] of [[OWNER, "owner"], [PROJECT_MEMBER, "member"], [SPACE_ONLY, "member"]]) {

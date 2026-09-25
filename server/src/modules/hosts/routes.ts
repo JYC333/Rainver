@@ -31,6 +31,7 @@ import { hostInstallationAuthMethods, hostInstallationCliLoginAvailable, hostIns
 import { PgRuntimeProvisioningRepository } from "./runtimeProvisioningRepository.js";
 import { serverOpenCodeProvisioningStatus, sharedServerOpenCodeProvisioner } from "./serverOpenCodeProvisioner.js";
 import { sseResponseHeaders } from "../../gateway/sse.js";
+import { managedHostEgressTransport, readInstanceOperationsPolicy } from "../settings/index.js";
 
 function isFailure(value: unknown): value is AuthFailure | HostFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);
@@ -436,6 +437,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.code(422).send({ detail: `Runtime adapter '${runtimeKey}' has no distribution to install from` });
     }
     const before = await currentManagedVersion(resolved.pool, resolved.hostId, runtimeKey);
+    const egressTransport = targetHost.rows[0]?.kind === "server"
+      ? managedHostEgressTransport(await readInstanceOperationsPolicy(context.config))
+      : { mode: "direct" as const };
     const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "install_tool", {
       runtime_key: runtimeKey,
       version,
@@ -443,6 +447,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       login: probe.login,
       runtime_version_command: getRuntimeAdapterSpec(runtimeKey)?.managed_runtime_version_command ?? null,
       health_check_protocol: getRuntimeAdapterSpec(runtimeKey)?.invocation?.protocol === "acp" ? "acp" : null,
+      egress_transport: egressTransport,
     });
     if (result.ok) {
       await recordHostRuntimeChange(resolved.pool, {
@@ -499,7 +504,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     // Wake the process-wide provisioner rather than building a one-shot one:
     // only the instance that owns a claim heartbeats it, so a throwaway
     // instance's install would be failed as interrupted by the scheduler's.
-    void sharedServerOpenCodeProvisioner(resolved.pool).reconcile();
+    void sharedServerOpenCodeProvisioner(resolved.pool, { config: context.config }).reconcile();
     return reply.code(202).send({
       host_id: resolved.hostId,
       runtime_key: "opencode",

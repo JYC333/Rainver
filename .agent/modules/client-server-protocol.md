@@ -180,3 +180,13 @@ There is no Chat-specific streaming endpoint and no polling execution path.
 
 Unimplemented generic WS / chunk SSE:
 [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §7.
+## Authentication protocol
+
+The auth client uses the explicit `/api/v1/auth/*` facade. Login and recovery
+errors are intentionally generic. Registration authority is carried in a
+short-lived claim secret returned by the invitation/bootstrap intent endpoint;
+the invitation token itself is read from a URL fragment and never sent in a
+request URL. Session-management DTOs contain a server-owned session id and
+metadata, not a cookie token or database digest. Password recovery returns no
+raw link to an unauthenticated caller; an instance admin or the local sole-admin
+CLI retrieves a manual link exactly once.

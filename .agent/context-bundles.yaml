@@ -31,6 +31,7 @@ security-access:
     - .agent/architecture/TESTING_STRATEGY.md
     - .agent/BOUNDARIES.md
     - .agent/modules/policy.md
+    - .agent/modules/auth.md
   code_roots:
     - packages/outbound-guard/src   # the one outbound HTTP boundary
     - server/src/modules/policy

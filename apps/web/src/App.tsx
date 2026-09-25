@@ -10,6 +10,9 @@ import { MODULE_REGISTRY, type Module } from './modules/registry'
 import { Skeleton } from './components/ui/skeleton'
 import LoginPage from './pages/LoginPage'
 import AcceptInvitationPage from './pages/AcceptInvitationPage'
+import RegistrationPage from './pages/RegistrationPage'
+import SecurityPage from './pages/SecurityPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
 import { useAuth } from './contexts/AuthContext'
 import { RequireInstanceAdmin, RequireSpaceAdmin } from './core/RequireRole'
 
@@ -77,7 +80,9 @@ export default function App() {
             <Routes>
               {/* Public routes — outside Shell */}
               <Route path="/login" element={<LoginPage />} />
-              <Route path="/invitations/:token" element={<AcceptInvitationPage />} />
+              <Route path="/register" element={<RegistrationPage />} />
+              <Route path="/invitations/claim" element={<AcceptInvitationPage />} />
+              <Route path="/reset-password" element={<ResetPasswordPage />} />
 
               <Route path="/" element={<RequireAuth><Shell /></RequireAuth>}>
                 {/* Default landing → user-scoped Home (not a Space) */}
@@ -86,6 +91,7 @@ export default function App() {
 
                 {/* Neutral, user-level system surfaces — never carry a Space in the URL. */}
                 {TOP_LEVEL_MODULES.map(moduleRoute)}
+                <Route path="settings/security" element={<SecurityPage />} />
 
                 {/* Space-scoped workspace — every module here operates on the URL's Space. */}
                 <Route path="spaces/:spaceId">

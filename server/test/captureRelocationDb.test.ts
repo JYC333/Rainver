@@ -36,8 +36,8 @@ beforeEach(async () => {
   );
   const now = new Date().toISOString();
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at)
-     VALUES ($1,'Owner','active',$3,$3), ($2,'Mate','active',$3,$3)`,
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+     VALUES ($1,'Owner','active',$3,$3, lower(gen_random_uuid()::text || '@test.invalid'), 'system'), ($2,'Mate','active',$3,$3, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [OWNER, MATE, now],
   );
   await db.pool.query(
@@ -502,7 +502,7 @@ describe("the copy-out Space setting (real Postgres)", () => {
     if (!db.available) return;
     const outsider = randomUUID();
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,'Outsider','active',now(),now())`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1,'Outsider','active',now(),now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [outsider],
     );
     expect(await new PgSpaceRepository(db.pool).getContentEgressSetting(outsider, TEAM))

@@ -8,6 +8,11 @@
 export async function readBodyUpTo(
   response: Response,
   maxBytes: number,
+  options: {
+    idleTimeoutMs?: number;
+    onChunk?: (chunk: Uint8Array) => void | Promise<void>;
+    collectBytes?: boolean;
+  } = {},
 ): Promise<{ bytes: Uint8Array; truncated: boolean }> {
   // A declared length over the ceiling marks the result truncated, but the
   // first `maxBytes` are still read. Returning nothing here instead would make
@@ -28,19 +33,26 @@ export async function readBodyUpTo(
   const chunks: Uint8Array[] = [];
   let total = 0;
   let truncated = false;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.length;
-    chunks.push(value);
-    if (total > maxBytes) {
-      truncated = true;
-      await reader.cancel().catch(() => undefined);
-      break;
+  try {
+    for (;;) {
+      const { done, value } = await readWithIdleTimeout(reader, options.idleTimeoutMs);
+      if (done) break;
+      if (!value?.length) continue;
+      total += value.length;
+      if (total > maxBytes) {
+        if (options.collectBytes !== false) chunks.push(value);
+        truncated = true;
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+      await options.onChunk?.(value);
+      if (options.collectBytes !== false) chunks.push(value);
     }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined);
+    throw error;
   }
-  const kept = Math.min(total, maxBytes);
+  const kept = options.collectBytes === false ? 0 : Math.min(total, maxBytes);
   const out = new Uint8Array(kept);
   let offset = 0;
   for (const chunk of chunks) {
@@ -50,6 +62,33 @@ export async function readBodyUpTo(
     offset += slice.length;
   }
   return { bytes: out, truncated: truncated || declaredOverflow };
+}
+
+async function readWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  idleTimeoutMs: number | undefined,
+): ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]> {
+  if (idleTimeoutMs === undefined) return await reader.read();
+  if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) {
+    throw new RangeError("idleTimeoutMs must be a positive finite number");
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new DOMException(
+            `Response body made no progress for ${idleTimeoutMs} ms`,
+            "TimeoutError",
+          ));
+        }, idleTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**

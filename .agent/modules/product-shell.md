@@ -46,3 +46,11 @@ switcher, or `RuntimeStatusBar`.
 - [0005-desktop-runtime.md](../decisions/0005-desktop-runtime.md)
 
 Unimplemented chrome ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §1.
+## Authentication surfaces
+
+`/login`, `/register`, `/invitations/claim`, and `/reset-password` are public
+routes outside the authenticated shell. `/settings/security` is an authenticated
+user surface inside the shell, with the Settings rail entry remaining available;
+`/instance-settings` contains the instance-admin Users & Security
+panel. A protected route always redirects unauthenticated users to `/login` and
+does not render product data while auth context is loading.

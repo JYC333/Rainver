@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { authApi } from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
+import { Button } from '../components/ui/button'
+import { useAuthConfiguration } from '../hooks/useAuthConfiguration'
 
 /* ── Aperture A mark (inline, no deps) ────────────────────────────────────── */
 function ApertureMark({ size = 56 }: { size?: number }) {
@@ -24,11 +26,22 @@ const ERROR_MESSAGES: Record<string, string> = {
 }
 
 export default function LoginPage() {
-  const { currentUser, isLoading } = useAuth()
+  const { currentUser, isLoading, reloadUser } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const [params] = useSearchParams()
-  const [googleAuthAvailable, setGoogleAuthAvailable] = useState(true)
+  const [params, setParams] = useSearchParams()
+  const {
+    google_auth_available: googleAuthAvailable,
+    bootstrap_registration_available: bootstrapRegistrationAvailable,
+  } = useAuthConfiguration()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [rememberMe, setRememberMe] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [formError, setFormError] = useState('')
+  const [resetSent, setResetSent] = useState('')
+  const [registrationCompleting, setRegistrationCompleting] = useState(false)
+  const attemptedRegistration = useRef<string | null>(null)
 
   // Redirect to the page the user was trying to reach (or home)
   const from = (location.state as { from?: Location })?.from?.pathname ?? '/'
@@ -39,17 +52,46 @@ export default function LoginPage() {
   }, [isLoading, currentUser, navigate, from])
 
   useEffect(() => {
-    authApi.googleConfigured().then(cfg => {
-      setGoogleAuthAvailable(cfg.google_auth_available)
-    }).catch(() => {
-      setGoogleAuthAvailable(false)
-    })
-  }, [])
+    const registrationId = params.get('registration')
+    if (!registrationId || attemptedRegistration.current === registrationId) return
+    attemptedRegistration.current = registrationId
+    setRegistrationCompleting(true)
+    void authApi.completeRegistration({ intent_id: registrationId })
+      .then(async () => { await reloadUser(); navigate(from, { replace: true }) })
+      .catch(() => {
+        setFormError('Google registration could not be completed. Please retry from the invitation.')
+        const next = new URLSearchParams(params)
+        next.delete('registration')
+        setParams(next, { replace: true })
+      })
+      .finally(() => setRegistrationCompleting(false))
+  }, [params, reloadUser, navigate, from, setParams])
 
   const error = params.get('error')
   const errorMsg = error ? (ERROR_MESSAGES[error] ?? 'An error occurred. Please try again.') : null
 
-  if (isLoading) return null
+  async function signIn(event: FormEvent) {
+    event.preventDefault()
+    setBusy(true)
+    setFormError('')
+    try {
+      await authApi.passwordLogin({ email, password, rememberMe })
+      await reloadUser()
+      navigate(from, { replace: true })
+    } catch {
+      setFormError('Invalid email or password.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function requestReset() {
+    setResetSent('')
+    try { await authApi.requestPasswordReset(email); setResetSent('If this email exists, a reset link will be prepared by the instance administrator.') }
+    catch { setResetSent('If this email exists, a reset link will be prepared by the instance administrator.') }
+  }
+
+  if (isLoading || registrationCompleting) return null
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
@@ -66,29 +108,32 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {/* Error */}
-        {errorMsg && (
-          <div
-            className="w-full text-sm px-3 py-2.5 rounded-lg border"
-            style={{
-              background: 'color-mix(in oklch, var(--destructive) 10%, transparent)',
-              borderColor: 'color-mix(in oklch, var(--destructive) 30%, transparent)',
-              color: 'var(--destructive)',
-            }}
-          >
-            {errorMsg}
-          </div>
+        {(errorMsg || formError) && (
+          <div className="w-full text-sm px-3 py-2.5 rounded-lg border text-destructive">{formError || errorMsg}</div>
         )}
 
-        {/* Sign in button */}
+        <form onSubmit={signIn} className="w-full space-y-3">
+          <input value={email} onChange={event => setEmail(event.target.value)} type="email" autoComplete="email" required placeholder="Email" className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm" />
+          <input value={password} onChange={event => setPassword(event.target.value)} type="password" autoComplete="current-password" required placeholder="Password" className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm" />
+          <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={rememberMe} onChange={event => setRememberMe(event.target.checked)} /> Keep me signed in</label>
+          <Button type="submit" disabled={busy} className="w-full h-10">{busy ? 'Signing in…' : 'Sign in'}</Button>
+          <button type="button" onClick={() => void requestReset()} className="w-full cursor-pointer text-xs text-muted-foreground underline">Forgot password?</button>
+        </form>
+        {resetSent && <p className="w-full text-xs text-muted-foreground" role="status">{resetSent}</p>}
+
+        <div className="w-full flex items-center gap-2 text-xs text-muted-foreground"><span className="h-px bg-border flex-1" />or<span className="h-px bg-border flex-1" /></div>
+
+        {/* Google sign in */}
         {googleAuthAvailable ? (
-          <button
+          <Button
+            type="button"
+            variant="outline"
             onClick={() => authApi.googleLogin(params.get('redirect') ?? undefined)}
-            className="w-full flex items-center justify-center gap-3 h-10 px-4 rounded-lg border border-border bg-card text-foreground text-sm font-medium hover:bg-accent transition-colors"
+            className="w-full h-10 gap-3 text-foreground"
           >
             <GoogleIcon />
             Sign in with Google
-          </button>
+          </Button>
         ) : (
           <div className="w-full text-center space-y-2">
             <div
@@ -109,10 +154,9 @@ export default function LoginPage() {
           </div>
         )}
 
-        <p className="text-[11px] text-muted-foreground text-center">
-          Your session is stored securely as an HttpOnly cookie.
-          <br />No password required.
-        </p>
+        {bootstrapRegistrationAvailable && (
+          <button type="button" onClick={() => navigate('/register')} className="cursor-pointer text-xs text-muted-foreground underline">Set up administrator account</button>
+        )}
       </div>
     </div>
   )

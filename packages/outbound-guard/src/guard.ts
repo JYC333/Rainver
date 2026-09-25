@@ -1,6 +1,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { isBlockedAddress } from "./blockList.js";
+import { isBlockedAddress, isSyntheticDnsAddress } from "./blockList.js";
 import { OutboundGuardError, outboundRefused } from "./errors.js";
 
 /** One address a request is allowed to connect to, and the family to dial it as. */
@@ -15,15 +15,15 @@ export type AddressLookup = (hostname: string) => Promise<Array<{ address: strin
 export const DEFAULT_DNS_TIMEOUT_MS = 5_000;
 
 /**
- * Decides which addresses an outbound request may connect to.
+ * Decides which resolved addresses an outbound request may use.
  *
- * The address, not the name, is the decision — and the *same* address is then
- * what the connection is pinned to. Checking a name and letting the HTTP client
- * resolve it again is a race a hostile DNS server wins by answering twice:
- * public for the check, private for the connect.
+ * A direct or TUN transport pins the same checked address for the connection.
+ * Checking a name and letting the HTTP client resolve it again would allow a
+ * DNS rebinding race. An explicitly selected HTTP proxy instead owns final
+ * target resolution; callers must treat that proxy as a trust boundary.
  *
- * Tests that must reach a fixture server supply their own implementation rather
- * than loosening this one; there is no bypass in the production guard.
+ * Fixture tests supply their own guard. Synthetic DNS remains refused by
+ * default and is eligible only under an explicit transport policy.
  */
 export interface OutboundGuard {
   /**
@@ -81,15 +81,33 @@ async function withTimeout<T>(work: Promise<T>, timeoutMs: number, signal: Abort
 
 export const dnsAddressLookup: AddressLookup = (hostname) => dnsLookup(hostname, { all: true });
 
+/** A fake-IP route is valid only for a hostname with no real private answers. */
+export function isSyntheticDnsHostnameRoute(
+  host: string,
+  answers: ReadonlyArray<{ address: string }>,
+  enabled: boolean,
+): boolean {
+  return enabled
+    && isIP(host) === 0
+    && answers.length > 0
+    && answers.some(({ address }) => isSyntheticDnsAddress(address))
+    && answers.every(({ address }) => !isBlockedAddress(address) || isSyntheticDnsAddress(address));
+}
+
 /**
- * The production guard: resolve the name, refuse it if any answer is inside
- * this instance's own network, and pin the rest.
- *
- * *Any*, not *all*: a name with one public and one private answer is a
- * rebinding attempt with the second answer already loaded.
+ * The production guard resolves and pins each answer. Public addresses are
+ * the default; a caller may explicitly select the host's TUN route for
+ * synthetic DNS hostnames. Even then, a real private/internal answer mixed
+ * into the set is refused, because it could be a rebinding attempt.
+ * Literal reserved addresses never qualify for the TUN route.
  */
 export function createOutboundGuard(
-  options: { lookup?: AddressLookup; dnsTimeoutMs?: number } = {},
+  options: {
+    lookup?: AddressLookup;
+    dnsTimeoutMs?: number;
+    /** Explicit transport policy for hostnames whose DNS answers contain TUN fake IPs. */
+    allowSyntheticDnsHostname?: (url: URL) => boolean;
+  } = {},
 ): OutboundGuard {
   const lookup = options.lookup ?? dnsAddressLookup;
   // A resolver that never answers would otherwise hold a scan worker for as
@@ -118,7 +136,12 @@ export function createOutboundGuard(
         throw outboundRefused();
       }
       if (answers.length === 0) throw outboundRefused();
-      if (answers.some((entry) => isBlockedAddress(entry.address))) throw outboundRefused();
+      const syntheticRoute = isSyntheticDnsHostnameRoute(
+        host,
+        answers,
+        options.allowSyntheticDnsHostname?.(url) ?? false,
+      );
+      if (answers.some((entry) => isBlockedAddress(entry.address)) && !syntheticRoute) throw outboundRefused();
       return answers.map((entry) => ({ address: entry.address, family: entry.family === 6 ? 6 : 4 }));
     },
   };

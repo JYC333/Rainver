@@ -134,7 +134,7 @@ async function appliedMap(
 export async function migrate(
   pool: Pool,
   dir: string,
-  opts: { log?: (msg: string) => void } = {},
+  opts: { log?: (msg: string) => void; skipMaintenance?: boolean } = {},
 ): Promise<MigrateResult> {
   const log = opts.log ?? (() => {});
   const files = loadMigrations(dir);
@@ -146,6 +146,10 @@ export async function migrate(
     const done = await appliedMap(client);
 
     for (const file of files) {
+      // A test or an explicitly staged rollout may need the still-running
+      // release's schema without applying an offline cutover. Production
+      // migration commands leave this false and apply every pending file.
+      if (opts.skipMaintenance && requiresMaintenance(file.sql)) continue;
       const prev = done.get(file.version);
       if (prev) {
         if (prev.checksum !== file.checksum) {

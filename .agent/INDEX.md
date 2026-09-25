@@ -208,6 +208,7 @@ Load only the module docs relevant to your task.
 | Project Folder browser / file UI | [modules/project-files.md](modules/project-files.md) |
 | Runtime tools / adapter types | [modules/runtime-adapters.md](modules/runtime-adapters.md) |
 | Credentials | [modules/credentials.md](modules/credentials.md) |
+| Authentication and registration | [modules/auth.md](modules/auth.md) |
 | Deployment | [modules/deployment.md](modules/deployment.md) |
 | Knowledge Base / knowledge items | [modules/knowledge-base.md](modules/knowledge-base.md) |
 | Relationships / people and organizations | [modules/relations.md](modules/relations.md) |
@@ -257,6 +258,7 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0020](decisions/0020-instance-update-through-deployer-pull.md) | Instance update runs through a deployer pull loop: the server keeps a job table and never gains Docker authority; the instance administrator's request is the ADR 0017 approval (no Proposal, no second confirmation); update = latest on the configured channel; soft drain of automation Runs; a failed stage stops the job with no automatic rollback; the deployer never recreates itself |
 | [0021](decisions/0021-files-code-codemirror-drafts-and-input-resources.md) | Files & Code uses CodeMirror for complete text files; PostgreSQL recovery drafts remain private pending state while the Project Folder stays canonical; sent file state freezes as an immutable message resource read lazily through Run-scoped governed tools |
 | [0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) | AgentRuntimeProfile is the mutable Agent deployment/backend authority; Agent loops use the single ACP adapter, bounded provider work has explicit execution shape, and the pre-release schema epoch is reset once after cutover |
+| [0023](decisions/0023-authentication-foundation-schema-epoch.md) | The completed authentication foundation replaces the provisional auth migrations with one current Drizzle-generated baseline; earlier databases have no upgrade path or compatibility shim |
 
 ---
 

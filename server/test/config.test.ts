@@ -26,9 +26,10 @@ describe("loadConfig", () => {
     expect(c.artifactStorageRoot).toBe("/rainver/storage/artifacts");
     expect(c.deployerSocketPath).toBe("/rainver/run/deployer.sock");
     expect(c.internalToken).toBeNull();
+    expect(c.betterAuthSecret).toBeNull();
     expect(c.googleClientId).toBe("");
     expect(c.googleClientSecret).toBe("");
-    expect(c.googleRedirectUri).toBe("http://localhost:5173/api/v1/auth/google/callback");
+    expect(c.googleRedirectUri).toBe("http://localhost:5173/api/v1/auth/callback/google");
     expect(c.frontendUrl).toBe("http://localhost:5173");
     expect(c.instanceAdminEmail).toBeNull();
     expect(c.sessionExpireDays).toBe(30);
@@ -49,9 +50,10 @@ describe("loadConfig", () => {
       SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
       BACKUP_DATABASE_URL: "postgresql://backup:secret@db:5432/rainver",
       SERVER_INTERNAL_TOKEN: "service-token",
+      BETTER_AUTH_SECRET: "auth-secret",
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",
-      GOOGLE_REDIRECT_URI: "http://localhost:8010/api/v1/auth/google/callback",
+      GOOGLE_REDIRECT_URI: "http://localhost:8010/api/v1/auth/callback/google",
       FRONTEND_URL: "http://localhost:5173/",
       INSTANCE_ADMIN_EMAIL: "Owner@Example.COM ",
       SESSION_EXPIRE_DAYS: "7",
@@ -75,9 +77,10 @@ describe("loadConfig", () => {
     expect(c.databaseUrl).toBe("postgresql://server@db:5432/rainver");
     expect(c.backupDatabaseUrl).toBe("postgresql://backup:secret@db:5432/rainver");
     expect(c.internalToken).toBe("service-token");
+    expect(c.betterAuthSecret).toBe("auth-secret");
     expect(c.googleClientId).toBe("google-client");
     expect(c.googleClientSecret).toBe("google-secret");
-    expect(c.googleRedirectUri).toBe("http://localhost:8010/api/v1/auth/google/callback");
+    expect(c.googleRedirectUri).toBe("http://localhost:8010/api/v1/auth/callback/google");
     expect(c.frontendUrl).toBe("http://localhost:5173");
     expect(c.instanceAdminEmail).toBe("owner@example.com");
     expect(c.sessionExpireDays).toBe(7);
@@ -96,6 +99,25 @@ describe("loadConfig", () => {
   it("fails fast on a malformed FRONTEND_URL", () => {
     expect(() => loadConfig({ FRONTEND_URL: "not a url" })).toThrow(ConfigError);
     expect(() => loadConfig({ FRONTEND_URL: "ftp://x:1" })).toThrow(ConfigError);
+  });
+
+  it("requires secure non-loopback auth origins in production", () => {
+    expect(() => loadConfig({
+      RAINVER_ENV: "prod",
+      BETTER_AUTH_SECRET: "auth-secret",
+      FRONTEND_URL: "http://app.example.com",
+    })).toThrowError(/https in production/);
+    expect(() => loadConfig({
+      RAINVER_ENV: "prod",
+      BETTER_AUTH_SECRET: "auth-secret",
+      GOOGLE_REDIRECT_URI: "http://auth.example.com/callback",
+    })).toThrowError(/GOOGLE_REDIRECT_URI must use https/);
+    expect(loadConfig({
+      RAINVER_ENV: "prod",
+      BETTER_AUTH_SECRET: "auth-secret",
+      FRONTEND_URL: "http://localhost:5173",
+      GOOGLE_REDIRECT_URI: "http://localhost:8010/callback",
+    }).frontendUrl).toBe("http://localhost:5173");
   });
 
   it("rejects invalid bounded values, boolean and log level", () => {
@@ -140,10 +162,13 @@ describe("loadConfig", () => {
     const line = describeConfig(loadConfig({}));
     expect(line).toContain("port=8010");
     expect(line).toContain("internalTokenConfigured=false");
+    expect(line).toContain("betterAuthConfigured=false");
     expect(line).toContain("googleOAuthConfigured=false");
     expect(line).not.toMatch(/authorization|cookie|password|secret/i);
     expect(describeConfig(loadConfig({ SERVER_INTERNAL_TOKEN: "secret-token" }))).not
       .toContain("secret-token");
+    expect(describeConfig(loadConfig({ BETTER_AUTH_SECRET: "auth-secret" }))).not
+      .toContain("auth-secret");
     expect(describeConfig(loadConfig({ GOOGLE_CLIENT_SECRET: "google-secret" }))).not
       .toContain("google-secret");
     expect(describeConfig(loadConfig({ BACKUP_DATABASE_URL: "postgresql://backup:secret@db/app" }))).not
@@ -170,13 +195,14 @@ describe("loadConfig", () => {
       codeOf({ SERVER_ENABLE_NOTIFICATION_WEBHOOK_EGRESS: "true" }),
     ).toBe("missing_notification_webhook_allowlist");
     expect(codeOf({ PROVIDER_PROXY_LISTEN_HOST: "0.0.0.0.1" })).toBe("invalid_listen_host");
+    expect(codeOf({ RAINVER_ENV: "prod" })).toBe("missing_better_auth_secret");
   });
 });
 
 describe("config snapshot", () => {
   it("is immutable and identifies the config by schema version + content hash", () => {
     const snapshot = loadConfigSnapshot({});
-    expect(snapshot.schema_version).toBe(23);
+    expect(snapshot.schema_version).toBe(24);
     expect(snapshot.content_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(snapshot.loaded_at).toBeTruthy();
     expect(Object.isFrozen(snapshot)).toBe(true);

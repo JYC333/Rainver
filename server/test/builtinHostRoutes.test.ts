@@ -58,7 +58,6 @@ function stubAuth(): AuthRepository {
     getUserSpaces: notImplemented,
     getSpaceForUser: notImplemented,
     logout: notImplemented,
-    findOrCreateFromGoogle: notImplemented,
   } as unknown as AuthRepository;
 }
 
@@ -76,13 +75,13 @@ function asUser(userId: string, token: string): void {
 }
 
 function get(path: string, token: string): Promise<Response> {
-  return fetch(`${baseUrl()}${path}`, { headers: { cookie: `session_id=${token}` } });
+  return fetch(`${baseUrl()}${path}`, { headers: { cookie: `better-auth.session_token=${token}` } });
 }
 
 function post(path: string, token: string, body: unknown = {}): Promise<Response> {
   return fetch(`${baseUrl()}${path}`, {
     method: "POST",
-    headers: { cookie: `session_id=${token}`, "content-type": "application/json" },
+    headers: { cookie: `better-auth.session_token=${token}`, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }
@@ -109,8 +108,8 @@ beforeEach(async (ctx) => {
   if (!db.available || !db.pool) return ctx.skip();
   await resetTables(db.pool, ["hosts", "machines", "users"], { cascade: true });
   await db.pool.query(
-    `INSERT INTO users (id, email, display_name, status, created_at, updated_at)
-     VALUES ($1, $2, 'Admin', 'active', now(), now()), ($3, 'member@example.test', 'Member', 'active', now(), now())`,
+    `INSERT INTO users (id, email, display_name, status, created_at, updated_at, registration_source)
+     VALUES ($1, $2, 'Admin', 'active', now(), now(), 'system'), ($3, 'member@example.test', 'Member', 'active', now(), now(), 'system')`,
     [ADMIN, ADMIN_EMAIL, MEMBER],
   );
   builtinHostId = await new PgHostRepository(db.pool).ensureServerHostId();

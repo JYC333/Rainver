@@ -40,7 +40,7 @@ beforeEach(async () => {
     [SPACE, now],
   );
   await db.pool.query(
-    `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,'Owner','active',$2,$2)`,
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1,'Owner','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [OWNER, now],
   );
   await db.pool.query(
@@ -390,7 +390,7 @@ describe("source post-processing repository (real Postgres)", () => {
     });
     expect(ownerBatch.evidence.map((row) => row.id)).toEqual([evidenceId]);
 
-    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,$1,'active',$2,$2)`, [OTHER, now]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,$1,'active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [OTHER, now]);
     await db.pool.query(
       `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
        VALUES ($1,$2,$3,'member','active',$4,$4)`,
@@ -655,7 +655,7 @@ describe("source post-processing repository (real Postgres)", () => {
     if (!db.available) return;
     const now = new Date().toISOString();
     await db.pool.query(
-      `INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1,'Other','active',$2,$2)`,
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1,'Other','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
       [OTHER, now],
     );
     await db.pool.query(

@@ -552,7 +552,7 @@ export interface ResearchArea {
 }
 export interface ResearchReadingList { items: Array<ProjectCorpusItem & { evidence_card: ResearchEvidenceCard | null }>; total: number; limit: number; offset: number }
 export type MemberRole     = 'owner' | 'admin' | 'reviewer' | 'member' | 'guest' | 'viewer'
-export type InviteStatus   = 'pending' | 'accepted' | 'revoked' | 'expired'
+export type InviteStatus   = 'available' | 'reserved' | 'accepted' | 'revoked' | 'expired'
 
 export interface CurrentUser {
   id: string
@@ -564,6 +564,12 @@ export interface CurrentUser {
   created_at: string
   last_login_at: string | null
 }
+
+export interface AuthConfiguration { google_auth_available: boolean; bootstrap_registration_available: boolean; password_min_length: number; password_max_length: number }
+export interface AuthAccount { id: string; provider: string; account_id: string; created_at: string }
+export interface AuthSession { id: string; created_at: string; updated_at: string; expires_at: string; ip_address: string | null; user_agent: string | null; current: boolean }
+export interface AdminAuthUser { id: string; email: string; display_name: string; status: string; registration_source: string; last_login_at: string | null; account_count: number }
+export interface RegistrationIntentAdmin { id: string; email: string; authority: string; state: string; pending_user_id: string | null; created_at: string; last_activity_at: string; expires_at: string; completed_at: string | null }
 
 export interface SpaceWithMembership {
   id: string

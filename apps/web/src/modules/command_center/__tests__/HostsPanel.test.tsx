@@ -241,11 +241,12 @@ describe('HostsPanel', () => {
     expect(screen.getByText(/up to 3 runs execute at once/)).toBeInTheDocument()
   })
 
-  it('says the Server Runtime login is instance-wide where that login happens', async () => {
-    // Plan Phase 4 §8: an administrator signing the Server copy into a paid
-    // account spends it on behalf of everyone allowed to run Agents there.
+  it('explains that native login is optional for ACP models but a signed-in Server account is shared', async () => {
+    // A native account is not a prerequisite for every ACP model, but a signed-in
+    // Server copy is usable by everyone authorized to run Agents there.
     render(<HostsPanel />)
-    expect(await screen.findByText(/This login is instance-wide: every person authorized to run Agents on the Server Runtime spends this account\./))
+    expect(await screen.findByText(/ACP models may still work without an account/)).toBeInTheDocument()
+    expect(screen.getByText(/If signed in, this account is instance-wide: every person authorized to run Agents on the Server Runtime can use it\./))
       .toBeInTheDocument()
   })
 

@@ -42,6 +42,8 @@ export const spaceInvitations = pgTable("space_invitations", {
 	role: varchar({ length: 32 }).notNull(),
 	tokenHash: varchar("token_hash", { length: 128 }).notNull(),
 	status: varchar({ length: 32 }).notNull(),
+	reservedByIntentId: varchar("reserved_by_intent_id", { length: 36 }),
+	reservedAt: timestamp("reserved_at", { withTimezone: true, mode: 'string' }),
 	invitedByUserId: varchar("invited_by_user_id", { length: 36 }).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	acceptedAt: timestamp("accepted_at", { withTimezone: true, mode: 'string' }),
@@ -49,6 +51,7 @@ export const spaceInvitations = pgTable("space_invitations", {
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_space_invitations_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_space_invitations_status").using("btree", table.status.asc().nullsLast()),
+	index("ix_space_invitations_reservation").using("btree", table.reservedByIntentId.asc().nullsLast(), table.reservedAt.asc().nullsLast()),
 	foreignKey({
 			columns: [table.invitedByUserId],
 			foreignColumns: [users.id],
@@ -61,6 +64,7 @@ export const spaceInvitations = pgTable("space_invitations", {
 		}),
 	unique("space_invitations_token_hash_key").on(table.tokenHash),
 	check("ck_space_invitations_role", sql`(role)::text = ANY (ARRAY[('owner'::character varying)::text, ('admin'::character varying)::text, ('reviewer'::character varying)::text, ('member'::character varying)::text, ('guest'::character varying)::text])`),
+	check("ck_space_invitations_status", sql`status IN ('available', 'reserved', 'accepted', 'expired', 'revoked')`),
 ]);
 
 export const spaceMemberships = pgTable("space_memberships", {

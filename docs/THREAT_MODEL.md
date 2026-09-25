@@ -4,6 +4,38 @@ Rainver manages personal, family, and team data and allows agents to run tools
 and generate code. This document enumerates threats and the architectural mitigations
 for each.
 
+## Authentication and registration threats
+
+**Scenario**: An attacker guesses a password, replays an invitation, or uses a
+pending identity to reach product routes.
+
+**Mitigations**:
+- Email/password is normalized and validated at the Rainver facade; failures
+  are generic and guarded by Better Auth limits plus bounded IP/normalized-email
+  progressive throttling.
+- The first account is restricted to `INSTANCE_ADMIN_EMAIL`; subsequent
+  registration requires an invitation whose token is stored only as a digest.
+- Registration intents reserve invitations, bind the pending Better Auth user,
+  and complete Space provisioning under one PostgreSQL transaction. Pending and
+  disabled users fail identity introspection. Stale reconciliation cannot undo
+  a completed transaction.
+- Invitation tokens are URL fragments and are cleared before the browser sends
+  the first request, keeping them out of URLs, Referer values and request logs.
+
+**Scenario**: OAuth or reset credentials leak through storage, logs, or an
+over-permissive security UI.
+
+**Mitigations**:
+- Better Auth OAuth state/origin handling is used through explicit routes;
+  provider access/refresh/ID tokens are scrubbed before persistence and Google
+  profile updates cannot overwrite the Rainver profile.
+- Sessions persist only a digest and user-facing session APIs expose safe ids
+  and metadata, never raw cookie tokens or stored digests.
+- Password-reset identifiers use Better Auth's hashed, single-use verification
+  store. Public recovery responses are generic; manual reset links are returned
+  only once to an authenticated instance administrator or the sole-admin local
+  CLI. A future mail adapter can consume the same delivery boundary.
+
 ---
 
 ## Threat 1: Cross-space memory leakage

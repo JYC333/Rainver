@@ -37,7 +37,7 @@ beforeEach(async () => {
   );
   await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'SP', 'personal', now(), now())`, [SPACE]);
   for (const id of [OWNER, READER]) {
-    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at) VALUES ($1, 'U', 'active', now(), now())`, [id]);
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1, 'U', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [id]);
   }
   const memberships: Array<[string, string, string]> = [["mem-owner", OWNER, "owner"], ["mem-reader", READER, "member"]];
   for (const [id, user, role] of memberships) {

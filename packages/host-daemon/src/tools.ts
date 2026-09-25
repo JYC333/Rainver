@@ -1,4 +1,4 @@
-import type { HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec, RuntimeAccount } from "@rainver/protocol";
+import type { HostEgressTransport, HostServerFrameOf, RuntimeDistribution, RuntimeLoginSpec, RuntimeAccount } from "@rainver/protocol";
 import { helperProcessEnv } from "./providerBinding.js";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -252,7 +252,7 @@ export async function installTool(
   await rm(stagingDir, { recursive: true, force: true });
   await mkdir(stagingDir, { recursive: true, mode: 0o700 });
   try {
-    const launch = await materialize(frame.distribution, stagingDir, log, downloadDependencies);
+    const launch = await materialize(frame.distribution, stagingDir, log, downloadDependencies, frame.egress_transport ?? { mode: "direct" });
     // User data is outside the version directory, so replacing or pruning
     // binaries cannot remove login, native history, settings, or Skills.
     await mkdir(home, { recursive: true, mode: 0o700 });
@@ -370,6 +370,7 @@ async function materialize(
   dir: string,
   log: (line: string) => void,
   downloadDependencies?: RuntimeArtifactDownloadDependencies,
+  transport: HostEgressTransport = { mode: "direct" },
 ): Promise<Pick<ToolManifest, "command" | "args" | "entry_args" | "env">> {
   if (distribution.kind === "npx") {
     // A pinned `npm install` into this directory, not `npx`: what runs is what
@@ -394,7 +395,7 @@ async function materialize(
   const target = distribution.platforms[key];
   if (!target) throw new Error(`No binary for this platform (${key}); available: ${Object.keys(distribution.platforms).join(", ")}`);
   const archive = join(dir, "archive");
-  await downloadRuntimeArtifact(target.archive, archive, target.sha256, log, downloadDependencies);
+  await downloadRuntimeArtifact(target.archive, archive, target.sha256, log, downloadDependencies, transport);
   await extract(archive, target.archive, dir, log);
   await rm(archive, { force: true });
   const command = resolve(dir, target.cmd);

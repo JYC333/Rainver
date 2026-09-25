@@ -40,7 +40,7 @@ beforeEach(async () => {
     { cascade: true },
   );
   await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Delivery','personal',now(),now())`, [SPACE]);
-  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at) VALUES ($1,'Owner','active',now(),now())`, [USER]);
+  await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Owner','active',now(),now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER]);
   await seedServerHost(db.pool, {
     id: HOST,
     installations: {
@@ -690,6 +690,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       },
     });
 
+    expect(result.envelope.window_plan.total_window_tokens).toBe(128_000);
     expect(result.envelope.items.find((item) => item.source_ref.id === MESSAGE)?.payload.text)
       .toBe("What code did I choose?");
     const continuity = result.envelope.items.find((item) => item.acquisition === "continuity");
@@ -1331,14 +1332,12 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     )).rows).toHaveLength(0);
   });
 
-  /**
-   * A default `runtime_native` Run names no model: the Profile snapshot carries
-   * none and there is no per-run override, because an ACP session picks the
-   * model only after it starts. Planning therefore writes a null window-plan
-   * model, and the reconciliation row has to store it — a NOT NULL column
-   * failed every such Run with 23502 at the first Delivery.
-   */
-  it("records the window plan of a native runtime Run that names no model", async () => {
+  it.each([
+    { selectedModel: null },
+    { selectedModel: "opencode/big-pickle" },
+    { selectedModel: "opencode/mimo-v2.6-flash-free" },
+    { selectedModel: "opencode/mimo-v2.5-free" },
+  ])("delegates the native ACP model $selectedModel window to its runtime", async ({ selectedModel }) => {
     if (!db.available) return;
     const decisionId = randomUUID();
     await db.pool.query(
@@ -1362,7 +1361,15 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  'test',$6,$4,now())`,
       [SETUP, SPACE, RUN, USER, AGENT, decisionId],
     );
-    await db.pool.query(`UPDATE runs SET prompt='Native question' WHERE id=$1`, [RUN]);
+    await db.pool.query(`UPDATE runs SET prompt=$2 WHERE id=$1`, [RUN, "x".repeat(20_000)]);
+    if (selectedModel) {
+      await db.pool.query(
+        `UPDATE runs SET model_override_json=$2::jsonb WHERE id=$1`,
+        [RUN, JSON.stringify({ acp_session_config: [
+          { id: "model", type: "select", category: "model", value: selectedModel },
+        ] })],
+      );
+    }
     const authoritative = control();
     authoritative.work_context_setup_ref = { type: "work_context_setup", id: SETUP, version: "1" };
     authoritative.egress = {
@@ -1393,11 +1400,23 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       },
     });
 
-    expect(delivery.model).toBeNull();
+    expect(delivery.model).toBe(selectedModel);
     expect((await db.pool.query<{ model: string | null }>(
       `SELECT model FROM context_window_reconciliations WHERE delivery_id=$1`,
       [delivery.id],
-    )).rows).toEqual([{ model: null }]);
+    )).rows).toEqual([{ model: selectedModel }]);
+    const window = await db.pool.query<{
+      total_window_tokens: number | null;
+      model_catalog_version: string;
+      planned_prompt_tokens: number;
+    }>(
+      `SELECT (plan_json->>'total_window_tokens')::integer AS total_window_tokens,
+              model_catalog_version, planned_prompt_tokens
+         FROM context_window_reconciliations WHERE delivery_id=$1`,
+      [delivery.id],
+    );
+    expect(window.rows[0]).toMatchObject({ total_window_tokens: null, model_catalog_version: "acp-runtime-managed.v1" });
+    expect(window.rows[0]?.planned_prompt_tokens).toBeGreaterThanOrEqual(20_000);
   });
 
   it("fails closed when retention disables raw persistence and deletes expired ciphertext", async () => {
