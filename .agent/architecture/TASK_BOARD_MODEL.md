@@ -71,6 +71,20 @@ Boards and tasks are scoped by **space** (and optionally **Project Folder**). As
 
 `POST /api/v1/tasks/{id}/runs` creates a **queued** `Run` (plus its initial attempt) through the runs repository inside one transaction with the `max_runs` admission lock, inserts a `task_runs` row (canonical), and may move the task to `in_progress`. It does **not** call runtime adapters or enqueue infrastructure jobs. Running the same Task again always creates a new Run and a new `task_runs` row; a terminal Run is never reopened by user request.
 
+On an execution host, a Task's write-capable execution Runs share one branch,
+`rainver/task-<task_id>`, in a worktree the daemon owns, and run one at a time
+(the `agent_run` job waits while another of them has not ended); each Run ends
+as one commit on that branch. A Task that reaches `done` by any path is merged
+into each such Location's main branch (a `task_merges` row and `task_merge`
+job per Location: squash, merge onto the main branch, a conflict to the Task's Agent through a
+`task_runs.role = 'merge'` Run and then the person, the Task's checks again,
+fast-forward; a Run that settles after the Task closed gets a merge of its
+own). A Task that leaves `done` withdraws its merges, a merge's
+conflict-resolution Run is the one Run admitted on a `done` Task, and a Task
+cancelled or deleted has its branch removed from every Location its Runs
+worked on (a durable `task_branch_delete` job per Location). See [`modules/hosts.md`](../modules/hosts.md), "Location
+lease, Task worktrees and `git_after`", and ADR 0016 §11.
+
 A Run finishing is not the Task finishing. Settlement runs when every Run of the Task has stopped advancing, reads the **latest** one, and closes the Task only on an accepted evaluation with its declared outputs present; everything else holds the Task in `waiting_for_review` for a person. `blocked` is no longer written by a Run outcome — it means held up by something else. See [`PROJECT_WORK.md`](PROJECT_WORK.md).
 
 ## Frontend

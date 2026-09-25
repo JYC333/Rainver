@@ -45,6 +45,14 @@ export const conversationExecutionContexts = pgTable("conversation_execution_con
 	gitDirty: boolean("git_dirty"),
 	gitExecutionReady: boolean("git_execution_ready"),
 	gitObservedAt: timestamp("git_observed_at", { withTimezone: true, mode: "string" }),
+	/**
+	 * Branch and HEAD the daemon observed at the exit of this Conversation's
+	 * most recent finished Run. A HEAD that moved to exactly this value was
+	 * moved by the Conversation's own Agent, so the send gate advances the
+	 * baseline instead of refusing.
+	 */
+	lastRunGitBranch: varchar("last_run_git_branch", { length: 256 }),
+	lastRunGitHead: varchar("last_run_git_head", { length: 128 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

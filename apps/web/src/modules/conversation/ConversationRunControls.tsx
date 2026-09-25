@@ -14,11 +14,14 @@ export function ConversationRunControls({
   run: suppliedRun,
   projectId,
   onRetry,
+  agentLabel,
 }: {
   runId: string
   run?: Run | null
   projectId?: string | null
   onRetry?: (runId: string) => Promise<void>
+  /** Whose Run these controls belong to, when one message started several. */
+  agentLabel?: string
 }) {
   const [run, setRun] = useState<Run | null>(suppliedRun ?? null)
   const [stopping, setStopping] = useState(false)
@@ -82,6 +85,7 @@ export function ConversationRunControls({
   }
 
   return <div className="mt-2 w-full min-w-0 max-w-full space-y-2" data-testid={`conversation-run-controls-${runId}`}>
+    {agentLabel && <div className="text-[11px] font-medium text-muted-foreground">{agentLabel}</div>}
     {active && (
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" role="status" aria-live="polite">
         <span>{stopping || run?.status === 'cancelling' ? 'Stopping…' : run?.status === 'queued' ? 'Queued…' : 'Working…'}</span>

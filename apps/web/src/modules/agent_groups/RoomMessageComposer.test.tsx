@@ -79,6 +79,22 @@ function EmptyResultsFileHarness() {
   />
 }
 
+function RoutingHarness() {
+  const [value, setValue] = useState(emptyRoomMessageComposerValue())
+  return <>
+    <RoomMessageComposer
+      value={value}
+      onChange={setValue}
+      agents={[{ id: 'agent-1', name: 'Builder', status: 'active' }, { id: 'agent-2', name: 'Critic', status: 'active' }]}
+      members={[{ agent_id: 'agent-1', status: 'active' }, { agent_id: 'agent-2', status: 'active' }]}
+      disabled={false}
+      resetToken={0}
+      onSubmit={() => undefined}
+    />
+    <output data-testid="room-routing">{JSON.stringify(value)}</output>
+  </>
+}
+
 async function getEditor() {
   await screen.findByText('Message...', {}, { timeout: 5000 })
   return document.querySelector('.ProseMirror') as HTMLElement
@@ -177,5 +193,24 @@ describe('RoomMessageComposer keyboard behavior', () => {
     resolveTree({ name: 'repo', path: '.', type: 'dir', children: [] })
     await waitFor(() => expect(screen.getByText('No matching agents or files.')).toBeInTheDocument())
     expect(listbox).toBeInTheDocument()
+  })
+
+  it('routes each mention cluster with the text that follows it, the way the server segments a reply', async () => {
+    const user = userEvent.setup({ delay: null })
+    render(<RoutingHarness />)
+    const editor = await getEditor()
+    await user.type(editor, 'Context first @Buil')
+    fireEvent.click(await screen.findByRole('option', { name: /@Builder/ }))
+    await user.type(editor, 'fix the build @Crit', { skipClick: true })
+    fireEvent.click(await screen.findByRole('option', { name: /@Critic/ }))
+    await user.type(editor, 'review it', { skipClick: true })
+    await waitFor(() => expect(JSON.parse(screen.getByTestId('room-routing').textContent ?? '{}')).toEqual({
+      text: 'Context first @Builder fix the build @Critic review it',
+      mentionIds: ['agent-1', 'agent-2'],
+      routingSegments: [
+        { recipient_agent_ids: ['agent-1'], content: 'Context first fix the build' },
+        { recipient_agent_ids: ['agent-2'], content: 'review it' },
+      ],
+    }))
   })
 })

@@ -211,26 +211,46 @@ export const ManagedWorkspaceContainerSchema = z.discriminatedUnion("kind", [
 ]);
 export type ManagedWorkspaceContainer = z.infer<typeof ManagedWorkspaceContainerSchema>;
 
+export const LocationLaunchWorkspaceSchema = z.object({
+  kind: z.literal("location"),
+  workspace_location_id: IdSchema,
+  /**
+   * Where this Location sits under the instance's own workspace root, for
+   * the built-in host only.
+   *
+   * A paired host maps a Location id to a path from its own registration —
+   * the control plane never learns that path (B64) — but the built-in host
+   * has no registration step and never runs `workspace add`: its Locations
+   * are created *by* the control plane, under the root both containers
+   * mount. ADR 0016 §4 says `root_path` is populated exactly for those, so
+   * this is the one case where the server legitimately knows where a
+   * workspace is. It is a path relative to that root, never absolute, and
+   * the daemon joins it under its own mount with containment — the same
+   * shape as a work surface's `relative_path`.
+   */
+  workspace_relative_path: z.string().min(1).optional(),
+  /**
+   * Run in the Task's own worktree rather than in the checkout itself. Set
+   * by the control plane for a write-capable execution Task Run (ADR 0016
+   * §11). The daemon keeps one worktree per Task under its own directory
+   * (`<config>/task-worktrees/<location_id>/<task_id>`), checking out the
+   * branch `rainver/task-<task_id>` — created from the main branch when
+   * absent — and keeps it after `complete` until `task_run_settle`. It
+   * falls back to running in place, under the Location's lease, when the
+   * Location is not the top level of a git checkout.
+   *
+   * With `merge_id`, the Run resolves that merge's conflict: it works in the
+   * Task worktree exactly as the merge left it — the merged files with their
+   * conflict markers — and the daemon neither prepares, commits leftovers in,
+   * nor keeps a start commit for it. It is never settled; the merge continues
+   * with `task_merge_continue`.
+   */
+  worktree: z.object({ task_id: IdSchema, merge_id: IdSchema.optional() }).optional(),
+});
+export type LocationLaunchWorkspace = z.infer<typeof LocationLaunchWorkspaceSchema>;
+
 export const LaunchWorkspaceSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("location"),
-    workspace_location_id: IdSchema,
-    /**
-     * Where this Location sits under the instance's own workspace root, for
-     * the built-in host only.
-     *
-     * A paired host maps a Location id to a path from its own registration —
-     * the control plane never learns that path (B64) — but the built-in host
-     * has no registration step and never runs `workspace add`: its Locations
-     * are created *by* the control plane, under the root both containers
-     * mount. ADR 0016 §4 says `root_path` is populated exactly for those, so
-     * this is the one case where the server legitimately knows where a
-     * workspace is. It is a path relative to that root, never absolute, and
-     * the daemon joins it under its own mount with containment — the same
-     * shape as a work surface's `relative_path`.
-     */
-    workspace_relative_path: z.string().min(1).optional(),
-  }),
+  LocationLaunchWorkspaceSchema,
   z.object({
     kind: z.literal("managed"),
     agent_id: IdSchema,

@@ -1,6 +1,7 @@
 import type { RunTurn } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { loadProjectChatActionPreviews } from "../agents/projectChatActionPreviews.js";
+import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import {
   appendActionPreviewParts,
   projectHostThreadTurn,
@@ -23,6 +24,8 @@ import {
 export async function loadRunTurn(
   db: Queryable,
   input: { spaceId: string; runId: string },
+  /** Whether a host has queued this Run's launch behind another writer of its directory. */
+  waitingForWorkspace: (runId: string) => boolean = (runId) => sharedHostConnectionRegistry.isWaitingForWorkspace(runId),
 ): Promise<RunTurn | null> {
   const run = await db.query<{
     id: string;
@@ -68,7 +71,13 @@ export async function loadRunTurn(
     ? await loadChatCompletion(db, input.spaceId, input.runId)
     : null;
 
-  const state = turnState(row.status, chatCompleted, Boolean(row.is_chat_turn));
+  const statusState = turnState(row.status, chatCompleted, Boolean(row.is_chat_turn));
+  // A running Run whose host has queued its launch behind another Run writing
+  // the same directory has not started. Shown through the blocked rendering
+  // so the reader sees why nothing is happening; it clears on its own once
+  // the host lets it in.
+  const workspaceWait = statusState === "working" && row.status === "running" && waitingForWorkspace(row.id);
+  const state = workspaceWait ? "blocked" as const : statusState;
   // A paused turn is waiting on a person, and the reader needs to know which
   // kind of waiting: an authorization they can grant, or a review somebody
   // else owes it. Saying only "working" hides that anything is expected of
@@ -78,9 +87,11 @@ export async function loadRunTurn(
   // (which sets the id), a supervisor hold (which sets this flag), and a
   // policy that requires approval on a run action — and that third one sets
   // neither. It is an approval, so the flag is what tells the three apart.
-  const blockedOn = state === "blocked"
-    ? (row.supervisor_review === true ? "run_decision" as const : "authorization" as const)
-    : null;
+  const blockedOn = workspaceWait
+    ? "workspace" as const
+    : state === "blocked"
+      ? (row.supervisor_review === true ? "run_decision" as const : "authorization" as const)
+      : null;
 
   // A Run can fail with nothing in either log to say why: the stale-run
   // reaper marks `orphaned` in one statement that writes no event, and a

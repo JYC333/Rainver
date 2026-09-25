@@ -11,7 +11,10 @@ both the server-host and remote-host execution paths; the self-maintained
 vendor CLI protocol implementations (stream-json argv, NDJSON-RPC) it
 replaced are deleted. So is the remote-host provider-binding plan
 (`remote-host-provider-binding-plan.md`, P1–P2 shipped in `404b1b87` and the
-commits that followed, retired 2026-08-28). The later ACP runtime authority
+commits that followed, retired 2026-08-28). So is the task-branch merge plan
+(`task-branch-merge-plan.md`, ADR 0016 §11: P1 in `bf27f3c5`, P2–P3 in
+`8353eaec`, retired 2026-09-24); its decisions and deviations are the Task
+worktree and "Merging a done Task" sections below. The later ACP runtime authority
 reset removed Host-wide ModelProvider defaults, their routes and UI. Current
 backend choice is Profile-owned; a selected Profile's authorized provider
 binding may be materialized into the Host launch frame, but Hosts do not
@@ -194,7 +197,10 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
   frontend reads instead of re-deriving eligibility. Per runtime:
   `runtime_key`, `display_name`, launch `command`, `capability_probe`,
   `remote_eligible`, `registry_id`, `latest_managed_version`,
-  `server_supported_version`, `reports_managed_cli_version`, `provider_api`,
+  `server_supported_version`, `reports_managed_cli_version`, `provider_api`
+  (`claude_compatible`, `openai_compatible`, or `vendor` — OpenCode, which
+  follows each Provider's vendor protocol; the composer's Provider picker then
+  requires the URL that protocol needs),
   and the two backend-mode flags `supports_runtime_native` /
   `supports_model_provider`, read from the same `AgentRuntimeDefinition` that
   Profile admission enforces so the composer cannot offer a mode the server
@@ -230,6 +236,14 @@ user session — the daemon has no session to present):
   Location.
   Size-capped server-side (`MAX_DIFF_BYTES`, `MAX_OUTPUT_FILE_BYTES`,
   `MAX_OUTPUT_FILES` in `repository.ts`) regardless of what the daemon sends.
+  The diff body is `HostRunDiffUploadSchema` (`@rainver/protocol`): `diff`
+  (null when none could be captured) and optional `git_before` / `git_after
+  { branch, head }` — where the Run's checkout stood before and after it (see
+  "Location lease, Task worktrees and `git_after`" below). `recordDiffArtifact`
+  writes `git_after` to the Run's `output_json.workspace_after` (kept through
+  finalization) and, under the conditions listed there, to
+  `conversation_execution_contexts.last_run_git_branch/head`; a body with
+  only git fields records no artifact.
 
 User-session authenticated dispatch is owned by the Tasks module, not this
 Host registry:
@@ -819,7 +833,18 @@ than launching a CLI to learn nothing. The control plane caches the answer in
 `host_runtime_usage`, refreshes every three hours, folds in the live reading a
 finished Run carries back, and shows it beside the copy on the host card.
 `GET /api/v1/hosts/:hostId/usage` is a cache read; `POST
-.../installations/:runtimeKey/:installation/usage` is the probe.
+.../installations/:runtimeKey/:installation/usage` is the probe. One gate reads
+the cache: an Agent-triggered Room turn waits while its login is past the
+Space's `subscription_quota.reserve_pct` (`rooms/quotaGate.ts`, `modules/rooms.md`
+"Subscription quota gate"), probing first when the reading is older than a
+minute; that probe keeps a readable cached number rather than overwriting it
+with "offline" or "did not answer in time" (`keepReadingWhenUnreadable`). The
+host's own usage endpoint is its owner's; a Room shows more widely only what
+its conversations run on: any member of the Room reads, for the logins its
+Agents run on in that conversation, the window's percentage and reset time
+under the label "Runtime · Host (installation)" (`GET …/conversations/:id/quota`,
+a discussion's cost lines) — the account window is what a discussion's header
+must show, and it carries no credential or account identity.
 
 What a dispatch may choose is decided where dispatch is validated — the
 admission resolves the backend and refuses an unusable one, so the caller
@@ -1065,8 +1090,9 @@ heartbeat is marked `execution_ready = false`. On socket close, the host is
 marked `offline` immediately; Host liveness remains distinct from Location
 readiness.
 A `hello` reporting a daemon older than `MIN_HOST_DAEMON_VERSION`
-(`hosts/daemonCompatibility.ts`, currently `0.2.0` — the release that renamed
-`adapter_type` to `runtime_key` on the wire) is refused with
+(`hosts/daemonCompatibility.ts`, currently `0.4.0` — the release that merges a
+done Task's branch: the `task_merge_*` frames and a resolution Run launched
+into the Task worktree as a merge left it) is refused with
 `daemon_outdated`: the reported version is recorded and the host stays offline
 rather than accepting Runs an older daemon would fail one at a time, so a
 paired host must update before it can execute again. The refused daemon
@@ -1074,9 +1100,10 @@ recognises that close (`isOutdatedDaemonClose` in `commands/run.ts`), logs the
 update instruction once and retries on a 15-minute floor rather than the
 ordinary ≤30s backoff, so an un-updated host does not re-record its version
 every half minute; its registration stays valid, unlike revocation.
-Heartbeat staleness (`HEARTBEAT_STALE_MS`, 45s) is computed at read time in
-`PgHostRepository`, not swept by a background job — a host that dies without
-closing its socket reports offline the next time anyone lists hosts.
+Heartbeat staleness (`hosts/liveness.ts`: `HEARTBEAT_STALE_MS`, 45s) is
+computed at read time wherever a host's status is read, not swept by a
+background job — a host that dies without closing its socket reports offline
+the next time anyone lists hosts.
 
 The dev Vite entrypoint proxies `/internal` with WebSocket upgrade forwarding
 to the server service, so a daemon registered against the browser's dev origin
@@ -1110,6 +1137,25 @@ The daemon-supervised HTTP/SSE runtime endpoints sketched in 2026-08-21 were
 superseded 2026-08-22 before anything was built, in favor of the duplex-frame
 ACP extension above (the ACP runtime replatform plan, P1-P5, complete and
 retired 2026-08-23; ledger in git history).
+
+A `launch` the daemon queues behind another writer of its Location is
+answered with `waiting_for_workspace` (same nonce) before its `launched`; see
+"Location lease, Task worktrees and `git_after`".
+
+Request pairs carry a Task branch's lifecycle (ADR 0016 §11), routed by
+`HostConnectionRegistry.requestTaskBranch` / `receiveTaskBranchResult` and
+answered in the reply's own shape when the host is offline or silent
+(`host_offline`, `host_timeout`, fifteen minutes): `task_run_settle` →
+`task_run_settle_result { branch, commit }` ends one Run on the branch, and
+`task_branch_delete` → `task_branch_delete_result { deleted }` removes a
+cancelled or deleted Task's branch and worktree, and the merge steps
+`task_merge_prepare` / `task_merge_continue` → `task_merge_step_result`,
+`task_merge_abort` → `task_merge_abort_result` and `task_merge_finish` →
+`task_merge_finish_result` land a done one. Each names the Task by a
+Location workspace carrying `worktree: { task_id }` (`HostTaskWorkspaceSchema`).
+A Run that executed in its Task worktree also reports
+`complete.task_worktree { branch, start_commit }`. See "Location lease, Task
+worktrees and `git_after`".
 
 C5: the daemon also sends a live `stderr` frame per chunk (not only the
 `complete` frame's existing failure-tail), routed the same way as `output`
@@ -1186,13 +1232,90 @@ concurrently sharing or overwriting one vendor session; explicit context reset
 waits until that claim is released.
 
 `recordRunOutcome` clears `vendor_session_id` outright (not
-COALESCE) whenever a resume degrades (`session_reset`) — retrying an already-
-broken vendor session id forever was a real P3 discovery-review bug, fixed
-before this landed. **Since the phase-2 event-pipeline work**, it is called
+COALESCE) whenever a resume degrades (`session_reset`) — which
+`recordHostThreadOutcome` concludes only when the runtime proved it: the Run
+failed with `runtime_session_invalid`, or finished a turn without a session id.
+A resume the runtime never answered — `session/resume` sent, no reply before the
+stall timeout or deadline — is reported as `runtime_session_invalid` too
+(`resume_unanswered`), so a session that hangs on load is given up instead of
+timing out every turn. A Run that failed before the runtime tried (the host
+offline, a launch that waited out its budget behind another writer, a person's
+stop, a runtime silent before it initialized) leaves the session in place. A
+Run that reports on a session the thread has since retired (dispatched before
+a rotation or reset, run after it — held for the subscription window, say)
+records only that it was the last Run: the retired session is never written
+back, nor its identity digest or occupancy. Clearing rather than preserving the id matters: retrying an
+already-broken vendor session id forever was a real P3 discovery-review bug,
+fixed before this landed. **Since the phase-2 event-pipeline work**, it is called
 from `agentRunHandler.ts`'s `handleAgentRun` (via
 `server/src/modules/hosts/threadOutcome.ts`'s `recordHostThreadOutcome`)
 once the dispatched Run's `agent_run` job reaches terminal — not from the
 dispatch route itself, which no longer waits around for that. Every session id a thread moves on from — reset, close, or a degraded resume — is appended to `retired_vendor_session_ids`, and ambient session import excludes those alongside the live id; clearing the live id alone would let the Agent's old sessions come back as the owner's own history.
+
+`recordRunOutcome` also keeps what the live vendor session holds.
+`identity_digest` / `identity_digest_run_id` name the standing context (identity
+block + Room rules) it last received, written only for a Run that carried the
+block and completed, and cleared when the session is replaced or reset
+(`modules/rooms.md`). `context_tokens` / `context_window_tokens` are the
+occupancy the runtime last reported through ACP `usage_update` (`used`,
+`size`), carried on the Run's `output_json.result.context_window`; a runtime
+that reports none leaves them null, and such a thread never rotates. A drop in
+reported occupancy within one session means the vendor compacted it, which may
+have summarized the standing context away, so it clears the digest and the
+next turn sends the block again. A runtime that reports nothing gives no such
+signal: its compaction can drop the block unnoticed until the session is
+replaced (a residual).
+
+### Session rotation with a self-written handoff (`agentGroups/sessionHandoff.ts`)
+
+When a Room turn would resume a Conversation × Agent session whose reported
+occupancy is at or past 60 % of its window (`roomContextBudgets.rotate_at`,
+below any vendor's own auto-compaction; the share is the fixed
+`ROOM_SESSION_ROTATE_SHARE` — no Space policy overrides it yet, see the
+deferred register), the send first creates a **handoff
+turn**: an ordinary Room Run for the same Agent, placed in the Conversation's
+serial chain immediately before that Agent's own turn, resuming the old
+session, whose prompt is the
+Prompt Library asset `agent.handoff` and whose only granted action is
+`handoff.write` (policy action `handoff.write`, `declared_resource`, ungated).
+The action writes one `agent_handoff` Artifact per handoff Run (a second call
+in the same turn replaces that turn's document, the Agent correcting itself; a
+later handoff or a retry writes its own, so the document a rotation used is
+never overwritten) — goal, decisions taken, files and their state, next step,
+open questions —
+bounded to 4 % of the window, visible to exactly whom the Run was
+(`selected_users` inheriting the Run's grants). Its Runtime Context input is
+its own request, with no conversation window — the resumed session already
+holds the conversation, and a window read then would end in the person's
+pending message. Its reply is posted neither to the transcript nor to the
+group timeline, and a later recipient's admission is never handed it as a
+reply. The renewed session's replay is sized without the "no summary"
+widening, so it does not start near the rotation share again. The person's turn is parked behind it and carries, beside the
+prompt it was dispatched with, the fresh prompt it switches to: standing
+context, the conversation title, the handoff, and the replay window.
+
+The rotation happens where that turn is admitted
+(`AgentGroupRunLifecycleProjector`), in one transaction: when the handoff Run
+succeeded and wrote its document, `rotateAfterHandoff` retires the session
+(`session_reset`, `vendor_session_id` null, digest and occupancy cleared,
+`handoff_artifact_id` set), the turn's prompt and `host_thread` override
+become the fresh ones, and an internal marker message
+(`continuation_event_kind = session_handoff`) keeps replay order. The handoff
+Run's own outcome can arrive afterwards and is ignored for the thread it
+already rotated. A handoff that failed or wrote nothing records a `warning`
+Run event on the turn, which then resumes the old session; the vendor's own
+compaction stays the safety net, and the same session is not handed off again
+until it has grown by a tenth of its window since that attempt. Rotation
+retires only the session the handoff was written from: a reset while the
+handoff ran leaves the thread as the reset left it, and an explicit context
+reset clears the handoff as well. Any later fresh prompt on the thread — a
+renewed turn that failed before its session existed, a broken resume —
+carries the last handoff, and a thread with no vendor session is always
+treated as fresh. Stopping the person's parked turn stops its handoff turn
+too; a stopped Run, or one that never started, is never read as a broken
+resume. The
+execution-context summary reports each pinned Agent's occupancy and links its
+handoff. Real-host acceptance is recorded in `tasks/deferred-register.md`.
 
 `vendor_session_id` is the thread's own resume target, deliberately distinct
 from the server-owned `runs.session_id`. No surface displays it any more — the
@@ -1456,6 +1579,495 @@ real local path is ever written down. It also records the daemon's `trust`
 mode, written with the credential it registered with; a config that predates
 the field is a paired host, which is all a daemon could be then.
 
+### Location lease, Task worktrees and `git_after`
+
+Writers on one directory are serialized; nothing else is. Two writers in one
+checkout would each see, and each diff, the other's half-finished edits, so
+the lease is taken by every writing launch, whatever kind of Run it is.
+What stays serial is deliberate: a Room conversation's Agents — a
+multi-recipient message, a discussion's waves — share the Conversation's
+directory by design and run one at a time by that design, a cost accepted
+until wall-clock complaints say otherwise (deferred register). An execution
+Task Run avoids the wait by working in its Task's worktree (below).
+`src/locationLease.ts` holds one execution lease per WorkspaceLocation id.
+A `launch` whose `isolation.sandbox_mode` is not `read_only`
+(`launchMayWrite`; a strict host told nothing counts as read-only, a paired
+host told nothing as a writer) takes the lease of its own Location — unless
+it runs in its Task's worktree, which takes the Task's lease instead — and of every `workspace_access` attachment
+granted `write`, all in sorted id order so two multi-Location writers cannot
+deadlock, before its baseline tree is captured. If any is held it queues in
+arrival order and sends `waiting_for_workspace` once (`HostDaemonFrameSchema`).
+Holders and waiters are launch attempts (`launch_id`), because a supervisor
+retry reuses the run id. The leases are released together in a `finally`
+right after the exit diff and HEAD are read — nothing after that reads the
+directory — or in `handleLaunch` when the launch fails before spawning. A
+queued launch is not in `launchingRuns` (an upgrade drain does not wait for
+it) but counts for `hasInFlightRuns`; revocation cancels every queued
+launch. A `read_only` Run, a managed workspace (already keyed by Conversation
+or owner) and a Task worktree's own Location take no lease. On a paired host
+`read_only` is the dispatch's declared intent, not enforcement. Locations are
+keyed by id, so overlapping registrations are not serialized (deferred
+register).
+
+`terminate` carries the `launch_id` of the dispatch the server is waiting on:
+the daemon cancels that attempt's wait or signals that attempt's process and
+nothing else; a `terminate` without one cancels every queued attempt of the
+run and signals its running one. An attempt still being prepared — resolving
+its workspace, or between being granted its leases and spawning — is marked
+stopped and completes without starting (`launchingRuns` and the stop marks are
+kept per launch attempt, so a retry's cleanup never clears an earlier
+attempt's entry). `HostConnectionRegistry` owes a host every
+stop it could not deliver — a `terminate` while the host was offline, and a
+forced stop for each dispatch given up as `host_disconnected` after the
+reconnect grace window — and sends them, by launch, when the host
+reconnects, so a launch the daemon still had queued for its directory never
+starts after the server reported it failed. A revoked host is owed nothing
+(`forgetRevokedHost`): it never reconnects, and its daemon stops its own Runs
+on the revocation close.
+
+Server side, `HostConnectionRegistry.receiveWaitingForWorkspace` marks the
+live dispatch (nonce-checked) until `launched` or `complete`;
+`isWaitingForWorkspace(runId)` is read by `runs/turnReadModel.ts`, which
+reports a `running` Run so marked as `state: "blocked"`,
+`blocked_on: "workspace"` through the existing blocked-turn rendering.
+**A Run's time budget starts at `launched`.** `RemoteWsCliCommandExecutor`
+arms the Run's timeout when the daemon reports the process started, as the
+daemon's own timer does, so a launch queued behind another writer (or for a
+built-in host slot) spends none of it; the wait itself is bounded by one
+budget from dispatch, after which the dispatch ends as a timeout and a
+`terminate` for it is sent. The stall clock does not run before `launched`.
+
+**Task worktrees and Task branches (ADR 0016 §11).** `withTaskWorktree`
+(`runs/remoteHostCliAdapter.ts`) sets `LaunchWorkspace.worktree: { task_id }`
+for a write-capable execution Task Run on a Location — its contract came from
+a Task, `run_type` is `agent`, and its sandbox level is not `read_only`
+(`executionTaskId`); a planning or read-only Run and every Conversation turn
+work in the checkout. The verification target carries the same workspace.
+
+*Where.* One worktree per Task, never inside the person's checkout:
+`realpath(<config>)/task-worktrees/<location_id>/<task_id>`
+(`src/taskWorktree.ts`; parents created 0700 one component at a time, each a
+real directory; the Task id must be a valid ref component). It checks out
+`rainver/task-<task_id>`, created when absent — compare-and-swap, create-only
+`update-ref` — at the tip of the main branch (`src/mainBranch.ts`: the local
+branch `origin/HEAD` names, then `main`, then `master`, else the checkout's
+current branch or detached commit — never a `rainver/task-*` branch, which
+names no main branch, so a merge there answers `no_main_branch`; nothing is
+fetched or pushed). A merge resolves the main branch the same way when it
+runs, not as it was when the Task branch was made. It is made
+with `git worktree add --lock` (locked because the entry records the daemon's
+path, which from the built-in host's neighbours looks prunable) and nothing is
+written in the checkout beyond git's own worktree entry and the branch — no
+`.rainver/`, no `info/exclude`. `checkLocationRepository` decides from the
+filesystem first: no real `.git` directory at the Location's top (a
+subdirectory, a `.git` file pointing elsewhere) or an unborn HEAD (a freshly
+`git init`ed managed folder) runs the Run in place under the Location's lease,
+with `git_before`/`git_after` as for any in-place Run; a real `.git` directory
+that is git's common directory with a commit gets the worktree; a real `.git`
+directory git fails or refuses on (a planted `core.worktree`, a broken HEAD)
+fails the launch ("This Location is a git checkout Rainver cannot make a Task
+worktree of: …"), as does a worktree that cannot be prepared — a Task never
+falls back to writing a checkout that is a repository. The branch is never
+moved while it is checked out anywhere else.
+
+The daemon never runs `git worktree prune`, `unlock` or `repair`: `.git` is
+Agent-writable, prune deletes through a symlink planted under `.git/worktrees`
+and drops the person's own entries, and repair rewrites every entry there —
+a planted one makes git write a `.git` file into any directory it names. It
+removes a worktree with `git worktree remove --force --force` (ten-minute
+timeout, as for `add` and each capture step), and when git refuses, deletes
+only a real directory that resolves to itself and then only that worktree's
+own entry — a real directory under a real `<common>/worktrees` whose `gitdir`
+backlink names it. Pointer files an Agent can write (a worktree's `.git`, an
+entry's `gitdir`) are read with `O_NOFOLLOW|O_NONBLOCK`, as regular files, at
+most 4 KiB. A worktree is recognised only when its pointer (relative ones
+resolved) names a real entry under `<common>/worktrees` whose backlink points
+back and git lists it at that path; when exactly one entry's backlink names
+it, the daemon rewrites the pointer itself (`relinkWorktree`), and otherwise
+the worktree is unrecognised. A symlink, file or FIFO at the worktree path is
+unlinked, never followed.
+
+A `<config>/task-records/<location_id>/<task_id>.creating` marker is written
+before `git worktree add` and removed once the worktree checks out; a worktree
+found with the marker still set (an add killed midway, which leaves a
+complete-looking, partly checked-out tree) holds no Run's work and is deleted
+without capture, and a command asked to run in it fails.
+
+*Quarantine* is `<config>/task-worktrees-quarantine/<location_id>/`, one
+target `<task_id>-<time>-<rand>` (and its `.git-modules` sibling) per event,
+created only when something is moved there. A worktree kept **whole** is never
+deleted automatically; the **parts** of a worktree whose work is on the
+branch go to a `-retired` target, which the sweep deletes 30 days after the
+time in its name — a repository with submodules leaves one set per Run. A
+worktree goes there **whole** when a launch or branch delete
+finds an unrecognised directory at the path (recognised: its `.git` names a
+real entry under `<common>/worktrees` whose backlink points back, whose
+`commondir` is absent or names this repository, and which git lists at that
+path — `git worktree list --porcelain -z`); when git cannot capture it (at a
+launch committing another Run's leftovers, at the sweep, and at settle, which
+then answers `ok: false` saying the uncommitted work is not on the branch); and
+when taking it down fails part-way (whatever is left). When a worktree whose
+work is on the branch is taken down — at settle after its commit, at launch
+after leftovers, at the sweep, at branch delete — only **parts** go there:
+each directory below its top holding a `.git` (a nested repository, ignored
+directories included; a symlink-free walk that does not descend into them),
+and each unreadable directory, at `<target>-retired/<relative path>`, plus the entry's
+`modules/` (submodule git directories) at `<target>-retired.git-modules`; the rest —
+files already on the branch, and ignored files — is deleted. A nested
+repository with a commit is committed only as a gitlink, so its files and
+history exist only there; a preserved submodule git directory still names the
+old worktree in `core.worktree` and is opened with `--work-tree`. An
+unrecognised directory found by a settle is left in place (`ok: false`, no
+fallback to the branch tip) and skipped by the sweep. After a settle has
+recorded its commit, taking the worktree down is best-effort and the settle
+still answers `ok`.
+
+With the Task's lease held, launch, settle, delete and sweep clear exactly two
+stale locks a killed git leaves — the entry's `index.lock` and
+`refs/heads/rainver/task-<task_id>.lock` — when they are regular files older
+than ten minutes or dated more than a minute in the future.
+
+*Serialization.* A Task's execution Runs run one at a time. Server side, the
+`agent_run` job defers (keeping its attempt) while another execution Run of
+the same Task on the same Location has started and not ended — `running`,
+`cancelling`, or parked on a delegated Agent or its own review request (a
+failed Run a supervisor holds for review has ended and does not count) — is
+`queued` with a live job and was admitted first (so two Runs checking at once
+agree on an order: a Run that already started — a parked Run resuming keeps
+its `started_at` — before one that has not, then by admission), or still has a
+settle owed to its host (`taskRunAhead`, joined through `task_runs`). Only a
+`queued` Run waits: a `running` one whose job was reclaimed after a worker
+died has already taken its turn.
+Daemon side, a launch takes the lease `task:<location_id>:<task_id>` (plus its
+`workspace_access` write leases, but not the Location's), so a second launch
+of the Task queues with `waiting_for_workspace`, and then also waits for a
+verification command still running in the worktree.
+
+*Launch.* With the lease held, `prepareTaskWorktree` deals with what it finds
+— an interrupted add is deleted, an unrecognised directory quarantined, a
+listed entry whose directory is gone removed, a worktree an Agent switched off
+the Task branch has its content committed onto the branch and is recreated —
+and
+reads the per-Task record `<config>/task-records/<location_id>/<task_id>.json`
+(`{ run_id, start_commit, location_root, updated_at }`, 0600, atomic; ids
+validated before any path is built from them). The same run id not yet
+settled (a retry, a parked Run resuming) reuses the worktree untouched and
+keeps its original start commit. A run id already settled — a supervisor retry
+after a failed Run's settle — continues that Run when the branch tip is still
+its settled commit: the worktree is recreated at the tip, the original start
+commit is kept, and its next settle replaces the earlier commit, so a retried
+Run still ends as one commit; if anything landed on the branch since, it
+starts from the tip. Any other Run first has an earlier unsettled Run's
+leftovers committed on top of the tip as one unsigned system commit
+(`Rainver <rainver@localhost>`, naming that run), and starts in a freshly
+recreated worktree at the new tip. The Run's diff baseline is its start commit,
+so its uploaded diff includes commits the Agent made itself. `complete`
+carries `task_worktree { branch, start_commit }` only when the process ran in
+the worktree, and the worktree is kept after `complete`.
+
+*Verification.* The server verifies in the Task worktree — a `command_run`
+whose workspace names the Task runs there when the worktree exists (a
+read-only check: it changes nothing in the repository), in the Location when
+none does, and errors when an unrecognised directory is there — and git-backed verifiers diff against the reported start commit
+(`base_commit_sha`).
+
+*Settle.* After verification, whatever the Run's outcome — also for a Run
+given up on a timeout or a lost host, which never sent `complete` (a parked
+Run is never settled) — orchestration asks the daemon to `task_run_settle`
+(`runs/taskRunSettlement.ts`). Author and committer are the Agent at
+`<agent_id>@agents.rainver.invalid`; the message is the Task title (with the
+outcome when it is not `succeeded`), the first 20 lines of the Agent's
+reply (redacted as the Run's stored summary is), and `Rainver-Task:` /
+`Rainver-Run:` / `Requested-by:` trailers. The
+daemon captures the whole working tree through a temporary index, and when it
+differs from the start commit's tree writes `commit-tree --no-gpg-sign -p
+<start_commit>` — squashing the Agent's own intermediate commits away — and
+moves the branch by compare-and-swap from the tip it read; then it removes the
+worktree. Files the repository ignores (`.gitignore`, `info/exclude`,
+`core.excludesFile`) are never committed and go with the worktree — at settle,
+branch delete, sweep, and whenever the worktree is recreated; a nested
+repository is committed as its commit id only. Capture steps get ten minutes
+each. It answers `task_busy` while a launch of the Task, a command in the
+worktree or another settle, delete or sweep holds it, and refuses when the
+branch no longer contains the Run's start commit. The answer is recorded in
+`<config>/task-runs/<run_id>.json` with the start commit (kept 30 days); a
+repeated settle replays it unless a later attempt of the same Run has
+launched since, which settles anew. A Run that never ran in the worktree (the
+Location is not a git checkout) is answered with neither branch nor commit,
+and the server records nothing; and the server keeps it as the Run's
+`output_json.result.task_branch { branch, commit, error }` — also when a
+cancellation wins the terminal publication. A settle that fails is a
+`task_run_settle_failed` warning, not a Run failure. One the host did not
+answer (`host_offline`, `host_timeout`) or refused as busy (`task_busy`) is
+owed: a durable `task_run_settle` job (`hosts/taskBranchJobs.ts`) retries it
+once the Run has published, defers without spending an attempt while the host
+is unavailable, gives up as `location_unavailable` once the Location is no
+longer active or its host is revoked, and writes the answer into the same
+record; the Task's next Run waits for it. A settle the host refused otherwise leaves
+the change in the worktree for the Task's next Run or the sweep.
+
+*Cancel and delete.* A Task moved to `cancelled` or soft-deleted enqueues, in
+the same transaction, one durable `task_branch_delete` job per Location its
+Runs worked on (`hosts/taskBranchJobs.ts`). The job skips a Task
+reopened since and a Location no longer active, defers while a Run of the Task
+has not ended (a queued one only with a live job) or its settle is owed, and defers without spending an attempt
+while the host is unavailable or answers `task_busy`; a host's `hello` brings
+its waiting Task branch jobs forward (`wakeTaskBranchJobs`). What these jobs
+and the merge share — the job names, which host answers mean "not now" and
+how long to wait (`deferForHostAnswer`), whether a Location can still answer
+(`loadTaskLocation` / `taskLocationUsable`), the Task's workspace as the host
+resolves it (`taskWorkspace`), the owed-settle predicate — is
+`hosts/taskBranchRequests.ts`, which neither imports. The daemon
+removes the worktree, deletes exactly `refs/heads/rainver/task-<task_id>` by
+compare-and-swap and drops the Task's record.
+
+*Sweep.* On connect (after `hello_ack`) and every 24 hours the daemon sweeps
+Task worktrees last used more than a day ago (the record's `updated_at`, else
+the directory's mtime; re-read once the Task's lease is held) with no live or
+queued launch and no running command:
+it commits their leftovers on top of the tip, takes the worktree down
+(removed, or quarantined as above), and keeps the record so a later settle or resume still counts from the Run's
+start commit. It never deletes a branch. A paired host resolves Locations from
+its registrations, the built-in host from the recorded `location_root` while it
+is under `RAINVER_HOST_WORKSPACES_ROOT`; a Location it cannot resolve keeps
+its directory and logs a line. On the built-in host `<config>` is the
+bind-mounted `cache/host-daemon`, so worktrees survive container restarts;
+wiping that cache loses only uncommitted work in unsettled worktrees.
+
+**Merging a done Task (ADR 0016 §11).** Each `done` write — automatic
+acceptance (`projectWork/settlement.ts`), a person (`tasks/repository.ts`
+`updateTask`), the Agent's `task.complete` (`projectWork/taskActions.ts`) —
+calls `enqueueTaskMerges` (`hosts/taskMerges.ts`) in its own transaction: one
+`task_merges` row per Location an execution Run of the Task names (settled or
+not — a Run that closes its own Task does so before its settle, which the
+merge then waits for; a Location with no Task branch answers `no_changes`),
+keyed by Task × Location × basis (the write that asked), with a `task_merge`
+job. An *execution Run* here and everywhere the merge looks at the Task's Runs
+— which Locations it merges into, whose contract it verifies again, which
+Agent resolves its conflict, who authored the Task commit — is one definition
+(`tasks/executionRuns.ts`): an Agent Run allowed to write in a role other than
+`planning`, `review` or `merge`. `requested_by_user_id` is whom the merge acts
+for: on a paired host its owner (ADR 0016 §3), whoever closed the Task;
+otherwise the person whose `done` write asked, or the Task's creator when
+nobody did. The job runs as that user and a resolution Run is admitted for
+them. A Task closed again replaces, on each Location, only a merge that
+stopped there (a conflict, failed checks, a failure — superseded); one under
+way, or verified and waiting for the checkout, is left to finish and lands
+the branch as it is when it gets there, the new close's work included, so
+nothing new is asked for beside it. The job drives the row through the host's
+steps; no step uses git's sequencer (`rebase`, `cherry-pick`), whose state
+files a Run could write and git would obey:
+
+1. `rebasing` — `task_merge_prepare`: the daemon squashes the branch since its
+   merge base with the main branch into one unsigned commit (`commit-tree`,
+   compare-and-swap) — authored by the Agent of the Task's latest execution
+   Run, the Task title and description head, a `Rainver-Task:` trailer and a
+   `Requested-by:` trailer naming the Task's creator — and merges it onto the
+   main branch's tip with `git merge-tree
+   --write-tree` (git 2.38 or newer, else `git_too_old`), every merge driver
+   the repository's own configuration defines disabled. Clean: the merged tree
+   becomes the Task commit (`commit-tree -p <main tip>`, the branch moved by
+   compare-and-swap) — `rebased`, with `main_branch`, `onto_commit`,
+   `task_commit`; a merged tree equal to main's means `no_changes`, which ends
+   the merge and deletes the branch. Conflicts: the merged files, markers
+   included, are written into the worktree (`read-tree --reset -u`) with HEAD
+   left on the squashed commit — no sequencer state is created — and the
+   merge goes to step 2. Any error restores the squashed commit.
+2. `resolving` — the Task's Agent gets one resolution Run
+   (`tasks/mergeResolution.ts`): the Agent, runtime profile and host thread of
+   the Task's latest execution Run, on the same Location, `task_runs.role =
+   'merge'`, `trigger_origin = 'system'`, the contract naming
+   `task_merge_id`, admitted as any Task Run is for the merge's requester
+   (Project write access, the host's owner, the Task's budget — a `done` Task
+   is admitted only for this; a refused admission hands the conflict to the
+   person) and then through the subscription quota gate
+   (`admitAgentOriginRun`), in the same transaction as the merge's move to
+   `resolving`. The conflict's main branch and base are recorded, so the Run
+   is told the other side by name. It launches into the worktree as the merge
+   left it (`worktree.merge_id`: no preparation, leftovers or start commit,
+   never settled), told the Task's side (HEAD) and the main branch's, and the
+   conflicted files: edit or delete each, and do nothing else — no commit,
+   reset, stash, checkout or branch move. The merge waits for the Run to end
+   (a failed one a supervisor holds for review counts as ended), then
+   `task_merge_continue`. When the Run left HEAD off the Task branch, deleted
+   the branch, or moved it anywhere but a descendant of the squashed commit,
+   the daemon puts the conflict back as the merge left it — branch at the
+   squashed commit (recreated if deleted), HEAD on the Task branch, the merged
+   files rewritten — and answers `unresolved`. Otherwise it captures the worktree through a private index
+   seeded from the merged tree and builds the result as the merged tree with
+   **only the conflicted paths** (and anything beneath them) taken from that
+   capture: everything else stays as the merge wrote it, so a Run that reset
+   or stashed cannot revert the main branch's changes, and anything more the
+   Task needs is for a later Task Run. A conflicted path is `unresolved` while
+   its blob holds a marker line (seven or more `<` or `>`, so a longer
+   `conflict-marker-size` counts), while a conflict that had no markers (a
+   binary file, a modify/delete) is left exactly as the merge wrote it, or when
+   git cannot say; every path is when the conflict list was too long to answer
+   in full (500 paths); and a result equal to the main branch's tree is too —
+   keeping nothing of the Task is the person's call, so continue never answers
+   `no_changes`. Else the result becomes the Task commit on `onto_commit` (its
+   id recorded before the branch moves, so an interrupted continue finishes on
+   retry). A Run stopped before it worked, an unresolved answer, or a second
+   conflict gives the conflict to the person: `task_merge_abort` restores the
+   squashed commit, to merge by hand, and the merge is `conflict` (`failed`,
+   if the host could not give the worktree back).
+3. `verifying` — the Task's declared checks again, in the merged worktree
+   (`verifyTaskWorkspace`, `runs/verification/engine.ts`): the checks a
+   workspace can answer (commands, tests, file and git checks, recipes), from
+   the Task's latest execution Run's contract and the Folder's recipe,
+   git-backed ones against `onto_commit`; a check that could not run fails the
+   gate, unless the host went away (then the merge waits). Failed →
+   `verification_failed`, and the main branch does not move — also after an
+   Agent's resolution, whose checks failing is not handed back to it. Files a check
+   leaves behind are thrown away, never merged.
+4. `task_merge_finish` — the daemon fast-forwards. It waits
+   (`waiting_local_changes`) while someone is busy with the main branch — a
+   rebase or bisect of it in any worktree, a merge, cherry-pick or revert in
+   progress in the checkout holding it. When the Location's checkout has the
+   main branch checked out it takes the Location's lease (`location_busy`
+   defers), rechecks HEAD, waits while the person's uncommitted or untracked
+   files — or an existing file, ignored ones included, where the Task adds one,
+   or a file where the Task needs a directory, in either case one `onto_commit`
+   does not track — overlap the Task commit's files, then runs `merge --ff-only
+   --no-overwrite-ignore --no-autostash` and confirms the main branch moved;
+   otherwise it moves the branch by compare-and-swap from `onto_commit`. The
+   main branch checked out in another worktree is `main_checked_out_elsewhere`.
+   A main branch no longer at `onto_commit` (`main_moved`), or a host whose
+   record of the merge no longer matches, goes back to step 1 — a main branch
+   that moves under the merge five times in a row stops it instead
+   (`failed`, `main_kept_moving`: each move costs the Task's checks again),
+   and the next move of the main branch tries it again from a clean count;
+   one already at `task_commit` (a crash right after the fast-forward) is
+   `merged`. `merged` removes the Task worktree and branch.
+
+The daemon's merge record (`<config>/task-records/<location_id>/<task_id>.merge.json`,
+state `preparing`, `conflict` or `rebased`, with the merged tree and each
+conflicted path's object in it) holds the worktree while a merge
+is under way: settles answer `task_busy` and the sweep skips it; an ordinary
+launch is refused while it is `preparing` or `conflict` and drops a `rebased`
+one (a merge that stopped after rebasing), running from the rebased commit.
+Finished merges are answered again from `<config>/task-merges/<merge_id>.json`
+(pruned after 30 days).
+
+Server side, a Task's Runs on that Location wait while its merge is `queued`,
+`rebasing`, `verifying`, `resolving` or `waiting_local_changes` (its own
+resolution Run excepted, and a Run resuming from a delegated Agent or a
+review, which the merge waited for), and a merge waits for the Task's Runs
+that started and have not ended — a resuming one included — and for owed
+settles, but not for one not yet started, which waits for the merge instead;
+the resolution Run waits for nothing, and starts a host thread of its own
+when another of the Task's Runs is queued on the Task's. A Task that leaves
+`done` — reopened, cancelled, deleted — withdraws its merges
+(`withdrawTaskMerges`), and a merge re-reads the Task before each host step
+that changes something, so one reopened while it verified does not move the
+main branch: each is superseded only once the host has given back what it
+held (a busy or absent host is waited for), and a resolution Run of it not
+yet started is cancelled then. A Task closed again before that happened
+keeps the merge as it is (see above): the Agent's resolution under way is
+not thrown away to be asked for a second time. Every stop — failed checks, a
+failure, a job whose attempts ran out (`stopAfterExhaustedAttempts`) — goes
+through the same door (`block`): the host gives the rebased branch back at
+once, best effort, and the person is told. A host that is away is waited
+for, not given up on.
+`waiting_local_changes` keeps its job polling every five minutes; a
+Location whose HEAD or dirty state changed runs it now. A merge blocked on a
+conflict, failed checks or a failure is retried when the checkout reports its
+main branch checked out at a commit other than the one the merge was blocked
+against — the person may have fixed it there — and, for a merge that stopped
+before it knew its main branch, on any HEAD move (`wakeTaskMergesForLocations`);
+a commit on another branch changes nothing the merge depends on and does not
+run the Task's checks again. A paired host's
+heartbeat reports that change (`recordDaemonHeartbeat`); a built-in host
+Location has no heartbeat, so while it has such a merge the server reads its
+git state every two minutes (`refreshBuiltinMergeLocations`, scheduler task
+`builtin_task_merge_refresh`). A host's `hello` wakes its merges. A Run of the
+Task that settles a commit after the Task is already `done` — queued before
+it closed, or resumed after — gets a merge of its own on its own Location
+(`enqueueLateTaskMerge`, basis `late:<run_id>`), by the same rule as any
+`done` write: a merge under way there takes the commit when it prepares (the
+usual case of a Run that closed its own Task), a stopped one is replaced.
+Other Locations' merges are not touched.
+
+Each blocked outcome writes `task.merge_blocked` (reason, files, failed checks) once per
+distinct outcome — the same conflict, the same failing checks, is one event
+however often it is tried and however far the main branch moves under it —
+and `merged` writes `task.merged`, even for
+a merge superseded while it finished; both are Project Updates and Task
+timeline entries, and when the Task came from a Room conversation
+(`tasks.source_run_id`, recorded by `task.create`) a notice there says what
+happened. A Task outside a Project has no stream, so its merge writes no
+event, notice or attention item — the merge itself runs the same. `waiting_local_changes`, `conflict`, `verification_failed` and
+`failed` are attention items for the responsible person of a Task still
+`done` (`tasks/projectIntegration.ts`, `source_type: task_merge`), with the
+failure reason in words (`mergeFailureText`). Rainver never pushes.
+
+A fast-forward in the checkout moves its HEAD, which the Room Git gate would
+refuse (`modules/rooms.md`). The conversation the Task came from — the one
+told it merged — takes that move as its own: when its accepted baseline or
+last-Run HEAD is the main branch at `onto_commit`, `merged` records the main
+branch at the merged commit as its `last_run_git_branch/head` through the
+gate's one writer (`sessions/conversationGitGate.ts`
+`recordConversationHeadMove`, which a Conversation Run's `git_after` goes
+through too), so its next send advances the baseline. Any other state there
+is someone else's move and still the person's to refresh; other conversations
+on the Location were not told and keep the gate.
+
+In strict mode the launch binds its cwd — now the Task worktree — by
+`sandbox_mode` and the repository's git common directory as a write bind
+capped by the same mode; a `command_run` in a Task worktree binds both the
+same way.
+
+**Git on an Agent-written checkout.** A Run that can write `.git/` must not
+get code executed as the daemon or the server (B62/B63), so every git call on
+a Location or Folder checkout goes through `runLocationGit` /
+`locationGitOutput` (`@rainver/folder-read`): the daemon's diff capture,
+`captureGitHead`, worktree commands and heartbeat status; the server's
+`refreshGitStatus` on built-in Locations (whose directory `sandbox-runner`
+Runs also write), Files & Code status and diff, and the server-host sandbox
+and code-patch collection. Each call disables hooks, the fsmonitor, submodule
+recursion and automatic maintenance (`maintenance.auto`, `gc.auto` — a
+`merge` would otherwise spawn a gc that prunes worktrees), reads
+the filter drivers the checkout's own configuration defines (`git config
+--show-scope --get-regexp`, which executes nothing) and blanks every one not
+from global or system configuration — the owner's `git lfs` stays — and
+refuses a checkout whose own configuration sets `core.worktree`. Overrides
+travel as `GIT_CONFIG_COUNT`/`KEY`/`VALUE` environment, not `-c` (the fixed
+hooks and fsmonitor ones as both). It fails closed: git older than 2.31, which
+ignores that environment, and a configuration the probe could not read (any
+exit but 0 or 1, a timeout) refuse the checkout rather than run git blind; git's
+version is read once per process in the system temporary directory, and only a
+version actually read is kept, so one failed attempt does not refuse every
+later call. Diffs pass `--no-ext-diff --no-textconv`, and every `status` and
+`diff` gets `--ignore-submodules=dirty`: to tell whether a nested repository's
+work tree is dirty git runs `status` inside it, under that repository's own
+configuration, which none of the overrides reach. A nested repository whose
+commit moved still shows as a change (so a Task Run that moved one is settled as a change);
+only its uncommitted edits are not looked at, and `diff.submodule=short` and
+`status.submoduleSummary=false` are pinned, so the change is shown as commit
+ids and git never runs a diff or log inside the nested repository. Gaps are recorded in the deferred register: an
+in-place capture follows a `.git` file; the configuration is probed by one
+git process and the command run by another, so a writer fast enough can
+change it between them. Removing a Task worktree whose `git worktree remove` failed deletes the directory only when it is a real directory that resolves to itself, then only that worktree's own entry.
+
+**`git_before` / `git_after`.** Just before spawn, with its leases held, the
+daemon reads the branch and HEAD (`captureGitHead`: `rev-parse --abbrev-ref
+HEAD` / `rev-parse HEAD`, the reads a heartbeat reports); after the exit diff
+it reads them again, and uploads both with the diff. Neither is sent for a
+worktree Run, whose detached HEAD is not the Location's. The server always
+keeps `git_after` as the Run's `output_json.workspace_after`, and records it
+as the Conversation's `last_run_git_branch/head` — through the gate's one
+writer, `sessions/conversationGitGate.ts` `recordConversationHeadMove`, which
+a done Task's fast-forward goes through too — only for a Run that may
+write (`required_sandbox_level` is not `read_only`), is not yet terminal,
+ran in its Conversation's Primary Location on the uploading host, and whose
+`git_before` equals the Conversation's baseline or its current last-Run HEAD
+— so the move to `git_after` happened while this Run held the directory. The
+Conversation send gates use it (`modules/rooms.md`, Git gate); refreshing or
+advancing the baseline clears it. A branch name longer than the record's 256
+characters is not kept — the diff still is — and the gate then treats a moved
+HEAD as it would with no report; a Location's status report records such a
+branch as unknown too.
+
 ### Strict mode (`strictNamespace.ts`)
 
 In strict mode `execution.ts` does not spawn the runtime — it spawns `bwrap`
@@ -1651,9 +2263,14 @@ write — a failure with no error anywhere.
   `workspace_location_id` — the server never sees the real path), injects
   `RAINVER_OUTPUT_DIR` as a per-run directory outside the workspace
   (phase-1 substitute for Run Exchange), streams stdout as `output` frames,
-  and on exit uploads the workspace's git diff (`src/gitDiff.ts` — unified
-  `git diff HEAD` with untracked files staged via intent-to-add so new file
-  content shows up, reset immediately after so nothing is left staged) and
+  and on exit uploads the Run's own git diff (`src/gitDiff.ts`: before the
+  process starts the daemon writes the working tree — tracked and untracked,
+  `.gitignore` respected — as a tree object through a private
+  `GIT_INDEX_FILE`, and at exit diffs that baseline against the tree then,
+  so the diff is what *this* Run changed rather than every uncommitted edit
+  in the directory, and the repository's own index is never read or written;
+  the dangling blobs are what `git stash create` leaves and `git gc` prunes
+  them; a launch whose baseline capture failed falls back to tree-vs-HEAD) and
   the output directory's contents (`src/outputFiles.ts`, UTF-8 only — a
   binary deliverable is a known phase-1 gap) before sending `complete`.
   **`RAINVER_OUTPUT_DIR` is no longer nudged via the prompt** (real-usage
@@ -1667,7 +2284,10 @@ write — a failure with no error anywhere.
   question, not this fix (`tasks/deferred-register.md`).
   Termination uses `process.kill(-pid, signal)` against the whole process
   group (`detached: true` at spawn), escalating a graceful `SIGTERM` to
-  `SIGKILL` after a 5s grace window if the process ignores it.
+  `SIGKILL` after a 5s grace window if the process ignores it. A `terminate`
+  for a launch still queued for its Location's lease removes it from the
+  queue and answers `complete` without starting it; a `terminate` naming a
+  `launch_id` reaches only that attempt.
   A `host_revoked` or `invalid_token` policy close is terminal rather than a
   reconnect: the daemon removes its local registration, terminates active Run
   process groups, and exits successfully so systemd does not restart it.
@@ -1741,7 +2361,11 @@ copy, on either host kind, through `install_tool` (above).
 
 - Conversation dispatch uses its pinned active Location. Remaining Task
   host selection is an explicit control-center choice. There is no scored
-  multi-location router or lease scheduler.
+  multi-location router; the only scheduling across Runs is the daemon's
+  per-Location execution lease (below) and the built-in host's run cap.
+- Worktrees and attempt records from the earlier per-Run Task worktree
+  scheme (`<location>/.rainver/worktrees/`, `<config>/worktrees/*.json`) are
+  neither migrated nor removed.
 - There is no automated daemon-process-to-live-server integration test.
   The wire contract is verified from the server side
   (`server/test/hostsRoutes.test.ts`); the daemon's `fetch`/`WebSocket`
@@ -1752,9 +2376,9 @@ copy, on either host kind, through `install_tool` (above).
 - **Host name occupancy:** `uq_hosts_owner_name` has no status filter, so
   an expired `pending_pairing` or `revoked` host keeps its name. A later
   pairing needs a different display name. There is no automatic cleanup.
-- Remote propose→apply, content sync, divergence detection, quota
-  probing, and Windows-native/WSL hardware verification are not
-  implemented (ADR 0016). Location `execution_ready` is persisted and
+- Content sync, divergence detection, quota probing, and
+  Windows-native/WSL hardware verification are not implemented (ADR 0016).
+  How a host Run's change lands is settled and built (ADR 0016 §11). Location `execution_ready` is persisted and
   heartbeat-driven; it is not inferred from Host liveness.
 
 Unimplemented host ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §25.
@@ -1777,6 +2401,12 @@ Host runs natively under its owner's OS permissions and has no namespace
 containment. Removing the probe does not imply filesystem confinement; the
 execution Host trust mode is the boundary (B62 and
 `SECURITY_AND_ACCESS_BOUNDARIES.md` §10).
+
+A vendor CLI's own interactive question (translated into an ordinary reply,
+`modules/runtime-adapters.md`) is therefore not certified by a probe either:
+the translation is covered by recorded-frame controller tests
+(`server/test/acpVendorQuestion.test.ts`), and each runtime's real question
+shape is a paired-host acceptance item in `tasks/deferred-register.md`.
 
 Filesystem containment follows the execution Host trust mode as described
 above. Provider-bound calls use their separately authorized egress profile

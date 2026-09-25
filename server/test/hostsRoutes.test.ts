@@ -587,6 +587,28 @@ describe("hosts routes", () => {
     expect(diffFromA.statusCode).toBe(201);
     expect(diffFromA.json().artifact_id).toBeTruthy();
 
+    // A diff that could not be read still reports where the checkout stands.
+    const gitAfterOnly = await app.inject({
+      method: "POST",
+      url: `/api/v1/hosts/me/runs/${runId}/diff`,
+      headers: { authorization: `Bearer ${hostA.token}` },
+      payload: { diff: null, git_after: { branch: "main", head: "abc123" } },
+    });
+    expect(gitAfterOnly.statusCode, gitAfterOnly.body).toBe(201);
+    expect(gitAfterOnly.json().artifact_id).toBeNull();
+    const workspaceAfter = await db.pool.query<{ workspace_after: unknown }>(
+      `SELECT output_json->'workspace_after' AS workspace_after FROM runs WHERE id = $1`,
+      [runId],
+    );
+    expect(workspaceAfter.rows[0]!.workspace_after).toMatchObject({ branch: "main", head: "abc123" });
+    const empty = await app.inject({
+      method: "POST",
+      url: `/api/v1/hosts/me/runs/${runId}/diff`,
+      headers: { authorization: `Bearer ${hostA.token}` },
+      payload: { diff: null },
+    });
+    expect(empty.statusCode).toBe(422);
+
     const outputsFromA = await app.inject({
       method: "POST",
       url: `/api/v1/hosts/me/runs/${runId}/outputs`,

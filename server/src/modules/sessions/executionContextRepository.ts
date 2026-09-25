@@ -7,7 +7,7 @@ import type {
 } from "@rainver/protocol";
 import { projectReadAccessSql } from "../access/contentAccessSql.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
-import { isStale } from "../hosts/repository.js";
+import { isStale } from "../hosts/liveness.js";
 import { withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { loadRuntimeProfileSnapshot } from "./runtimeProfileSnapshot.js";
 
@@ -37,6 +37,12 @@ export interface ExecutionContextRow {
   git_dirty: boolean | null;
   git_execution_ready: boolean | null;
   git_observed_at: string | null;
+  /**
+   * Branch and HEAD the host reported at the exit of this Conversation's most
+   * recent Run in its Primary Location (hosts/repository recordGitAfter).
+   */
+  last_run_git_branch: string | null;
+  last_run_git_head: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -108,12 +114,17 @@ export interface ConversationRuntimeThreadRow {
   runtime_key: string;
   runtime_installation: string;
   status: "active" | "session_reset" | "closed";
+  /** How full the vendor session was after its last Run, and the handoff it was renewed from. */
+  context_tokens: number | null;
+  context_window_tokens: number | null;
+  handoff_artifact_id: string | null;
 }
 
 const CONTEXT_COLUMNS = `id, space_id, session_id, execution_host_id,
   primary_workspace_mode, primary_project_folder_id, primary_workspace_location_id,
   state, initialized_at, initialized_by_user_id, dispatch_lock_id, queue_paused_at,
   git_branch, git_head, git_dirty, git_execution_ready, git_observed_at,
+  last_run_git_branch, last_run_git_head,
   created_at, updated_at`;
 
 const ATTACHMENT_COLUMNS = `grant_row.id, grant_row.space_id, grant_row.session_id,
@@ -259,6 +270,11 @@ export class PgConversationExecutionContextRepository {
               git_dirty = $5,
               git_execution_ready = $6,
               git_observed_at = $7,
+              -- A new baseline starts a new account of who moved HEAD: a
+              -- last-Run HEAD from before it must not later vouch for a HEAD
+              -- somebody else moved to the same commit.
+              last_run_git_branch = NULL,
+              last_run_git_head = NULL,
               updated_at = now()
         WHERE space_id = $1 AND session_id = $2 AND state = 'initialized'
         RETURNING ${CONTEXT_COLUMNS}`,
@@ -469,7 +485,8 @@ export class PgConversationExecutionContextRepository {
   async getConversationThread(spaceId: string, sessionId: string, agentId: string): Promise<ConversationRuntimeThreadRow | null> {
     const result = await this.db.query<ConversationRuntimeThreadRow>(
       `SELECT agent_id, execution_host_id, workspace_mode, workspace_location_id,
-              runtime_key, runtime_installation, status
+              runtime_key, runtime_installation, status,
+              context_tokens, context_window_tokens, handoff_artifact_id
          FROM host_threads
         WHERE space_id = $1 AND session_id = $2 AND agent_id = $3
           AND container_kind = 'conversation' AND status IN ('active', 'session_reset')

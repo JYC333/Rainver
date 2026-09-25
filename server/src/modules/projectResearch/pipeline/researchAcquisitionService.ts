@@ -8,6 +8,12 @@ export interface StartResearchAcquisitionInput {
   intentNote?: string | null;
   originRoomId: string | null;
   originSessionId: string | null;
+  /**
+   * The Room task group whose Agent started this acquisition, if an Agent
+   * did: its result turn is Agent-triggered and charged to that group's
+   * container, like a delegation result. Null when a person started it.
+   */
+  originGroupId?: string | null;
   /** How many of the newest matches to read; the pipeline's own default applies when absent. */
   maxItems?: number | null;
   /** ISO date floor for collection; all available history when absent. */
@@ -80,6 +86,7 @@ export class ResearchAcquisitionService {
           intent_note: input.intentNote ?? null,
           origin_room_id: input.originRoomId,
           origin_session_id: input.originSessionId,
+          ...(input.originGroupId ? { origin_group_id: input.originGroupId } : {}),
           ...(input.maxItems ? { max_items: input.maxItems } : {}),
           ...(input.since ? { since: input.since } : {}),
         },

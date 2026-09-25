@@ -1,6 +1,6 @@
 {
   "name": "@rainver/host-daemon",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Thin execution-host bridge for ADR 0016: registers a personal machine with an Rainver control plane, registers pre-existing directories as trusted-host workspaces, and holds an outbound heartbeat connection. No planner, no memory, no business logic \u2014 see .agent/decisions/0016-control-plane-execution-hosts.md.",
   "private": true,
   "type": "module",

@@ -1,18 +1,20 @@
 /**
  * The oldest `rainver-host` this control plane speaks to.
  *
- * The host wire renamed `adapter_type` to `runtime_key` in the 2026-09-21 ACP
- * runtime-authority epoch. A daemon built before that rename reads
- * `frame.runtime_key` as `undefined` and falls back to the raw argv command,
- * so every Run dispatched to it fails for a reason that names neither the
- * daemon nor the rename. A paired machine must update before it can execute
- * again; refusing its `hello` says that once, instead of once per Run.
+ * 0.4.0 merges a done Task's branch (ADR 0016 §11): `task_merge_prepare`,
+ * `_continue`, `_abort` and `_finish`, and a conflict-resolution Run launched
+ * into the Task worktree as a merge left it (`worktree.merge_id`). An older
+ * daemon answers none of the merge frames and would launch a resolution Run
+ * as an ordinary Task Run — committing the conflict markers as leftovers — so
+ * no Task it worked on could ever land on the main branch. A paired
+ * machine must update before it can execute again; refusing its `hello` says
+ * that once, instead of once per Run.
  *
  * Raise this in the same change that makes the daemon's answer to a frame
  * depend on a field an older daemon does not read, and bump the daemon's own
  * `package.json` version with it.
  */
-export const MIN_HOST_DAEMON_VERSION = "0.2.0";
+export const MIN_HOST_DAEMON_VERSION = "0.4.0";
 
 const RELEASE_TRIPLE = /^(\d+)\.(\d+)\.(\d+)/;
 

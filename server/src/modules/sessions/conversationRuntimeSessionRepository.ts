@@ -18,6 +18,81 @@ interface RuntimeSessionRow {
   runtime_message_cursor_id?: string | null;
 }
 
+/**
+ * Whether a chat turn holds the conversation. A turn held at the subscription
+ * reserve line (`output_json.waiting_for_quota`, `rooms/quotaGate.ts`), or
+ * parked until another turn is over (`waiting_for_turn`), does not while it
+ * has no job; nor does anything that cannot run before it: a Run parked
+ * waiting on it (transitively), and — since a group runs one Run at a time —
+ * every Run of its group that is parked on a dependency or queued with no
+ * job. A person's turn is never held behind any of them. Any other Run still
+ * holds the turn.
+ *
+ * `admitting` asks on behalf of one Run about to be admitted: its own
+ * group's Runs that cannot run yet — itself, those parked on a dependency,
+ * those queued with no job — do not count against it, while one already
+ * running, or queued with its job enqueued, does. Callers hold
+ * `lockConversation`.
+ */
+export async function conversationTurnTaken(
+  db: Queryable,
+  spaceId: string,
+  sessionId: string,
+  options: { admitting?: { runId: string; groupId: string | null } } = {},
+): Promise<boolean> {
+  const result = await db.query<{ active: boolean }>(
+    `WITH RECURSIVE jobless(id) AS (
+       SELECT run.id FROM runs run
+        WHERE run.space_id = $1 AND run.session_id = $2 AND run.status = 'queued'
+          AND NOT EXISTS (
+            SELECT 1 FROM jobs job
+             WHERE job.space_id = run.space_id AND job.job_type = 'agent_run'
+               AND job.payload_json->>'run_id' = run.id
+               AND job.status IN ('pending', 'claimed', 'running')
+          )
+     ),
+     held AS (
+       SELECT run.id, run.run_group_id FROM runs run
+        WHERE run.id IN (SELECT id FROM jobless)
+          AND (run.output_json ? 'waiting_for_quota' OR run.output_json ? 'waiting_for_turn')
+     ),
+     blocked(id) AS (
+       SELECT id FROM held
+       UNION
+       SELECT waiter.id
+         FROM runs waiter
+         JOIN blocked ON waiter.output_json->'waiting_for_results'->'depends_on_run_ids' ? blocked.id
+        WHERE waiter.space_id = $1 AND waiter.session_id = $2
+          AND waiter.status = 'waiting_for_dependency'
+     )
+     SELECT EXISTS (
+       SELECT 1
+         FROM runs run
+        WHERE run.space_id = $1
+          AND run.session_id = $2
+          AND run.model_override_json->'chat_turn'->>'schema_version' = 'chat_turn.v1'
+          AND run.status IN (
+            'queued', 'running', 'cancelling',
+            'waiting_for_review', 'waiting_for_dependency'
+          )
+          AND run.id NOT IN (SELECT id FROM blocked)
+          AND NOT (
+            run.run_group_id IN (SELECT run_group_id FROM held WHERE run_group_id IS NOT NULL)
+            AND (run.status = 'waiting_for_dependency' OR run.id IN (SELECT id FROM jobless))
+          )
+          AND NOT (
+            $4::varchar IS NOT NULL AND run.run_group_id = $4::varchar AND (
+              run.id = $3::varchar
+              OR run.status = 'waiting_for_dependency'
+              OR run.id IN (SELECT id FROM jobless)
+            )
+          )
+     ) AS active`,
+    [spaceId, sessionId, options.admitting?.runId ?? null, options.admitting?.groupId ?? null],
+  );
+  return result.rows[0]?.active === true;
+}
+
 export class ConversationTurnInProgressError extends Error {
   readonly statusCode = 409;
 
@@ -69,21 +144,7 @@ export class PgConversationRuntimeSessionRepository {
     // the turn. The user id is still part of the Run's audit, but must not
     // partition this serialization authority.
     await this.lockConversation(input.space_id, input.session_id);
-    const active = await this.db.query<{ active: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1
-           FROM runs
-          WHERE space_id = $1
-            AND session_id = $2
-            AND model_override_json->'chat_turn'->>'schema_version' = 'chat_turn.v1'
-            AND status IN (
-              'queued', 'running', 'cancelling',
-              'waiting_for_review', 'waiting_for_dependency'
-            )
-       ) AS active`,
-      [input.space_id, input.session_id],
-    );
-    if (active.rows[0]?.active) throw new ConversationTurnInProgressError();
+    if (await conversationTurnTaken(this.db, input.space_id, input.session_id)) throw new ConversationTurnInProgressError();
   }
 
   async prepare(input: {

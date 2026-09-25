@@ -9,6 +9,7 @@ import { runsModule } from "../src/modules/runs/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { publishChatTextDelta } from "../src/modules/streaming/conversationDeltaBus.js";
+import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
 import type { RunTurn, TurnStreamFrame } from "@rainver/protocol";
 
 const db = useTestDatabase(import.meta.filename, { max: 8 });
@@ -274,6 +275,30 @@ describe("run turn", () => {
       const turn = (await app.inject({ method: "GET", url: `/api/v1/runs/${runId}/turn` })).json() as RunTurn;
       expect(turn.state).toBe("blocked");
       expect(turn.blocked_on).toBe(expected);
+    }
+  });
+
+  it("reports a Run its host queued behind another writer of the directory as blocked on the workspace until it launches", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    await seedManagedRun("run-queued");
+    await db.pool!.query("UPDATE runs SET status='running' WHERE id='run-queued'");
+    const connection = { send: (frame: unknown) => { sent.push(frame as Record<string, unknown>); }, close: () => undefined };
+    const sent: Record<string, unknown>[] = [];
+    sharedHostConnectionRegistry.registerConnection("host-turn-test", connection);
+    try {
+      const completion = sharedHostConnectionRegistry.dispatchLaunch("host-turn-test", "run-queued", { argv: ["claude"] });
+      const launchId = String(sent.at(-1)!.launch_id);
+      sharedHostConnectionRegistry.receiveWaitingForWorkspace("host-turn-test", "run-queued", launchId);
+      const waiting = (await app.inject({ method: "GET", url: "/api/v1/runs/run-queued/turn" })).json() as RunTurn;
+      expect(waiting).toMatchObject({ state: "blocked", blocked_on: "workspace" });
+
+      sharedHostConnectionRegistry.receiveLaunched("host-turn-test", "run-queued", launchId);
+      const running = (await app.inject({ method: "GET", url: "/api/v1/runs/run-queued/turn" })).json() as RunTurn;
+      expect(running).toMatchObject({ state: "working", blocked_on: null });
+      sharedHostConnectionRegistry.receiveComplete("host-turn-test", "run-queued", { exit_code: 0, timed_out: false, error: null }, launchId);
+      await completion;
+    } finally {
+      sharedHostConnectionRegistry.unregisterConnection("host-turn-test", connection);
     }
   });
 

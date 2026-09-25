@@ -743,7 +743,8 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       model: "gpt-4o",
       outputReserveTokens: 0,
       modelWindowOverride: {
-        contextWindowTokens: requiredTokens + 12,
+        // The planner fills 90 % of the window after reserve and overhead.
+        contextWindowTokens: Math.ceil((requiredTokens + 12) / 0.9),
         defaultOutputReserveTokens: 0,
         providerOverheadTokens: 0,
         catalogVersion: "test.trimmed-continuity.v1",
@@ -754,7 +755,10 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       retrievalItems: result.envelope.items.filter((item) => item.acquisition === "retrieval"),
     });
     expect(trimmedEnvelope.window_plan.decisions.find((entry) => entry.item_id === continuity?.id))
-      .toMatchObject({ decision: "trimmed", planned_tokens: 12 });
+      .toMatchObject({
+        decision: "trimmed",
+        planned_tokens: Math.floor(Math.ceil((requiredTokens + 12) / 0.9) * 0.9) - requiredTokens,
+      });
     await expect(create(trimmedEnvelope)).resolves.toBeDefined();
     await db.pool.query(`UPDATE sessions SET status='archived',updated_at=now() WHERE id=$1`, [sessionId]);
     await expect(create()).rejects.toMatchObject({ statusCode: 409 });
@@ -1361,7 +1365,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  'test',$6,$4,now())`,
       [SETUP, SPACE, RUN, USER, AGENT, decisionId],
     );
-    await db.pool.query(`UPDATE runs SET prompt=$2 WHERE id=$1`, [RUN, "x".repeat(20_000)]);
+    await db.pool.query(`UPDATE runs SET prompt=$2 WHERE id=$1`, [RUN, "x".repeat(80_000)]);
     if (selectedModel) {
       await db.pool.query(
         `UPDATE runs SET model_override_json=$2::jsonb WHERE id=$1`,

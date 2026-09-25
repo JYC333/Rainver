@@ -5,6 +5,7 @@ import { PgRunRepository } from "./repository.js";
 import { sharedCliProcessRegistry } from "./processRegistry.js";
 import { PgCodePatchCollector, PgRunSandboxManager } from "../projectFolders/index.js";
 import { PgVerificationEngine } from "./verification/index.js";
+import { PgTaskRunSettler } from "./taskRunSettlement.js";
 
 /**
  * The one wiring of a fully adaptered `RunOrchestrationService`. This adapter
@@ -25,6 +26,7 @@ export function buildRunOrchestration(
     workspaceManager: PgRunSandboxManager.fromConfig(config),
     codePatchCollector: PgCodePatchCollector.fromConfig(config),
     verificationEngine: PgVerificationEngine.fromConfig(config),
+    taskRunSettler: PgTaskRunSettler.fromConfig(config),
     processRegistry: sharedCliProcessRegistry,
   });
   return { repository, orchestration, materializer };

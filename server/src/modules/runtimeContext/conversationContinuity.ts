@@ -177,7 +177,16 @@ export async function loadRoomContinuityForRunRequest(
 export async function loadRoomConversationReplayThroughMessage(
   db: Queryable,
   input: { spaceId: string; sessionId: string; currentMessageId: string },
-): Promise<{ messages: MessageOut[]; summary: RoomSummaryCoverage | null }> {
+): Promise<{ messages: MessageOut[]; summary: RoomSummaryCoverage | null; summary_unavailable: boolean }> {
+  // `waiting_provider` (the Room owner has no eligible provider) and `failed`
+  // (retries exhausted) both mean no summary is coming for the uncovered
+  // prefix, which is what lets the replay window widen instead of dropping it.
+  const stateResult = await db.query<{ status: string }>(
+    `SELECT status FROM room_conversation_summary_states
+      WHERE space_id=$1 AND session_id=$2 LIMIT 1`,
+    [input.spaceId, input.sessionId],
+  );
+  const summaryStatus = stateResult.rows[0]?.status ?? null;
   const summaryResult = await db.query<RoomSummaryCoverage>(
     `SELECT summary.id,summary.version,summary.summary_text,
             summary.covered_through_message_id,summary.covered_through_created_at
@@ -201,7 +210,11 @@ export async function loadRoomConversationReplayThroughMessage(
     currentMessageId: input.currentMessageId,
     summary,
   });
-  return { messages: messages.rows.map(messageOut), summary };
+  return {
+    messages: messages.rows.map(messageOut),
+    summary,
+    summary_unavailable: summaryStatus === "waiting_provider" || summaryStatus === "failed",
+  };
 }
 
 async function loadRoomMessagesThrough(

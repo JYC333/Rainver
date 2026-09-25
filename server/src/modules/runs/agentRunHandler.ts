@@ -23,6 +23,12 @@ import {
 } from "../deployment/drainAdmission.js";
 import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
 import { enqueueRunTerminalReconcilers } from "./runTerminalReconcilers.js";
+import { executionTaskId, taskMergeIdOf } from "./remoteHostCliAdapter.js";
+import { runInProgressSql } from "../tasks/executionRuns.js";
+import { owedSettleSql } from "../hosts/taskBranchRequests.js";
+import { UNDER_WAY_MERGE_STATUSES } from "../hosts/taskMerges.js";
+import type { RunRecord } from "./runRepositoryTypes.js";
+import type { Queryable } from "../routeUtils/common.js";
 
 export function registerAgentRunHandler(
   registry: JobHandlerRegistry,
@@ -163,6 +169,18 @@ async function handleAgentRun(
       throw new JobDeferredError(INSTANCE_UPDATE_PENDING, 30_000);
     }
   }
+  // ADR 0016 §11: a Task's execution Runs share its worktree and branch, so
+  // they run one at a time — a later one waits for the earlier one to end,
+  // including while that one is parked on a review or a delegated Agent. The
+  // daemon also queues two launches of one Task, which covers the moment
+  // both pass this check; this is what keeps a parked Run's worktree from
+  // being taken over. Deferring keeps the retry budget intact.
+  // Only a Run not yet admitted waits: a `running` one whose job was
+  // reclaimed after a worker died has already taken its turn, and holding it
+  // could leave it and the Run it waits for waiting on each other.
+  if (queuedRun?.status === "queued" && await taskRunAhead(getDbPool(config.databaseUrl!), queuedRun)) {
+    throw new JobDeferredError(TASK_RUN_AHEAD, 30_000);
+  }
   const hostThread = hostThreadDispatchInputs(queuedRun ?? { host_task_thread_id: null, model_override_json: null });
   let result: Awaited<ReturnType<RunOrchestrationService["executeRun"]>>;
   try {
@@ -215,6 +233,7 @@ async function handleAgentRun(
                 hostThread.thread_id,
                 currentTerminal,
                 hostThread.resume_attempted,
+                hostThread.identity,
               );
             }
             await finalizeChatTurn(config, repository, currentTerminal);
@@ -252,6 +271,7 @@ async function handleAgentRun(
       hostThread.thread_id,
       completedRun,
       hostThread.resume_attempted,
+      hostThread.identity,
     );
   }
   if (completedRun) {
@@ -275,6 +295,67 @@ async function handleAgentRun(
     });
   }
   return result;
+}
+
+const TASK_RUN_AHEAD = "Another execution Run of this Task is still in progress";
+
+/**
+ * Whether this Run must wait for another execution Run of the same Task on
+ * the same Location: one that has started and not ended (a failed Run a
+ * supervisor holds for review has ended — it was settled, and a person
+ * deciding on it must not stall the Task), one queued with a live job that
+ * comes first — a Run that already started (a parked Run resuming keeps its
+ * `started_at`) before one that has not, then by admission — or one whose
+ * settle is still owed to its host (a `task_run_settle` retry job), or while
+ * a merge of the Task holds its worktree. The queued clause is what makes two
+ * Runs checking at once agree on an order.
+ */
+export async function taskRunAhead(db: Queryable, run: RunRecord): Promise<boolean> {
+  const taskId = executionTaskId(run);
+  if (!taskId || !run.workspace_location_id) return false;
+  // A merge's resolution Run waits for nothing: its merge already waited for
+  // every Run that started, and a queued one waits for the merge — holding
+  // this Run behind that one would have each wait for the other.
+  if (taskMergeIdOf(run)) return false;
+  const result = await db.query(
+    `SELECT 1
+       FROM task_runs tr
+       JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
+       JOIN runs self ON self.id = $2 AND self.space_id = $1
+      WHERE tr.space_id = $1
+        AND tr.task_id = $4
+        AND r.id <> $2
+        AND r.workspace_location_id = $3
+        AND r.run_type = 'agent'
+        AND r.required_sandbox_level <> 'read_only'
+        AND (
+          ${runInProgressSql("r")}
+          OR (
+            r.status = 'queued'
+            AND (r.started_at IS NULL, r.created_at, r.id) < (self.started_at IS NULL, self.created_at, self.id)
+            AND EXISTS (
+              SELECT 1 FROM jobs j
+               WHERE j.job_type = 'agent_run'
+                 AND j.status IN ('pending', 'claimed', 'running')
+                 AND j.payload_json->>'run_id' = r.id
+            )
+          )
+        )
+     UNION ALL
+     SELECT 1 WHERE ${owedSettleSql("$4", "$3")}
+     UNION ALL
+     -- A merge in progress holds the worktree. A Run that already started and
+     -- is resuming (from a delegated Agent or a review) goes on: the merge
+     -- waits for it (\`taskBusyOnLocation\`), so it cannot be past \`queued\`.
+     SELECT 1 FROM task_merges m
+      JOIN runs self ON self.id = $2 AND self.space_id = $1
+      WHERE m.space_id = $1 AND m.task_id = $4 AND m.workspace_location_id = $3
+        AND m.status = ANY($5::text[])
+        AND self.started_at IS NULL
+     LIMIT 1`,
+    [run.space_id, run.id, run.workspace_location_id, taskId, UNDER_WAY_MERGE_STATUSES],
+  );
+  return (result.rowCount ?? result.rows.length) > 0;
 }
 
 export async function enqueueAgentRunJob(

@@ -62,6 +62,14 @@ task/audit authority, not a second conversation UI.
   execution preflight, and turn rendering. See
   [`architecture/CONVERSATION.md`](../architecture/CONVERSATION.md).
 
+  Discussions render in that same component: messages sharing a
+  `discussion_id` fold into one collapsible `DiscussionGroup` with Stop /
+  extend controls, discussion notices render as cards, and the full Room
+  variant adds an "Open a discussion" dialog beside the composer. The client
+  calls `roomsApi.openDiscussion` / `discussions` / `discussion` /
+  `stopDiscussion` / `extendDiscussion` (`apps/web/src/api/client.ts`); see
+  the Rendering section of `architecture/CONVERSATION.md`.
+
 ## Navigation And Ordering
 
 - Opening a Rooms route without an explicit selection enters the newest
@@ -137,10 +145,33 @@ Room conversation summaries:
   only after the uncompacted prefix crosses the raw 6,000-token threshold and
   never run in the send transaction. A missing or no-longer-eligible owner
   provider leaves the state waiting with an actionable setup status.
-- Runtime Context renders the active summary (up to 2,000 tokens) plus only
-  uncaptured recent turns (up to 6,000 tokens). The cursor is exclusive and the
-  assembler asserts that the two ranges do not overlap. The current trigger
-  message is never silently truncated.
+- Runtime Context renders the active summary plus only uncaptured recent
+  turns. For a Room turn both budgets are shares of the recipient's model
+  window — summary 3 %, recent 15 %, one summary batch 30 %
+  (`roomContextBudgets`) — never below the 2,000 / 6,000 / 12,000-token floors
+  a small or unknown model gets; the window is the one the runtime reported for
+  the thread, else the catalog entry for the pinned model. When no summary is
+  coming (the state is `waiting_provider` or `failed`) the recent window widens
+  by one summary batch rather than dropping what a summary would have covered
+  — at most to half the share at which the session rotates (30 % of the
+  window at the default 60 %), so a fresh session does not start next to the
+  rotation line — and the Room shows "Summary not configured" to every member. While
+  summaries run, the tail a summary leaves uncovered is the 6,000-token floor
+  for every recipient, since the summary is one per conversation; a larger
+  recent budget matters on a fresh session, before the first summary, and
+  when no summary is coming. The cursor is
+  exclusive and the assembler asserts that the two ranges do not overlap. The
+  current trigger message is never silently truncated. Tokens are the shared
+  character-class estimate (`usage/modelCatalog.estimateModelTokens`: a
+  run of ASCII letters, and whitespace, a quarter token a character; a run of
+  ASCII letters and digits that holds a digit — numbers, hashes, UUIDs,
+  base64 — three quarters; other ASCII punctuation half; any other character
+  one), not UTF-8 bytes. Measured against real tokenizers it stays at or
+  above the real count on prose, code, ids and encoded data. The summary
+  scheduler's SQL threshold gate (`conversationSummaryService.ts`)
+  approximates it in the database: every ASCII character a quarter, every
+  multi-byte character one. It under-counts digits and punctuation, which only
+  delays a summary; the provider path measures the exact batch.
 - Every Room turn closes visibly in the conversation. A terminal execution
   failure produces an Agent reply with the sanitized reason; it is not
   converted into a generic review hold. A genuine authorization pause writes
@@ -183,7 +214,12 @@ Room conversation summaries:
   posts a `ConversationContinuationRegistry` event continuation
   (`agent_delegation_result`) the moment nothing is left waiting on that
   child, so the Room does not go silent just because the Manager chose not
-  to block (plan Phase 3). A Manager that *did* wait is unaffected — that
+  to block (plan Phase 3). A child that changed files carries its `[Changes]`
+  block (file list with counts and a `rainver://artifacts/<id>` link, never
+  the patch) in the delegation result itself — in a Room only, since only a
+  Room turn has the resource tools to follow the link — so the `delegation_result`
+  message, the continuation and its retry job all hand it on; a turn whose
+  instruction carries such a link is granted the resource tools that read it. A Manager that *did* wait is unaffected — that
   case already resumes through the pre-existing dependency-wait path and
   never reaches this second notification. `research.start_acquisition`
   reports the same way: `research_pipeline_outcome` (started, the question
@@ -247,20 +283,67 @@ There is no server fallback to a different Host, CLI, or workspace.
 
 Before a Room send can commit, the server locks the Conversation execution
 context and compares the current Primary Workspace's Git branch, commit, and
-readiness with the persisted baseline. A stale workspace returns `409` and
-rolls back the send transaction, so no Room message, group, or recipient Run
-is persisted; the explicit execution-context Git refresh route is the only way
-to advance that baseline. This remains true for direct API callers and for
-image-only messages, not only for the preflight UI.
+readiness with the persisted baseline (`assertConversationGitBaseline`). When
+branch and commit moved to exactly the values the host reported at the exit
+of this Conversation's most recent writing Run in that Location
+(`last_run_git_branch/head`, from the diff upload's `git_after`, recorded only
+when that Run started from the accepted HEAD with the directory's lease held —
+`modules/hosts.md`), the Conversation's own Agent moved them: the send
+advances the baseline in place — the same write as the refresh route, which
+also clears the last-Run HEAD — and continues. A done Task's merge that
+fast-forwards the checkout records its merged commit there the same way for
+the conversation the Task came from, when that conversation had accepted the
+main branch's previous tip (`modules/hosts.md`, "Merging a done Task"). Any
+other move, and
+any readiness change, returns `409` and rolls back the send transaction, so
+no Room message, group, or recipient Run is persisted; the explicit
+execution-context Git refresh route is the only other way to advance the
+baseline. Uncommitted changes are never compared. The direct-chat send and
+the execution-context summary's `can_send` apply the same rule
+(`sessions/conversationGitGate.ts`). This remains true for direct API callers
+and for image-only messages, not only for the preflight UI.
 
 The shared conversation turn controls stop active Runs through the canonical
 Run stop route, retain partial output on cancellation, and show the exact
-per-Run `remote_diff` Artifact when a Host uploaded one. Retry is manual and
-idempotent: it checks every failed/degraded recipient Run, revalidates the
+per-Run `remote_diff` Artifact when a Host uploaded one. That Artifact is
+this Run's own change: the daemon captures the working tree as a git tree
+object before the process starts and diffs it against the tree at exit,
+through a private index file, so a later recipient's diff does not repeat
+every earlier Agent's uncommitted edits and the person's staged index is
+never touched ([hosts.md](hosts.md), diff capture). The same Artifact is how
+one Agent's change reaches another: as a `[Changes]` list and link, see
+serialized recipients below. Retry is manual and
+idempotent: it checks every failed/degraded recipient Run (`run_ids`; a
+delegated child in `delegated_run_ids` is not a recipient), revalidates the
 original image/file parts against current recipient capabilities, reuses the
 original user Message, and records new retry Run ids in that message. Drafts
 are kept in destination-scoped sessionStorage as validated logical references;
 they never contain image bytes, absolute Host paths, or credentials.
+
+A message addressed to several Agents creates one Run per recipient in one
+transaction, but they execute one at a time: the Conversation has one
+directory. Every recipient after the first is parked `waiting_for_dependency`
+(scope `conversation_serialization`, `agentGroups/waitScopes.ts`) behind
+*every* earlier recipient, and the lifecycle projector admits it when those
+are terminal. An admitted recipient keeps the prompt it was dispatched with —
+identity block, conversation window, execution rules, assigned task — with
+the earlier recipients' replies appended under a `[Replies already given to
+this same message]` heading, because its conversation window closed at the
+person's message. An earlier recipient that changed files (a non-empty
+per-Run `remote_diff` Artifact, latest upload) has a `[Changes]` block under
+its reply: `git diff --stat`-style lines derived server-side from the stored
+diff (path, `+added -removed`, at most 20 files and a summary line, an honest
+"at least … truncated" header when the stored diff was cut) and the link
+`rainver://artifacts/<id>`. The patch never goes into the prompt; the admitted
+Run gains `input_resource.read/search` to read it on demand
+(`agentGroups/runChangeBlock.ts`; the read authority is in
+`architecture/SYSTEM_ACTIONS.md`). The `agent.wait_for_results` continuation
+lists the same block under each completed result. That is deliberately not the `agent.wait_for_results`
+resume shape, which replaces the prompt with a continue instruction: a Run
+that never ran has nothing to continue. The parked Runs hold the turn, so
+the next message waits in the queue until the chain completes (or gets `409`
+when sent without `queue`; see "A person's message during a turn" under
+Discussions).
 
 Each Conversation × Agent owns one live `host_threads` row. It pins the
 Location or managed mode, Agent/container identity, adapter, installation, and
@@ -281,14 +364,22 @@ in any Room that asked). Both memory sections are bounded: the persona is
 clamped, and notes are taken newest-first, whole notes only, skipping one too
 large for what is left rather than stopping at it.
 
-It is sent on **every** turn, not only a fresh one: a vendor session outlives
-many turns, and an Agent whose persona was revised, or whose Room roster
-changed what it may be told, would otherwise go on acting as whoever it was
-when the session started. The cost is that a resumed session accumulates one
-copy of the block per turn; sending only on change would need a digest on the
-thread, and a digest that said "sent" for a turn that never reached the runtime
-would silently withhold the Agent's identity — which is the worse failure. It
-is in the backlog rather than the code.
+The block and the Room execution rules form the turn's **standing context**
+(`agentGroups/roomStandingContext.ts`), and it is sent **when it changes**, not
+on every turn: into any vendor session that is not being resumed, and into a
+resumed one only when its sha256 differs from `host_threads.identity_digest`,
+the digest of what that session last received. A revised persona, a roster
+change that alters which notes may be delivered, or a rules edit is a new
+digest and goes out on the next turn; an unchanged block is not repeated, so a
+resumed session no longer grows by one copy per turn and its prefix stays
+stable for vendor caching. The digest is written **only** by the terminal
+outcome of a Run that carried the block and completed
+(`PgHostThreadRepository.recordRunOutcome`, `landed`): a dispatch that never
+reached the runtime, or failed, records nothing and the next turn sends the
+block again — a digest that said "sent" for a turn that never landed would
+silently withhold the Agent's identity, which is the worse failure. A vendor
+session replaced under a Run that did not carry the block clears the digest,
+and a reset clears it outright.
 
 What re-sending cannot do is **retract**: a note delivered on turn 1 is in the
 vendor session, and adding a member to the Room afterwards stops it being sent
@@ -647,8 +738,14 @@ The allowance holds four proposal-gated actions — propose a Project
 definition, create an Inquiry Thread, record a conclusion, and promote
 Knowledge — plus two directly-executed, idempotency-guarded actions:
 `agent.delegate` and `research.start_acquisition` (plan Phase 4). Delegation
-is still bounded to one level, two specialists, and the Room's concurrency
-cap; neither directly-executed action is a general Agent permission.
+is bounded to one level and two specialists per turn (`max_depth: 1`,
+`max_fanout: 2`, prospective counts — the third request is refused and
+recorded as refused, and a refused request does not consume the budget).
+There is no concurrency budget on a Room group: delegated children execute
+one at a time because the Conversation shares one directory, and a parent
+that delegates and then waits in the same turn admits its children when it
+parks — before that, the two waited on each other. Neither
+directly-executed action is a general Agent permission.
 Retrieval is excluded on purpose: it would execute under the message sender's
 identity, including their `private` content, and answer into a conversation
 every Room member can read. Grounding a drafted conclusion in Project material
@@ -806,6 +903,323 @@ A reference is written strictly before the message it arrives with, on a
 timestamp floored above the conversation's own maximum, so a thread reads in
 the order it was assembled.
 
+## Discussions among a conversation's Agents
+
+A Room conversation's Agents can address each other. The mechanism is one
+object, `room_discussions` (`rooms/discussionService.ts`,
+`rooms/discussionRepository.ts`), living inside the conversation's single
+timeline: every message and task group in a discussion carries
+`discussion_id`, and each message records the **wave** it belongs to in
+`metadata_json.wave`. A wave is one task group — the message that dispatched
+it and its recipients' replies — and waves count from the person's message
+(0). There is no second navigation level; the client folds a discussion into
+one block (*Room = channel, Conversation = thread, discussion = a grouped run
+inside a thread*; a second thread level waits on the trigger in the deferred
+register).
+
+**The constraints a change must keep.** Agent-to-Agent discussion is bounded
+so that spend never grows without a person's say: every Agent-triggered turn
+is charged to a container a person started, and past its budget an Agent's
+`@` is a held notice a person may accept, never a Run. Emergent and explicit
+discussions are one mechanism at two budget levels, not two features. A round
+is a wave and an Agent speaks at most once per wave (the one-segment-per-Agent
+rule), so turns per round ≤ participants and a discussion's turns are bounded
+by rounds × participants with no separate turn cap; the fan-out ceiling of 5
+(ADR 0017) caps participants. Waves run one after another because the
+Conversation's Agents share one directory (the serial chain below, and the
+Location lease in [hosts.md](hosts.md)); parallel participants would need a
+worktree each and a merge, which is deferred. Whether to delegate a sub-task
+or discuss is the Manager's own judgment, as for delegate-vs-research above;
+the server never pattern-matches text to choose, and what each turn reads
+follows from the action that created it, never from a mode switch
+([CONVERSATION.md](../architecture/CONVERSATION.md), "What each turn reads"). `"all"`
+is a participant option of the open-discussion request, never a token in
+message text; everyday messages keep explicit `@`. Reaching a cap is never
+silent, and whatever ends a discussion, the Manager reports on it. Every
+turn in a discussion, the closing one included, acts with exactly the
+authority of the person who owns the container (B8A), so its writes meet the
+same gates that person's own turn would (memory writes under B10).
+
+**Containers and budgets.** Every Agent-triggered turn is charged to a
+container: by default the person's message that started the turn. When the
+last Run of a wave has completed its chat turn (`finalizeChatTurn` →
+`RoomDiscussionService.afterTurnFinalized`), its replies are parsed for
+`@Name` mentions of roster Agents with the same segmenting rule the composer
+uses (`parseAgentMentions` in `packages/protocol/src/roomDiscussions.ts`; code
+spans are never read as addressing anyone). Mentions of another Agent open an
+**emergent** discussion on that message (the group's trigger message; for a
+wave started by a delegation or research result that is the continuation's
+hidden instruction, not the person's message — kept so, because the timeline
+folds a discussion from its origin and anchoring it on the person's message
+would split the block around the Manager's own reply): round cap 2 (the
+person's round plus one the Agents opened) and the fan-out ceiling of 5 Agent-triggered turns
+(ADR 0017). Two replies of one wave addressing the same Agent give it one
+turn whose content is both addressed parts. A person opens an **explicit**
+discussion with `POST …/discussions` — topic, participants (explicit, or
+`"all"`, refused above five), shape `open`/`debate`, round cap (default 3 open,
+2 debate) and a spend cap on priced Runs (default
+`ROOM_DISCUSSION_DEFAULT_SPEND_CAP_USD` (protocol), USD 2 — a constant, as
+there is no Space setting for a pipeline's bounded spend to default to;
+subscription Runs are bounded by rounds). One discussion per conversation is active or waiting at its cap
+(partial unique index); opening a second returns 409 naming it.
+
+Every Agent-origin continuation charges the container: a delegated child
+charges it when spawned (`chargeDelegatedChild`), and an
+`agent_delegation_result` continuation joins the source's wave and delegates
+only from what the container has left (`agentOriginContinuation`), never past
+a discussion's spend cap. Inside a discussion the count is the row's
+`turns_used` (an emergent discussion's waves count too; an explicit one's are
+bounded by rounds); otherwise it is one counter on the task group of the
+person's message, `budget_json.container_turns_used`, which every branch of
+the chain charges through its `budget_json.container_group_id` pointer. A
+completion turn can therefore no longer delegate again with a fresh budget.
+A research acquisition an Agent starts (`research.start_acquisition`) carries
+its turn's group (`origin_group_id`, through the pipeline job and the
+Operation's progress), so its result and status turns are charged to that
+container too; one a person starts opens its own. The
+container model itself is described with the other execution budgets in
+[EXECUTION_MODEL.md](../architecture/EXECUTION_MODEL.md) ("Containers and
+Agent-triggered budgets").
+
+**Waves.** The next wave is an ordinary domain-event continuation
+(`agent_mention`, keyed `<discussion>:<wave>`) with one recipient segment per
+addressed Agent, dispatched as the container's owner — so a wave has the
+serialization, identity block, prompt and authority of that person addressing
+the Agent directly (B8A) and no more. An Agent the owner could not trigger — an
+owner-only specialist on someone else's machine, or a private Agent the
+dispatcher's own visibility check would refuse them — gets a `not_admitted`
+notice (`metadata_json.discussion_notice`) and no Run; when that leaves nobody
+to set working, no closing turn is spent either. A wave spans every task
+group stamped with it — its dispatch plus any delegation result joining it —
+and advances once, from the dispatching group, over all their replies.
+Participants read the shared window (messages since their own last turn). In
+a **debate** the first round answers independently — the serialized "replies
+already given" block is withheld — and every later round goes to all
+participants to critique, each handed every answer of the round before.
+
+**Ending.** A wave in which nobody addresses anyone converges; a wave that
+would pass the round cap, a spend at or above the cap, or a spent fan-out
+budget stops at `cap_reached` with a `cap_reached` notice naming the Agents it
+held back (`held_mentions_json`); a person may stop it (`…/stop`, any member;
+the running turn finishes). Whatever the reason, the Manager then gets one
+closing turn (`agent_discussion_closing`) addressed to the person — agreements,
+disagreements, next steps, who did not respond and why — outside the round cap
+and inside the spend cap; its reply is `conclusion_message_id` (only the
+closing turn keyed to the discussion's current round count concludes it). A
+discussion at its cap stays open to `…/extend { rounds }`, which records who
+added them, turns an emergent discussion explicit ("open a discussion"), and
+dispatches the held Agents as the next wave. Adding rounds is a new decision
+to spend, so the discussion then runs for the person who made it: their
+authority re-checks the held Agents, their subscription executes the waves,
+and they get a spend bound (another budget of the same size when the cap was
+reached). A wave that loses the conversation's turn to a concurrent message is
+retried by the `room_discussion_advance_retry` job, and so is one that met a
+transient database failure (deadlock, serialization conflict, timeout, lost
+connection). Advancing is idempotent per group: once a wave is complete, every
+group in it is stamped `agent_run_groups.advanced_at` in the advance's own
+transaction, and an advance that finds its group stamped does nothing — so a
+retry, a queue release and a second finalization reaching the same wave never
+announce, merge or dispatch twice. A late group of an advanced wave (a
+delegation result) is advanced once itself, and names only the Agents its own
+replies addressed. A wave that cannot be
+dispatched for any other reason — the Host offline, the container's owner no
+longer in the Room — closes the discussion with a `failed` notice rather than
+leaving it running with nothing behind it. Discussion notices are posted by
+the conversation, attributed to no one, so they are written even when the
+person the discussion ran for has left. A delegation result that arrives
+after its discussion stopped or reached a cap still reports into it, but
+delegates nothing and opens nothing new; Agents a late or superseded reply
+addresses are named in a `not_admitted` notice, never silently dropped.
+
+**A person's message during a turn** is queued, not refused: a person must be
+able to steer a running discussion, and a mid-turn injection into the vendor
+session is deferred (deferred register), so the message enters at the next
+turn boundary — the running turn finishes first — and every later turn sees
+it. The same queue replaced the plain `409` outside discussions. The queue is
+its own table rather than a hidden message in the tree, so nothing that reads
+the message tree has to filter it out.
+`POST …/messages` with `queue: true` (the client's default for a message
+without attachments) returns 202 with the queued message when another turn
+holds the conversation, or when earlier messages are still waiting (a queued
+message never overtakes them); it waits in `room_queued_messages`
+(`rooms/messageQueue.ts`), outside the message tree, so no prompt, replay or
+summary sees it until it is posted. A send, a release and a discussion's
+advance all take the conversation's `room-discussion:` advisory lock first; a
+send with attachments, or without `queue`, does not queue and so can go ahead
+of waiting messages when the turn is free.
+When a turn completes and the conversation's turn is free, the oldest waiting
+message is posted as an ordinary message with the request it was sent with, as
+its sender (`RoomDiscussionService.releaseQueued`). Inside a running
+discussion it is posted by the advance of the wave that just completed, in the
+same transaction, ahead of the wave the Agents' replies asked for: the
+person's message joins the discussion as a new first round (`round_base`; the
+round cap counts from it, the spend cap does not), and the Agents that wave
+addressed are held and follow it. Agents are held only behind a message that
+was actually posted; a withdrawn or failed one lets the advance continue as
+usual, and a turn taken by something else retries the advance. From a Project
+writer (who may open and extend discussions) the new rounds are that person's
+decision (B8A): they become the discussion's owner, within the spend cap
+already set. Anyone else's message is one more round within the bound the
+discussion already has. In a debate nothing is held: the next critique round
+answers the replies to the person's message. A message with
+attachments is never queued (its parts are claimed at send). A waiting message
+that cannot be posted is marked failed and the next one is tried (a turn still
+taken, an addressed Agent's host thread still on the turn that just ended —
+409 `room_agent_turn_in_progress` — or a transient database error leaves it
+waiting instead); it stays
+listed to its sender only, with the refusal's reason (an internal error reads
+"The message could not be posted."), until they dismiss it. Every
+queued message also enqueues a `room_queued_message_release` job
+(`rooms/queuedMessageReleaseJob.ts`), deferred while the turn is taken, so a
+message is released even when no turn boundary did it — the turn ended just
+before it was queued, or the server stopped in between (a release that lands
+in the moment between a wave's last Run ending and its advance posts the
+message outside the discussion; the wave then advances as usual and the
+Agents the message's turn addresses join its held Agents); a transient database
+error defers the job rather than spending an attempt, and a discussion whose
+advance failed and closed posts what waited for it at once. Its sender takes it
+back, or dismisses a failed one, with `DELETE …/queued-messages/:id`.
+`GET …/messages` returns what is waiting, and the viewer's own failed
+messages, beside the page as `queued`. Without `queue`, a taken turn is the 409 it always was
+(`conversation_turn_in_progress`; like every coded Room refusal, its body
+carries `detail` for the reader beside `code`).
+
+**Cost lines, by funding source.** The two ways a Run is paid for are bounded
+differently because only one of them can be attributed: a priced Run has a
+money figure of its own, so a discussion's spend cap bounds priced Runs only;
+a subscription's window utilization is account-wide — shared with everything
+else the login runs — so it is shown, never charged to a discussion, and
+subscription Runs are bounded by rounds, by the window itself, and by the
+quota gate below. `GET …/discussions/:id` returns `usage: {
+priced_usd, subscription: [{ account_label, tokens, window }] }`: money on
+priced Runs (catalog-costed `token_usage_events`; the spend cap bounds only
+these), and one line per CLI login the discussion's Runs spent — a Run spends
+its host thread's copy (`host_id`, `runtime_key`, `runtime_installation`) when
+it is not bound to a ModelProvider — with this discussion's tokens there and
+the account's fuller window (`kind`, `utilization`, `resets_at`) from the
+latest cached reading (`host_runtime_usage`; no probe on a read). The
+percentage is account-wide and never charged to the discussion
+(`rooms/subscriptionLogins.ts`). The client reads the detail when the
+discussion's record changes — once per wave, not per poll — and the group
+header renders one line per funding source, marked past the Space's warning
+line.
+
+**Subscription quota gate** (`rooms/quotaGate.ts`). The gate coordinates a
+shared subscription by trigger origin (ADR 0017): turns Agents set going
+spend the account unattended and stop at a reserve line, keeping the rest of
+the window for the person, while a person's own message is their decision in
+that moment and is never held — it proceeds until the CLI itself refuses. A
+held turn deliberately does not keep the conversation's turn (below), so a
+person is never queued behind Agents waiting for a window. The Space
+policy `subscription_quota` (`warn_pct` 70, `reserve_pct` 85; a
+`ScopedSettingsStore` descriptor in `providers/subscriptionQuotaPolicy.ts`,
+edited on the Providers page) draws two lines. Every **Agent-triggered**
+admission — the first Run of a domain-event continuation (a discussion wave,
+its closing turn, a delegation result, a research result:
+`dispatchMessageInTransaction` with `agent_origin`), a delegated child
+(`queueDelegatedChildrenInTransaction`), and a serialized recipient inside a
+continuation group (`queueWaitingDependencyRunIfReady`) — replaces its job
+enqueue with `admitAgentOriginRun`: it reads the login the Run spends (the
+cached reading; probed through `usage_probe` first when older than 60 s,
+waiting at most 5 s inside the admission's transaction), and at or past
+`reserve_pct` the Run stays `queued` with no job and
+`output_json.waiting_for_quota = { window, resets_at, utilization,
+account_label, login, held_at, job }`. A held Run does not hold the
+conversation's turn: `conversationTurnTaken`
+(`sessions/conversationRuntimeSessionRepository.ts`) skips it and every Run
+parked waiting on it, transitively (a serialized recipient behind it, a parent
+waiting for it) — never a queued Run whose job is enqueued, which is about to
+run — and, since a group runs one Run at a time, every Run of the held Run's
+group that is parked on a dependency or queued with no job (a recipient
+serialized after one whose delegated child is held, say); a held or parked Run
+that has its job again is about to run and holds the turn. So a person's
+message goes ahead at once while Agents wait. Those Runs also let go of their
+Agents' host threads (`dispatch_lock_id`, claimed when each was created), so a
+person may address any of those Agents meanwhile; a lock is claimed back in
+the name of the Run it was taken for — a handoff turn runs under the lock of
+the recipient it prepares, and claims in that recipient's name. Whenever a
+Run's job is enqueued its waiting markers are cleared. Admission takes both back: a held Run is admitted only when no
+other Run holds the conversation — its own group's running Runs and queued
+ones with a job included, since a group runs one Run at a time — and its host
+thread is free; otherwise it stays held. Any other admission in a group that
+gave the turn up (its held Run was cancelled, say) checks the same
+(`enqueueWhenTurnFree`): it parks the Run (`output_json.waiting_for_turn`,
+carrying its job), which does not hold the turn either and is admitted when
+that turn completes (`admitTurnParkedRuns`, and on the minute pass). A person's message sent
+directly, or released from the queue, while the discussion's latest wave waits
+rather than being done stays outside the discussion (no new round, no change
+of owner). The Agents addressed by a non-discussion turn while a discussion is
+running — that person's turn, or a late delegation or research result — join
+the discussion's held Agents (in a debate they are named as not admitted
+instead); they are checked against the discussion owner's authority when it
+next advances and run in its next wave if it has one, or are named in its cap
+notice when it ends there, as an emergent discussion held at its first Agent
+wave does. A refusal read through an unreadable probe keeps its effect:
+only a readable reading can say the window is no longer full. A notice is posted once per window —
+a `quota_hold` discussion notice, or, outside a discussion, a
+`subscription_quota_hold` system notice — and the discussion stays `active`;
+its detail's `quota_hold` drives the header's "waiting for the window (resets
+HH:MM) · continue anyway". What admits a held Run: "continue anyway"
+(`POST …/conversations/:id/quota/continue`, Project writer), which admits every
+held Run of the conversation on a login that person may spend
+(`mayContinueLogin`: its host's owner, or for the built-in host — which has no
+owner — a Space owner or admin; whose subscription it is decides whether its
+reserve is spent, so a Run on another member's login stays held) — now, or,
+while a person's turn holds the conversation, once it is over
+(`continued_by_user_id` on the marker) — and records
+`quota_override_by_user_id`/`_at` on the discussions that had such a Run held,
+so their later turns on that person's logins are not held again (the record
+spares no other member's login); each hold says whether the viewer may
+continue it (`can_continue`); the
+`subscription_quota_hold_release` scheduler task each minute, over every held
+Run a page at a time, which admits once the login is below the line or the
+window's reset time has passed, and otherwise refreshes the marker (and says
+so again) when the window holding it or its reset time changed; and a delegated
+child's FIFO re-evaluating its head, which admits it the same way. Stopping a
+discussion does not cancel a held wave, which runs after admission and then
+closes it; the Agents it held are named in its "already ended" notice.
+Stopping a discussion held at its cap ends it for good: the rounds on offer
+are given up and a closing turn still waiting for the window is cancelled, so
+no conclusion arrives hours later; a person who wants one asks for it.
+Adding rounds to a discussion stopped at its cap, or opening a new one over
+it, cancels a closing turn still held from that cap — the whole closing group
+that has not started, a handoff turn before the Manager's included — (and frees
+its Agents' host
+thread), which would otherwise run first once the window resets. A delegation
+result that meets a taken turn, a busy Agent or a transient database error is
+retried by its job, never dropped. A person's own message is never held; past
+`warn_pct` the composer shows the account's line (`GET …/quota`). Nothing
+known about a login (no reading, an unreadable probe, a runtime without a
+subscription, a Run bound to a ModelProvider) admits. A ModelProvider-bound Run
+never spends a subscription: the binding excludes subscription providers
+(`runs/remoteProviderBinding.ts`) and the provider proxy's lease needs an API
+key, so such Runs are priced and bounded by the spend cap.
+
+**Quota exhaustion is a cap**, never a silent end. A CLI Run whose error text
+matches its runtime's `usage.quota_exhausted_patterns` (`RuntimeAdapterSpec`)
+fails with `subscription_quota_exhausted` (`runs/retryPolicy.ts`,
+`classifyRuntimeFailure`, applied in `remoteHostCliAdapter.ts`), which is never
+retried; only the error the turn ended on (or, with none, the last lines of
+stderr) is matched, never a notice logged earlier in the Run. A later refusal
+on a login overrules an older reading (`refusedWindow` in
+`rooms/subscriptionLogins.ts`): the gate reads that login's window as full
+until the reading's reset time, or, when no reading says when, one 5-hour
+window from the refusal — and not at all once a newer reading shows the window
+below full. When a wave contains such a Run whose window has not reset since,
+the discussion ends `cap_reached` with `stop_reason = 'quota_exhausted'`,
+its "continue anyway" is cleared, the refused recipients are held beside the
+Agents the wave's other replies addressed (so adding rounds sets them working
+again), and the cap notice carries that window's `resets_at`; the Manager's closing turn then passes the gate like any
+Agent-triggered turn, so it runs at once on another login and waits for the
+window (or "continue anyway") on the exhausted one.
+
+Residual: two Agents that keep politely addressing each other converge only at
+the round cap; there is no earlier detector (deferred register). Residual:
+`agent.wait_for_results` has no timeout of its own; a wait ends with the
+child's Run timeout or orphan handling. Residual (quota): a gate probe is bounded to 5 s inside the
+admission's transaction and the minute re-check to 30 s per login; a host that
+is slow to answer is decided on the cached reading.
+
 ## API Surface
 
 - `POST /api/v1/rooms` — create a Room (writer authority on the Project).
@@ -853,8 +1267,22 @@ the order it was assembled.
   message; supports direct `@agent` recipient segmentation or manager
   coordination, optional explicit per-recipient backend selection, and
   server-owned `input_parts` for images or authorized text-file snapshots
+- `DELETE /api/v1/rooms/:roomId/conversations/:sessionId/queued-messages/:id` —
+  take back one's own message still waiting for the turn, or dismiss one that
+  could not be posted
+- `POST /api/v1/rooms/:roomId/conversations/:sessionId/discussions` — open an
+  explicit discussion (Project writer); `GET` lists the conversation's
+  discussions, `GET …/discussions/:id` returns one with its waves, cost lines
+  (`usage`) and `quota_hold`, `POST …/discussions/:id/stop` (any member) and
+  `…/extend { rounds }` (Project writer)
+- `GET /api/v1/rooms/:roomId/conversations/:sessionId/quota` — the Space's
+  subscription lines, the windows of the logins the conversation's Agents run
+  on (cached), and the Agent-triggered Runs held at the reserve line;
+  `POST …/quota/continue` (Project writer) admits them now ("continue anyway")
 - `POST /api/v1/sessions/:sessionId/execution-context/refresh-git` — explicitly
-  advance the initialized Conversation's Git admission baseline
+  advance the initialized Conversation's Git admission baseline (a send
+  advances it itself when HEAD is where the Conversation's own last Run left
+  it)
 - `GET /api/v1/projects/:projectId/host-execution-targets` — the caller's
   online remote Hosts, this Project's Locations, and reported CLI
   adapter/installation choices for the host-bound Agent selector

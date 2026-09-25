@@ -2754,6 +2754,7 @@ export class ProjectResearchOrchestrator {
         operation_id: operation.id,
         room_id: roomId,
         session_id: sessionId,
+        ...(optionalString(origin.origin_group_id) ? { origin_group_id: optionalString(origin.origin_group_id) } : {}),
         status,
         ...(episode === null ? {} : { episode }),
         reason: message,

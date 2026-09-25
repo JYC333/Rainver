@@ -26,6 +26,9 @@ import { registerProjectResearchHandler } from "../projectResearch/index.js";
 import { registerKnowledgeExtractionHandler } from "../knowledgePromotion/extractionJob.js";
 import { registerInquiryAdviceHandler } from "../inquiry/adviceJob.js";
 import { registerExperimentReconcileHandler } from "../experiments/reconcileJob.js";
+import { registerTaskBranchJobHandlers } from "../hosts/taskBranchJobs.js";
+import { registerTaskMergeHandler } from "../hosts/taskMerges.js";
+import { TaskMergeResolutionDispatcher } from "../tasks/mergeResolution.js";
 import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { finalizeChatTurn } from "../runs/chatTurnFinalizer.js";
@@ -35,6 +38,8 @@ import { registerRuntimeContextCheckpointHandler } from "../runtimeContext/conti
 import { registerRoomConversationSummaryHandler } from "../rooms/conversationSummaryJob.js";
 import { registerRoomConversationTitleHandler } from "../rooms/conversationTitleJob.js";
 import { registerRoomDelegationCompletionRetryHandler } from "../agentGroups/delegationCompletionRetryJob.js";
+import { registerRoomDiscussionAdvanceRetryHandler } from "../rooms/discussionAdvanceRetryJob.js";
+import { registerRoomQueuedMessageReleaseHandler } from "../rooms/queuedMessageReleaseJob.js";
 import { registerResearchAcquisitionPipelineHandler } from "../projectResearch/pipeline/researchAcquisitionPipelineJob.js";
 import { registerResearchOperationFailureNotifyHandler } from "../projectResearch/pipeline/researchOperationFailureNotifyJob.js";
 import { registerResearchOperationCancelHandler } from "../projectResearch/pipeline/researchOperationCancelJob.js";
@@ -105,11 +110,15 @@ export function buildJobHandlerRegistry(
   registerProjectResearchHandler(registry, config);
   registerKnowledgeExtractionHandler(registry, config);
   registerExperimentReconcileHandler(registry, config);
+  registerTaskBranchJobHandlers(registry, config);
+  registerTaskMergeHandler(registry, config, { resolver: new TaskMergeResolutionDispatcher(config) });
   registerInquiryAdviceHandler(registry, config);
   registerRuntimeContextCheckpointHandler(registry, config);
   registerRoomConversationSummaryHandler(registry, config);
   registerRoomConversationTitleHandler(registry, config);
   registerRoomDelegationCompletionRetryHandler(registry, config);
+  registerRoomDiscussionAdvanceRetryHandler(registry, config);
+  registerRoomQueuedMessageReleaseHandler(registry, config);
   registerResearchAcquisitionPipelineHandler(registry, config);
   registerResearchOperationFailureNotifyHandler(registry, config);
   registerResearchOperationCancelHandler(registry, config);
@@ -171,6 +180,7 @@ export function startJobsWorker(
         }
       }
       await reconcileTerminalChatRuns(config, runs, log);
+      await reconcileUnfinalizedTaskRuns(config, runs, log);
     } catch (error) {
       log?.error(
         `[jobs-worker] stale run recovery failed: ${
@@ -185,6 +195,7 @@ export function startJobsWorker(
           const reclaimed = await worker.reclaimStuckJobs(STUCK_AFTER_SECONDS);
           if (reclaimed > 0) log?.warn(`[jobs-worker] reclaimed ${reclaimed} stuck job(s)`);
           await reconcileTerminalChatRuns(config, runs, log);
+          await reconcileUnfinalizedTaskRuns(config, runs, log);
           lastReclaim = now;
         }
         const result = await worker.processOne();
@@ -246,7 +257,7 @@ export async function reconcileTerminalChatRuns(
         // record the vendor-session outcome before publishing completion.
         const hostThread = hostThreadDispatchInputs(current);
         if (hostThread.thread_id) {
-          await recordHostThreadOutcome(config, hostThread.thread_id, current, hostThread.resume_attempted);
+          await recordHostThreadOutcome(config, hostThread.thread_id, current, hostThread.resume_attempted, hostThread.identity);
         }
         await finalizeChatTurn(config, runs, current, finalizerDeps);
       }
@@ -267,6 +278,38 @@ export async function reconcileTerminalChatRuns(
     } catch (error) {
       log?.warn(
         `[jobs-worker] waiting Room Run ${item.id} reply deferred: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+}
+
+/**
+ * A Task's terminal Run that nobody finalized — its job was cancelled or gave
+ * up, recovery cancelled it, a module ended it by hand — is finalized here,
+ * so its Task is settled (`projectWork/finalizationReconciler.ts`) whatever
+ * path ended the Run. The paths that can, finalize at once and this finds
+ * nothing.
+ */
+export async function reconcileUnfinalizedTaskRuns(
+  config: ServerConfig,
+  runs: PgRunRepository,
+  log?: JobsWorkerLogger,
+  materializer: Pick<RunMaterializationService, "finalizeRun"> =
+    RunMaterializationService.fromConfig(config),
+): Promise<void> {
+  for (const item of await runs.listTaskRunsAwaitingFinalization()) {
+    const run = await runs.getRun(item.space_id, item.id);
+    if (!run) continue;
+    try {
+      const finalization = await materializer.finalizeRun(run);
+      if (finalization.status !== "succeeded") {
+        throw new Error(finalization.error_message ?? "Run finalization failed.");
+      }
+    } catch (error) {
+      log?.warn(
+        `[jobs-worker] Task Run ${item.id} finalization deferred: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );

@@ -19,6 +19,8 @@ export interface AgentRunGroupRecord {
   room_id: string | null;
   session_id: string | null;
   trigger_message_id: string | null;
+  /** The Room discussion this group is a wave, or the closing turn, of. */
+  discussion_id?: string | null;
   project_id: string | null;
   project_folder_id: string | null;
   title: string;
@@ -47,6 +49,8 @@ export interface AgentRunGroupMemberRecord {
 export interface AgentRunGroupMemberWithAgentStatus extends AgentRunGroupMemberRecord {
   agent_status: string | null;
   agent_kind: string | null;
+  /** The Agent's current version — what a Run created for it now is attributed to. */
+  agent_current_version_id: string | null;
 }
 
 export interface AgentRunMessageRecord {
@@ -109,7 +113,7 @@ export interface AgentCapabilitySnapshotRecord {
 
 const GROUP_COLUMNS = `
   id, space_id, root_run_id, manager_user_id, manager_agent_id, room_id,
-  session_id, trigger_message_id, project_id, project_folder_id, title, goal,
+  session_id, trigger_message_id, discussion_id, project_id, project_folder_id, title, goal,
   status, budget_json, policy_snapshot_json, created_at, updated_at, ended_at
 `;
 
@@ -174,6 +178,20 @@ const DELEGATION_RUN_JOINS = `
 
 export class PgAgentGroupRepository {
   constructor(private readonly db: Queryable) {}
+
+  /** The Agent-triggered turns charged to a container group, or to the discussion it is a wave of. */
+  async containerTurnsUsed(input: { space_id: string; discussion_id: string | null; container_group_id: string }): Promise<number> {
+    const result = input.discussion_id
+      ? await this.db.query<{ used: number | null }>(
+        `SELECT turns_used AS used FROM room_discussions WHERE space_id = $1 AND id = $2`,
+        [input.space_id, input.discussion_id],
+      )
+      : await this.db.query<{ used: number | null }>(
+        `SELECT COALESCE((budget_json->>'container_turns_used')::int, 0) AS used FROM agent_run_groups WHERE space_id = $1 AND id = $2`,
+        [input.space_id, input.container_group_id],
+      );
+    return Number(result.rows[0]?.used ?? 0);
+  }
 
   async canReadProject(
     spaceId: string,
@@ -488,7 +506,8 @@ export class PgAgentGroupRepository {
     const result = await this.db.query<AgentRunGroupMemberWithAgentStatus>(
       `SELECT ${MEMBER_COLUMNS_ALIASED},
               a.status AS agent_status,
-              a.agent_kind
+              a.agent_kind,
+              a.current_version_id AS agent_current_version_id
          FROM agent_run_group_members m
          JOIN agent_run_groups group_row
            ON group_row.space_id = m.space_id AND group_row.id = m.group_id
@@ -1074,7 +1093,8 @@ export class PgAgentGroupRepository {
     const result = await this.db.query<{ count: string }>(
       `SELECT count(*)::text AS count
          FROM run_delegations
-        WHERE space_id = $1 AND parent_run_id = $2`,
+        WHERE space_id = $1 AND parent_run_id = $2
+          AND status <> 'policy_denied'`,
       [input.space_id, input.parent_run_id],
     );
     return Number(result.rows[0]?.count ?? 0);

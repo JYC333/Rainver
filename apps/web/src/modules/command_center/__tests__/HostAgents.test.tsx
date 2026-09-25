@@ -51,7 +51,7 @@ vi.mock('../../../api/client', async importOriginal => {
 
 const ADAPTERS: HostRuntimeDefinitionOption[] = [
   { runtime_key: 'claude_code', display_name: 'Claude Code', command: 'claude-agent-acp', capability_probe: 'claude', remote_eligible: true, registry_id: 'claude-acp', reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false },
-  { runtime_key: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true, registry_id: 'opencode', supports_runtime_native: true, supports_model_provider: true, provider_api: 'openai_compatible' },
+  { runtime_key: 'opencode', display_name: 'OpenCode', command: 'opencode', capability_probe: 'opencode', remote_eligible: true, registry_id: 'opencode', supports_runtime_native: true, supports_model_provider: true, provider_api: 'vendor' },
   { runtime_key: 'acp_goose', display_name: 'goose', command: 'acp_goose', capability_probe: 'acp_goose', remote_eligible: true, supports_runtime_native: true, supports_model_provider: false },
   // What the server really reports for a registry agent: installable and
   // managed on a host, but not dispatch-eligible until its entry can name a

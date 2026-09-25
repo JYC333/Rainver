@@ -14,7 +14,19 @@ describe("hostThreadDispatchInputs", () => {
         model: "m",
         host_thread: { schema_version: "host_thread.v1", thread_id: "thread-1", runtime_session_id: "sess-9", fresh: false },
       },
-    })).toEqual({ thread_id: "thread-1", resume_session_id: "sess-9", resume_attempted: true });
+    })).toEqual({ thread_id: "thread-1", resume_session_id: "sess-9", resume_attempted: true, identity: null });
+  });
+
+  it("reads the standing-context digest the Run was dispatched with", () => {
+    const run = (hostThread: Record<string, unknown>) => ({
+      host_task_thread_id: "thread-1",
+      model_override_json: { host_thread: { schema_version: "host_thread.v1", thread_id: "thread-1", ...hostThread } },
+    });
+    expect(hostThreadDispatchInputs(run({ identity_digest: "d1", identity_sent: true })).identity)
+      .toEqual({ digest: "d1", sent: true });
+    expect(hostThreadDispatchInputs(run({ identity_digest: "d1", identity_sent: false })).identity)
+      .toEqual({ digest: "d1", sent: false });
+    expect(hostThreadDispatchInputs(run({ identity_sent: true })).identity).toBeNull();
   });
 
   it("marks a thread's first dispatch as not attempting a resume", () => {
@@ -26,7 +38,7 @@ describe("hostThreadDispatchInputs", () => {
       { host_thread: "malformed" },
     ]) {
       expect(hostThreadDispatchInputs({ host_task_thread_id: "thread-1", model_override_json: override }), JSON.stringify(override))
-        .toEqual({ thread_id: "thread-1", resume_session_id: null, resume_attempted: false });
+        .toEqual({ thread_id: "thread-1", resume_session_id: null, resume_attempted: false, identity: null });
     }
   });
 
@@ -34,6 +46,6 @@ describe("hostThreadDispatchInputs", () => {
     expect(hostThreadDispatchInputs({
       host_task_thread_id: null,
       model_override_json: { host_thread: { runtime_session_id: "sess-9" } },
-    })).toEqual({ thread_id: null, resume_session_id: null, resume_attempted: false });
+    })).toEqual({ thread_id: null, resume_session_id: null, resume_attempted: false, identity: null });
   });
 });

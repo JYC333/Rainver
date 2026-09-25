@@ -28,6 +28,14 @@ describe("Project execution Mode adapters", () => {
     const orphan = { claimed_by_user_id: null, claimed_by_agent_id: null, assigned_user_id: null, assigned_agent_id: null, created_by_user_id: null, responsible_user_id: identity.userId, loop_stage: "verify" };
     const query = vi.fn(async (sql: string) => {
       expect(sql).toContain("content_access_grants");
+      // A done Task's merge that stopped on a conflict: its own item, with
+      // its own source, so snoozing it leaves the Task's items alone.
+      if (sql.includes("FROM task_merges")) {
+        return {
+          rows: [{ id: "merge-1", task_id: "done", title: "Prepare release", status: "conflict", main_branch: "main", detail_json: { conflicted_files: ["a.ts"] } }],
+          rowCount: 1,
+        };
+      }
       return {
         rows: [
           { id: "waiting", title: "Confirm the approach", status: "waiting_for_review", due_at: null, blocked_reason: null, ...mine },
@@ -49,6 +57,7 @@ describe("Project execution Mode adapters", () => {
 
     const attention = projectAttentionRegistry.list().find(item => item.areaKind === "delivery");
     await expect(attention!.listAttentionItems(db, identity, projectId)).resolves.toEqual([
+      expect.objectContaining({ source_type: "task_merge", source_id: "merge-1", severity: "high", reason: "merge_conflict", href: "/tasks/done" }),
       expect.objectContaining({ source_id: "waiting", severity: "high", reason: "waiting_for_review" }),
       expect.objectContaining({ source_id: "blocked", severity: "high", reason: "blocked" }),
       expect.objectContaining({ source_id: "overdue", severity: "normal", reason: "overdue" }),

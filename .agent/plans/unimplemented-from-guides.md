@@ -494,8 +494,8 @@ substitute for [../tasks/deferred-register.md](../tasks/deferred-register.md).
 
 **Current fact:** Conversation dispatch uses the pinned Location; Task
 host choice is explicit. Expired `pending_pairing` / `revoked` host
-names still occupy `uq_hosts_owner_name`. Remote propose→apply is
-explicitly not settled (ADR 0016).
+names still occupy `uq_hosts_owner_name`. How a host Run's change lands is
+settled by ADR 0016 §11.
 
 **Extracted design**
 - Scored multi-location routing / lease scheduler.

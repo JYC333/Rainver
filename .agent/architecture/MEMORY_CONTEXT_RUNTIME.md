@@ -114,8 +114,11 @@ product table; Context Events store ordered refs and typed continuity facts.
   transaction takes the Work Context version advisory lock, then revalidates
   and locks the active scope and Project ACL authority.
 - Room conversation continuity combines the active append-only Room summary
-  (2,000-token budget) with only the uncaptured canonical message tail
-  (6,000-token budget) through the exact current message. The summary cursor is
+  (2,000-token floor) with only the uncaptured canonical message tail
+  (6,000-token floor) through the exact current message. The Runtime Context
+  continuity item uses the floors; the replay a host-bound Room turn builds
+  into its own prompt scales both to its model's window
+  (`roomContextBudgets`, `modules/rooms.md`). The summary cursor is
   exclusive, so ranges cannot overlap; the canonical transcript remains the
   source of truth and is always available through paged history. Before an
   active summary exists, the same complete-message assembler is used rather

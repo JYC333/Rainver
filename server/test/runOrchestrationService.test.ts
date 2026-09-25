@@ -21,6 +21,7 @@ import type { ExecutionControlSnapshot, InvocationDelivery, RunAdapterResultEnve
 import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders/index.js";
 import type { CliCommandExecutor, CliStdioController } from "../src/modules/runs/localCliExecution.js";
 import { NO_PROVIDER_BINDINGS, type RemoteHostCliAdapterDeps } from "../src/modules/runs/remoteHostCliAdapter.js";
+import type { TaskRunSettlementInput } from "../src/modules/runs/taskRunSettlement.js";
 
 function config(withDatabase = false) {
   return loadConfig({
@@ -600,7 +601,13 @@ class FakeDelegationProjector implements RunDelegationLifecycleProjectorPort {
   running: RunRecord[] = [];
   terminal: RunRecord[] = [];
   reconciled: RunRecord[] = [];
+  queued: RunRecord[] = [];
   fail = false;
+
+  async queueDelegatedChildren(run: RunRecord): Promise<void> {
+    if (this.fail) throw new Error("delegated child admission failed");
+    this.queued.push(run);
+  }
 
   async markDelegatedRunRunning(run: RunRecord): Promise<void> {
     if (this.fail) throw new Error("delegation projection failed");
@@ -619,13 +626,17 @@ class FakeDelegationProjector implements RunDelegationLifecycleProjectorPort {
 }
 
 describe("RunOrchestrationService", () => {
-  it("reconciles dependency waits after releasing the active execution lock", async () => {
+  it("admits delegated children and reconciles dependency waits after releasing the active execution lock", async () => {
     const repo = new FakeRepo();
     repo.run = run({ run_group_id: "group-1" });
     const delegationProjector = new FakeDelegationProjector();
     const reconcile = delegationProjector.reconcileWaitingRun.bind(delegationProjector);
     delegationProjector.reconcileWaitingRun = async (waitingRun) => {
       expect(repo.executionLocked).toBe(false);
+      // A parent that delegated and then waited in one turn: its children
+      // were created queued with no job, so the park has to admit them or
+      // the two wait on each other for ever.
+      expect(delegationProjector.queued).toMatchObject([{ id: "run-1", status: "waiting_for_dependency" }]);
       await reconcile(waitingRun);
     };
     const service = orchestration(repo, {
@@ -1221,6 +1232,137 @@ describe("RunOrchestrationService", () => {
     expect(workspaceManager.calls).toEqual([]);
   });
 
+  describe("a host Task Run's Task branch (ADR 0016 §11)", () => {
+    const START = "a".repeat(40);
+    const taskRun = (over: Partial<AgentRunRecord> = {}) => run({
+      runtime_key: "claude_code",
+      runtime_profile_snapshot_json: {
+        ...DEFAULT_ACP_PROFILE_SNAPSHOT,
+        runtime_key: "claude_code",
+        workspace: { kind: "location", workspace_location_id: "location-2" },
+      },
+      run_type: "agent",
+      required_sandbox_level: "worktree",
+      workspace_location_id: "location-2",
+      contract_snapshot_json: { source: { kind: "task", id: "task-1" } },
+      ...over,
+    });
+    const inWorktree: CliCommandExecutor = {
+      async runCommand(input) {
+        await completeCodexProtocol(input.stdio_controller, "Fixed the parser.");
+        return {
+          returncode: 0, stdout: "", stderr: "", timed_out: false,
+          task_worktree: { branch: "rainver/task-task-1", start_commit: START },
+        };
+      },
+    };
+    const onPairedHost = async () => ({ hostKind: "remote" as const, hostId: "host-2", workspaceLocationId: "location-2" });
+    const execute = (service: RunOrchestrationService) => service.executeRun({
+      run_id: "run-1", space_id: "space-1", worker_id: "worker-1", command_source: "job",
+    });
+
+    it("verifies against the Run's start commit in the Task worktree, then settles, and records the commit", async () => {
+      const repo = new FakeRepo();
+      repo.run = taskRun();
+      const order: string[] = [];
+      const verified: Array<{ base: string | null; workspace: unknown }> = [];
+      const settles: TaskRunSettlementInput[] = [];
+      const service = orchestration(repo, {
+        ...daemonCli(inWorktree),
+        policyEnforcer: allowPolicy,
+        hostKindResolver: onPairedHost,
+        verificationEngine: {
+          async verify(input) {
+            order.push("verify");
+            verified.push({ base: input.base_commit_sha, workspace: input.execution_target?.workspace });
+            return [];
+          },
+        },
+        taskRunSettler: {
+          async settle(input) {
+            order.push("settle");
+            settles.push(input);
+            return { branch: "rainver/task-task-1", commit: "c".repeat(40), error: null };
+          },
+        },
+      });
+
+      await expect(execute(service)).resolves.toMatchObject({ status: "succeeded" });
+      expect(order.at(-1)).toBe("settle");
+      expect(order.filter((step) => step === "verify").length).toBeGreaterThan(0);
+      expect(verified[0]).toEqual({
+        base: START,
+        workspace: { kind: "location", workspace_location_id: "location-2", worktree: { task_id: "task-1" } },
+      });
+      expect(settles).toHaveLength(1);
+      expect(settles[0]).toMatchObject({
+        taskId: "task-1",
+        hostId: "host-2",
+        workspace: { kind: "location", workspace_location_id: "location-2", worktree: { task_id: "task-1" } },
+        outcome: "succeeded",
+        summary: "Fixed the parser.",
+      });
+      expect(repo.terminalUpdates[0]?.output_json).toMatchObject({
+        result: { task_branch: { branch: "rainver/task-task-1", commit: "c".repeat(40), error: null } },
+      });
+    });
+
+    it("records a failed settle as a warning without failing the Run", async () => {
+      const repo = new FakeRepo();
+      repo.run = taskRun();
+      const service = orchestration(repo, {
+        ...daemonCli(inWorktree),
+        policyEnforcer: allowPolicy,
+        hostKindResolver: onPairedHost,
+        taskRunSettler: { async settle() { return { branch: null, commit: null, error: "host_offline" }; } },
+      });
+
+      await expect(execute(service)).resolves.toMatchObject({ status: "succeeded" });
+      expect(repo.runEvents.some((event) => event.error_code === "task_run_settle_failed")).toBe(true);
+      expect(repo.terminalUpdates[0]?.output_json).toMatchObject({
+        result: { task_branch: { commit: null, error: "host_offline" } },
+      });
+    });
+
+    it("settles a Task Run whose host never said where it ran, and records nothing when it ran in place", async () => {
+      const silent: CliCommandExecutor = {
+        async runCommand(input) {
+          await completeCodexProtocol(input.stdio_controller, "Done.");
+          return { returncode: 0, stdout: "", stderr: "", timed_out: false };
+        },
+      };
+      const repo = new FakeRepo();
+      repo.run = taskRun();
+      const settles: TaskRunSettlementInput[] = [];
+      const service = orchestration(repo, {
+        ...daemonCli(silent),
+        policyEnforcer: allowPolicy,
+        hostKindResolver: onPairedHost,
+        taskRunSettler: { async settle(input) { settles.push(input); return { branch: null, commit: null, error: null }; } },
+      });
+
+      await expect(execute(service)).resolves.toMatchObject({ status: "succeeded" });
+      expect(settles).toHaveLength(1);
+      expect(repo.terminalUpdates[0]?.output_json).not.toMatchObject({ result: { task_branch: expect.anything() } });
+    });
+
+    it("settles nothing for a Run that did not execute in a Task worktree", async () => {
+      const repo = new FakeRepo();
+      repo.run = taskRun({ run_type: "planning" });
+      const settles: unknown[] = [];
+      const service = orchestration(repo, {
+        ...daemonCli(inWorktree),
+        policyEnforcer: allowPolicy,
+        hostKindResolver: onPairedHost,
+        taskRunSettler: { async settle(input) { settles.push(input); return { branch: null, commit: null, error: null }; } },
+      });
+
+      await expect(execute(service)).resolves.toMatchObject({ status: "succeeded" });
+      expect(settles).toEqual([]);
+      expect(repo.terminalUpdates[0]?.output_json).not.toMatchObject({ result: { task_branch: expect.anything() } });
+    });
+  });
+
   it("writes materialization summaries and finalizes after terminal state", async () => {
     const repo = new FakeRepo();
     const finalizations: Array<{
@@ -1692,6 +1834,20 @@ describe("RunOrchestrationService", () => {
 
     expect(attempts).toBe(2);
     expect(projector.terminal).toHaveLength(1);
+  });
+
+  it("stops a turn's session handoff together with the turn", async () => {
+    const repo = new FakeRepo();
+    repo.run = run({
+      status: "waiting_for_dependency",
+      model_override_json: { handoff_rotation: { handoff_run_id: "run-handoff" } },
+    });
+    repo.runsById.set("run-handoff", run({ id: "run-handoff", status: "running" }));
+    const service = orchestration(repo);
+
+    await expect(service.cancelRun({ run_id: "run-1", space_id: "space-1" }))
+      .resolves.toMatchObject({ status: "cancelled" });
+    expect(repo.calls).toContain("get:space-1:run-handoff");
   });
 
   it("does not overwrite a concurrent cancel when the adapter finishes", async () => {

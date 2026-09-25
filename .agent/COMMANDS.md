@@ -248,6 +248,17 @@ curl http://localhost:3000/api/v1/hosts/<host-id>/usage -H "Authorization: Beare
 curl -X POST http://localhost:3000/api/v1/hosts/<host-id>/installations/claude_code/own/usage \
   -H "Authorization: Bearer <token>"
 
+# The Space's subscription lines (warning / reserve), and moving them (owner/admin).
+curl http://localhost:3000/api/v1/providers/subscription-quota-policy -H "Authorization: Bearer <token>"
+curl -X PUT http://localhost:3000/api/v1/providers/subscription-quota-policy \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{"warn_pct":70,"reserve_pct":85}'
+
+# A conversation's logins, windows and held Agent-triggered turns; continue anyway (Project writer).
+curl http://localhost:3000/api/v1/rooms/<room-id>/conversations/<session-id>/quota -H "Authorization: Bearer <token>"
+curl -X POST http://localhost:3000/api/v1/rooms/<room-id>/conversations/<session-id>/quota/continue \
+  -H "Authorization: Bearer <token>"
+
 # What has changed about every host's runtimes, newest first.
 curl http://localhost:3000/api/v1/hosts/runtime-changes -H "Authorization: Bearer <token>"
 ```

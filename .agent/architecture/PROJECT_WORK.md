@@ -92,11 +92,19 @@ insert next to it.
 ### Kinds
 
 `task.created · task.flow_changed · task.stage_changed · task.accepted ·
-task.responsibility_changed · task.run_settled · task.reported ·
+task.responsibility_changed · task.run_settled · task.merged ·
+task.merge_blocked · task.reported ·
 project.reported · thread.created · thread.archived · thread.reopened ·
 thread.concluded · thread.next_step_adopted · memory.remembered ·
 memory.revised · memory.archived · agent.persona_revised ·
 agent.persona_restored`
+
+`task.merged` and `task.merge_blocked` are what became of a done Task's
+change on an execution host: on a Location's main branch, or stopped on
+something a person has to see (`reason`: `waiting_local_changes`,
+`conflict`, `verification_failed`, `failed`, with the files or failed checks).
+The service actor `task_merge` writes them (ADR 0016 §11;
+[modules/hosts.md](../modules/hosts.md), "Merging a done Task").
 
 The `thread.*` kinds are Inquiry advancement, subject `inquiry_thread`,
 declared by the `inquiry` module in the same registry. They exist because
@@ -134,7 +142,9 @@ the machine record disagree, with no way to resolve which was right.
 advancing: `succeeded · degraded · failed · cancelled · waiting_for_review`.
 `orphaned` is deliberately absent — crash recovery terminalises the orphaned
 attempt and the Supervisor creates the next one, so settling on it would
-settle mid-retry. `task_runs.role ∈ planning, review` are not execution: a
+settle mid-retry. `task_runs.role ∈ planning, review, merge` are not
+execution (`merge`: a done Task's conflict-resolution Run, which settles
+nothing about the Task): a
 planning Run (*Ask Agent to plan*) does not advance the work, and a successful
 plan closing its Task was the most wrong answer the old projection could give.
 
@@ -148,16 +158,21 @@ a person's decision with nothing to evaluate.
 
 **Trigger.** Settlement is registered as a run-finalization reconciler
 (`projectWork/finalizationReconciler.ts`); the registry runs after the
-evaluation bridge, the finalization row and the Supervisor decision. The
-terminal-status-time call (`publishRunTerminalWithConversationSession`,
-`markRunDegraded`, stale-Run recovery, job cancellation) still runs; it settles
-`cancelled` immediately and finds nothing decided for everything else.
+evaluation bridge, the finalization row and the Supervisor decision, and it
+is the only trigger: no repository calls settlement. Every terminal Run of a
+Task is finalized — by the job that ran it (`agentRunHandler`), by the route
+that cancelled it (`runs/routes.ts`, `jobs/routes.ts`), or, for what ended
+another way (a queued Run whose job was cancelled or gave up, one recovery
+cancelled, one a module ended by hand), by the jobs worker's sweep of
+terminal Task Runs with no `run_finalizations` row
+(`reconcileUnfinalizedTaskRuns`, at start and every two minutes). A
+cancelled Run's finalization has nothing to evaluate and settles at once.
 
 The decision reads the **latest** execution Run, then:
 
 | Run | Task |
 |---|---|
-| `succeeded` / `degraded`, evaluation recommends `accept`, declared outputs present | `done` + `task.accepted`, stage → `conclude` |
+| `succeeded` / `degraded`, evaluation recommends `accept`, declared outputs present | `done` + `task.accepted`, stage → `conclude`, and the Task's merge is enqueued |
 | `succeeded` / `degraded`, anything else | `waiting_for_review`, stage → `verify` |
 | `failed` · `cancelled` · `waiting_for_review` | `waiting_for_review`, **stage unchanged** |
 | `orphaned` | not settled |
@@ -250,17 +265,22 @@ holds a Task in any other status it interrupts nobody, which is the boundary
 between *Agent Next* and *Needs You*.
 
 The Delivery attention adapter surfaces `waiting_for_review`, `blocked` and
-overdue Tasks **to the responsible person only**. Everyone else still sees the
+overdue Tasks, and a done Task's merge that stopped on something a person has
+to see (`source_type: task_merge`; [modules/hosts.md](../modules/hosts.md),
+"Merging a done Task"), **to the responsible person only**. Everyone else still sees the
 Task and can take it over; they are simply not told to. A shared inbox was the
 alternative and it fails in both directions at once — everyone assumes someone
 else has it, or two people start the same work.
 
 ## 6. Entry point and transaction boundary
 
-`tasks/taskRunStatusProjection.ts` stays the entry point called by the runs and
-jobs repositories. It delegates the decision here because settling a Task
-writes work events and moves its Loop stage as well as its flow status, and
-those are one transaction rather than three modules agreeing afterwards.
+`settleTasksForRun` (`projectWork/settlement.ts`) is the entry point, reached
+only through the finalization reconciler. It opens its own transaction
+because settling a Task writes work events and moves its Loop stage as well
+as its flow status, and those are one transaction rather than three modules
+agreeing afterwards. The runs and jobs repositories never call it: a
+repository writes its own rows, and what a Run's end means for its Task is
+decided above them.
 
 Settling used to do more: it took a host-thread queue lock and withdrew the
 Task's queued messages, so a queued message could not dispatch into a fresh Run
@@ -269,7 +289,9 @@ run is one Run created at admission — so there is no queued message to withdra
 and no second lock to take. The dispatch-refusal set
 (`blocked · done · cancelled`) is now the only such set; a person may run a
 `waiting_for_review` Task again, because re-running is one of the decisions the
-hold exists to ask for.
+hold exists to ask for. The one exception is a done Task's merge, whose
+conflict-resolution Run (`task_runs.role = 'merge'`) is admitted on a `done`
+Task ([modules/hosts.md](../modules/hosts.md), "Merging a done Task").
 
 Every append-only surface that records who acted resolves its `actors` row
 through `db/actorResolver.ts`. Two partial unique indexes (one person per
@@ -320,7 +342,9 @@ nothing is decided by it.
 `GET /projects/:projectId/updates` (`updatesReadModel.ts`) is the third read
 model: the same stream filtered to `task.reported`, `project.reported`,
 `task.accepted` (a Task closing is an update; nothing writes a report for it,
-so the acceptance is rendered as itself), the five `thread.*` kinds, the three
+so the acceptance is rendered as itself), `task.merged` and
+`task.merge_blocked` (whether a done Task's change landed), the five
+`thread.*` kinds, the three
 `memory.*` kinds and the two `agent.persona_*` kinds, newest first. A persona
 revision is the one row that carries `previous_summary` — what it replaced,
 because deciding whether to put that back needs both sides in front of the
@@ -392,7 +416,7 @@ own paragraph below gives:
 
 | Action | Writes | Records |
 |---|---|---|
-| `task.create` | a Task, and its `task_entity_links` | `task.created` |
+| `task.create` | a Task (recording the Run as `tasks.source_run_id`, so its merge can be told in the conversation it came from), and its `task_entity_links` | `task.created` |
 | `task.report` | nothing | `task.reported` |
 | `task.handoff` | the claim on a Task | `task.responsibility_changed` |
 | `task.advance_stage` | the Loop fold | `task.stage_changed` |

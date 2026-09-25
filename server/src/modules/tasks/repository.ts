@@ -1,6 +1,6 @@
 import { TASK_STATUSES as PROTOCOL_TASK_STATUSES } from "@rainver/protocol";
 import { randomUUID } from "node:crypto";
-import type { Pool } from "../../db/pool.js";
+import type { Pool, PoolClient } from "../../db/pool.js";
 import {
   HttpError,
   countFromRow,
@@ -38,10 +38,12 @@ import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { hostInstallationIds } from "../hosts/capabilities.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
+import { enqueueTaskBranchDeletes } from "../hosts/taskBranchJobs.js";
+import { enqueueTaskMerges, withdrawTaskMerges } from "../hosts/taskMerges.js";
+import { admitAgentOriginRun } from "../rooms/quotaGate.js";
+import { liveQuotaSource } from "../rooms/subscriptionLogins.js";
 import { dispatchToolAllowance } from "../systemActions/scenarioToolAllowance.js";
 import { isTerminalRunStatus } from "../runs/orchestrationResults.js";
-import {
-} from "./taskRunStatusProjection.js";
 import { responsibleUserSql } from "../projectWork/responsibility.js";
 import { linkTaskEntities } from "../projectWork/taskActions.js";
 import { resolveUserActorId } from "../../db/actorResolver.js";
@@ -75,6 +77,17 @@ const TASK_STATUSES = new Set<string>(PROTOCOL_TASK_STATUSES);
  * it again" is one of the decisions.
  */
 const TASK_DISPATCH_REFUSED_STATUSES = new Set(["blocked", "done", "cancelled"]);
+
+/**
+ * A merge's resolution Run is the server's own, started by a merge nobody is
+ * attending: not `manual`, which would say a person asked for it.
+ */
+const MERGE_RESOLUTION_TRIGGER_ORIGIN = "system" as const;
+
+/** The merge a resolution Run belongs to (`createMergeResolutionRun`). */
+interface MergeResolutionAdmission {
+  mergeId: string;
+}
 import {
   BOARD_COLUMNS,
   completionOverride,
@@ -648,6 +661,25 @@ export class PgTaskRepository {
           basedOn: dateIso(currentTask.updated_at) ?? String(currentTask.updated_at),
         });
       }
+      // A Task that ends without being done leaves no branch behind on the
+      // Locations its Runs worked on (ADR 0016 §11); a done one keeps its
+      // branch for the merge.
+      const ended = (flowChanged && requestedStatus === "cancelled")
+        || (Object.hasOwn(body, "deleted_at") && toDbDate(body.deleted_at) !== null);
+      if (ended) await enqueueTaskBranchDeletes(client, { spaceId: identity.spaceId, userId: identity.userId, taskId });
+      // Leaving `done` takes back its merges: each gives back what it holds
+      // on the host, so the worktree is the Task's again.
+      if (ended || (flowChanged && currentTask.status === "done")) {
+        await withdrawTaskMerges(client, { spaceId: identity.spaceId, taskId });
+      }
+      if (flowChanged && requestedStatus === "done") {
+        await enqueueTaskMerges(client, {
+          spaceId: identity.spaceId,
+          taskId,
+          basis: `user:${dateIso(currentTask.updated_at) ?? String(currentTask.updated_at)}`,
+          requestedByUserId: identity.userId,
+        });
+      }
       if (Array.isArray(body.links) && body.links.length > 0) {
         await linkTaskEntities(
           client,
@@ -680,6 +712,8 @@ export class PgTaskRepository {
     taskId: string,
     body: Record<string, unknown>,
     transactionClient?: Queryable,
+    /** Set only by `createMergeResolutionRun`, never from a request body. */
+    merge?: MergeResolutionAdmission,
   ) {
     assertPersonStartedRunRequest(body);
     for (const key of ["runtime_key", "installation", "model_provider_id", "model", "reasoning_effort"]) {
@@ -706,7 +740,9 @@ export class PgTaskRepository {
       );
       const currentTask = lockedTask.rows[0];
       if (!currentTask) throw new HttpError(404, "Task not found");
-      if (TASK_DISPATCH_REFUSED_STATUSES.has(currentTask.status)) {
+      // A merge's resolution Run works on a done Task: that is the only Task
+      // with a merge.
+      if (TASK_DISPATCH_REFUSED_STATUSES.has(currentTask.status) && !(merge && currentTask.status === "done")) {
         throw new HttpError(409, `Task is ${currentTask.status} and cannot be dispatched`);
       }
       await assertNotRoomConversationSession(client, identity.spaceId, optionalString(body.session_id));
@@ -752,7 +788,7 @@ export class PgTaskRepository {
         return await this.prepareRemoteTaskRun(client, identity, task, target, agentId, body, {
           maxRuns,
           taskPolicy,
-        });
+        }, merge);
       }
       if (target && !target.execution_ready) {
         throw new HttpError(409, "Workspace Location is not execution-ready");
@@ -778,6 +814,8 @@ export class PgTaskRepository {
         mode: optionalString(body.mode) ?? "live",
         run_type: "agent",
         trigger_origin: PERSON_STARTED_TRIGGER_ORIGIN,
+        // Never from a body: only `createMergeResolutionRun` passes `merge`.
+        ...(merge ? { trigger_origin: MERGE_RESOLUTION_TRIGGER_ORIGIN } : {}),
         runtime_profile_id: runtimeProfile.id,
         runtime_profile_selection_source: optionalString(body.runtime_profile_id) ? "explicit" : "default",
         session_id: optionalString(body.session_id),
@@ -804,6 +842,7 @@ export class PgTaskRepository {
           budget_precedence: numberValue(taskPolicy.budget_precedence),
           budget_sources: budgetSourcesFromPolicy(taskPolicy.budget_sources),
           route_hints_json: contractRouteHints(task.policy_json),
+          ...(merge ? { task_merge_id: merge.mergeId } : {}),
         },
       });
       const now = new Date().toISOString();
@@ -813,14 +852,7 @@ export class PgTaskRepository {
          ON CONFLICT (task_id, run_id) DO NOTHING`,
         [randomUUID(), identity.spaceId, taskId, run.id, optionalString(body.role) ?? "primary", now],
       );
-      await new PgJobQueueRepository(client).ensureAgentRunJob({
-        job_type: "agent_run",
-        space_id: identity.spaceId,
-        user_id: identity.userId,
-        agent_id: agentId,
-        project_folder_id: task.project_folder_id,
-        payload: { run_id: run.id },
-      });
+      await this.enqueueTaskRunJob(client, identity, { runId: run.id, agentId, projectFolderId: task.project_folder_id }, merge);
       if (body.set_task_in_progress !== false) {
         await client.query(`UPDATE tasks SET status = 'in_progress', updated_at = $3 WHERE space_id = $1 AND id = $2`, [identity.spaceId, taskId, now]);
       }
@@ -832,6 +864,69 @@ export class PgTaskRepository {
       };
     };
     return transactionClient ? execute(transactionClient) : withDbTransaction(this.pool, execute);
+  }
+
+  /**
+   * A merge's conflict-resolution Run (ADR 0016 §11): the Task's
+   * Agent, on the Task's Location and runtime profile, resuming the Task's
+   * host thread, working in the Task worktree as the merge left it. It is
+   * Agent-triggered — nobody is in the turn — so it goes through the same
+   * admission as any Task Run (the requester's Project write access, the
+   * host's owner, the Task's budget) and then the subscription quota gate,
+   * rather than straight onto the queue.
+   */
+  async createMergeResolutionRun(
+    identity: SpaceUserIdentity,
+    taskId: string,
+    input: {
+      mergeId: string;
+      workspaceLocationId: string;
+      agentId: string;
+      runtimeProfileId: string | null;
+      threadId: string | null;
+      prompt: string;
+    },
+    client: Queryable,
+  ): Promise<string> {
+    const admission = await this.createTaskRunAdmission(identity, taskId, {
+      workspace_location_id: input.workspaceLocationId,
+      agent_id: input.agentId,
+      ...(input.runtimeProfileId ? { runtime_profile_id: input.runtimeProfileId } : {}),
+      ...(input.threadId ? { thread_id: input.threadId } : {}),
+      prompt: input.prompt,
+      role: "merge",
+      set_task_in_progress: false,
+    }, client, { mergeId: input.mergeId });
+    return String(admission.run.id);
+  }
+
+  /** A person's Task Run is queued; a merge's resolution Run passes the quota gate first. */
+  private async enqueueTaskRunJob(
+    client: Queryable,
+    identity: SpaceUserIdentity,
+    input: { runId: string; agentId: string; projectFolderId: string | null },
+    merge?: MergeResolutionAdmission,
+  ): Promise<void> {
+    const job = {
+      user_id: identity.userId,
+      agent_id: input.agentId,
+      project_folder_id: input.projectFolderId,
+      payload: { run_id: input.runId },
+    };
+    if (merge) {
+      await admitAgentOriginRun(client as PoolClient, {
+        spaceId: identity.spaceId,
+        runId: input.runId,
+        job,
+        source: liveQuotaSource(this.pool),
+      });
+      return;
+    }
+    await new PgJobQueueRepository(client).ensureAgentRunJob({
+      job_type: "agent_run",
+      space_id: identity.spaceId,
+      ...job,
+    });
   }
 
   /**
@@ -873,6 +968,7 @@ export class PgTaskRepository {
      * without them admits every time.
      */
     budget: { maxRuns: number | null; taskPolicy: Record<string, unknown> },
+    merge?: MergeResolutionAdmission,
   ) {
     // The merged task-run admission gate above already locked the active
     // Project and verified the caller's writer access before either adapter
@@ -982,7 +1078,7 @@ export class PgTaskRepository {
       user_id: identity.userId,
       mode: "live",
       run_type: "agent",
-      trigger_origin: "manual",
+      trigger_origin: merge ? MERGE_RESOLUTION_TRIGGER_ORIGIN : PERSON_STARTED_TRIGGER_ORIGIN,
       runtime_profile_id: runtimeProfile.id,
       runtime_profile_selection_source: optionalString(body.runtime_profile_id) || inheritedProfileId ? "explicit" : "default",
       project_folder_id: task.project_folder_id,
@@ -1019,6 +1115,7 @@ export class PgTaskRepository {
         budget_precedence: numberValue(budget.taskPolicy.budget_precedence),
         budget_sources: budgetSourcesFromPolicy(budget.taskPolicy.budget_sources),
         route_hints_json: contractRouteHints(task.policy_json),
+        ...(merge ? { task_merge_id: merge.mergeId } : {}),
       },
     });
 
@@ -1029,14 +1126,7 @@ export class PgTaskRepository {
        ON CONFLICT (task_id, run_id) DO NOTHING`,
       [randomUUID(), identity.spaceId, task.id, run.id, optionalString(body.role) ?? "primary", now],
     );
-    await new PgJobQueueRepository(client).ensureAgentRunJob({
-      job_type: "agent_run",
-      space_id: identity.spaceId,
-      user_id: identity.userId,
-      agent_id: agentId,
-      project_folder_id: task.project_folder_id,
-      payload: { run_id: run.id },
-    });
+    await this.enqueueTaskRunJob(client, identity, { runId: run.id, agentId, projectFolderId: task.project_folder_id }, merge);
     if (body.set_task_in_progress !== false) {
       await client.query(
         `UPDATE tasks SET status = 'in_progress', updated_at = now() WHERE space_id = $1 AND id = $2`,

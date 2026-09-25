@@ -5,7 +5,7 @@ import { ExecutionGraphRecoveryService } from "../src/modules/execution/executio
 import { ExecutionGraphScheduler } from "../src/modules/execution/executionGraphScheduler.js";
 import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/workspaceLocations.js";
-import { projectTaskStatusFromRun } from "../src/modules/tasks/taskRunStatusProjection.js";
+import { settleTasksForRun } from "../src/modules/projectWork/settlement.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
@@ -177,6 +177,19 @@ describe("executionTopologyDb", () => {
       const ready = await locations.get({ spaceId: SPACE, userId: USER }, FOLDER, remoteLocation.id);
       expect(ready).toMatchObject({ execution_ready: true, branch: "main", git_head: "abc123", dirty: false });
 
+      // A branch name longer than the record holds is recorded as unknown, not a failed report.
+      await hosts.recordHeartbeat(registered.host_id, {
+        workspace_reports: [{
+          location_id: remoteLocation.id,
+          branch: `feature/${"x".repeat(300)}`,
+          git_head: "def456",
+          dirty: true,
+          execution_ready: true,
+        }],
+      });
+      const longBranch = await locations.get({ spaceId: SPACE, userId: USER }, FOLDER, remoteLocation.id);
+      expect(longBranch).toMatchObject({ execution_ready: true, branch: null, git_head: "def456", dirty: true });
+
       await hosts.recordHeartbeat(registered.host_id, { workspace_reports: [] });
       const stale = await locations.get({ spaceId: SPACE, userId: USER }, FOLDER, remoteLocation.id);
       expect(stale?.execution_ready).toBe(false);
@@ -244,7 +257,7 @@ describe("executionTopologyDb", () => {
       // A Run finishing is not the Task finishing. With no evaluation to say
       // the result is good, settlement holds the Task for a person rather than
       // closing it — this used to write `done` straight from the adapter exit.
-      await projectTaskStatusFromRun(db.pool, SPACE, RUN);
+      await settleTasksForRun(db.pool, SPACE, RUN);
       let task = await db.pool.query<{ status: string; blocked_reason: string | null }>(
         `SELECT status, blocked_reason FROM tasks WHERE id = $1`,
         [TASK],
@@ -256,7 +269,7 @@ describe("executionTopologyDb", () => {
       // now means only what it says: held up by something else.
       await db.pool.query(`UPDATE tasks SET status = 'ready', completed_at = NULL WHERE id = $1`, [TASK]);
       await db.pool.query(`UPDATE runs SET status = 'failed' WHERE id = $1`, [RUN]);
-      await projectTaskStatusFromRun(db.pool, SPACE, RUN);
+      await settleTasksForRun(db.pool, SPACE, RUN);
       task = await db.pool.query<{ status: string; blocked_reason: string | null }>(
         `SELECT status, blocked_reason FROM tasks WHERE id = $1`,
         [TASK],

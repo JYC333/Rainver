@@ -2,8 +2,9 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { JobDeferredError, type JobHandlerRegistry, type JobHandlerResult } from "../jobs/handlerRegistry.js";
 import { withDbTransaction } from "../routeUtils/common.js";
-import { isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository.js";
+import { isRetryableRoomPostError } from "../rooms/messageQueue.js";
 import { RoomService } from "../rooms/service.js";
+import { agentOriginContinuation } from "../rooms/discussionService.js";
 import { PgAgentGroupRepository } from "./repository.js";
 
 export const ROOM_DELEGATION_COMPLETION_RETRY_JOB = "room_delegation_completion_retry";
@@ -45,6 +46,9 @@ export function registerRoomDelegationCompletionRetryHandler(
       if (!delegation || (delegation.status !== "succeeded" && delegation.status !== "failed" && delegation.status !== "cancelled")) return;
       const group = await groups.getGroup(job.space_id, delegation.group_id);
       if (!group?.room_id || !group.session_id) return;
+      // The continuation charges the container before it claims the turn: a
+      // busy turn rolls both back, so a deferred retry charges nothing.
+      await client.query("SAVEPOINT delegation_result_retry");
       try {
         await new RoomService(config, pool).continueAfterDomainEventInTransaction(
           client,
@@ -59,10 +63,13 @@ export function registerRoomDelegationCompletionRetryHandler(
               result_summary: delegation.result_summary ?? "",
               status: delegation.status,
             },
+            ...await agentOriginContinuation(client, group.space_id, group.id),
           },
         );
+        await client.query("RELEASE SAVEPOINT delegation_result_retry");
       } catch (error) {
-        if (isConversationTurnInProgressError(error)) {
+        if (isRetryableRoomPostError(error)) {
+          await client.query("ROLLBACK TO SAVEPOINT delegation_result_retry");
           deferAfterMs = TURN_BUSY_RETRY_DELAY_MS;
           return;
         }

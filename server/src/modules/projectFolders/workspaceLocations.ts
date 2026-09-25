@@ -3,9 +3,9 @@ import { stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
-import { isStale } from "../hosts/repository.js";
+import { isStale } from "../hosts/liveness.js";
 import type { AmbientSessionCount, HostExecutionTarget, HostExecutionTargetRuntime } from "@rainver/protocol";
-import { isGitRepo, runGit } from "@rainver/folder-read";
+import { isGitRepo, runLocationGit } from "@rainver/folder-read";
 import { normalizeHostCapabilities } from "../hosts/capabilities.js";
 import { getLocalCliRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 
@@ -321,9 +321,17 @@ export class PgWorkspaceLocationRepository {
     return { ...row, host_online: hostOnline };
   }
 
-  /** Server-host only — reuses the same `isGitRepo`/`runGit` helpers the pre-P1 Folder-level git endpoints used. */
-  async refreshGitStatus(location: Pick<WorkspaceLocationRow, "id" | "root_path" | "execution_host_kind">, workspaceRoot: string): Promise<void> {
-    if (location.execution_host_kind !== "server") return;
+  /**
+   * Server-host only. The directory is shared with the built-in host, where
+   * Runs write it, so git here runs through `runLocationGit`: nothing a Run
+   * planted in `.git/` (hook, fsmonitor, filter driver) executes in the server.
+   */
+  async refreshGitStatus(
+    location: Pick<WorkspaceLocationRow, "id" | "root_path" | "execution_host_kind">,
+    workspaceRoot: string,
+  ): Promise<{ changed: boolean; headMoved: boolean }> {
+    const unchanged = { changed: false, headMoved: false };
+    if (location.execution_host_kind !== "server") return unchanged;
     const root = locationAbsoluteRoot(location, workspaceRoot);
     const info = await stat(root).catch(() => null);
     if (!info?.isDirectory()) {
@@ -332,7 +340,7 @@ export class PgWorkspaceLocationRepository {
                 dirty = NULL, last_seen_at = $2, updated_at = $2 WHERE id = $1`,
         [location.id, new Date().toISOString()],
       );
-      return;
+      return unchanged;
     }
     if (!(await isGitRepo(root))) {
       await this.db.query(
@@ -340,16 +348,22 @@ export class PgWorkspaceLocationRepository {
                 dirty = NULL, last_seen_at = $2, updated_at = $2 WHERE id = $1`,
         [location.id, new Date().toISOString()],
       );
-      return;
+      return unchanged;
     }
-    const branch = (await runGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000)).stdout.trim() || null;
-    const head = (await runGit(["rev-parse", "HEAD"], root, 10_000)).stdout.trim() || null;
-    const status = await runGit(["status", "--porcelain"], root, 10_000);
-    await this.db.query(
-      `UPDATE workspace_locations SET branch = $2, git_head = $3, dirty = $4, execution_ready = true,
-              last_seen_at = $5, updated_at = $5 WHERE id = $1`,
-      [location.id, branch, head, status.stdout.trim().length > 0, new Date().toISOString()],
+    const branch = (await runLocationGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000)).stdout.trim() || null;
+    const head = (await runLocationGit(["rev-parse", "HEAD"], root, 10_000)).stdout.trim() || null;
+    const status = await runLocationGit(["status", "--porcelain"], root, 10_000);
+    const updated = await this.db.query<{ changed: boolean; head_moved: boolean }>(
+      `WITH previous AS (SELECT git_head, dirty FROM workspace_locations WHERE id = $1)
+       UPDATE workspace_locations SET branch = $2, git_head = $3, dirty = $4, execution_ready = true,
+              last_seen_at = $5, updated_at = $5 WHERE id = $1
+       RETURNING ((SELECT git_head FROM previous) IS DISTINCT FROM $3::varchar
+                  OR (SELECT dirty FROM previous) IS DISTINCT FROM $4::boolean) AS changed,
+                 ((SELECT git_head FROM previous) IS DISTINCT FROM $3::varchar) AS head_moved`,
+      [location.id, storableBranch(branch), head, status.stdout.trim().length > 0, new Date().toISOString()],
     );
+    const row = updated.rows[0];
+    return { changed: Boolean(row?.changed), headMoved: Boolean(row?.head_moved) };
   }
 
   /** Refresh migrated server Locations during server startup as well as after a new Folder is created. */
@@ -388,8 +402,13 @@ export class PgWorkspaceLocationRepository {
     }
   }
 
-  /** Applies the complete location report from one remote daemon heartbeat. */
-  async recordDaemonHeartbeat(hostId: string, reports: WorkspaceLocationHeartbeat[]): Promise<void> {
+  /**
+   * Applies the complete location report from one remote daemon heartbeat,
+   * and returns the Locations whose HEAD or dirty state changed (`changed`)
+   * and those whose HEAD moved (`headMoved`) — a merge waiting on the
+   * checkout is worth trying again for those.
+   */
+  async recordDaemonHeartbeat(hostId: string, reports: WorkspaceLocationHeartbeat[]): Promise<{ changed: string[]; headMoved: string[] }> {
     const seen = reports.map((report) => report.location_id);
     if (seen.length === 0) {
       await this.db.query(
@@ -398,16 +417,27 @@ export class PgWorkspaceLocationRepository {
           WHERE execution_host_id = $1 AND execution_host_kind = 'remote' AND status <> 'archived'`,
         [hostId],
       );
-      return;
+      return { changed: [], headMoved: [] };
     }
+    const changed: string[] = [];
+    const headMoved: string[] = [];
     for (const report of reports) {
-      await this.db.query(
-        `UPDATE workspace_locations
+      const updated = await this.db.query<{ changed: boolean; head_moved: boolean }>(
+        `WITH previous AS (
+           SELECT git_head, dirty FROM workspace_locations
+            WHERE id = $1 AND execution_host_id = $2 AND execution_host_kind = 'remote' AND status <> 'archived'
+         )
+         UPDATE workspace_locations
             SET branch = $3, git_head = $4, dirty = $5, execution_ready = $6,
                 last_seen_at = now(), updated_at = now()
-          WHERE id = $1 AND execution_host_id = $2 AND execution_host_kind = 'remote' AND status <> 'archived'`,
-        [report.location_id, hostId, report.branch ?? null, report.git_head ?? null, report.dirty ?? null, report.execution_ready],
+          WHERE id = $1 AND execution_host_id = $2 AND execution_host_kind = 'remote' AND status <> 'archived'
+          RETURNING ((SELECT git_head FROM previous) IS DISTINCT FROM $4::varchar
+                     OR (SELECT dirty FROM previous) IS DISTINCT FROM $5::boolean) AS changed,
+                    ((SELECT git_head FROM previous) IS DISTINCT FROM $4::varchar) AS head_moved`,
+        [report.location_id, hostId, storableBranch(report.branch ?? null), report.git_head ?? null, report.dirty ?? null, report.execution_ready],
       );
+      if (updated.rows[0]?.changed) changed.push(report.location_id);
+      if (updated.rows[0]?.head_moved) headMoved.push(report.location_id);
     }
     await this.db.query(
       `UPDATE workspace_locations
@@ -416,6 +446,7 @@ export class PgWorkspaceLocationRepository {
           AND NOT (id = ANY($2::varchar[]))`,
       [hostId, seen],
     );
+    return { changed, headMoved };
   }
 }
 
@@ -589,4 +620,13 @@ function dateIso(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string") return new Date(value).toISOString();
   return new Date(0).toISOString();
+}
+
+/**
+ * A branch name as `workspace_locations.branch` (`varchar(256)`) can hold it:
+ * git takes longer ones, and a status report must not fail on one — it is
+ * recorded as unknown instead.
+ */
+function storableBranch(branch: string | null): string | null {
+  return branch !== null && branch.length <= 256 ? branch : null;
 }

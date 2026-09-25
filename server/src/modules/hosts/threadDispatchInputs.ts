@@ -26,6 +26,11 @@ export interface HostThreadDispatchInputs {
    * no session and never counts as a reset when none comes back.
    */
   resume_attempted: boolean;
+  /**
+   * The identity digest the Run was dispatched with, and whether the identity
+   * block was in its prompt. Null for Runs that carry no identity block.
+   */
+  identity: { digest: string; sent: boolean } | null;
 }
 
 export function hostThreadDispatchInputs(
@@ -34,7 +39,7 @@ export function hostThreadDispatchInputs(
   const threadId = typeof run.host_task_thread_id === "string" && run.host_task_thread_id
     ? run.host_task_thread_id
     : null;
-  if (!threadId) return { thread_id: null, resume_session_id: null, resume_attempted: false };
+  if (!threadId) return { thread_id: null, resume_session_id: null, resume_attempted: false, identity: null };
   const override = run.model_override_json;
   const hostThread = override && typeof override === "object" && !Array.isArray(override)
     ? (override as Record<string, unknown>).host_thread
@@ -43,5 +48,16 @@ export function hostThreadDispatchInputs(
     ? (hostThread as Record<string, unknown>).runtime_session_id
     : null;
   const resumeSessionId = typeof sessionId === "string" && sessionId ? sessionId : null;
-  return { thread_id: threadId, resume_session_id: resumeSessionId, resume_attempted: resumeSessionId !== null };
+  const thread = hostThread && typeof hostThread === "object" && !Array.isArray(hostThread)
+    ? hostThread as Record<string, unknown>
+    : {};
+  const identity = typeof thread.identity_digest === "string" && thread.identity_digest
+    ? { digest: thread.identity_digest, sent: thread.identity_sent === true }
+    : null;
+  return {
+    thread_id: threadId,
+    resume_session_id: resumeSessionId,
+    resume_attempted: resumeSessionId !== null,
+    identity,
+  };
 }

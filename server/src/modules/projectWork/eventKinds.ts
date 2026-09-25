@@ -52,6 +52,8 @@ function registerCoreWorkEventKinds(): void {
     "task.accepted",
     "task.responsibility_changed",
     "task.run_settled",
+    "task.merged",
+    "task.merge_blocked",
     "task.reported",
   ];
   for (const kind of taskKinds) {

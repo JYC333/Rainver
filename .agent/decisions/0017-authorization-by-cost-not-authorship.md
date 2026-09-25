@@ -27,7 +27,7 @@ one of:
 | --- | --- | --- |
 | Self-modification | the Agent's own capabilities, policies, prompts | B20, ADR 0009 |
 | Long-term belief with widened reach | memory writes that widen visibility, raise sensitivity, concern another person, or replace content authored by a person or another Agent | ADR 0003 |
-| Real checkout | code patches to a governed workspace | B19, ADR 0016 |
+| Real checkout | a code patch proposed by a Run the server executes in its own sandbox, for a Project Folder that Run could not write | B19 |
 | Exposure | egress, publication, sharing across Spaces or from personal to team | ADR 0013 |
 | Money | spend above the bounded default of any pipeline | this ADR §3 |
 | Credentials and deployment | | ADR 0008, B43 |
@@ -36,6 +36,14 @@ one of:
 An action that registers as a proposal must name, at its registration, which
 row of this table it falls under. An action that names none is not a proposal
 action.
+
+The real-checkout row covers the server's own sandbox and nothing else. An
+Agent run by an execution host ([ADR 0016](0016-control-plane-execution-hosts.md))
+— the built-in host or a paired one — writes its Location directly, bounded by
+Project write authority and the host's isolation (B63): a Conversation turn in
+place, a Task Run in its own worktree whose change lands on the checkout when
+the Task is done ([ADR 0016](0016-control-plane-execution-hosts.md) §11).
+Neither is a per-change gate.
 
 **One named exception, and only one: an Agent's persona entry.** A persona is
 rendered into that Agent's own prompt, so on its face it reads as

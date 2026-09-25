@@ -151,9 +151,11 @@ export const RunTurnSchema = z.object({
   /**
    * What the turn is waiting on, when it is `blocked`. `authorization` is a
    * specific request the person can approve; `run_decision` is a supervisor
-   * review of the Run itself.
+   * review of the Run itself; `workspace` is another Run still writing the
+   * same directory, which the host lets this one into once that Run ends —
+   * nobody has to act on it.
    */
-  blocked_on: z.enum(["authorization", "run_decision"]).nullable(),
+  blocked_on: z.enum(["authorization", "run_decision", "workspace"]).nullable(),
   /**
    * The highest event index this projection consumed. A stream resumes from
    * here rather than replaying the turn.

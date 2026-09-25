@@ -19,8 +19,19 @@ vi.mock('../ProjectConversationBackendCard', () => ({
 // is what is under test here, not the editor.
 vi.mock('../../agent_groups/RoomMessageComposer', () => ({
   emptyRoomMessageComposerValue: () => ({ text: '', mentionIds: [], routingSegments: [] }),
+  // A leading `@agent-id ` stands in for a mention node: the real editor's
+  // segmenting is covered by its own test, this only has to hand one over.
   RoomMessageComposer: ({ onChange }: { onChange: (value: { text: string; mentionIds: string[]; routingSegments: unknown[] }) => void }) => (
-    <textarea aria-label="Room message" onChange={event => onChange({ text: event.target.value, mentionIds: [], routingSegments: [] })} />
+    <textarea
+      aria-label="Room message"
+      onChange={event => {
+        const text = event.target.value
+        const mention = /^@(\S+)\s+(.*)$/s.exec(text)
+        onChange(mention
+          ? { text, mentionIds: [mention[1]!], routingSegments: [{ recipient_agent_ids: [mention[1]!], content: mention[2]! }] }
+          : { text, mentionIds: [], routingSegments: [] })
+      }}
+    />
   ),
 }))
 vi.mock('../../../api/client', async () => {
@@ -40,6 +51,7 @@ vi.mock('../../../api/client', async () => {
     createConversation: vi.fn(),
     messages: vi.fn(),
     sendMessage: vi.fn(),
+    conversationQuota: vi.fn().mockResolvedValue({ warn_pct: 70, reserve_pct: 85, logins: [], holds: [] }),
   },
   sessionsApi: {
     executionContext: vi.fn(),
@@ -270,7 +282,22 @@ describe('Project chat sidecar', () => {
       routing_mode: 'direct',
       backends: [],
       focus_refs: [{ type: 'task', id: TASK }],
+      queue: true,
     }))
+  })
+
+  it('routes a mention typed in the panel, the same as the full Room page', async () => {
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({} as never)
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalled())
+
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: '@agent-2 check the style' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'conv-2', expect.objectContaining({
+      routing_mode: 'direct',
+      recipient_segments: [{ recipient_agent_ids: ['agent-2'], content: 'check the style' }],
+    })))
   })
 
   it('shows the Files current-file bar and includes the acknowledged resource by default', async () => {
@@ -393,6 +420,23 @@ describe('Project chat sidecar', () => {
     // Opposite alignment, so a column of mixed-language text still reads.
     expect(mine?.className).toContain('justify-end')
     expect(theirs?.className).toContain('justify-start')
+  })
+
+  it('marks a reply that is a question for the person, and only that one', async () => {
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [
+        { id: 'm1', role: 'user', content: 'Clean up the parser.', created_at: '2026-08-27T09:00:00.000Z' },
+        {
+          id: 'm2', role: 'assistant', content: 'Which parser should I keep?\n\n- Pratt\n- Recursive descent',
+          created_at: '2026-08-27T09:00:05.000Z', metadata_json: { awaiting_answer: true },
+        },
+        { id: 'm3', role: 'assistant', content: 'Done.', created_at: '2026-08-27T09:00:09.000Z', metadata_json: {} },
+      ], task_group_ids: [], limit: 50, offset: 0,
+    } as never)
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    const question = (await screen.findByText('Which parser should I keep?')).closest('[data-role]')
+    expect(question).toHaveTextContent('waiting for an answer')
+    expect(screen.getByText('Done.').closest('[data-role]')).not.toHaveTextContent('waiting for an answer')
   })
 
   it('decides a proposal the turn produced, right here, and lets the Agent continue', async () => {

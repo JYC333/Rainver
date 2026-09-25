@@ -1,3 +1,4 @@
+import { agentOriginContinuation } from "../../rooms/discussionService.js";
 import type { Pool } from "../../../db/pool.js";
 import { getDbPool } from "../../../db/pool.js";
 import type { ServerConfig } from "../../../config.js";
@@ -43,6 +44,7 @@ export function registerResearchOperationFailureNotifyHandler(registry: JobHandl
     // failures, so an absent status still means `failed`.
     const status = optionalString(job.payload.status) ?? "failed";
     const episode = typeof job.payload.episode === "number" ? job.payload.episode : null;
+    const originGroupId = optionalString(job.payload.origin_group_id);
     if (!operationId || !roomId || !sessionId || !job.user_id) {
       throw new Error(`${RESEARCH_OPERATION_FAILURE_NOTIFY_JOB} requires operation_id, room_id, session_id, and user_id`);
     }
@@ -50,7 +52,7 @@ export function registerResearchOperationFailureNotifyHandler(registry: JobHandl
       throw new Error(`${RESEARCH_OPERATION_FAILURE_NOTIFY_JOB} received an unsupported status ${JSON.stringify(status)}`);
     }
     try {
-      await withDbTransaction(pool, (client) =>
+      await withDbTransaction(pool, async (client) =>
         new RoomService(config, pool).continueAfterDomainEventInTransaction(
           client,
           { spaceId: job.space_id, userId: job.user_id! },
@@ -67,6 +69,8 @@ export function registerResearchOperationFailureNotifyHandler(registry: JobHandl
             // casualty of its first failure.
             key: episode === null ? `${operationId}:${status}` : `${operationId}:${status}:${episode}`,
             payload: { status, operation_id: operationId, reason },
+            // Started by an Agent's turn: charged to that turn's container.
+            ...(originGroupId ? await agentOriginContinuation(client, job.space_id, originGroupId) : {}),
           },
         ),
       );

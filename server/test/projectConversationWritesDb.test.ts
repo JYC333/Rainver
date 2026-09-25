@@ -109,7 +109,7 @@ describe("asking for a plan in conversation", () => {
     const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Memory layer" });
     const config = await configFor();
     const run = {
-      id: randomUUID(), space_id: SPACE, agent_id: AGENT, project_id: project.id, run_group_id: null,
+      id: await seedConversationRun(), space_id: SPACE, agent_id: AGENT, project_id: project.id, run_group_id: null,
       instructed_by_user_id: OWNER, trigger_origin: "manual", session_id: randomUUID(),
     } as unknown as RunRecord;
     const executors = new Map<SystemActionId, SystemActionExecutor>();
@@ -145,7 +145,7 @@ describe("asking for a plan in conversation", () => {
     const sibling = await projects.create(identity(), { name: "Sibling" });
     const config = await configFor();
     const run = {
-      id: randomUUID(), space_id: SPACE, agent_id: AGENT, project_id: mine.id, run_group_id: null,
+      id: await seedConversationRun(), space_id: SPACE, agent_id: AGENT, project_id: mine.id, run_group_id: null,
       instructed_by_user_id: OWNER, trigger_origin: "manual", session_id: randomUUID(),
     } as unknown as RunRecord;
     const executors = new Map<SystemActionId, SystemActionExecutor>();

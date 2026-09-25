@@ -21,11 +21,11 @@ import { listAgentMemoryForDispatch } from "../memory/agentMemoryDelivery.js";
  * host-bound path already sends a conversation's own history
  * ([`modules/rooms.md`](../../../../.agent/modules/rooms.md)).
  *
- * Sent on every turn rather than only on a fresh session. A vendor session
- * outlives many turns, and an Agent whose persona was revised — or whose Room
- * roster changed what it may be told — would otherwise go on acting as
- * whoever it was when the session started. The budget below is what keeps
- * that affordable.
+ * A Room turn sends it whenever the vendor session does not already hold
+ * exactly this block (`roomStandingContext.ts`): an Agent whose persona was
+ * revised — or whose Room roster changed what it may be told — would otherwise
+ * go on acting as whoever it was when the session started. Direct chat still
+ * sends it on every turn. The budget below bounds each copy.
  */
 const NOTE_BUDGET_CHARS = 3000;
 

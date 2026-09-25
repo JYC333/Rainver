@@ -11,7 +11,44 @@ export type HostRequestPayload<T extends HostServerFrame["type"]> = Omit<HostSer
  * machine runs no proxy, and a Run that touched no network has nothing to
  * report.
  */
-export type HostRunCompletion = Pick<HostDaemonFrameOf<"complete">, "exit_code" | "timed_out" | "error" | "egress">;
+export type HostRunCompletion = Pick<HostDaemonFrameOf<"complete">, "exit_code" | "timed_out" | "error" | "egress" | "task_worktree">;
+/**
+ * A Task branch request (settle, branch delete, the merge steps) and the reply
+ * frame that answers it, whole. Prepare and continue share one reply shape.
+ */
+const TASK_BRANCH_REPLIES = {
+  task_run_settle: "task_run_settle_result",
+  task_branch_delete: "task_branch_delete_result",
+  task_merge_prepare: "task_merge_step_result",
+  task_merge_continue: "task_merge_step_result",
+  task_merge_abort: "task_merge_abort_result",
+  task_merge_finish: "task_merge_finish_result",
+} as const;
+type TaskBranchRequestType = keyof typeof TASK_BRANCH_REPLIES;
+export type TaskBranchReplyType = (typeof TASK_BRANCH_REPLIES)[TaskBranchRequestType];
+export type TaskBranchReply<T extends TaskBranchRequestType> =
+  Omit<HostDaemonFrameOf<(typeof TASK_BRANCH_REPLIES)[T]>, "type" | "request_id">;
+type ReplyOf<F> = F extends unknown ? Omit<F, "type" | "request_id"> : never;
+type AnyTaskBranchReply = ReplyOf<HostDaemonFrameOf<TaskBranchReplyType>>;
+/** A transport failure, reported in the reply's own shape. */
+function failedTaskBranchRequest(type: TaskBranchRequestType, error: string): AnyTaskBranchReply {
+  switch (TASK_BRANCH_REPLIES[type]) {
+    case "task_run_settle_result": return { ok: false, branch: null, commit: null, error };
+    case "task_branch_delete_result": return { ok: false, deleted: false, error };
+    case "task_merge_step_result":
+      return { ok: false, outcome: null, main_branch: null, onto_commit: null, task_commit: null, conflicted_files: [], error };
+    case "task_merge_abort_result": return { ok: false, error };
+    case "task_merge_finish_result":
+      return { ok: false, outcome: null, merged_commit: null, overlapping_files: [], error };
+  }
+}
+/**
+ * A settle commits and removes a worktree, a branch delete removes one, and a
+ * merge step squashes, rebases or fast-forwards: local git on a checkout the
+ * size of the person's repository, each with its own ten-minute budget on the
+ * host. A daemon that never answers must still fail.
+ */
+const TASK_BRANCH_REQUEST_TIMEOUT_MS = 15 * 60_000;
 /** A `list_dirs` / `workspace_register` / `workspace_forget` reply, whole. */
 type HostActionType = "list_dirs" | "workspace_register" | "workspace_forget";
 type HostActionResult<T extends HostActionType> = Omit<HostDaemonFrameOf<`${T}_result`>, "type" | "request_id">;
@@ -57,6 +94,7 @@ export interface HostFrameSink {
 }
 
 const RECONNECT_GRACE_MS = 60_000;
+const MAX_UNDELIVERED_STOPS_PER_HOST = 500;
 
 interface PendingRun {
   hostId: string;
@@ -87,6 +125,12 @@ interface PendingRun {
    * state" tolerance already applied to the grace timer above.
    */
   pendingStdin: Array<{ type: "stdin"; value: string } | { type: "stdin_close" }>;
+  /**
+   * The daemon queued this launch behind another Run writing the same
+   * WorkspaceLocation (`waiting_for_workspace`) and has not started it yet.
+   * Cleared by `launched`; gone with the entry on `complete`.
+   */
+  waitingForWorkspace: boolean;
 }
 
 interface HostConnection {
@@ -256,6 +300,13 @@ export class HostConnectionRegistry {
     resolve: (result: ManagedWorkspaceResult) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
+  private readonly pendingTaskBranchRequests = new Map<string, {
+    hostId: string;
+    type: TaskBranchRequestType;
+    replyType: TaskBranchReplyType;
+    resolve: (result: AnyTaskBranchReply) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
   /**
    * Settles everything waiting on a host that has gone.
@@ -317,8 +368,47 @@ export class HostConnectionRegistry {
       clearTimeout(pending.timer);
       pending.resolve(failedHostAction(pending.type, "host_offline"));
     }
+    for (const [requestId, pending] of this.pendingTaskBranchRequests) {
+      if (pending.hostId !== hostId) continue;
+      this.pendingTaskBranchRequests.delete(requestId);
+      clearTimeout(pending.timer);
+      pending.resolve(failedTaskBranchRequest(pending.type, "host_offline"));
+    }
   }
   private readonly logins = new Map<string, PendingLogin>();
+  /**
+   * Stops this process owes a host that was offline when they were due, by
+   * launch attempt: a `terminate` that could not be sent, and every dispatch
+   * given up as `host_disconnected` after the reconnect grace window. The
+   * daemon may still be running such an attempt — or still have it queued
+   * for its Location, which would start it long after this process reported
+   * it failed — so they are sent the moment the host is back, each naming
+   * its launch so a retry of the same run id is untouched. Bounded per host;
+   * a daemon that restarts in between has lost those attempts anyway.
+   */
+  private readonly undeliveredStops = new Map<string, Map<string, { runId: string; force: boolean }>>();
+
+  /** Hosts revoked in this process's lifetime: they never reconnect, so nothing is owed to them. */
+  private readonly revokedHosts = new Set<string>();
+
+  /**
+   * Drops what this process would otherwise keep for a revoked host until it
+   * reconnected — which it never will. Its daemon stops its own Runs on the
+   * revocation close (`stopAllRunsForRevocation`).
+   */
+  forgetRevokedHost(hostId: string): void {
+    this.revokedHosts.add(hostId);
+    this.undeliveredStops.delete(hostId);
+  }
+
+  private owedStop(hostId: string, runId: string, launchId: string, force: boolean): void {
+    if (this.revokedHosts.has(hostId)) return;
+    const stops = this.undeliveredStops.get(hostId) ?? new Map<string, { runId: string; force: boolean }>();
+    const previous = stops.get(launchId);
+    stops.set(launchId, { runId, force: force || previous?.force === true });
+    while (stops.size > MAX_UNDELIVERED_STOPS_PER_HOST) stops.delete(stops.keys().next().value!);
+    this.undeliveredStops.set(hostId, stops);
+  }
 
   registerConnection(hostId: string, sink: HostFrameSink): void {
     // A second connection from the same host (e.g. daemon restart racing its
@@ -342,6 +432,11 @@ export class HostConnectionRegistry {
           : { type: "stdin_close", run_id: runId });
       }
     }
+    const stops = this.undeliveredStops.get(hostId);
+    this.undeliveredStops.delete(hostId);
+    for (const [launchId, stop] of stops ?? []) {
+      sink.send({ type: "terminate", run_id: stop.runId, launch_id: launchId, force: stop.force });
+    }
   }
 
   unregisterConnection(hostId: string, sink: HostFrameSink): void {
@@ -352,6 +447,8 @@ export class HostConnectionRegistry {
       if (pendingRun.hostId !== hostId || pendingRun.graceTimer) continue;
       pendingRun.graceTimer = setTimeout(() => {
         this.pending.delete(runId);
+        // Given up here; whatever the daemon still holds of it must not run on.
+        this.owedStop(hostId, runId, pendingRun.launchId, true);
         pendingRun.resolveComplete({ exit_code: -1, timed_out: false, error: "host_disconnected" });
       }, RECONNECT_GRACE_MS);
       pendingRun.graceTimer.unref?.();
@@ -440,7 +537,7 @@ export class HostConnectionRegistry {
     const sink = connection.sink;
     const launchId = randomUUID();
     const completion = new Promise<HostRunCompletion>((resolve) => {
-      this.pending.set(runId, { hostId, launchId, onOutput, onStderr, onLaunched, resolveComplete: resolve, graceTimer: null, pendingStdin: [] });
+      this.pending.set(runId, { hostId, launchId, onOutput, onStderr, onLaunched, resolveComplete: resolve, graceTimer: null, pendingStdin: [], waitingForWorkspace: false });
     });
     const launch: HostLaunchFrame = { ...frame, type: "launch", run_id: runId, launch_id: launchId };
     try {
@@ -468,9 +565,16 @@ export class HostConnectionRegistry {
       queued!.cancel();
       return true;
     }
+    // The attempt this process is waiting on, so the stop cannot reach a
+    // different attempt of the same run id on the host.
+    const pending = this.pending.get(runId);
+    const launchId = pending?.hostId === hostId ? pending.launchId : undefined;
     const connection = this.connections.get(hostId);
-    if (!connection?.sink) return false;
-    connection.sink.send({ type: "terminate", run_id: runId, force });
+    if (!connection?.sink) {
+      if (launchId) this.owedStop(hostId, runId, launchId, force);
+      return false;
+    }
+    connection.sink.send({ type: "terminate", run_id: runId, force, ...(launchId ? { launch_id: launchId } : {}) });
     return true;
   }
 
@@ -887,6 +991,46 @@ export class HostConnectionRegistry {
     pending.resolve({ ...result, ok: result.error === null });
   }
 
+  /**
+   * Asks a host to settle a Task Run onto its Task branch, delete a Task's
+   * branch and worktree, or take one step of merging it (ADR 0016 §11). Always answers in the reply's
+   * shape: an offline host or one that never replies is `ok: false` with
+   * `host_offline` / `host_timeout`, which the callers retry or record.
+   */
+  requestTaskBranch<T extends TaskBranchRequestType>(
+    hostId: string,
+    type: T,
+    frame: HostRequestPayload<T>,
+  ): Promise<TaskBranchReply<T>> {
+    const connection = this.connections.get(hostId);
+    if (!connection?.sink) return Promise.resolve(failedTaskBranchRequest(type, "host_offline") as unknown as TaskBranchReply<T>);
+    const requestId = randomUUID();
+    return new Promise((resolve) => {
+      const settle = resolve as unknown as (result: AnyTaskBranchReply) => void;
+      const timer = setTimeout(() => {
+        this.pendingTaskBranchRequests.delete(requestId);
+        settle(failedTaskBranchRequest(type, "host_timeout"));
+      }, TASK_BRANCH_REQUEST_TIMEOUT_MS);
+      timer.unref?.();
+      this.pendingTaskBranchRequests.set(requestId, { hostId, type, replyType: TASK_BRANCH_REPLIES[type], resolve: settle, timer });
+      try {
+        connection.sink!.send({ ...frame, type, request_id: requestId } as HostServerFrame);
+      } catch {
+        clearTimeout(timer);
+        this.pendingTaskBranchRequests.delete(requestId);
+        settle(failedTaskBranchRequest(type, "host_offline"));
+      }
+    });
+  }
+
+  receiveTaskBranchResult(hostId: string, replyType: TaskBranchReplyType, requestId: string, result: AnyTaskBranchReply): void {
+    const pending = this.pendingTaskBranchRequests.get(requestId);
+    if (!pending || pending.hostId !== hostId || pending.replyType !== replyType) return;
+    clearTimeout(pending.timer);
+    this.pendingTaskBranchRequests.delete(requestId);
+    pending.resolve(result);
+  }
+
   receiveToolResult(hostId: string, requestId: string, result: ToolInstallResult): void {
     const pending = this.pendingInstalls.get(requestId);
     if (!pending || pending.hostId !== hostId) return;
@@ -908,7 +1052,26 @@ export class HostConnectionRegistry {
   }
 
   receiveLaunched(hostId: string, runId: string, launchId: string): void {
-    this.currentDispatch(hostId, runId, launchId)?.onLaunched?.();
+    const pending = this.currentDispatch(hostId, runId, launchId);
+    if (!pending) return;
+    pending.waitingForWorkspace = false;
+    pending.onLaunched?.();
+  }
+
+  /** Routes a daemon's `waiting_for_workspace` frame: the launch is queued behind another writer of its Location. */
+  receiveWaitingForWorkspace(hostId: string, runId: string, launchId: string): void {
+    const pending = this.currentDispatch(hostId, runId, launchId);
+    if (pending) pending.waitingForWorkspace = true;
+  }
+
+  /**
+   * Whether this Run's launch is queued on its host for a directory another
+   * Run is writing. In-process like the rest of this registry: it is a fact
+   * about a live dispatch, and a server that restarts has no dispatch left to
+   * be waiting.
+   */
+  isWaitingForWorkspace(runId: string): boolean {
+    return this.pending.get(runId)?.waitingForWorkspace === true;
   }
 
   /** Routes a daemon's `output` frame to whatever is awaiting that run's stream. */

@@ -14,6 +14,13 @@ import type { PermissionOption, ContentBlock } from "@agentclientprotocol/sdk";
 export type { ContentBlock } from "@agentclientprotocol/sdk";
 import { usageFromAcp } from "./cliRuntimeMeasurement.js";
 import { decidePermission, type PermissionDecisionRecord } from "./runPermissionPolicy.js";
+import {
+  advertisesFormElicitation,
+  interactiveRequestQuestion,
+  isCapabilityGatedMethod,
+  permissionRequestQuestion,
+  type AskedUser,
+} from "./vendorQuestion.js";
 import { getRuntimeAdapterSpec, isAcpRuntimeAdapter, type VendorCliRuntimeKey } from "../runtimeAdapters/specs.js";
 
 type ConversationProtocolAdapter = VendorCliRuntimeKey;
@@ -164,7 +171,15 @@ export class AcpController implements CliStdioController {
     resets_at: number;
     is_using_overage: boolean;
   } | null = null;
+  /** The runtime's last report of how full its session context is (ACP `usage_update`). */
+  private contextWindow: { used: number; size: number } | null = null;
   private promptIndex = 0;
+  /**
+   * The runtime's own question, once it asked one (`modules/runtime-adapters.md`,
+   * "Interactive requests from the runtime"). From then on
+   * the turn is being cancelled: whatever the prompt ends with completes it.
+   */
+  private askedUser: AskedUser | null = null;
 
   constructor(private readonly input: {
     runtime_key: ConversationProtocolAdapter;
@@ -194,6 +209,10 @@ export class AcpController implements CliStdioController {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
           session: { configOptions: { boolean: {} } },
+          // Only where the runtime's question tool depends on it:
+          // advertising it is what lets that question reach us, as a form we
+          // translate into the reply rather than one the runtime drops.
+          ...(advertisesFormElicitation(this.input.runtime_key) ? { elicitation: { form: {} } } : {}),
         },
         clientInfo: { name: "rainver", version: "1" },
       },
@@ -214,6 +233,12 @@ export class AcpController implements CliStdioController {
       return;
     }
     if (message.error) {
+      if (this.askedUser && this.phase === "prompt" && message.id === 4 + this.promptIndex) {
+        // A runtime may answer a cancelled prompt with an error rather than
+        // `stopReason: "cancelled"`; either way the cancel was ours.
+        this.completeAskedTurn(closeStdin);
+        return;
+      }
       if (
         this.phase === "session_new"
         && message.id === 2
@@ -245,7 +270,42 @@ export class AcpController implements CliStdioController {
       return;
     }
     if (isServerRequest(message) && message.method === "session/request_permission") {
+      const params = record(message.params);
+      const question = this.inScopeQuestionRequest(params)
+        ? this.askedUser ?? permissionRequestQuestion(this.input.runtime_key, params)
+        : null;
+      if (question) {
+        this.askUser(question, { jsonrpc: "2.0", id: message.id, result: { outcome: { outcome: "cancelled" } } }, send);
+        return;
+      }
       this.approvePermissionRequest(message, send, closeStdin);
+      return;
+    }
+    if (
+      isServerRequest(message)
+      && !isCapabilityGatedMethod(message.method)
+      && this.inScopeQuestionRequest(record(message.params))
+    ) {
+      // Not a tool permission: the runtime is asking the person something.
+      // Answered with the protocol's cancel (or a refusal, for a method with
+      // no cancel of its own), and the turn ends on the question.
+      const answer = message.method === "elicitation/create"
+        ? { jsonrpc: "2.0", id: message.id, result: { action: "cancel" } }
+        : {
+            jsonrpc: "2.0",
+            id: message.id,
+            error: { code: -32601, message: `Rainver answers '${message.method}' by ending the turn with the question` },
+          };
+      this.askUser(
+        this.askedUser ?? interactiveRequestQuestion(
+          this.input.runtime_key,
+          this.label(),
+          message.method,
+          record(message.params),
+        ),
+        answer,
+        send,
+      );
       return;
     }
     if (isServerRequest(message)) {
@@ -328,7 +388,7 @@ export class AcpController implements CliStdioController {
     if (message.id === 4 + this.promptIndex && this.phase === "prompt") {
       const result = record(message.result);
       const stopReason = stringField(result, "stopReason");
-      if (stopReason !== "end_turn") {
+      if (stopReason !== "end_turn" && !this.askedUser) {
         this.fail(
           `${this.label()} ACP turn ended with stop reason '${stopReason ?? "unknown"}'`,
           closeStdin,
@@ -346,7 +406,9 @@ export class AcpController implements CliStdioController {
       if (this.input.runtime_key === "claude_code" && this.selectedModel && usage) {
         this.modelUsage = addModelUsage(this.modelUsage, this.selectedModel, usage);
       }
-      if (this.promptIndex + 1 < this.promptCount()) {
+      if (this.askedUser) {
+        this.completeAskedTurn(closeStdin);
+      } else if (this.promptIndex + 1 < this.promptCount()) {
         this.phase = "phase_acknowledge";
         const acknowledge = this.input.before_next_prompt?.(this.sessionId!);
         Promise.resolve(acknowledge).then(() => {
@@ -374,6 +436,7 @@ export class AcpController implements CliStdioController {
         return;
       }
       this.captureSubscriptionQuota(params, update);
+      this.captureContextWindow(update);
       if (update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk") {
         const thought = update.sessionUpdate === "agent_thought_chunk";
         if (this.phase !== "prompt") {
@@ -445,12 +508,17 @@ export class AcpController implements CliStdioController {
       completed: this.completed,
       error: this.error,
       ...(this.resumeHandshakeFailed ? { resume_handshake_failed: true } : {}),
+      // A `session/resume` sent and never answered: when the Run is stopped
+      // for silence or its budget here, the stored session is what hung.
+      ...(this.input.runtime_session_id && this.phase === "session_new" ? { resume_unanswered: true } : {}),
       text: this.text,
       // Only a session the runtime has something on disk for. See `prompted`.
       external_session_id: this.prompted ? this.sessionId : null,
       usage: this.usage,
       model_usage: this.modelUsage,
       subscription_quota: this.subscriptionQuota,
+      context_window: this.contextWindow,
+      asked_user: this.askedUser,
     };
   }
 
@@ -561,6 +629,37 @@ export class AcpController implements CliStdioController {
     closeStdin();
   }
 
+  /**
+   * A question can only end a prompt this session is running. Before the
+   * prompt, or for another session, the request keeps its old handling.
+   */
+  private inScopeQuestionRequest(params: Record<string, unknown>): boolean {
+    if (this.phase !== "prompt" || !this.sessionId) return false;
+    const requestSessionId = stringField(params, "sessionId");
+    return requestSessionId === null || requestSessionId === this.sessionId;
+  }
+
+  /**
+   * Cancel the turn on the runtime's question. `session/cancel`
+   * goes first so the runtime already knows the turn is over when it reads
+   * the answer and cannot carry on as if the person had declined. A second
+   * request while the cancel lands is answered the same way; the first
+   * question is the one kept.
+   */
+  private askUser(question: AskedUser, answer: Record<string, unknown>, send: Send): void {
+    if (!this.askedUser) {
+      this.askedUser = question;
+      send({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.sessionId } });
+    }
+    send(answer);
+  }
+
+  private completeAskedTurn(closeStdin: () => void): void {
+    this.completed = true;
+    this.phase = "terminal";
+    closeStdin();
+  }
+
   private approvePermissionRequest(
     message: Record<string, unknown> & { id: string | number; method: string },
     send: Send,
@@ -629,6 +728,14 @@ export class AcpController implements CliStdioController {
       this.advertisedConfigOptions = result.configOptions.map(record);
       this.captureSelectedModel(result);
     }
+  }
+
+  private captureContextWindow(update: Record<string, unknown>): void {
+    if (update.sessionUpdate !== "usage_update") return;
+    const used = nonNegativeInteger(update.used);
+    const size = nonNegativeInteger(update.size);
+    if (used === null || size === null || size === 0) return;
+    this.contextWindow = { used, size };
   }
 
   private captureSubscriptionQuota(

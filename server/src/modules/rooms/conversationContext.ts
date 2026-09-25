@@ -1,12 +1,57 @@
 import type { MessageOut } from "@rainver/protocol";
 import { estimateModelTokens, fitTextToTokenBudget } from "../usage/modelCatalog.js";
 
+/**
+ * Floors of the Room context budgets, and the budgets of everything that is
+ * shared by every recipient rather than read by one pinned model: the rolling
+ * summary is written once per conversation, and its compaction threshold is
+ * the raw tail it retains.
+ */
 export const ROOM_SUMMARY_TOKEN_BUDGET = 2_000;
 export const ROOM_RECENT_TOKEN_BUDGET = 6_000;
 /** Keep each provider task bounded even when the uncaptured archive is large. */
 export const ROOM_SUMMARY_SOURCE_TOKEN_BUDGET = 12_000;
 
 export type RoomTokenEstimator = (text: string) => number;
+
+/** A Room turn's context budgets, derived from the pinned model's window. */
+export interface RoomContextBudgets {
+  summary: number;
+  recent: number;
+  summary_source: number;
+  /** Share of the window at which a vendor session hands off and rotates. */
+  rotate_at: number;
+}
+
+export const ROOM_CONTEXT_FLOOR_BUDGETS: RoomContextBudgets = {
+  summary: ROOM_SUMMARY_TOKEN_BUDGET,
+  recent: ROOM_RECENT_TOKEN_BUDGET,
+  summary_source: ROOM_SUMMARY_SOURCE_TOKEN_BUDGET,
+  rotate_at: Number.POSITIVE_INFINITY,
+};
+
+/** Default share of the context window at which a session rotates. */
+export const ROOM_SESSION_ROTATE_SHARE = 0.6;
+
+/**
+ * Budgets as shares of the model's context window — summary 3 %, recent 15 %,
+ * summary source 30 %, rotation at 60 % — never below the floors, so a small
+ * or unknown model is no worse off than with the fixed constants these
+ * replaced. The caller resolves the window from the Conversation × Agent pin;
+ * the assembler receives numbers and never looks a model up.
+ */
+export function roomContextBudgets(
+  contextWindowTokens: number,
+  rotateShare: number = ROOM_SESSION_ROTATE_SHARE,
+): RoomContextBudgets {
+  const share = (fraction: number, floor: number) => Math.max(floor, Math.floor(contextWindowTokens * fraction));
+  return {
+    summary: share(0.03, ROOM_SUMMARY_TOKEN_BUDGET),
+    recent: share(0.15, ROOM_RECENT_TOKEN_BUDGET),
+    summary_source: share(0.3, ROOM_SUMMARY_SOURCE_TOKEN_BUDGET),
+    rotate_at: Math.floor(contextWindowTokens * rotateShare),
+  };
+}
 
 export interface RoomSummaryCoverage {
   id: string;
@@ -43,24 +88,40 @@ export interface RoomCompactionBatch {
 }
 
 /**
- * Build the fixed Room context contract: at most 2k summary tokens plus at
- * most 6k uncaptured recent tokens. The summary cursor is exclusive, so a
- * message can never be represented in both halves of the prompt.
+ * Build the Room context contract: the active summary within the summary
+ * budget plus the uncaptured recent tail within the recent budget. The summary
+ * cursor is exclusive, so a message can never be represented in both halves of
+ * the prompt.
+ *
+ * `summaryUnavailable` says no summary is coming for the prefix — the Room
+ * owner has no eligible provider, or summarizing stopped — so the tail widens
+ * by what one summary batch would have covered instead of dropping it, up to
+ * half the share at which the session rotates.
  */
 export function assembleRoomConversationContext(input: {
   messages: readonly MessageOut[];
   currentMessage: MessageOut;
   summary?: RoomSummaryCoverage | null;
+  budgets?: RoomContextBudgets;
+  summaryUnavailable?: boolean;
   estimateTokens?: RoomTokenEstimator;
 }): RoomConversationContext | null {
   const estimate = input.estimateTokens ?? estimateModelTokens;
+  const budgets = input.budgets ?? ROOM_CONTEXT_FLOOR_BUDGETS;
   const summary = input.summary ?? null;
   const history = input.messages
     .filter((message) => message.id !== input.currentMessage.id)
     .filter((message) => message.content.trim().length > 0)
     .filter((message) => !summary || isAfterCoverage(message, summary));
-  const recent = selectRecent(history, ROOM_RECENT_TOKEN_BUDGET, estimate);
-  const summaryText = summary?.summary_text.trim() ?? "";
+  // Widened at most to half the rotation share: a fresh session replaying the
+  // wider tail must not start next to the line that would rotate it again.
+  const recentBudget = input.summaryUnavailable
+    ? Math.min(budgets.recent + budgets.summary_source, Math.max(budgets.recent, Math.floor(budgets.rotate_at / 2)))
+    : budgets.recent;
+  const recent = selectRecent(history, recentBudget, estimate);
+  const rawSummaryText = summary?.summary_text.trim() ?? "";
+  const summaryText = rawSummaryText ? fitRoomSummaryToBudget(rawSummaryText, budgets.summary, estimate) : "";
+  const deliveredSummary = summary && summaryText !== rawSummaryText ? { ...summary, summary_text: summaryText } : summary;
   if (!summaryText && recent.messages.length === 0) return null;
 
   const summaryIds = new Set(
@@ -72,7 +133,7 @@ export function assembleRoomConversationContext(input: {
   if (overlap) throw new Error("Room conversation context summary/recent ranges overlap");
 
   return {
-    summary,
+    summary: deliveredSummary,
     recent_messages: recent.messages,
     recent_token_estimate: recent.token_estimate,
     summary_token_estimate: estimate(summaryText),

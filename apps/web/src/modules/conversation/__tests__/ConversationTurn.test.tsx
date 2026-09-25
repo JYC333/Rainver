@@ -138,6 +138,12 @@ describe('ConversationTurn — the states of D3', () => {
     expect(screen.getByRole('link', { name: 'Resolve Run' })).toBeInTheDocument()
   })
 
+  it('blocked on the workspace says so and sends nobody anywhere', () => {
+    show(<ConversationTurn turn={turn('blocked', [], 'workspace')} runHref="/runs/run-1" />)
+    expect(screen.getByText(/waiting for the directory/)).toBeInTheDocument()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
   it('leaves out what a backend did not report, and shows what it did', () => {
     const reported: TurnPart = {
       type: 'tool_call', index: 0, call_id: 'c0', name: 'read', kind: null,

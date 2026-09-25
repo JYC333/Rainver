@@ -8,7 +8,7 @@ import {
   declareRunArtifact,
   normalizeDeclaredPath,
 } from "../src/modules/projectWork/artifactDeclarations.js";
-import { projectTaskStatusFromRun } from "../src/modules/tasks/taskRunStatusProjection.js";
+import { settleTasksForRun } from "../src/modules/projectWork/settlement.js";
 import { resolveAgentActorId } from "../src/db/actorResolver.js";
 import { renderWorkSkill, workSkillContentHash } from "../src/modules/capabilities/workSkill.js";
 import { dispatchToolAllowance } from "../src/modules/systemActions/scenarioToolAllowance.js";
@@ -260,7 +260,7 @@ describe("artifact declarations", () => {
       { artifact_id: artifactId, name: "report.md" },
     ]);
     await finalize(run);
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
 
     const artifact = await db.pool!.query<{ artifact_type: string }>(
       `SELECT artifact_type FROM artifacts WHERE id = $1`,
@@ -294,7 +294,7 @@ describe("artifact declarations", () => {
       { artifact_id: artifactId, name: "report.md" },
     ]);
     await finalize(run);
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
 
     const status = await db.pool!.query<{ status: string }>(
       `SELECT status FROM tasks WHERE id = $1`,
@@ -321,7 +321,7 @@ describe("artifact declarations", () => {
       { artifact_id: artifactId, name: "notes.md" },
     ]);
     await finalize(run);
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
 
     const status = await db.pool!.query<{ status: string }>(
       `SELECT status FROM tasks WHERE id = $1`,

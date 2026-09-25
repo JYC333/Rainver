@@ -526,19 +526,10 @@ From the agent-identity-and-memory-boundary plan's P4 review (2026-09-06);
 that plan is retired, and the current state is
 [ADR 0003](../decisions/0003-memory-proposal-flow.md) §4 with
 [modules/rooms.md](../modules/rooms.md) and
-[modules/agents.md](../modules/agents.md). The phase shipped and neither item
-blocks it.
+[modules/agents.md](../modules/agents.md). The phase shipped and the item
+does not block it. (Sending the block on change is implemented; see
+`modules/rooms.md`.)
 
-- [ ] Send the host-bound identity block **on change** rather than on every
-  turn. A resumed vendor session accumulates one copy of it per turn (role,
-  persona, and up to 3000 characters of notes), which is the dominant repeated
-  payload on a conversation that otherwise sends only the increment since the
-  Agent's last turn. Doing it needs a digest of the rendered block on
-  `host_threads`, and the reason it was not built with P4 is the failure mode:
-  a digest that records "sent" for a turn that never reached the runtime would
-  silently leave the Agent without its identity, which is worse than the cost.
-  Whatever closes this has to make the record conditional on the dispatch
-  actually landing.
 - [ ] Deliver the same block to **managed** (server-side) Agents. P4 scoped
   itself to the host-bound path on purpose: the managed path would acquire
   these entries through its Runtime Context Memory candidate authority, which

@@ -19,7 +19,7 @@ export interface ModelWindowOverride {
 }
 
 const CATALOG_VERSION = "model-catalog.2026-09-25";
-const TOKENIZER_VERSION = "utf8-byte-upper-bound.v1";
+const TOKENIZER_VERSION = "char-class-estimate.v1";
 /** ACP does not advertise a model's context limit; the runtime owns that check. */
 export const ACP_RUNTIME_MANAGED_WINDOW: ModelWindowOverride = {
   contextWindowTokens: null,
@@ -71,25 +71,90 @@ export function resolveModelWindow(model: string | null, override?: ModelWindowO
   };
 }
 
-/** Shared deterministic fallback used by Runtime Context and Usage estimates. */
+/**
+ * Shared deterministic estimate used by Runtime Context, Room replay and Usage.
+ *
+ * A character-class estimate, not a tokenizer. Runs of ASCII letters (words,
+ * identifiers) and whitespace cost a quarter token a character, since BPE
+ * vocabularies merge them into ~4-character pieces; a run of ASCII letters and
+ * digits that contains a digit — a number, a hash, a UUID segment, base64 —
+ * costs three quarters a character, since such runs split into short pieces;
+ * other ASCII punctuation half a token; CJK and any other character one token.
+ * Measured against the o200k and cl100k tokenizers it stays at or above the
+ * real count on English, code, Markdown, numbers, hashes, UUIDs, JSON with ids
+ * and base64 (CJK on cl100k within 5 % under), and needs no dependency. It is
+ * an upper bound only approximately: planners keep a margin
+ * (`runtimeContext/windowPlanner.ts`).
+ */
 export function estimateModelTokens(text: string): number {
   if (!text) return 0;
-  return Buffer.byteLength(text, "utf8");
+  let quarters = 0;
+  let run = 0;
+  let runHasDigit = false;
+  for (const character of text) {
+    const code = character.codePointAt(0) ?? 0;
+    if (isAsciiAlphanumeric(code)) {
+      run += 1;
+      runHasDigit ||= isAsciiDigit(code);
+      continue;
+    }
+    quarters += runQuarters(run, runHasDigit) + otherQuarters(code);
+    run = 0;
+    runHasDigit = false;
+  }
+  return Math.ceil((quarters + runQuarters(run, runHasDigit)) / 4);
 }
 
+/**
+ * The longest prefix of `text` whose estimate is at most `maximumTokens`. It
+ * follows the prefix's own estimate — a run is charged as it stands in the
+ * prefix, re-charged when a digit joins it — so the estimate grows with the
+ * prefix and cutting again to a cut's own estimate returns the same cut.
+ */
 export function trimTextToModelTokens(text: string, maximumTokens: number): string {
   if (!Number.isInteger(maximumTokens) || maximumTokens < 0) {
     throw new Error("maximumTokens must be a non-negative integer");
   }
-  let used = 0;
-  let result = "";
+  const limit = maximumTokens * 4;
+  let settled = 0;
+  let run = 0;
+  let runHasDigit = false;
+  let length = 0;
   for (const character of text) {
-    const size = Buffer.byteLength(character, "utf8");
-    if (used + size > maximumTokens) break;
-    result += character;
-    used += size;
+    const code = character.codePointAt(0) ?? 0;
+    if (isAsciiAlphanumeric(code)) {
+      const digit: boolean = runHasDigit || isAsciiDigit(code);
+      if (settled + runQuarters(run + 1, digit) > limit) break;
+      run += 1;
+      runHasDigit = digit;
+    } else {
+      const next = settled + runQuarters(run, runHasDigit) + otherQuarters(code);
+      if (next > limit) break;
+      settled = next;
+      run = 0;
+      runHasDigit = false;
+    }
+    length += character.length;
   }
-  return result;
+  return text.slice(0, length);
+}
+
+/** A run of ASCII letters and digits: a quarter token a character, three quarters once it holds a digit. */
+function runQuarters(length: number, hasDigit: boolean): number {
+  return length * (hasDigit ? 3 : 1);
+}
+
+/** Any other code point: whitespace a quarter, ASCII punctuation half, anything else one token. */
+function otherQuarters(code: number): number {
+  return code >= 0x80 ? 4 : code <= 0x20 ? 1 : 2;
+}
+
+function isAsciiAlphanumeric(code: number): boolean {
+  return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a);
+}
+
+function isAsciiDigit(code: number): boolean {
+  return code >= 0x30 && code <= 0x39;
 }
 
 /**
@@ -113,14 +178,18 @@ export function fitTextToTokenBudget(
 }
 
 function trimUtf8(text: string, maxTokens: number, estimateTokens: (text: string) => number): string {
-  // Tokenizer implementations are intentionally injectable. The shared
-  // fallback is conservative and character-boundary safe; provider-specific
-  // implementations can replace it without changing cursor semantics.
-  let result = "";
-  for (const character of text) {
-    const candidate = result + character;
-    if (estimateTokens(candidate) > maxTokens) break;
-    result = candidate;
+  // Tokenizer implementations are intentionally injectable, so the cut is a
+  // search over code-point prefixes that only assumes the estimate grows with
+  // the prefix. Binary rather than linear: a per-character re-estimate of a
+  // growing prefix is quadratic, and Room budgets derived from a 200k window
+  // clip tens of thousands of characters.
+  const characters = Array.from(text);
+  let low = 0;
+  let high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (estimateTokens(characters.slice(0, middle).join("")) <= maxTokens) low = middle;
+    else high = middle - 1;
   }
-  return result;
+  return characters.slice(0, low).join("");
 }

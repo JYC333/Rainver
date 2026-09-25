@@ -98,6 +98,15 @@ Responses transport and uses the protocol-native `tool_choice: "required"`;
 ordinary OpenAI-compatible chat retains the Chat Completions function-choice
 shape.
 
+CLI subscription logins (a host's copy of Claude Code or Codex running on its
+own login, not bound to a Provider) are rationed by a Space policy rather than
+a spend cap: `subscription_quota { warn_pct: 70, reserve_pct: 85 }`
+(`providers/subscriptionQuotaPolicy.ts`, `GET|PUT
+/api/v1/providers/subscription-quota-policy`, owner/admin to change, shown on
+the Providers page). Past the reserve line Agent-triggered Room turns wait for
+the window; a person's turns never do (`modules/rooms.md`, "Subscription quota
+gate").
+
 Source post-processing and Project Research synthesis are server-managed work,
 not user Automations. Project Research stage executions are ordinary Agent
 Runs pinned to the selected AgentRuntimeProfile; bounded provider operations
@@ -129,8 +138,12 @@ would render an Anthropic or Codex provider binding still exist in
 reaches them.
 
 For an OpenCode `model_provider` Profile the Provider row remains the source of
-truth: `config_json.openai_compatible_base_url` stores the OpenAI-compatible
-base URL, and `default_model` / `available_models` store model choices. The
+truth, and its vendor protocol picks the endpoint: an `anthropic_messages`
+vendor uses `config_json.claude_compatible_base_url` on an `anthropic`-route
+lease, registered in OpenCode as `@ai-sdk/anthropic`; an `openai_completions`
+vendor uses `config_json.openai_compatible_base_url` on an `openai`-route
+lease as `@ai-sdk/openai-compatible` (`runs/adapterProviderRequirement.ts`).
+`default_model` / `available_models` store model choices. The
 server creates a short-lived per-run provider proxy lease and writes a
 Run-scoped `opencode.json` into the Run's isolated runtime profile
 (`OPENCODE_CONFIG`) containing the proxy address, the lease token and the

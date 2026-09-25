@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { decidableByViewer, messageRunIds } from '../ConversationSurface'
+import { decidableByViewer, delegatedRunIds, mergeMessages, messageRunIds } from '../ConversationSurface'
+import type { RoomMessage } from '../../../types/api'
 import type { ChatActionPreview } from '../../../types/api'
 
 /**
@@ -54,5 +55,33 @@ describe('which cards a person is shown', () => {
       run_id: 'run-original',
       metadata_json: { run_ids: ['run-original', 'run-recipient'], retry_run_ids: ['run-retry'] },
     })).toEqual(['run-original', 'run-recipient', 'run-retry'])
+  })
+})
+
+describe('a polled page merged into the held transcript', () => {
+  const message = (id: string, extra: Partial<RoomMessage> = {}): RoomMessage => ({
+    id,
+    space_id: 'space-1',
+    session_id: 'session-1',
+    user_id: 'user-1',
+    role: 'user',
+    content: id,
+    created_at: '2026-09-24T00:00:00.000Z',
+    ...extra,
+  }) as RoomMessage
+
+  it('takes the server\'s revision of a message it already holds, in place', () => {
+    const merged = mergeMessages(
+      [message('m-1'), message('m-2')],
+      [message('m-1', { discussion_id: 'discussion-1' }), message('m-3')],
+    )
+    expect(merged.map(item => item.id)).toEqual(['m-1', 'm-2', 'm-3'])
+    expect(merged[0]!.discussion_id).toBe('discussion-1')
+  })
+
+  it('lists a delegated child Run as live but apart from the recipients', () => {
+    const held = { run_id: null, metadata_json: { run_ids: ['run-recipient'], delegated_run_ids: ['run-child'] } }
+    expect(messageRunIds(held)).toEqual(['run-recipient', 'run-child'])
+    expect(delegatedRunIds(held)).toEqual(['run-child'])
   })
 })

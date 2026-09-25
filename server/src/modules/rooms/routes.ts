@@ -36,6 +36,8 @@ type RoomServicePort = Pick<
   | "listMessages"
   | "getConversationSummary"
   | "sendMessage"
+  | "sendOrQueueMessage"
+  | "withdrawQueuedMessage"
   | "retryMessage"
   | "attachConversationReferences"
   | "continueAfterProposal"
@@ -371,14 +373,31 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (!identity) return reply;
       try {
         const body = protocol.SendRoomMessageRequestSchema.parse(jsonBody(request));
-        return reply.code(201).send(
-          await service(context).sendMessage(
-            identity,
-            roomId(request),
-            sessionId(request),
-            body,
+        const { queue, ...send } = body;
+        if (!queue) {
+          return reply.code(201).send(await service(context).sendMessage(identity, roomId(request), sessionId(request), send));
+        }
+        const sent = await service(context).sendOrQueueMessage(identity, roomId(request), sessionId(request), send);
+        return "queued" in sent
+          ? reply.code(202).send(protocol.QueuedRoomMessageResponseSchema.parse(sent))
+          : reply.code(201).send(sent);
+      } catch (error) {
+        return sendRoomError(reply, error);
+      }
+    },
+  );
+
+  app.delete(
+    "/api/v1/rooms/:roomId/conversations/:sessionId/queued-messages/:queuedId",
+    async (request, reply) => {
+      const identity = await resolveIdentity(context.config, request, reply);
+      if (!identity) return reply;
+      try {
+        return reply.send(protocol.QueuedRoomMessageSchema.parse(
+          await service(context).withdrawQueuedMessage(
+            identity, roomId(request), sessionId(request), params(request).queuedId ?? "",
           ),
-        );
+        ));
       } catch (error) {
         return sendRoomError(reply, error);
       }

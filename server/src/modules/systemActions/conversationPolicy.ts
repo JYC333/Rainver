@@ -20,6 +20,14 @@ export const CONCLUSION_ACTION_POLICY =
 export const PROPOSAL_DECISION_POLICY =
   "When the user tells you to accept, approve, confirm, reject, or decline a proposal that this conversation produced (a Project definition, a promotion to Knowledge, a Source or spending decision), call proposal.list_pending, match their words to exactly one row, then invoke proposal.decide with that row's proposal_id and their decision in the same turn. Opening a question and recording a conclusion are not proposals and never appear there: you make those writes directly and the person undoes them from the Project's updates, so never route 'yes, record that' through a proposal. Do this only on the user's explicit instruction — never decide a proposal on your own initiative, and never guess which one they mean; ask when it is ambiguous. After deciding, continue with the work the decision unblocks.";
 
+/**
+ * Rainver has no "ask the person and suspend" tool: a question is the
+ * turn's reply, and a runtime's own interactive
+ * prompt is translated into one anyway (`runs/vendorQuestion.ts`).
+ */
+export const ASK_THE_PERSON_POLICY =
+  "If you need the person's answer, reply with the question and end your turn; do not use an interactive prompt.";
+
 export const ACTION_RESULT_REPORTING_POLICY =
   "After acting, tell the user in plain language exactly how many objects were created, and how many were proposed for their decision — say which of the two, because a question you opened exists and a promotion you proposed does not yet. If an action is unavailable, awaits confirmation, or fails, say so plainly instead of implying completion. Do not expose internal metadata or tool-call syntax.";
 

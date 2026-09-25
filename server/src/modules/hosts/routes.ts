@@ -4,7 +4,7 @@ import websocketPlugin from "@fastify/websocket";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { HostDaemonFrameSchema, HostHelloInfoSchema, type HostHelloInfo, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
+import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema, type HostHelloInfo, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow } from "./repository.js";
@@ -32,6 +32,8 @@ import { PgRuntimeProvisioningRepository } from "./runtimeProvisioningRepository
 import { serverOpenCodeProvisioningStatus, sharedServerOpenCodeProvisioner } from "./serverOpenCodeProvisioner.js";
 import { sseResponseHeaders } from "../../gateway/sse.js";
 import { managedHostEgressTransport, readInstanceOperationsPolicy } from "../settings/index.js";
+import { wakeTaskBranchJobs } from "./taskBranchJobs.js";
+import { wakeTaskMergesForHost } from "./taskMerges.js";
 
 function isFailure(value: unknown): value is AuthFailure | HostFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);
@@ -168,6 +170,7 @@ function bearerToken(request: FastifyRequest): string | null {
 /** Applies the process-local consequences shared by owner revoke and host self-revoke. */
 function cutOffRevokedHost(hostId: string): void {
   sharedHostConnectionRegistry.closeConnection(hostId, 1008, "host_revoked");
+  sharedHostConnectionRegistry.forgetRevokedHost(hostId);
   providerProxyLeases.revokeHost(hostId);
 }
 
@@ -868,9 +871,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   // Upload endpoints (D7): the daemon posts its diff/output-directory
   // contents here after a Run completes, bearer-token authenticated. A
-  // remote diff is stored as a read-only artifact, never a code-patch
-  // proposal — remote in-place execution's propose->apply governance is
-  // explicitly deferred (D7 / "pit 3").
+  // host Run's diff is stored as a read-only artifact, never a code-patch
+  // proposal: on an execution host a change lands without per-change review
+  // (ADR 0016 §11, B65).
   app.post("/api/v1/hosts/me/runs/:runId/diff", async (request, reply) => {
     const requestId = resolveRequestId(request);
     reply.header(REQUEST_ID_HEADER, requestId);
@@ -884,11 +887,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!runId) return reply.code(400).send({ detail: "runId is required" });
     const run = await hosts.runOwnedByHost(host.id, runId);
     if (!run) return reply.code(404).send({ detail: "Run not found for this host" });
-    const payload = body<{ diff: string; truncated?: boolean }>(request);
-    if (typeof payload.diff !== "string") return reply.code(422).send({ detail: "diff is required" });
+    const parsed = HostRunDiffUploadSchema.safeParse(body(request));
+    if (!parsed.success) return reply.code(422).send({ detail: "diff upload is malformed" });
+    // A body with neither says nothing; one with only `git_after` is a Run
+    // whose diff could not be read but whose checkout could.
+    if (parsed.data.diff === null && !parsed.data.git_after) return reply.code(422).send({ detail: "diff is required" });
     const result = await hosts.recordDiffArtifact(run, host.owner_user_id ?? run.owner_user_id, {
-      diff: payload.diff,
-      truncated: payload.truncated === true,
+      diff: parsed.data.diff,
+      truncated: parsed.data.truncated === true,
+      ...(parsed.data.git_before ? { git_before: parsed.data.git_before } : {}),
+      ...(parsed.data.git_after ? { git_after: parsed.data.git_after } : {}),
     });
     return reply.code(201).send(result);
   });
@@ -1026,6 +1034,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes(probeHostKind) });
               void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), host.id)
                 .catch(() => undefined);
+              void wakeTaskBranchJobs(getDbPool(context.config.databaseUrl!), host.id)
+                .catch(() => undefined);
+              void wakeTaskMergesForHost(getDbPool(context.config.databaseUrl!), host.id)
+                .catch(() => undefined);
             } finally {
               helloInProgress = false;
             }
@@ -1050,6 +1062,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               scheduleAmbientSyncs(dbPool(context.config), context.config, hostId);
               return;
             }
+            case "waiting_for_workspace":
+              sharedHostConnectionRegistry.receiveWaitingForWorkspace(hostId, frame.run_id, frame.launch_id);
+              return;
             case "launched":
               sharedHostConnectionRegistry.receiveLaunched(hostId, frame.run_id, frame.launch_id);
               return;
@@ -1067,8 +1082,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 timed_out: frame.timed_out,
                 error: frame.error,
                 egress: frame.egress,
+                task_worktree: frame.task_worktree,
               }, frame.launch_id);
               return;
+            case "task_run_settle_result":
+            case "task_branch_delete_result":
+            case "task_merge_step_result":
+            case "task_merge_abort_result":
+            case "task_merge_finish_result": {
+              const { type, request_id: requestId, ...reply } = frame;
+              sharedHostConnectionRegistry.receiveTaskBranchResult(hostId, type, requestId, reply);
+              return;
+            }
             case "login_output":
               sharedHostConnectionRegistry.receiveLoginEvent(hostId, frame.session_id, { type: "output", data: frame.data });
               return;

@@ -7,6 +7,7 @@ import { assertProjectWriterForMutation } from "../projects/access.js";
 import { appendProjectWorkEvent } from "./eventWriter.js";
 import { recordStageChange } from "./loopState.js";
 import { taskCompletionState } from "./completion.js";
+import { enqueueTaskMerges } from "../hosts/taskMerges.js";
 
 /**
  * What an Agent may do to a Project's work.
@@ -378,6 +379,13 @@ export async function completeTask(
       runId: context.runId,
       idempotencyKey: `task.reported:done:${context.idempotencyKey}`,
       data: { summary: input.summary, outcome: "done", via: "agent" },
+    });
+    // Done by any path lands its branch (ADR 0016 §11).
+    await enqueueTaskMerges(tx, {
+      spaceId: context.spaceId,
+      taskId: task.id,
+      basis: `agent:${context.idempotencyKey}`,
+      requestedByUserId: context.instructedByUserId,
     });
     return { task_id: task.id, status: "done", event_id: event.id };
   });

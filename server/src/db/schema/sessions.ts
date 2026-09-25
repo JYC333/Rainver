@@ -7,6 +7,7 @@ import { projectFolders } from "./projectFolders.js";
 import { projects } from "./projects.js";
 import { rooms } from "./rooms.js";
 import { runs } from "./runs.js";
+import { roomDiscussions } from "./roomDiscussions.js";
 
 export const sessions = pgTable("sessions", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -177,8 +178,20 @@ export const messages = pgTable("messages", {
 	// started. A column, not a `metadata_json` key: it is a relationship
 	// between two rows and carries a foreign key.
 	runId: varchar("run_id", { length: 36 }),
+	// The Room discussion this message is part of (`room_discussions`): its
+	// person's message, the instructions of its waves, the Agents' replies,
+	// its notices and its conclusion. The conversation keeps one timeline;
+	// this is what lets a reader fold one discussion into one block.
+	discussionId: varchar("discussion_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
+	index("ix_messages_discussion_id").on(table.spaceId, table.discussionId)
+		.where(sql`discussion_id IS NOT NULL`),
+	foreignKey({
+			columns: [table.discussionId],
+			foreignColumns: [roomDiscussions.id],
+			name: "messages_discussion_id_fkey",
+		}).onDelete("set null"),
 	index("ix_messages_session_id").using("btree", table.sessionId.asc().nullsLast()),
 	index("ix_messages_space_session_created").on(table.spaceId, table.sessionId, table.createdAt, table.id),
 	index("ix_messages_space_id").using("btree", table.spaceId.asc().nullsLast()),

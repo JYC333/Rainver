@@ -15,7 +15,7 @@
  * Query rewriting does NOT consult this seam: it sends only the query string,
  * never candidate content.
  */
-import { getRuntimeAdapterSpec } from "../../runtimeAdapters/specs.js";
+import { adapterProviderApi, adapterProviderRequirement } from "../../runs/adapterProviderRequirement.js";
 
 export interface RetrievalEgressRef {
   object_type: string;
@@ -93,18 +93,20 @@ export function runtimeProviderEgressDestination(
   runtimeKey: string | null | undefined,
   provider: { provider_type: string; base_url?: string | null; config_json?: unknown },
 ): RetrievalEgressDestination {
-  const providerApi = getRuntimeAdapterSpec(runtimeKey)?.model.provider_api;
-  const compatibleUrlKey = providerApi ? `${providerApi}_base_url` : null;
-  if (!compatibleUrlKey) return retrievalProviderEgressDestination(provider);
+  if (!adapterProviderApi(runtimeKey)) return retrievalProviderEgressDestination(provider);
+  // The same resolution the binding uses, so a runtime that follows its
+  // vendor's protocol (OpenCode) is classified by the endpoint it will reach.
+  const compatibleUrlKey = adapterProviderRequirement(runtimeKey, provider.provider_type)?.base_url_field ?? null;
   const config = provider.config_json !== null
     && typeof provider.config_json === "object"
     && !Array.isArray(provider.config_json)
     ? provider.config_json as Record<string, unknown>
     : {};
-  const compatibleUrl = typeof config[compatibleUrlKey] === "string"
+  const compatibleUrl = compatibleUrlKey && typeof config[compatibleUrlKey] === "string"
     ? config[compatibleUrlKey].trim()
     : "";
-  // Missing or malformed compatible endpoints fail conservatively as external;
+  // Missing or malformed compatible endpoints, and a vendor protocol the
+  // runtime cannot bind, fail conservatively as external;
   // the runtime binding will independently reject them before invocation.
   return retrievalProviderEgressDestination({
     provider_type: "compatible_upstream",

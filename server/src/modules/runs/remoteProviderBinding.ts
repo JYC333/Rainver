@@ -4,8 +4,9 @@ import { resolveProvidersDbPort } from "../providers/dbReader.js";
 import {
   providerProxyLeases,
   type ProviderProxyLeaseRegistry,
+  type ProviderProxyRoute,
 } from "../providers/proxy/lease.js";
-import { adapterProviderRequirement } from "./adapterProviderRequirement.js";
+import { adapterProviderApi, adapterProviderRequirement } from "./adapterProviderRequirement.js";
 import { resolveHostLeaseUrl } from "./hostProviderProxyAddress.js";
 import { codexModelCatalog, renderCodexProviderToml } from "./codexProviderConfig.js";
 import { applyOpenCodeProviderConfig, openCodeModelId } from "./opencodeProviderConfig.js";
@@ -363,8 +364,7 @@ export async function buildRemoteProviderBinding(input: {
   /** The Run executor's policy seam; unset in production, where the policy service decides. */
   enforcer?: CredentialSpendDeps["enforcer"];
 }): Promise<RemoteProviderBinding> {
-  const requirement = adapterProviderRequirement(input.runtimeKey);
-  if (!requirement) {
+  if (!adapterProviderApi(input.runtimeKey)) {
     throw new RemoteProviderBindingError(
       "adapter_provider_binding_unsupported",
       `Runtime adapter '${input.runtimeKey}' does not support a ModelProvider binding.`,
@@ -385,6 +385,17 @@ export async function buildRemoteProviderBinding(input: {
     );
   }
   const record = provider as Record<string, unknown>;
+  // Which endpoint and route the binding uses can depend on the provider: a
+  // runtime declaring `vendor` (OpenCode) speaks the bound vendor's own
+  // protocol, so the requirement is resolved only once the provider is known.
+  const requirement = adapterProviderRequirement(input.runtimeKey, stringValue(record.provider_type));
+  if (!requirement) {
+    throw new RemoteProviderBindingError(
+      "provider_protocol_unsupported",
+      `Runtime adapter '${input.runtimeKey}' cannot bind a ModelProvider of type '${stringValue(record.provider_type) ?? "unknown"}': `
+        + "its vendor protocol is neither Anthropic Messages nor OpenAI-compatible.",
+    );
+  }
   const upstreamBaseUrl = stringValue(record[requirement.base_url_field]);
   if (!upstreamBaseUrl) {
     throw new RemoteProviderBindingError(
@@ -481,6 +492,7 @@ export async function buildRemoteProviderBinding(input: {
         model,
         providerName,
         availableModels,
+        route: requirement.route,
       }),
       used_model: model,
       revoke: () => registry.revoke(lease.id),
@@ -538,6 +550,7 @@ function bindingFrame(input: {
   model: string | null;
   providerName: string;
   availableModels: string[];
+  route: ProviderProxyRoute;
 }): RemoteProviderBindingFrame {
   // Every segment is already constrained — the adapter type comes from the
   // runtime-adapter catalog, the ids are generated identifiers — and the
@@ -601,6 +614,7 @@ function bindingFrame(input: {
 
   const document: Record<string, unknown> = {};
   applyOpenCodeProviderConfig(document, {
+    route: input.route,
     providerName: input.providerName,
     proxyBaseUrl: input.leaseUrl,
     leaseToken: input.leaseToken,

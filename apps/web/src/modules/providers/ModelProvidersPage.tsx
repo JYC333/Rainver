@@ -13,6 +13,7 @@ import type { SpaceWithMembership } from '../../types/api'
 import AddProviderForm from './components/AddProviderForm'
 import ProviderCard from './components/ProviderCard'
 import ManagedSubscriptionsPanel from './components/ManagedSubscriptionsPanel'
+import SubscriptionQuotaPolicyCard from './components/SubscriptionQuotaPolicyCard'
 import type { AddProviderMode } from './types'
 import { isRetrievalOnlyVendor } from './providerMetadata'
 
@@ -302,6 +303,7 @@ export default function ModelProvidersPage() {
               onDisconnected={id => setConfigs(previous => previous.filter(config => config.id !== id))}
             />
           )}
+          {!addingMode && activeSpaceId && <SubscriptionQuotaPolicyCard canEdit={canChangeRuntimeDefault} />}
           {!addingMode && (configs.length === 0 ? (
             <Card>
               <p className="text-sm text-muted-foreground p-4">

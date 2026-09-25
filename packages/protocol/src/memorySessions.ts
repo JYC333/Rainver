@@ -15,6 +15,7 @@ import {
   ConversationInputPartsSchema,
 } from "./conversationInput.js";
 import { ConversationInputResourceMessagePartSchema } from "./conversationInputResources.js";
+import { RoomDiscussionNoticeSchema } from "./roomDiscussions.js";
 
 const JsonObjectSchema = z.record(z.unknown());
 const TraceSafeObjectSchema = TraceSafeJsonSchema.refine(
@@ -78,18 +79,29 @@ export type MessageActionPreview = z.infer<typeof ActionPreviewSchema>;
 const CommonMessageMetadata = {
   /** The Room this conversation belongs to, denormalized for the client. */
   room_id: IdSchema.nullish(),
+  /** Inside a discussion: the wave this message belongs to (the person's message is 0). */
+  wave: z.number().int().nonnegative().nullish(),
+  /** The Manager's closing turn of a discussion, and its reply. */
+  discussion_closing: z.boolean().nullish(),
   /** The Task group a dispatch created. */
   task_group_id: IdSchema.nullish(),
   /** One dispatch, several recipient Agents, one Run each. */
   run_ids: z.array(IdSchema).nullish(),
   /** Additional Runs created by an explicit retry of this message. */
   retry_run_ids: z.array(IdSchema).nullish(),
+  /** Runs a Manager delegated while answering this message, shown live as their own turns. */
+  delegated_run_ids: z.array(IdSchema).nullish(),
   recipient_run_ids: z.array(IdSchema).nullish(),
   /** The producing Run's terminal status, for an Agent reply. */
   status: z.string().nullish(),
   error_code: z.string().nullish(),
   /** Why a paused turn needs a person: a decision, or an authorization. */
   attention_kind: z.enum(["run_decision", "authorization"]).nullish(),
+  /**
+   * An Agent reply that is a question for the person: the runtime asked one
+   * of its own mid-turn and the turn ended on it. The turn is complete; the answer is the person's next message.
+   */
+  awaiting_answer: z.boolean().nullish(),
   authorization_request_id: IdSchema.nullish(),
   artifact_refs: z.array(IdSchema).nullish(),
   action_previews: z.array(ActionPreviewSchema).nullish(),
@@ -142,6 +154,7 @@ export const SystemNoticeMessageMetadataSchema = z.object({
   host_thread_id: IdSchema.nullish(),
   host_thread_event: z.string().nullish(),
   host_thread_reset_reason: z.string().nullish(),
+  discussion_notice: RoomDiscussionNoticeSchema.nullish(),
   ...CommonMessageMetadata,
 }).strict();
 
@@ -191,6 +204,8 @@ export const MessageOutSchema = z
     parent_message_id: IdSchema.nullish(),
     /** The Run that produced this message, or that this message started. */
     run_id: IdSchema.nullish(),
+    /** The Room discussion this message belongs to, when it is part of one. */
+    discussion_id: IdSchema.nullish(),
     input_parts: ConversationMessageInputPartsSchema.optional(),
     created_at: ISODateTimeSchema,
     ...SecretResponseGuards,

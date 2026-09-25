@@ -750,16 +750,23 @@ describe("the executor band", () => {
     });
   });
 
-  it("creates the Task in the Run's own Project", async (ctx) => {
+  it("creates the Task in the Run's own Project, recording the Run it came from", async (ctx) => {
     if (!db.available) return ctx.skip();
-    const { executors } = executorsFor();
+    const { executors, run } = executorsFor();
+    const runId = (run as { id: string }).id;
+    // The executing Run exists, as it always does outside a test: the Task
+    // records it, so what becomes of the Task can be told where it came from.
+    await db.pool!.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $6, $4, 'sandboxed', 'agent', 'manual', 'running', 'live', $5, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
+      [runId, SPACE, AGENT, PROJECT, OWNER, VERSION],
+    );
     await executors.get("task.create" as SystemActionId)!(
       { title: "Split out by the Agent" },
       dispatch(randomUUID()),
     );
-    const row = await db.pool!.query<{ project_id: string }>(
-      `SELECT project_id FROM tasks WHERE title = 'Split out by the Agent'`);
-    expect(row.rows[0]?.project_id).toBe(PROJECT);
+    const row = await db.pool!.query<{ project_id: string; source_run_id: string | null }>(
+      `SELECT project_id, source_run_id FROM tasks WHERE title = 'Split out by the Agent'`);
+    expect(row.rows[0]).toEqual({ project_id: PROJECT, source_run_id: runId });
   });
 
   it("refuses a Project the model named that is not the Run's", async (ctx) => {

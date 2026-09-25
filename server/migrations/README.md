@@ -6,13 +6,20 @@ drizzle-kit output directory: `NNNN_<name>.sql` files in order, plus `meta/`
 with the Drizzle journal and the snapshot each file was diffed from.
 
 **`0000_baseline.sql` starts the 2026-09-23 authentication-foundation schema
-epoch (ADR 0023).** It is drizzle-kit output generated from
-`src/db/schema/` against an empty chain, with the declared `vector` extension
-added at the top because drizzle-kit does not model extensions. The baseline
-contains the final Better Auth, registration, invitation-reservation, and
-security-event schema directly; it has no legacy authentication tables,
-backfill, or compatibility path.
+epoch (ADR 0023).** It was regenerated on 2026-09-25 with every migration
+written before the first release folded back into it, since no instance
+carried data yet. It is drizzle-kit output generated from `src/db/schema/`
+against an empty chain, so every object in it has a Drizzle definition
+`schema:check` can see. The baseline contains the final Better Auth,
+registration, invitation-reservation, security-event, Room discussion, and
+Task-merge schema directly; it has no legacy authentication tables, backfill,
+or compatibility path.
 
+Its one hand-added line is the `CREATE EXTENSION` at the top, which drizzle-kit
+does not model and the `vector` columns need first. Never regenerate it from a
+`pg_dump` of a migrated database: a dump carries catalog names — renamed
+columns' NOT NULL constraints, for one — that no Drizzle definition mentions,
+and every new instance would then be created carrying them.
 Databases from an earlier epoch cannot be upgraded or restored into this epoch;
 they must be recreated from this baseline. The reset intentionally does not
 preserve or transform earlier rows. After this change the baseline is frozen
@@ -21,12 +28,6 @@ has applied is never edited: the runner records each file's checksum in
 `public.server_schema_migrations` and refuses to start against a changed one.
 `server/test/baselineSchema.test.ts` pins the baseline hash and the current
 one-migration chain shape so accidental drift fails in CI.
-
-Never regenerate the baseline from a `pg_dump` of a migrated database: a dump
-carries catalog names that no Drizzle definition mentions. A new baseline is a
-schema epoch, not an ordinary maintenance technique, and requires an accepted
-decision plus explicit acknowledgement that earlier databases have no upgrade
-path.
 
 ## Changing the schema
 

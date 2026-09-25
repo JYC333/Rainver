@@ -1,3 +1,4 @@
+import { agentOriginContinuation } from "../../rooms/discussionService.js";
 import type { Pool } from "../../../db/pool.js";
 import { getDbPool } from "../../../db/pool.js";
 import type { ServerConfig } from "../../../config.js";
@@ -56,6 +57,8 @@ interface PipelinePayload {
   since: string | null;
   originRoomId: string | null;
   originSessionId: string | null;
+  /** The Room task group whose Agent started it (`StartResearchAcquisitionInput.originGroupId`). */
+  originGroupId: string | null;
   /** Identifies *this* pipeline run, so its outcome is reported even when an
    *  earlier run for the same Thread already reported an identical one. */
   jobId: string;
@@ -108,6 +111,7 @@ export class ResearchAcquisitionPipelineRunner {
       projectId,
       originRoomId: optionalString(raw.origin_room_id) ?? null,
       originSessionId: optionalString(raw.origin_session_id) ?? null,
+      originGroupId: optionalString(raw.origin_group_id) ?? null,
       maxItems: typeof raw.max_items === "number" && Number.isInteger(raw.max_items) && raw.max_items > 0
         ? raw.max_items
         : null,
@@ -212,7 +216,11 @@ export class ResearchAcquisitionPipelineRunner {
       await this.pool.query(
         `UPDATE project_operations SET progress_json = progress_json || $1::jsonb
           WHERE id=$2 AND space_id=$3`,
-        [JSON.stringify({ origin_room_id: payload.originRoomId, origin_session_id: payload.originSessionId }), operationId, identity.spaceId],
+        [JSON.stringify({
+          origin_room_id: payload.originRoomId,
+          origin_session_id: payload.originSessionId,
+          ...(payload.originGroupId ? { origin_group_id: payload.originGroupId } : {}),
+        }), operationId, identity.spaceId],
       );
     }
 
@@ -364,7 +372,7 @@ export class ResearchAcquisitionPipelineRunner {
   ): Promise<void> {
     if (!payload.originRoomId || !payload.originSessionId) return;
     try {
-      await withDbTransaction(this.pool, (client) =>
+      await withDbTransaction(this.pool, async (client) =>
         new RoomService(this.config, this.pool).continueAfterDomainEventInTransaction(
           client,
           identity,
@@ -374,7 +382,13 @@ export class ResearchAcquisitionPipelineRunner {
           // Thread is a new outcome to report, and keying by Thread made
           // every attempt after the first silently return the first one's
           // message — so a failed retry looked like no answer at all.
-          { kind: "research_pipeline_outcome", key: `${payload.threadId}:${payload.jobId}`, payload: outcome },
+          {
+            kind: "research_pipeline_outcome",
+            key: `${payload.threadId}:${payload.jobId}`,
+            payload: outcome,
+            // Started by an Agent's turn: its result is charged to that turn's container.
+            ...(payload.originGroupId ? await agentOriginContinuation(client, identity.spaceId, payload.originGroupId) : {}),
+          },
         ),
       );
     } catch (error) {

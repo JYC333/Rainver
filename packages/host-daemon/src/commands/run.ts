@@ -8,9 +8,11 @@ import {
   type RuntimeProbe,
 } from "@rainver/protocol";
 import { helloInfo } from "../api.js";
-import { builtinCredentialPath, configDir, loadConfig, removeConfig } from "../config.js";
+import { builtinCredentialPath, configDir, loadConfig, removeConfig, workspacesRoot } from "../config.js";
 import { adoptBuiltinCredential } from "../builtinRegistration.js";
 import { runHostCommand } from "../commandRun.js";
+import { deleteTaskBranch, settleTaskRun, sweepTaskWorktrees } from "../taskWorktree.js";
+import { abortTaskMerge, continueTaskMerge, finishTaskMerge, prepareTaskMerge } from "../taskMerge.js";
 import { probeUsage } from "../usageProbe.js";
 import { startEgressProxy } from "../egressProxy.js";
 
@@ -25,6 +27,7 @@ import {
   handleTerminate,
   hasInFlightRuns,
   resolveAcpLaunch,
+  resolveLocationCwd,
   stopAllRunsForRevocation,
   sweepStaleRunProfiles,
   type LaunchFrame,
@@ -52,6 +55,8 @@ const TOOL_DRAIN_TIMEOUT_MS = 5 * 60 * 1000;
 
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
+/** Unsettled Task worktrees are swept on connect and then this often (`taskWorktree.ts`). */
+const TASK_WORKTREE_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 /**
@@ -134,6 +139,9 @@ function toLaunchWorkspace(workspace: HostServerFrameOf<"launch">["workspace"]):
       kind: "location",
       workspace_location_id: workspace.workspace_location_id,
       ...(workspace.workspace_relative_path ? { workspace_relative_path: workspace.workspace_relative_path } : {}),
+      ...(workspace.worktree
+        ? { worktree: { task_id: workspace.worktree.task_id, ...(workspace.worktree.merge_id ? { merge_id: workspace.worktree.merge_id } : {}) } }
+        : {}),
     };
   }
   return {
@@ -298,6 +306,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
     log(`connecting to ${endpoint}`);
     const socket = openHostSocket(endpoint, token);
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    let taskWorktreeSweepTimer: ReturnType<typeof setInterval> | null = null;
     let helloAcked = false;
     let updateRestartTimer: ReturnType<typeof setInterval> | null = null;
     let restartForUpdate = false;
@@ -312,6 +321,21 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       socket.send(JSON.stringify(payload));
     };
     const currentWorkspaces = async () => (await loadConfig())?.workspaces ?? workspaces;
+    const sweepWorktrees = () => {
+      void currentWorkspaces()
+        .then((ws) => sweepTaskWorktrees({ workspaces: ws, workspacesRoot: workspacesRoot(), log }))
+        .then((removed) => {
+          if (removed > 0) log(`removed ${removed} unsettled Task worktree${removed === 1 ? "" : "s"}`);
+        })
+        .catch((error) => log(`task worktree sweep failed: ${error instanceof Error ? error.message : String(error)}`));
+    };
+    /** A Task workspace's Location on this machine, the same resolution a launch uses. */
+    const taskLocationRoot = async (workspace: HostServerFrameOf<"task_run_settle">["workspace"]) => resolveLocationCwd(
+      await currentWorkspaces(),
+      workspace.workspace_location_id,
+      workspace.workspace_relative_path,
+      workspacesRoot(),
+    );
     // Carried across reconnects so a reconnecting daemon's first hello
     // already names its runtimes rather than only git for one heartbeat.
     let runtimeProbes: RuntimeProbe[] | undefined = lastRuntimeProbes;
@@ -394,6 +418,9 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
           clearFailedRuntimeOptionsCache();
           sendHeartbeat();
           heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+          sweepWorktrees();
+          taskWorktreeSweepTimer = setInterval(sweepWorktrees, TASK_WORKTREE_SWEEP_INTERVAL_MS);
+          taskWorktreeSweepTimer.unref?.();
           return;
         }
         case "heartbeat_ack":
@@ -513,6 +540,87 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
               log,
             );
             sink.send({ type: "command_result", request_id: frame.request_id, ...result });
+          })();
+          return;
+        }
+        case "task_run_settle": {
+          // Fire-and-forget: a large worktree takes a while to capture.
+          void (async () => {
+            const result = await settleTaskRun({
+              locationRoot: await taskLocationRoot(frame.workspace),
+              locationId: frame.workspace.workspace_location_id,
+              taskId: frame.workspace.worktree.task_id,
+              runId: frame.run_id,
+              author: frame.author,
+              message: frame.message,
+              log,
+            }).catch((error: unknown) => ({
+              ok: false, branch: null, commit: null, error: error instanceof Error ? error.message : String(error),
+            }));
+            if (!result.ok) log(`task_run_settle for run ${frame.run_id} failed: ${result.error}`);
+            sink.send({ type: "task_run_settle_result", request_id: frame.request_id, ...result });
+          })();
+          return;
+        }
+        case "task_branch_delete": {
+          void (async () => {
+            const result = await deleteTaskBranch({
+              locationRoot: await taskLocationRoot(frame.workspace),
+              locationId: frame.workspace.workspace_location_id,
+              taskId: frame.workspace.worktree.task_id,
+            }).catch((error: unknown) => ({
+              ok: false, deleted: false, error: error instanceof Error ? error.message : String(error),
+            }));
+            if (!result.ok) log(`task_branch_delete for task ${frame.workspace.worktree.task_id} failed: ${result.error}`);
+            sink.send({ type: "task_branch_delete_result", request_id: frame.request_id, ...result });
+          })();
+          return;
+        }
+        case "task_merge_prepare":
+        case "task_merge_continue": {
+          // Fire-and-forget: a rebase of a large Task takes a while.
+          void (async () => {
+            const target = {
+              locationRoot: await taskLocationRoot(frame.workspace),
+              locationId: frame.workspace.workspace_location_id,
+              taskId: frame.workspace.worktree.task_id,
+              mergeId: frame.merge_id,
+            };
+            const result = frame.type === "task_merge_prepare"
+              ? await prepareTaskMerge({ ...target, author: frame.author, message: frame.message })
+              : await continueTaskMerge(target);
+            if (!result.ok) log(`${frame.type} for task ${target.taskId} failed: ${result.error}`);
+            sink.send({ type: "task_merge_step_result", request_id: frame.request_id, ...result });
+          })();
+          return;
+        }
+        case "task_merge_abort": {
+          void (async () => {
+            const result = await abortTaskMerge({
+              locationRoot: await taskLocationRoot(frame.workspace),
+              locationId: frame.workspace.workspace_location_id,
+              taskId: frame.workspace.worktree.task_id,
+              mergeId: frame.merge_id,
+            });
+            if (!result.ok) log(`task_merge_abort for task ${frame.workspace.worktree.task_id} failed: ${result.error}`);
+            sink.send({ type: "task_merge_abort_result", request_id: frame.request_id, ...result });
+          })();
+          return;
+        }
+        case "task_merge_finish": {
+          void (async () => {
+            const result = await finishTaskMerge({
+              locationRoot: await taskLocationRoot(frame.workspace),
+              locationId: frame.workspace.workspace_location_id,
+              taskId: frame.workspace.worktree.task_id,
+              mergeId: frame.merge_id,
+              mainBranch: frame.main_branch,
+              ontoCommit: frame.onto_commit,
+              taskCommit: frame.task_commit,
+              log,
+            });
+            if (!result.ok) log(`task_merge_finish for task ${frame.workspace.worktree.task_id} failed: ${result.error}`);
+            sink.send({ type: "task_merge_finish_result", request_id: frame.request_id, ...result });
           })();
           return;
         }
@@ -728,6 +836,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
 
     socket.addEventListener("close", (event) => {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (taskWorktreeSweepTimer) clearInterval(taskWorktreeSweepTimer);
       if (updateRestartTimer) clearInterval(updateRestartTimer);
       for (const controller of folderReadControllers.values()) controller.abort();
       folderReadControllers.clear();

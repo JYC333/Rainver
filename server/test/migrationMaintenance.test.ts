@@ -37,10 +37,9 @@ describe("maintenance-only migrations", () => {
 
   it("keeps the current epoch as one ordinary baseline migration", async () => {
     const chain = loadMigrations(join(import.meta.dirname, "..", "migrations"));
-    expect(chain.map(({ version, name }) => ({ version, name }))).toEqual([
-      { version: "0000", name: "baseline" },
-    ]);
-    expect(requiresMaintenance(chain[0]!.sql)).toBe(false);
+    expect(chain[0]).toMatchObject({ version: "0000", name: "baseline" });
+    // Nothing appended to this epoch so far removes what a running release reads.
+    expect(chain.map((migration) => requiresMaintenance(migration.sql))).toEqual(chain.map(() => false));
     expect(chain[0]!.sql).not.toContain("cli_credential_profiles");
     expect(chain[0]!.sql).toContain('CREATE TABLE "auth_accounts"');
     expect(chain[0]!.sql).toContain('CREATE TABLE "registration_intents"');

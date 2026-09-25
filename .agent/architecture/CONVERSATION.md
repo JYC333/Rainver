@@ -79,6 +79,15 @@ exists because the derivation needs facts a client does not have:
 - `waiting_for_review` is `blocked`: stopped, waiting on a person, resuming
   where it left off once they decide. Not `working` (nothing is happening) and
   not `failed` (nothing went wrong).
+- A turn that ended on the runtime's own question is `done`, not `blocked`
+  (`modules/runtime-adapters.md`, interactive requests). The ACP controller cancels the vendor's
+  interactive prompt, the Run succeeds with `output_json.asked_user`, and
+  `chatTurnFinalizer` writes the question (options as a bullet list, after
+  anything the Agent said first) as the reply with
+  `metadata_json.awaiting_answer = true`. Nothing is held open: the answer is
+  the person's next message, into the same vendor session, and a serialized
+  chain or discussion proceeds as after any reply. The web shows "waiting for
+  an answer" under such a reply (`AwaitingAnswerMarker`).
 
 A client that re-derives state from the Run's status gets `degraded` wrong, and
 that is not hypothetical — it happened during this work, on two surfaces.
@@ -122,6 +131,32 @@ resumes where it stopped once somebody decides, so it waits at human pace and
 an idle timeout on that connection is the ordinary ending rather than a fault.
 A client that treats a blocked ending as an error drops the one turn carrying
 the approval link.
+
+## What each turn reads
+
+A Room turn's reading model is bound to the action that created it, never to a
+mode the conversation is switched into, and the server never infers it from
+message text. A person chooses once — by addressing an Agent, or when opening
+a discussion — and the Manager's own judgment decides whether to delegate.
+
+- **A participant** — an Agent a person addressed, or one a discussion wave
+  addressed — reads the **shared window**: on a fresh or reset vendor session
+  the standing context, Project state, the rolling summary and the messages it
+  does not cover; on a resumed session only the messages since its own last
+  turn, plus the standing context when it changed (`modules/rooms.md`, "Host-bound
+  specialists and direct chat"). A recipient serialized behind others also gets the
+  replies already given to the same message, each with its `[Changes]` block.
+- **A debate** starts independent: in its first round that "replies already
+  given" block is withheld, and from the next round every participant is
+  handed every answer of the round before to critique. The Manager's closing
+  turn is the judge.
+- **A delegated specialist** reads the **distilled view**: its standing
+  context (when its session does not already hold it), a handoff when its
+  session was just renewed, and the Manager's instruction — no conversation
+  window. What it changed comes back to the Manager as a `[Changes]` block in
+  the delegation result.
+- **A handoff turn** reads only its own request; the session it resumes
+  already holds the conversation.
 
 ## Rendering
 
@@ -170,19 +205,96 @@ turn a signed-out copy into a selectable runtime.
 The execution context also stores the Primary Workspace Git baseline. Direct
 Host sends and Room dispatch compare the current branch, commit, and readiness
 to that baseline on the server before a send can commit its user message or
-Run; a changed workspace returns a refresh-required conflict. The Run's immutable
-contract records the Git snapshot observed at its start. A user may refresh
+Run; a changed workspace returns a refresh-required conflict. The one
+exception is a HEAD this Conversation's own Agent moved: the host reports the
+branch and HEAD before and after every Run with its diff, the context keeps
+the exit HEAD of the last writing Run that started from the accepted HEAD
+(`last_run_git_branch/head`), and when the current branch and commit equal it
+the send advances the baseline itself — clearing that record — and proceeds. The Run's immutable
+contract records the Git snapshot observed at its start, and the Run's
+`output_json.workspace_after` where it left the checkout. A user may refresh
 the baseline explicitly, but conversation controls do not switch branches,
 commit, push, or deploy.
 
 Conversation turns expose shared Run controls: active Runs can be stopped via
 the canonical Run API and finish visibly as cancelled with partial output;
 terminal Host Runs look up their exact `remote_diff` Artifact, including
-managed workspaces. Failed turns can be retried with an idempotency key using
+managed workspaces. Another Agent sees that change only as a `[Changes]`
+block (files, `+added -removed`, and a `rainver://artifacts/<id>` link it can
+read with `input_resource.read`) appended to a delegation result or to the
+replies a serialized recipient is given; the patch itself is never inlined
+(`modules/rooms.md`). A turn still working is headed by the Agent's name the
+way its finished reply is, and when one message started several Runs each
+control block under it is headed by its Agent too: the name comes from the
+Run record's `agent_id` resolved against the roster, so nothing new crosses
+the wire and a fan-out never reads as N anonymous bubbles. Failed turns can be retried with an idempotency key using
 the original persisted input and execution pin; the retry links new Run ids to
 the original user message rather than adding a duplicate message. Draft
 recovery stores only validated text and logical input references in a
 destination-scoped, seven-day sessionStorage record.
+
+A Room discussion stays in the one timeline; the surface only folds it.
+Messages that carry the same `discussion_id` — plus a discussion notice's own
+reference and, for an emergent discussion, the person's message the row names
+as `origin_message_id` — render inside one `DiscussionGroup`
+(`modules/conversation/DiscussionGroup.tsx`) placed where the first of them
+is, each message still rendered exactly as outside. The header shows the
+topic (the first message's text for an emergent discussion), participants
+resolved against the roster, `Round x/y`, status and, once
+`conclusion_message_id` is present, a conclusion excerpt; a concluded group
+starts folded. Stop is offered while `active`, and the extend action while
+`cap_reached` — "Add N rounds" with N the shape's default round cap, or "Open
+a discussion" on an emergent row, which the same `extend` call upgrades. The
+list (`GET …/discussions`) is read with the message poll, and only while a
+referenced discussion is unknown, running, or has a message newer than the
+record held (a closing reply, a wave after another member added rounds); a
+read never overwrites a newer record from a stop or extend. Messages are
+merged by id, so a message the server revises after sending it — its
+discussion stamp, a delegated child listed on it — is picked up in place. A
+discussion's consecutive messages fold into one block; when other messages
+come between two stretches of it, the later stretch is a block of its own
+where it happened. A `system_notice` carrying `discussion_notice` renders as a
+card: `cap_reached` offers the extend action while the discussion is still
+held there and something waits to continue (Agents held at the cap, or a
+debate's next round) — and a discussion held at its cap can be stopped for
+good — `not_admitted` names the Agents and the reason with no action,
+and `failed` says the discussion ended because it could not continue. A
+`cap_reached` card is titled by the cap its reason names — "Round cap reached",
+"Spend cap reached", "Turn budget reached" (`fanout_budget`), "Subscription
+limit reached" (`quota_exhausted`) — and shows the notice message's own text,
+since its reason is a code; so does a `quota_hold` ("Waiting for the
+subscription window"). The header's status names the cap from the
+discussion's `stop_reason` the same way. Under the header, the discussion's detail
+(`GET …/discussions/:id`, read only when a shown discussion's record changes —
+once per wave) adds one cost line per funding source: "Priced models · $x of
+$cap", and per CLI login its tokens here and the account's window, marked past
+the Space's warning line; while Agent-triggered turns are held at the reserve
+line it adds "Waiting for the window (resets HH:MM) · continue anyway". Above
+the composer `ConversationQuotaLine` shows any login of the conversation past
+the warning line and any held turns with the same "continue anyway"
+(`GET …/quota`, re-read as the transcript grows and when a shown discussion's
+record changes; `POST …/quota/continue`). "Continue anyway" is offered only to
+a Project writer (`viewer_can_write`), and only on a hold whose login the
+viewer may spend (`can_continue`); a hold on someone else's login reads
+"Waiting for <account>'s window" with no action. The full Room variant has an "Open a discussion"
+dialog beside the composer (topic, participants or "All Agents", shape, round
+cap defaulting by shape, optional spend cap), refusing more than
+`ROOM_DISCUSSION_MAX_PARTICIPANTS` client-side; its returned message lands as
+a send's does. A live turn whose Run has `parent_run_id` — a delegated child,
+listed in `delegated_run_ids` on the nearest message a person can see (the
+dispatching message, or for a continuation the discussion's origin or the
+container's message), apart from the recipients' `run_ids`, and never
+offered a Retry — reads
+"delegated by <Agent>" beside its name, the parent Run's Agent resolved the
+same way as the name (the Room's Manager until that Run is read).
+
+A message sent while a turn is running is not refused: the composer sends it
+with `queue: true` (unless it has attachments), and a 202 shows it at the end
+of the transcript as "will be sent when the current turn ends" with Cancel for
+its sender; the poll replaces that list with what still waits, and the
+message appears in place once the server posts it at the turn boundary
+(`modules/rooms.md`). One the server could not post stays there with "could
+not be sent" and the reason, and Dismiss for its sender.
 
 `action_preview` parts are deliberately not rendered. Both surfaces show a
 Proposal from the assistant message's own record instead, which is what

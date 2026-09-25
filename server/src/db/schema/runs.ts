@@ -272,7 +272,7 @@ export const runs = pgTable("runs", {
 	    AND (
 	      (runtime_profile_id IS NOT NULL AND runtime_profile_selection_source IS NOT NULL AND runtime_key IS NOT NULL AND runtime_profile_snapshot_json IS NOT NULL)
 	      OR (runtime_profile_id IS NULL AND runtime_key IS NULL AND runtime_profile_snapshot_json IS NULL
-	        AND started_at IS NULL AND status IN ('queued', 'cancelling', 'failed', 'cancelled', 'orphaned'))
+	        AND started_at IS NULL AND status IN ('queued', 'waiting_for_dependency', 'cancelling', 'failed', 'cancelled', 'orphaned'))
 	      OR (run_role = 'coordinator' AND runtime_profile_id IS NULL AND runtime_key IS NULL
 	        AND runtime_profile_snapshot_json IS NULL AND started_at IS NULL
 	        AND status IN ('waiting_for_dependency', 'succeeded', 'degraded'))

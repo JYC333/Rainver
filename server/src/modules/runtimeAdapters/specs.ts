@@ -162,19 +162,59 @@ export interface RuntimeAdapterSpec {
     /**
      * Which ModelProvider endpoint a CLI can be pointed at — the
      * `<provider_api>_base_url` a binding needs. Only meaningful for vendor
-     * CLIs that accept a provider.
+     * CLIs that accept a provider. `vendor` means the CLI speaks either
+     * protocol and the binding follows the bound ModelProvider's own vendor
+     * protocol (`providers/vendors.ts`); `runs/adapterProviderRequirement.ts`
+     * resolves it per provider.
      */
-    provider_api?: "claude_compatible" | "openai_compatible";
+    provider_api?: "claude_compatible" | "openai_compatible" | "vendor";
   };
   permissions: {
     supports_permission_bypass: boolean;
     permission_bypass_arg_template?: string[];
     permission_bypass_policy_key?: string;
   };
+  /**
+   * How this runtime asks the person a question of its own mid-turn
+   * (`modules/runtime-adapters.md`). Rainver has nobody to answer during a
+   * Run, so the ACP controller translates such a question into the turn's
+   * reply (`runs/vendorQuestion.ts`) instead of approving or failing it. A
+   * runtime without a declaration keeps the generic rule: any interactive
+   * request that is not a tool permission is a question.
+   */
+  interaction?: {
+    question_detector: {
+      /**
+       * The runtime's question tool is offered only to a client that
+       * advertises ACP form elicitation (`elicitation/create`), so the
+       * controller advertises it for this runtime. Claude Code disables
+       * AskUserQuestion otherwise; Codex answers request_user_input with
+       * nothing and carries on.
+       */
+      form_elicitation?: {
+        /**
+         * Which field of a one-question form carries the question text:
+         * Claude puts it in the request's `message` (the field's title is a
+         * short header); Codex puts it in the field's `title`.
+         */
+        question_text: "message" | "field_title";
+      };
+      /** A `session/request_permission` that names no tool call is a question, not a tool permission. */
+      permission_without_tool_call?: boolean;
+    };
+  };
   usage: {
     usage_accuracy: "precise" | "estimated" | "unknown";
     supports_usage_probe: boolean;
     usage_probe_kind?: string;
+    /**
+     * How this runtime says it refused because the subscription's window is
+     * used up: case-insensitive regular expressions over a failed Run's error
+     * text. A match is classified `subscription_quota_exhausted`
+     * (`runs/retryPolicy.ts`) — not retried, and a discussion stops at it as
+     * at a cap (`modules/rooms.md`, "Quota exhaustion is a cap").
+     */
+    quota_exhausted_patterns?: readonly string[];
   };
   output: {
     patch_strategy: "none" | "git_diff";
@@ -323,10 +363,27 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       permission_bypass_arg_template: [],
       permission_bypass_policy_key: "allow_permission_bypass",
     },
+    // claude-agent-acp 0.70 (read 2026-09-24): AskUserQuestion becomes a form
+    // elicitation — one question in `message`, several as `question_<n>`
+    // fields with the question in `description`.
+    interaction: {
+      question_detector: {
+        form_elicitation: { question_text: "message" },
+        permission_without_tool_call: true,
+      },
+    },
     usage: {
       usage_accuracy: "precise",
       supports_usage_probe: false,
       usage_probe_kind: "cached_claude_quota",
+      // "Claude AI usage limit reached|<epoch>", "5-hour limit reached ∙
+      // resets 3pm", "You've hit your limit · resets 3pm".
+      quota_exhausted_patterns: [
+        "usage limit reached",
+        // Not the Opus limit: that one falls back to another model, it does not refuse.
+        "(5-hour|five-hour|weekly) limit reached",
+        "you['’]ve hit your (usage )?limit",
+      ],
     },
     output: {
       patch_strategy: "git_diff",
@@ -397,9 +454,22 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       provider_api: "openai_compatible",
     },
     permissions: { supports_permission_bypass: false },
+    // codex-acp 1.12 (read 2026-09-24): request_user_input becomes a form
+    // elicitation whose generic `message` is "Codex needs your input to
+    // continue."; each question is a field whose `title` is the question.
+    interaction: {
+      question_detector: {
+        form_elicitation: { question_text: "field_title" },
+      },
+    },
     usage: {
       usage_accuracy: "precise",
       supports_usage_probe: false,
+      // `usage_limit_reached`; "You've hit your usage limit. … try again in 2 hours".
+      quota_exhausted_patterns: [
+        "usage_limit_reached",
+        "you['’]ve (hit|reached) your usage limit",
+      ],
     },
     output: {
       patch_strategy: "git_diff",
@@ -471,7 +541,11 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       supports_model_override: true,
       model_arg_template: ["--model", "{model}"],
       model_config_behavior: "uses_model",
-      provider_api: "openai_compatible",
+      // OpenCode loads an AI SDK package per provider, so it can register an
+      // Anthropic-protocol vendor as `@ai-sdk/anthropic` and keep that
+      // vendor's prompt caching rather than forcing it through an
+      // OpenAI-compatible bridge.
+      provider_api: "vendor",
     },
     permissions: { supports_permission_bypass: false },
     usage: {

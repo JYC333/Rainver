@@ -1,10 +1,11 @@
-import { pgTable, index, uniqueIndex, check, foreignKey, varchar, timestamp, jsonb, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, check, foreignKey, varchar, timestamp, jsonb, integer, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { workspaceLocations } from "./workspaceLocations.js";
 import { agents } from "./agents.js";
 import { tasks } from "./tasks.js";
 import { hosts } from "./hosts.js";
 import { sessions } from "./sessions.js";
+import { artifacts } from "./artifacts.js";
 
 /**
  * ADR 0016 D14: a host thread pins a run-file-lifecycle conversation to one
@@ -58,6 +59,22 @@ export const hostThreads = pgTable("host_threads", {
 	// host — `vendor_session_id` alone is cleared at exactly those moments.
 	retiredVendorSessionIds: jsonb("retired_vendor_session_ids").default([]).notNull(),
 	status: varchar({ length: 24 }).notNull().default('active'),
+	// sha256 of the identity block + Room execution rules this thread's vendor
+	// session last received, and the Run that delivered it. Written only by the
+	// terminal outcome of a Run that reached the runtime, so a dispatch that
+	// never landed can never mark the block as sent; cleared whenever the
+	// vendor session is replaced.
+	identityDigest: varchar("identity_digest", { length: 64 }),
+	identityDigestRunId: varchar("identity_digest_run_id", { length: 36 }),
+	// How full the vendor session's context was when this thread's last Run
+	// ended, and the window it was measured against — both as the runtime
+	// reported them (ACP `usage_update`). Drive handoff rotation before the
+	// vendor's own compaction; null when the runtime reports no occupancy.
+	contextTokens: integer("context_tokens"),
+	contextWindowTokens: integer("context_window_tokens"),
+	// The Agent-written handoff document the current vendor session was
+	// seeded from after a rotation.
+	handoffArtifactId: varchar("handoff_artifact_id", { length: 36 }),
 	createdByUserId: varchar("created_by_user_id", { length: 36 }).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -107,6 +124,11 @@ export const hostThreads = pgTable("host_threads", {
 			foreignColumns: [agents.id],
 			name: "host_threads_agent_id_fkey"
 		}),
+	foreignKey({
+			columns: [table.handoffArtifactId],
+			foreignColumns: [artifacts.id],
+			name: "host_threads_handoff_artifact_id_fkey"
+		}).onDelete("set null"),
 	check("ck_host_threads_workspace_mode", sql`workspace_mode IN ('location', 'managed') AND (workspace_mode <> 'location' OR workspace_location_id IS NOT NULL) AND (workspace_mode <> 'managed' OR workspace_location_id IS NULL)`),
 	check("ck_host_threads_owner", sql`
 		(workspace_location_id IS NOT NULL AND session_id IS NULL AND agent_id IS NULL AND container_kind IS NULL AND container_user_id IS NULL)

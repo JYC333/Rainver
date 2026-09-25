@@ -28,7 +28,7 @@ import {
   AmbientSessionImportSchema,
   AmbientTrimLimitsSchema,
 } from "./ambientSessions.js";
-import { LaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema, RuntimeAuthMethodSchema } from "./hosts.js";
+import { LaunchWorkspaceSchema, LocationLaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema, RuntimeAuthMethodSchema } from "./hosts.js";
 import { ConversationInputResourceSchema } from "./conversationInput.js";
 import { RuntimeKeySchema } from "./runtimeAuthority.js";
 
@@ -375,7 +375,13 @@ export const HostCommandRunFrameSchema = z.object({
   /** Whose workspace to run in; resolved on the host, like every other path. */
   workspace: LaunchWorkspaceSchema.optional(),
   workspace_location_id: IdSchema.optional(),
-  /** Which Run this asks about, for correlation in host logs; the command gets its own directory either way. */
+  /**
+   * Which Run this asks about, for correlation in host logs. A `workspace`
+   * carrying `worktree` runs the command in that Task's worktree instead of
+   * the Location — or in the Location when the Task has none there, as when
+   * its Run fell back to running in place. The command's scratch HOME is its
+   * own either way.
+   */
   run_id: IdSchema.optional(),
   /**
    * Run in a throwaway directory the daemon makes for this request instead of
@@ -421,6 +427,149 @@ export const HostUsageProbeFrameSchema = z.object({
    */
   login: RuntimeLoginSpecSchema.nullable(),
   timeout_seconds: z.number().positive(),
+});
+
+/**
+ * A Task's worktree, named by the Location it belongs to. Only a Location
+ * workspace has one; `worktree.task_id` says which Task's.
+ */
+export const HostTaskWorkspaceSchema = LocationLaunchWorkspaceSchema.extend({
+  worktree: z.object({ task_id: IdSchema, merge_id: IdSchema.optional() }),
+});
+export type HostTaskWorkspace = z.infer<typeof HostTaskWorkspaceSchema>;
+
+/** Git's identity for a commit the system writes: `name <email>`. */
+export const HostGitIdentitySchema = z.object({
+  name: z.string().trim().min(1).max(256),
+  email: z.string().trim().min(1).max(320),
+});
+export type HostGitIdentity = z.infer<typeof HostGitIdentitySchema>;
+
+/**
+ * End one Task Run in its Task's worktree (ADR 0016 §11): commit everything
+ * the Run left since its start commit — the Agent's own commits and whatever
+ * it left uncommitted — as one unsigned commit on the Task branch, with
+ * `author` as author and committer and `message` verbatim, then remove the
+ * worktree. The branch stays for the Task's next Run and its merge.
+ *
+ * Sent after the Run's verification, which reads the worktree. Idempotent per
+ * `run_id`: a settle for a Run already settled answers with what the first
+ * one did.
+ */
+export const HostTaskRunSettleFrameSchema = z.object({
+  type: z.literal("task_run_settle"),
+  request_id: IdSchema,
+  workspace: HostTaskWorkspaceSchema,
+  run_id: IdSchema,
+  author: HostGitIdentitySchema,
+  message: z.string().min(1).max(16_000),
+});
+
+/**
+ * The Task is gone (cancelled or deleted): remove its worktree, if one is
+ * left, and its branch. Answers `deleted: false` when neither existed, which
+ * is success.
+ */
+export const HostTaskBranchDeleteFrameSchema = z.object({
+  type: z.literal("task_branch_delete"),
+  request_id: IdSchema,
+  workspace: HostTaskWorkspaceSchema,
+});
+
+/** A 40- or 64-hex git object id. */
+const GitObjectIdSchema = z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u);
+
+/**
+ * Merging a done Task's branch into the main branch (ADR 0016 §11), in the
+ * Task's worktree, one merge at a time per Task: the daemon records the
+ * `merge_id` in progress and neither sweeps nor starts an ordinary Run in a
+ * worktree a merge holds.
+ *
+ * `task_merge_prepare` squashes everything the branch has since its merge
+ * base with the main branch into one unsigned commit (`author` as author and
+ * committer, `message` verbatim) and merges it onto the main branch's tip —
+ * `git merge-tree`, never git's sequencer, whose state files a Run could
+ * write. Clean, the merged tree becomes the Task commit on that tip
+ * (`rebased`). A conflict writes the merged files, markers included, into the
+ * worktree with the branch left on the squashed commit, for
+ * `task_merge_continue` or `task_merge_abort`. Idempotent per `merge_id`:
+ * repeated while that conflict is waiting, it answers it again; after the
+ * main branch moved, it merges again.
+ */
+export const HostTaskMergePrepareFrameSchema = z.object({
+  type: z.literal("task_merge_prepare"),
+  request_id: IdSchema,
+  workspace: HostTaskWorkspaceSchema,
+  merge_id: IdSchema,
+  author: HostGitIdentitySchema,
+  message: z.string().min(1).max(16_000),
+});
+
+/**
+ * After a resolution Run: take only the conflicted paths from the worktree
+ * onto the merged tree, refuse (`unresolved`) while any still holds conflict
+ * markers or a marker-less conflict is untouched, else commit the result as
+ * the Task commit on the main branch's tip. Answers like `task_merge_prepare`,
+ * never with `no_changes`.
+ */
+export const HostTaskMergeContinueFrameSchema = z.object({
+  type: z.literal("task_merge_continue"),
+  request_id: IdSchema,
+  workspace: HostTaskWorkspaceSchema,
+  merge_id: IdSchema,
+});
+
+/**
+ * Give the merge up to the person: the branch goes back to the Task's single
+ * squashed commit, to be merged by hand, the worktree is reset, and the merge
+ * releases it.
+ */
+export const HostTaskMergeAbortFrameSchema = z.object({
+  type: z.literal("task_merge_abort"),
+  request_id: IdSchema,
+  workspace: HostTaskWorkspaceSchema,
+  merge_id: IdSchema,
+});
+
+/**
+ * Move the main branch to the verified Task commit, by fast-forward only.
+ *
+ * When the Location's checkout has the main branch checked out, the daemon
+ * takes the Location's lease (answering `location_busy` while a writer holds
+ * it), compares the files the Task commit changes against the person's
+ * uncommitted changes (`waiting_local_changes` with the overlap when any
+ * overlap), and runs `merge --ff-only`. Otherwise it moves the branch by
+ * compare-and-swap from `onto_commit`. Either way a main branch no longer at
+ * `onto_commit` answers `main_moved`, and nothing changes. On `merged` the
+ * Task branch and its worktree are removed.
+ */
+export const HostTaskMergeFinishFrameSchema = z.object({
+  type: z.literal("task_merge_finish"),
+  request_id: IdSchema,
+  workspace: HostTaskWorkspaceSchema,
+  merge_id: IdSchema,
+  main_branch: z.string().min(1).max(4096),
+  onto_commit: GitObjectIdSchema,
+  task_commit: GitObjectIdSchema,
+});
+
+/** What `task_merge_prepare` and `task_merge_continue` answer. */
+export const HostTaskMergeStepResultSchema = z.object({
+  type: z.literal("task_merge_step_result"),
+  request_id: IdSchema,
+  ok: z.boolean(),
+  /**
+   * `rebased` — the Task commit sits on the main branch's tip;
+   * `conflict` — the merge stopped on conflicts (`conflicted_files`); `unresolved` — a
+   * continue found files still unmerged or holding markers; `no_changes` —
+   * the branch holds nothing the main branch lacks (or is gone).
+   */
+  outcome: z.enum(["rebased", "conflict", "unresolved", "no_changes"]).nullable(),
+  main_branch: z.string().min(1).max(4096).nullable(),
+  onto_commit: GitObjectIdSchema.nullable(),
+  task_commit: GitObjectIdSchema.nullable(),
+  conflicted_files: z.array(z.string().max(4096)).max(500),
+  error: z.string().nullable(),
 });
 
 /** The shape the control plane already caches; `available: false` with a reason is a real answer. */
@@ -552,7 +701,13 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("heartbeat_ack"), runtime_probes: z.array(RuntimeProbeSchema).optional() }),
   z.object({ type: z.literal("error"), detail: z.string() }),
   HostLaunchFrameSchema,
-  z.object({ type: z.literal("terminate"), run_id: IdSchema, force: z.boolean() }),
+  /**
+   * Stop a Run. With `launch_id`, only that launch attempt — a queued one is
+   * taken out of its Location's queue, a running one is signalled — so a stop
+   * meant for an abandoned attempt never reaches a retry of the same run id.
+   * Without it, every attempt of the run.
+   */
+  z.object({ type: z.literal("terminate"), run_id: IdSchema, force: z.boolean(), launch_id: IdSchema.optional() }),
   z.object({ type: z.literal("stdin"), run_id: IdSchema, value: z.string() }),
   z.object({ type: z.literal("stdin_close"), run_id: IdSchema }),
   z.object({ type: z.literal("list_dirs"), request_id: IdSchema, path: z.string().nullable() }),
@@ -580,6 +735,12 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostFolderReadFrameSchema,
   HostFolderReadCancelFrameSchema,
   HostFolderWriteFrameSchema,
+  HostTaskRunSettleFrameSchema,
+  HostTaskBranchDeleteFrameSchema,
+  HostTaskMergePrepareFrameSchema,
+  HostTaskMergeContinueFrameSchema,
+  HostTaskMergeAbortFrameSchema,
+  HostTaskMergeFinishFrameSchema,
 ]);
 export type HostServerFrame = z.infer<typeof HostServerFrameSchema>;
 export type HostServerFrameOf<T extends HostServerFrame["type"]> = Extract<HostServerFrame, { type: T }>;
@@ -597,6 +758,12 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
   HostHeartbeatFrameSchema,
   /** The child process is registered; `stdin` frames may follow. */
   z.object({ type: z.literal("launched"), run_id: IdSchema, launch_id: IdSchema }),
+  /**
+   * The launch is queued behind another Run that may write the same
+   * WorkspaceLocation; `launched` follows once that Run releases the
+   * directory, or `complete` if this one is stopped while it waits.
+   */
+  z.object({ type: z.literal("waiting_for_workspace"), run_id: IdSchema, launch_id: IdSchema }),
   z.object({ type: z.literal("output"), run_id: IdSchema, launch_id: IdSchema, chunk: z.string() }),
   z.object({ type: z.literal("stderr"), run_id: IdSchema, launch_id: IdSchema, chunk: z.string() }),
   z.object({
@@ -619,6 +786,16 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
       reason: z.string().nullable(),
       at: ISODateTimeSchema,
     })).max(200).optional(),
+    /**
+     * The Run executed in its Task's worktree: the Task branch and the commit
+     * the worktree stood at when the Run's process started — the base its
+     * git-backed verification compares against, and what `task_run_settle`
+     * squashes from. Absent when the Run fell back to running in place.
+     */
+    task_worktree: z.object({
+      branch: z.string().min(1).max(4096),
+      start_commit: GitObjectIdSchema,
+    }).optional(),
   }),
   z.object({
     type: z.literal("folder_write_result"),
@@ -648,6 +825,42 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
     entries: z.array(z.string()).optional(),
   }),
   z.object({ type: z.literal("usage_probe_result"), request_id: IdSchema, quota: HostUsageQuotaSchema }),
+  /**
+   * `commit` is the Run's commit on `branch`, null when the Run changed
+   * nothing (no commit is written then; the worktree is removed either way).
+   */
+  z.object({
+    type: z.literal("task_run_settle_result"),
+    request_id: IdSchema,
+    ok: z.boolean(),
+    branch: z.string().min(1).max(4096).nullable(),
+    commit: GitObjectIdSchema.nullable(),
+    error: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("task_branch_delete_result"),
+    request_id: IdSchema,
+    ok: z.boolean(),
+    deleted: z.boolean(),
+    error: z.string().nullable(),
+  }),
+  HostTaskMergeStepResultSchema,
+  z.object({
+    type: z.literal("task_merge_abort_result"),
+    request_id: IdSchema,
+    ok: z.boolean(),
+    error: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("task_merge_finish_result"),
+    request_id: IdSchema,
+    ok: z.boolean(),
+    outcome: z.enum(["merged", "main_moved", "waiting_local_changes"]).nullable(),
+    merged_commit: GitObjectIdSchema.nullable(),
+    /** For `waiting_local_changes`: the person's uncommitted files the Task commit also changes. */
+    overlapping_files: z.array(z.string().max(4096)).max(500),
+    error: z.string().nullable(),
+  }),
   z.object({ type: z.literal("login_output"), session_id: IdSchema, data: z.string() }),
   z.object({ type: z.literal("login_exit"), session_id: IdSchema, exit_code: z.number(), logged_in: z.boolean().nullable() }),
   /** One frame per session: a folder's history is megabytes even trimmed. */
@@ -717,3 +930,37 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
 ]);
 export type HostDaemonFrame = z.infer<typeof HostDaemonFrameSchema>;
 export type HostDaemonFrameOf<T extends HostDaemonFrame["type"]> = Extract<HostDaemonFrame, { type: T }>;
+
+// ---------------------------------------------------------------------------
+// Daemon → control plane, over HTTP
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the Run's checkout stood when it exited: `rev-parse --abbrev-ref HEAD`
+ * and `rev-parse HEAD`, the same two reads a heartbeat reports for a Location.
+ * The send gate of a Conversation compares a moved HEAD with this to tell a
+ * commit its own Agent made from one somebody else made.
+ */
+export const HostRunGitAfterSchema = z.object({
+  // Git takes branch names longer than any column here; a long one must not
+  // cost the Run its diff (the server keeps what it can store).
+  branch: z.string().max(4096).nullable(),
+  head: z.string().min(1).max(128),
+});
+export type HostRunGitAfter = z.infer<typeof HostRunGitAfterSchema>;
+
+/**
+ * `POST /api/v1/hosts/me/runs/:runId/diff`: the Run's own change and where
+ * its checkout stood. `git_before` is read after the Run holds its Location's
+ * lease, just before its process starts; `git_after` after the diff at exit.
+ * `diff` is null when no diff could be captured but the HEAD could; both git
+ * fields are absent outside a git checkout and for a Run that executed in a
+ * worktree of its own, whose HEAD is not the Location's.
+ */
+export const HostRunDiffUploadSchema = z.object({
+  diff: z.string().nullable(),
+  truncated: z.boolean().optional(),
+  git_before: HostRunGitAfterSchema.optional(),
+  git_after: HostRunGitAfterSchema.optional(),
+});
+export type HostRunDiffUpload = z.infer<typeof HostRunDiffUploadSchema>;

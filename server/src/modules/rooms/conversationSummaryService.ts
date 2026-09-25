@@ -20,6 +20,7 @@ import { canWriteProject } from "../projects/access.js";
 import {
   fitRoomSummaryToBudget,
   estimateRoomSummaryTokens,
+  ROOM_RECENT_TOKEN_BUDGET,
   selectRoomCompactionBatch,
   type RoomCompactionBatch,
   type RoomSummaryCoverage,
@@ -118,7 +119,15 @@ export async function requestRoomConversationSummary(
 ): Promise<void> {
   await withQueryableTransaction(db, async (client) => {
     const threshold = await client.query<{ source_token_estimate: string }>(
-      `SELECT COALESCE(SUM(GREATEST(1, octet_length(message.content))), 0)::text AS source_token_estimate
+      // The estimator's character classes, roughly, in SQL: a multi-byte
+      // character is counted as one token (its extra bytes, halved,
+      // approximate how many there are) and every ASCII character as a
+      // quarter. It under-counts digits and punctuation, which only delays a
+      // summary; the provider path measures the exact batch.
+      `SELECT COALESCE(SUM(GREATEST(1, ceil(
+                (char_length(message.content) - (octet_length(message.content) - char_length(message.content)) / 2.0) / 4.0
+                + (octet_length(message.content) - char_length(message.content)) / 2.0
+              ))), 0)::text AS source_token_estimate
          FROM messages message
         JOIN sessions session_row
            ON session_row.id=message.session_id AND session_row.space_id=message.space_id
@@ -145,12 +154,12 @@ export async function requestRoomConversationSummary(
           )`,
       [input.spaceId, input.sessionId, input.throughMessageId, input.roomId],
     );
-    // `estimateModelTokens` is the shared tokenizer fallback used by Room
-    // context assembly. SQL uses byte length only to avoid loading a full
-    // transcript before the threshold; the extra precision is harmless for
-    // the scheduling gate and the provider path rechecks the exact batch.
-    const sourceBytes = Number(threshold.rows[0]?.source_token_estimate ?? 0);
-    if (sourceBytes < 6_000) return;
+    // `estimateModelTokens` is the shared estimate used by Room context
+    // assembly. SQL approximates it only to avoid loading a full transcript
+    // before the threshold; the provider path rechecks the exact batch. The
+    // threshold is the raw tail a summary always leaves uncovered.
+    const sourceTokens = Number(threshold.rows[0]?.source_token_estimate ?? 0);
+    if (sourceTokens < ROOM_RECENT_TOKEN_BUDGET) return;
     const now = new Date().toISOString();
     const state = await client.query<{ status: string; retry_count: number }>(
       `INSERT INTO room_conversation_summary_states (

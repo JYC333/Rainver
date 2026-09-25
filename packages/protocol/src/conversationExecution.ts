@@ -100,13 +100,25 @@ export const ConversationAttachmentSummarySchema = z.object({
 }).strict();
 export type ConversationAttachmentSummary = z.infer<typeof ConversationAttachmentSummarySchema>;
 
+/**
+ * A pinned Conversation × Agent runtime as the summary reports it: the pin,
+ * plus what its vendor session holds — how full it was after the last Run and
+ * the handoff document it was last renewed from.
+ */
+export const ConversationPinnedRuntimeSchema = ConversationRuntimeSelectionSchema.extend({
+  context_tokens: z.number().int().nonnegative().nullable().optional(),
+  context_window_tokens: z.number().int().positive().nullable().optional(),
+  handoff_artifact_id: IdSchema.nullable().optional(),
+}).strict();
+export type ConversationPinnedRuntime = z.infer<typeof ConversationPinnedRuntimeSchema>;
+
 export const ConversationExecutionSummarySchema = z.object({
   session_id: IdSchema,
   state: ConversationExecutionStateSchema,
   host: ConversationExecutionHostSummarySchema.nullable(),
   runtime: ConversationRuntimeSelectionSchema.nullable(),
   /** Every pinned Conversation × Agent runtime, not only the manager. */
-  runtimes: z.array(ConversationRuntimeSelectionSchema).default([]),
+  runtimes: z.array(ConversationPinnedRuntimeSchema).default([]),
   primary: ConversationPrimarySummarySchema.nullable(),
   git: ConversationGitSnapshotSchema.nullable().optional(),
   attachments: z.array(ConversationAttachmentSummarySchema),

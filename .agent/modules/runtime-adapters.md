@@ -42,8 +42,32 @@ not current execution protocols.
 
 The shared controller accepts non-message session metadata between context
 and current-user prompts or just after a prompt response; message and thought
-chunks remain confined to an
-active prompt and updates from another session are rejected.
+chunks remain confined to an active prompt and updates from another session
+are rejected.
+
+Interactive requests from the runtime. There is no "ask the person and
+suspend" tool: an Agent asks by ending its turn with the question, and the
+vendor session keeps its working state for the answer, which is the person's
+next message. A vendor CLI's own interactive question is translated into that
+shape rather than approved or treated as a failure. A
+`session/request_permission` is a tool permission and is pre-authorized
+through `runPermissionPolicy.ts` as before, unless the runtime's
+`RuntimeAdapterSpec.interaction.question_detector` says that shape is a
+question (Claude Code: a request naming no `toolCall`). A question — that, an
+`elicitation/create` form, or any other interactive method except the
+capability-gated `fs/*` and `terminal/*`, which still refuse and fail the Run —
+is answered with the protocol's cancel (`cancelled` outcome, `action:
+"cancel"`, or a `-32601` refusal), preceded by `session/cancel`; the prompt then
+completes on whatever stop reason or error it ends with, and the controller's
+result carries `asked_user: { question, options }` (`runs/vendorQuestion.ts`
+reads the form). The Run succeeds; see CONVERSATION.md for the reply. The
+detector's `form_elicitation` also makes the controller advertise
+`clientCapabilities.elicitation.form`, which is what makes Claude Code offer
+AskUserQuestion and Codex's `request_user_input` reach the client at all
+(claude-agent-acp 0.70 and codex-acp 1.12, read 2026-09-24); OpenCode declares
+nothing and is not offered it. Room execution rules tell the Agent to ask by
+replying instead (`ASK_THE_PERSON_POLICY`). Per-runtime question shapes on a
+real host are an open acceptance item in `tasks/deferred-register.md`.
 
 ## Run and Host boundary
 
@@ -99,6 +123,24 @@ qualifies, because the daemon receives a proxy lease address rather than a key
 authorizes each spend and issues that short-lived lease; runtime-specific proxy
 configuration contains only the lease, never the upstream secret. ACP itself
 grants no Provider compatibility.
+
+Which endpoint and proxy route a binding uses is the spec's
+`model.provider_api`. OpenCode declares `vendor`: the binding follows the bound
+Provider's vendor protocol (`providers/vendors.ts`), resolved by
+`runs/adapterProviderRequirement.ts`. An `anthropic_messages` vendor binds on
+its `claude_compatible_base_url` with an `anthropic`-route lease and is
+registered in OpenCode as `@ai-sdk/anthropic` (so OpenCode applies its own
+Anthropic prompt-cache breakpoints); an `openai_completions` vendor binds on
+its `openai_compatible_base_url` with an `openai`-route lease as
+`@ai-sdk/openai-compatible`. Any other protocol is refused
+(`provider_protocol_unsupported`) before a lease is minted. The OpenCode
+provider id is `rainver_provider` either way. Retrieval egress classification
+(`runtimeProviderEgressDestination`) reads the same resolution. An OpenCode
+profile bound, before this rule, to an Anthropic-protocol Provider that has
+only an OpenAI-compatible URL now fails its dispatch with
+`claude_compatible_base_url_required` and is greyed out in the Provider
+selector; the fix is to add the Provider's Claude-compatible URL or bind a
+different Provider. Nothing rewrites such a binding automatically.
 
 Provider authorization, credential spend, network policy and lease lifecycle
 remain owned by `server/src/modules/providers/`. Bounded generation such as

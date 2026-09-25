@@ -6,6 +6,7 @@ import { seedAgentWithVersion, seedSpaceOwnerProject } from "./support/domainSee
 import { PgAgentRepository } from "../src/modules/agents/repository.js";
 import { loadConfig } from "../src/config.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
+import { recordHostThreadOutcome } from "../src/modules/hosts/threadOutcome.js";
 import { resolveRuntimeProfileScope, runtimeProfileKey } from "../src/modules/runs/remoteProviderBinding.js";
 import { PgHostThreadEventRepository } from "../src/modules/hosts/threadEventRepository.js";
 import { PgRoomRepository } from "../src/modules/rooms/repository.js";
@@ -178,6 +179,175 @@ describe("host_threads owner constraints", () => {
     expect(closed).toHaveLength(1);
     expect(closed[0]).toMatchObject({ id: first.id, status: "closed" });
     expect(closed[0]?.pending_archive_at).toEqual(expect.any(String));
+  });
+
+  it("records a standing-context digest only for a Run that carried it and landed", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const repository = new PgHostThreadRepository(db.pool);
+    const thread = await repository.getOrCreateForConversationAgent({
+      executionHostId: HOST,
+      workspaceMode: "managed",
+      spaceId: SPACE,
+      sessionId: CONVERSATION,
+      agentId: AGENT,
+      runtimeKey: "claude_code",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+    });
+    const read = async () => (await db.pool.query<{
+      identity_digest: string | null;
+      identity_digest_run_id: string | null;
+      context_tokens: number | null;
+      context_window_tokens: number | null;
+    }>(
+      `SELECT identity_digest, identity_digest_run_id, context_tokens, context_window_tokens
+         FROM host_threads WHERE id = $1`,
+      [thread.id],
+    )).rows[0];
+
+    // A dispatch that never reached the runtime says nothing was sent.
+    await repository.recordRunOutcome(thread.id, {
+      lastRunId: randomUUID(),
+      vendorSessionId: null,
+      sessionReset: false,
+      landed: false,
+      identity: { digest: "digest-1", sent: true },
+    });
+    expect(await read()).toMatchObject({ identity_digest: null });
+
+    const landedRun = randomUUID();
+    await repository.recordRunOutcome(thread.id, {
+      lastRunId: landedRun,
+      vendorSessionId: "vendor-1",
+      sessionReset: false,
+      landed: true,
+      identity: { digest: "digest-1", sent: true },
+      contextWindow: { used: 42_000, size: 200_000 },
+    });
+    expect(await read()).toMatchObject({
+      identity_digest: "digest-1",
+      identity_digest_run_id: landedRun,
+      context_tokens: 42_000,
+      context_window_tokens: 200_000,
+    });
+
+    // A resumed turn that did not carry the block keeps what the session holds.
+    await repository.recordRunOutcome(thread.id, {
+      lastRunId: randomUUID(),
+      vendorSessionId: "vendor-1",
+      sessionReset: false,
+      landed: true,
+      identity: { digest: "digest-1", sent: false },
+    });
+    expect(await read()).toMatchObject({ identity_digest: "digest-1", identity_digest_run_id: landedRun });
+
+    // A new vendor session under a Run that did not carry the block holds no
+    // identity at all, and its occupancy is unknown.
+    await repository.recordRunOutcome(thread.id, {
+      lastRunId: randomUUID(),
+      vendorSessionId: "vendor-2",
+      sessionReset: false,
+      landed: true,
+      identity: { digest: "digest-1", sent: false },
+    });
+    expect(await read()).toMatchObject({ identity_digest: null, context_tokens: null });
+
+    // Less in context than last time, in the same session: the vendor
+    // compacted it and may have summarized the standing context away.
+    await repository.recordRunOutcome(thread.id, {
+      lastRunId: randomUUID(),
+      vendorSessionId: "vendor-2",
+      sessionReset: false,
+      landed: true,
+      identity: { digest: "digest-2", sent: true },
+      contextWindow: { used: 90_000, size: 200_000 },
+    });
+    await repository.recordRunOutcome(thread.id, {
+      lastRunId: randomUUID(),
+      vendorSessionId: "vendor-2",
+      sessionReset: false,
+      landed: true,
+      identity: { digest: "digest-2", sent: false },
+      contextWindow: { used: 30_000, size: 200_000 },
+    });
+    expect(await read()).toMatchObject({ identity_digest: null, context_tokens: 30_000 });
+
+    // A reset forgets everything the old session held.
+    await repository.recordRunOutcome(thread.id, {
+      lastRunId: randomUUID(),
+      vendorSessionId: "vendor-2",
+      sessionReset: false,
+      landed: true,
+      identity: { digest: "digest-2", sent: true },
+      contextWindow: { used: 10, size: 100 },
+    });
+    await repository.recordRunOutcome(thread.id, {
+      lastRunId: randomUUID(),
+      vendorSessionId: null,
+      sessionReset: true,
+    });
+    expect(await read()).toMatchObject({ identity_digest: null, context_tokens: null, context_window_tokens: null });
+  });
+
+  it("never brings back a session the thread retired, however late a Run reports on it", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const repository = new PgHostThreadRepository(db.pool);
+    const thread = await repository.getOrCreateForConversationAgent({
+      executionHostId: HOST,
+      workspaceMode: "managed",
+      spaceId: SPACE,
+      sessionId: CONVERSATION,
+      agentId: AGENT,
+      runtimeKey: "claude_code",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+    });
+    const outcome = (vendorSessionId: string | null, extra: Partial<Parameters<typeof repository.recordRunOutcome>[1]> = {}) =>
+      repository.recordRunOutcome(thread.id, { lastRunId: randomUUID(), vendorSessionId, sessionReset: false, landed: true, ...extra });
+    await outcome("vendor-old");
+    await outcome(null, { sessionReset: true });
+    await outcome("vendor-new", { identity: { digest: "digest-new", sent: true }, contextWindow: { used: 30_000, size: 200_000 } });
+    // Dispatched before the reset, it ran after it on the session it was given.
+    await outcome("vendor-old", { identity: { digest: "digest-old", sent: true }, contextWindow: { used: 150_000, size: 200_000 } });
+    const row = (await db.pool.query<{ vendor_session_id: string; status: string; identity_digest: string; context_tokens: number }>(
+      `SELECT vendor_session_id, status, identity_digest, context_tokens FROM host_threads WHERE id = $1`,
+      [thread.id],
+    )).rows[0];
+    expect(row).toEqual({ vendor_session_id: "vendor-new", status: "active", identity_digest: "digest-new", context_tokens: 30_000 });
+  });
+
+  it("reads a resume as broken only when the runtime proved it so", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const repository = new PgHostThreadRepository(db.pool);
+    const thread = await repository.getOrCreateForConversationAgent({
+      executionHostId: HOST,
+      workspaceMode: "managed",
+      spaceId: SPACE,
+      sessionId: CONVERSATION,
+      agentId: AGENT,
+      runtimeKey: "claude_code",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+    });
+    await repository.recordRunOutcome(thread.id, { lastRunId: randomUUID(), vendorSessionId: "vendor-live", sessionReset: false });
+    const vendorSession = async () => (await db.pool.query<{ status: string; vendor_session_id: string | null }>(
+      `SELECT status, vendor_session_id FROM host_threads WHERE id = $1`, [thread.id],
+    )).rows[0];
+    // Failed before the runtime tried: a launch that waited out its budget,
+    // a person's stop. The session is still there.
+    for (const run of [
+      { id: randomUUID(), status: "failed", error_json: { error_code: "runtime_timeout" } },
+      { id: randomUUID(), status: "cancelled", error_json: { error_code: "run_cancelled" } },
+    ]) {
+      await recordHostThreadOutcome(config, thread.id, run, true);
+      expect(await vendorSession()).toMatchObject({ status: "active", vendor_session_id: "vendor-live" });
+    }
+    // The runtime refused the session.
+    await recordHostThreadOutcome(config, thread.id, {
+      id: randomUUID(), status: "failed", error_json: { error_code: "runtime_session_invalid" },
+    }, true);
+    expect(await vendorSession()).toMatchObject({ status: "session_reset", vendor_session_id: null });
   });
 
   it("gives every Agent × container its own runtime profile, and the machine's own to none of them", async (ctx) => {

@@ -8,6 +8,7 @@ import { policyDecisionRecords } from "./policy.js";
 import { rooms } from "./rooms.js";
 import { projectFolders } from "./projectFolders.js";
 import { messages, sessions } from "./sessions.js";
+import { roomDiscussions } from "./roomDiscussions.js";
 
 export const agentRunGroups = pgTable("agent_run_groups", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -18,6 +19,11 @@ export const agentRunGroups = pgTable("agent_run_groups", {
 	roomId: varchar("room_id", { length: 36 }),
 	sessionId: varchar("session_id", { length: 36 }),
 	triggerMessageId: varchar("trigger_message_id", { length: 36 }),
+	// The Room discussion this group is one wave (or the closing turn) of.
+	discussionId: varchar("discussion_id", { length: 36 }),
+	// When the group's turn was advanced (`rooms/discussionService.ts`): a
+	// wave advances once, however many completions and retries reach it.
+	advancedAt: timestamp("advanced_at", { withTimezone: true, mode: 'string' }),
 	projectId: varchar("project_id", { length: 36 }),
 	projectFolderId: varchar("project_folder_id", { length: 36 }),
 	title: text().notNull(),
@@ -32,6 +38,13 @@ export const agentRunGroups = pgTable("agent_run_groups", {
 	index("ix_agent_run_groups_manager_user_updated").using("btree", table.spaceId.asc().nullsLast(), table.managerUserId.asc().nullsLast(), table.updatedAt.asc().nullsLast()),
 	index("ix_agent_run_groups_root_run").using("btree", table.spaceId.asc().nullsLast(), table.rootRunId.asc().nullsLast()),
 	index("ix_agent_run_groups_room_session").on(table.spaceId, table.roomId, table.sessionId, table.createdAt),
+	index("ix_agent_run_groups_discussion").on(table.spaceId, table.discussionId)
+		.where(sql`discussion_id IS NOT NULL`),
+	foreignKey({
+			columns: [table.discussionId],
+			foreignColumns: [roomDiscussions.id],
+			name: "agent_run_groups_discussion_id_fkey",
+		}).onDelete("set null"),
 	index("ix_agent_run_groups_status_updated").using("btree", table.spaceId.asc().nullsLast(), table.status.asc().nullsLast(), table.updatedAt.asc().nullsLast()),
 	foreignKey({
 			columns: [table.managerAgentId],

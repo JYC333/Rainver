@@ -17,7 +17,7 @@ import type {
   ProposalApplyResult,
   ProposalApplierRegistry,
 } from "../proposals/applierRegistry.js";
-import { gitOutput, runGit, validatePath } from "@rainver/folder-read";
+import { locationGitOutput, runLocationGit, validatePath } from "@rainver/folder-read";
 import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "./workspaceLocations.js";
 import { PgProjectFolderRepository } from "./repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
@@ -233,14 +233,14 @@ export async function collectWorktreeChanges(
   worktreePath: string,
   baseCommitSha: string | null,
 ): Promise<{ operations: CodePatchOperation[]; skipped: SkippedChange[] }> {
-  const nameStatus = await runGit(["diff", "--name-status", "HEAD"], worktreePath, 30_000);
+  const nameStatus = await runLocationGit(["diff", "--name-status", "HEAD"], worktreePath, 30_000);
   if (nameStatus.code !== 0) {
     return {
       operations: [],
       skipped: [gitFailureSkipped("git_diff_failed", nameStatus.code, nameStatus.stderr)],
     };
   }
-  const status = await runGit(["status", "--porcelain"], worktreePath, 30_000);
+  const status = await runLocationGit(["status", "--porcelain"], worktreePath, 30_000);
   if (status.code !== 0) {
     return {
       operations: [],
@@ -316,7 +316,7 @@ async function preimageForPath(
 ): Promise<{ exists: boolean; content: Buffer }> {
   const rev = baseCommitSha ? `${baseCommitSha}:${path}` : `HEAD:${path}`;
   try {
-    return { exists: true, content: Buffer.from(await gitOutput(["show", rev], worktreePath, 30_000), "utf8") };
+    return { exists: true, content: Buffer.from(await locationGitOutput(["show", rev], worktreePath, 30_000), "utf8") };
   } catch {
     return { exists: false, content: Buffer.alloc(0) };
   }

@@ -235,7 +235,7 @@ describe("researchAcquisitionPipelineDb", () => {
       });
 
       const runner = new ResearchAcquisitionPipelineRunner(db.pool, config!, { adaptiveQueryDependencies: FAKE_QUERY_DEPENDENCIES });
-      const result = await runner.run(await makeJob(String(thread.id)));
+      const result = await runner.run(await makeJob(String(thread.id), { origin_group_id: "group-1" }));
       expect(result).toMatchObject({ status: "started", thread_id: String(thread.id) });
       const operationId = (result as { operation_id: string }).operation_id;
 
@@ -244,7 +244,7 @@ describe("researchAcquisitionPipelineDb", () => {
         [operationId, SPACE],
       );
       expect(operation.rows[0]!.status).toBe("active");
-      expect(operation.rows[0]!.progress_json).toMatchObject({ origin_room_id: ROOM, origin_session_id: SESSION });
+      expect(operation.rows[0]!.progress_json).toMatchObject({ origin_room_id: ROOM, origin_session_id: SESSION, origin_group_id: "group-1" });
 
       // The acquisition is bounded before it runs, and says so. Unbounded,
       // this walked a source's whole history — 873 documents, every one put
@@ -450,6 +450,7 @@ describe("researchAcquisitionServiceDb", () => {
         intentNote: "test kickoff",
         originRoomId: "room-1",
         originSessionId: "session-1",
+        originGroupId: "group-1",
       });
       expect(result).toEqual({ status: "queued", thread_id: String(thread.id) });
 
@@ -465,6 +466,8 @@ describe("researchAcquisitionServiceDb", () => {
         intent_note: "test kickoff",
         origin_room_id: "room-1",
         origin_session_id: "session-1",
+        // An Agent's turn started it: its result is charged to that turn's container.
+        origin_group_id: "group-1",
       });
     });
 

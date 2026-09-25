@@ -79,6 +79,11 @@ export interface RunContractSnapshotInput {
   policy_context_json?: unknown;
   /** Immutable Git facts captured when this conversation Run was admitted. */
   git_snapshot?: RunGitSnapshot | null;
+  /**
+   * The Task merge whose conflict this Run resolves (ADR 0016 §11): it works
+   * in the Task worktree as the merge left it and is never settled.
+   */
+  task_merge_id?: string | null;
 }
 
 export interface RunContractSnapshot {
@@ -105,6 +110,7 @@ export interface RunContractSnapshot {
   route_hints_json: unknown;
   policy_context_json: unknown;
   git_snapshot: RunGitSnapshot | null;
+  task_merge_id?: string;
   created_at: string;
 }
 
@@ -166,6 +172,7 @@ export function createRunContractSnapshot(
     route_hints_json: cloneJson(input?.route_hints_json),
     policy_context_json: cloneJson(input?.policy_context_json),
     git_snapshot: input?.git_snapshot ? cloneJson(input.git_snapshot) as RunGitSnapshot : null,
+    ...(input?.task_merge_id ? { task_merge_id: input.task_merge_id } : {}),
     created_at: createdAt,
   };
 }

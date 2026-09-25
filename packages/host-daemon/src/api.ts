@@ -1,4 +1,4 @@
-import type { HostHelloInfo, RuntimeProbe } from "@rainver/protocol";
+import type { HostHelloInfo, HostRunDiffUpload, RuntimeProbe } from "@rainver/protocol";
 import { mkdtemp, rm } from "node:fs/promises";
 import { arch, platform, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -194,7 +194,7 @@ export async function uploadRunDiff(
   serverUrl: string,
   token: string,
   runId: string,
-  input: { diff: string; truncated: boolean },
+  input: HostRunDiffUpload,
 ): Promise<void> {
   await request<void>(`${serverUrl}/api/v1/hosts/me/runs/${encodeURIComponent(runId)}/diff`, {
     method: "POST",

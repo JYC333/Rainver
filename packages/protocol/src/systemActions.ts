@@ -393,6 +393,15 @@ const proposalInputs:Record<string,z.ZodType>={
   }).strict(),
   "input_resource.read": InputResourceReadInputSchema,
   "input_resource.search": InputResourceSearchInputSchema,
+  // The sections of an Agent's handoff to its own next session. Each is what
+  // a fresh session cannot recover from the Room summary alone.
+  "handoff.write": z.object({
+    goal: z.string().trim().min(1).max(4000).describe("The goal of this conversation as you understand it."),
+    decisions: z.string().trim().min(1).max(8000).describe("Decisions already taken, and by whom."),
+    files: z.string().trim().max(8000).optional().describe("Files you changed and their current state. Omit when you changed none."),
+    next_step: z.string().trim().min(1).max(4000).describe("What you were doing and the next step."),
+    open_questions: z.string().trim().max(4000).optional().describe("Questions still open for the person."),
+  }).strict(),
 };
 const visibility = (...values: SystemActionVisibility[]) => new Set(values);
 
@@ -458,6 +467,9 @@ export const SYSTEM_ACTION_REGISTRY = [
   // reason: it says what a file is, and a Task closes on the file existing
   // with the declared type — never on the declaration alone.
   agentAction("artifact.submit", "Declare a file this Run produced as a Task's output", "projectWork", "ProjectWorkArtifactDeclarations.submit", "artifact.declare", "durable", { resource_type: "task", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: false }),
+  // Granted to one kind of Run only: the handoff turn Rainver dispatches
+  // before rotating a Conversation × Agent vendor session.
+  agentAction("handoff.write", "Write the handoff your next session starts from", "agentGroups", "AgentHandoffService.write", "handoff.write", "durable", { resource_type: "host_thread", resource_id_fallback: "run", check_action_approval_grant: false }),
   action("proposal.list_pending", "List this conversation's pending Proposals with their ids", "proposals", "PgProposalRepository.listVisible", "proposal.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["proposal.list_pending"] }),
   agentAction("proposal.decide", "Decide a proposal this conversation produced, on the person's instruction", "proposals", "ProposalDecisionExecutor.decide", "proposal.decide", "durable", { resource_type: "proposal", resource_id_input_field: "proposal_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("task.plan.propose", "Propose an Agent-generated Task plan", "plans", "PgPlanRepository.createPlanFromAgent", "task.plan.propose", "durable", { resource_type: "plan", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: true }),

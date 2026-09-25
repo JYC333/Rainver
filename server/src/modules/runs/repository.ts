@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { projectTaskStatusFromRun } from "../tasks/taskRunStatusProjection.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { withDedicatedSessionAdvisoryLock } from "../../db/advisoryLock.js";
@@ -211,11 +210,29 @@ export class PgRunRepository {
         JSON.stringify(cancelledJson),
       ],
     );
-    for (const row of result.rows) {
-      await projectTaskStatusFromRun(db, row.space_id, row.id);
-    }
     return result.rowCount ?? result.rows.length;
     });
+  }
+
+  /**
+   * Terminal Runs of a Task that nobody finalized: a queued Run whose job was
+   * cancelled or gave up, one that recovery cancelled, one a module ended by
+   * hand. Finalization is where a Task's settlement is decided, so the
+   * jobs worker finalizes these (`reconcileUnfinalizedTaskRuns`). `orphaned`
+   * has its own sweep (`listOrphanedRunIds`).
+   */
+  async listTaskRunsAwaitingFinalization(limit = 100): Promise<Array<{ id: string; space_id: string }>> {
+    const result = await this.db.query<{ id: string; space_id: string }>(
+      `SELECT r.id, r.space_id
+         FROM runs r
+        WHERE r.status IN ('succeeded', 'failed', 'degraded', 'cancelled')
+          AND EXISTS (SELECT 1 FROM task_runs tr WHERE tr.space_id = r.space_id AND tr.run_id = r.id)
+          AND NOT EXISTS (SELECT 1 FROM run_finalizations f WHERE f.space_id = r.space_id AND f.run_id = r.id)
+        ORDER BY r.updated_at ASC, r.id ASC
+        LIMIT $1`,
+      [Math.max(1, Math.min(500, Math.trunc(limit)))],
+    );
+    return result.rows;
   }
 
   async listOrphanedRunIds(limit = 100): Promise<Array<{ id: string; space_id: string }>> {
@@ -1934,7 +1951,15 @@ export class PgRunRepository {
        ), updated AS (
          UPDATE runs run_row
           SET status = $3,
-              output_json = $4::jsonb,
+              -- Where the host left the checkout arrives with the diff upload,
+              -- before this; the terminal output replaces everything else but
+              -- keeps that (hosts/repository recordGitAfter).
+              output_json = CASE
+                WHEN jsonb_typeof(run_row.output_json) = 'object'
+                 AND run_row.output_json ? 'workspace_after'
+                THEN $4::jsonb || jsonb_build_object('workspace_after', run_row.output_json->'workspace_after')
+                ELSE $4::jsonb
+              END,
               error_json = $5::jsonb,
               exit_code = $6,
               ended_at = $7,
@@ -2029,15 +2054,7 @@ export class PgRunRepository {
         executionOwner,
       ],
     );
-    const terminal = result.rows[0] ?? null;
-    if (terminal) {
-      // Every terminal mutation (worker success/failure, direct execution,
-      // queued cancellation, and retry exhaustion) passes through this
-      // repository method. Keep Task status projection here so no caller can
-      // accidentally leave a linked Task in `in_progress`.
-      await projectTaskStatusFromRun(db, terminal.space_id, terminal.id);
-    }
-    return terminal;
+    return result.rows[0] ?? null;
     });
   }
 
@@ -2441,6 +2458,8 @@ export class PgRunRepository {
     space_id: string;
     prompt: string;
     resumed_at: string;
+    /** Replaces the Run's override when admission rebuilt its dispatch (a session rotation). */
+    model_override_json?: Record<string, unknown> | null;
   }): Promise<RunRecord | null> {
     const resumeJson = sanitizeEvidenceJson({
       waiting_for_results_resume: {
@@ -2453,6 +2472,7 @@ export class PgRunRepository {
           SET status = 'queued',
               prompt = $3,
               model_override_json = CASE
+                WHEN $6::jsonb IS NOT NULL THEN $6::jsonb
                 WHEN model_override_json->'conversation_runtime'->>'schema_version'
                      = 'conversation_runtime.v1'
                 THEN jsonb_set(
@@ -2511,6 +2531,7 @@ export class PgRunRepository {
         input.prompt,
         JSON.stringify(resumeJson),
         input.resumed_at,
+        input.model_override_json ? JSON.stringify(input.model_override_json) : null,
       ],
     );
     return result.rows[0] ?? null;
@@ -2752,9 +2773,7 @@ export class PgRunRepository {
         redactEvidenceText(input.error_message),
       ],
     );
-    const degraded = result.rows[0] ?? null;
-    if (degraded) await projectTaskStatusFromRun(db, degraded.space_id, degraded.id);
-    return degraded;
+    return result.rows[0] ?? null;
     });
   }
 

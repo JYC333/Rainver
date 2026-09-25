@@ -14,7 +14,8 @@ import type {
 import { RETRIEVAL_INTENT_MAX_CHARS } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import { dispatchInstallation, executeRemoteHostCliAdapter, type RemoteHostCliAdapterDeps } from "./remoteHostCliAdapter.js";
+import { dispatchInstallation, executeRemoteHostCliAdapter, executionTaskId, taskMergeIdOf, withTaskWorktree, type RemoteHostCliAdapterDeps } from "./remoteHostCliAdapter.js";
+import { taskWorkspaceFor, type TaskBranchRecord, type TaskRunSettlerPort } from "./taskRunSettlement.js";
 import { PgHostThreadEventRepository, createSerializedThreadEventSink } from "../hosts/threadEventRepository.js";
 import { serializeCalls } from "../routeUtils/common.js";
 import { AgentGroupRunLifecycleProjector } from "../agentGroups/lifecycleProjector.js";
@@ -222,6 +223,8 @@ export interface RunExecutionAdapterDeps {
   workspaceManager?: RunSandboxManagerPort;
   codePatchCollector?: RunCodePatchCollectorPort;
   verificationEngine?: VerificationEnginePort;
+  /** Ends a host Task Run on its Task branch after verification (ADR 0016 §11). */
+  taskRunSettler?: TaskRunSettlerPort;
   policyEnforcer?: RunPolicyEnforcer;
   executionControlSnapshotWriter?: (
     run: RunRecord,
@@ -475,9 +478,14 @@ export { verificationTarget as verificationTargetForTest };
 
 function verificationTarget(
   port: HostExecutionPort | null | undefined,
-  run?: Pick<RunRecord, "runtime_key" | "model_override_json" | "runtime_profile_snapshot_json">,
+  run?: Pick<RunRecord, "runtime_key" | "model_override_json" | "runtime_profile_snapshot_json" | "contract_snapshot_json">
+    & Partial<Pick<RunRecord, "run_type" | "required_sandbox_level">>,
 ): VerificationTarget | null {
   if (!port?.hostId) return null;
+  // An execution Task Run's change is in its Task's worktree, which the daemon
+  // keeps until the Run is settled; naming it lets the daemon ask the question
+  // there (`withTaskWorktree`).
+  const workspace = withTaskWorktree(workspaceForVerification(port) ?? undefined, port.workspaceLocationId ?? null, run ?? {});
   return {
     host_id: port.hostId,
     workspace_location_id: port.workspaceLocationId ?? null,
@@ -488,7 +496,7 @@ function verificationTarget(
     // The same resolution the launch gets: a verifier asks its questions in
     // the Run's own workspace, and on the built-in host that is a directory
     // the daemon has no registration for.
-    ...(workspaceForVerification(port) ? { workspace: workspaceForVerification(port)! } : {}),
+    ...(workspace ? { workspace } : {}),
   };
 }
 
@@ -1218,7 +1226,7 @@ export class RunOrchestrationService {
         verificationResults = await this.adapters.verificationEngine.verify({
           run: materializationRun,
           execution_target: verificationTarget(preparedRuntime?.execution_port, materializationRun),
-          base_commit_sha: preparedRuntime?.base_commit_sha ?? null,
+          base_commit_sha: preparedRuntime?.base_commit_sha ?? taskWorktreeOf(adapterResult)?.start_commit ?? null,
           output_json: adapterResult.output_json,
           materialization_items: [],
           host_kind: preparedRuntime?.execution_port?.hostKind,
@@ -1251,7 +1259,7 @@ export class RunOrchestrationService {
           const postMaterialization = await this.adapters.verificationEngine.verify({
             run: materializationRun,
             execution_target: verificationTarget(preparedRuntime?.execution_port, materializationRun),
-            base_commit_sha: preparedRuntime?.base_commit_sha ?? null,
+            base_commit_sha: preparedRuntime?.base_commit_sha ?? taskWorktreeOf(adapterResult)?.start_commit ?? null,
             output_json: adapterResult.output_json,
             materialization_items: materialization.items,
             host_kind: preparedRuntime?.execution_port?.hostKind,
@@ -1305,6 +1313,13 @@ export class RunOrchestrationService {
         : adapterResult.success && (materialization.errors.length > 0 || toolDegradation)
           ? "degraded"
           : adapterTerminalStatus;
+      const taskBranch = await this.settleTaskRunBestEffort(
+        running,
+        materializationRun,
+        preparedRuntime?.execution_port,
+        adapterResult,
+        terminalStatus,
+      );
 
       await this.appendMaterializationEvents(running, materialization.items);
       if (step) await this.updateRunStepStatusBestEffort({
@@ -1362,12 +1377,15 @@ export class RunOrchestrationService {
         output_json: canonicalRunOutput({
           success: adapterResult.success && !semanticFailure,
           outputText: adapterResult.output_text,
-          outputJson: outputJsonWithVerification(
-            outputJsonWithRuntimeUsage(adapterResult),
-            materialization.items,
-            materialization.errors,
-            verificationResults,
-          ),
+          outputJson: {
+            ...recordValue(outputJsonWithVerification(
+              outputJsonWithRuntimeUsage(adapterResult),
+              materialization.items,
+              materialization.errors,
+              verificationResults,
+            )),
+            ...(taskBranch ? { task_branch: taskBranch } : {}),
+          },
         }),
         error_json: semanticFailureErrorJson(adapterResult, semanticFailure),
         exit_code: adapterResult.exit_code,
@@ -1387,7 +1405,9 @@ export class RunOrchestrationService {
             output_json: canonicalRunOutput({
               success: false,
               outputText: "",
-              outputJson: { error_code: "run_cancelled" },
+              // The settle already ran: the Run's commit is on its Task branch
+              // whichever terminal state wins.
+              outputJson: { error_code: "run_cancelled", ...(taskBranch ? { task_branch: taskBranch } : {}) },
             }),
             error_json: {
               error_code: "run_cancelled",
@@ -1599,6 +1619,11 @@ export class RunOrchestrationService {
         try {
           const current = await this.repository.getRun(run.space_id, run.id);
           if (current?.status === "waiting_for_dependency") {
+            // A delegated child is created `queued` with no job; it is
+            // admitted when its parent yields. Parking is a yield — before
+            // this call nothing admitted a child whose parent waited on it in
+            // the same turn, and the two waited on each other for ever.
+            await this.delegationProjector?.queueDelegatedChildren?.(current);
             await this.delegationProjector?.reconcileWaitingRun?.(current);
           }
         } catch (error) {
@@ -1739,6 +1764,7 @@ export class RunOrchestrationService {
         cancelledHostThread.thread_id,
         updated,
         cancelledHostThread.resume_attempted,
+        cancelledHostThread.identity,
       ).catch(() => undefined);
     }
     const finalization = await this.finalizeTerminalRunBestEffort(
@@ -1753,6 +1779,19 @@ export class RunOrchestrationService {
       };
     }
     await this.markDelegatedRunTerminal(updated);
+    // A turn parked behind its own session handoff is the only reason that
+    // handoff runs; stopping the turn stops it too, or it would go on writing
+    // into the Agent's session after the person asked for the turn to end.
+    const handoffRunId = recordValue(recordValue(updated.model_override_json).handoff_rotation).handoff_run_id;
+    if (typeof handoffRunId === "string" && handoffRunId) {
+      await this.cancelRun({
+        run_id: handoffRunId,
+        space_id: updated.space_id,
+        requested_by_user_id: input.requested_by_user_id ?? null,
+        reason: input.reason ?? "The turn this handoff prepared was stopped.",
+        terminate_process: input.terminate_process,
+      });
+    }
     // Cancellation evidence lives on the run row (error_json carries requester
     // + process_terminated); no run_event is appended (event_type has a closed
     // CHECK constraint with no cancel type).
@@ -2196,8 +2235,10 @@ export class RunOrchestrationService {
         const agentId = effectiveBindings.agentId ?? run.agent_id;
         const runtimeProfileId = effectiveBindings.runtimeProfileId ?? run.requested_runtime_profile_id;
         if (!userId || !agentId || !runtimeProfileId) {
+          // Not `runtime_session_invalid`: no vendor session was tried, and
+          // that code resets the Agent's host thread.
           throw new RunPreparationError(
-            "runtime_session_invalid",
+            "runtime_context_authority_missing",
             "CLI work-scope identity is incomplete.",
           );
         }
@@ -2718,6 +2759,62 @@ export class RunOrchestrationService {
     }
   }
 
+  /**
+   * After verification, commit a host Task Run's change onto its Task branch
+   * and remove its worktree (ADR 0016 §11) — for every Run dispatched to a
+   * Task worktree, not only one whose `complete` said where it ran: a Run
+   * given up on a timeout or a lost host never sends one, and its work is
+   * still the Agent's. The daemon answers a Run that never ran there with
+   * neither branch nor commit, which records nothing, and one whose process
+   * still holds the Task with `task_busy`, which is retried. A failed settle
+   * is recorded on the Run and as a warning, never a Run failure.
+   */
+  private async settleTaskRunBestEffort(
+    running: RunRecord,
+    run: RunRecord,
+    port: HostExecutionPort | null | undefined,
+    adapterResult: RunAdapterResultEnvelope,
+    terminalStatus: "succeeded" | "failed" | "degraded" | "cancelled" | "orphaned",
+  ): Promise<TaskBranchRecord | null> {
+    const settler = this.adapters.taskRunSettler;
+    const taskId = executionTaskId(run);
+    const target = verificationTarget(port, run);
+    const workspace = taskWorkspaceFor(target?.workspace);
+    // A merge's conflict-resolution Run leaves its work to the merge.
+    if (!settler || !taskId || !target || !workspace || taskMergeIdOf(run)) return null;
+    let record: TaskBranchRecord;
+    try {
+      record = await settler.settle({
+        run,
+        taskId,
+        hostId: target.host_id,
+        workspace,
+        outcome: terminalStatus,
+        summary: adapterResult.output_text ?? "",
+      });
+    } catch (error) {
+      record = { branch: null, commit: null, error: error instanceof Error ? error.message : "task_run_settle_failed" };
+    }
+    // Nothing ran in the Task worktree (the Location is not a git checkout).
+    if (!record.branch && !record.commit && !record.error) return null;
+    if (record.error) {
+      await this.appendRunEventBestEffort({
+        run_id: running.id,
+        space_id: running.space_id,
+        event_type: "warning",
+        status: "warning",
+        summary: record.retrying
+          ? "The Run's host did not answer its Task branch commit; it is retried when the host is back."
+          : "The Run's change could not be committed to its Task branch; it stays in the Task worktree for the next Run.",
+        error_code: "task_run_settle_failed",
+        error_message: record.error,
+        project_folder_id: running.project_folder_id,
+        metadata_json: { event_code: "task_run_settle_failed", task_id: taskId },
+      });
+    }
+    return record;
+  }
+
   private async appendRunEventBestEffort(input: RunEventInput): Promise<void> {
     try {
       await this.repository.appendRunEvent(input);
@@ -3177,7 +3274,10 @@ function isChatTurnRun(run: RunRecord): boolean {
 function currentRuntimeContextInputRef(run: RunRecord): TurnContextRequest["current_message_ref"] {
   const chatTurn = recordValue(recordValue(run.model_override_json).chat_turn);
   const messageId = stringConfigValue(chatTurn.user_message_id);
-  if (chatTurn.schema_version === "chat_turn.v1" && messageId) {
+  // A session handoff turn is not an answer to the message it precedes: its
+  // input is its own request, or it would read — and could start acting on —
+  // the person's turn it is only preparing the session for.
+  if (chatTurn.schema_version === "chat_turn.v1" && messageId && chatTurn.kind !== "handoff") {
     return { type: "message", id: messageId };
   }
   return { type: "run_request", id: run.id };
@@ -3190,6 +3290,15 @@ function resolvedRunModel(run: RunRecord, requested: string | null | undefined):
   }
   return requested
     ?? stringConfigValue(recordValue(run.model_override_json).model);
+}
+
+/** Where a host Task Run executed, as its daemon reported (`complete.task_worktree`). */
+function taskWorktreeOf(result: RunAdapterResultEnvelope): { branch: string; start_commit: string } | null {
+  const value = recordValue(result.metadata_json).task_worktree;
+  const record = recordValue(value);
+  return typeof record.branch === "string" && typeof record.start_commit === "string"
+    ? { branch: record.branch, start_commit: record.start_commit }
+    : null;
 }
 
 function outputJsonWithVerification(

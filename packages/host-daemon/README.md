@@ -78,7 +78,7 @@ rainver-host update
 ```
 
 Updating is not optional in the long run. The control plane requires a minimum
-daemon version (currently 0.2.0) and refuses an older one at `hello` with
+daemon version (currently 0.4.0) and refuses an older one at `hello` with
 `daemon_outdated`: the Host shows as offline, executes no Runs, and stays that
 way until this machine is updated with the command above (or by turning
 automatic updates on). The daemon keeps retrying on a long interval and logs

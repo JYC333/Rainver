@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { Queryable } from "../routeUtils/common.js";
-import { projectTaskStatusFromRun } from "../tasks/taskRunStatusProjection.js";
 import { withQueryableTransaction } from "../routeUtils/common.js";
 import {
   redactEvidenceText,
   sanitizeEvidenceJson,
 } from "../runs/evidenceRedaction.js";
+import { PgRunRepository } from "../runs/repository.js";
 import { wakeJobWorkers } from "./wakeSignal.js";
 
 export type JobStatus =
@@ -78,14 +78,43 @@ const JOB_SELECT_COLUMNS = `
   created_at, updated_at
 `;
 
-const TERMINAL_RUN_STATES = [
+/** Job types that perform a Run: their job ending without it ends the Run. */
+const RUN_BACKED_JOB_TYPES = new Set(["agent_run", "provider_task_run"]);
+/** A Run in one of these is not this job's to end: finished, or parked for a person. */
+const RUN_NOT_ENDED_BY_JOB = new Set([
   "succeeded",
   "failed",
   "degraded",
   "cancelled",
   "orphaned",
   "waiting_for_review",
-];
+]);
+
+/**
+ * Ends the Run a job was going to perform, through the Run repository's one
+ * terminal write — proposals, attempt, locks — never by writing `runs`
+ * here. A Run already ended, or parked for a person's decision, is left
+ * alone. Finalization, and with it the Task's settlement, follows from the
+ * jobs worker's sweep of unfinalized Task Runs.
+ */
+async function endRunBehindJob(
+  db: Queryable,
+  spaceId: string,
+  runId: string,
+  ending: { status: "cancelled" | "failed"; error_code: string; error_text: string; completed_at: string },
+): Promise<void> {
+  const runs = new PgRunRepository(db);
+  const run = await runs.getRun(spaceId, runId);
+  if (!run || RUN_NOT_ENDED_BY_JOB.has(run.status)) return;
+  await runs.markRunTerminal({
+    run_id: runId,
+    space_id: spaceId,
+    status: ending.status,
+    output_json: {},
+    error_json: { error_code: ending.error_code, error_text: ending.error_text },
+    completed_at: ending.completed_at,
+  });
+}
 
 /**
  * A job scheduled for later is not claimable yet, so enqueuing one must not
@@ -435,9 +464,8 @@ export class PgJobQueueRepository {
     now: Date = new Date(),
   ): Promise<boolean> {
     return withQueryableTransaction(this.db, async (db) => {
-    const result = await db.query<{ id: string; run_id: string | null; run_space_id: string | null }>(
-      `WITH cancelled_job AS (
-         UPDATE jobs
+      const result = await db.query<{ id: string; job_type: string; space_id: string; run_id: string | null }>(
+        `UPDATE jobs
             SET status = 'cancelled',
                 heartbeat_at = NULL,
                 completed_at = $2::timestamptz,
@@ -445,33 +473,23 @@ export class PgJobQueueRepository {
           WHERE id = $1
             AND status IN ('pending', 'claimed', 'running')
             AND (CAST($3 AS text) IS NULL OR claimed_by = $3)
-         RETURNING id, job_type, payload_json, space_id
-       ),
-       -- Both Run-backed job types: cancelling the job that would have
-       -- performed a queued ProviderTask Run has to settle that Run too, or
-       -- the person sees a cancelled job beside a Run still listed as queued.
-       cancelled_run AS (
-         UPDATE runs
-            SET status = 'cancelled',
-                ended_at = $2::timestamptz,
-                updated_at = $2::timestamptz,
-                error_message = 'Run cancelled',
-                error_json = '{"error_code":"run_cancelled","error_text":"Run cancelled"}'::jsonb
-           FROM cancelled_job
-          WHERE cancelled_job.job_type IN ('agent_run', 'provider_task_run')
-            AND runs.id::text = cancelled_job.payload_json->>'run_id'
-            AND runs.status <> ALL($4::text[])
-           RETURNING runs.id, runs.space_id
-       )
-       SELECT cancelled_job.id, cancelled_run.id AS run_id, cancelled_run.space_id AS run_space_id
-         FROM cancelled_job
-         LEFT JOIN cancelled_run ON true`,
-      [jobId, now.toISOString(), workerId, TERMINAL_RUN_STATES],
-    );
-    for (const row of result.rows) {
-      if (row.run_id && row.run_space_id) await projectTaskStatusFromRun(db, row.run_space_id, row.run_id);
-    }
-    return (result.rowCount ?? 0) > 0;
+         RETURNING id, job_type, space_id, payload_json->>'run_id' AS run_id`,
+        [jobId, now.toISOString(), workerId],
+      );
+      // Both Run-backed job types: cancelling the job that would have
+      // performed a queued ProviderTask Run has to end that Run too, or the
+      // person sees a cancelled job beside a Run still listed as queued.
+      for (const job of result.rows) {
+        if (job.run_id && RUN_BACKED_JOB_TYPES.has(job.job_type)) {
+          await endRunBehindJob(db, job.space_id, job.run_id, {
+            status: "cancelled",
+            error_code: "run_cancelled",
+            error_text: "Run cancelled",
+            completed_at: now.toISOString(),
+          });
+        }
+      }
+      return (result.rowCount ?? 0) > 0;
     });
   }
 
@@ -528,7 +546,7 @@ export class PgJobQueueRepository {
       const result = await db.query<{
       reclaimed_count: string | number;
       exhausted_jobs: JobReclaimResult["exhausted_jobs"] | null;
-      failed_run_refs: Array<{ id: string; space_id: string }> | null;
+      abandoned_runs: Array<{ space_id: string; run_id: string }> | null;
     }>(
       `WITH retryable AS (
          UPDATE jobs
@@ -543,19 +561,6 @@ export class PgJobQueueRepository {
             AND attempts < max_attempts
           RETURNING id, space_id, user_id, job_type, attempts, max_attempts
        ),
-       -- Both Run-backed job types, because both leave a Run behind when the
-       -- job stops retrying: a provider_task_run job whose Run never started
-       -- would otherwise sit queued forever, still spending its domain's
-       -- daily budget, with nothing left to perform it.
-       exhausted_runs AS (
-         SELECT payload_json->>'run_id' AS run_id
-           FROM jobs
-          WHERE status IN ('claimed', 'running')
-            AND job_type IN ('agent_run', 'provider_task_run')
-            AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
-            AND attempts >= max_attempts
-            AND payload_json ? 'run_id'
-       ),
        failed AS (
          UPDATE jobs
             SET status = 'failed',
@@ -568,19 +573,7 @@ export class PgJobQueueRepository {
           WHERE status IN ('claimed', 'running')
             AND COALESCE(heartbeat_at, updated_at) < $2::timestamptz
             AND attempts >= max_attempts
-          RETURNING id, space_id, user_id, job_type, attempts, max_attempts
-       ),
-       failed_runs AS (
-         UPDATE runs
-            SET status = 'failed',
-                ended_at = $1::timestamptz,
-                updated_at = $1::timestamptz,
-                error_message = 'run abandoned: backing job stuck and retry attempts exhausted',
-                error_json = '{"error_code":"run_abandoned","error_text":"run abandoned: backing job stuck and retry attempts exhausted"}'::jsonb
-           FROM exhausted_runs
-          WHERE runs.id::text = exhausted_runs.run_id
-            AND runs.status <> ALL($3::text[])
-           RETURNING runs.id, runs.space_id
+          RETURNING id, space_id, user_id, job_type, attempts, max_attempts, payload_json
        )
        SELECT
          (SELECT COUNT(*) FROM retryable) + (SELECT COUNT(*) FROM failed)
@@ -596,14 +589,25 @@ export class PgJobQueueRepository {
             )) FROM failed),
            '[]'::jsonb
          ) AS exhausted_jobs,
+         -- Both Run-backed job types, because both leave a Run behind when
+         -- the job stops retrying: a provider_task_run job whose Run never
+         -- started would otherwise sit queued forever, still spending its
+         -- domain's daily budget, with nothing left to perform it.
          COALESCE(
-           (SELECT jsonb_agg(jsonb_build_object('id', id, 'space_id', space_id)) FROM failed_runs),
+           (SELECT jsonb_agg(jsonb_build_object('space_id', space_id, 'run_id', payload_json->>'run_id'))
+              FROM failed
+             WHERE job_type = ANY($3::text[]) AND payload_json ? 'run_id'),
            '[]'::jsonb
-         ) AS failed_run_refs`,
-      [now.toISOString(), cutoff, TERMINAL_RUN_STATES],
+         ) AS abandoned_runs`,
+      [now.toISOString(), cutoff, [...RUN_BACKED_JOB_TYPES]],
       );
-      for (const run of result.rows[0]?.failed_run_refs ?? []) {
-        await projectTaskStatusFromRun(db, run.space_id, run.id);
+      for (const run of result.rows[0]?.abandoned_runs ?? []) {
+        await endRunBehindJob(db, run.space_id, run.run_id, {
+          status: "failed",
+          error_code: "run_abandoned",
+          error_text: "run abandoned: backing job stuck and retry attempts exhausted",
+          completed_at: now.toISOString(),
+        });
       }
       return result;
     });

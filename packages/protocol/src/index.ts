@@ -71,6 +71,8 @@ export * from "./runOrchestration.js";
 // Agent group run / delegation contracts
 export * from "./agentGroupRuns.js";
 export * from "./rooms.js";
+export * from "./roomDiscussions.js";
+export * from "./subscriptionQuota.js";
 
 // Thread references: content copied from one conversation into another
 export * from "./threadReferences.js";

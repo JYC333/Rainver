@@ -268,7 +268,7 @@ launcher/control panel. See [ADR 0005](decisions/0005-desktop-runtime.md).
 
 **B18** — Sandboxes are short-lived execution areas. Long-term records are: artifacts, diffs, logs, and approved proposals. Sandbox directories may be cleaned up after artifact collection.
 
-**B19** — Agents do not directly modify a server-host real checkout. Read-only work uses an OS-enforced `read_only` namespace; mutation uses `logical Project Folder → server WorkspaceLocation → git worktree/sandbox → agent execution → validation → diff/artifacts → approval → apply patch`. **Amended 2026-08-21 ([ADR 0016](decisions/0016-control-plane-execution-hosts.md)):** this governed sequence describes the server host and any host under code-patch proposal governance. A Project Folder's remote trusted WorkspaceLocation is the deliberate exception — the agent runs in-place on the daemon-owned directory and there is no worktree/apply-patch stage; see B65.
+**B19** — No Agent writes a real checkout beyond the authority its execution grants. A Run the server executes itself (a non-CLI Run in a server-side sandbox, `projectFolders/sandbox.ts`) never touches the checkout: read-only work uses an OS-enforced `read_only` namespace, and a change goes `logical Project Folder → server WorkspaceLocation → isolated clone → agent execution → validation → diff → code_patch proposal → approval → apply patch` (ADR 0017 §1, real checkout). An Agent run by an execution host (ADR 0016) — the built-in host or a paired one — writes its Location directly, bounded by Project write authority and the host's isolation (B63): a Conversation turn in place, a Task Run in its own worktree whose change reaches the checkout when the Task is done (ADR 0016 §11, B65).
 
 **B19A** — Files & Code reads are policy-gated. `project_folder.read` is enforced for tree, file, git status, and git diff. Protected-Folder, external-root, restricted/protected, full-diff, and secret-like reads force durable audit records.
 
@@ -372,10 +372,13 @@ data, never used for access control, mount resolution, or identity. A Folder
 is logical and may have multiple Locations; no old Folder host/path column may
 be reintroduced.
 
-**B65** — Remote in-place execution's propose→apply governance (review before
-changes land, rollback semantics) is an open design question, not settled by
-default. Do not wire a remote diff into the code-patch proposal apply/rollback
-machinery without a new decision superseding this boundary.
+**B65** — On an execution host a change lands without a per-change approval.
+A Conversation turn edits its Location in place. A Task Run's change reaches
+the main branch only when its Task is done — by automatic acceptance, a
+person, or its Agent — merged onto the main branch's tip and verified by the
+Task's own checks, and then only by fast-forward (ADR 0016 §11). Do not wire a host Run's diff into the
+code-patch proposal apply/rollback machinery: that machinery belongs to Runs
+the server executes itself (B19).
 
 **B67** — For a Run bound to a ModelProvider, **backend selection comes only
 from what the control plane injects for that binding.** State the rule that

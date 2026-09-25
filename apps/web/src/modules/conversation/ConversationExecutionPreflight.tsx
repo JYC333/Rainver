@@ -526,18 +526,24 @@ function InitializedSummary({ summary, profiles, participants }: {
   const primary = summary.primary
   const runtime = summary.runtime
   const pinnedRuntimes = summary.runtimes ?? []
-  const runtimes = pinnedRuntimes.length > 0 ? pinnedRuntimes : runtime ? [runtime] : []
+  const runtimes: PinnedRuntime[] = pinnedRuntimes.length > 0 ? pinnedRuntimes : runtime ? [runtime] : []
   return <div className="space-y-1.5 text-xs">
     <div className="space-y-1">
       <span className="font-medium">Agents / CLI</span>
       {runtimes.length > 0 ? runtimes.map(pinned => (
-        <SummaryRow
-          key={pinned.agent_id}
-          label={participants.find(participant => participant.agent_id === pinned.agent_id)?.agent_name
-            ?? profiles.find(profile => profile.runtime_profile_id === pinned.runtime_profile_id)?.agent_name
-            ?? 'Unknown Agent'}
-          value={`${pinned.runtime_key} · ${pinned.runtime_installation}`}
-        />
+        <div key={pinned.agent_id}>
+          <SummaryRow
+            label={participants.find(participant => participant.agent_id === pinned.agent_id)?.agent_name
+              ?? profiles.find(profile => profile.runtime_profile_id === pinned.runtime_profile_id)?.agent_name
+              ?? 'Unknown Agent'}
+            value={`${pinned.runtime_key} · ${pinned.runtime_installation}${sessionOccupancy(pinned)}`}
+          />
+          {pinned.handoff_artifact_id ? (
+            <div className="pl-26 text-muted-foreground">
+              Session renewed from its handoff · <Link to={`/artifacts/${pinned.handoff_artifact_id}`} className="underline">Open handoff</Link>
+            </div>
+          ) : null}
+        </div>
       )) : <SummaryRow label="Agent / CLI" value="Unavailable" />}
     </div>
     <SummaryRow label="Host" value={host ? `${host.host_name}${host.online ? ' · daemon online' : ' · daemon offline'}` : 'Unavailable'} tone={host?.online === false ? 'danger' : undefined} />
@@ -597,6 +603,14 @@ function AttachmentControls({ summary, locations, selectedLocationId, onLocation
     </div>}
     <p className="text-xs text-muted-foreground">Attached Folders are writable by default. Choose Read only when this Conversation should only inspect that Folder.</p>
   </div>
+}
+
+type PinnedRuntime = ConversationExecutionSummary['runtimes'][number]
+
+/** How full this Agent's vendor session is, as its runtime last reported it. */
+function sessionOccupancy(pinned: PinnedRuntime): string {
+  if (pinned.context_tokens == null || !pinned.context_window_tokens) return ''
+  return ` · context ${Math.round((pinned.context_tokens / pinned.context_window_tokens) * 100)}% full`
 }
 
 function SummaryRow({ label, value, tone }: { label: string; value: string; tone?: 'danger' }) {

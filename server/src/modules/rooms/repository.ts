@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
-import type { SessionOut } from "@rainver/protocol";
-import { isStale } from "../hosts/repository.js";
+import type { RoomConversation, SessionOut } from "@rainver/protocol";
+import { isStale } from "../hosts/liveness.js";
 
 export interface RoomRecord {
   id: string;
@@ -525,4 +525,34 @@ export class PgRoomRepository {
 function required<T>(value: T | null | undefined, message: string): T {
   if (!value) throw new Error(message);
   return value;
+}
+
+/**
+ * A Room conversation as the wire carries it (`RoomConversationSchema`): ISO
+ * times, and no `user_id` — a Room conversation belongs to its Room, not to
+ * one person.
+ */
+export function roomConversationOut(session: {
+  id: string;
+  space_id: string;
+  room_id?: string | null;
+  project_id?: string | null;
+  project_folder_id?: string | null;
+  title?: string | null;
+  status: string;
+  created_at: unknown;
+  updated_at: unknown;
+}): RoomConversation {
+  const iso = (value: unknown) => value instanceof Date ? value.toISOString() : String(value);
+  return {
+    id: session.id,
+    space_id: session.space_id,
+    room_id: session.room_id!,
+    project_id: session.project_id!,
+    project_folder_id: session.project_folder_id ?? null,
+    title: session.title ?? null,
+    status: session.status,
+    created_at: iso(session.created_at),
+    updated_at: iso(session.updated_at),
+  };
 }

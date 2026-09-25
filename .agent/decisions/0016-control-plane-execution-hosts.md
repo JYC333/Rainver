@@ -425,11 +425,22 @@ be split across releases: a maintenance upgrade is downtime someone has to
 schedule. A UI-triggered offline upgrade would need an executor that survives
 stopping the server that requested it, and is not built.
 
-### 11. Deferred by decision
+### 11. How changes land, and what is deferred
 
-Remote Agent execution still lands changes on disk before review — the reverse
-of propose-then-apply — and its code-patch proposal apply/rollback path is
-unchanged. Separately, the explicit human File page has a bounded direct-write
+An Agent on an execution host lands changes without a per-change review. A
+Conversation turn edits its Location in place, bounded by Project write
+authority and the host's isolation (B63). A Task Run on a git Location works
+apart, on a branch of its own in a worktree the daemon owns (never inside the
+person's checkout), so an independent Task neither waits on the Location's
+writers nor shows them half-done work; its change reaches the checkout when
+the Task is done — by automatic acceptance, a person, or its Agent — with the
+Task's own declared verification as the gate: the branch is rebased onto the
+main branch in the worktree, a conflict goes to the Task's Agent and then to
+the person, verification runs again, and only then does the main branch move,
+by fast-forward. Rainver never pushes. The mechanics live in
+`modules/hosts.md`. The code-patch proposal apply/rollback path belongs to
+Runs the server executes in its own sandbox (B19, B65). Separately, the
+explicit human File page has a bounded direct-write
 path: the server authorizes a Project writer, pins the active Location, sends
 only a relative path and optimistic preimage hash over `folder_write`, and
 stores a short-lived preimage for rollback. A remote Location is writable only

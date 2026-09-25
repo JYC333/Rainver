@@ -110,6 +110,8 @@ CREATE TABLE "agent_run_groups" (
 	"room_id" varchar(36),
 	"session_id" varchar(36),
 	"trigger_message_id" varchar(36),
+	"discussion_id" varchar(36),
+	"advanced_at" timestamp with time zone,
 	"project_id" varchar(36),
 	"project_folder_id" varchar(36),
 	"title" text NOT NULL,
@@ -4033,6 +4035,27 @@ CREATE TABLE "task_loop_states" (
 	CONSTRAINT "ck_task_loop_states_revision" CHECK (revision >= 1)
 );
 --> statement-breakpoint
+CREATE TABLE "task_merges" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"task_id" varchar(36) NOT NULL,
+	"workspace_location_id" varchar(36) NOT NULL,
+	"basis" varchar(256) NOT NULL,
+	"status" varchar(32) DEFAULT 'queued' NOT NULL,
+	"requested_by_user_id" varchar(36) NOT NULL,
+	"main_branch" varchar(256),
+	"onto_commit" varchar(64),
+	"task_commit" varchar(64),
+	"merged_commit" varchar(64),
+	"detail_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"resolution_run_id" varchar(36),
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	"completed_at" timestamp with time zone,
+	CONSTRAINT "uq_task_merges_task_location_basis" UNIQUE("task_id","workspace_location_id","basis"),
+	CONSTRAINT "ck_task_merges_status" CHECK (status IN ('queued', 'rebasing', 'verifying', 'resolving', 'waiting_local_changes', 'conflict', 'verification_failed', 'merged', 'no_changes', 'failed', 'superseded'))
+);
+--> statement-breakpoint
 CREATE TABLE "proposal_approvals" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"proposal_id" varchar(36) NOT NULL,
@@ -4420,6 +4443,56 @@ CREATE TABLE "room_conversation_summary_versions" (
 	CONSTRAINT "ck_room_conversation_summary_versions_json" CHECK (jsonb_typeof(usage_json) = 'object' AND jsonb_typeof(audit_json) = 'object')
 );
 --> statement-breakpoint
+CREATE TABLE "room_discussions" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"room_id" varchar(36) NOT NULL,
+	"session_id" varchar(36) NOT NULL,
+	"opened_by_user_id" varchar(36) NOT NULL,
+	"origin_message_id" varchar(36) NOT NULL,
+	"kind" varchar(16) NOT NULL,
+	"shape" varchar(16) DEFAULT 'open' NOT NULL,
+	"topic" text,
+	"participant_agent_ids" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"round_cap" integer NOT NULL,
+	"rounds_used" integer DEFAULT 0 NOT NULL,
+	"round_base" integer DEFAULT 0 NOT NULL,
+	"turns_used" integer DEFAULT 0 NOT NULL,
+	"spend_cap_usd" numeric(12, 4),
+	"spend_usd" numeric(18, 8) DEFAULT '0' NOT NULL,
+	"status" varchar(16) DEFAULT 'active' NOT NULL,
+	"stop_reason" text,
+	"held_mentions_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"extensions_json" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"conclusion_message_id" varchar(36),
+	"quota_override_by_user_id" varchar(36),
+	"quota_override_at" timestamp with time zone,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_room_discussions_kind" CHECK (kind IN ('emergent', 'explicit')),
+	CONSTRAINT "ck_room_discussions_shape" CHECK (shape IN ('open', 'debate')),
+	CONSTRAINT "ck_room_discussions_status" CHECK (status IN ('active', 'converged', 'cap_reached', 'stopped', 'closed')),
+	CONSTRAINT "ck_room_discussions_caps" CHECK (round_cap > 0 AND rounds_used >= 0 AND round_base >= 0 AND turns_used >= 0 AND (spend_cap_usd IS NULL OR spend_cap_usd > 0) AND spend_usd >= 0),
+	CONSTRAINT "ck_room_discussions_arrays" CHECK (jsonb_typeof(participant_agent_ids) = 'array' AND jsonb_typeof(held_mentions_json) = 'array' AND jsonb_typeof(extensions_json) = 'array')
+);
+--> statement-breakpoint
+CREATE TABLE "room_queued_messages" (
+	"id" varchar(36) PRIMARY KEY NOT NULL,
+	"space_id" varchar(36) NOT NULL,
+	"room_id" varchar(36) NOT NULL,
+	"session_id" varchar(36) NOT NULL,
+	"user_id" varchar(36) NOT NULL,
+	"content" text NOT NULL,
+	"request_json" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"status" varchar(16) DEFAULT 'queued' NOT NULL,
+	"released_message_id" varchar(36),
+	"failure_reason" text,
+	"created_at" timestamp with time zone NOT NULL,
+	"updated_at" timestamp with time zone NOT NULL,
+	CONSTRAINT "ck_room_queued_messages_status" CHECK (status IN ('queued', 'released', 'withdrawn', 'failed')),
+	CONSTRAINT "ck_room_queued_messages_request" CHECK (jsonb_typeof(request_json) = 'object')
+);
+--> statement-breakpoint
 CREATE TABLE "room_creation_idempotencies" (
 	"id" varchar(36) PRIMARY KEY NOT NULL,
 	"space_id" varchar(36) NOT NULL,
@@ -4773,7 +4846,7 @@ CREATE TABLE "runs" (
 	    AND (
 	      (runtime_profile_id IS NOT NULL AND runtime_profile_selection_source IS NOT NULL AND runtime_key IS NOT NULL AND runtime_profile_snapshot_json IS NOT NULL)
 	      OR (runtime_profile_id IS NULL AND runtime_key IS NULL AND runtime_profile_snapshot_json IS NULL
-	        AND started_at IS NULL AND status IN ('queued', 'cancelling', 'failed', 'cancelled', 'orphaned'))
+	        AND started_at IS NULL AND status IN ('queued', 'waiting_for_dependency', 'cancelling', 'failed', 'cancelled', 'orphaned'))
 	      OR (run_role = 'coordinator' AND runtime_profile_id IS NULL AND runtime_key IS NULL
 	        AND runtime_profile_snapshot_json IS NULL AND started_at IS NULL
 	        AND status IN ('waiting_for_dependency', 'succeeded', 'degraded'))
@@ -4926,6 +4999,7 @@ CREATE TABLE "messages" (
 	"path_depth" integer NOT NULL,
 	"branch_path" text NOT NULL,
 	"run_id" varchar(36),
+	"discussion_id" varchar(36),
 	"created_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_messages_id_space_session" UNIQUE("id","space_id","session_id"),
 	CONSTRAINT "ck_messages_role" CHECK ((role)::text = ANY (ARRAY[('user'::character varying)::text, ('assistant'::character varying)::text, ('system'::character varying)::text, ('tool'::character varying)::text]))
@@ -5163,6 +5237,8 @@ CREATE TABLE "conversation_execution_contexts" (
 	"git_dirty" boolean,
 	"git_execution_ready" boolean,
 	"git_observed_at" timestamp with time zone,
+	"last_run_git_branch" varchar(256),
+	"last_run_git_head" varchar(128),
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "uq_conversation_execution_contexts_session_space" UNIQUE("session_id","space_id"),
@@ -6199,6 +6275,11 @@ CREATE TABLE "host_threads" (
 	"dispatch_lock_id" varchar(36),
 	"retired_vendor_session_ids" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"status" varchar(24) DEFAULT 'active' NOT NULL,
+	"identity_digest" varchar(64),
+	"identity_digest_run_id" varchar(36),
+	"context_tokens" integer,
+	"context_window_tokens" integer,
+	"handoff_artifact_id" varchar(36),
 	"created_by_user_id" varchar(36) NOT NULL,
 	"created_at" timestamp with time zone NOT NULL,
 	"updated_at" timestamp with time zone NOT NULL,
@@ -6398,6 +6479,7 @@ ALTER TABLE "agent_run_group_members" ADD CONSTRAINT "agent_run_group_members_gr
 ALTER TABLE "agent_run_group_members" ADD CONSTRAINT "agent_run_group_members_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_group_members" ADD CONSTRAINT "fk_agent_run_group_members_agent_same_space" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_group_members" ADD CONSTRAINT "fk_agent_run_group_members_group_same_space" FOREIGN KEY ("group_id","space_id") REFERENCES "public"."agent_run_groups"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_discussion_id_fkey" FOREIGN KEY ("discussion_id") REFERENCES "public"."room_discussions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_manager_agent_id_fkey" FOREIGN KEY ("manager_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_manager_user_id_fkey" FOREIGN KEY ("manager_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "agent_run_groups" ADD CONSTRAINT "agent_run_groups_root_run_id_fkey" FOREIGN KEY ("root_run_id") REFERENCES "public"."runs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
@@ -7144,6 +7226,9 @@ ALTER TABLE "task_loop_states" ADD CONSTRAINT "task_loop_states_space_id_fkey" F
 ALTER TABLE "task_loop_states" ADD CONSTRAINT "task_loop_states_task_id_fkey" FOREIGN KEY ("task_id","space_id") REFERENCES "public"."tasks"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_loop_states" ADD CONSTRAINT "task_loop_states_project_id_fkey" FOREIGN KEY ("project_id","space_id") REFERENCES "public"."projects"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "task_loop_states" ADD CONSTRAINT "task_loop_states_last_event_id_fkey" FOREIGN KEY ("last_event_id") REFERENCES "public"."project_work_events"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_merges" ADD CONSTRAINT "task_merges_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_merges" ADD CONSTRAINT "task_merges_task_id_fkey" FOREIGN KEY ("task_id","space_id") REFERENCES "public"."tasks"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "task_merges" ADD CONSTRAINT "task_merges_workspace_location_id_fkey" FOREIGN KEY ("workspace_location_id") REFERENCES "public"."workspace_locations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposal_approvals" ADD CONSTRAINT "proposal_approvals_approver_user_id_fkey" FOREIGN KEY ("approver_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposal_approvals" ADD CONSTRAINT "proposal_approvals_grant_id_fkey" FOREIGN KEY ("grant_id") REFERENCES "public"."personal_memory_grants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "proposal_approvals" ADD CONSTRAINT "proposal_approvals_action_grant_id_fkey" FOREIGN KEY ("action_grant_id") REFERENCES "public"."action_approval_grants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -7229,6 +7314,16 @@ ALTER TABLE "room_conversation_summary_versions" ADD CONSTRAINT "room_conversati
 ALTER TABLE "room_conversation_summary_versions" ADD CONSTRAINT "room_conversation_summary_versions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_conversation_summary_versions" ADD CONSTRAINT "room_conversation_summary_versions_owner_user_id_fkey" FOREIGN KEY ("owner_user_id") REFERENCES "public"."users"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_conversation_summary_versions" ADD CONSTRAINT "room_conversation_summary_versions_supersedes_id_fkey" FOREIGN KEY ("supersedes_id") REFERENCES "public"."room_conversation_summary_versions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_discussions" ADD CONSTRAINT "room_discussions_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_discussions" ADD CONSTRAINT "room_discussions_room_id_fkey" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_discussions" ADD CONSTRAINT "room_discussions_session_scope_fkey" FOREIGN KEY ("session_id","space_id") REFERENCES "public"."sessions"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_discussions" ADD CONSTRAINT "room_discussions_opened_by_user_id_fkey" FOREIGN KEY ("opened_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_discussions" ADD CONSTRAINT "room_discussions_origin_message_id_fkey" FOREIGN KEY ("origin_message_id") REFERENCES "public"."messages"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_discussions" ADD CONSTRAINT "room_discussions_conclusion_message_id_fkey" FOREIGN KEY ("conclusion_message_id") REFERENCES "public"."messages"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_queued_messages" ADD CONSTRAINT "room_queued_messages_session_scope_fkey" FOREIGN KEY ("session_id","space_id") REFERENCES "public"."sessions"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_queued_messages" ADD CONSTRAINT "room_queued_messages_room_id_fkey" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_queued_messages" ADD CONSTRAINT "room_queued_messages_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "room_queued_messages" ADD CONSTRAINT "room_queued_messages_released_message_id_fkey" FOREIGN KEY ("released_message_id") REFERENCES "public"."messages"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_creation_idempotencies" ADD CONSTRAINT "room_creation_idempotencies_space_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_creation_idempotencies" ADD CONSTRAINT "room_creation_idempotencies_user_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "room_creation_idempotencies" ADD CONSTRAINT "room_creation_idempotencies_room_fkey" FOREIGN KEY ("room_id","space_id") REFERENCES "public"."rooms"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -7314,6 +7409,7 @@ ALTER TABLE "run_tool_identities" ADD CONSTRAINT "run_tool_identities_run_id_fke
 ALTER TABLE "run_tool_identities" ADD CONSTRAINT "run_tool_identities_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "scheduler_tasks" ADD CONSTRAINT "scheduler_tasks_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "scheduler_tasks" ADD CONSTRAINT "scheduler_tasks_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "messages" ADD CONSTRAINT "messages_discussion_id_fkey" FOREIGN KEY ("discussion_id") REFERENCES "public"."room_discussions"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messages" ADD CONSTRAINT "messages_session_scope_fkey" FOREIGN KEY ("session_id","space_id") REFERENCES "public"."sessions"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messages" ADD CONSTRAINT "messages_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "messages" ADD CONSTRAINT "messages_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -7544,6 +7640,7 @@ ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_task_id_fkey" FOREIGN KE
 ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_session_space_fkey" FOREIGN KEY ("session_id","space_id") REFERENCES "public"."sessions"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_agent_space_fkey" FOREIGN KEY ("agent_id","space_id") REFERENCES "public"."agents"("id","space_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "host_threads" ADD CONSTRAINT "host_threads_handoff_artifact_id_fkey" FOREIGN KEY ("handoff_artifact_id") REFERENCES "public"."artifacts"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_thread_events" ADD CONSTRAINT "host_thread_events_thread_id_fkey" FOREIGN KEY ("host_task_thread_id") REFERENCES "public"."host_threads"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_thread_events" ADD CONSTRAINT "host_thread_events_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "host_thread_events" ADD CONSTRAINT "host_thread_events_run_id_fkey" FOREIGN KEY ("run_id") REFERENCES "public"."runs"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -7592,6 +7689,7 @@ CREATE INDEX "ix_agent_run_group_members_group" ON "agent_run_group_members" USI
 CREATE INDEX "ix_agent_run_groups_manager_user_updated" ON "agent_run_groups" USING btree ("space_id","manager_user_id","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_groups_root_run" ON "agent_run_groups" USING btree ("space_id","root_run_id");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_groups_room_session" ON "agent_run_groups" USING btree ("space_id","room_id","session_id","created_at");--> statement-breakpoint
+CREATE INDEX "ix_agent_run_groups_discussion" ON "agent_run_groups" USING btree ("space_id","discussion_id") WHERE discussion_id IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "ix_agent_run_groups_status_updated" ON "agent_run_groups" USING btree ("space_id","status","updated_at");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_messages_group_created" ON "agent_run_messages" USING btree ("space_id","group_id","created_at");--> statement-breakpoint
 CREATE INDEX "ix_agent_run_messages_run_created" ON "agent_run_messages" USING btree ("space_id","run_id","created_at");--> statement-breakpoint
@@ -8209,6 +8307,8 @@ CREATE INDEX "ix_project_work_events_undo_of" ON "project_work_events" USING btr
 CREATE UNIQUE INDEX "uq_project_work_events_idempotency" ON "project_work_events" USING btree ("space_id","idempotency_key") WHERE idempotency_key IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "ix_task_loop_states_project" ON "task_loop_states" USING btree ("space_id","project_id");--> statement-breakpoint
 CREATE INDEX "ix_task_loop_states_stage" ON "task_loop_states" USING btree ("space_id","project_id","current_stage_key");--> statement-breakpoint
+CREATE INDEX "ix_task_merges_task" ON "task_merges" USING btree ("space_id","task_id");--> statement-breakpoint
+CREATE INDEX "ix_task_merges_location_status" ON "task_merges" USING btree ("workspace_location_id","status");--> statement-breakpoint
 CREATE INDEX "ix_proposal_approvals_approval_type" ON "proposal_approvals" USING btree ("approval_type");--> statement-breakpoint
 CREATE INDEX "ix_proposal_approvals_approver_user_id" ON "proposal_approvals" USING btree ("approver_user_id");--> statement-breakpoint
 CREATE INDEX "ix_proposal_approvals_created_at" ON "proposal_approvals" USING btree ("created_at");--> statement-breakpoint
@@ -8279,6 +8379,9 @@ CREATE INDEX "ix_rooms_space_updated" ON "rooms" USING btree ("space_id","update
 CREATE INDEX "ix_room_conversation_summary_states_due" ON "room_conversation_summary_states" USING btree ("status","next_attempt_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_room_conversation_summary_versions_active" ON "room_conversation_summary_versions" USING btree ("session_id") WHERE status = 'active';--> statement-breakpoint
 CREATE INDEX "ix_room_conversation_summary_versions_room_created" ON "room_conversation_summary_versions" USING btree ("space_id","room_id","created_at");--> statement-breakpoint
+CREATE INDEX "ix_room_discussions_session" ON "room_discussions" USING btree ("space_id","session_id","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_room_discussions_session_open" ON "room_discussions" USING btree ("session_id") WHERE status IN ('active', 'cap_reached');--> statement-breakpoint
+CREATE INDEX "ix_room_queued_messages_session" ON "room_queued_messages" USING btree ("space_id","session_id","created_at") WHERE status = 'queued';--> statement-breakpoint
 CREATE INDEX "ix_room_creation_idempotency_room" ON "room_creation_idempotencies" USING btree ("space_id","room_id");--> statement-breakpoint
 CREATE INDEX "ix_retrieval_aliases_normalized_alias" ON "retrieval_aliases" USING btree ("normalized_alias");--> statement-breakpoint
 CREATE INDEX "ix_retrieval_aliases_object" ON "retrieval_aliases" USING btree ("object_type","object_id");--> statement-breakpoint
@@ -8386,6 +8489,7 @@ CREATE INDEX "ix_run_tool_identities_space_id" ON "run_tool_identities" USING bt
 CREATE INDEX "ix_scheduler_tasks_due" ON "scheduler_tasks" USING btree ("task_type","status","next_run_at");--> statement-breakpoint
 CREATE INDEX "ix_scheduler_tasks_space_id" ON "scheduler_tasks" USING btree ("space_id");--> statement-breakpoint
 CREATE INDEX "ix_scheduler_tasks_user_id" ON "scheduler_tasks" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "ix_messages_discussion_id" ON "messages" USING btree ("space_id","discussion_id") WHERE discussion_id IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "ix_messages_session_id" ON "messages" USING btree ("session_id");--> statement-breakpoint
 CREATE INDEX "ix_messages_space_session_created" ON "messages" USING btree ("space_id","session_id","created_at","id");--> statement-breakpoint
 CREATE INDEX "ix_messages_space_id" ON "messages" USING btree ("space_id");--> statement-breakpoint

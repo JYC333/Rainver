@@ -25,6 +25,10 @@ const UPDATE_KINDS = [
   "task.reported",
   "project.reported",
   "task.accepted",
+  // What became of a done Task's change: on the main branch, or stopped on
+  // something a person has to see (ADR 0016 §11).
+  "task.merged",
+  "task.merge_blocked",
   "thread.created",
   "thread.archived",
   "thread.reopened",
@@ -147,6 +151,11 @@ function summaryOf(row: UpdateRow): string {
   switch (row.event_kind) {
     // Bare, because the row already links the Task by name right beneath it.
     case "task.accepted": return "Accepted";
+    case "task.merged": return `Merged into ${str(row.data_json?.main_branch) ?? "the main branch"}`;
+    case "task.merge_blocked": return mergeBlockedSummary(
+      str(row.data_json?.reason),
+      Array.isArray(row.data_json?.overlapping_files) && (row.data_json.overlapping_files as unknown[]).length > 0,
+    );
     case "thread.created": return "Question opened";
     case "thread.archived": return "Question archived";
     case "thread.reopened": return "Question reopened";
@@ -161,6 +170,17 @@ function summaryOf(row: UpdateRow): string {
       return focus ? `Next step: ${focus.replace(/_/g, " ")}` : "Next step adopted";
     }
     default: return "";
+  }
+}
+
+function mergeBlockedSummary(reason: string | null, namesFiles: boolean): string {
+  switch (reason) {
+    case "waiting_local_changes": return namesFiles
+      ? "Ready to merge, waiting for uncommitted changes in the checkout"
+      : "Ready to merge, waiting for a rebase, merge or bisect of the main branch to finish";
+    case "conflict": return "Not merged: conflicts with the main branch";
+    case "verification_failed": return "Not merged: checks failed on the latest main branch";
+    default: return "Not merged: the merge failed";
   }
 }
 

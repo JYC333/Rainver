@@ -93,7 +93,7 @@ const CARD_SELECT = `
         FROM task_runs tr
         JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
        WHERE tr.task_id = t.id AND tr.space_id = t.space_id
-         AND tr.role NOT IN ('planning', 'review')
+         AND tr.role NOT IN ('planning', 'review', 'merge')
          AND ${runReadSql("$3")}
        ORDER BY r.created_at DESC, r.id DESC
        LIMIT 1
@@ -290,7 +290,7 @@ export async function getTaskWorkView(
               FROM task_runs tr
               JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
              WHERE tr.task_id = $2 AND tr.space_id = $1
-               AND tr.role NOT IN ('planning', 'review')
+               AND tr.role NOT IN ('planning', 'review', 'merge')
                AND ${runReadSql("$3")}
              ORDER BY r.created_at DESC, r.id DESC
              LIMIT 1

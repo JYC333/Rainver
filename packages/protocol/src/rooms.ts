@@ -8,6 +8,7 @@ import {
 import { ConversationMessageInputPartsSchema, MessageMetadataSchema } from "./memorySessions.js";
 import { RuntimeSessionConfigSelectionSchema } from "./hosts.js";
 import { RuntimeKeySchema } from "./runtimeAuthority.js";
+import { RoomDiscussionSchema } from "./roomDiscussions.js";
 
 export const RoomSchema = z.object({
   id: IdSchema,
@@ -355,6 +356,8 @@ export const RoomMessageSchema = z.object({
   parent_message_id: IdSchema.nullish(),
   /** The Run that produced this message, or that this message started. */
   run_id: IdSchema.nullish(),
+  /** The Room discussion this message belongs to, when it is part of one. */
+  discussion_id: IdSchema.nullish(),
   /** Ordered images and managed file references backed by server snapshots. */
   input_parts: ConversationMessageInputPartsSchema.optional(),
   created_at: ISODateTimeSchema,
@@ -459,6 +462,13 @@ export const SendRoomMessageRequestSchema = z.object({
   content: z.string().trim().max(8000).default(""),
   input_parts: ConversationInputPartsSchema.default([]),
   focus_refs: z.array(RoomMessageFocusRefSchema).max(4).nullish(),
+  /**
+   * Wait for the turn instead of being refused: when another turn holds the
+   * conversation, the message is queued and posted at the next turn boundary
+   * (202 with the queued message). A message with input parts is never
+   * queued.
+   */
+  queue: z.boolean().default(false),
   routing_mode: AgentRunMessageRoutingModeSchema.default("direct"),
   recipient_segments: z.array(AgentRunMessageRecipientSegmentSchema).min(1).nullish(),
   backends: z.array(z.object({
@@ -490,6 +500,33 @@ export const SendRoomMessageResponseSchema = z.object({
   run_ids: z.array(IdSchema).min(1),
   ...SecretResponseGuards,
 }).strict();
+
+/** A person's message waiting for the conversation's turn. */
+export const QueuedRoomMessageSchema = z.object({
+  id: IdSchema,
+  room_id: IdSchema,
+  session_id: IdSchema,
+  user_id: IdSchema,
+  content: z.string(),
+  status: z.enum(["queued", "released", "withdrawn", "failed"]),
+  released_message_id: IdSchema.nullable(),
+  failure_reason: z.string().nullable(),
+  created_at: ISODateTimeSchema,
+  ...SecretResponseGuards,
+}).strict();
+export type QueuedRoomMessage = z.infer<typeof QueuedRoomMessageSchema>;
+
+export const QueuedRoomMessageResponseSchema = z.object({
+  queued: QueuedRoomMessageSchema,
+  ...SecretResponseGuards,
+}).strict();
+export type QueuedRoomMessageResponse = z.infer<typeof QueuedRoomMessageResponseSchema>;
+
+/** Opening a discussion posts its topic as the person's message and dispatches the first wave. */
+export const OpenRoomDiscussionResponseSchema = SendRoomMessageResponseSchema.extend({
+  discussion: RoomDiscussionSchema,
+}).strict();
+export type OpenRoomDiscussionResponse = z.infer<typeof OpenRoomDiscussionResponseSchema>;
 
 /**
  * Everyone who can read a Project — the roster picker's candidate set.

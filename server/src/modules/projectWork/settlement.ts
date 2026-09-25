@@ -1,9 +1,10 @@
 import type { RunSettlementReason, WorkLoopStageKey } from "@rainver/protocol";
 import { artifactReadSql } from "../access/contentAccessSql.js";
-import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { resolveServiceActorId } from "../../db/actorResolver.js";
 import { appendProjectWorkEvent } from "./eventWriter.js";
 import { recordStageChange } from "./loopState.js";
+import { enqueueTaskMerges } from "../hosts/taskMerges.js";
 
 /**
  * What a finished Run means for the Task it was run for.
@@ -37,15 +38,20 @@ import { recordStageChange } from "./loopState.js";
  *   Task as `evaluation_missing`, and a failed Run held it while the
  *   Supervisor was about to retry. So a settled Run must carry a
  *   `run_finalizations` row before it counts, except `cancelled` (a person's
- *   decision, nothing to evaluate), and the finalization reconciler is the
- *   trigger that re-runs settlement once that row exists.
+ *   decision, nothing to evaluate), and finalization is the one trigger
+ *   (`finalizationReconciler.ts`): every terminal Run of a Task is finalized
+ *   — by the job that ran it, the route that cancelled it, or the jobs
+ *   worker's sweep of the rest — and nothing calls settlement from a
+ *   repository.
  * - It counted every `task_runs` row. A `planning` Run (Ask Agent to plan) and
  *   a `review` Run do not advance the work, and a successful plan closing its
  *   Task as done is precisely the wrong answer.
  */
 
 /** `task_runs.role` values that do not advance the Task's own work. */
-const NON_EXECUTION_TASK_RUN_ROLES = ["planning", "review"] as const;
+// `merge`: a conflict-resolution Run of a done Task's merge, which settles
+// nothing about the Task.
+const NON_EXECUTION_TASK_RUN_ROLES = ["planning", "review", "merge"] as const;
 
 /** Statuses that mean this Run is no longer advancing on its own. */
 export const SETTLED_RUN_STATUSES = [
@@ -69,6 +75,7 @@ interface LatestRunRow {
   required_outputs_json: unknown;
   run_id: string;
   run_status: string;
+  requested_by_user_id: string | null;
   evaluation_id: string | null;
   recommendation: string | null;
 }
@@ -225,6 +232,16 @@ export async function settleTasksForRun(
   spaceId: string,
   runId: string,
 ): Promise<readonly string[]> {
+  // One transaction: a Task's flow status, its Loop stage, its work events
+  // and its merge move together or not at all.
+  return withQueryableTransaction(db, (tx) => settleTasksForRunIn(tx, spaceId, runId));
+}
+
+async function settleTasksForRunIn(
+  db: Queryable,
+  spaceId: string,
+  runId: string,
+): Promise<readonly string[]> {
   const candidates = await db.query<LatestRunRow>(
     `WITH linked AS (
        SELECT DISTINCT tr.task_id
@@ -272,6 +289,7 @@ export async function settleTasksForRun(
             t.required_outputs_json,
             latest.run_id,
             latest.run_status,
+            (SELECT COALESCE(r.instructed_by_user_id, r.owner_user_id) FROM runs r WHERE r.id = latest.run_id) AS requested_by_user_id,
             ev.id AS evaluation_id,
             ev.recommendation
        FROM decided AS latest
@@ -359,6 +377,18 @@ export async function settleTasksForRun(
     );
     if (updated.rows.length === 0) continue;
     settled.push(row.task_id);
+
+    if (outcome.flow === "done") {
+      // Done by any path lands its branch (ADR 0016 §11).
+      await enqueueTaskMerges(db, {
+        spaceId,
+        taskId: row.task_id,
+        // Per close, not per Run: a Task reopened and closed again on the same
+        // Run merges again.
+        basis: `accepted:${row.run_id}:${new Date().toISOString()}`,
+        requestedByUserId: row.requested_by_user_id,
+      });
+    }
 
     if (!row.project_id) continue;
 

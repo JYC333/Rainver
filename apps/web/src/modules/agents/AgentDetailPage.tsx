@@ -479,6 +479,7 @@ function ModelTab({
   const supportsProviderSelection = backendMode === 'model_provider' && canUseModelProvider
   const requireClaudeCompatible = adapter?.provider_api === 'claude_compatible'
   const requireOpenAiCompatible = adapter?.provider_api === 'openai_compatible'
+  const requireVendorCompatible = adapter?.provider_api === 'vendor'
   useEffect(() => {
     setSelectedProfileId(defaultProfile?.id ?? '')
   }, [agentId, defaultProfile?.id])
@@ -698,6 +699,7 @@ function ModelTab({
           required={false}
           requireClaudeCompatible={requireClaudeCompatible}
           requireOpenAiCompatible={requireOpenAiCompatible}
+          requireVendorCompatible={requireVendorCompatible}
           emptyLabel={adapter ? `${adapter.display_name} default` : 'Agent/space default provider'}
         />
       )}

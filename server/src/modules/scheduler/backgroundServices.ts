@@ -19,6 +19,7 @@ import { enqueueDueResearchIntegrityChecks } from "../projectResearch/integrityM
 import { processAllUnclaimedDomainChangeEvents } from "../knowledgePromotion/revalidationService.js";
 import { sweepConversationRuntimeState } from "../runs/conversationRuntimeState.js";
 import { HOST_USAGE_REFRESH_INTERVAL_SECONDS, refreshAllHostUsage } from "../hosts/usageService.js";
+import { admitTurnParkedRuns, releaseHeldRuns } from "../rooms/quotaGate.js";
 import { setBackgroundServicesStatusSource } from "./runtimeStatus.js";
 import { AutonomyRecoveryService } from "../autonomy/recoveryService.js";
 import { reconcileInformationDigestAutomations } from "../informationDigest/automationProvisioning.js";
@@ -30,6 +31,7 @@ import { ConversationInputService } from "../sessions/conversationInputService.j
 import { PgProjectFileDraftRepository } from "../projectFolders/draftRepository.js";
 import { sharedServerOpenCodeProvisioner } from "../hosts/serverOpenCodeProvisioner.js";
 import { RegistrationService } from "../auth/registration.js";
+import { refreshBuiltinMergeLocations } from "../hosts/taskMerges.js";
 
 export interface BackgroundServicesHandle {
   worker: JobsWorkerHandle | null;
@@ -157,6 +159,18 @@ export function startBackgroundServices(
       runOnStart: true,
       awaitRunOnStart: false,
       run: async () => serverOpenCodeProvisioner.reconcile(),
+    });
+
+    // A built-in host Location has no heartbeat: its merges waiting on the
+    // checkout, or stopped on something the person may fix, are woken when
+    // the server sees its git state change (`hosts/taskMerges.ts`).
+    tasks.push({
+      name: "builtin_task_merge_refresh",
+      intervalSeconds: 120,
+      runOnStart: false,
+      run: async () => {
+        await refreshBuiltinMergeLocations(getDbPool(config.databaseUrl!), config.workspaceRoot);
+      },
     });
 
     tasks.push({
@@ -350,6 +364,20 @@ export function startBackgroundServices(
       run: async () => {
         const probed = await refreshAllHostUsage(getDbPool(config.databaseUrl!));
         if (probed > 0) log?.info(`[scheduler] host_usage_quota_refresh probed ${probed} copy(ies)`);
+      },
+    });
+    // Agent-triggered Room turns held at a subscription's reserve line start
+    // when its window resets (`modules/rooms.md`, "Subscription quota gate").
+    tasks.push({
+      name: "subscription_quota_hold_release",
+      intervalSeconds: 60,
+      runOnStart: false,
+      run: async () => {
+        const onError = (runId: string, error: unknown) =>
+          log?.warn(`[scheduler] subscription_quota_hold_release could not decide run ${runId}: ${error instanceof Error ? error.message : String(error)}`);
+        const released = await releaseHeldRuns(getDbPool(config.databaseUrl!), { onError })
+          + await admitTurnParkedRuns(getDbPool(config.databaseUrl!), null, onError);
+        if (released > 0) log?.info(`[scheduler] subscription_quota_hold_release admitted ${released} run(s)`);
       },
     });
   }

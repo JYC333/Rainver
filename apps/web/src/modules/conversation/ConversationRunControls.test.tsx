@@ -112,6 +112,18 @@ describe('ConversationRunControls', () => {
     expect(await screen.findByText('Turn cancelled; partial output is retained.')).toBeInTheDocument()
   })
 
+  it('names whose controls these are when told, so a fan-out does not show identical blocks', () => {
+    render(
+      <MemoryRouter>
+        <ConversationRunControls runId="run-1" run={run({ status: 'running' })} agentLabel="Critical Reviewer" />
+      </MemoryRouter>,
+    )
+
+    const controls = screen.getByTestId('conversation-run-controls-run-1')
+    expect(controls).toHaveTextContent('Critical Reviewer')
+    expect(controls).toHaveTextContent('Working…')
+  })
+
   it('surfaces a retry error without changing the transcript itself', async () => {
     const onRetry = vi.fn().mockRejectedValue(new Error('backend changed'))
 

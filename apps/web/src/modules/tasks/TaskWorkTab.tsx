@@ -28,6 +28,33 @@ function actorLabel(actor: ResponsibleActor): string {
   return actor.display_name ?? 'System'
 }
 
+/** The server's failure codes in words; the raw code stays in the record. */
+function mergeFailureText(error: string | null): string {
+  switch (error) {
+    case 'location_unavailable': return 'its Location is no longer available'
+    case 'main_checked_out_elsewhere': return 'the main branch is checked out in another worktree'
+    case 'no_main_branch': return 'the checkout has no main branch to merge into'
+    case 'git_too_old': return "the host's git is too old to merge"
+    case 'task_merge_unexpected_answer': return 'the host gave an answer the merge did not expect'
+    default: return 'the merge failed on the host'
+  }
+}
+
+function mergeBlockedSummary(reason: string | null, data: Record<string, unknown>): string {
+  const listed = (key: string) => {
+    const files = Array.isArray(data[key]) ? (data[key] as unknown[]).filter((f): f is string => typeof f === 'string') : []
+    return files.length > 0 ? `: ${files.slice(0, 3).join(', ')}${files.length > 3 ? ` and ${files.length - 3} more` : ''}` : ''
+  }
+  switch (reason) {
+    case 'waiting_local_changes': return listed('overlapping_files')
+      ? `Ready to merge, waiting for uncommitted changes in the checkout${listed('overlapping_files')}`
+      : 'Ready to merge, waiting for a rebase, merge or bisect of the main branch to finish'
+    case 'conflict': return `Not merged: conflicts with the main branch${listed('conflicted_files')}; the branch is kept to merge by hand`
+    case 'verification_failed': return 'Not merged: its checks failed on the latest main branch'
+    default: return `Not merged: ${mergeFailureText(typeof data.error === 'string' ? data.error : null)}`
+  }
+}
+
 function eventSummary(kind: string, data: Record<string, unknown>): string {
   const str = (key: string) => (typeof data[key] === 'string' ? data[key] as string : null)
   switch (kind) {
@@ -39,6 +66,8 @@ function eventSummary(kind: string, data: Record<string, unknown>): string {
       : 'Accepted the result'
     case 'task.responsibility_changed': return 'Changed who is responsible'
     case 'task.run_settled': return `A Run settled: ${str('reason') ?? str('run_status') ?? '—'}`
+    case 'task.merged': return `Merged into ${str('main_branch') ?? 'the main branch'}`
+    case 'task.merge_blocked': return mergeBlockedSummary(str('reason'), data)
     case 'task.reported': return str('summary') ?? 'Reported on the work'
     default: return kind
   }

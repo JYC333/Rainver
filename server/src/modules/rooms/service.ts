@@ -28,6 +28,15 @@ import { RoomConversationSummaryService } from "./conversationSummaryService.js"
 import { requestRoomConversationTitle } from "./conversationTitleService.js";
 import { PgProposalRepository } from "../proposals/repository.js";
 import { createDefaultConversationContinuationRegistry } from "../proposals/continuationRegistry.js";
+import { PgRoomDiscussionRepository } from "./discussionRepository.js";
+import {
+  enqueueRoomMessage,
+  hasQueuedRoomMessage,
+  isTurnTaken,
+  listQueuedRoomMessages,
+  lockRoomConversationQueue,
+  RoomMessageQueue,
+} from "./messageQueue.js";
 import { PLAIN_STATUS_RESPONSE_POLICY } from "../systemActions/conversationPolicy.js";
 import { PgConversationBackendRepository } from "../sessions/conversationBackendRepository.js";
 import { ConversationInputError, ConversationInputService, type PreparedConversationInputPart } from "../sessions/conversationInputService.js";
@@ -563,6 +572,8 @@ export class RoomService {
     );
     return {
       items: messages ?? [],
+      // What people said while the turn was taken, not yet posted.
+      queued: await listQueuedRoomMessages(this.pool, identity.spaceId, sessionId, identity.userId),
       task_group_ids: await roomRepository.listConversationTaskGroupIds(
         identity.spaceId,
         roomId,
@@ -585,33 +596,98 @@ export class RoomService {
   }
 
   /** Speak in an explicitly-created, initialized Conversation in a Room. */
-  async sendMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: {
-    content: string;
-    input_parts?: ConversationInputPart[];
-    focus_refs?: Array<{ type: "task"; id: string }> | null;
-    routing_mode?: "direct" | "agent_coordination";
-    recipient_segments?: AgentGroupMessageRecipientSegment[] | null;
-    backends?: Array<{
-      agent_id: string;
-      runtime_profile_id: string;
-      session_config?: RuntimeSessionConfigSelection[];
-    }>;
-  }) {
+  async sendMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: RoomSendInput) {
+    return withDbTransaction(this.pool, async (client) => this.sendInTransaction(client, identity, roomId, sessionId, input));
+  }
+
+  /**
+   * A person's message that waits for a taken turn instead of being refused
+   * (`modules/rooms.md`, "A person's message during a turn"): posted now when the turn is free, otherwise queued and
+   * posted at the next turn boundary. A message with input parts is never
+   * queued — its parts are claimed at send — and gets the refusal as before.
+   */
+  async sendOrQueueMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: RoomSendInput) {
+    if (input.input_parts?.length) return this.sendMessage(identity, roomId, sessionId, input);
     return withDbTransaction(this.pool, async (client) => {
-      const rooms = new PgRoomRepository(client);
-      const room = await requireRoom(rooms, identity, roomId, true);
-      const conversation = await requireConversation(rooms, identity, roomId, sessionId);
-      const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
-        content: input.content.trim(),
-        input_parts: input.input_parts ?? [],
-        focus_refs: input.focus_refs ?? null,
-        routing_mode: input.routing_mode ?? "direct",
-        recipient_segments: input.recipient_segments ?? null,
-        backends: input.backends ?? [],
-        kind: "user",
+      // Taken before the send, as a release and a discussion's advance take
+      // it: a message never slips in between a refusal and its queueing, nor
+      // ahead of one already waiting.
+      await lockRoomConversationQueue(client, identity.spaceId, sessionId);
+      const enqueue = async () => ({
+        queued: await enqueueRoomMessage(client, {
+          spaceId: identity.spaceId,
+          roomId,
+          sessionId,
+          userId: identity.userId,
+          content: input.content.trim(),
+          request: {
+            routing_mode: input.routing_mode ?? "direct",
+            recipient_segments: input.recipient_segments ?? null,
+            focus_refs: input.focus_refs ?? null,
+            backends: input.backends ?? [],
+          },
+        }),
       });
-      return dispatched;
+      if (await hasQueuedRoomMessage(client, identity.spaceId, sessionId)) {
+        const rooms = new PgRoomRepository(client);
+        await requireRoom(rooms, identity, roomId, true);
+        await requireConversation(rooms, identity, roomId, sessionId);
+        return enqueue();
+      }
+      await client.query("SAVEPOINT room_send");
+      try {
+        return await this.sendInTransaction(client, identity, roomId, sessionId, input);
+      } catch (error) {
+        if (!isTurnTaken(error)) throw error;
+        await client.query("ROLLBACK TO SAVEPOINT room_send");
+        return enqueue();
+      }
     });
+  }
+
+  private async sendInTransaction(client: PoolClient, identity: RoomIdentity, roomId: string, sessionId: string, input: RoomSendInput) {
+    const rooms = new PgRoomRepository(client);
+    const room = await requireRoom(rooms, identity, roomId, true);
+    const conversation = await requireConversation(rooms, identity, roomId, sessionId);
+    return this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
+      content: input.content.trim(),
+      input_parts: input.input_parts ?? [],
+      focus_refs: input.focus_refs ?? null,
+      routing_mode: input.routing_mode ?? "direct",
+      recipient_segments: input.recipient_segments ?? null,
+      backends: input.backends ?? [],
+      kind: "user",
+    });
+  }
+
+  /**
+   * A person's message, inside a transaction the caller owns: the discussion
+   * service opens a discussion with the topic as the person's message and
+   * stamps it in the same transaction.
+   */
+  async sendMessageInTransaction(client: PoolClient, identity: RoomIdentity, roomId: string, sessionId: string, input: {
+    content: string;
+    recipient_segments: AgentGroupMessageRecipientSegment[] | null;
+    routing_mode?: "direct" | "agent_coordination";
+    focus_refs?: Array<{ type: "task"; id: string }> | null;
+    backends?: Array<{ agent_id: string; runtime_profile_id: string; session_config?: RuntimeSessionConfigSelection[] }>;
+  }) {
+    const rooms = new PgRoomRepository(client);
+    const room = await requireRoom(rooms, identity, roomId, true);
+    const conversation = await requireConversation(rooms, identity, roomId, sessionId);
+    return this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
+      content: input.content.trim(),
+      input_parts: [],
+      focus_refs: input.focus_refs ?? null,
+      routing_mode: input.routing_mode ?? "direct",
+      recipient_segments: input.recipient_segments,
+      backends: input.backends ?? [],
+      kind: "user",
+    });
+  }
+
+  async withdrawQueuedMessage(identity: RoomIdentity, roomId: string, sessionId: string, queuedId: string) {
+    return new RoomMessageQueue(this.config, this.pool).withdraw(identity, roomId, sessionId, queuedId);
   }
 
   async retryMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: {
@@ -926,7 +1002,17 @@ export class RoomService {
     identity: RoomIdentity,
     roomId: string,
     sessionId: string,
-    event: { kind: string; key: string; payload?: Record<string, unknown> },
+    event: {
+      kind: string;
+      key: string;
+      payload?: Record<string, unknown>;
+      /** Addressed Agents and what each is told; the Manager alone when absent. */
+      recipient_segments?: AgentGroupMessageRecipientSegment[] | null;
+      /** The discussion wave (or closing turn) this continuation is part of. */
+      discussion?: RoomDispatchDiscussion | null;
+      /** The delegation budget left in the turn's container. */
+      delegation_budget?: RoomDelegationBudget | null;
+    },
   ) {
     const rooms = new PgRoomRepository(client);
     const room = await requireRoom(rooms, identity, roomId, true);
@@ -964,11 +1050,13 @@ export class RoomService {
     return this.dispatchRoomMessage(client, rooms, room, identity, sessionId, {
       content: continuation.instruction,
       routing_mode: "direct",
-      recipient_segments: null,
+      recipient_segments: event.recipient_segments ?? null,
       backends: [],
       kind: "domain_event_continuation",
       event: { kind: event.kind, key: event.key },
       continuation: { directive: continuation.directive, context: continuation.context },
+      discussion: event.discussion ?? null,
+      delegation_budget: event.delegation_budget ?? null,
     });
   }
 
@@ -997,6 +1085,10 @@ export class RoomService {
       existing_user_message?: MessageOut;
       /** See `AddMessageInput.created_at`; set when references precede it. */
       created_at?: string;
+      /** The discussion wave this message opens, stamped on it and on its group. */
+      discussion?: RoomDispatchDiscussion | null;
+      /** The container's remaining delegation budget; the per-turn default when absent. */
+      delegation_budget?: RoomDelegationBudget | null;
     } & (
       | { kind: "user"; proposal?: never }
       | {
@@ -1094,7 +1186,7 @@ export class RoomService {
         });
       } catch (error) {
         if (error instanceof ConversationTurnInProgressError) {
-          throw new HttpError(error.statusCode, error.message);
+          throw new HttpError(error.statusCode, error.message, { detail: error.message, code: "conversation_turn_in_progress" });
         }
         throw error;
       }
@@ -1194,16 +1286,43 @@ export class RoomService {
         // owns the Primary and attached roots. Keeping this null prevents a
         // managed Primary from inheriting a Room Folder in Run creation.
         project_folder_id: null,
-        budget_json: {
+        // One level of delegation, at most two specialists per turn. There is
+        // no concurrency budget: delegated children execute one at a time
+        // because the Conversation shares one directory (lifecycle projector),
+        // so a number here would describe nothing the runtime does.
+        budget_json: input.delegation_budget ? { ...input.delegation_budget } : {
           max_depth: 1,
           max_fanout: 2,
-          max_concurrency: 2,
         },
       }, { allowSystemAssistant: true });
+      if (input.discussion) {
+        // Stamped before the recipients are dispatched, in the same
+        // transaction: a Run of this group is never seen outside its
+        // discussion, and the discussion never counts a wave it did not open.
+        const discussions = new PgRoomDiscussionRepository(client);
+        await discussions.stampGroup(identity.spaceId, created.group.id, input.discussion.id);
+        await discussions.stampMessages({
+          spaceId: identity.spaceId,
+          sessionId,
+          discussionId: input.discussion.id,
+          wave: input.discussion.wave,
+          messageIds: [roomMessage.id],
+        });
+        if (input.discussion.closing) {
+          await client.query(
+            `UPDATE messages SET metadata_json = COALESCE(metadata_json, '{}'::jsonb) || '{"discussion_closing": true}'::jsonb
+              WHERE space_id = $1 AND id = $2`,
+            [identity.spaceId, roomMessage.id],
+          );
+        }
+      }
       const dispatched = await groups.sendRoomMessageInTransaction(client, identity, {
         space_id: identity.spaceId,
         group_id: created.group.id,
         content,
+        // A domain-event continuation is an Agent-triggered turn: admitted
+        // through the subscription quota gate (`quotaGate.ts`).
+        agent_origin: input.kind === "domain_event_continuation",
         // Retry capability parts are read-only metadata from the original
         // message. The persisted message already owns its frozen inputs; do
         // not feed the read-model shape back through the create-input path —
@@ -1259,10 +1378,14 @@ export class RoomService {
         message: {
           ...roomMessage,
           ...(input.input_parts?.length ? { input_parts: input.input_parts } : {}),
+          ...(input.discussion ? { discussion_id: input.discussion.id } : {}),
           metadata_json: {
             ...(roomMessage.metadata_json ?? {}),
             task_group_id: created.group.id,
             run_ids: runIds,
+            ...(input.discussion
+              ? { wave: input.discussion.wave, ...(input.discussion.closing ? { discussion_closing: true } : {}) }
+              : {}),
           },
         },
         task_group_ids: [created.group.id],
@@ -1319,6 +1442,39 @@ function createRoomFingerprint(input: {
 
 function cryptoRandomId(): string {
   return randomUUID();
+}
+
+/** What a person's send carries. */
+export interface RoomSendInput {
+  content: string;
+  input_parts?: ConversationInputPart[];
+  focus_refs?: Array<{ type: "task"; id: string }> | null;
+  routing_mode?: "direct" | "agent_coordination";
+  recipient_segments?: AgentGroupMessageRecipientSegment[] | null;
+  backends?: Array<{
+    agent_id: string;
+    runtime_profile_id: string;
+    session_config?: RuntimeSessionConfigSelection[];
+  }>;
+}
+
+/**
+ * The delegation budget a continuation's task group starts with, and — for a
+ * container that is not a discussion — how many Agent-triggered turns the
+ * chain has already charged.
+ */
+export interface RoomDelegationBudget {
+  max_depth: number;
+  max_fanout: number;
+  /** The task group whose count this chain charges, when it is not this one. */
+  container_group_id?: string;
+}
+
+/** Where a dispatch sits in a Room discussion (`discussionService.ts`). */
+export interface RoomDispatchDiscussion {
+  id: string;
+  wave: number;
+  closing?: boolean;
 }
 
 async function requireRoom(

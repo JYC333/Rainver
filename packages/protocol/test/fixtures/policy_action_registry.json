@@ -1456,6 +1456,19 @@
     "record_failure_mode": "fail_closed"
   },
   {
+    "action": "handoff.write",
+    "resource_type": "host_thread",
+    "default_risk_level": "low",
+    "default_decision": "allow",
+    "audit_required": true,
+    "approval_capability": null,
+    "default_required_approver_role": null,
+    "current_enforcement_point": "server/src/modules/systemActions/systemActionDispatcher.ts",
+    "description": "Write the handoff an Agent's next vendor session starts from, before Rainver rotates a session that has filled most of its context window. Self-limiting: it writes one Artifact on the Agent's own Conversation thread and touches nothing else, which is why it is ungated at any origin.",
+    "lifecycle_status": "wired_direct",
+    "record_failure_mode": "fail_closed"
+  },
+  {
     "action": "task.request_review",
     "resource_type": "task",
     "default_risk_level": "low",

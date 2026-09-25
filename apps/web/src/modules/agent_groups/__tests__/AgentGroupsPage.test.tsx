@@ -14,7 +14,7 @@ import {
   sessionsApi,
   spacesApi,
 } from '../../../api/client'
-import type { AgentOut, Project, Room, RoomConversation, RoomDetail, Run, RunTurn, TurnPart } from '../../../types/api'
+import type { AgentOut, Project, Room, RoomConversation, RoomDetail, RoomDiscussion, Run, RunTurn, TurnPart } from '../../../types/api'
 
 /** A turn in progress, for the stream mock. */
 function workingTurn(runId: string, parts: TurnPart[]): RunTurn {
@@ -55,7 +55,15 @@ vi.mock('../../../api/client', async () => {
     messages: vi.fn(),
     create: vi.fn(),
     sendMessage: vi.fn(),
+    withdrawQueuedMessage: vi.fn(),
     continueAfterProposal: vi.fn(),
+    openDiscussion: vi.fn(),
+    discussions: vi.fn(),
+    stopDiscussion: vi.fn(),
+    extendDiscussion: vi.fn(),
+    discussion: vi.fn(),
+    conversationQuota: vi.fn(),
+    continuePastQuota: vi.fn(),
     agentCandidates: vi.fn(),
     addAgent: vi.fn(),
     addAgentPreset: vi.fn(),
@@ -193,6 +201,40 @@ async function openLimitedRoomWith(name: string) {
   fireEvent.click(screen.getByRole('button', { name: 'Create' }))
 }
 
+/** The Room with a second, specialist Agent on its roster. */
+const detailWithReviewer: RoomDetail = {
+  ...detail,
+  agent_members: [
+    ...detail.agent_members,
+    { ...detail.agent_members[0]!, id: 'agent-member-2', agent_id: 'agent-2', agent_name: 'Critical Reviewer', agent_kind: 'standard', role: 'member' },
+  ],
+}
+
+const activeDiscussion: RoomDiscussion = {
+  id: 'disc-1',
+  room_id: 'room-1',
+  session_id: 'session-1',
+  kind: 'explicit',
+  shape: 'open',
+  status: 'active',
+  stop_reason: null,
+  topic: 'Pick a database',
+  opened_by_user_id: 'user-1',
+  origin_message_id: 'm-topic',
+  participant_agent_ids: ['agent-1', 'agent-2'],
+  round_cap: 3,
+  rounds_used: 1,
+  round_base: 0,
+  turns_used: 2,
+  spend_cap_usd: null,
+  spend_usd: 0,
+  held_mentions: [],
+  conclusion_message_id: null,
+  quota_override_by_user_id: null,
+  created_at: '2026-09-24T10:00:00.000Z',
+  updated_at: '2026-09-24T10:00:00.000Z',
+}
+
 /** One user message in `session-1`, to be picked. */
 const polarsMessages = {
   items: [{
@@ -240,6 +282,7 @@ describe('Rooms page', () => {
       offset: 0,
     })
     vi.mocked(roomsApi.summary).mockResolvedValue({ state: null, summary: null })
+    vi.mocked(roomsApi.conversationQuota).mockResolvedValue({ warn_pct: 70, reserve_pct: 85, logins: [], holds: [] })
     vi.mocked(roomsApi.agentCandidates).mockResolvedValue({ agents: [], presets: [], total: 0, limit: 100, offset: 0 })
     vi.mocked(roomsApi.invitations).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 })
     vi.mocked(projectsApi.readers).mockResolvedValue({
@@ -761,6 +804,58 @@ describe('Rooms page', () => {
     expect(screen.getAllByText('Owner').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Member').length).toBeGreaterThan(0)
     expect(await screen.findByText('Agent started')).toBeInTheDocument()
+  })
+
+  it('renders one live turn per recipient when a message fans out to several Agents, each named', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue({
+      ...detail,
+      agent_members: [
+        ...detail.agent_members,
+        { ...detail.agent_members[0]!, id: 'agent-member-2', agent_id: 'agent-2', agent_name: 'Critical Reviewer', agent_kind: 'standard', role: 'member' },
+      ],
+    })
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'message-fanout',
+        session_id: 'session-1',
+        space_id: 'space-1',
+        user_id: 'user-1',
+        sender_agent_id: null,
+        role: 'user',
+        content: '@Manager @Reviewer compare notes',
+        metadata_json: { run_ids: ['run-manager', 'run-reviewer'] },
+        created_at: '2026-07-26T00:00:01.000Z',
+      }],
+      task_group_ids: ['group-1'],
+      limit: 200,
+      offset: 0,
+    })
+    vi.mocked(runsApi.get).mockImplementation(async runId => ({
+      id: runId, status: 'running', agent_id: runId === 'run-reviewer' ? 'agent-2' : 'agent-1',
+    }) as Run)
+    vi.mocked(runsApi.streamTurn).mockImplementation(async (runId, options) => {
+      options.onTurn(workingTurn(runId, [
+        { type: 'tool_call', index: 0, call_id: `${runId}-c1`, name: `${runId} started`,
+          kind: null, status: 'running', input: null, output: null },
+      ]))
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    expect(await screen.findByText('@Manager @Reviewer compare notes')).toBeInTheDocument()
+    // Both recipients' turns stream at once, each as its own turn after the
+    // person's message — neither hides the other.
+    expect(await screen.findByText('run-manager started')).toBeInTheDocument()
+    expect(await screen.findByText('run-reviewer started')).toBeInTheDocument()
+    expect(runsApi.streamTurn).toHaveBeenCalledWith('run-manager', expect.anything())
+    expect(runsApi.streamTurn).toHaveBeenCalledWith('run-reviewer', expect.anything())
+    // While they work, each turn says who is working, and so does each
+    // Stop block under the person's message — two anonymous bubbles and two
+    // identical Stop buttons said nothing about which was which.
+    await waitFor(() => expect(within(screen.getByTestId('turn-run-reviewer')).getByText('Critical Reviewer')).toBeInTheDocument())
+    expect(within(screen.getByTestId('turn-run-manager')).getByText('Space Assistant')).toBeInTheDocument()
+    expect(screen.getByTestId('conversation-run-controls-run-reviewer')).toHaveTextContent('Critical Reviewer')
+    expect(screen.getByTestId('conversation-run-controls-run-manager')).toHaveTextContent('Space Assistant')
   })
 
   it('keeps a failed turn on screen, because nothing else says what went wrong', async () => {
@@ -1996,6 +2091,212 @@ describe('Rooms page', () => {
     // Its origin is reachable, and it is the session's own page.
     expect(screen.getByRole('link', { name: 'Branch review' }))
       .toHaveAttribute('href', '/spaces/space-1/projects/project-1/imported-sessions/imported-1')
+  })
+
+  it('folds a discussion into one group in the timeline and stops it from its header', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [
+        {
+          id: 'm-before', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+          role: 'user', content: 'Before the discussion', metadata_json: {}, created_at: '2026-09-24T09:59:00.000Z',
+        },
+        {
+          id: 'm-topic', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+          role: 'user', content: 'Pick a database', discussion_id: 'disc-1', metadata_json: { wave: 0 },
+          created_at: '2026-09-24T10:00:00.000Z',
+        },
+        {
+          id: 'm-reply', space_id: 'space-1', session_id: 'session-1', user_id: null, sender_agent_id: 'agent-2',
+          role: 'assistant', content: 'Postgres, with pgvector.', discussion_id: 'disc-1', metadata_json: { wave: 0 },
+          created_at: '2026-09-24T10:00:05.000Z',
+        },
+      ],
+      task_group_ids: [], limit: 50, offset: 0,
+    })
+    vi.mocked(roomsApi.discussions).mockResolvedValue({ items: [activeDiscussion] })
+    const stopped: RoomDiscussion = { ...activeDiscussion, status: 'stopped', updated_at: '2026-09-24T10:01:00.000Z' }
+    vi.mocked(roomsApi.stopDiscussion).mockImplementation(async () => {
+      vi.mocked(roomsApi.discussions).mockResolvedValue({ items: [stopped] })
+      return stopped
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    const group = await screen.findByTestId('discussion-disc-1')
+    expect(await within(group).findByText(/Space Assistant, Critical Reviewer · Round 1\/3 · In progress/)).toBeInTheDocument()
+    expect(within(group).getByText('Postgres, with pgvector.')).toBeInTheDocument()
+    // A message outside the discussion stays where it was, outside the group.
+    expect(within(group).queryByText('Before the discussion')).not.toBeInTheDocument()
+    expect(screen.getByText('Before the discussion')).toBeInTheDocument()
+    expect(roomsApi.discussions).toHaveBeenCalledWith('room-1', 'session-1')
+
+    fireEvent.click(within(group).getByRole('button', { name: 'Stop' }))
+    await waitFor(() => expect(roomsApi.stopDiscussion).toHaveBeenCalledWith('room-1', 'session-1', 'disc-1'))
+    expect(await within(group).findByText(/Round 1\/3 · Stopped/)).toBeInTheDocument()
+  })
+
+  it('opens an emergent discussion held at its cap from the notice card', async () => {
+    const held: RoomDiscussion = {
+      ...activeDiscussion, kind: 'emergent', topic: null, status: 'cap_reached', round_cap: 1, origin_message_id: 'm-origin',
+      held_mentions: [{ agent_id: 'agent-2', from_agent_ids: ['agent-1'], content: 'Should we cache this?' }],
+    }
+    vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [
+        {
+          id: 'm-origin', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+          role: 'user', content: 'Should we cache this?', metadata_json: {}, created_at: '2026-09-24T10:00:00.000Z',
+        },
+        {
+          id: 'm-notice', space_id: 'space-1', session_id: 'session-1', user_id: null, sender_agent_id: null,
+          role: 'system', content: 'This turn has used its Agent turns. Critical Reviewer is waiting to take part.', discussion_id: 'disc-1',
+          metadata_json: {
+            room_display: 'system_notice',
+            discussion_notice: {
+              discussion_id: 'disc-1', kind: 'cap_reached', reason: 'fanout_budget', agent_ids: ['agent-2'],
+            },
+          },
+          created_at: '2026-09-24T10:00:05.000Z',
+        },
+      ],
+      task_group_ids: [], limit: 50, offset: 0,
+    })
+    vi.mocked(roomsApi.discussions).mockResolvedValue({ items: [held] })
+    const opened: RoomDiscussion = { ...held, kind: 'explicit', status: 'active', round_cap: 4, updated_at: '2026-09-24T10:01:00.000Z' }
+    vi.mocked(roomsApi.extendDiscussion).mockImplementation(async () => {
+      vi.mocked(roomsApi.discussions).mockResolvedValue({ items: [opened] })
+      return opened
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    const group = await screen.findByTestId('discussion-disc-1')
+    // Emergent: no topic of its own, so the person's message names it.
+    expect(within(group).getAllByText('Should we cache this?').length).toBeGreaterThan(0)
+    const notice = within(group).getByTestId('discussion-notice-m-notice')
+    expect(notice).toHaveTextContent('Turn budget reached')
+    expect(notice).toHaveTextContent('This turn has used its Agent turns.')
+    fireEvent.click(await within(notice).findByRole('button', { name: 'Open a discussion' }))
+    await waitFor(() => expect(roomsApi.extendDiscussion).toHaveBeenCalledWith('room-1', 'session-1', 'disc-1', { rounds: 3 }))
+    await waitFor(() => expect(within(notice).queryByRole('button')).not.toBeInTheDocument())
+  })
+
+  it('shows a delegated child Run live as its own named turn, delegated by the Manager', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'm-ask', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+        role: 'user', content: 'Review the schema',
+        // The server lists a delegated child apart from the recipients.
+        metadata_json: { run_ids: ['run-manager'], delegated_run_ids: ['run-child'] },
+        created_at: '2026-09-24T10:00:00.000Z',
+      }],
+      task_group_ids: [], limit: 50, offset: 0,
+    })
+    vi.mocked(runsApi.get).mockImplementation(async runId => ({
+      id: runId,
+      status: 'running',
+      agent_id: runId === 'run-child' ? 'agent-2' : 'agent-1',
+      parent_run_id: runId === 'run-child' ? 'run-manager' : null,
+    }) as Run)
+    vi.mocked(runsApi.streamTurn).mockImplementation(async (runId, options) => {
+      options.onTurn(workingTurn(runId, [
+        { type: 'tool_call', index: 0, call_id: `${runId}-c1`, name: `${runId} started`,
+          kind: null, status: 'running', input: null, output: null },
+      ]))
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    expect(await screen.findByText('run-child started')).toBeInTheDocument()
+    await waitFor(() => expect(within(screen.getByTestId('turn-run-child')).getByText('Critical Reviewer')).toBeInTheDocument())
+    expect(within(screen.getByTestId('turn-run-child')).getByText('delegated by Space Assistant')).toBeInTheDocument()
+    expect(within(screen.getByTestId('turn-run-manager')).queryByText(/delegated by/)).not.toBeInTheDocument()
+    expect(roomsApi.discussions).not.toHaveBeenCalled()
+  })
+
+  it('lets a message wait for the running turn, and takes it back on Cancel', async () => {
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      queued: {
+        id: 'q-1', room_id: 'room-1', session_id: 'session-1', user_id: 'user-1', content: 'Also check the indexes',
+        status: 'queued', released_message_id: null, failure_reason: null, created_at: '2026-09-24T10:00:00.000Z',
+      },
+    } as never)
+    vi.mocked(roomsApi.withdrawQueuedMessage).mockResolvedValue({} as never)
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Also check the indexes' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.objectContaining({ queue: true })))
+    const waiting = await screen.findByTestId('queued-q-1')
+    expect(waiting).toHaveTextContent('Also check the indexes')
+    expect(waiting).toHaveTextContent('will be sent when the current turn ends')
+    fireEvent.click(within(waiting).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(roomsApi.withdrawQueuedMessage).toHaveBeenCalledWith('room-1', 'session-1', 'q-1'))
+    await waitFor(() => expect(screen.queryByTestId('queued-q-1')).not.toBeInTheDocument())
+  })
+
+  it('shows a waiting message that could not be sent, with the reason, until its sender dismisses it', async () => {
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      queued: [{
+        id: 'q-2', room_id: 'room-1', session_id: 'session-1', user_id: 'user-1', content: 'Run it again',
+        status: 'failed', released_message_id: null, failure_reason: 'Host is offline', created_at: '2026-09-24T10:00:00.000Z',
+      }],
+    } as never)
+    vi.mocked(roomsApi.withdrawQueuedMessage).mockResolvedValue({} as never)
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    const failed = await screen.findByTestId('queued-q-2')
+    expect(failed).toHaveTextContent('could not be sent: Host is offline')
+    fireEvent.click(within(failed).getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() => expect(roomsApi.withdrawQueuedMessage).toHaveBeenCalledWith('room-1', 'session-1', 'q-2'))
+  })
+
+  it('offers opening a discussion only to a Project writer', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue({ ...detailWithReviewer, viewer_can_write: false })
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    await screen.findByLabelText('Room message')
+    await waitFor(() => expect(roomsApi.get).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: 'Open a discussion' })).not.toBeInTheDocument()
+  })
+
+  it('opens a discussion from the composer and shows its topic as the person\'s message', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    vi.mocked(roomsApi.openDiscussion).mockResolvedValue({
+      message: {
+        id: 'm-topic', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+        role: 'user', content: 'Pick a database', discussion_id: 'disc-1', metadata_json: { wave: 0 },
+        created_at: '2026-09-24T10:00:00.000Z',
+      },
+      discussion: activeDiscussion,
+      conversation: initialConversation,
+      task_group_ids: ['group-1'],
+      run_ids: [],
+    } as never)
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    const open = await screen.findByRole('button', { name: 'Open a discussion' })
+    await waitFor(() => expect(open).toBeEnabled())
+    fireEvent.click(open)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText('Topic'), { target: { value: 'Pick a database' } })
+    fireEvent.click(within(dialog).getByLabelText('Space Assistant'))
+    fireEvent.click(within(dialog).getByLabelText('Critical Reviewer'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Open discussion' }))
+
+    await waitFor(() => expect(roomsApi.openDiscussion).toHaveBeenCalledWith('room-1', 'session-1', {
+      topic: 'Pick a database', participant_agent_ids: ['agent-1', 'agent-2'], shape: 'open', round_cap: 3,
+    }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    const group = await screen.findByTestId('discussion-disc-1')
+    expect(within(group).getByText(/Round 1\/3 · In progress/)).toBeInTheDocument()
   })
 
   it('renders execution system events as labeled timeline entries', async () => {

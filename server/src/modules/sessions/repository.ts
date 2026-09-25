@@ -82,6 +82,7 @@ interface MessageRow {
   metadata_json: unknown;
   parent_message_id: string | null;
   run_id: string | null;
+  discussion_id?: string | null;
   created_at: unknown;
   input_parts?: unknown;
 }
@@ -271,6 +272,7 @@ export class PgSessionRepository {
                   m.metadata_json,
                   m.parent_message_id,
                   m.run_id,
+                  m.discussion_id,
                   COALESCE((
                     SELECT jsonb_agg(
                       CASE WHEN part.kind = 'image' THEN jsonb_build_object(
@@ -449,6 +451,7 @@ export class PgSessionRepository {
                   m.metadata_json,
                   m.parent_message_id,
                   m.run_id,
+                  m.discussion_id,
                   COALESCE((
                     SELECT jsonb_agg(
                       CASE WHEN part.kind = 'image' THEN jsonb_build_object(
@@ -712,6 +715,32 @@ export class PgSessionRepository {
   }
 
   /**
+   * A system notice the Room itself posts — a discussion that ended, an Agent
+   * that could not be set working — attributed to nobody. Scoped to the
+   * conversation rather than to a reader, so it is written even when the
+   * person the discussion ran for has since left the Room: the notice is how
+   * the remaining members learn what happened.
+   */
+  async addRoomConversationNotice(
+    spaceId: string,
+    sessionId: string,
+    input: Omit<AddMessageInput, "role" | "metadata"> & {
+      metadata?: Omit<SystemNoticeMessageMetadata, "room_display"> | null;
+    },
+  ): Promise<MessageOut | null> {
+    const session = await this.db.query<{ id: string }>(
+      `SELECT id FROM sessions WHERE space_id = $1 AND id = $2 AND room_id IS NOT NULL AND status = 'active'`,
+      [spaceId, sessionId],
+    );
+    if (!session.rows[0]) return null;
+    return this.insertAttributedMessage(spaceId, "", sessionId, {
+      ...input,
+      role: "system",
+      metadata: { ...(input.metadata ?? {}), room_display: "system_notice" },
+    }, null);
+  }
+
+  /**
    * A durable, visible execution-context event for either a direct or Room
    * Conversation. The visibility check deliberately reuses the same
    * conversation projection as the read routes, and the event key makes a
@@ -732,7 +761,7 @@ export class PgSessionRepository {
     if (!session) return null;
     const existing = await this.db.query<MessageRow>(
       `SELECT id, session_id, space_id, user_id, sender_agent_id, role,
-              content, metadata_json, parent_message_id, run_id, created_at
+              content, metadata_json, parent_message_id, run_id, discussion_id, created_at
          FROM messages
         WHERE space_id = $1 AND session_id = $2 AND role = 'system'
           AND metadata_json->>'room_display' = 'system_notice'
@@ -831,7 +860,7 @@ export class PgSessionRepository {
     if (!session) return null;
     const result = await this.db.query<MessageRow>(
       `SELECT id, session_id, space_id, user_id, sender_agent_id, role,
-              content, metadata_json, parent_message_id, run_id, created_at
+              content, metadata_json, parent_message_id, run_id, discussion_id, created_at
          FROM messages
         WHERE space_id = $1 AND session_id = $2 AND role = 'system'
           AND metadata_json->>'room_display' = 'internal'
@@ -858,7 +887,7 @@ export class PgSessionRepository {
     if (!session) return null;
     const result = await this.db.query<MessageRow>(
       `SELECT id, session_id, space_id, user_id, sender_agent_id, role,
-              content, metadata_json, parent_message_id, run_id, created_at
+              content, metadata_json, parent_message_id, run_id, discussion_id, created_at
          FROM messages
         WHERE space_id = $1 AND session_id = $2 AND role = 'system'
           AND metadata_json->>'room_display' = 'internal'
@@ -941,7 +970,7 @@ export class PgSessionRepository {
                              AND head.space_id = $2 AND head.session_id = $3), $10),
                 $8
            FROM locked
-         RETURNING id, space_id, session_id, user_id, sender_agent_id, role, content, metadata_json, parent_message_id, run_id, created_at
+         RETURNING id, space_id, session_id, user_id, sender_agent_id, role, content, metadata_json, parent_message_id, run_id, discussion_id, created_at
        ), touched AS (
          UPDATE sessions
             SET updated_at = $8,
@@ -1015,7 +1044,7 @@ export class PgSessionRepository {
          -- idempotency index, so only that conflict is the no-op.
          ON CONFLICT (space_id, run_id) WHERE role = 'assistant' AND run_id IS NOT NULL
          DO NOTHING
-         RETURNING id, space_id, session_id, user_id, sender_agent_id, role, content, metadata_json, parent_message_id, run_id, created_at
+         RETURNING id, space_id, session_id, user_id, sender_agent_id, role, content, metadata_json, parent_message_id, run_id, discussion_id, created_at
        ), touched AS (
          UPDATE sessions
             SET updated_at = $7,
@@ -1043,7 +1072,7 @@ export class PgSessionRepository {
 
     const existing = await this.db.query<MessageRow>(
       `SELECT id, space_id, session_id, user_id, sender_agent_id, role, content,
-              metadata_json, parent_message_id, run_id, created_at
+              metadata_json, parent_message_id, run_id, discussion_id, created_at
          FROM messages
         WHERE space_id = $1
           AND session_id = $2
@@ -1123,7 +1152,7 @@ export class PgSessionRepository {
          ON CONFLICT (space_id, run_id) WHERE role = 'assistant' AND run_id IS NOT NULL
          DO NOTHING
          RETURNING id, space_id, session_id, user_id, sender_agent_id, role,
-                   content, metadata_json, parent_message_id, run_id, created_at
+                   content, metadata_json, parent_message_id, run_id, discussion_id, created_at
        ), updated AS (
          UPDATE messages message
             SET content = $5,
@@ -1139,7 +1168,7 @@ export class PgSessionRepository {
          RETURNING message.id, message.space_id, message.session_id,
                    message.user_id, message.sender_agent_id, message.role,
                    message.content, message.metadata_json,
-                   message.parent_message_id, message.run_id, message.created_at
+                   message.parent_message_id, message.run_id, message.discussion_id, message.created_at
        ), touched AS (
          UPDATE sessions
             SET updated_at = $7,
@@ -1174,7 +1203,7 @@ export class PgSessionRepository {
     if (created) return messageToOut(created);
     const existing = await this.db.query<MessageRow>(
       `SELECT id, space_id, session_id, user_id, sender_agent_id, role,
-              content, metadata_json, parent_message_id, run_id, created_at
+              content, metadata_json, parent_message_id, run_id, discussion_id, created_at
          FROM messages
         WHERE space_id = $1
           AND session_id = $2
@@ -1346,6 +1375,7 @@ function messageToOut(row: MessageRow): MessageOut {
     metadata_json: recordOrNull(row.metadata_json),
     parent_message_id: row.parent_message_id,
     run_id: row.run_id,
+    discussion_id: row.discussion_id ?? null,
     input_parts: ConversationMessageInputPartsSchema.safeParse(row.input_parts ?? []).success
       ? ConversationMessageInputPartsSchema.parse(row.input_parts ?? [])
       : [],

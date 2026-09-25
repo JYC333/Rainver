@@ -152,6 +152,47 @@ describe("finalizeChatTurn", () => {
     ]);
   });
 
+  it.each(["succeeded", "degraded"] as const)("writes a direct-chat turn that ended on the runtime's own question as a reply awaiting an answer (%s)", async (status) => {
+    let persisted: { content: string; metadata: unknown } | null = null;
+    const completion = await finalizeChatTurn(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://unused/test" }),
+      {
+        async listRunEventsPage() { return { items: [], total: 0, limit: 1, offset: 0 }; },
+        async appendRunEvent() { return {} as never; },
+      },
+      run({
+        status,
+        output_json: {
+          schema_version: "run_output.v1",
+          status,
+          summary: "",
+          result: { asked_user: { question: "Keep the old parser?", options: ["Yes", "No"] } },
+          output_manifest: [],
+        },
+      }),
+      {
+        sessions: {
+          async addAssistantMessageForRun(_spaceId, _userId, _sessionId, _runId, input) {
+            persisted = { content: input.content, metadata: input.metadata ?? null };
+            return {
+              id: "message-assistant-1", session_id: "session-1", space_id: "space-1", user_id: "user-1",
+              role: "assistant", content: input.content, metadata_json: input.metadata ?? null,
+              created_at: "2026-07-26T10:00:02.000Z",
+            };
+          },
+        },
+        resolveAgentActorId: async (_space: string, agentId: string) => agentId,
+        continuity: continuity(),
+        loadActionPreviews: async () => [],
+      },
+    );
+    expect(completion).toMatchObject({ ok: true, reply: "Keep the old parser?\n\n- Yes\n- No" });
+    expect(persisted).toEqual({
+      content: "Keep the old parser?\n\n- Yes\n- No",
+      metadata: { awaiting_answer: true },
+    });
+  });
+
   it("finalizes a Room turn through the Room writer exactly once", async () => {
     const events: RunEventInput[] = [];
     let roomWrites = 0;

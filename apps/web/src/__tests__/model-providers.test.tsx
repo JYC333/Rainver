@@ -5,7 +5,7 @@ import { toast } from 'sonner'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
-const { listMock, presetsMock, vendorsMock, createMock, createFromPresetMock, getRuntimeDefaultMock, setRuntimeDefaultMock, activeSpace } = vi.hoisted(() => ({
+const { listMock, presetsMock, vendorsMock, createMock, createFromPresetMock, getRuntimeDefaultMock, setRuntimeDefaultMock, quotaPolicyMock, updateQuotaPolicyMock, activeSpace } = vi.hoisted(() => ({
   listMock: vi.fn(),
   presetsMock: vi.fn(),
   vendorsMock: vi.fn(),
@@ -13,6 +13,8 @@ const { listMock, presetsMock, vendorsMock, createMock, createFromPresetMock, ge
   createFromPresetMock: vi.fn(),
   getRuntimeDefaultMock: vi.fn(),
   setRuntimeDefaultMock: vi.fn(),
+  quotaPolicyMock: vi.fn(),
+  updateQuotaPolicyMock: vi.fn(),
   activeSpace: { id: 'personal-1', name: 'My Personal' },
 }))
 
@@ -24,7 +26,7 @@ vi.mock('../api/client', () => ({
   authApi: { mySpaces: vi.fn().mockResolvedValue([{ id: 'personal-1', name: 'My Personal', type: 'personal', role: 'owner' }]) },
   acpAgentsApi: { registry: vi.fn().mockResolvedValue({ items: [] }), list: vi.fn().mockResolvedValue({ items: [] }) },
   hostsApi: { list: vi.fn().mockResolvedValue({ items: [] }), listRuntimeDefinitions: vi.fn().mockResolvedValue({ items: [] }) },
-  providersApi: { list: listMock, presets: presetsMock, vendors: vendorsMock, create: createMock, createFromPreset: createFromPresetMock, delete: vi.fn(), test: vi.fn(), patch: vi.fn(), grant: vi.fn() },
+  providersApi: { list: listMock, presets: presetsMock, vendors: vendorsMock, create: createMock, createFromPreset: createFromPresetMock, delete: vi.fn(), test: vi.fn(), patch: vi.fn(), grant: vi.fn(), subscriptionQuotaPolicy: quotaPolicyMock, updateSubscriptionQuotaPolicy: updateQuotaPolicyMock },
 }))
 
 vi.mock('../contexts/SpaceContext', () => ({
@@ -124,6 +126,8 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
     createFromPresetMock.mockReset()
     getRuntimeDefaultMock.mockResolvedValue(null)
     setRuntimeDefaultMock.mockReset()
+    quotaPolicyMock.mockResolvedValue({ warn_pct: 70, reserve_pct: 85 })
+    updateQuotaPolicyMock.mockReset()
     presetsMock.mockResolvedValue(providerPresets)
     // The vendor registry is the server's; the page reads it rather than
     // holding its own copy of which vendors can chat, embed, or rerank.
@@ -161,6 +165,24 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
       model_provider_id: provider.id,
       model_name: provider.default_model,
     }))
+  })
+
+  it('moves the Space\'s subscription quota lines, and refuses a warning line above the reserve line', async () => {
+    listMock.mockResolvedValue([])
+    updateQuotaPolicyMock.mockResolvedValue({ warn_pct: 60, reserve_pct: 90 })
+    render(<ModelProvidersPage />)
+    const warn = await screen.findByLabelText('Warning line percent')
+    expect(warn).toHaveValue(70)
+    expect(screen.getByLabelText('Reserve line percent')).toHaveValue(85)
+
+    fireEvent.change(warn, { target: { value: '95' } })
+    expect(screen.getByRole('alert')).toHaveTextContent('not above the reserve line')
+    expect(screen.getByRole('button', { name: 'Save quota lines' })).toBeDisabled()
+
+    fireEvent.change(warn, { target: { value: '60' } })
+    fireEvent.change(screen.getByLabelText('Reserve line percent'), { target: { value: '90' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save quota lines' }))
+    await waitFor(() => expect(updateQuotaPolicyMock).toHaveBeenCalledWith({ warn_pct: 60, reserve_pct: 90 }))
   })
 
   it('hides the empty-state while the add form is open', async () => {

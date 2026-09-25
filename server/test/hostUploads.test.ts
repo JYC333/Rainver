@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { HostRunDiffUploadSchema } from "@rainver/protocol";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-Postgres coverage for the ADR 0016 D7 upload path: a remote host may
@@ -170,6 +172,7 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
     const hosts = new PgHostRepository(db.pool);
     const run = await hosts.runOwnedByHost(HOST_A, RUN_A);
     const { artifact_id: artifactId } = await hosts.recordDiffArtifact(run!, OWNER, { diff: "diff --git a/x b/x\n+hi\n", truncated: false });
+    if (!artifactId) throw new Error("expected a diff artifact");
 
     const artifacts = new PgArtifactRepository(db.pool, { artifactStorageRoot: "/tmp", sandboxRoot: "/tmp" });
     const asMember = await artifacts.getVisible(SPACE, MEMBER, artifactId, true);
@@ -177,5 +180,149 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
 
     const listedForMember = await artifacts.listVisible(SPACE, MEMBER, { runId: RUN_A, limit: 10, offset: 0 });
     expect(listedForMember.items.map((item) => item.id)).toContain(artifactId);
+  });
+
+  it("records where the Run left the checkout on the Run and on its Conversation's gate, and keeps it through finalization", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const now = new Date().toISOString();
+    const sessionId = "99999999-9999-4999-8999-999999999999";
+    await db.pool.query(
+      // A direct chat's Conversation: its Runs carry the session id just as a Room turn's do.
+      `INSERT INTO sessions (id, space_id, project_id, user_id, agent_id, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)`,
+      [sessionId, SPACE, PROJECT, OWNER, AGENT, now],
+    );
+    await db.pool.query(
+      `INSERT INTO conversation_execution_contexts (
+         id, space_id, session_id, execution_host_id, primary_workspace_mode,
+         primary_project_folder_id, primary_workspace_location_id, state, initialized_at,
+         git_branch, git_head, git_execution_ready, git_observed_at, created_at, updated_at
+       ) VALUES (gen_random_uuid()::varchar, $1, $2, $3, 'location', $4, 'location-a', 'initialized', $5,
+                 'main', 'baseline', true, $5, $5, $5)`,
+      [SPACE, sessionId, HOST_A, FOLDER_A, now],
+    );
+    await db.pool.query(`UPDATE runs SET session_id = $2, status = 'running', output_json = NULL WHERE id = $1`, [RUN_A, sessionId]);
+    const hosts = new PgHostRepository(db.pool);
+    const run = await hosts.runOwnedByHost(HOST_A, RUN_A);
+
+    // No diff could be read, but the checkout could: nothing to review, and
+    // the gate still learns where this Run left HEAD.
+    const result = await hosts.recordDiffArtifact(run!, OWNER, {
+      diff: null,
+      truncated: false,
+      git_before: { branch: "main", head: "baseline" },
+      git_after: { branch: "main", head: "agent-commit" },
+    });
+    expect(result.artifact_id).toBeNull();
+    const context = await db.pool.query<{ last_run_git_branch: string; last_run_git_head: string; git_head: string }>(
+      `SELECT last_run_git_branch, last_run_git_head, git_head FROM conversation_execution_contexts WHERE session_id = $1`,
+      [sessionId],
+    );
+    // The baseline itself moves only when a send accepts it.
+    expect(context.rows[0]).toEqual({ last_run_git_branch: "main", last_run_git_head: "agent-commit", git_head: "baseline" });
+
+    await new PgRunRepository(db.pool).markRunTerminal({
+      run_id: RUN_A,
+      space_id: SPACE,
+      status: "succeeded",
+      output_json: { summary: "done" },
+      completed_at: new Date().toISOString(),
+    });
+    const finalized = await db.pool.query<{ output_json: Record<string, unknown> }>(`SELECT output_json FROM runs WHERE id = $1`, [RUN_A]);
+    expect(finalized.rows[0]!.output_json).toMatchObject({
+      summary: "done",
+      workspace_after: { branch: "main", head: "agent-commit", workspace_location_id: "location-a" },
+    });
+  });
+
+  it("keeps a Run's diff when its branch name is longer than the record holds", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const now = new Date().toISOString();
+    const sessionId = "99999999-9999-4999-8999-999999999997";
+    await db.pool.query(
+      `INSERT INTO sessions (id, space_id, project_id, user_id, agent_id, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)`,
+      [sessionId, SPACE, PROJECT, OWNER, AGENT, now],
+    );
+    await db.pool.query(
+      `INSERT INTO conversation_execution_contexts (
+         id, space_id, session_id, execution_host_id, primary_workspace_mode,
+         primary_project_folder_id, primary_workspace_location_id, state, initialized_at,
+         git_branch, git_head, git_execution_ready, git_observed_at, created_at, updated_at
+       ) VALUES (gen_random_uuid()::varchar, $1, $2, $3, 'location', $4, 'location-a', 'initialized', $5,
+                 'main', 'baseline', true, $5, $5, $5)`,
+      [SPACE, sessionId, HOST_A, FOLDER_A, now],
+    );
+    await db.pool.query(`UPDATE runs SET session_id = $2, status = 'running', output_json = NULL WHERE id = $1`, [RUN_A, sessionId]);
+    const hosts = new PgHostRepository(db.pool);
+    const run = await hosts.runOwnedByHost(HOST_A, RUN_A);
+    const branch = `feature/${"x".repeat(300)}`;
+    expect(HostRunDiffUploadSchema.safeParse({ diff: "diff --git a/f b/f\n", git_after: { branch, head: "h" } }).success).toBe(true);
+    const result = await hosts.recordDiffArtifact(run!, OWNER, {
+      diff: "diff --git a/f b/f\n",
+      truncated: false,
+      git_after: { branch, head: "agent-commit" },
+    });
+    expect(result.artifact_id).toBeTruthy();
+    const context = await db.pool.query<{ last_run_git_head: string | null }>(
+      `SELECT last_run_git_head FROM conversation_execution_contexts WHERE session_id = $1`,
+      [sessionId],
+    );
+    expect(context.rows[0]).toEqual({ last_run_git_head: null });
+  });
+
+  it("does not let a Run vouch for a HEAD it may not have moved", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const now = new Date().toISOString();
+    const sessionId = "99999999-9999-4999-8999-999999999998";
+    await db.pool.query(
+      `INSERT INTO sessions (id, space_id, project_id, user_id, agent_id, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)`,
+      [sessionId, SPACE, PROJECT, OWNER, AGENT, now],
+    );
+    await db.pool.query(
+      `INSERT INTO conversation_execution_contexts (
+         id, space_id, session_id, execution_host_id, primary_workspace_mode,
+         primary_project_folder_id, primary_workspace_location_id, state, initialized_at,
+         git_branch, git_head, git_execution_ready, git_observed_at, created_at, updated_at
+       ) VALUES (gen_random_uuid()::varchar, $1, $2, $3, 'location', $4, 'location-a', 'initialized', $5,
+                 'main', 'baseline', true, $5, $5, $5)`,
+      [SPACE, sessionId, HOST_A, FOLDER_A, now],
+    );
+    const hosts = new PgHostRepository(db.pool);
+    const lastRun = async () => (await db.pool!.query<{ last_run_git_head: string | null }>(
+      `SELECT last_run_git_head FROM conversation_execution_contexts WHERE session_id = $1`, [sessionId],
+    )).rows[0]!.last_run_git_head;
+    const upload = async (before: { branch: string; head: string } | undefined) => {
+      const run = await hosts.runOwnedByHost(HOST_A, RUN_A);
+      await hosts.recordDiffArtifact(run!, OWNER, {
+        diff: null,
+        truncated: false,
+        ...(before ? { git_before: before } : {}),
+        git_after: { branch: "main", head: "someone-else" },
+      });
+    };
+
+    // A read-only Run holds no lease: the HEAD it finds may be anyone's.
+    await db.pool.query(
+      `UPDATE runs SET session_id = $2, status = 'running', required_sandbox_level = 'read_only' WHERE id = $1`,
+      [RUN_A, sessionId],
+    );
+    await upload({ branch: "main", head: "baseline" });
+    expect(await lastRun()).toBeNull();
+
+    // A writer that started from a HEAD the Conversation never accepted.
+    await db.pool.query(`UPDATE runs SET required_sandbox_level = 'none' WHERE id = $1`, [RUN_A]);
+    await upload({ branch: "main", head: "moved-before-the-run" });
+    expect(await lastRun()).toBeNull();
+    // Or that did not say where it started.
+    await upload(undefined);
+    expect(await lastRun()).toBeNull();
+
+    // A late upload for a Run that already finished.
+    await db.pool.query(`UPDATE runs SET status = 'succeeded' WHERE id = $1`, [RUN_A]);
+    await upload({ branch: "main", head: "baseline" });
+    expect(await lastRun()).toBeNull();
+
+    // The Run's own record keeps what the host reported regardless.
+    const recorded = await db.pool.query<{ head: string }>(`SELECT output_json->'workspace_after'->>'head' AS head FROM runs WHERE id = $1`, [RUN_A]);
+    expect(recorded.rows[0]!.head).toBe("someone-else");
   });
 });

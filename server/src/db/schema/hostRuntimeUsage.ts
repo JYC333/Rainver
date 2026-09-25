@@ -11,9 +11,12 @@ import { hosts } from "./hosts.js";
  * reads here. `available: false` with a reason is a real answer worth caching:
  * "this copy is not logged in" should not be re-probed every few seconds.
  *
- * Cache only. Nothing decides anything from these rows — no dispatch, no
- * budget, no gate — so a stale or missing row costs a stale panel and nothing
- * else. `checked_at` is what makes the staleness visible rather than implied.
+ * A cache, and one gate reads it: Agent-triggered Room turns are held while
+ * the login's window is past the Space's reserve line (`rooms/quotaGate.ts`,
+ * which probes first when the reading is older than a minute). A missing or
+ * unreadable row holds nothing — the turn is admitted and the CLI itself is
+ * the last word. `checked_at` is what makes the staleness visible rather
+ * than implied.
  */
 export const hostRuntimeUsage = pgTable("host_runtime_usage", {
 	hostId: varchar("host_id", { length: 36 }).notNull(),

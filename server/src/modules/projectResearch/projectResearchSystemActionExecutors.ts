@@ -37,6 +37,7 @@ export function registerProjectResearchSystemActionExecutors(
       intentNote: body.intent_note ?? null,
       originRoomId: origin?.room_id ?? null,
       originSessionId: origin?.session_id ?? null,
+      originGroupId: origin?.room_id ? origin.id : null,
       maxItems: body.max_items ?? null,
       since: body.since ?? null,
     }).catch(async (error: unknown) => {

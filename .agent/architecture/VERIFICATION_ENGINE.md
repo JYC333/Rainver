@@ -52,7 +52,21 @@ author a recipe, which is Project write access.
 - `file_exists`, `file_changed`, `diff_scope`, `no_forbidden_change`: asked of
   the host the same way — `test -e` and `git diff`/`git status` through that
   one channel, rather than `stat` and git against a server path that a Run on
-  another machine never had;
+  another machine never had. An execution Task Run on an execution host is
+  asked about in its Task's worktree, and `git diff` compares against the
+  commit that worktree stood at when the Run started (the daemon reports it on
+  `complete`), so commits the Agent made itself count as its change
+  ([hosts.md](../modules/hosts.md), "Location lease, Task worktrees and
+  `git_after`");
+- a done Task's merge asks the Task's checks again of its merged worktree
+  (`verifyTaskWorkspace`): only the checks a workspace can answer — commands,
+  tests, lint, typecheck, file and git checks, recipe refs — declared from the
+  Task's latest execution Run's contract and the Folder's recipe, git-backed
+  ones against the main branch the Task commit sits on. The results gate the
+  merge; a failing gate records its failed checks on the merge (and its
+  `task.merge_blocked` event), never on that Run; and a check that could not
+  run (skipped) fails the gate ([hosts.md](../modules/hosts.md), "Merging a
+  done Task");
 - `artifact_exists`, `artifact_schema`, `output_schema`: materialization and
   bounded JSON-schema checks;
 - `proposal_created`: proposal materialization evidence.

@@ -12,7 +12,7 @@ import {
   isProviderEligibleForUser,
   providerCredentialEligibilitySql,
 } from "../providers/eligibility.js";
-import { isStale } from "../hosts/repository.js";
+import { isStale } from "../hosts/liveness.js";
 import { hostInstallationIds, hostInstallationOptions, hostInstallationPromptCapabilities } from "../hosts/capabilities.js";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { loadRuntimeProfileSnapshot, projectRuntimeProfileSnapshot } from "./runtimeProfileSnapshot.js";

@@ -9,7 +9,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { configDir, requireConfig, workspacesRoot } from "./config.js";
 import { buildStrictNamespaceCommand, type StrictBind } from "./strictNamespace.js";
 import { uploadRunDiff, uploadRunOutputs } from "./api.js";
-import { captureWorkspaceDiff } from "./gitDiff.js";
+import { captureGitHead, captureWorkspaceDiff, captureWorkspaceTree } from "./gitDiff.js";
+import { acquireLocationLeases, cancelAllLeaseWaits, cancelLeaseWaits, hasLeaseWaiters, releaseLocationLeases } from "./locationLease.js";
+import { checkLocationRepository, hasTaskWorktreeMaintenance, isTaskWorktreeInUse, prepareTaskWorktree, taskLeaseKey, touchTaskRecord, validTaskWorktreeIds, type LocationRepository, type TaskWorktree } from "./taskWorktree.js";
+import { mergeResolutionWorktree } from "./taskMerge.js";
 import { collectOutputFiles } from "./outputFiles.js";
 import { clearStateRootEnv, clearVendorCredentialEnv, filterAmbientEnv, materializeProviderBinding, sweepOrphanedRunDirectories } from "./providerBinding.js";
 import { managedToolTree, OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
@@ -23,6 +26,12 @@ export interface LaunchWorkspace {
   workspace_location_id?: string;
   /** Set only for a built-in-host Location; see the wire contract for why that is the one case. */
   workspace_relative_path?: string;
+  /**
+   * Run in the Task's own worktree (a write-capable execution Task Run;
+   * `taskWorktree.ts`) — or, with `merge_id`, resolve that merge's conflict
+   * in it as the merge left it (`taskMerge.ts`).
+   */
+  worktree?: { task_id: string; merge_id?: string };
   agent_id?: string;
   container?: ManagedWorkspaceContainer;
 }
@@ -121,7 +130,7 @@ export type WorkSurfaceFrame = HostLaunchWorkSurface;
 export type ProviderBindingFrame = HostLaunchProviderBinding;
 export type StdinFrame = Pick<HostServerFrameOf<"stdin">, "run_id" | "value">;
 export type StdinCloseFrame = Pick<HostServerFrameOf<"stdin_close">, "run_id">;
-export type TerminateFrame = Pick<HostServerFrameOf<"terminate">, "run_id"> & { force?: boolean };
+export type TerminateFrame = Pick<HostServerFrameOf<"terminate">, "run_id"> & Partial<Pick<HostServerFrameOf<"terminate">, "launch_id">> & { force?: boolean };
 
 interface ActiveRun {
   child: ChildProcess;
@@ -362,8 +371,29 @@ export function managedToolTreeForLaunch(runtimeKey: string | undefined, install
  * daemon process's lifetime.
  */
 const activeRuns = new Map<string, ActiveRun>();
-/** Runs whose launch frame has arrived but whose child is not registered yet. */
-const launchingRuns = new Set<string>();
+/**
+ * Every running attempt, by launch id → run id and attempt: `activeRuns`
+ * holds only a run's newest, and an earlier attempt that takes no lease (a
+ * Task worktree, a read-only Run) can still be running beside it.
+ */
+const activeLaunches = new Map<string, { runId: string; active: ActiveRun }>();
+/**
+ * Launch attempts whose frame has arrived but whose child is not registered
+ * yet, by launch id → run id. By attempt, because a retry reuses the run id
+ * and one attempt ending must not make an earlier one look finished.
+ */
+const launchingRuns = new Map<string, string>();
+/**
+ * Launch attempts a `terminate` reached while they were still being prepared.
+ * Checked before an attempt waits for its Locations and right before it
+ * spawns, so a stop that arrives in between is not lost.
+ */
+const stoppedLaunches = new Set<string>();
+
+function isLaunching(runId: string): boolean {
+  for (const launching of launchingRuns.values()) if (launching === runId) return true;
+  return false;
+}
 /**
  * Runs whose child has exited but whose directory is still being read.
  *
@@ -379,7 +409,7 @@ let registrationRevoked = false;
 
 /** A release updater may restart the daemon only after all Run work is settled. */
 export function hasInFlightRuns(): boolean {
-  return activeRuns.size > 0 || launchingRuns.size > 0 || finishingRuns.size > 0;
+  return activeLaunches.size > 0 || launchingRuns.size > 0 || finishingRuns.size > 0 || hasLeaseWaiters() || hasTaskWorktreeMaintenance();
 }
 
 /**
@@ -467,7 +497,7 @@ export async function withRuntimeKeyDrained<T>(
     const deadline = Date.now() + timeoutMs;
     const busy = () => launchingRuns.size > 0
       || (runtimeKeyHolders.get(runtimeKey) ?? 0) > 0
-      || [...activeRuns.values()].some((run) => run.runtimeKey === runtimeKey);
+      || [...activeLaunches.values()].some(({ active }) => active.runtimeKey === runtimeKey);
     while (busy()) {
       if (Date.now() >= deadline) {
         throw new Error(`Runs are still using ${runtimeKey}; try again once they finish`);
@@ -486,7 +516,9 @@ export async function withRuntimeKeyDrained<T>(
 /** A revoked host must stop every trusted-host process, including its process group, immediately. */
 export function stopAllRunsForRevocation(log: (line: string) => void = () => {}): void {
   registrationRevoked = true;
-  for (const [runId, active] of activeRuns) {
+  // A launch still queued for its Location has no process yet; it ends here.
+  cancelAllLeaseWaits();
+  for (const { runId, active } of activeLaunches.values()) {
     log(`run ${runId}: terminating because this host was revoked`);
     // Like every other deliberate stop: without it, a strict run killed here
     // before its namespace reported would be blamed on the namespace. Not
@@ -510,7 +542,7 @@ export async function sweepStaleRunProfiles(): Promise<number> {
   // to prevent.
   return sweepOrphanedRunDirectories(
     join(configDir(), "runs"),
-    new Set([...activeRuns.keys(), ...launchingRuns, ...finishingRuns]),
+    new Set([...[...activeLaunches.values()].map(({ runId }) => runId), ...launchingRuns.values(), ...finishingRuns]),
   );
 }
 
@@ -946,18 +978,57 @@ export async function handleLaunch(
     });
     return;
   }
-  launchingRuns.add(frame.run_id);
+  launchingRuns.set(frame.launch_id, frame.run_id);
+  const hold: LaunchHold = { leases: [], worktree: null, resolution: null, spawned: false };
   try {
-    await launchRun(frame, send, log);
+    await launchRun(frame, send, log, hold);
   } finally {
-    launchingRuns.delete(frame.run_id);
+    launchingRuns.delete(frame.launch_id);
+    stoppedLaunches.delete(frame.launch_id);
+    // A launch that never spawned gives back what it took on the way; one
+    // that did leaves that to its child's close handler. A Task worktree
+    // stays either way: it is the Task's, and settle removes it.
+    if (!hold.spawned) releaseHeldLeases(frame, hold);
   }
+}
+
+/**
+ * What a launch holds between deciding where to run and its diff being
+ * captured: the execution leases of the Locations it may write (or of its
+ * Task worktree), and that worktree. The leases are released exactly once, by
+ * whichever of `handleLaunch` (no child) and the child's close handler owns
+ * the Run at that point.
+ */
+interface LaunchHold {
+  leases: string[];
+  worktree: TaskWorktree | null;
+  /** A merge's conflict resolution: the Task worktree as the merge left it, neither prepared nor settled. */
+  resolution: { root: string; gitCommonDir: string } | null;
+  spawned: boolean;
+}
+
+function releaseHeldLeases(frame: Pick<LaunchFrame, "launch_id">, hold: LaunchHold): void {
+  const leases = hold.leases;
+  hold.leases = [];
+  releaseLocationLeases(leases, frame.launch_id);
+}
+
+/**
+ * Whether a Run may write its workspace, which is what its Location's lease
+ * serializes. The dispatch's `sandbox_mode` says so; a strict host that was
+ * told nothing binds the workspace read-only (`DEFAULT_STRICT_ISOLATION`),
+ * while a paired host that was told nothing runs natively and may write.
+ */
+export function launchMayWrite(isolation: HostLaunchIsolation | undefined, strict: boolean): boolean {
+  const mode = isolation?.sandbox_mode ?? (strict ? DEFAULT_STRICT_ISOLATION.sandbox_mode : "read_write");
+  return mode !== "read_only";
 }
 
 async function launchRun(
   frame: LaunchFrame,
   send: (frame: HostDaemonFrame) => void,
   log: (line: string) => void,
+  hold: LaunchHold,
 ): Promise<void> {
   const config = await requireConfig();
   let cwd: string | undefined;
@@ -1003,6 +1074,127 @@ async function launchRun(
       error: "This daemon has no local path registered for that workspace.",
     });
     return;
+  }
+  // Who else may be writing this directory (hosts.md, "Location lease"). An
+  // execution Task Run works in its Task's worktree and waits only for an
+  // earlier Run of the same Task; a Location that is not the top level of a
+  // git checkout cannot give it one, so it runs in place like any other writer.
+  const locationId = frame.workspace?.kind === "managed"
+    ? null
+    : frame.workspace?.workspace_location_id ?? frame.workspace_location_id ?? null;
+  const taskId = frame.workspace?.kind === "location" ? frame.workspace.worktree?.task_id ?? null : null;
+  let taskRepository: LocationRepository | null = null;
+  if (locationId && taskId) {
+    // Not a checkout, or one with nothing committed: the Run works in place.
+    // A checkout git refuses fails the launch instead — it is still the
+    // person's checkout, and a Task does not run there.
+    const check = await checkLocationRepository(cwd);
+    const refusal = check.kind === "unusable"
+      ? `This Location is a git checkout Rainver cannot make a Task worktree of: ${check.reason}`
+      : check.kind === "repository" && !validTaskWorktreeIds(locationId, taskId)
+        ? "This Task's id cannot name a Task worktree on this host."
+        : null;
+    if (refusal) {
+      send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: refusal });
+      return;
+    }
+    taskRepository = check.kind === "repository" ? check.repo : null;
+  }
+  const taskKey = locationId && taskId && taskRepository ? taskLeaseKey(locationId, taskId) : null;
+  // Every Location this Run may write — its own, unless it runs in its Task
+  // worktree, and each attachment granted `write` — and the Task worktree's
+  // own lease. Taken together, in sorted order.
+  const mayWrite = launchMayWrite(frame.isolation, config.trust === "strict");
+  const leaseIds = [
+    ...(taskKey ? [taskKey] : []),
+    ...(mayWrite
+      ? [
+        ...(locationId && !taskKey ? [locationId] : []),
+        ...(frame.workspace_access ?? [])
+          .filter((attachment) => attachment.access_mode === "write")
+          .map((attachment) => attachment.workspace_location_id),
+      ]
+      : []),
+  ];
+  if (stoppedLaunches.has(frame.launch_id)) {
+    sendStoppedBeforeStart(frame, send);
+    return;
+  }
+  let waitingSent = false;
+  if (leaseIds.length > 0) {
+    // Not "launching" while it waits: an upgrade drain would otherwise stall
+    // behind a Run that has not chosen a copy and may not for a long time. A
+    // stop meanwhile reaches it through the lease queue instead.
+    launchingRuns.delete(frame.launch_id);
+    const outcome = await acquireLocationLeases(leaseIds, { runId: frame.run_id, launchId: frame.launch_id }, () => {
+      waitingSent = true;
+      send({ type: "waiting_for_workspace", run_id: frame.run_id, launch_id: frame.launch_id });
+    });
+    launchingRuns.set(frame.launch_id, frame.run_id);
+    if (outcome === "cancelled") {
+      send({
+        type: "complete",
+        run_id: frame.run_id,
+        launch_id: frame.launch_id,
+        exit_code: 1,
+        timed_out: false,
+        error: "This run was stopped while it waited for its workspace.",
+      });
+      return;
+    }
+    hold.leases = [...new Set(leaseIds)];
+    // Checked again: both can change during a wait.
+    if (registrationRevoked || isRuntimeKeyBeingReplaced(frame.runtime_key)) {
+      send({
+        type: "complete",
+        run_id: frame.run_id,
+        launch_id: frame.launch_id,
+        exit_code: 1,
+        timed_out: false,
+        error: registrationRevoked
+          ? "This host registration was revoked."
+          : `${frame.runtime_key} is being upgraded on this host; retry in a moment.`,
+      });
+      return;
+    }
+  }
+  if (taskKey && locationId && taskId && taskRepository) {
+    // A verification command still running in the Task's worktree finishes
+    // first (commands are bounded by their own timeout); the lease already
+    // keeps settle, delete and the sweep out.
+    let waited = waitingSent;
+    while (isTaskWorktreeInUse(taskKey)) {
+      if (stoppedLaunches.has(frame.launch_id)) {
+        sendStoppedBeforeStart(frame, send);
+        return;
+      }
+      if (!waited) {
+        waited = true;
+        send({ type: "waiting_for_workspace", run_id: frame.run_id, launch_id: frame.launch_id });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    // With the Task's lease held: nothing else touches its worktree now.
+    const mergeId = frame.workspace?.kind === "location" ? frame.workspace.worktree?.merge_id : undefined;
+    try {
+      if (mergeId) {
+        hold.resolution = await mergeResolutionWorktree(taskRepository, locationId, taskId, mergeId);
+        cwd = hold.resolution.root;
+      } else {
+        hold.worktree = await prepareTaskWorktree(taskRepository, locationId, taskId, frame.run_id);
+        cwd = hold.worktree.root;
+      }
+    } catch (error) {
+      send({
+        type: "complete",
+        run_id: frame.run_id,
+        launch_id: frame.launch_id,
+        exit_code: 1,
+        timed_out: false,
+        error: `Could not prepare this Task's worktree: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
   }
   let attachedWorkspaceEnv: Record<string, string> = {};
   let attachedWorkspaceBinds: Array<{ path: string; access_mode: "read" | "write" }> = [];
@@ -1258,7 +1450,11 @@ async function launchRun(
         loginHome,
         toolTree: tool ? managedToolTreeForLaunch(frame.runtime_key ?? rawCommand, frame.installation) : null,
         runtimeRoot: daemonRuntimeRoot(),
-        workspaceBinds: attachedWorkspaceBinds,
+        // A worktree's history lives in the repository's own git directory,
+        // outside the worktree; without it git inside the namespace fails.
+        workspaceBinds: hold.worktree ?? hold.resolution
+          ? [...attachedWorkspaceBinds, { path: (hold.worktree ?? hold.resolution)!.gitCommonDir, access_mode: "write" as const }]
+          : attachedWorkspaceBinds,
       });
       await mkdir(plan.home, { recursive: true, mode: 0o700 });
       spawnCommand = plan.command;
@@ -1284,12 +1480,40 @@ async function launchRun(
     }
   }
 
+  const taskWorktree = hold.worktree;
+  const inTaskWorktree = Boolean(hold.worktree ?? hold.resolution);
+  // Where HEAD stands with this Run's leases held and before it runs: what
+  // lets the control plane tell whether the HEAD at exit is one this Run
+  // moved or one it merely found (`git_before`). Not for a Task worktree.
+  const gitBefore = inTaskWorktree ? null : await captureGitHead(cwd).catch(() => null);
+  // What the directory held before this attempt ran: the `remote_diff`
+  // uploaded at exit is the change between this and the tree at exit, so a
+  // later recipient in the same Conversation reports its own edits and not
+  // every earlier Agent's. A failed capture degrades to the tree-vs-HEAD diff.
+  // In a Task worktree it is the Run's start commit, so the diff also holds
+  // the commits the Agent made, and everything since a retry or resumption
+  // of the same Run first started.
+  const baselineTree = taskWorktree
+    ? taskWorktree.startCommit
+    : await captureWorkspaceTree(cwd).catch((error: unknown) => {
+      log(`run ${frame.run_id}: workspace baseline capture failed: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
+  // The last point a stop can arrive without a process to signal; past this
+  // line one exists and the stop reaches it through `activeRuns`.
+  if (stoppedLaunches.has(frame.launch_id)) {
+    if (strict) egressProxy?.revoke(frame.run_id);
+    sendStoppedBeforeStart(frame, send);
+    return;
+  }
   const child: ChildProcess = spawn(spawnCommand, spawnCommandArgs, {
     cwd,
     env: spawnEnv,
     stdio,
     detached: true,
   });
+  // From here the close handler below releases the leases.
+  hold.spawned = true;
   if (strict) {
     // "The namespace could not be built" and "the runtime exited immediately"
     // are the same exit code; this handshake is what tells them apart, and it
@@ -1320,6 +1544,7 @@ async function launchRun(
   // A retry of the same run id may arrive while the previous attempt's child
   // is still being torn down; the newest dispatch owns the id from here.
   activeRuns.set(frame.run_id, active);
+  activeLaunches.set(active.launchId, { runId: frame.run_id, active });
   // ACP runtime replatform P2: the server must not write a `stdin` frame
   // (e.g. a controller's `initialize` request) until it knows this run is
   // actually registered here — `launch` and any immediately-following
@@ -1365,14 +1590,41 @@ async function launchRun(
       // Only this attempt's own entry: a retry that took the run id over
       // while this child was dying must keep its registration.
       if (activeRuns.get(frame.run_id) === active) activeRuns.delete(frame.run_id);
+      if (activeLaunches.get(active.launchId)?.active === active) activeLaunches.delete(active.launchId);
       // Held until the directory is gone, so a reconnect mid-upload cannot
       // sweep the outputs this block is still reading.
       finishingRuns.add(frame.run_id);
 
+      let diff: string | null = null;
+      let gitAfter: Awaited<ReturnType<typeof captureGitHead>> = null;
       try {
-        const diff = await captureWorkspaceDiff(cwd);
-        if (diff !== null) {
-          await uploadRunDiff(config.server_url, config.token, frame.run_id, { diff, truncated: false });
+        diff = await captureWorkspaceDiff(cwd, baselineTree).catch((error: unknown) => {
+          log(`run ${frame.run_id}: diff capture failed: ${error instanceof Error ? error.message : String(error)}`);
+          return null;
+        });
+        // Where the checkout stands now, so the control plane can tell a HEAD
+        // this Run moved from one somebody else moved. Not for a Task
+        // worktree: its HEAD is the Task branch, never the Location's.
+        gitAfter = inTaskWorktree ? null : await captureGitHead(cwd).catch(() => null);
+        // Its sweep counts a day from the Run's end, not its start.
+        if (taskWorktree) {
+          await touchTaskRecord(taskWorktree, frame.run_id).catch((error: unknown) => {
+            log(`run ${frame.run_id}: task worktree record update failed: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }
+      } finally {
+        // Once the diff and HEAD are read the directory is the next writer's;
+        // nothing after this reads it. In a `finally` so no path keeps it.
+        releaseHeldLeases(frame, hold);
+      }
+      try {
+        if (diff !== null || gitAfter) {
+          await uploadRunDiff(config.server_url, config.token, frame.run_id, {
+            diff,
+            truncated: false,
+            ...(gitBefore ? { git_before: gitBefore } : {}),
+            ...(gitAfter ? { git_after: gitAfter } : {}),
+          });
         }
       } catch (error) {
         log(`run ${frame.run_id}: diff upload failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1389,7 +1641,7 @@ async function launchRun(
       // same directory, so this attempt leaves the cleanup to that one. A
       // failure here must not swallow the `complete` frame or pin the run id
       // in `finishingRuns` for this daemon's lifetime.
-      const superseded = activeRuns.has(frame.run_id) || launchingRuns.has(frame.run_id);
+      const superseded = activeRuns.has(frame.run_id) || isLaunching(frame.run_id);
       if (superseded) {
         log(`run ${frame.run_id}: a newer attempt owns the run directory; leaving it in place`);
       } else {
@@ -1410,7 +1662,8 @@ async function launchRun(
       // still gives up its entries, or the retry would report them again.
       if (superseded) egressProxy?.clearLog(frame.run_id);
       else egressProxy?.revoke(frame.run_id);
-
+      // A Task worktree stays: verification runs in it next, and
+      // `task_run_settle` commits and removes it.
       send({
         type: "complete",
         run_id: frame.run_id,
@@ -1418,6 +1671,7 @@ async function launchRun(
         exit_code: code ?? 1,
         timed_out: active.timedOut,
         ...(egress.length > 0 ? { egress } : {}),
+        ...(taskWorktree ? { task_worktree: { branch: taskWorktree.branch, start_commit: taskWorktree.startCommit } } : {}),
         error: launchFailureMessage({
           namespaceReady,
           timedOut: active.timedOut,
@@ -1430,11 +1684,33 @@ async function launchRun(
   });
 }
 
+function sendStoppedBeforeStart(frame: Pick<LaunchFrame, "run_id" | "launch_id">, send: (frame: HostDaemonFrame) => void): void {
+  send({
+    type: "complete",
+    run_id: frame.run_id,
+    launch_id: frame.launch_id,
+    exit_code: 1,
+    timed_out: false,
+    error: "This run was stopped before it started.",
+  });
+}
+
 export function handleTerminate(frame: TerminateFrame, log: (line: string) => void = () => {}): void {
-  const active = activeRuns.get(frame.run_id);
-  if (!active) return;
-  active.terminationRequested = true;
-  terminateWithEscalation(active.child, frame.force === true, log);
+  // A launch queued for its Locations has no process to signal; stopping it
+  // means taking it out of the queue, which completes it. A stop that names
+  // its attempt reaches only that attempt; one that does not reaches every
+  // attempt of the run, queued and running alike.
+  cancelLeaseWaits(frame.run_id, frame.launch_id);
+  // An attempt still being prepared has neither a queue place nor a process:
+  // it is marked, and stops itself before it waits or spawns.
+  for (const [launchId, runId] of launchingRuns) {
+    if (runId === frame.run_id && (!frame.launch_id || launchId === frame.launch_id)) stoppedLaunches.add(launchId);
+  }
+  for (const { runId, active } of activeLaunches.values()) {
+    if (runId !== frame.run_id || (frame.launch_id && active.launchId !== frame.launch_id)) continue;
+    active.terminationRequested = true;
+    terminateWithEscalation(active.child, frame.force === true, log);
+  }
 }
 
 /** Writes a `stdin` frame's value to the run's child process, translating the cwd placeholder first. */

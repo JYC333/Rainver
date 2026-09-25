@@ -546,6 +546,9 @@ class PgCheckpointContinuityProvider implements RuntimeContextChannelProvider {
   ): Promise<ContextItem[]> {
     const run = await loadInvocationRun(this.db, this.context, request);
     if (!run?.session_id) return [];
+    // A session handoff turn resumes the session that already holds the
+    // conversation; a window read now would end in the person's pending turn.
+    if (record(record(run.model_override_json).chat_turn).kind === "handoff") return [];
     const session = await this.sessions.getConversationForBackendSelection(
       request.identity.spaceId,
       request.identity.userId,

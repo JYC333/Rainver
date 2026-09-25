@@ -15,7 +15,7 @@ import {
 } from "../providers/eligibility.js";
 import { PgAgentRepository, type AgentCreateInput } from "./repository.js";
 import { normalizeHostCapabilities } from "../hosts/capabilities.js";
-import { isStale } from "../hosts/repository.js";
+import { isStale } from "../hosts/liveness.js";
 import { TASK_CONTRACT_POLICY } from "../systemActions/conversationPolicy.js";
 
 const MANAGED_ASSISTANT_NAME = "Space Assistant";

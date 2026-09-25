@@ -218,7 +218,16 @@ executors revalidate that the server-issued resource belongs to the authorized
 message, Run, Space, and session before returning bounded lines or literal
 matches. The resource body is never copied into tool summaries, audit records,
 or Host workspaces; a turn without an attached resource does not receive these
-actions merely because the Agent requested them.
+actions merely because the Agent requested them. A turn handed another Run's
+`[Changes]` link (`rainver://artifacts/<id>`, `agentGroups/runChangeBlock.ts`)
+receives the same pair: at dispatch through the same `has_input_resources`
+input, and a parked Run resumed with such a link through
+`grantRunChangeReadTools`, which adds only these two actions to its declared
+capabilities and scenario allowance and recomputes its grants through
+`buildRunToolGrants`. The executors then resolve the link only to a
+`remote_diff` Artifact of a Run in the reading Run's own conversation that the
+instructing person can read through the Artifact read gate (content ACL, Room
+Run grants, no admin oversight); the read is audited as that person's.
 
 ### Scenario tool allowances
 
@@ -337,7 +346,10 @@ with a one-click undo, and attention carries only what a person must decide
 (see `PROJECT_WORK.md`). `task.report`, `task.handoff` and
 `task.request_review` are ungated at any origin because they are append-only
 or self-limiting — a report only records, a handoff can only give work away, a
-review request can only stop work.
+review request can only stop work. `handoff.write` is ungated for the same
+reason and granted to one kind of Run only — the handoff turn before a
+Conversation × Agent session rotates (`modules/hosts.md`): it writes one
+Artifact on the Agent's own thread and nothing else.
 
 **What flipped, and what did not.** `inquiry.propose_thread` became
 `inquiry.create_thread` and `inquiry.record_conclusion` became a direct write;

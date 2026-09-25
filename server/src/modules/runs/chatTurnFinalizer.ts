@@ -16,12 +16,14 @@ import {
   RuntimeContextContinuityService,
 } from "../runtimeContext/index.js";
 import { runOutputResult } from "./orchestrationResults.js";
+import { askedUserFromRunOutput, awaitingAnswerReply } from "./vendorQuestion.js";
 import {
   PgRunRepository,
   type AgentRunRecord,
   type RunRecord,
 } from "./repository.js";
 import { requestRoomConversationSummary } from "../rooms/conversationSummaryService.js";
+import { RoomDiscussionService } from "../rooms/discussionService.js";
 import { InvocationAuthorityNotFoundError } from "../runtimeContext/continuity/service.js";
 
 const TERMINAL_STATUSES = new Set([
@@ -50,6 +52,8 @@ export interface ChatTurnFinalizerDeps {
   continuity?: Pick<RuntimeContextContinuityService, "finalizeChatTurn">;
   /** Ensures the Agent's actor row exists and returns its id (`db/actorResolver`). */
   resolveAgentActorId?: (spaceId: string, agentId: string) => Promise<string>;
+  /** Advances a Room discussion once a wave's last turn completes. */
+  discussions?: Pick<RoomDiscussionService, "afterTurnFinalized">;
 }
 
 export async function finalizeChatTurn(
@@ -121,9 +125,17 @@ export async function finalizeChatTurn(
   let assistantMessage: AssistantMessage | null = null;
   let terminalMessageId: string | null = null;
   let terminalMessageCreatedAt: string | null = null;
+  // A handoff turn talks to the Agent's next session, not to the Room: what
+  // it produced is the handoff Artifact, and its reply is never posted.
+  const handoffTurn = recordValue(recordValue(run.model_override_json).chat_turn).kind === "handoff";
 
-  if (outcome.ok) {
+  if (handoffTurn) {
+    // Completed below like any turn, so nothing waits on it.
+  } else if (outcome.ok) {
     const artifactRefs = artifactReferences(run.output_json);
+    // The runtime's own question ended this turn: the reply is the
+    // question, marked so the person sees it is waiting on them.
+    const awaitingAnswer = outcome.awaitingAnswer ? { awaiting_answer: true } : {};
     const sessions = deps.sessions ?? PgSessionRepository.fromConfig(config);
     const stored = isRoomConversationRun(run)
       ? await requiredRoomMessageWriter(sessions)({
@@ -135,6 +147,7 @@ export async function finalizeChatTurn(
           metadata: {
             ...(run.run_group_id ? { task_group_id: run.run_group_id } : {}),
             status: run.status,
+            ...awaitingAnswer,
             ...(artifactRefs.length > 0 ? { artifact_refs: artifactRefs } : {}),
             ...(persistedActionPreviews.length > 0 ? { action_previews: persistedActionPreviews } : {}),
           },
@@ -147,6 +160,7 @@ export async function finalizeChatTurn(
           {
             content: outcome.reply,
             metadata: {
+              ...awaitingAnswer,
               ...(artifactRefs.length > 0 ? { artifact_refs: artifactRefs } : {}),
               ...(persistedActionPreviews.length > 0 ? { action_previews: persistedActionPreviews } : {}),
             },
@@ -246,6 +260,18 @@ export async function finalizeChatTurn(
     },
   });
   const roomId = isRoomConversationRun(run) ? metadata.room_id ?? null : null;
+  if (isRoomConversationRun(run) && roomId && config.databaseUrl) {
+    // The turn is complete; if it was the last of its wave, the wave's
+    // replies decide the next one (a discussion, or its conclusion). Never a
+    // reason to fail the turn itself: a busy conversation is retried by a
+    // job, and anything else is logged and left to the next turn.
+    try {
+      await (deps.discussions ?? new RoomDiscussionService(config, getDbPool(config.databaseUrl)))
+        .afterTurnFinalized(run);
+    } catch (error) {
+      process.stderr.write(`[rooms] discussion advance after run ${run.id} failed: ${String((error as Error)?.message ?? error)}\n`);
+    }
+  }
   if (isRoomConversationRun(run) && outcome.ok && roomId && terminalMessageId && terminalMessageCreatedAt) {
     try {
       await requestRoomConversationSummary(getDbPool(config.databaseUrl!), {
@@ -311,7 +337,7 @@ function chatTurnMetadata(value: unknown): ChatTurnMetadata | null {
 
 function chatOutcome(
   run: AgentRunRecord,
-): { ok: true; reply: string } | {
+): { ok: true; reply: string; awaitingAnswer?: true } | {
   ok: false;
   error: string;
   errorCode: string;
@@ -324,7 +350,10 @@ function chatOutcome(
     "";
   // A degraded managed Run can still contain the complete model reply. The
   // degraded status records a non-blocking tool/materialization warning; it
-  // must not replace usable conversation output with a synthetic failure.
+  // must not replace usable conversation output with a synthetic failure —
+  // nor drop a question the runtime stopped to ask.
+  const asked = run.status === "succeeded" || run.status === "degraded" ? askedUserFromRunOutput(run.output_json) : null;
+  if (asked) return { ok: true, reply: awaitingAnswerReply(asked, reply), awaitingAnswer: true };
   if (run.status === "succeeded" || (run.status === "degraded" && reply)) {
     return { ok: true, reply };
   }

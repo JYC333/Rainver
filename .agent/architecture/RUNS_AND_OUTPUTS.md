@@ -250,8 +250,11 @@ the attempt's own transaction, so the Run cannot be `running` while pointing at
 a ledger record that was rolled back, and it refuses to start a Run that has
 left `queued` (`run_not_queued`) rather than spending the provider on work
 already called off. Cancellation and job exhaustion treat a queued ProviderTask
-Run as ordinary queued work: `cancelJob` and `reclaimStuckJobs` settle the Run
-behind a `provider_task_run` job exactly as they settle an `agent_run`'s, and
+Run as ordinary queued work: `cancelJob` and `reclaimStuckJobs` end the Run
+behind a `provider_task_run` job exactly as they end an `agent_run`'s —
+through the Run repository's one terminal write, never by writing `runs`
+themselves; its Task is then settled from finalization
+(`PROJECT_WORK.md`, "Trigger") — and
 the handler settles the Run `failed` when its own last attempt throws — which
 is the only thing that finishes a Run the worker never dispatched, because
 `recoverStaleRuns` reclaims only rows that actually started.

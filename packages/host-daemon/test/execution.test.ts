@@ -1,4 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -764,15 +766,19 @@ describe("a retry that reuses the run id", () => {
     // while that attempt is still uploading; both attempts share
     // `<config>/runs/<run_id>/`. The first attempt's cleanup used to delete
     // the second attempt's Skill and launcher out from under a live child.
+    // Read-only, because a writer's retry queues behind the first attempt's
+    // Location lease and so never overlaps it; a Run that takes no lease still
+    // can.
+    const readOnly = { sandbox_mode: "read_only", egress_profile: "none" } as const;
     const first = collectSend();
     await handleLaunch(
-      { run_id: "run-retry", launch_id: "launch-1", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.4"], work_surface: surface },
+      { run_id: "run-retry", launch_id: "launch-1", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.4"], work_surface: surface, isolation: readOnly },
       first.send,
       () => {},
     );
     const second = collectSend();
     await handleLaunch(
-      { run_id: "run-retry", launch_id: "launch-2", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.8; cat \"$RAINVER_SKILL_PATH\""], work_surface: surface },
+      { run_id: "run-retry", launch_id: "launch-2", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.8; cat \"$RAINVER_SKILL_PATH\""], work_surface: surface, isolation: readOnly },
       second.send,
       () => {},
     );
@@ -861,3 +867,255 @@ describe("what a Run reports about its egress", () => {
     }
   });
 });
+
+function git(args: string[], cwd: string): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+async function initRepository(dir: string): Promise<void> {
+  git(["init", "-q", "-b", "main"], dir);
+  git(["config", "user.email", "test@example.com"], dir);
+  git(["config", "user.name", "Test"], dir);
+  git(["commit", "-q", "--allow-empty", "-m", "initial"], dir);
+}
+
+/** A stand-in control plane that records each Run's diff upload body. */
+async function captureUploads(): Promise<{ server: Server; diffs: Map<string, Record<string, unknown>> }> {
+  const diffs = new Map<string, Record<string, unknown>>();
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk: Buffer) => { body += chunk.toString("utf8"); });
+    request.on("end", () => {
+      const match = /\/runs\/([^/]+)\/diff$/.exec(request.url ?? "");
+      if (match) diffs.set(decodeURIComponent(match[1]!), JSON.parse(body) as Record<string, unknown>);
+      response.writeHead(201, { "content-type": "application/json" });
+      response.end("{}");
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no address");
+  await saveConfig({
+    server_url: `http://127.0.0.1:${address.port}`,
+    host_id: "host-1",
+    trust: "trusted",
+    token: "secret-token",
+    workspaces: { "folder-1": workspaceDir },
+  });
+  return { server, diffs };
+}
+
+function frameIndex(frames: Record<string, unknown>[], type: string): number {
+  return frames.findIndex((frame) => frame.type === type);
+}
+
+describe("Location lease", () => {
+  it("serializes two writers on one Location and tells the control plane the second is waiting", async () => {
+    const order: string[] = [];
+    const first = collectSend();
+    await handleLaunch(
+      { run_id: "lease-writer-1", launch_id: "lease-launch-1", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.4"] },
+      (frame: Record<string, unknown>) => { order.push(`${String(frame.run_id)}:${String(frame.type)}`); first.send(frame); },
+      () => {},
+    );
+    const second = collectSend();
+    const secondLaunch = handleLaunch(
+      { run_id: "lease-writer-2", launch_id: "lease-launch-2", workspace_location_id: "folder-1", argv: ["sh", "-c", "true"] },
+      (frame: Record<string, unknown>) => { order.push(`${String(frame.run_id)}:${String(frame.type)}`); second.send(frame); },
+      () => {},
+    );
+    await second.complete();
+    await secondLaunch;
+    expect(second.frames[0]).toMatchObject({ type: "waiting_for_workspace", run_id: "lease-writer-2", launch_id: "lease-launch-2" });
+    // The second writer's process starts only after the first one completed.
+    expect(order.indexOf("lease-writer-2:launched")).toBeGreaterThan(order.indexOf("lease-writer-1:complete"));
+    expect(await first.complete()).toMatchObject({ exit_code: 0 });
+  });
+
+  it("does not make a read-only Run wait for a writer", async () => {
+    const writer = collectSend();
+    await handleLaunch(
+      { run_id: "lease-writer-3", launch_id: "lease-launch-3", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.4"] },
+      writer.send,
+      () => {},
+    );
+    const reader = collectSend();
+    await handleLaunch(
+      {
+        run_id: "lease-reader-1",
+        launch_id: "lease-launch-4",
+        workspace_location_id: "folder-1",
+        isolation: { sandbox_mode: "read_only", egress_profile: "none" },
+        argv: ["sh", "-c", "true"],
+      },
+      reader.send,
+      () => {},
+    );
+    expect(frameIndex(reader.frames, "launched")).toBe(0);
+    expect(frameIndex(reader.frames, "waiting_for_workspace")).toBe(-1);
+    // Launched while the writer still runs.
+    expect(frameIndex(writer.frames, "complete")).toBe(-1);
+    await reader.complete();
+    await writer.complete();
+  });
+
+  it("stops a queued launch on terminate without ever starting it", async () => {
+    const writer = collectSend();
+    await handleLaunch(
+      { run_id: "lease-writer-4", launch_id: "lease-launch-5", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.4"] },
+      writer.send,
+      () => {},
+    );
+    const queued = collectSend();
+    const launch = handleLaunch(
+      { run_id: "lease-queued-1", launch_id: "lease-launch-6", workspace_location_id: "folder-1", argv: ["sh", "-c", "true"] },
+      queued.send,
+      () => {},
+    );
+    await new Promise<void>((resolve) => {
+      const check = () => (frameIndex(queued.frames, "waiting_for_workspace") >= 0 ? resolve() : setTimeout(check, 5));
+      check();
+    });
+    handleTerminate({ run_id: "lease-queued-1", force: false });
+    await launch;
+    const done = await queued.complete();
+    expect(done).toMatchObject({ exit_code: 1, error: expect.stringMatching(/waited for its workspace/) });
+    expect(frameIndex(queued.frames, "launched")).toBe(-1);
+    await writer.complete();
+  });
+
+  it("uploads the branch and HEAD the Run left the checkout at with its diff", async () => {
+    await initRepository(workspaceDir);
+    const { server, diffs } = await captureUploads();
+    try {
+      const { send, complete } = collectSend();
+      await handleLaunch(
+        {
+          run_id: "git-after-1",
+          launch_id: "git-after-launch-1",
+          workspace_location_id: "folder-1",
+          argv: ["sh", "-c", "echo change > file.txt && git add file.txt && git commit -q -m agent"],
+        },
+        send,
+        () => {},
+      );
+      expect(await complete()).toMatchObject({ exit_code: 0 });
+      const upload = diffs.get("git-after-1");
+      expect(upload?.git_after).toEqual({ branch: "main", head: git(["rev-parse", "HEAD"], workspaceDir) });
+      // Read with the lease held, just before the process started.
+      expect(upload?.git_before).toEqual({ branch: "main", head: git(["rev-parse", "HEAD~1"], workspaceDir) });
+      expect(String(upload?.diff)).toContain("+change");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("serializes a Run that writes an attached Location against that Location's own writer", async () => {
+    const order: string[] = [];
+    const record = (collector: ReturnType<typeof collectSend>) => (frame: Record<string, unknown>) => {
+      order.push(`${String(frame.run_id)}:${String(frame.type)}`);
+      collector.send(frame);
+    };
+    const first = collectSend();
+    await handleLaunch(
+      {
+        run_id: "attach-writer",
+        launch_id: "attach-launch-1",
+        workspace_location_id: "folder-1",
+        workspace_access: [{ workspace_location_id: "location-attached", access_mode: "write" }],
+        argv: ["sh", "-c", "sleep 0.4"],
+      },
+      record(first),
+      () => {},
+    );
+    const second = collectSend();
+    const secondLaunch = handleLaunch(
+      { run_id: "attached-own-writer", launch_id: "attach-launch-2", workspace_location_id: "location-attached", argv: ["true"] },
+      record(second),
+      () => {},
+    );
+    // A read grant on the same Location waits for nobody.
+    const reader = collectSend();
+    await handleLaunch(
+      {
+        run_id: "attach-reader",
+        launch_id: "attach-launch-3",
+        workspace_location_id: "folder-1",
+        isolation: { sandbox_mode: "read_only", egress_profile: "none" },
+        workspace_access: [{ workspace_location_id: "location-attached", access_mode: "read" }],
+        argv: ["true"],
+      },
+      reader.send,
+      () => {},
+    );
+    expect(frameIndex(reader.frames, "waiting_for_workspace")).toBe(-1);
+    await second.complete();
+    await secondLaunch;
+    expect(second.frames[0]).toMatchObject({ type: "waiting_for_workspace" });
+    expect(order.indexOf("attached-own-writer:launched")).toBeGreaterThan(order.indexOf("attach-writer:complete"));
+    await first.complete();
+    await reader.complete();
+  });
+
+  it("stops only the named attempt when a terminate carries its launch id", async () => {
+    const running = collectSend();
+    await handleLaunch(
+      { run_id: "attempts", launch_id: "attempt-1", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 0.4"] },
+      running.send,
+      () => {},
+    );
+    const queued = collectSend();
+    const queuedLaunch = handleLaunch(
+      { run_id: "attempts", launch_id: "attempt-2", workspace_location_id: "folder-1", argv: ["true"] },
+      queued.send,
+      () => {},
+    );
+    await waitFor(() => frameIndex(queued.frames, "waiting_for_workspace") >= 0);
+    handleTerminate({ run_id: "attempts", launch_id: "attempt-2", force: true });
+    await queuedLaunch;
+    expect(await queued.complete()).toMatchObject({ exit_code: 1, error: expect.stringMatching(/waited for its workspace/) });
+    // The running attempt was not the one named.
+    expect(await running.complete()).toMatchObject({ exit_code: 0 });
+  });
+
+  it("stops every attempt, queued and running, when a terminate names none", async () => {
+    const running = collectSend();
+    await handleLaunch(
+      { run_id: "all-attempts", launch_id: "all-1", workspace_location_id: "folder-1", argv: ["sh", "-c", "sleep 5"] },
+      running.send,
+      () => {},
+    );
+    const queued = collectSend();
+    const queuedLaunch = handleLaunch(
+      { run_id: "all-attempts", launch_id: "all-2", workspace_location_id: "folder-1", argv: ["true"] },
+      queued.send,
+      () => {},
+    );
+    await waitFor(() => frameIndex(queued.frames, "waiting_for_workspace") >= 0);
+    handleTerminate({ run_id: "all-attempts", force: true });
+    await queuedLaunch;
+    expect(await queued.complete()).toMatchObject({ exit_code: 1 });
+    expect(frameIndex(queued.frames, "launched")).toBe(-1);
+    expect((await running.complete()).exit_code).not.toBe(0);
+  }, 10000);
+
+  it("does not start an attempt a terminate reached while it was still being prepared", async () => {
+    const { frames: sent, send, complete } = collectSend();
+    const launch = handleLaunch(
+      { run_id: "stopped-early", launch_id: "stopped-early-1", workspace_location_id: "folder-1", argv: ["true"] },
+      send,
+      () => {},
+    );
+    handleTerminate({ run_id: "stopped-early", launch_id: "stopped-early-1", force: true });
+    await launch;
+    expect(await complete()).toMatchObject({ exit_code: 1, error: expect.stringMatching(/stopped before it started/) });
+    expect(frameIndex(sent, "launched")).toBe(-1);
+  });
+});
+
+function waitFor(condition: () => boolean): Promise<void> {
+  return new Promise((resolve) => {
+    const check = () => (condition() ? resolve() : setTimeout(check, 5));
+    check();
+  });
+}

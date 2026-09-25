@@ -32,7 +32,8 @@ export function settledTurn(
 }
 
 /**
- * What state a turn read back on a cold load is shown in.
+ * What state a turn read back on a cold load is shown in, given what it is
+ * blocked on when it is blocked.
  *
  * A saved reply exists, so the Agent is not working on it any more — but the
  * turn can still read `working`: `chatTurnFinalizer` writes the message
@@ -41,8 +42,16 @@ export function settledTurn(
  * correct it, and the reply would sit under a permanent "Working…" with its
  * work withheld.
  *
- * `blocked` is kept — that one is still true, and it carries the link out.
+ * `blocked` is kept — that one is still true, and it carries the link out —
+ * except `blocked` on the workspace, which is a turn still running (its host
+ * queued it behind another writer of the directory) and reads back like
+ * `working`: a reply exists, so it is over.
  */
-export function readBackTurnState(state: RunTurn['state']): RunTurn['state'] {
-  return state === 'working' ? 'done' : state
+export function readBackTurnState(
+  state: RunTurn['state'],
+  blockedOn: RunTurn['blocked_on'] = null,
+): RunTurn['state'] {
+  if (state === 'working') return 'done'
+  if (state === 'blocked' && blockedOn === 'workspace') return 'done'
+  return state
 }

@@ -20,6 +20,11 @@ export interface CliExecutionResult {
    * uses the machine's own network and reports nothing.
    */
   egress?: Array<{ allowed: boolean; host: string; port: number; reason: string | null; at: string }>;
+  /**
+   * The Run executed in its Task's worktree on a host: the Task branch and
+   * the commit the worktree stood at when the process started (ADR 0016 §11).
+   */
+  task_worktree?: { branch: string; start_commit: string };
 }
 
 export interface ReadOnlyCliExecutionOptions {
@@ -83,6 +88,7 @@ export interface CliStdioController {
     completed: boolean;
     error: string | null;
     resume_handshake_failed?: boolean;
+    resume_unanswered?: boolean;
     text: string;
     external_session_id?: string | null;
     usage?: CanonicalUsage | null;
@@ -94,6 +100,9 @@ export interface CliStdioController {
       resets_at: number;
       is_using_overage: boolean;
     } | null;
+    context_window?: { used: number; size: number } | null;
+    /** The runtime's own question that ended the turn (`vendorQuestion.ts`). */
+    asked_user?: { question: string; options: string[] } | null;
   };
 }
 

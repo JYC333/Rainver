@@ -1,5 +1,5 @@
 {
-  "id": "ca145e16-4c2c-41b6-a858-aee425f89950",
+  "id": "e9861847-3dc3-4d6c-88c5-e2aee25847aa",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -1389,6 +1389,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "discussion_id": {
+          "name": "discussion_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "advanced_at": {
+          "name": "advanced_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "project_id": {
           "name": "project_id",
           "type": "varchar(36)",
@@ -1532,6 +1544,28 @@
           "method": "btree",
           "with": {}
         },
+        "ix_agent_run_groups_discussion": {
+          "name": "ix_agent_run_groups_discussion",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "discussion_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "discussion_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "ix_agent_run_groups_status_updated": {
           "name": "ix_agent_run_groups_status_updated",
           "columns": [
@@ -1561,6 +1595,19 @@
         }
       },
       "foreignKeys": {
+        "agent_run_groups_discussion_id_fkey": {
+          "name": "agent_run_groups_discussion_id_fkey",
+          "tableFrom": "agent_run_groups",
+          "tableTo": "room_discussions",
+          "columnsFrom": [
+            "discussion_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
         "agent_run_groups_manager_agent_id_fkey": {
           "name": "agent_run_groups_manager_agent_id_fkey",
           "tableFrom": "agent_run_groups",
@@ -46232,6 +46279,217 @@
       },
       "isRLSEnabled": false
     },
+    "public.task_merges": {
+      "name": "task_merges",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_location_id": {
+          "name": "workspace_location_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "basis": {
+          "name": "basis",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "requested_by_user_id": {
+          "name": "requested_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "main_branch": {
+          "name": "main_branch",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "onto_commit": {
+          "name": "onto_commit",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "task_commit": {
+          "name": "task_commit",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "merged_commit": {
+          "name": "merged_commit",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detail_json": {
+          "name": "detail_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "resolution_run_id": {
+          "name": "resolution_run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ix_task_merges_task": {
+          "name": "ix_task_merges_task",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_task_merges_location_status": {
+          "name": "ix_task_merges_location_status",
+          "columns": [
+            {
+              "expression": "workspace_location_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "task_merges_space_id_fkey": {
+          "name": "task_merges_space_id_fkey",
+          "tableFrom": "task_merges",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "task_merges_task_id_fkey": {
+          "name": "task_merges_task_id_fkey",
+          "tableFrom": "task_merges",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "task_merges_workspace_location_id_fkey": {
+          "name": "task_merges_workspace_location_id_fkey",
+          "tableFrom": "task_merges",
+          "tableTo": "workspace_locations",
+          "columnsFrom": [
+            "workspace_location_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_task_merges_task_location_basis": {
+          "name": "uq_task_merges_task_location_basis",
+          "nullsNotDistinct": false,
+          "columns": [
+            "task_id",
+            "workspace_location_id",
+            "basis"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_task_merges_status": {
+          "name": "ck_task_merges_status",
+          "value": "status IN ('queued', 'rebasing', 'verifying', 'resolving', 'waiting_local_changes', 'conflict', 'verification_failed', 'merged', 'no_changes', 'failed', 'superseded')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.proposal_approvals": {
       "name": "proposal_approvals",
       "schema": "",
@@ -50968,6 +51226,504 @@
       },
       "isRLSEnabled": false
     },
+    "public.room_discussions": {
+      "name": "room_discussions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "opened_by_user_id": {
+          "name": "opened_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin_message_id": {
+          "name": "origin_message_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "shape": {
+          "name": "shape",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "topic": {
+          "name": "topic",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "participant_agent_ids": {
+          "name": "participant_agent_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "round_cap": {
+          "name": "round_cap",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rounds_used": {
+          "name": "rounds_used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "round_base": {
+          "name": "round_base",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "turns_used": {
+          "name": "turns_used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "spend_cap_usd": {
+          "name": "spend_cap_usd",
+          "type": "numeric(12, 4)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "spend_usd": {
+          "name": "spend_usd",
+          "type": "numeric(18, 8)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'0'"
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "stop_reason": {
+          "name": "stop_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "held_mentions_json": {
+          "name": "held_mentions_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "extensions_json": {
+          "name": "extensions_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "conclusion_message_id": {
+          "name": "conclusion_message_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quota_override_by_user_id": {
+          "name": "quota_override_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quota_override_at": {
+          "name": "quota_override_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_room_discussions_session": {
+          "name": "ix_room_discussions_session",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_room_discussions_session_open": {
+          "name": "uq_room_discussions_session_open",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status IN ('active', 'cap_reached')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_discussions_space_id_fkey": {
+          "name": "room_discussions_space_id_fkey",
+          "tableFrom": "room_discussions",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_discussions_room_id_fkey": {
+          "name": "room_discussions_room_id_fkey",
+          "tableFrom": "room_discussions",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_discussions_session_scope_fkey": {
+          "name": "room_discussions_session_scope_fkey",
+          "tableFrom": "room_discussions",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_discussions_opened_by_user_id_fkey": {
+          "name": "room_discussions_opened_by_user_id_fkey",
+          "tableFrom": "room_discussions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "opened_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "room_discussions_origin_message_id_fkey": {
+          "name": "room_discussions_origin_message_id_fkey",
+          "tableFrom": "room_discussions",
+          "tableTo": "messages",
+          "columnsFrom": [
+            "origin_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_discussions_conclusion_message_id_fkey": {
+          "name": "room_discussions_conclusion_message_id_fkey",
+          "tableFrom": "room_discussions",
+          "tableTo": "messages",
+          "columnsFrom": [
+            "conclusion_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ck_room_discussions_kind": {
+          "name": "ck_room_discussions_kind",
+          "value": "kind IN ('emergent', 'explicit')"
+        },
+        "ck_room_discussions_shape": {
+          "name": "ck_room_discussions_shape",
+          "value": "shape IN ('open', 'debate')"
+        },
+        "ck_room_discussions_status": {
+          "name": "ck_room_discussions_status",
+          "value": "status IN ('active', 'converged', 'cap_reached', 'stopped', 'closed')"
+        },
+        "ck_room_discussions_caps": {
+          "name": "ck_room_discussions_caps",
+          "value": "round_cap > 0 AND rounds_used >= 0 AND round_base >= 0 AND turns_used >= 0 AND (spend_cap_usd IS NULL OR spend_cap_usd > 0) AND spend_usd >= 0"
+        },
+        "ck_room_discussions_arrays": {
+          "name": "ck_room_discussions_arrays",
+          "value": "jsonb_typeof(participant_agent_ids) = 'array' AND jsonb_typeof(held_mentions_json) = 'array' AND jsonb_typeof(extensions_json) = 'array'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.room_queued_messages": {
+      "name": "room_queued_messages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_json": {
+          "name": "request_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "released_message_id": {
+          "name": "released_message_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_reason": {
+          "name": "failure_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_room_queued_messages_session": {
+          "name": "ix_room_queued_messages_session",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "status = 'queued'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "room_queued_messages_session_scope_fkey": {
+          "name": "room_queued_messages_session_scope_fkey",
+          "tableFrom": "room_queued_messages",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_queued_messages_room_id_fkey": {
+          "name": "room_queued_messages_room_id_fkey",
+          "tableFrom": "room_queued_messages",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "room_queued_messages_user_id_fkey": {
+          "name": "room_queued_messages_user_id_fkey",
+          "tableFrom": "room_queued_messages",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "room_queued_messages_released_message_id_fkey": {
+          "name": "room_queued_messages_released_message_id_fkey",
+          "tableFrom": "room_queued_messages",
+          "tableTo": "messages",
+          "columnsFrom": [
+            "released_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ck_room_queued_messages_status": {
+          "name": "ck_room_queued_messages_status",
+          "value": "status IN ('queued', 'released', 'withdrawn', 'failed')"
+        },
+        "ck_room_queued_messages_request": {
+          "name": "ck_room_queued_messages_request",
+          "value": "jsonb_typeof(request_json) = 'object'"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.room_creation_idempotencies": {
       "name": "room_creation_idempotencies",
       "schema": "",
@@ -55540,7 +56296,7 @@
         },
         "ck_runs_execution_shape": {
           "name": "ck_runs_execution_shape",
-          "value": "(\n\t  (execution_kind = 'agent'\n\t    AND agent_id IS NOT NULL AND agent_version_id IS NOT NULL\n\t    AND provider_task_control_id IS NULL AND provider_task_delivery_id IS NULL AND provider_task_snapshot_id IS NULL\n\t    AND (\n\t      (runtime_profile_id IS NOT NULL AND runtime_profile_selection_source IS NOT NULL AND runtime_key IS NOT NULL AND runtime_profile_snapshot_json IS NOT NULL)\n\t      OR (runtime_profile_id IS NULL AND runtime_key IS NULL AND runtime_profile_snapshot_json IS NULL\n\t        AND started_at IS NULL AND status IN ('queued', 'cancelling', 'failed', 'cancelled', 'orphaned'))\n\t      OR (run_role = 'coordinator' AND runtime_profile_id IS NULL AND runtime_key IS NULL\n\t        AND runtime_profile_snapshot_json IS NULL AND started_at IS NULL\n\t        AND status IN ('waiting_for_dependency', 'succeeded', 'degraded'))\n\t    ))\n\t  OR\n\t  (execution_kind = 'provider_task'\n\t    AND agent_id IS NULL AND agent_version_id IS NULL\n\t    AND requested_runtime_profile_id IS NULL AND runtime_profile_id IS NULL AND runtime_profile_selection_source IS NULL\n\t    AND runtime_key IS NULL AND runtime_profile_snapshot_json IS NULL\n\t    AND workspace_location_id IS NULL AND host_task_thread_id IS NULL\n\t    AND (\n\t      -- Dispatched: the bounded task has picked its provider and opened\n\t      -- its ledger records, so all four are present for the rest of the\n\t      -- Run's life, terminal states included.\n\t      (model_provider_id IS NOT NULL\n\t        AND provider_task_control_id IS NOT NULL AND provider_task_delivery_id IS NOT NULL\n\t        AND provider_task_snapshot_id IS NOT NULL)\n\t      -- Queued, the same \"snapshot required before dispatch\" rule the\n\t      -- agent shape states one arm above: a ProviderTask Run may exist\n\t      -- before its first attempt exists, and a queued Run that is\n\t      -- cancelled or never starts stays without ledger references. What it\n\t      -- must never do is *start* without them.\n\t      OR (model_provider_id IS NULL\n\t        AND provider_task_control_id IS NULL AND provider_task_delivery_id IS NULL\n\t        AND provider_task_snapshot_id IS NULL\n\t        AND started_at IS NULL\n\t        AND status IN ('queued', 'cancelling', 'failed', 'cancelled', 'orphaned'))\n\t    ))\n\t)"
+          "value": "(\n\t  (execution_kind = 'agent'\n\t    AND agent_id IS NOT NULL AND agent_version_id IS NOT NULL\n\t    AND provider_task_control_id IS NULL AND provider_task_delivery_id IS NULL AND provider_task_snapshot_id IS NULL\n\t    AND (\n\t      (runtime_profile_id IS NOT NULL AND runtime_profile_selection_source IS NOT NULL AND runtime_key IS NOT NULL AND runtime_profile_snapshot_json IS NOT NULL)\n\t      OR (runtime_profile_id IS NULL AND runtime_key IS NULL AND runtime_profile_snapshot_json IS NULL\n\t        AND started_at IS NULL AND status IN ('queued', 'waiting_for_dependency', 'cancelling', 'failed', 'cancelled', 'orphaned'))\n\t      OR (run_role = 'coordinator' AND runtime_profile_id IS NULL AND runtime_key IS NULL\n\t        AND runtime_profile_snapshot_json IS NULL AND started_at IS NULL\n\t        AND status IN ('waiting_for_dependency', 'succeeded', 'degraded'))\n\t    ))\n\t  OR\n\t  (execution_kind = 'provider_task'\n\t    AND agent_id IS NULL AND agent_version_id IS NULL\n\t    AND requested_runtime_profile_id IS NULL AND runtime_profile_id IS NULL AND runtime_profile_selection_source IS NULL\n\t    AND runtime_key IS NULL AND runtime_profile_snapshot_json IS NULL\n\t    AND workspace_location_id IS NULL AND host_task_thread_id IS NULL\n\t    AND (\n\t      -- Dispatched: the bounded task has picked its provider and opened\n\t      -- its ledger records, so all four are present for the rest of the\n\t      -- Run's life, terminal states included.\n\t      (model_provider_id IS NOT NULL\n\t        AND provider_task_control_id IS NOT NULL AND provider_task_delivery_id IS NOT NULL\n\t        AND provider_task_snapshot_id IS NOT NULL)\n\t      -- Queued, the same \"snapshot required before dispatch\" rule the\n\t      -- agent shape states one arm above: a ProviderTask Run may exist\n\t      -- before its first attempt exists, and a queued Run that is\n\t      -- cancelled or never starts stays without ledger references. What it\n\t      -- must never do is *start* without them.\n\t      OR (model_provider_id IS NULL\n\t        AND provider_task_control_id IS NULL AND provider_task_delivery_id IS NULL\n\t        AND provider_task_snapshot_id IS NULL\n\t        AND started_at IS NULL\n\t        AND status IN ('queued', 'cancelling', 'failed', 'cancelled', 'orphaned'))\n\t    ))\n\t)"
         },
         "ck_runs_observability_level": {
           "name": "ck_runs_observability_level",
@@ -56759,6 +57515,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "discussion_id": {
+          "name": "discussion_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -56767,6 +57529,28 @@
         }
       },
       "indexes": {
+        "ix_messages_discussion_id": {
+          "name": "ix_messages_discussion_id",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "discussion_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "discussion_id IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "ix_messages_session_id": {
           "name": "ix_messages_session_id",
           "columns": [
@@ -57014,6 +57798,19 @@
         }
       },
       "foreignKeys": {
+        "messages_discussion_id_fkey": {
+          "name": "messages_discussion_id_fkey",
+          "tableFrom": "messages",
+          "tableTo": "room_discussions",
+          "columnsFrom": [
+            "discussion_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
         "messages_session_scope_fkey": {
           "name": "messages_session_scope_fkey",
           "tableFrom": "messages",
@@ -59110,6 +59907,18 @@
         "git_observed_at": {
           "name": "git_observed_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_run_git_branch": {
+          "name": "last_run_git_branch",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_run_git_head": {
+          "name": "last_run_git_head",
+          "type": "varchar(128)",
           "primaryKey": false,
           "notNull": false
         },
@@ -71134,6 +71943,36 @@
           "notNull": true,
           "default": "'active'"
         },
+        "identity_digest": {
+          "name": "identity_digest",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "identity_digest_run_id": {
+          "name": "identity_digest_run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_tokens": {
+          "name": "context_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_window_tokens": {
+          "name": "context_window_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "handoff_artifact_id": {
+          "name": "handoff_artifact_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_by_user_id": {
           "name": "created_by_user_id",
           "type": "varchar(36)",
@@ -71352,6 +72191,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "host_threads_handoff_artifact_id_fkey": {
+          "name": "host_threads_handoff_artifact_id_fkey",
+          "tableFrom": "host_threads",
+          "tableTo": "artifacts",
+          "columnsFrom": [
+            "handoff_artifact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

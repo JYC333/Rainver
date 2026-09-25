@@ -12,8 +12,10 @@ import { acpRuntimeProbe } from "./runtimeProbes.js";
  * Before ADR 0016 this ran beside the server against a credential the
  * broker had copied into a profile directory it owned. Nothing brokers a
  * credential any more, so the control plane asks the host and keeps only the
- * numbers. Nothing decides anything from them: they are shown on the host
- * card so someone can see a subscription running out before a Run does.
+ * numbers. They are shown on the host card so someone can see a
+ * subscription running out before a Run does, and one gate reads them: an
+ * Agent-triggered Room turn waits while its login is past the Space's reserve
+ * line (`rooms/quotaGate.ts`).
  */
 export interface HostUsageRow {
   host_id: string;
@@ -89,6 +91,15 @@ export async function refreshHostUsage(
   runtimeKey: string,
   installation: string,
   registry: HostConnectionRegistry = sharedHostConnectionRegistry,
+  options: {
+    /**
+     * Keep a readable cached number when this probe could not read one (the
+     * host is offline or slow). The admission gate asks for this: "did not
+     * answer in time" says nothing about the window, and overwriting 90 %
+     * with it would let the next admission through (`rooms/quotaGate.ts`).
+     */
+    keepReadingWhenUnreadable?: boolean;
+  } = {},
 ): Promise<HostUsageRow> {
   const quota = hasSubscriptionQuota(runtimeKey)
     ? await registry.requestUsageProbe(hostId, {
@@ -107,6 +118,11 @@ export async function refreshHostUsage(
       week_resets: null,
       error: `${runtimeKey} reports no subscription quota.`,
     };
+  if (options.keepReadingWhenUnreadable && !quota.available) {
+    const cached = (await readHostUsage(pool, hostId))
+      .find((row) => row.runtime_key === runtimeKey && row.installation === installation);
+    if (cached?.quota.available) return cached;
+  }
   const checkedAt = await writeHostUsage(pool, hostId, runtimeKey, installation, quota);
   return { host_id: hostId, runtime_key: runtimeKey, installation, quota, checked_at: checkedAt };
 }

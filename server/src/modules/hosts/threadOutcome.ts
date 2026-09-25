@@ -25,25 +25,46 @@ import { PgSessionRepository } from "../sessions/repository.js";
 export async function recordHostThreadOutcome(
   config: ServerConfig,
   threadId: string,
-  completedRun: { id: string; status: string; output_json?: unknown },
+  completedRun: { id: string; status: string; output_json?: unknown; error_json?: unknown },
   resumeAttempted: boolean,
+  identity: { digest: string; sent: boolean } | null = null,
 ): Promise<void> {
   if (!config.databaseUrl) return;
   const pool = getDbPool(config.databaseUrl);
   const threads = new PgHostThreadRepository(pool);
-  const rawSessionId = runOutputResult(completedRun.output_json).external_session_id;
+  const result = runOutputResult(completedRun.output_json);
+  const rawSessionId = result.external_session_id;
   const externalSessionId = typeof rawSessionId === "string" && rawSessionId ? rawSessionId : null;
+  const errorJson = completedRun.error_json;
+  const errorCode = errorJson && typeof errorJson === "object" && !Array.isArray(errorJson)
+    ? (errorJson as Record<string, unknown>).error_code
+    : null;
+  const sessionReset = resumeAttempted && !externalSessionId && (
+    errorCode === "runtime_session_invalid"
+    || completedRun.status === "succeeded"
+    || completedRun.status === "degraded"
+  );
   await threads.recordRunOutcome(threadId, {
     lastRunId: completedRun.id,
     vendorSessionId: externalSessionId,
-    // A resume was attempted (the thread already had a vendor session) but
-    // came back empty — the daemon could not resume it. Not attempting a
-    // resume at all (a thread's first-ever dispatch) never counts as a
-    // reset, even though it also produces no prior session id.
-    sessionReset: resumeAttempted && !externalSessionId,
+    // A resume was attempted and proved broken: the runtime refused the
+    // session (`runtime_session_invalid`), or finished a turn without handing
+    // one back. Nothing else says so. A Run that failed before the runtime
+    // tried — the host offline, a launch that waited out its budget behind
+    // another writer, a person's stop — produces no session id either, but
+    // the session it would have resumed is still there. Not attempting a
+    // resume at all (a thread's first-ever dispatch) never counts.
+    sessionReset,
+    // A completed turn is the proof the prompt reached the runtime. A failed
+    // or cancelled Run may have died before it; it then records nothing, and
+    // the next turn sends the identity block again — the safe direction.
+    landed: Boolean(externalSessionId)
+      && (completedRun.status === "succeeded" || completedRun.status === "degraded"),
+    identity,
+    contextWindow: contextWindowFrom(result.context_window),
   });
 
-  if (resumeAttempted && !externalSessionId) {
+  if (sessionReset) {
     const conversation = await pool.query<{
       space_id: string;
       room_id: string;
@@ -90,4 +111,13 @@ export async function recordHostThreadOutcome(
       }
     }
   }
+}
+
+function contextWindowFrom(value: unknown): { used: number; size: number } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const { used, size } = value as Record<string, unknown>;
+  return typeof used === "number" && Number.isInteger(used) && used >= 0
+    && typeof size === "number" && Number.isInteger(size) && size > 0
+    ? { used, size }
+    : null;
 }

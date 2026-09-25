@@ -35,10 +35,23 @@ export interface HostThread {
   updated_at: string;
   /** Non-null while this thread's managed workspace is awaiting archive. */
   pending_archive_at: string | null;
+  /** Digest of the identity block + rules the live vendor session last received. */
+  identity_digest: string | null;
+  identity_digest_run_id: string | null;
+  /** Context occupancy the runtime reported after the last Run, and its window. */
+  context_tokens: number | null;
+  context_window_tokens: number | null;
+  /** The handoff document the current vendor session was seeded from. */
+  handoff_artifact_id: string | null;
 }
 
 const COLUMNS = `id, space_id, execution_host_id, workspace_location_id, workspace_mode, task_id, session_id, agent_id, container_kind, container_user_id, runtime_key, runtime_installation, vendor_session_id,
-  last_run_id, last_session_id, dispatch_lock_id, retired_vendor_session_ids, status, created_by_user_id, created_at, updated_at, pending_archive_at`;
+  last_run_id, last_session_id, dispatch_lock_id, retired_vendor_session_ids, status, created_by_user_id, created_at, updated_at, pending_archive_at,
+  identity_digest, identity_digest_run_id, context_tokens, context_window_tokens, handoff_artifact_id`;
+
+/** In `recordRunOutcome`: the same vendor session now reports less in context than before. */
+const COMPACTED_SQL = `($7::integer IS NOT NULL AND context_tokens IS NOT NULL AND $7::integer < context_tokens
+                  AND ($3::varchar IS NULL OR vendor_session_id IS NOT DISTINCT FROM $3::varchar))`;
 
 function normalizeReturnedThread(row: HostThread): HostThread {
   const iso = (value: unknown): string | null => value instanceof Date
@@ -329,11 +342,18 @@ export class PgHostThreadRepository {
   }
 
   async resetConversationAgent(threadId: string): Promise<HostThread | null> {
+    // A person's reset starts the Agent clean: the last handoff is not
+    // carried into the new session either.
     const result = await this.db.query<HostThread>(
       `UPDATE host_threads
           SET status = 'session_reset',
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
+              identity_digest = NULL,
+              identity_digest_run_id = NULL,
+              context_tokens = NULL,
+              context_window_tokens = NULL,
+              handoff_artifact_id = NULL,
               updated_at = now()
         WHERE id = $1 AND session_id IS NOT NULL AND agent_id IS NOT NULL
           AND container_kind = 'conversation'
@@ -533,12 +553,50 @@ export class PgHostThreadRepository {
 
   async recordRunOutcome(
     threadId: string,
-    input: { lastRunId: string; vendorSessionId: string | null; sessionReset: boolean },
+    input: {
+      lastRunId: string;
+      vendorSessionId: string | null;
+      sessionReset: boolean;
+      /**
+       * Whether the Run's prompt reached the runtime and the turn completed:
+       * only then did the vendor session receive what it was dispatched with.
+       */
+      landed?: boolean;
+      /** The identity digest the Run was dispatched with, and whether its block was in the prompt. */
+      identity?: { digest: string; sent: boolean } | null;
+      /** Context occupancy the runtime reported at the end of the Run. */
+      contextWindow?: { used: number; size: number } | null;
+    },
   ): Promise<void> {
     // A reset clears the stale vendor session id outright rather than
     // COALESCE-preserving it — otherwise every subsequent dispatch into this
     // thread keeps retrying the exact same broken `--resume <id>` forever
     // instead of degrading to a fresh session as `session_reset` promises.
+    //
+    // The identity digest is recorded here and nowhere else: only a Run that
+    // carried the block and landed may say the session holds it, so a
+    // dispatch that never reached the runtime can never withhold the Agent's
+    // identity from the next turn. A vendor session that changed under a Run
+    // which did not carry the block holds no identity at all, so the digest
+    // is cleared and the next turn sends it again. So is one whose reported
+    // occupancy fell between two of its own turns: the vendor compacted it,
+    // and may have summarized the standing context away.
+    //
+    // A Run that reports on a session this thread has since retired — it was
+    // dispatched before a rotation or reset and ran after it (held for the
+    // subscription window, say) — says nothing about the thread's current
+    // session and must not bring the retired one back: only its last Run is
+    // recorded.
+    if (input.vendorSessionId) {
+      const retired = await this.db.query(
+        `SELECT 1 FROM host_threads WHERE id = $1 AND retired_vendor_session_ids ? $2`,
+        [threadId, input.vendorSessionId],
+      );
+      if ((retired.rowCount ?? 0) > 0) {
+        input = { lastRunId: input.lastRunId, vendorSessionId: null, sessionReset: false, landed: false, identity: null, contextWindow: null };
+      }
+    }
+    const identitySent = Boolean(input.identity?.sent && input.landed && !input.sessionReset);
     await this.db.query(
       `UPDATE host_threads
           SET last_run_id = $2::varchar,
@@ -547,13 +605,80 @@ export class PgHostThreadRepository {
                 WHEN NOT $4::boolean AND $3::varchar IS NOT NULL AND vendor_session_id IS NOT NULL AND vendor_session_id <> $3::varchar
                   THEN retired_vendor_session_ids || to_jsonb(vendor_session_id)
                 ELSE retired_vendor_session_ids END,
+              identity_digest = CASE
+                WHEN $4::boolean THEN NULL
+                WHEN ${COMPACTED_SQL} THEN NULL
+                WHEN $5::boolean THEN $6::varchar
+                WHEN $3::varchar IS NOT NULL AND vendor_session_id IS DISTINCT FROM $3::varchar THEN NULL
+                ELSE identity_digest END,
+              identity_digest_run_id = CASE
+                WHEN $4::boolean THEN NULL
+                WHEN ${COMPACTED_SQL} THEN NULL
+                WHEN $5::boolean THEN $2::varchar
+                WHEN $3::varchar IS NOT NULL AND vendor_session_id IS DISTINCT FROM $3::varchar THEN NULL
+                ELSE identity_digest_run_id END,
+              context_tokens = CASE
+                WHEN $4::boolean THEN NULL
+                WHEN $7::integer IS NOT NULL THEN $7::integer
+                WHEN $3::varchar IS NOT NULL AND vendor_session_id IS DISTINCT FROM $3::varchar THEN NULL
+                ELSE context_tokens END,
+              context_window_tokens = CASE
+                WHEN $4::boolean THEN NULL
+                WHEN $8::integer IS NOT NULL THEN $8::integer
+                WHEN $3::varchar IS NOT NULL AND vendor_session_id IS DISTINCT FROM $3::varchar THEN NULL
+                ELSE context_window_tokens END,
               vendor_session_id = CASE WHEN $4::boolean THEN NULL ELSE COALESCE($3::varchar, vendor_session_id) END,
               status = CASE WHEN $4::boolean THEN 'session_reset' ELSE 'active' END,
               dispatch_lock_id = CASE WHEN dispatch_lock_id = $2::varchar THEN NULL ELSE dispatch_lock_id END,
               updated_at = now()
-        WHERE id = $1 AND status <> 'closed'`,
-      [threadId, input.lastRunId, input.vendorSessionId, input.sessionReset],
+        WHERE id = $1 AND status <> 'closed'
+          -- A handoff turn whose document rotated this thread (the rotation
+          -- runs where the next turn is admitted, which usually comes first)
+          -- reports on a session that is already retired, however late its
+          -- outcome arrives; it must never write that session back.
+          AND NOT EXISTS (
+            SELECT 1 FROM artifacts handoff
+             WHERE handoff.id = host_threads.handoff_artifact_id AND handoff.run_id = $2::varchar
+          )`,
+      [
+        threadId,
+        input.lastRunId,
+        input.vendorSessionId,
+        input.sessionReset,
+        identitySent,
+        identitySent ? input.identity!.digest : null,
+        input.contextWindow?.used ?? null,
+        input.contextWindow?.size ?? null,
+      ],
     );
+  }
+
+  /**
+   * End a vendor session after its Agent wrote a handoff document: the next
+   * turn starts fresh from identity block + handoff + Room summary. The
+   * session is retired exactly like a reset, and the handoff it was replaced
+   * by is kept on the thread.
+   */
+  async rotateAfterHandoff(threadId: string, handoffArtifactId: string, retiringVendorSessionId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE host_threads
+          SET status = 'session_reset',
+              retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
+              vendor_session_id = NULL,
+              identity_digest = NULL,
+              identity_digest_run_id = NULL,
+              context_tokens = NULL,
+              context_window_tokens = NULL,
+              handoff_artifact_id = $2,
+              updated_at = now()
+        WHERE id = $1 AND status IN ('active', 'session_reset')
+          -- Only the session the handoff was written from. A reset, or any
+          -- other change of session while the handoff ran, means the document
+          -- describes a session that is already gone.
+          AND vendor_session_id = $3`,
+      [threadId, handoffArtifactId, retiringVendorSessionId],
+    );
+    return (result.rowCount ?? 0) > 0;
   }
 
 }

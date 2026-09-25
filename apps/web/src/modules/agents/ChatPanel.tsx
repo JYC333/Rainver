@@ -186,7 +186,7 @@ export default function ChatPanel({
           // what it was before.
           turn: m.role === 'assistant' && m.run_id && index >= foldFrom
             ? await runsApi.turn(m.run_id)
-              .then(read => settledTurn(read, readBackTurnState(read.state), m.content))
+              .then(read => settledTurn(read, readBackTurnState(read.state, read.blocked_on), m.content))
               .catch(() => null)
             : null,
         })))
@@ -271,7 +271,8 @@ export default function ChatPanel({
    * state update could have landed.
    */
   const inFlight = useRef(false)
-  const awaitingDecision = messages.some(message => message.turn?.state === 'blocked')
+  // A turn waiting for its directory is still running, not waiting on a person.
+  const awaitingDecision = messages.some(message => message.turn?.state === 'blocked' && message.turn.blocked_on !== 'workspace')
 
   const send = useCallback(async (text: string, parts: ConversationInputPart[] = inputParts) => {
     const message = text.trim()

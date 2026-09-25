@@ -11,6 +11,10 @@ interface ProviderSelectorProps {
   required?: boolean
   requireClaudeCompatible?: boolean
   requireOpenAiCompatible?: boolean
+  /** The runtime follows each provider's vendor protocol (`provider_api: 'vendor'`, OpenCode):
+   *  an Anthropic-protocol vendor needs its Claude-compatible URL, an OpenAI-protocol vendor its
+   *  OpenAI-compatible URL, and any other protocol cannot be bound. */
+  requireVendorCompatible?: boolean
   providerFilter?: (provider: ModelProviderOut) => string | null
   defaultModelForProvider?: (provider: ModelProviderOut) => string | null | undefined
   disabled?: boolean
@@ -34,6 +38,7 @@ export default function ProviderSelector({
   required = false,
   requireClaudeCompatible = false,
   requireOpenAiCompatible = false,
+  requireVendorCompatible = false,
   providerFilter,
   defaultModelForProvider,
   disabled = false,
@@ -53,6 +58,18 @@ export default function ProviderSelector({
 
   useEffect(() => { loadProviders() }, [loadProviders])
 
+  // Vendor → protocol, read from the server's registry rather than guessed here.
+  // Null until loaded (or when not needed): nothing is blocked on a lookup that has not answered.
+  const [vendorProtocols, setVendorProtocols] = useState<Map<string, string> | null>(null)
+  useEffect(() => {
+    if (!requireVendorCompatible) { setVendorProtocols(null); return }
+    let cancelled = false
+    providersApi.vendors()
+      .then(vendors => { if (!cancelled) setVendorProtocols(new Map(vendors.map(v => [v.id, v.protocol]))) })
+      .catch(() => { if (!cancelled) setVendorProtocols(null) })
+    return () => { cancelled = true }
+  }, [requireVendorCompatible])
+
   const incompatibleReason = useCallback((provider: ModelProviderOut): string | null => {
     if (requireClaudeCompatible && !provider.claude_compatible_base_url) {
       return 'no Claude-compatible URL'
@@ -60,10 +77,20 @@ export default function ProviderSelector({
     if (requireOpenAiCompatible && !provider.openai_compatible_base_url) {
       return 'no OpenAI-compatible URL'
     }
+    if (requireVendorCompatible && vendorProtocols) {
+      const protocol = vendorProtocols.get(provider.provider_type)
+      if (protocol === 'anthropic_messages') {
+        if (!provider.claude_compatible_base_url) return 'no Claude-compatible URL'
+      } else if (protocol === 'openai_completions') {
+        if (!provider.openai_compatible_base_url) return 'no OpenAI-compatible URL'
+      } else {
+        return 'protocol not supported by this runtime'
+      }
+    }
     const customReason = providerFilter?.(provider) ?? null
     if (customReason) return customReason
     return null
-  }, [providerFilter, requireClaudeCompatible, requireOpenAiCompatible])
+  }, [providerFilter, requireClaudeCompatible, requireOpenAiCompatible, requireVendorCompatible, vendorProtocols])
 
   const isSelectable = useCallback((provider: ModelProviderOut) => (
     incompatibleReason(provider) === null

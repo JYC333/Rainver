@@ -7,6 +7,7 @@ import { buildStrictNamespaceCommand } from "./strictNamespace.js";
 import { isRuntimeKeyBeingReplaced, daemonRuntimeRoot, withRuntimeKeyHeld, managedToolTreeForLaunch, resolveAcpLaunch, resolveLocationCwd, strictBindsForRun } from "./execution.js";
 import { OWN_INSTALLATION, readToolManifestSync } from "./tools.js";
 import { ensureManagedWorkspace, type ManagedWorkspaceContainer } from "./managedWorkspaces.js";
+import { existingTaskWorktree, taskLeaseKey, useTaskWorktree } from "./taskWorktree.js";
 
 /**
  * A fixed command the control plane runs in a workspace on this host.
@@ -24,7 +25,7 @@ import { ensureManagedWorkspace, type ManagedWorkspaceContainer } from "./manage
  */
 export interface CommandRunRequest {
   request_id: string;
-  workspace?: { kind: "location"; workspace_location_id?: string; workspace_relative_path?: string } | { kind: "managed"; agent_id?: string; container?: ManagedWorkspaceContainer };
+  workspace?: { kind: "location"; workspace_location_id?: string; workspace_relative_path?: string; worktree?: { task_id: string; merge_id?: string } } | { kind: "managed"; agent_id?: string; container?: ManagedWorkspaceContainer };
   workspace_location_id?: string;
   run_id?: string;
   scratch_workspace?: boolean;
@@ -64,18 +65,18 @@ function boundedTail(value: string): string {
  * Where this command runs. The control plane names a Location or a managed
  * container and never a path (B64), the same as a launch.
  */
-async function resolveCwd(request: CommandRunRequest, scratch: string): Promise<string> {
+async function resolveCwd(request: CommandRunRequest, scratch: string): Promise<{ cwd: string; gitCommonDir: string | null }> {
   // A question about an installed copy rather than about anyone's work gets a
   // directory of its own, removed with the request.
   if (request.scratch_workspace) {
     await mkdir(scratch, { recursive: true, mode: 0o700 });
-    return scratch;
+    return { cwd: scratch, gitCommonDir: null };
   }
   if (request.workspace?.kind === "managed") {
     if (!request.workspace.agent_id || !request.workspace.container) {
       throw new Error("managed command workspace is incomplete");
     }
-    return ensureManagedWorkspace(request.workspace.agent_id, request.workspace.container);
+    return { cwd: await ensureManagedWorkspace(request.workspace.agent_id, request.workspace.container), gitCommonDir: null };
   }
   const locationId = request.workspace?.kind === "location"
     ? request.workspace.workspace_location_id
@@ -89,7 +90,16 @@ async function resolveCwd(request: CommandRunRequest, scratch: string): Promise<
     workspacesRoot(),
   );
   if (!cwd) throw new Error(`This daemon has no local path registered for workspace ${locationId}.`);
-  return cwd;
+  // A Task Run that worked in its Task's worktree left its change there, not
+  // in the checkout; a question about it is asked where it is.
+  const taskId = request.workspace?.kind === "location" ? request.workspace.worktree?.task_id : undefined;
+  if (taskId) {
+    // Throws for a worktree that is there but broken: the command fails
+    // rather than checking the person's checkout instead.
+    const worktree = await existingTaskWorktree(cwd, locationId, taskId);
+    if (worktree) return { cwd: worktree.root, gitCommonDir: worktree.gitCommonDir };
+  }
+  return { cwd, gitCommonDir: null };
 }
 
 /** One path segment, the same shape a run id is held to and for the same reason. */
@@ -102,8 +112,17 @@ export async function runHostCommand(
   // Held for the whole command, not merely checked at the door: a verification
   // recipe runs for minutes and is in neither run registry, so without this a
   // drain reports quiet and the replacement deletes the tree it is executing
-  // from.
-  return withRuntimeKeyHeld(request.runtime_key, () => runHostCommandInner(request, log));
+  // from. A command in a Task worktree marks it in use for as long, so the
+  // sweep and a settle leave it alone.
+  const workspace = request.workspace?.kind === "location" ? request.workspace : undefined;
+  const release = workspace?.worktree && workspace.workspace_location_id
+    ? useTaskWorktree(taskLeaseKey(workspace.workspace_location_id, workspace.worktree.task_id))
+    : null;
+  try {
+    return await withRuntimeKeyHeld(request.runtime_key, () => runHostCommandInner(request, log));
+  } finally {
+    release?.();
+  }
 }
 
 async function runHostCommandInner(
@@ -128,8 +147,9 @@ async function runHostCommandInner(
   }
   const scratch = join(configDir(), "commands", request.request_id);
   let cwd: string;
+  let gitCommonDir: string | null;
   try {
-    cwd = await resolveCwd(request, scratch);
+    ({ cwd, gitCommonDir } = await resolveCwd(request, scratch));
   } catch (error) {
     return { exit_code: 1, stdout: "", stderr: "", timed_out: false, error: error instanceof Error ? error.message : String(error) };
   }
@@ -208,6 +228,12 @@ async function runHostCommandInner(
           loginHome: namespaceTool?.home ?? null,
           toolTree: namespaceTool ? managedToolTreeForLaunch(namespaceRuntimeKey, namespaceInstallation) : null,
           runtimeRoot: daemonRuntimeRoot(),
+          // A Task worktree's history is in the repository's git directory,
+          // outside the worktree; git inside the namespace needs it. Bound as
+          // the workspace itself is.
+          workspaceBinds: gitCommonDir
+            ? [{ path: gitCommonDir, access: (request.isolation?.sandbox_mode ?? "read_write") === "read_only" ? "read_only" : "read_write" }]
+            : undefined,
         }),
         // Read-write because a verification recipe builds and tests; no
         // network because it has no upstream to reach — the recipe's inputs

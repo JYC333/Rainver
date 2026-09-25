@@ -67,6 +67,7 @@ import { conversationToolGrantInput } from "../systemActions/scenarioToolAllowan
 import { ConversationInputError, ConversationInputService } from "../sessions/conversationInputService.js";
 import { ConversationInputCapabilityError, assertConversationInputCapabilities, assertConversationInputResourceTools } from "../sessions/conversationInputCapabilities.js";
 import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
+import { headMovedByConversationRun } from "../sessions/conversationGitGate.js";
 import type { RunGitSnapshot } from "../runs/contractSnapshot.js";
 import { conversationRetryFingerprint, requireConversationIdempotencyKey, withConversationRetryIdempotency } from "../sessions/conversationRetry.js";
 
@@ -1609,16 +1610,25 @@ async function ensureDirectHostGitContext(input: {
       || context.primary_workspace_location_id !== locationId) {
       throw new ChatContextError("The direct conversation execution context is pinned to a different Host workspace", 409);
     }
-    if (context.git_observed_at && gitSnapshotChanged({
+    const baseline = {
       source: primaryMode === "managed" ? "managed_workspace" : "workspace_location",
       workspace_location_id: context.primary_workspace_location_id,
       branch: context.git_branch,
       commit_sha: context.git_head,
       execution_ready: context.git_execution_ready,
-    }, input.hostDispatch.git_snapshot)) {
+    };
+    const snapshot = input.hostDispatch.git_snapshot;
+    const changed = Boolean(context.git_observed_at) && gitSnapshotChanged(baseline, snapshot);
+    // A HEAD this Conversation's own last Run moved advances the baseline in
+    // place; only branch and commit may differ for that, never the Location
+    // or its readiness (sessions/conversationGitGate.ts).
+    const advance = changed
+      && headMovedByConversationRun(context, snapshot)
+      && !gitSnapshotChanged({ ...baseline, branch: snapshot.branch, commit_sha: snapshot.commit_sha }, snapshot);
+    if (changed && !advance) {
       throw new ChatContextError("Git branch or commit changed after this Conversation was initialized; refresh the execution context before sending", 409);
     }
-    if (!context.git_observed_at) {
+    if (!context.git_observed_at || advance) {
       await repository.refreshGitBaseline({
         spaceId: input.spaceId,
         sessionId: input.session.id,

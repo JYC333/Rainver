@@ -187,6 +187,68 @@ describe("remote provider binding frame", () => {
       binding.revoke();
     }
   });
+
+  it("binds OpenCode with the bound vendor's own protocol", async () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", null);
+    // Both MiniMax URLs are configured, so only the vendor decides the route.
+    const urls = {
+      claude_compatible_base_url: "https://api.minimaxi.com/anthropic",
+      openai_compatible_base_url: "https://api.minimaxi.com/v1",
+    };
+    for (const [providerType, npm, route, upstream] of [
+      ["minimax", "@ai-sdk/anthropic", "anthropic", urls.claude_compatible_base_url],
+      ["openai", "@ai-sdk/openai-compatible", "openai", urls.openai_compatible_base_url],
+    ] as const) {
+      const leases = new ProviderProxyLeaseRegistry();
+      const binding = await bind({
+        runtimeKey: "opencode",
+        model: "MiniMax-M3",
+        provider: { id: "prov-1", name: "MiniMax", provider_type: providerType, ...urls },
+        leaseRegistry: leases,
+      });
+      try {
+        const file = (binding.frame.files ?? []).find((entry) => entry.relative_path === "opencode.json");
+        const document = JSON.parse(file!.contents) as Record<string, any>;
+        const provider = document.provider.rainver_provider;
+        expect(provider.npm).toBe(npm);
+        expect(document.model).toBe("rainver_provider/MiniMax-M3");
+        // The lease OpenCode is pointed at is one the proxy accepts on that
+        // route, and it forwards to the upstream of the same protocol.
+        const leaseId = new URL(provider.options.baseURL).pathname.split("/")[2]!;
+        expect(provider.options.baseURL).toContain(`/${route}/${leaseId}`);
+        const lease = leases.resolve(leaseId, provider.options.apiKey);
+        expect(lease).toMatchObject({ route, upstream_base_url: upstream });
+      } finally {
+        binding.revoke();
+      }
+    }
+  });
+
+  it("refuses an OpenCode binding the vendor's protocol cannot serve, before minting a lease", async () => {
+    setProviderProxyBaseUrlForProcess("http://server:8021", null);
+    for (const [provider, code] of [
+      // An Anthropic-protocol vendor needs its Claude-compatible URL; the
+      // OpenAI one it also has is not a fallback.
+      [
+        { provider_type: "anthropic", openai_compatible_base_url: "https://gateway.example.test/v1" },
+        "claude_compatible_base_url_required",
+      ],
+      // Neither protocol: never guessed.
+      [
+        { provider_type: "cohere", openai_compatible_base_url: "https://gateway.example.test/v1" },
+        "provider_protocol_unsupported",
+      ],
+    ] as const) {
+      const leases = new ProviderProxyLeaseRegistry();
+      await expect(bind({
+        runtimeKey: "opencode",
+        model: "some-model",
+        provider: { id: "prov-1", name: "P", ...provider },
+        leaseRegistry: leases,
+      })).rejects.toMatchObject({ code } satisfies Partial<RemoteProviderBindingError>);
+      expect(leases.size()).toBe(0);
+    }
+  });
 });
 
 function leaseTokenOf(toml: string): string {

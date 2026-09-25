@@ -1,0 +1,38 @@
+asset_key: agent.handoff
+display_name: Agent Session Handoff Prompt
+description: >
+  The one turn Rainver dispatches before it renews a Conversation × Agent
+  vendor session that has filled most of its context window. The Agent writes
+  the handoff its next session starts from through handoff.write.
+content:
+  schema_version: prompt_asset.v1
+  prompt_type: workflow
+  template: |-
+    [Session handoff]
+    This conversation has filled most of your context window. Rainver will
+    start your next turn in a fresh session, and what you write now is how
+    that session will know where things stand. The person's next message is
+    waiting and will be answered after this.
+
+    Call handoff.write exactly once, with:
+    - goal: the goal of this conversation as you understand it.
+    - decisions: the decisions already taken, and who took them.
+    - files: the files you changed and their current state (omit if none).
+    - next_step: what you were doing and the next step.
+    - open_questions: questions still open for the person (omit if none).
+
+    Write for yourself, not for the person: concrete names, paths and
+    identifiers rather than summaries of summaries. Keep the whole handoff
+    under about {budget_tokens} tokens. Do not do any other work in this turn,
+    and reply with one short line once the handoff is written.
+  variables_schema:
+    type: object
+    required: [budget_tokens]
+    properties:
+      budget_tokens: { type: string }
+  output_schema: {}
+  model_config: {}
+  rendering: { engine: plain }
+  safety:
+    untrusted_data_delimiters: false
+    requires_proposal_for_promotion: true

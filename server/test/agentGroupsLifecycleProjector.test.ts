@@ -9,6 +9,7 @@ import type {
   RunDelegationRecord,
 } from "../src/modules/agentGroups/repository.js";
 import type { JobRecord } from "../src/modules/jobs/repository.js";
+import type { QuotaSource } from "../src/modules/rooms/subscriptionLogins.js";
 
 function childRun(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   return {
@@ -132,6 +133,12 @@ interface FakeState {
     metadata_json: Record<string, unknown>;
   }>;
   jobs?: JobRecord[];
+  /** Stored `remote_diff` Artifacts, newest last. */
+  artifacts?: Array<{ id: string; run_id: string; content: string; truncated?: boolean }>;
+  /** Tool-surface columns of a Run, for the change-link grant. */
+  runTools?: Map<string, { capabilities_json: unknown; permission_snapshot_json: unknown; trigger_origin: string }>;
+  /** The CLI login every Run here spends, when the quota gate should see one. */
+  login?: { host_id: string; host_name: string; runtime_key: string; installation: string };
 }
 
 class FakeClient {
@@ -145,6 +152,116 @@ class FakeClient {
   ): Promise<{ rows: Row[]; rowCount: number }> {
     if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
       return { rows: [], rowCount: 0 };
+    }
+    // The subscription quota gate (`rooms/quotaGate.ts`).
+    if (sql.includes("SELECT 1 FROM jobs")) {
+      const rows = (this.state.jobs ?? []).filter((job) => job.payload_json.run_id === params[1]);
+      return { rows: rows as Row[], rowCount: rows.length };
+    }
+    if (sql.includes("JOIN host_threads thread ON thread.id = run.host_task_thread_id") && sql.includes("provider_bound")) {
+      const rows = this.state.login ? [{ ...this.state.login, provider_bound: false }] : [];
+      return { rows: rows as Row[], rowCount: rows.length };
+    }
+    if (sql.includes("AS override") || sql.includes("FROM settings")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("jsonb_build_object('waiting_for_quota'")) {
+      const row = this.state.runs.get(String(params[1]));
+      if (row?.status === "queued") {
+        this.state.runs.set(row.id, {
+          ...row,
+          output_json: { ...(row.output_json as Record<string, unknown> ?? {}), waiting_for_quota: JSON.parse(String(params[2])) },
+        });
+      }
+      return { rows: [], rowCount: row ? 1 : 0 };
+    }
+    if (sql.includes("SELECT 1 FROM runs") && sql.includes("output_json ? 'waiting_for_quota'")) {
+      const row = this.state.runs.get(String(params[1]));
+      const held = Boolean(row && (row.output_json as Record<string, unknown> | null)?.waiting_for_quota);
+      return { rows: held ? [{} as Row] : [], rowCount: held ? 1 : 0 };
+    }
+    // A held Run lets go of its host thread; here Runs have none.
+    if (sql.includes("UPDATE host_threads thread") && sql.includes("SET dispatch_lock_id = NULL")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("SELECT run.host_task_thread_id")) {
+      return { rows: [{ host_task_thread_id: null, owner_id: null } as Row], rowCount: 1 };
+    }
+    // One Run of a group at a time (`groupHasRunnableRun`).
+    if (sql.includes("AND run_group_id = $2 AND id <> $3")) {
+      const busy = [...this.state.runs.values()].some((row) => row.run_group_id === params[1] && row.id !== params[2]
+        && ["queued", "running", "cancelling", "waiting_for_review"].includes(row.status));
+      return { rows: busy ? [{} as Row] : [], rowCount: busy ? 1 : 0 };
+    }
+    // Recipients parked for serialization (`queueSerializedRecipientsIfReady`).
+    if (sql.includes("output_json->'waiting_for_results'->>'scope' = $3")) {
+      const rows = [...this.state.runs.values()]
+        .filter((row) => row.run_group_id === params[1] && row.status === "waiting_for_dependency"
+          && (row.output_json as { waiting_for_results?: { scope?: string } } | null)?.waiting_for_results?.scope === params[2])
+        .map((row) => ({ id: row.id }));
+      return { rows: rows as Row[], rowCount: rows.length };
+    }
+    // No conversation here: the turn check (`enqueueWhenTurnFree`) has nothing to wait for.
+    if (sql.includes("SELECT session_id, run_group_id FROM runs")) {
+      const row = this.state.runs.get(String(params[1]));
+      return { rows: row ? [{ session_id: null, run_group_id: row.run_group_id } as Row] : [], rowCount: row ? 1 : 0 };
+    }
+    if (sql.includes("SELECT session_id FROM runs")) {
+      const row = this.state.runs.get(String(params[1]));
+      return { rows: row ? [{ session_id: null } as Row] : [], rowCount: row ? 1 : 0 };
+    }
+    if (sql.includes("output_json->'waiting_for_quota' AS marker, run_group_id")) {
+      const row = this.state.runs.get(String(params[1]));
+      const marker = (row?.output_json as Record<string, unknown> | null)?.waiting_for_quota;
+      return row?.status === "queued" && marker
+        ? { rows: [{ marker, run_group_id: row.run_group_id } as Row], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("SET output_json = output_json - 'waiting_for_quota'")) {
+      const row = this.state.runs.get(String(params[1]));
+      if (row) {
+        const { waiting_for_quota: _marker, waiting_for_turn: _parked, ...rest } = (row.output_json as Record<string, unknown> | null) ?? {};
+        this.state.runs.set(row.id, { ...row, output_json: rest });
+      }
+      return { rows: [], rowCount: row ? 1 : 0 };
+    }
+    if (sql.includes("UPDATE room_discussions SET updated_at = now()")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("FROM artifacts artifact") && sql.includes("'remote_diff'")) {
+      const runIds = params[1] as string[];
+      const latest = new Map<string, NonNullable<FakeState["artifacts"]>[number]>();
+      for (const artifact of this.state.artifacts ?? []) {
+        if (runIds.includes(artifact.run_id)) latest.set(artifact.run_id, artifact);
+      }
+      const rows = [...latest.values()].map((artifact) => ({
+        id: artifact.id,
+        run_id: artifact.run_id,
+        content: artifact.content,
+        truncated: artifact.truncated ?? false,
+      }));
+      return { rows: rows as Row[], rowCount: rows.length };
+    }
+    if (sql.includes("SELECT capabilities_json, permission_snapshot_json, trigger_origin")) {
+      const row = this.state.runTools?.get(String(params[1]));
+      const run = this.state.runs.get(String(params[1]));
+      return row && run?.status === "queued" ? { rows: [row as Row], rowCount: 1 } : { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("UPDATE runs") && sql.includes("SET capabilities_json = $3::jsonb")) {
+      const row = this.state.runTools?.get(String(params[1]));
+      if (row) {
+        const snapshot = (row.permission_snapshot_json ?? {}) as Record<string, unknown>;
+        this.state.runTools!.set(String(params[1]), {
+          ...row,
+          capabilities_json: JSON.parse(String(params[2])),
+          permission_snapshot_json: {
+            ...snapshot,
+            tool_grants: JSON.parse(String(params[3])),
+            scenario_tool_allowance: JSON.parse(String(params[4])),
+          },
+        });
+      }
+      return { rows: [], rowCount: row ? 1 : 0 };
     }
     if (sql.includes("UPDATE run_delegations") && sql.includes("status = 'running'")) {
       const row = this.state.delegations.get(String(params[1]));
@@ -455,11 +572,20 @@ class FakeClient {
   }
 }
 
-function projectorFor(state: FakeState): AgentGroupRunLifecycleProjector {
+function projectorFor(state: FakeState, quotaSource?: QuotaSource): AgentGroupRunLifecycleProjector {
   // Every fixture group in this file has room_id: null, so the Phase 3
   // Room-notification path (which needs a real ServerConfig only to
   // construct RoomService) always short-circuits before touching config.
-  return new AgentGroupRunLifecycleProjector(new FakePool(state) as unknown as Pool, {} as ServerConfig);
+  return new AgentGroupRunLifecycleProjector(new FakePool(state) as unknown as Pool, {} as ServerConfig, quotaSource);
+}
+
+function fixedQuota(utilization: number): QuotaSource {
+  return {
+    read: async () => ({
+      window: { kind: "session", utilization, resets_at: "2099-01-01T00:00:00.000Z" },
+      checked_at: new Date().toISOString(),
+    }),
+  };
 }
 
 describe("AgentGroupRunLifecycleProjector", () => {
@@ -494,6 +620,42 @@ describe("AgentGroupRunLifecycleProjector", () => {
         delegation_id: "delegation-1",
       }),
     });
+  });
+
+  it("holds a delegated child at the subscription reserve line, and admits it below", async () => {
+    const parent = childRun({
+      id: "run-parent",
+      agent_id: "agent-manager",
+      parent_run_id: null,
+      root_run_id: "run-parent",
+      delegation_id: null,
+      status: "waiting_for_dependency",
+    });
+    const queuedChild = childRun({ status: "queued" });
+    const state: FakeState = {
+      group: group(),
+      runs: new Map([[parent.id, parent], [queuedChild.id, queuedChild]]),
+      delegations: new Map([["delegation-1", delegation()]]),
+      messages: [],
+      events: [],
+      jobs: [],
+      login: { host_id: "host-1", host_name: "Server", runtime_key: "claude_code", installation: "own" },
+    };
+
+    // A delegation is Agent-triggered: at 90 % of the window (reserve 85 %) it waits, with no job.
+    await projectorFor(state, fixedQuota(90)).queueDelegatedChildren(parent);
+    expect(state.jobs).toHaveLength(0);
+    expect(state.runs.get("run-child")).toMatchObject({
+      status: "queued",
+      output_json: { waiting_for_quota: expect.objectContaining({ window: "session", utilization: 90, account_label: "Claude Code · Server" }) },
+    });
+
+    // The FIFO re-evaluates its head on the next terminal event; below the line it runs.
+    await projectorFor(state, fixedQuota(40)).queueDelegatedChildren(parent);
+    expect(state.jobs).toHaveLength(1);
+    expect(state.jobs?.[0]?.payload_json).toMatchObject({ run_id: "run-child", trigger_origin: "delegation" });
+    // Admitted, it no longer reads as waiting.
+    expect((state.runs.get("run-child")?.output_json as Record<string, unknown> | null)?.waiting_for_quota).toBeUndefined();
   });
 
   it("projects completed manager run output as a chat message once", async () => {
@@ -623,6 +785,85 @@ describe("AgentGroupRunLifecycleProjector", () => {
       parent_message_id: "message-multi",
       sender_agent_id: "agent-worker",
       content: "Reviewer result.",
+    });
+  });
+
+  it("admits a serialized recipient with the prompt it was dispatched with and the earlier replies appended", async () => {
+    const originalPrompt = [
+      "[Agent identity]\nYou are the Reviewer.",
+      "[Conversation]\n[user:user-1] compare notes",
+      "[Assigned task for this Room turn]\ncompare notes",
+    ].join("\n\n");
+    const firstRun = childRun({
+      id: "run-first",
+      agent_id: "agent-manager",
+      agent_name: "Manager",
+      parent_run_id: null,
+      root_run_id: "run-first",
+      delegation_id: null,
+      trigger_origin: "manual",
+      prompt: "manager prompt",
+      project_folder_id: null,
+      status: "succeeded",
+      output_json: canonicalOutput("Manager says the plan is fine."),
+      ended_at: "2026-07-05T00:01:00.000Z",
+    });
+    const parkedRun = childRun({
+      id: "run-second",
+      agent_id: "agent-reviewer",
+      agent_name: "Reviewer",
+      parent_run_id: "run-first",
+      root_run_id: "run-first",
+      delegation_id: null,
+      trigger_origin: "manual",
+      prompt: originalPrompt,
+      project_folder_id: null,
+      status: "waiting_for_dependency",
+      output_json: {
+        waiting_for_results: {
+          status: "waiting",
+          scope: "conversation_serialization",
+          reason: "Conversation Runs share one execution directory and run serially.",
+          depends_on_run_ids: ["run-first"],
+        },
+      },
+    });
+    const state: FakeState = {
+      group: group({ root_run_id: "run-first", session_id: "session-1" }),
+      runs: new Map([[firstRun.id, firstRun], [parkedRun.id, parkedRun]]),
+      delegations: new Map(),
+      messages: [
+        userMessage({
+          id: "message-fanout",
+          run_id: "run-first",
+          content: "@Manager @Reviewer compare notes",
+          mentions_json: [{ agent_id: "agent-manager" }, { agent_id: "agent-reviewer" }],
+          metadata_json: { root_run_id: "run-first", recipient_run_ids: ["run-first", "run-second"] },
+        }),
+      ],
+      events: [],
+      jobs: [],
+    };
+
+    await projectorFor(state).markDelegatedRunTerminal(firstRun);
+
+    const admitted = state.runs.get("run-second")!;
+    expect(admitted.status).toBe("queued");
+    // The Run never ran: its identity block, conversation window and task are
+    // still what it needs, and the reply produced meanwhile is added to them.
+    expect(admitted.prompt?.startsWith(originalPrompt)).toBe(true);
+    expect(admitted.prompt).toContain("[Replies already given to this same message]");
+    expect(admitted.prompt).toContain("Manager says the plan is fine.");
+    expect(admitted.prompt).not.toContain("Continue the paused room agent run");
+    expect(state.messages.find((message) => message.metadata_json?.wait_for_results_run_id === "run-second")).toMatchObject({
+      message_type: "system_event",
+      content: "Recipient run admitted after the preceding recipients of this turn completed.",
+    });
+    expect(state.jobs).toHaveLength(1);
+    expect(state.jobs?.[0]).toMatchObject({
+      job_type: "agent_run",
+      agent_id: "agent-reviewer",
+      payload_json: expect.objectContaining({ run_id: "run-second" }),
     });
   });
 
@@ -939,6 +1180,142 @@ describe("AgentGroupRunLifecycleProjector", () => {
     expect(resumedParent.status).toBe("queued");
     expect(resumedParent.prompt).toContain("Need delegated reviewer result");
     expect(resumedParent.prompt).toContain("Reviewer A says 2.");
+  });
+
+  it("hands a delegated child's change on as a [Changes] list and a link, never the patch", async () => {
+    const parentRun = childRun({
+      id: "run-parent",
+      agent_id: "agent-manager",
+      parent_run_id: "run-root",
+      delegation_id: null,
+      trigger_origin: "manual",
+      prompt: "Fix the parser.",
+      project_folder_id: null,
+      status: "waiting_for_dependency",
+      output_json: {
+        waiting_for_results: {
+          status: "waiting",
+          scope: "own_delegations",
+          reason: "Need the coder's change before replying.",
+          depends_on_run_ids: ["run-child"],
+        },
+      },
+    });
+    const terminalRun = childRun({
+      status: "succeeded",
+      output_json: canonicalOutput("Parser fixed."),
+      ended_at: "2026-07-05T00:01:00.000Z",
+    });
+    const patch = [
+      "diff --git a/src/parser.ts b/src/parser.ts",
+      "index 1111111..2222222 100644",
+      "--- a/src/parser.ts",
+      "+++ b/src/parser.ts",
+      "@@ -1,3 +1,4 @@",
+      " const a = 1;",
+      "-const secretPatchLine = 2;",
+      "+const b = 2;",
+      "+const c = 3;",
+      " export { a };",
+    ].join("\n");
+    const state: FakeState = {
+      // A Room turn: only a Room turn can follow a change link.
+      group: group({ room_id: "room-1", session_id: "session-1" }),
+      runs: new Map([["run-parent", parentRun], ["run-child", terminalRun]]),
+      delegations: new Map([["delegation-1", delegation({ status: "running" })]]),
+      messages: [userMessage()],
+      events: [],
+      jobs: [],
+      artifacts: [{ id: "artifact-diff-1", run_id: "run-child", content: patch }],
+      runTools: new Map([["run-parent", {
+        capabilities_json: ["agent.delegate", "agent.wait_for_results"],
+        permission_snapshot_json: {
+          tool_grants: [],
+          scenario_tool_allowance: ["agent.delegate", "agent.wait_for_results"],
+        },
+        trigger_origin: "manual",
+      }]]),
+    };
+
+    await projectorFor(state).markDelegatedRunTerminal(terminalRun);
+
+    const expectedBlock = [
+      "[Changes] 1 file changed, +2 -1",
+      "  src/parser.ts | +2 -1",
+      "Full patch (not included): rainver://artifacts/artifact-diff-1 — read it only if you need the lines, with input_resource.read or input_resource.search (resource_id: artifact-diff-1).",
+    ].join("\n");
+    expect(state.delegations.get("delegation-1")?.result_summary).toBe(`Parser fixed.\n\n${expectedBlock}`);
+    const resumed = state.runs.get("run-parent")!;
+    expect(resumed.status).toBe("queued");
+    expect(resumed.prompt).toContain(expectedBlock.split("\n").map((line) => `   ${line}`).join("\n"));
+    expect(resumed.prompt).not.toContain("secretPatchLine");
+    // The resumed Run can follow the link it was handed.
+    const tools = state.runTools?.get("run-parent");
+    expect(tools?.capabilities_json).toEqual(expect.arrayContaining(["input_resource.read", "input_resource.search"]));
+    expect((tools?.permission_snapshot_json as { tool_grants: Array<{ action_id: string }> }).tool_grants
+      .map((grant) => grant.action_id)).toEqual(expect.arrayContaining(["input_resource.read", "input_resource.search"]));
+  });
+
+  it("appends an earlier recipient's [Changes] block to the replies a serialized recipient is given", async () => {
+    const firstRun = childRun({
+      id: "run-first",
+      agent_id: "agent-manager",
+      agent_name: "Manager",
+      parent_run_id: null,
+      root_run_id: "run-first",
+      delegation_id: null,
+      trigger_origin: "manual",
+      project_folder_id: null,
+      status: "succeeded",
+      output_json: canonicalOutput("Renamed the helper."),
+    });
+    const parkedRun = childRun({
+      id: "run-second",
+      agent_id: "agent-reviewer",
+      parent_run_id: "run-first",
+      root_run_id: "run-first",
+      delegation_id: null,
+      trigger_origin: "manual",
+      prompt: "reviewer prompt",
+      project_folder_id: null,
+      status: "waiting_for_dependency",
+      output_json: {
+        waiting_for_results: {
+          status: "waiting",
+          scope: "conversation_serialization",
+          depends_on_run_ids: ["run-first"],
+        },
+      },
+    });
+    const state: FakeState = {
+      group: group({ root_run_id: "run-first", room_id: "room-1", session_id: "session-1" }),
+      runs: new Map([[firstRun.id, firstRun], [parkedRun.id, parkedRun]]),
+      delegations: new Map(),
+      messages: [userMessage({ id: "message-fanout", run_id: "run-first", metadata_json: { recipient_run_ids: ["run-first", "run-second"] } })],
+      events: [],
+      jobs: [],
+      artifacts: [
+        { id: "artifact-old", run_id: "run-first", content: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b" },
+        {
+          id: "artifact-latest",
+          run_id: "run-first",
+          content: "diff --git a/old.ts b/new.ts\nsimilarity index 90%\nrename from old.ts\nrename to new.ts\n--- a/old.ts\n+++ b/new.ts\n@@ -1 +1 @@\n-x\n+y",
+          truncated: true,
+        },
+      ],
+    };
+
+    await projectorFor(state).markDelegatedRunTerminal(firstRun);
+
+    const admitted = state.runs.get("run-second")!;
+    expect(admitted.prompt).toContain("[Replies already given to this same message]");
+    expect(admitted.prompt).toContain([
+      "   result: Renamed the helper.",
+      "   [Changes] at least 1 file changed, +1 -1 (the stored diff was truncated: counts cover only the stored part, and files after the cut are not listed)",
+      "     old.ts => new.ts | +1 -1",
+      "   Full patch (not included): rainver://artifacts/artifact-latest",
+    ].join("\n"));
+    expect(admitted.prompt).not.toContain("artifact-old");
   });
 });
 function canonicalOutput(summary: string): Record<string, unknown> {

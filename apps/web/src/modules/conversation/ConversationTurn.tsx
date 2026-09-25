@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertTriangle, ChevronRight, Info, ListChecks } from 'lucide-react'
+import { AlertTriangle, ChevronRight, CircleHelp, Info, ListChecks } from 'lucide-react'
 import type { RunTurn, TurnPart } from '../../types/api'
 import { Message, MessageContent, MessageResponse } from '../../components/ai-elements/message'
 import {
@@ -113,12 +113,19 @@ export function ConversationTurn({
         {blocked && (
           <div className="flex items-center gap-2 rounded-md bg-warning/10 px-2 py-1.5 text-xs text-foreground">
             <AlertTriangle className="size-3 shrink-0" />
-            <span>{turn.blocked_on === 'authorization' ? 'approval needed' : 'waiting for a decision'}</span>
+            <span>
+              {turn.blocked_on === 'authorization'
+                ? 'approval needed'
+                : turn.blocked_on === 'workspace'
+                  ? 'waiting for the directory — another Run is writing it'
+                  : 'waiting for a decision'}
+            </span>
             {/*
               Somewhere to act. A turn that says it is waiting on you and does
-              not say where to go is worse than one that says nothing.
+              not say where to go is worse than one that says nothing. A turn
+              waiting for its directory needs nobody: it starts on its own.
             */}
-            {runHref && (
+            {runHref && turn.blocked_on !== 'workspace' && (
               <SpaceLink to={runHref} className="underline underline-offset-2">
                 {turn.blocked_on === 'authorization' ? 'Review request' : 'Resolve Run'}
               </SpaceLink>
@@ -134,6 +141,19 @@ export function ConversationTurn({
         {working && <Shimmer className="text-sm">Working…</Shimmer>}
       </MessageContent>
     </Message>
+  )
+}
+
+/**
+ * Under a reply that is a question for the person (`awaiting_answer`): the
+ * runtime asked mid-turn, the turn ended on it, and the answer is the next
+ * message. Done, not blocked — nothing is held open waiting for it.
+ */
+export function AwaitingAnswerMarker() {
+  return (
+    <span className="mt-1 flex w-fit items-center gap-1.5 text-xs text-muted-foreground">
+      <CircleHelp className="size-3" /> waiting for an answer
+    </span>
   )
 }
 

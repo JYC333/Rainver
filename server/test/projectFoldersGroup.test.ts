@@ -308,3 +308,41 @@ describe("projectFoldersSecurity", () => {
     });
   });
 });
+
+describe("server-side git on a built-in Location", () => {
+  it("refreshes a checkout's status without running anything a Run planted in its .git", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { existsSync } = await import("node:fs");
+    const { writeFile } = await import("node:fs/promises");
+    const { PgWorkspaceLocationRepository } = await import("../src/modules/projectFolders/workspaceLocations.js");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "rainver-location-git-"));
+    try {
+      const root = join(workspaceRoot, "location-1");
+      await mkdir(root);
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "t@example.com");
+      git("config", "user.name", "T");
+      await writeFile(join(root, ".gitattributes"), "*.txt filter=evil\n");
+      await writeFile(join(root, "a.txt"), "a\n");
+      git("add", ".");
+      git("commit", "-q", "-m", "init");
+      const marker = join(workspaceRoot, "planted-ran");
+      // What a Run on the built-in host can write into the shared directory.
+      git("config", "core.fsmonitor", `touch '${marker}'; false`);
+      git("config", "filter.evil.clean", `touch '${marker}'; cat`);
+      await writeFile(join(root, "a.txt"), "changed\n");
+
+      const writes: unknown[][] = [];
+      const db = { query: async (_sql: string, params: unknown[]) => { writes.push(params); return { rows: [], rowCount: 1 }; } };
+      await new PgWorkspaceLocationRepository(db as never).refreshGitStatus(
+        { id: "location-1", root_path: null, execution_host_kind: "server" },
+        workspaceRoot,
+      );
+      expect(existsSync(marker)).toBe(false);
+      expect(writes[0]).toEqual(["location-1", "main", git("rev-parse", "HEAD"), true, expect.any(String)]);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});

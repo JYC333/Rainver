@@ -12,6 +12,10 @@ import {
 import { PgJobQueueRepository } from "./repository.js";
 import type { JobEventRecord, JobRecord } from "./repository.js";
 import { buildJobHandlerRegistry } from "./workerRuntime.js";
+import type { ServerConfig } from "../../config.js";
+import { getDbPool } from "../../db/pool.js";
+import { PgRunRepository } from "../runs/repository.js";
+import { RunMaterializationService } from "../runs/materializationService.js";
 
 export interface JobOut {
   id: string;
@@ -128,6 +132,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         event_type: "status_change",
         message: "Job cancelled by user",
       });
+      await finalizeRunBehindCancelledJob(context.config, job);
       const updated = await queue().getJob(jobId);
       return reply.send(updated ? jobToOut(updated) : null);
     } catch (error) {
@@ -179,4 +184,16 @@ export function jobEventToOut(event: JobEventRecord): JobEventOut {
     data: event.data ?? null,
     created_at: event.created_at,
   };
+}
+
+/**
+ * The Run a cancelled `agent_run` / `provider_task_run` job was going to
+ * perform ended with it (`PgJobQueueRepository.cancelJob`); finalizing it
+ * now settles its Task at once rather than at the worker's next sweep.
+ */
+async function finalizeRunBehindCancelledJob(config: ServerConfig, job: JobRecord): Promise<void> {
+  const runId = job.payload_json?.run_id;
+  if (typeof runId !== "string" || !["agent_run", "provider_task_run"].includes(job.job_type)) return;
+  const run = await new PgRunRepository(getDbPool(config.databaseUrl!)).getRun(job.space_id, runId);
+  if (run?.status === "cancelled") await RunMaterializationService.fromConfig(config).finalizeRun(run);
 }

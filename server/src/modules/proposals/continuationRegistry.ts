@@ -2,6 +2,7 @@ import type { Queryable } from "./repository.js";
 import { registerProjectDefinitionContinuation } from "../projects/projectDefinitionProposalApplier.js";
 import { registerAgentDelegationContinuation } from "../agentGroups/delegationContinuation.js";
 import { registerResearchAcquisitionContinuation } from "../projectResearch/researchAcquisitionContinuation.js";
+import { registerRoomDiscussionContinuations } from "../rooms/discussionContinuations.js";
 
 /**
  * The Proposal fields a continuation handler needs — a narrow read view of
@@ -113,6 +114,7 @@ export function createDefaultConversationContinuationRegistry(): ConversationCon
   registerProjectDefinitionContinuation(registry);
   registerAgentDelegationContinuation(registry);
   registerResearchAcquisitionContinuation(registry);
+  registerRoomDiscussionContinuations(registry);
   return registry;
 }
 

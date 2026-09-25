@@ -7,6 +7,7 @@ import type { AgentRunRecord } from "./repository.js";
 import { buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
 import { acpRuntimeContextPromptBlocks } from "./acpRuntimeContextPrompt.js";
 import { stallTimeoutSeconds } from "./stallTimeout.js";
+import { classifyRuntimeFailure } from "./retryPolicy.js";
 import { workSkillPromptPointer } from "../capabilities/workSkill.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
@@ -634,7 +635,11 @@ async function runRemoteHostCliAdapter(
     installation,
     spec.runtime_key,
     workSurface?.frame ?? null,
-    launchWorkspace(input.workspace, workspaceLocationId, input.workspace_relative_path ?? null),
+    withTaskWorktree(
+      launchWorkspace(input.workspace, workspaceLocationId, input.workspace_relative_path ?? null),
+      workspaceLocationId,
+      input.run,
+    ),
     input.workspace_access ?? [],
     inputResources,
     dispatchIsolation(input.run),
@@ -781,10 +786,14 @@ async function runRemoteHostCliAdapter(
       { event_type: "diagnostic", text: detail },
       { event_type: "status", status: "run_timeout" },
     ]);
+    // A resume the runtime never answered is a session it cannot load: the
+    // thread gives it up (`hosts/threadOutcome.ts`) rather than time out on
+    // it every turn. A wait before the process started says nothing about it.
+    const resumeHung = Boolean(input.resume_session_id && protocolResult?.resume_unanswered);
     return remoteFailure(
       spec.runtime_key,
-      stalled ? "runtime_stall_timeout" : "runtime_timeout",
-      detail,
+      resumeHung ? "runtime_session_invalid" : stalled ? "runtime_stall_timeout" : "runtime_timeout",
+      resumeHung ? `${detail} It never answered the request to resume its session, which is given up.` : detail,
       startedAt,
       completedAt,
     );
@@ -799,6 +808,14 @@ async function runRemoteHostCliAdapter(
     output_json: {
       runtime_key: spec.runtime_key,
       external_session_id: measurement.external_session_id,
+      // How full the vendor session is after this turn, as the runtime said.
+      // The host-thread outcome keeps it so a long session can hand off and
+      // rotate before the vendor's own compaction does it invisibly.
+      ...(protocolResult?.context_window ? { context_window: protocolResult.context_window } : {}),
+      // The runtime asked the person a question of its own and the turn was
+      // cancelled on it. A completed turn, not a failure: the chat
+      // finalizer writes the question as the Agent's reply.
+      ...(protocolResult?.asked_user ? { asked_user: protocolResult.asked_user } : {}),
     },
     metadata_json: {
       runtime_key: spec.runtime_key,
@@ -813,6 +830,10 @@ async function runRemoteHostCliAdapter(
       // Run event: "why did the install fail" has no other answer, since the
       // refusal happened on the host and the CLI only saw a 403.
       ...(result.egress?.length ? { egress: result.egress } : {}),
+      // Where this Run's change is: its Task branch, and the commit its
+      // worktree stood at when it started — the base its verification diffs
+      // against and what the Run's settle squashes from (ADR 0016 §11).
+      ...(result.task_worktree ? { task_worktree: result.task_worktree } : {}),
       // The provider this run actually executed against, or null when it ran
       // on the copy's own subscription login. Reported rather than read off
       // the Run row, because this path *overwrites* that row mid-execution
@@ -828,7 +849,16 @@ async function runRemoteHostCliAdapter(
       ...(workSurface ? { work_skill_content_hash: workSurface.skill_content_hash } : {}),
     },
     exit_code: result.returncode,
-    error_code: success ? null : resumedSessionInvalid ? "runtime_session_invalid" : "runtime_nonzero_exit",
+    error_code: success
+      ? null
+      : resumedSessionInvalid
+        ? "runtime_session_invalid"
+        // A refusal for an exhausted subscription is its own, non-retryable
+        // code — read from the error the turn ended on, or, with none, the
+        // end of stderr, never from a notice logged earlier in the run.
+        : classifyRuntimeFailure(spec.runtime_key, protocolResult?.error ?? stderrTail(result.stderr), {
+          providerBound: Boolean(providerBinding),
+        }) ?? "runtime_nonzero_exit",
     error_message: success
       ? null
       : protocolResult?.error
@@ -888,6 +918,62 @@ function launchWorkspace(
   if (fromSnapshot) return fromSnapshot;
   if (!workspaceLocationId || !relativePath) return undefined;
   return { kind: "location", workspace_location_id: workspaceLocationId, workspace_relative_path: relativePath };
+}
+
+/**
+ * A write-capable execution Task Run on a Location works in its Task's own
+ * worktree, on the Task's branch (`worktree: { task_id }`, ADR 0016 §11), so
+ * it never waits for the Location's writers and they never see its edits; the
+ * change reaches the checkout only when the Task is done. The daemon falls
+ * back to the checkout itself, under the Location's lease, when the Location
+ * is not a git checkout. Every other Run — a Conversation turn above all, and
+ * a Task's planning or read-only Run — works in the checkout the person is
+ * looking at.
+ */
+export function withTaskWorktree(
+  workspace: LaunchWorkspace | undefined,
+  workspaceLocationId: string | null,
+  run: TaskWorktreeRun,
+): LaunchWorkspace | undefined {
+  const taskId = executionTaskId(run);
+  if (!taskId) return workspace;
+  if (workspace?.kind === "managed") return workspace;
+  const location: LaunchWorkspace | undefined = workspace
+    ?? (workspaceLocationId ? { kind: "location", workspace_location_id: workspaceLocationId } : undefined);
+  const mergeId = taskMergeIdOf(run);
+  return location ? { ...location, worktree: { task_id: taskId, ...(mergeId ? { merge_id: mergeId } : {}) } } : undefined;
+}
+
+/**
+ * The merge whose conflict this Run resolves (ADR 0016 §11):
+ * it works in the Task worktree as the merge left it, and is never settled.
+ */
+export function taskMergeIdOf(run: { contract_snapshot_json?: unknown }): string | null {
+  const contract = run.contract_snapshot_json;
+  if (!contract || typeof contract !== "object" || Array.isArray(contract)) return null;
+  const mergeId = (contract as Record<string, unknown>).task_merge_id;
+  return typeof mergeId === "string" && mergeId.length > 0 ? mergeId : null;
+}
+
+export interface TaskWorktreeRun {
+  contract_snapshot_json?: unknown;
+  run_type?: string | null;
+  required_sandbox_level?: string | null;
+}
+
+/**
+ * The Task a Run executes, when it is an execution Run that may write: its
+ * contract came from a Task, it is an `agent` Run (not `planning`), and its
+ * workspace is not `read_only` — the same line `dispatchIsolation` draws.
+ */
+export function executionTaskId(run: TaskWorktreeRun): string | null {
+  if (run.run_type !== "agent" || run.required_sandbox_level === "read_only") return null;
+  const contract = run.contract_snapshot_json;
+  if (!contract || typeof contract !== "object" || Array.isArray(contract)) return null;
+  const source = (contract as Record<string, unknown>).source;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const { kind, id } = source as Record<string, unknown>;
+  return kind === "task" && typeof id === "string" && id.length > 0 ? id : null;
 }
 
 async function hostIsStrict(databaseUrl: string | null | undefined, hostId: string): Promise<boolean> {
@@ -1030,10 +1116,21 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     // request) until the daemon confirms this run is actually registered —
     // see the `launched` frame's doc comment in
     // `packages/host-daemon/src/execution.ts`.
-    let onLaunched: (() => void) | undefined;
+    let resolveLaunched: (() => void) | undefined;
     const launchedPromise = controller
-      ? new Promise<void>((resolve) => { onLaunched = resolve; })
+      ? new Promise<void>((resolve) => { resolveLaunched = resolve; })
       : null;
+    // The stall clock starts when the process does: a launch the daemon
+    // queued behind another writer of its Location has said nothing because
+    // nothing has run yet.
+    let launchedAt: number | null = null;
+    let armExecutionDeadline: (() => void) | null = null;
+    const onLaunched = () => {
+      launchedAt = Date.now();
+      lastOutputAt = launchedAt;
+      armExecutionDeadline?.();
+      resolveLaunched?.();
+    };
     const completion = this.registry.dispatchLaunch(
       this.hostId,
       input.run_id,
@@ -1075,11 +1172,30 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       return toExecutionResult(outcome, controller);
     }
     let expiry: "timeout" | "stall_timeout" | null = null;
+    let expiredBeforeLaunch = false;
     const deadlines: Array<Promise<null>> = [];
     if (timeoutMs) {
       deadlines.push(new Promise<null>((resolve) => {
-        const timer = setTimeout(() => { expiry ??= "timeout"; resolve(null); }, timeoutMs);
-        timer.unref?.();
+        // The Run's budget is for running. It starts when the host starts the
+        // process (`launched`), as the daemon's own timer does — a launch the
+        // host queued behind another writer of its Location, or this server
+        // queued for a built-in host slot, has not used any of it. The wait
+        // itself is bounded by one budget from dispatch, so a launch that is
+        // never let in still ends.
+        const waitTimer = setTimeout(() => {
+          if (launchedAt !== null) return;
+          expiredBeforeLaunch = true;
+          expiry ??= "timeout";
+          resolve(null);
+        }, timeoutMs);
+        waitTimer.unref?.();
+        armExecutionDeadline = () => {
+          clearTimeout(waitTimer);
+          armExecutionDeadline = null;
+          const timer = setTimeout(() => { expiry ??= "timeout"; resolve(null); }, timeoutMs);
+          timer.unref?.();
+        };
+        if (launchedAt !== null) armExecutionDeadline();
       }));
     }
     if (stallMs) {
@@ -1088,6 +1204,11 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         // the last output, not from launch, so a run producing events stays
         // alive indefinitely under the run timeout alone.
         const check = () => {
+          // Silence before the process exists is not a stall: the wait has
+          // its own bound above when there is a run budget.
+          if (this.registry.isWaitingForWorkspace(input.run_id) || (launchedAt === null && timeoutMs)) {
+            lastOutputAt = Date.now();
+          }
           const idleMs = Date.now() - lastOutputAt;
           if (idleMs >= stallMs) { expiry ??= "stall_timeout"; resolve(null); return; }
           const timer = setTimeout(check, stallMs - idleMs);
@@ -1104,7 +1225,9 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       return {
         returncode: 1,
         stdout: "",
-        stderr: "",
+        stderr: expiredBeforeLaunch
+          ? "The host did not start this run within its time budget: another Run was writing its workspace, or the host had no free slot."
+          : "",
         timed_out: true,
         failure_code: expiry ?? "timeout",
         idle_seconds: Math.round((Date.now() - lastOutputAt) / 1000),
@@ -1133,6 +1256,13 @@ function toExecutionResult(
     stdout: "",
     stderr: protocol?.error ?? outcome.error ?? "",
     ...(outcome.egress?.length ? { egress: outcome.egress } : {}),
+    ...(outcome.task_worktree ? { task_worktree: outcome.task_worktree } : {}),
     timed_out: outcome.timed_out,
   };
+}
+
+/** The last few lines of a process's stderr: where a CLI says why it stopped. */
+function stderrTail(stderr: string | null | undefined): string | null {
+  const lines = (stderr ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
+  return lines.length > 0 ? lines.slice(-3).join("\n") : null;
 }

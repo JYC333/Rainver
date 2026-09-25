@@ -10,6 +10,7 @@ const REAL_CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 
 const EXPECTED_ASSET_KEYS = [
   "agent.default_assistant.system",
+  "agent.handoff",
   "agent_template.coding_reviewer.system",
   "agent_template.activity_reflector.system",
   "agent_template.research_reader.system",

@@ -1,5 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import type { ProviderProxyRoute } from "../providers/proxy/lease.js";
 
 export class OpenCodeProviderConfigError extends Error {
   constructor(readonly code: string, message: string) {
@@ -20,6 +21,7 @@ export interface OpenCodeProviderConfigHandle {
  */
 export async function writeOpenCodeProviderConfig(input: {
   sandboxCwd: string | null;
+  route: ProviderProxyRoute;
   providerName: string;
   proxyBaseUrl: string;
   leaseToken: string;
@@ -75,16 +77,44 @@ export function openCodeModelId(model: string): string {
 }
 
 /**
+ * The AI SDK package OpenCode loads for the bound provider, and the base URL
+ * that package is given, per lease route. The route is the wire protocol the
+ * proxy forwards verbatim, so the package must speak exactly that protocol.
+ *
+ * - `anthropic`: `@ai-sdk/anthropic`, so OpenCode applies its own Anthropic
+ *   prompt-cache breakpoints. That package posts to `<baseURL>/messages`, and
+ *   a Claude-compatible upstream is recorded without `/v1` (the form Claude
+ *   Code's `ANTHROPIC_BASE_URL` takes), so the lease URL gains `/v1` here and
+ *   the proxy forwards `/v1/messages` onto the upstream.
+ * - `openai`: `@ai-sdk/openai-compatible` on the lease URL itself; the
+ *   OpenAI-compatible upstream already carries its `/v1`.
+ */
+const OPENCODE_PROVIDER_PACKAGES: Record<ProviderProxyRoute, { npm: string; baseUrl: (leaseUrl: string) => string }> = {
+  anthropic: { npm: "@ai-sdk/anthropic", baseUrl: (leaseUrl) => `${leaseUrl.replace(/\/+$/, "")}/v1` },
+  openai: { npm: "@ai-sdk/openai-compatible", baseUrl: (leaseUrl) => leaseUrl },
+};
+
+/**
  * Merges the binding into an OpenCode config document, in place.
  *
  * Shared with the remote path so both produce the same provider block — the
  * `npm` field in particular is what makes a non-registry provider loadable at
- * all, and a second implementation is how that silently goes missing.
+ * all, and a second implementation is how that silently goes missing. The
+ * provider id stays `rainver_provider` whichever package serves it, so
+ * `openCodeModelId` does not depend on the protocol.
  */
 export function applyOpenCodeProviderConfig(
   document: Record<string, unknown>,
-  input: { providerName: string; proxyBaseUrl: string; leaseToken: string; model: string; availableModels: string[] },
+  input: {
+    route: ProviderProxyRoute;
+    providerName: string;
+    proxyBaseUrl: string;
+    leaseToken: string;
+    model: string;
+    availableModels: string[];
+  },
 ): void {
+  const binding = OPENCODE_PROVIDER_PACKAGES[input.route];
   const providerId = OPENCODE_PROVIDER_ID;
   const provider = recordValue(document.provider);
   const models = { ...recordValue(provider.models) };
@@ -96,11 +126,11 @@ export function applyOpenCodeProviderConfig(
     ...provider,
     [providerId]: {
       ...recordValue(provider[providerId]),
-      npm: "@ai-sdk/openai-compatible",
+      npm: binding.npm,
       name: input.providerName,
       options: {
         ...recordValue(recordValue(provider[providerId]).options),
-        baseURL: input.proxyBaseUrl,
+        baseURL: binding.baseUrl(input.proxyBaseUrl),
         apiKey: input.leaseToken,
       },
       models,

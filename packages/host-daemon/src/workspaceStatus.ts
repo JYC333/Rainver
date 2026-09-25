@@ -1,8 +1,5 @@
-import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { runLocationGit } from "@rainver/folder-read";
 
 export interface WorkspaceStatusReport {
   location_id: string;
@@ -14,8 +11,10 @@ export interface WorkspaceStatusReport {
 
 async function git(args: string[], cwd: string): Promise<string | null> {
   try {
-    const result = await execFileAsync("git", args, { cwd, timeout: 5_000, maxBuffer: 32 * 1024 });
-    return result.stdout.trim() || null;
+    // An Agent may have written this checkout's `.git/`; nothing it planted
+    // there may run as the daemon (`runLocationGit`).
+    const result = await runLocationGit(args, cwd, 5_000);
+    return result.code === 0 ? result.stdout.trim() || null : null;
   } catch {
     return null;
   }

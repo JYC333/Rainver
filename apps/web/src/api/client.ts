@@ -343,6 +343,17 @@ import type {
   RoomMessage,
   ThreadReferencePick,
   ContinueRoomAfterProposalRequest,
+  ExtendRoomDiscussionRequest,
+  OpenRoomDiscussionRequest,
+  OpenRoomDiscussionResponse,
+  QueuedRoomMessage,
+  QueuedRoomMessageResponse,
+  RoomConversationQuota,
+  RoomDiscussion,
+  RoomDiscussionDetail,
+  RoomDiscussionListResponse,
+  SubscriptionQuotaPolicy,
+  SubscriptionQuotaPolicyUpdate,
   Run,
   RunAttempt,
   RunCreateBody,
@@ -1512,6 +1523,8 @@ export const roomsApi = {
     return (
     get<{
       items: RoomMessage[]
+      /** What people said while the turn was taken, not yet posted. */
+      queued?: QueuedRoomMessage[]
       conversation?: RoomConversation
       task_group_ids: string[]
       limit: number
@@ -1522,14 +1535,17 @@ export const roomsApi = {
   sendMessage: (
     roomId: string,
     sessionId: string,
-    body: Omit<SendRoomMessageRequest, 'input_parts'> & { input_parts?: ConversationInputPart[] },
+    body: Omit<SendRoomMessageRequest, 'input_parts' | 'queue'> & { input_parts?: ConversationInputPart[]; queue?: boolean },
   ) =>
     post<{
       message: RoomMessage
       conversation: RoomConversation
       task_group_ids: string[]
       run_ids: string[]
-    }>(`/rooms/${roomId}/conversations/${sessionId}/messages`, body),
+    } | QueuedRoomMessageResponse>(`/rooms/${roomId}/conversations/${sessionId}/messages`, body),
+  /** Takes back one's own message that is still waiting for the turn. */
+  withdrawQueuedMessage: (roomId: string, sessionId: string, queuedId: string) =>
+    del<QueuedRoomMessage>(`/rooms/${roomId}/conversations/${sessionId}/queued-messages/${encodeURIComponent(queuedId)}`),
   retryMessage: (roomId: string, sessionId: string, runId: string, options: { idempotencyKey?: string } = {}) =>
     post<ConversationRetryResponse>(`/rooms/${roomId}/conversations/${sessionId}/retry`, { run_id: runId }, {
       idempotencyKey: options.idempotencyKey ?? crypto.randomUUID(),
@@ -1544,6 +1560,26 @@ export const roomsApi = {
     task_group_ids: string[]
     run_ids: string[]
   }>(`/rooms/${roomId}/conversations/${sessionId}/proposal-continuations`, body),
+  /** Posts the topic as the person's message and dispatches the first wave; 409 while another discussion is active. */
+  openDiscussion: (roomId: string, sessionId: string, body: OpenRoomDiscussionRequest) =>
+    post<OpenRoomDiscussionResponse>(`/rooms/${roomId}/conversations/${sessionId}/discussions`, body),
+  /** Newest first. */
+  discussions: (roomId: string, sessionId: string) =>
+    get<RoomDiscussionListResponse>(`/rooms/${roomId}/conversations/${sessionId}/discussions`),
+  discussion: (roomId: string, sessionId: string, discussionId: string) =>
+    get<RoomDiscussionDetail>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}`),
+  /** No further waves; the Manager then writes the conclusion. */
+  stopDiscussion: (roomId: string, sessionId: string, discussionId: string) =>
+    post<RoomDiscussion>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}/stop`, {}),
+  /** Adds rounds; on an emergent discussion held at its cap this also opens it. */
+  extendDiscussion: (roomId: string, sessionId: string, discussionId: string, body: ExtendRoomDiscussionRequest) =>
+    post<RoomDiscussion>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}/extend`, body),
+  /** The Space's quota lines, the windows of the logins this conversation's Agents use, and what is held. */
+  conversationQuota: (roomId: string, sessionId: string) =>
+    get<RoomConversationQuota>(`/rooms/${roomId}/conversations/${sessionId}/quota`),
+  /** "Continue anyway": admits the Agent-triggered turns held at the reserve line (Project writer). */
+  continuePastQuota: (roomId: string, sessionId: string) =>
+    post<RoomConversationQuota>(`/rooms/${roomId}/conversations/${sessionId}/quota/continue`, {}),
 }
 
 // ── Personal Memory Grants ─────────────────────────────────────────────────
@@ -3716,6 +3752,11 @@ export const providersApi = {
 
   refreshSubscriptionQuota: (id: string) =>
     post<ModelProviderOut>(`/providers/${id}/subscription/quota`, {}),
+
+  /** Where the Space draws the subscription warning and reserve lines. */
+  subscriptionQuotaPolicy: () => get<SubscriptionQuotaPolicy>('/providers/subscription-quota-policy'),
+  updateSubscriptionQuotaPolicy: (body: SubscriptionQuotaPolicyUpdate) =>
+    put<SubscriptionQuotaPolicy>('/providers/subscription-quota-policy', body),
 
   disconnectSubscription: (id: string) =>
     del<ModelProviderOut>(`/providers/${id}/subscription`),

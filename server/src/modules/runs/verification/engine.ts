@@ -66,6 +66,11 @@ export interface VerificationCommandExecutor {
 }
 
 export class PgVerificationEngine {
+  /** See `verifyTaskWorkspace`. */
+  verifyTaskWorkspace(input: { run: RunRecord; target: VerificationTarget; base_commit_sha: string }): Promise<WorkspaceVerificationOutcome> {
+    return verifyTaskWorkspace(this.planReader, this.commandExecutor, input);
+  }
+
   private readonly planReader: VerificationPlanReader;
   private readonly resultRepository: PgVerificationRepository;
 
@@ -126,6 +131,64 @@ export class PgVerificationEngine {
     const results = aggregateResults(rawResults);
     return this.resultRepository.upsertResults(input.run.space_id, input.run.id, results);
   }
+}
+
+/** What a merge can ask of a Task worktree: the checks that read the workspace, not a Run's outputs. */
+const WORKSPACE_VERIFIER_TYPES = new Set([
+  "command", "test", "lint", "typecheck", "file_exists", "file_changed", "diff_scope", "no_forbidden_change", "recipe_ref",
+]);
+
+export interface WorkspaceVerificationCheck {
+  verifier_type: string;
+  key: string;
+  status: VerificationStatus;
+  summary: string;
+}
+
+export interface WorkspaceVerificationOutcome {
+  /** `not_required` when the Task declares no check a workspace can answer. */
+  status: "passed" | "failed" | "not_required";
+  checks: WorkspaceVerificationCheck[];
+}
+
+/**
+ * The Task's declared verification, asked again of its worktree after the
+ * merge rebased it onto the main branch (ADR 0016 §11) — the gate the main
+ * branch moves on. Declared the way a Run's are (its contract and the Folder's
+ * recipe, from the Task's last execution Run), but only the checks a workspace
+ * can answer, and recorded on the merge rather than on that Run: the Run's own
+ * verification already happened, and this is a different question about a
+ * different tree. Git-backed checks compare against `base_commit_sha`, the
+ * main branch the Task commit now sits on.
+ */
+export async function verifyTaskWorkspace(
+  planReader: VerificationPlanReader,
+  commandExecutor: VerificationCommandExecutor | undefined,
+  input: { run: RunRecord; target: VerificationTarget; base_commit_sha: string },
+): Promise<WorkspaceVerificationOutcome> {
+  const plan = await planReader.getPlan(input.run);
+  const declarations = buildVerificationDeclarations(input.run, plan, [])
+    .filter((declaration) => WORKSPACE_VERIFIER_TYPES.has(declaration.verifier_type));
+  if (declarations.length === 0) return { status: "not_required", checks: [] };
+  const verificationInput: VerificationInput = {
+    run: input.run,
+    execution_target: input.target,
+    base_commit_sha: input.base_commit_sha,
+    output_json: null,
+    materialization_items: [],
+  };
+  const changed = declarations.some((declaration) => GIT_BACKED_VERIFIERS.has(declaration.verifier_type))
+    ? await changedFiles(input.run.id, input.target, input.base_commit_sha, commandExecutor)
+    : { paths: [], error: null };
+  const checks: WorkspaceVerificationCheck[] = [];
+  for (const declaration of declarations) {
+    const result = await evaluateDeclaration(verificationInput, declaration, changed, commandExecutor);
+    checks.push({ verifier_type: result.verifier_type, key: result.key, status: result.status, summary: result.summary });
+  }
+  // A skipped check (a missing recipe) is not a pass: the gate is what the
+  // Task declared, and a check that could not run did not say yes.
+  const passed = checks.every((check) => check.status === "passed");
+  return { status: passed ? "passed" : "failed", checks };
 }
 
 export function buildVerificationDeclarations(

@@ -124,6 +124,35 @@ describe("Room routes", () => {
     });
   });
 
+  it("answers 202 with the waiting message when a queued send finds the turn taken", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-2" });
+    let seen: unknown;
+    __setRoomServiceFactoryForTests(() => service({
+      sendOrQueueMessage: async (_identity: unknown, _roomId: string, _sessionId: string, input: unknown) => {
+        seen = input;
+        return {
+          queued: {
+            id: "queued-1", room_id: "room-1", session_id: "session-1", user_id: "user-2",
+            content: "Later", status: "queued", released_message_id: null, failure_reason: null,
+            created_at: "2026-07-26T00:00:00.000Z",
+          },
+        };
+      },
+    }));
+    app = buildModuleServer(config(), [roomsModule]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/rooms/room-1/conversations/session-1/messages",
+      payload: { content: "Later", queue: true },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ queued: { id: "queued-1", status: "queued" } });
+    // The service is handed the send itself; whether to queue is the route's.
+    expect(seen).not.toHaveProperty("queue");
+  });
+
   it("dispatches a Room message with the signed-in user's backend selection", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-2" });
     let seen: unknown;

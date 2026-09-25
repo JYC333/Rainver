@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { launchWorkspaceForTest } from "../src/modules/runs/remoteHostCliAdapter.js";
+import { executionTaskId, launchWorkspaceForTest, withTaskWorktree } from "../src/modules/runs/remoteHostCliAdapter.js";
 import { verificationTargetForTest } from "../src/modules/runs/orchestrationService.js";
 
 /**
@@ -79,3 +79,50 @@ describe("the workspace a verifier runs in", () => {
     })).toMatchObject({ runtime_key: "codex_cli", installation: "managed:1.11.0" });
   });
 })
+
+/**
+ * A write-capable execution Task Run works in its Task's worktree, on the
+ * Task's branch (ADR 0016 §11), so it never waits for the Location's writers;
+ * every other Run — a turn, a Task's planning Run, a read-only Run — works in
+ * the checkout the person is looking at. The verifier asks about the Task Run
+ * where its change is.
+ */
+describe("a Task Run's worktree", () => {
+  const LOC = "loc-1";
+  const task = {
+    contract_snapshot_json: { source: { kind: "task", id: "task-1" } },
+    run_type: "agent",
+    required_sandbox_level: "worktree",
+  };
+
+  it("names the Task on an execution Run's Location launch, even one the snapshot named no workspace for", () => {
+    expect(withTaskWorktree({ kind: "location", workspace_location_id: LOC }, LOC, task))
+      .toEqual({ kind: "location", workspace_location_id: LOC, worktree: { task_id: "task-1" } });
+    expect(withTaskWorktree(undefined, LOC, task))
+      .toEqual({ kind: "location", workspace_location_id: LOC, worktree: { task_id: "task-1" } });
+  });
+
+  it("leaves Conversation turns, managed workspaces and Location-less Runs alone", () => {
+    const location = { kind: "location" as const, workspace_location_id: LOC };
+    expect(withTaskWorktree(location, LOC, { ...task, contract_snapshot_json: {} })).toEqual(location);
+    const managed = { kind: "managed" as const, agent_id: "a", container: { kind: "conversation" as const, conversation_id: "c" } };
+    expect(withTaskWorktree(managed, LOC, task)).toEqual(managed);
+    expect(withTaskWorktree(undefined, null, task)).toBeUndefined();
+  });
+
+  it("gives a Task's planning Run and a read-only Run the checkout, not a worktree", () => {
+    const location = { kind: "location" as const, workspace_location_id: LOC };
+    expect(withTaskWorktree(location, LOC, { ...task, run_type: "planning" })).toEqual(location);
+    expect(withTaskWorktree(location, LOC, { ...task, required_sandbox_level: "read_only" })).toEqual(location);
+    expect(executionTaskId({ ...task, run_type: "planning" })).toBeNull();
+    expect(executionTaskId(task)).toBe("task-1");
+  });
+
+  it("points the verifier of a Task Run at its worktree", () => {
+    const target = verificationTargetForTest({
+      hostKind: "remote", hostId: "host-1", workspaceLocationId: LOC, workspaceRelativePath: null,
+      workspace: { kind: "location", workspace_location_id: LOC },
+    } as never, { runtime_key: null, model_override_json: null, runtime_profile_snapshot_json: null, ...task } as never);
+    expect(target?.workspace).toEqual({ kind: "location", workspace_location_id: LOC, worktree: { task_id: "task-1" } });
+  });
+});

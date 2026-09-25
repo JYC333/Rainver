@@ -128,7 +128,7 @@ describe("runtimeContextCliContinuityDb", () => {
       });
       let currentMessage = "";
       for (let index = 0; index < 8; index += 1) {
-        currentMessage = await message(`overflow-${index}`, "x".repeat(1_200), "user");
+        currentMessage = await message(`overflow-${index}`, "x".repeat(4_000), "user");
         await continuity.ingest({
           invocation_id: RUN,
           event_type: "user_message_received",

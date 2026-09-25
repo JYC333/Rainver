@@ -5,7 +5,14 @@ import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Bot, FileText, Loader2 } from 'lucide-react'
 import type { ConversationInputFileReferencePart, ConversationInputPart } from '@rainver/protocol'
-import { CONVERSATION_MAX_FILE_REFERENCES, CONVERSATION_MAX_FILE_SNAPSHOT_BYTES } from '@rainver/protocol'
+import {
+  CONVERSATION_MAX_FILE_REFERENCES,
+  CONVERSATION_MAX_FILE_SNAPSHOT_BYTES,
+  agentMentionSegments,
+  normalizeMentionText,
+  renderMentionTokens,
+  type AgentMentionToken,
+} from '@rainver/protocol'
 import { conversationInputApi, projectFoldersApi } from '../../api/client'
 import type { FileNode } from '../../types/api'
 import { errMsg } from '../../lib/utils'
@@ -41,16 +48,6 @@ interface MentionRange {
   from: number
   to: number
   query: string
-}
-
-type ComposerToken =
-  | { type: 'text'; text: string }
-  | { type: 'mention'; id: string; label: string }
-
-interface MentionCluster {
-  start: number
-  end: number
-  recipient_agent_ids: string[]
 }
 
 const AgentMentionNode = Node.create({
@@ -636,19 +633,20 @@ function emptyDoc(): JSONContent {
 function serializeComposerValue(doc: JSONContent): RoomMessageComposerValue {
   const tokens = tokensFromDoc(doc)
   const mentionIds = uniqueIds(tokens
-    .filter((token): token is Extract<ComposerToken, { type: 'mention' }> => token.type === 'mention')
+    .filter((token): token is Extract<AgentMentionToken, { type: 'mention' }> => token.type === 'mention')
     .map(token => token.id)
     .filter(Boolean))
   return {
-    text: normalizeMessageText(renderTokens(tokens, { includeMentions: true })),
+    text: normalizeMentionText(renderMentionTokens(tokens, true)),
     mentionIds,
-    routingSegments: routingSegmentsFromTokens(tokens),
+    // The same segmenting the server applies to an Agent's reply.
+    routingSegments: agentMentionSegments(tokens),
   }
 }
 
-function tokensFromDoc(doc: JSONContent): ComposerToken[] {
+function tokensFromDoc(doc: JSONContent): AgentMentionToken[] {
   const blocks = doc.content ?? []
-  const tokens: ComposerToken[] = []
+  const tokens: AgentMentionToken[] = []
   blocks.forEach((block, index) => {
     if (index > 0) tokens.push({ type: 'text', text: '\n' })
     tokens.push(...tokensFromNode(block))
@@ -656,7 +654,7 @@ function tokensFromDoc(doc: JSONContent): ComposerToken[] {
   return tokens
 }
 
-function tokensFromNode(node: JSONContent): ComposerToken[] {
+function tokensFromNode(node: JSONContent): AgentMentionToken[] {
   if (node.type === 'text') return [{ type: 'text', text: node.text ?? '' }]
   if (node.type === 'agentMention') {
     const id = stringAttr(node.attrs?.id)
@@ -667,92 +665,8 @@ function tokensFromNode(node: JSONContent): ComposerToken[] {
   return (node.content ?? []).flatMap(child => tokensFromNode(child))
 }
 
-function routingSegmentsFromTokens(tokens: ComposerToken[]): RoomMessageRoutingSegment[] {
-  const clusters = mentionClusters(tokens)
-  if (clusters.length === 0) return []
-
-  if (clusters.length === 1) {
-    const cluster = clusters[0]!
-    const content = normalizeMessageText([
-      renderTokens(tokens.slice(0, cluster.start), { includeMentions: false }),
-      renderTokens(tokens.slice(cluster.end), { includeMentions: false }),
-    ].filter(Boolean).join(' '))
-    return [{
-      recipient_agent_ids: cluster.recipient_agent_ids,
-      content,
-    }]
-  }
-
-  return clusters.map((cluster, index) => {
-    const nextCluster = clusters[index + 1] ?? null
-    const prefix = index === 0
-      ? renderTokens(tokens.slice(0, cluster.start), { includeMentions: false })
-      : ''
-    let content = normalizeMessageText([
-      prefix,
-      renderTokens(tokens.slice(cluster.end, nextCluster?.start ?? tokens.length), { includeMentions: false }),
-    ].filter(Boolean).join(' '))
-    return {
-      recipient_agent_ids: cluster.recipient_agent_ids,
-      content,
-    }
-  })
-}
-
-function mentionClusters(tokens: ComposerToken[]): MentionCluster[] {
-  const clusters: MentionCluster[] = []
-  let index = 0
-  while (index < tokens.length) {
-    const token = tokens[index]
-    if (token?.type !== 'mention') {
-      index += 1
-      continue
-    }
-
-    const recipientAgentIds = [token.id]
-    const start = index
-    let end = index + 1
-    let cursor = end
-    while (cursor < tokens.length) {
-      let next = cursor
-      while (tokens[next]?.type === 'text') {
-        const textToken = tokens[next] as Extract<ComposerToken, { type: 'text' }>
-        if (!isWhitespace(textToken.text)) break
-        next += 1
-      }
-      if (tokens[next]?.type !== 'mention') break
-      recipientAgentIds.push((tokens[next] as Extract<ComposerToken, { type: 'mention' }>).id)
-      cursor = next + 1
-      end = cursor
-    }
-
-    clusters.push({ start, end, recipient_agent_ids: uniqueIds(recipientAgentIds) })
-    index = end
-  }
-  return clusters
-}
-
-function renderTokens(tokens: ComposerToken[], options: { includeMentions: boolean }): string {
-  return tokens.map(token => {
-    if (token.type === 'text') return token.text
-    return options.includeMentions ? `@${token.label}` : ''
-  }).join('')
-}
-
-function normalizeMessageText(value: string): string {
-  return value
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n[ \t]+/g, '\n')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim()
-}
-
 function uniqueIds(ids: string[]): string[] {
   return [...new Set(ids.map(id => id.trim()).filter(Boolean))]
-}
-
-function isWhitespace(value: string): boolean {
-  return value.trim().length === 0
 }
 
 function stringAttr(value: unknown): string {

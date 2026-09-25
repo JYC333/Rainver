@@ -5,6 +5,7 @@
  * - GET /api/v1/providers/presets
  * - GET /api/v1/providers/vendors
  * - GET /api/v1/providers/:configId
+ * - GET|PUT /api/v1/providers/subscription-quota-policy
  *
  * Provider reads and commands are server-owned. List/detail read from the provider
  * DB port behind native server identity; the vendor registry and preset catalog
@@ -28,9 +29,11 @@ import {
   listProviderPresets,
 } from "./service.js";
 import { registerProviderCommandRoutes } from "./commands/routes.js";
+import { registerSubscriptionQuotaPolicyRoutes } from "./subscriptionQuotaPolicy.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   registerProviderCommandRoutes(app, context.config);
+  registerSubscriptionQuotaPolicyRoutes(app, context.config);
   app.get("/api/v1/providers", async (request, reply) =>
     listProviderConfigs(context.config, request, reply),
   );

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostConnectionRegistry, type HostFrameSink } from "../src/modules/hosts/connectionRegistry.js";
 
 // A supervisor retry reuses the run id within seconds of the first attempt's
@@ -8,6 +8,8 @@ import { HostConnectionRegistry, type HostFrameSink } from "../src/modules/hosts
 // the first attempt's exit code — and the second attempt's tool token was
 // revoked while its process was still running.
 describe("launch nonce routing", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   function sink(): HostFrameSink & { sent: Record<string, unknown>[] } {
     const sent: Record<string, unknown>[] = [];
     return { sent, send: (frame) => { sent.push(frame as Record<string, unknown>); }, close: () => undefined };
@@ -35,6 +37,74 @@ describe("launch nonce routing", () => {
 
     registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, secondLaunch);
     await expect(second).resolves.toMatchObject({ exit_code: 0 });
+  });
+
+  it("marks a launch the host queued for its directory until the host launches it, for its own dispatch only", async () => {
+    const registry = new HostConnectionRegistry();
+    const connection = sink();
+    registry.registerConnection("host-1", connection);
+    const completion = registry.dispatchLaunch("host-1", "run-1", { argv: ["claude"] });
+    const launch = String(connection.sent.at(-1)!.launch_id);
+
+    registry.receiveWaitingForWorkspace("host-1", "run-1", "some-other-launch");
+    expect(registry.isWaitingForWorkspace("run-1")).toBe(false);
+    registry.receiveWaitingForWorkspace("host-1", "run-1", launch);
+    expect(registry.isWaitingForWorkspace("run-1")).toBe(true);
+    registry.receiveLaunched("host-1", "run-1", launch);
+    expect(registry.isWaitingForWorkspace("run-1")).toBe(false);
+
+    // A queued launch that is stopped completes without ever launching.
+    registry.receiveWaitingForWorkspace("host-1", "run-1", launch);
+    registry.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: "stopped" }, launch);
+    expect(registry.isWaitingForWorkspace("run-1")).toBe(false);
+    await expect(completion).resolves.toMatchObject({ exit_code: 1 });
+  });
+
+  it("owes a host the stops it could not deliver, and sends them by launch when it reconnects", async () => {
+    vi.useFakeTimers();
+    {
+      const registry = new HostConnectionRegistry();
+      const first = sink();
+      registry.registerConnection("host-1", first);
+      const abandoned = registry.dispatchLaunch("host-1", "run-1", { argv: ["claude"] });
+      const abandonedLaunch = String(first.sent.at(-1)!.launch_id);
+      const stopped = registry.dispatchLaunch("host-1", "run-2", { argv: ["claude"] });
+      const stoppedLaunch = String(first.sent.at(-1)!.launch_id);
+      registry.unregisterConnection("host-1", first);
+      // A stop requested while the host is away …
+      expect(registry.sendTerminate("host-1", "run-2", false)).toBe(false);
+      // … and a dispatch given up after the grace window, which the host may
+      // still have queued for its directory.
+      await vi.advanceTimersByTimeAsync(61_000);
+      await expect(abandoned).resolves.toMatchObject({ error: "host_disconnected" });
+      await expect(stopped).resolves.toMatchObject({ error: "host_disconnected" });
+
+      const second = sink();
+      registry.registerConnection("host-1", second);
+      expect(second.sent).toEqual(expect.arrayContaining([
+        { type: "terminate", run_id: "run-1", launch_id: abandonedLaunch, force: true },
+        { type: "terminate", run_id: "run-2", launch_id: stoppedLaunch, force: true },
+      ]));
+      // Delivered once.
+      const third = sink();
+      registry.registerConnection("host-1", third);
+      expect(third.sent.filter((frame) => frame.type === "terminate")).toEqual([]);
+    }
+  });
+
+  it("owes a revoked host nothing, since it never reconnects", async () => {
+    vi.useFakeTimers();
+    const registry = new HostConnectionRegistry();
+    const first = sink();
+    registry.registerConnection("host-1", first);
+    void registry.dispatchLaunch("host-1", "run-1", { argv: ["claude"] });
+    registry.unregisterConnection("host-1", first);
+    registry.sendTerminate("host-1", "run-1", false);
+    registry.forgetRevokedHost("host-1");
+    await vi.advanceTimersByTimeAsync(61_000);
+    const later = sink();
+    registry.registerConnection("host-1", later);
+    expect(later.sent.filter((frame) => frame.type === "terminate")).toEqual([]);
   });
 
   it("routes output only to the dispatch it belongs to", async () => {

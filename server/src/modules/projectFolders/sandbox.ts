@@ -4,7 +4,7 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import type { RunRecord } from "../runs/repository.js";
-import { gitOutput, isGitRepo, isInside, runGit } from "@rainver/folder-read";
+import { isGitRepo, isInside, locationGitOutput, runLocationGit } from "@rainver/folder-read";
 import { PgProjectFolderRepository, type ProjectFolderRow } from "./repository.js";
 import { resolveServerHostLocationForRun, locationAbsoluteRoot } from "./workspaceLocations.js";
 
@@ -105,8 +105,8 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
       throw new HttpError(422, "Project Folder worktree execution requires a git repository");
     }
 
-    const baseCommitSha = (await gitOutput(["rev-parse", "HEAD"], folderRoot, 10_000)).trim();
-    const status = await runGit(["status", "--porcelain"], folderRoot, 10_000);
+    const baseCommitSha = (await locationGitOutput(["rev-parse", "HEAD"], folderRoot, 10_000)).trim();
+    const status = await runLocationGit(["status", "--porcelain"], folderRoot, 10_000);
     const sandboxCwd = this.runSandboxPath(run.space_id, run.id);
     await this.removeExistingSandbox(sandboxCwd, folderRoot, "git_worktree");
     await mkdir(resolve(this.config.sandboxRoot, WORKTREE_ROOT_DIR, run.space_id), { recursive: true });
@@ -114,8 +114,8 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     // database inside the selected sandbox. Mounting the source repository's
     // absolute `.git/worktrees/*` backing path into a runtime namespace would
     // otherwise widen the Runner authority boundary.
-    await gitOutput(["clone", "--no-local", "--no-checkout", folderRoot, sandboxCwd], dirname(sandboxCwd), 60_000);
-    await gitOutput(["checkout", "--detach", baseCommitSha], sandboxCwd, 60_000);
+    await locationGitOutput(["clone", "--no-local", "--no-checkout", folderRoot, sandboxCwd], dirname(sandboxCwd), 60_000);
+    await locationGitOutput(["checkout", "--detach", baseCommitSha], sandboxCwd, 60_000);
     await this.setRunSandboxPath(run.space_id, run.id, sandboxCwd);
     return {
       sandbox_cwd: sandboxCwd,
@@ -145,7 +145,7 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     }
     if (input.cleanupKind === "git_worktree" && input.workspaceRoot) {
       const folderRoot = resolve(input.workspaceRoot);
-      await runGit(["worktree", "remove", "--force", sandboxCwd], folderRoot, 60_000)
+      await runLocationGit(["worktree", "remove", "--force", sandboxCwd], folderRoot, 60_000)
         .catch(() => undefined);
     }
     await rm(sandboxCwd, { recursive: true, force: true });
@@ -237,7 +237,7 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     const exists = await stat(sandboxCwd).catch(() => null);
     if (!exists) return;
     if (cleanupKind === "git_worktree" && folderRoot) {
-      await runGit(["worktree", "remove", "--force", sandboxCwd], folderRoot, 60_000)
+      await runLocationGit(["worktree", "remove", "--force", sandboxCwd], folderRoot, 60_000)
         .catch(() => undefined);
     }
     await rm(sandboxCwd, { recursive: true, force: true });

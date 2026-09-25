@@ -10,6 +10,7 @@ import type {
   ConversationGitSnapshot,
   ConversationExecutionSelection,
   ConversationPrimarySelection,
+  ConversationPinnedRuntime,
   ConversationRuntimeSelection,
   ConversationRuntimeChoice,
 } from "@rainver/protocol";
@@ -24,6 +25,7 @@ import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocati
 import { PgAgentRepository } from "../agents/repository.js";
 import { PgConversationRuntimeSessionRepository } from "./conversationRuntimeSessionRepository.js";
 import { PgSessionRepository } from "./repository.js";
+import { headMovedByConversationRun } from "./conversationGitGate.js";
 import {
   attachmentSummary,
   hostIsOnline,
@@ -706,7 +708,7 @@ export class ConversationExecutionContextService {
     primary: ConversationExecutionSummary["primary"],
     git: ConversationGitSnapshot | null,
     attachments: ReturnType<typeof attachmentSummary>[],
-    runtimes: ConversationRuntimeSelection[] = runtime ? [runtime] : [],
+    runtimes: ConversationPinnedRuntime[] = runtime ? [runtime] : [],
   ): ConversationExecutionSummary {
     return {
       session_id: sessionId,
@@ -749,9 +751,9 @@ export class ConversationExecutionContextService {
     repository: PgConversationExecutionContextRepository,
     identity: ConversationExecutionContextIdentity,
     session: ExecutionSessionRow,
-  ): Promise<ConversationRuntimeSelection[]> {
+  ): Promise<ConversationPinnedRuntime[]> {
     const bindings = await repository.listBindings(identity.spaceId, session.id);
-    const runtimes: ConversationRuntimeSelection[] = [];
+    const runtimes: ConversationPinnedRuntime[] = [];
     for (const binding of bindings) {
       if (!await repository.canAgentParticipate(session, binding.agent_id, identity.userId)) continue;
       const thread = await repository.getConversationThread(identity.spaceId, session.id, binding.agent_id);
@@ -759,8 +761,11 @@ export class ConversationExecutionContextService {
       runtimes.push({
         agent_id: binding.agent_id,
         runtime_profile_id: binding.runtime_profile_id,
-          runtime_key: thread.runtime_key,
+        runtime_key: thread.runtime_key,
         runtime_installation: thread.runtime_installation,
+        context_tokens: thread.context_tokens,
+        context_window_tokens: thread.context_window_tokens,
+        handoff_artifact_id: thread.handoff_artifact_id,
       });
     }
     return runtimes;
@@ -895,17 +900,19 @@ function managedGitSnapshot(): ConversationGitSnapshot {
 }
 
 function gitContextChanged(
-  context: Pick<ExecutionContextRow, "git_observed_at" | "git_branch" | "git_head" | "git_execution_ready" | "primary_workspace_location_id">,
+  context: Pick<ExecutionContextRow, "git_observed_at" | "git_branch" | "git_head" | "git_execution_ready" | "primary_workspace_location_id" | "last_run_git_branch" | "last_run_git_head">,
   current: ConversationGitSnapshot | null,
 ): boolean {
   // Older initialized contexts predate the baseline fields. They remain
   // usable and acquire the baseline on the next new Conversation.
   if (!context.git_observed_at) return false;
   if (!current) return true;
-  return context.primary_workspace_location_id !== current.workspace_location_id
-    || context.git_branch !== current.branch
-    || context.git_head !== current.commit_sha
-    || context.git_execution_ready !== current.execution_ready;
+  if (context.primary_workspace_location_id !== current.workspace_location_id
+    || context.git_execution_ready !== current.execution_ready) return true;
+  if (context.git_branch === current.branch && context.git_head === current.commit_sha) return false;
+  // Moved by this Conversation's own last Run: the next send advances the
+  // baseline itself, so nothing is stale for the person to refresh.
+  return !headMovedByConversationRun(context, current);
 }
 
 function runtimeChoice(candidate: ConversationExecutionRuntimeProfile): ConversationRuntimeChoice {

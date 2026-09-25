@@ -41,6 +41,7 @@ const EXACT_ERROR_CODE_MAP: Record<string, { layer: string; reason: string }> = 
   },
   credentials_missing: { layer: "policy", reason: "credentials_missing" },
   adapter_runtime_error: { layer: "runtime", reason: "adapter_runtime_error" },
+  subscription_quota_exhausted: { layer: "runtime", reason: "subscription_quota_exhausted" },
   semantic_rejection: { layer: "task_spec", reason: "semantic_rejection" },
   runtime_removed: { layer: "runtime", reason: "runtime_removed" },
   orphaned: { layer: "orchestration", reason: "orphaned" },

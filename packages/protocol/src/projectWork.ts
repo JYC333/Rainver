@@ -112,6 +112,10 @@ export const PROJECT_WORK_EVENT_KINDS = [
   "task.responsibility_changed",
   // Execution outcomes folded into Project state
   "task.run_settled",
+  // A done Task's branch reaching the main branch of a Location (ADR 0016
+  // §11), or a merge stopping on something a person has to see.
+  "task.merged",
+  "task.merge_blocked",
   // Readable account: what an actor did and concluded. `task.reported` closes
   // out one Task; `project.reported` is the periodic cross-Task summary.
   "task.reported",

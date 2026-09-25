@@ -14,12 +14,25 @@ import {
   InputResourceSearchInputSchema,
   InputResourceSearchOutputSchema,
 } from "@rainver/protocol";
+import { createHash } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { RunRecord } from "../runs/repository.js";
 import type { SystemActionExecutor } from "../systemActions/gateway.js";
 import type { Queryable } from "../routeUtils/common.js";
-import { projectReadAccessSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { bodyWithheld, type ContentAccessLevel } from "../access/contentAccessTypes.js";
+import { ContentAccessAuditService } from "../contentAccess/audit.js";
+
+const ARTIFACT_ACCESS = contentResourceDefinition("artifact")!;
+
+/**
+ * A Run's change reaches another Run as a link to its `remote_diff` Artifact
+ * (`agentGroups/runChangeBlock.ts`); the resource tools accept the link or
+ * the bare Artifact id as `resource_id`.
+ */
+export const RUN_ARTIFACT_URI_PREFIX = "rainver://artifacts/";
 
 export class ConversationInputResourceToolError extends Error {
   constructor(readonly code: "resource_not_found" | "resource_unavailable" | "invalid_resource_request", message: string) {
@@ -31,7 +44,7 @@ export class ConversationInputResourceToolError extends Error {
 interface ResourceRow {
   id: string;
   sha256: string;
-  content: string;
+  content: string | null;
 }
 
 /**
@@ -122,7 +135,25 @@ export class ConversationInputResourceService {
     return InputResourceSearchOutputSchema.parse(output);
   }
 
-  private async loadResource(input: { spaceId: string; runId: string; messageId: string }, resourceId: string): Promise<ResourceRow> {
+  private async loadResource(
+    input: { spaceId: string; runId: string; messageId: string },
+    resourceId: string,
+  ): Promise<ResourceRow & { content: string }> {
+    const linkedArtifactId = resourceId.startsWith(RUN_ARTIFACT_URI_PREFIX)
+      ? resourceId.slice(RUN_ARTIFACT_URI_PREFIX.length)
+      : null;
+    const row = linkedArtifactId === null
+      ? await this.loadMessageResource(input, resourceId)
+      : null;
+    const resource = row ?? await this.loadConversationRunChange(input, linkedArtifactId ?? resourceId);
+    if (!resource) throw new ConversationInputResourceToolError("resource_not_found", "The attached resource is not available to this Run.");
+    if (typeof resource.content !== "string") {
+      throw new ConversationInputResourceToolError("resource_unavailable", "The attached resource body is unavailable.");
+    }
+    return { ...resource, content: resource.content };
+  }
+
+  private async loadMessageResource(input: { spaceId: string; runId: string; messageId: string }, resourceId: string): Promise<ResourceRow | null> {
     const result = await this.db.query<ResourceRow>(
       `SELECT resource.id, resource.sha256, blob.content
          FROM conversation_input_resources resource
@@ -140,36 +171,100 @@ export class ConversationInputResourceService {
         WHERE resource.id = $2
           AND resource.space_id = $3
           AND resource.message_id = $4
-          AND run_row.status IN ('queued', 'running', 'cancelling', 'waiting_for_review', 'waiting_for_dependency')
-          AND run_row.instructed_by_user_id IS NOT NULL
+          AND ${liveRunInConversationSql("run_row", "session_row")}
+        LIMIT 1`,
+      [input.runId, resourceId, input.spaceId, input.messageId],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  /**
+   * Another Run's change, handed to this Run as a `rainver://artifacts/<id>`
+   * link: only a `remote_diff` Artifact of a Run in this Run's own
+   * conversation, and only when the person this Run acts for can read that
+   * Artifact through the ordinary Artifact read gate (content ACL and Room Run
+   * grants) with its body — never by admin oversight, since the Agent's reply
+   * goes to everyone in the conversation. The read is audited for that person.
+   */
+  private async loadConversationRunChange(
+    input: { spaceId: string; runId: string },
+    artifactId: string,
+  ): Promise<ResourceRow | null> {
+    const reader = "run_row.instructed_by_user_id";
+    const result = await this.db.query<{
+      id: string;
+      content: string | null;
+      viewer_user_id: string;
+      agent_id: string | null;
+      effective_access_level: ContentAccessLevel;
+    }>(
+      `SELECT artifact.id, artifact.content, run_row.instructed_by_user_id AS viewer_user_id,
+              run_row.agent_id,
+              ${contentAccessLevelSql({ definition: ARTIFACT_ACCESS, alias: "artifact", userExpr: reader, includeOversight: false })} AS effective_access_level
+         FROM artifacts artifact
+         JOIN runs source_run
+           ON source_run.id = artifact.run_id AND source_run.space_id = artifact.space_id
+         JOIN runs run_row
+           ON run_row.id = $1 AND run_row.space_id = artifact.space_id
+          AND run_row.session_id = source_run.session_id
+         JOIN sessions session_row
+           ON session_row.id = run_row.session_id AND session_row.space_id = run_row.space_id
+          AND session_row.status = 'active'
+        WHERE artifact.id = $2
+          AND artifact.space_id = $3
+          AND artifact.artifact_type = 'remote_diff'
+          AND ${liveRunInConversationSql("run_row", "session_row")}
+          AND ${contentReadSql("artifact", "artifact", reader, { includeOversight: false })}
+          AND ${roomRunReadAccessSql("artifact.run_id", "artifact.space_id", reader)}
+        LIMIT 1`,
+      [input.runId, artifactId, input.spaceId],
+    );
+    const row = result.rows[0];
+    if (!row || bodyWithheld(row.effective_access_level)) return null;
+    if (typeof row.content !== "string") return { id: row.id, sha256: "", content: null };
+    await new ContentAccessAuditService(this.db).recordReads({
+      spaceId: input.spaceId,
+      resourceType: "artifact",
+      resourceIds: [row.id],
+      viewerUserId: row.viewer_user_id,
+      accessType: "explicit_read",
+      agentId: row.agent_id,
+      runId: input.runId,
+    });
+    return {
+      id: row.id,
+      sha256: createHash("sha256").update(row.content, "utf8").digest("hex"),
+      content: row.content,
+    };
+  }
+}
+
+/**
+ * The reading Run is live and acts for a person who is in this conversation:
+ * the direct chat's own person, or an active member of its Room, with read
+ * access to the conversation's Project.
+ */
+function liveRunInConversationSql(run: string, session: string): string {
+  return `${run}.status IN ('queued', 'running', 'cancelling', 'waiting_for_review', 'waiting_for_dependency')
+          AND ${run}.instructed_by_user_id IS NOT NULL
           AND (
-            (session_row.room_id IS NULL AND session_row.user_id = run_row.instructed_by_user_id)
+            (${session}.room_id IS NULL AND ${session}.user_id = ${run}.instructed_by_user_id)
             OR (
-              session_row.room_id IS NOT NULL
+              ${session}.room_id IS NOT NULL
               AND EXISTS (
                 SELECT 1 FROM room_user_members resource_room_member
-                 WHERE resource_room_member.space_id = session_row.space_id
-                   AND resource_room_member.room_id = session_row.room_id
-                   AND resource_room_member.user_id = run_row.instructed_by_user_id
+                 WHERE resource_room_member.space_id = ${session}.space_id
+                   AND resource_room_member.room_id = ${session}.room_id
+                   AND resource_room_member.user_id = ${run}.instructed_by_user_id
                    AND resource_room_member.status = 'active'
               )
             )
           )
-          AND (session_row.project_id IS NULL OR ${projectReadAccessSql(
-            "session_row.space_id",
-            "session_row.project_id",
-            "run_row.instructed_by_user_id",
-          )})
-        LIMIT 1`,
-      [input.runId, resourceId, input.spaceId, input.messageId],
-    );
-    const row = result.rows[0];
-    if (!row) throw new ConversationInputResourceToolError("resource_not_found", "The attached resource is not available to this Run.");
-    if (typeof row.content !== "string") {
-      throw new ConversationInputResourceToolError("resource_unavailable", "The attached resource body is unavailable.");
-    }
-    return row;
-  }
+          AND (${session}.project_id IS NULL OR ${projectReadAccessSql(
+            `${session}.space_id`,
+            `${session}.project_id`,
+            `${run}.instructed_by_user_id`,
+          )})`;
 }
 
 export function registerConversationInputResourceExecutors(

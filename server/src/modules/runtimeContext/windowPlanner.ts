@@ -14,6 +14,8 @@ import { contextItemText } from "./itemNormalizer.js";
 
 // A product-side cap on optional estimated context, not a claim about any ACP model.
 const RUNTIME_MANAGED_OPTIONAL_ESTIMATE_BUDGET = 16_384;
+/** Share of the post-reserve window the planner fills. */
+const ESTIMATE_PLANNING_SHARE = 0.9;
 
 export class RuntimeContextPlanningError extends Error {
   constructor(
@@ -43,9 +45,15 @@ export class ContextWindowPlanner {
     if (!Number.isInteger(reserve) || reserve < 0) {
       throw new RuntimeContextPlanningError("invalid_context_item", "Output reserve must be a non-negative integer");
     }
+    // The token estimate is a character-class approximation, not the model's
+    // tokenizer, so finite windows keep a margin rather than filling the
+    // published capacity to the last estimated token. Native ACP sessions do
+    // not publish a capacity; their runtime owns the hard limit instead.
     const available = spec.contextWindowTokens === null
       ? null
-      : spec.contextWindowTokens - reserve - spec.providerOverheadTokens;
+      : Math.floor(
+        (spec.contextWindowTokens - reserve - spec.providerOverheadTokens) * ESTIMATE_PLANNING_SHARE,
+      );
     if (available !== null && available < 0) {
       throw new RuntimeContextPlanningError("required_context_overflow", "Output reserve exceeds the model context window");
     }

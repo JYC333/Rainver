@@ -113,6 +113,9 @@ export function registerProjectWorkSystemActionExecutors(
           due_at: body.due_at ?? null,
           start_after: body.start_after ?? null,
           visibility: "space_shared",
+          // The Run that made it, so what becomes of the Task — its merge
+          // above all — can be told in the conversation it came from.
+          source_run_id: run.id,
         },
         tx,
         context.actorId,

@@ -452,6 +452,53 @@ candidates remain at their low effective-trust baseline until a restriction is
 actually applied and verified at the Host boundary. Dynamic C3 conformance
 probes are retired and do not qualify or gate current dispatch.
 
+### Containers and Agent-triggered budgets
+
+In a Room conversation, turns Agents set going are bounded by the person turn
+that started them, so spend never grows without a person's say (ADR 0017's
+fan-out ceiling and bounded defaults). The implementation is
+`rooms/discussionService.ts` (`delegationBudget`, `agentOriginContinuation`,
+`chargeContainer`, `containerTurns`) and `agentGroups/service.ts`
+(`chargeDelegatedChild`).
+
+- **One container per person-originated turn.** A person's message opens one
+  task group; that group is the container, with the default delegation budget
+  `{ max_depth: 1, max_fanout: 2 }` (`rooms/service.ts`). There is no
+  concurrency budget: a group runs one Run at a time because the Conversation
+  shares one directory — children one after another, and a serialized
+  recipient only once the recipients before it, and whatever they delegated
+  without waiting, have finished (`lifecycleProjector.ts`,
+  `groupHasRunnableRun` / `queueSerializedRecipientsIfReady`).
+- **Every Agent-triggered turn is charged to it.** A delegated child is
+  charged when spawned; an `agent_delegation_result` continuation (the
+  Manager's turn after a child it did not wait for finished) is charged when
+  it opens. The count is one counter, `budget_json.container_turns_used`, on
+  the container group; every later group of the chain carries
+  `budget_json.container_group_id` pointing at it, so all branches charge the
+  same counter. A turn's delegation budget is what the container has left —
+  `max_fanout = min(2, 5 − turns used)`, depth 1 — so a completion turn can no
+  longer delegate again with a fresh budget — and every spawn is also held to
+  what the container (or its discussion's `turns_used`) has left, so the
+  recipients of one wave cannot together spawn past the ceiling
+  (`enforceSpawnPolicy`). A research acquisition an Agent starts carries
+  its turn's group (`origin_group_id`), so its result and status turns are
+  charged to that container; one a person starts opens its own.
+- **The emergent fan-out ceiling.** When replies `@`-address other Agents, the
+  container becomes an emergent discussion (`room_discussions`, with the
+  container's count carried into `turns_used`): its waves are charged too,
+  and past 5 Agent-triggered turns (`ROOM_DISCUSSION_MAX_PARTICIPANTS`, the
+  ADR 0017 ceiling) an addressed Agent is held with a notice, not run. Only a
+  person adding rounds grants another budget of the same size.
+- **An explicit discussion's caps.** A discussion a person opens is bounded by
+  its round cap (default 3 open, 2 debate; one turn per Agent per round, at
+  most 5 participants), and on priced Runs by a spend cap (default USD 2);
+  its `turns_used` counts only what Agents started on their own (delegations
+  and their results), which still draw on the same 5-turn ceiling. The
+  Manager's closing turn is outside the round cap and inside the spend cap.
+  Subscription Runs are bounded by rounds and by the account's window, with
+  Agent-triggered admissions held at the Space's reserve line
+  ([modules/rooms.md](../modules/rooms.md), Discussions).
+
 ### Runtime capability declarations
 
 The spec fields `subagent_support`, `subagent_disable_mechanism`,
@@ -580,7 +627,12 @@ queued → running → waiting_for_dependency → queued → running → termina
 `waiting_for_dependency` is a non-terminal parked state for AgentRunGroup runs
 that called `agent.wait_for_results`. The worker releases the execution lock and
 the lifecycle projector requeues the same run after every declared dependency
-run reaches a hard terminal state.
+run reaches a hard terminal state. A Room recipient parked behind the earlier
+recipients of the same message enters it *before* its first dispatch (scope
+`conversation_serialization`, never routed, no runtime snapshot yet), which
+`ck_runs_execution_shape` admits alongside `queued` since migration `0001`;
+such a run is admitted with the prompt it was dispatched with rather than a
+continue instruction (`modules/rooms.md`).
 
 **Finalized** means the canonical materializer has reconciled durable
 runtime-output delegation, `PostRunFinalizationService` has performed

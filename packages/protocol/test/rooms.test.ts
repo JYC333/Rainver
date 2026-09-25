@@ -1,3 +1,4 @@
+import { agentMentionSegments, parseAgentMentions } from "../src/roomDiscussions.js";
 import { describe, expect, it } from "vitest";
 import {
   ContinueRoomAfterProposalRequestSchema,
@@ -192,5 +193,50 @@ describe("Room contracts", () => {
       ...base,
       execution: { ...base.execution, workspace_mode: "managed", workspace_location_id: "location-1" },
     }).success).toBe(false);
+  });
+});
+
+describe("addressing Agents in an Agent's reply", () => {
+  const roster = [
+    { agent_id: "agent-research", label: "Research Specialist" },
+    { agent_id: "agent-research-lead", label: "Research" },
+    { agent_id: "agent-coder", label: "Coder" },
+  ];
+
+  it("matches the longest roster label, case-insensitively, only where a word starts", () => {
+    const parsed = parseAgentMentions("@research specialist can you check this? cc @Coder", roster);
+    expect(parsed.mentioned_agent_ids).toEqual(["agent-research", "agent-coder"]);
+    expect(parsed.segments).toEqual([
+      { recipient_agent_ids: ["agent-research"], content: "can you check this? cc" },
+      { recipient_agent_ids: ["agent-coder"], content: "" },
+    ]);
+    expect(parseAgentMentions("email me at someone@Coder.example", roster).mentioned_agent_ids).toEqual([]);
+    expect(parseAgentMentions("@Coders are busy", roster).mentioned_agent_ids).toEqual([]);
+  });
+
+  it("addresses adjacent mentions together and never reads code as addressing anyone", () => {
+    const parsed = parseAgentMentions("Thoughts, @Research @Coder?\n```ts\n@Coder decorator\n```\nand `@Research`", roster);
+    expect(parsed.segments).toEqual([
+      { recipient_agent_ids: ["agent-research-lead", "agent-coder"], content: "Thoughts, ?\n```ts\n@Coder decorator\n```\nand `@Research`" },
+    ]);
+  });
+
+  it("keeps positions when lowercasing changes a character's length", () => {
+    const parsed = parseAgentMentions("İİ @Coder look", roster);
+    expect(parsed.mentioned_agent_ids).toEqual(["agent-coder"]);
+    expect(parsed.segments).toEqual([{ recipient_agent_ids: ["agent-coder"], content: "İİ look" }]);
+  });
+
+  it("segments the way the composer does", () => {
+    expect(agentMentionSegments([
+      { type: "text", text: "Intro " },
+      { type: "mention", id: "a", label: "A" },
+      { type: "text", text: " do x " },
+      { type: "mention", id: "b", label: "B" },
+      { type: "text", text: " do y" },
+    ])).toEqual([
+      { recipient_agent_ids: ["a"], content: "Intro do x" },
+      { recipient_agent_ids: ["b"], content: "do y" },
+    ]);
   });
 });

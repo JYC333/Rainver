@@ -3283,6 +3283,32 @@ export type {
   ImportedSessionRecord,
 } from '@rainver/protocol'
 
+/** A bounded discussion among a Room conversation's Agents; the protocol owns the shapes. */
+export type {
+  ExtendRoomDiscussionRequest,
+  OpenRoomDiscussionRequest,
+  OpenRoomDiscussionResponse,
+  RoomDiscussion,
+  RoomDiscussionDetail,
+  RoomDiscussionListResponse,
+  RoomDiscussionNotice,
+  RoomDiscussionShape,
+  RoomDiscussionStatus,
+} from '@rainver/protocol'
+
+/** A person's message waiting for the conversation's turn. */
+export type { QueuedRoomMessage, QueuedRoomMessageResponse } from '@rainver/protocol'
+
+/** Subscription quota: the Space's lines, a conversation's logins and holds. */
+export type {
+  RoomConversationQuota,
+  SubscriptionQuotaHold,
+  SubscriptionQuotaPolicy,
+  SubscriptionQuotaPolicyUpdate,
+  SubscriptionQuotaWindow,
+  SubscriptionUsageLine,
+} from '@rainver/protocol'
+
 export interface ProjectFolderCreateBody {
   name: string
   description?: string
@@ -3417,8 +3443,9 @@ export interface HostRuntimeDefinitionOption {
   supports_runtime_native: boolean
   /** Whether the runtime contract admits `model_provider` — a Rainver-proxied Provider binding. */
   supports_model_provider: boolean
-  /** Which ModelProvider endpoint it speaks — the `<provider_api>_base_url` a binding needs. */
-  provider_api?: 'claude_compatible' | 'openai_compatible' | null
+  /** Which ModelProvider endpoint it speaks — the `<provider_api>_base_url` a binding needs;
+   *  `vendor` follows each provider's own vendor protocol (OpenCode). */
+  provider_api?: 'claude_compatible' | 'openai_compatible' | 'vendor' | null
 }
 
 export interface ProjectFolderExecutionConfig {

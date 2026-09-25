@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import { projectTaskStatusFromRun } from "../src/modules/tasks/taskRunStatusProjection.js";
+import { loadConfig } from "../src/config.js";
+import { reconcileUnfinalizedTaskRuns } from "../src/modules/jobs/workerRuntime.js";
+import { settleTasksForRun } from "../src/modules/projectWork/settlement.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import type { RunRecord } from "../src/modules/runs/runRepositoryTypes.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
@@ -154,7 +158,7 @@ describe("run settlement", () => {
     await evaluate(task, run, "accept");
     await finalize(run);
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
 
     const row = await taskRow(task);
     expect(row.status).toBe("done");
@@ -186,14 +190,14 @@ describe("run settlement", () => {
     await makeTask(task);
     await makeRun(failed, task, "failed", "2026-08-27T00:00:00.000Z");
     await finalize(failed);
-    await projectTaskStatusFromRun(db.pool!, SPACE, failed);
+    await settleTasksForRun(db.pool!, SPACE, failed);
     expect((await taskRow(task)).status).toBe("waiting_for_review");
 
     await db.pool!.query(`UPDATE tasks SET status = 'in_progress' WHERE id = $1`, [task]);
     await makeRun(retried, task, "succeeded", "2026-08-27T01:00:00.000Z");
     await evaluate(task, retried, "accept");
     await finalize(retried);
-    await projectTaskStatusFromRun(db.pool!, SPACE, retried);
+    await settleTasksForRun(db.pool!, SPACE, retried);
 
     expect((await taskRow(task)).status).toBe("done");
   });
@@ -209,14 +213,14 @@ describe("run settlement", () => {
     await makeTask(task);
     await makeRun(failed, task, "failed", "2026-08-27T00:00:00.000Z");
     await finalize(failed);
-    await projectTaskStatusFromRun(db.pool!, SPACE, failed);
+    await settleTasksForRun(db.pool!, SPACE, failed);
     expect((await taskRow(task)).status).toBe("waiting_for_review");
 
     // No status reset this time: the Task stays parked while the retry runs.
     await makeRun(retried, task, "succeeded", "2026-08-27T01:00:00.000Z");
     await evaluate(task, retried, "accept");
     await finalize(retried);
-    await projectTaskStatusFromRun(db.pool!, SPACE, retried);
+    await settleTasksForRun(db.pool!, SPACE, retried);
     expect((await taskRow(task)).status).toBe("done");
   });
 
@@ -244,7 +248,7 @@ describe("run settlement", () => {
     // … and then finished with an accept. The person has not answered yet.
     await evaluate(task, run, "accept");
     await finalize(run);
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
     expect((await taskRow(task)).status).toBe("waiting_for_review");
   });
 
@@ -261,7 +265,7 @@ describe("run settlement", () => {
       `UPDATE tasks SET status = 'blocked', blocked_reason = 'Waiting on the vendor' WHERE id = $1`, [task]);
     await evaluate(task, run, "accept");
     await finalize(run);
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
     const row = await db.pool!.query<{ status: string; blocked_reason: string | null }>(
       `SELECT status, blocked_reason FROM tasks WHERE id = $1`, [task]);
     expect(row.rows[0]).toEqual({ status: "blocked", blocked_reason: "Waiting on the vendor" });
@@ -280,7 +284,7 @@ describe("run settlement", () => {
     // finalized by the time settlement sees it.
     await finalize(run);
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
 
     expect((await taskRow(task)).status).toBe("waiting_for_review");
     // Nothing was produced, so the Loop stage is left where it was.
@@ -299,7 +303,7 @@ describe("run settlement", () => {
     await evaluate(task, finished, "accept");
     await finalize(finished);
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, finished);
+    await settleTasksForRun(db.pool!, SPACE, finished);
 
     expect((await taskRow(task)).status).toBe("in_progress");
     expect(await eventKindCounts(task)).toEqual({});
@@ -315,7 +319,7 @@ describe("run settlement", () => {
     await makeTask(task);
     await makeRun(orphaned, task, "orphaned", "2026-08-27T00:00:00.000Z");
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, orphaned);
+    await settleTasksForRun(db.pool!, SPACE, orphaned);
 
     expect((await taskRow(task)).status).toBe("in_progress");
   });
@@ -329,7 +333,7 @@ describe("run settlement", () => {
     await evaluate(task, run, "accept");
     await finalize(run);
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
     expect((await taskRow(task)).status).toBe("waiting_for_review");
 
     const artifact = randomUUID();
@@ -347,7 +351,7 @@ describe("run settlement", () => {
     );
     await db.pool!.query(`UPDATE tasks SET status = 'in_progress' WHERE id = $1`, [task]);
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
     expect((await taskRow(task)).status).toBe("done");
     // The second settlement had different facts, so it is a second event —
     // a key without the outcome swallowed it and left a status change with
@@ -371,9 +375,9 @@ describe("run settlement", () => {
     await evaluate(task, run, "accept");
     await finalize(run);
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
 
     expect(await eventKindCounts(task)).toEqual({
       "task.run_settled": 1,
@@ -391,7 +395,7 @@ describe("run settlement", () => {
     await makeRun(run, task, "failed", "2026-08-27T00:00:00.000Z");
     await finalize(run);
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
 
     expect((await taskRow(task)).status).toBe("done");
     expect(await eventKindCounts(task)).toEqual({});
@@ -410,12 +414,12 @@ describe("run settlement", () => {
     await makeRun(run, task, "succeeded", "2026-08-27T00:00:00.000Z");
     await evaluate(task, run, "accept");
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
     expect((await taskRow(task)).status).toBe("in_progress");
     expect(await eventKindCounts(task)).toEqual({});
 
     await finalize(run);
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
     expect((await taskRow(task)).status).toBe("done");
   });
 
@@ -428,7 +432,7 @@ describe("run settlement", () => {
     await makeTask(task);
     await makeRun(run, task, "cancelled", "2026-08-27T00:00:00.000Z");
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
     expect((await taskRow(task)).status).toBe("waiting_for_review");
   });
 
@@ -442,7 +446,7 @@ describe("run settlement", () => {
     await makeTask(task);
     await makeRun(run, task, "waiting_for_review", "2026-08-27T00:00:00.000Z");
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, run);
+    await settleTasksForRun(db.pool!, SPACE, run);
     expect((await taskRow(task)).status).toBe("in_progress");
   });
 
@@ -458,7 +462,7 @@ describe("run settlement", () => {
     await evaluate(task, planning, "accept");
     await finalize(planning);
 
-    await projectTaskStatusFromRun(db.pool!, SPACE, planning);
+    await settleTasksForRun(db.pool!, SPACE, planning);
     expect((await taskRow(task)).status).toBe("in_progress");
     expect(await eventKindCounts(task)).toEqual({});
   });
@@ -489,9 +493,38 @@ describe("run settlement", () => {
       const run = randomUUID();
       await makeRun(run, task, status, `2026-08-27T${at}:00:00.000Z`);
       await finalize(run);
-      await projectTaskStatusFromRun(db.pool!, SPACE, run);
+      await settleTasksForRun(db.pool!, SPACE, run);
       expect((await taskRow(task)).status, status).toBe("waiting_for_review");
       await db.pool!.query(`UPDATE tasks SET status = 'in_progress' WHERE id = $1`, [task]);
     }
+  });
+
+  it("finalizes a Task's terminal Run that nobody finalized, so its settlement has one trigger", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    // A queued Run whose job was cancelled, one recovery cancelled, one a
+    // module ended by hand: none went through the job that would have
+    // finalized it. The worker's sweep does, and a finalized one is not
+    // touched again.
+    const task = randomUUID();
+    const cancelled = randomUUID();
+    const finalized = randomUUID();
+    await makeTask(task);
+    await makeRun(cancelled, task, "cancelled", "2026-08-27T00:00:00.000Z");
+    await makeRun(finalized, task, "failed", "2026-08-27T00:01:00.000Z");
+    await finalize(finalized);
+    const runs = new PgRunRepository(db.pool!);
+    expect((await runs.listTaskRunsAwaitingFinalization()).map((run) => run.id)).toEqual([cancelled]);
+
+    const finalizedRuns: string[] = [];
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test" });
+    await reconcileUnfinalizedTaskRuns(config, runs, undefined, {
+      finalizeRun: async (run: RunRecord) => {
+        finalizedRuns.push(run.id);
+        await finalize(run.id);
+        return { kind: "activity", status: "succeeded" };
+      },
+    });
+    expect(finalizedRuns).toEqual([cancelled]);
+    expect(await runs.listTaskRunsAwaitingFinalization()).toEqual([]);
   });
 });

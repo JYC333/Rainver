@@ -144,7 +144,11 @@ Assistant Chat is a two-step use of this transport:
    resumes where it stopped, so the stream stays open and the client keeps
    watching. Treating it as terminal sends the reader to fetch a reply that
    does not exist; treating it as ordinary work tells them nothing is
-   expected of them. `blocked_on` says which kind of waiting it is.
+   expected of them. `blocked_on` says which kind of waiting it is:
+   `authorization`, `run_decision`, or `workspace` — the host queued the
+   Run's launch behind another Run writing the same directory, which needs
+   nobody and turns back into `working` once the host starts it
+   (`modules/hosts.md`, "Location lease").
 
 There is no Chat-specific streaming endpoint and no polling execution path.
 

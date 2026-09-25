@@ -17,7 +17,7 @@ import {
   MAX_FILES,
   SHOW_HIDDEN,
 } from "./limits.js";
-import { isGitRepo, parsePorcelain, runGit } from "./git.js";
+import { isGitRepo, parsePorcelain, runLocationGit } from "./git.js";
 import type { FileContent, FileNode, GitDiff, GitStatus } from "./types.js";
 
 export type FolderReadErrorCode = "not_found" | "is_directory" | "too_large" | "path_forbidden";
@@ -172,8 +172,8 @@ function hasNul(bytes: Uint8Array): boolean {
 
 export async function folderGitStatus(root: string): Promise<GitStatus> {
   if (!await isGitRepo(root)) return { is_repo: false, branch: null, files: [] };
-  const branch = (await runGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000)).stdout.trim() || null;
-  const raw = await runGit(["status", "--porcelain"], root, 10_000);
+  const branch = (await runLocationGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000)).stdout.trim() || null;
+  const raw = await runLocationGit(["status", "--porcelain"], root, 10_000);
   return { is_repo: true, branch, files: parsePorcelain(raw.stdout) };
 }
 
@@ -188,10 +188,14 @@ export async function folderGitDiff(
     await assertContainedPath(root, resolved.absolute, opts);
     safePath = resolved.relative;
   }
-  const args = safePath !== null ? ["diff", "HEAD", "--", safePath] : ["diff", "HEAD", "--"];
-  let diff = (await runGit(args, root, 15_000)).stdout;
+  const args = safePath !== null
+    ? ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", safePath]
+    : ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--"];
+  let diff = (await runLocationGit(args, root, 15_000)).stdout;
   if (!diff) {
-    diff = (await runGit(safePath !== null ? ["diff", "--", safePath] : ["diff", "--"], root, 15_000)).stdout;
+    diff = (await runLocationGit(safePath !== null
+      ? ["diff", "--no-ext-diff", "--no-textconv", "--", safePath]
+      : ["diff", "--no-ext-diff", "--no-textconv", "--"], root, 15_000)).stdout;
   }
   if (diffTouchesSecretLikePath(diff)) {
     throw new PathPolicyError("Diff includes blocked path");

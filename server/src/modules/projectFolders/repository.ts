@@ -12,7 +12,7 @@ import {
   readFolderFile,
   restoreFolderFile,
   resolveRelativePath,
-  runGit,
+  runLocationGit,
   writeFolderFile,
   type FileContent,
   type FileNode,
@@ -27,7 +27,8 @@ import { enforce } from "../policy/service.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter, assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 import { projectFolderReadAccessSql } from "./access.js";
-import { isStale, PgHostRepository } from "../hosts/repository.js";
+import { isStale } from "../hosts/liveness.js";
+import { PgHostRepository } from "../hosts/repository.js";
 import {
   PgWorkspaceLocationRepository,
   locationAbsoluteRoot,
@@ -1085,7 +1086,7 @@ export class PgProjectFolderRepository {
 
   private async cloneRepository(spaceId: string, name: string, repoUrl: string): Promise<string> {
     const target = await this.createManagedDir(spaceId, name);
-    const result = await runGit(["clone", "--", repoUrl, target], resolve(this.config.workspaceRoot, spaceId), 120_000);
+    const result = await runLocationGit(["clone", "--", repoUrl, target], resolve(this.config.workspaceRoot, spaceId), 120_000);
     if (result.code !== 0) {
       throw new HttpError(422, `Failed to clone repository: ${result.stderr.slice(0, 400)}`);
     }

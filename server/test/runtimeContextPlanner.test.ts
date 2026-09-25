@@ -58,6 +58,16 @@ describe("Runtime Context common planner", () => {
       base_url: "http://localhost:11434",
       config_json: {},
     })).toBe("external_provider");
+    // OpenCode follows the vendor's protocol, so an Anthropic vendor is
+    // classified by the Claude-compatible endpoint it will actually reach.
+    expect(runtimeContextProviderDestination("opencode", {
+      provider_type: "anthropic",
+      base_url: "https://api.anthropic.com",
+      config_json: {
+        claude_compatible_base_url: "http://localhost:4000",
+        openai_compatible_base_url: "https://gateway.example.test/v1",
+      },
+    })).toBe("local_provider");
   });
 
   it("uses the same deterministic window decisions for preview and execution", () => {
@@ -325,8 +335,8 @@ describe("Runtime Context common planner", () => {
   });
 
   it("lets an ACP runtime enforce an unpublished model window while bounding optional context", () => {
-    const current = currentMessage("x".repeat(20_000));
-    const ranked = item({ id: "optional", text: "y".repeat(20_000), acquisition: "retrieval" });
+    const current = currentMessage("x".repeat(80_000));
+    const ranked = item({ id: "optional", text: "y".repeat(80_000), acquisition: "retrieval" });
     const result = new ContextWindowPlanner().plan({
       model: "new-provider/new-model",
       modelWindowOverride: ACP_RUNTIME_MANAGED_WINDOW,
@@ -351,7 +361,7 @@ describe("Runtime Context common planner", () => {
 
   it("uses a conservative catalog fallback for unknown models and CJK token estimates", () => {
     const current = currentMessage("界".repeat(20));
-    expect(current.token_estimate).toBe(60);
+    expect(current.token_estimate).toBe(20);
     const result = new ContextWindowPlanner().plan({
       model: "unknown-model",
       items: [current],
@@ -364,8 +374,9 @@ describe("Runtime Context common planner", () => {
     });
   });
 
-  it("blocks a ranked trim when the remaining budget cannot hold one character", () => {
-    const current = currentMessage("x".repeat(9));
+  it("blocks a ranked item once the window is spent", () => {
+    // 20 - 5 reserved - 4 overhead = 11, of which the planner fills 90 %: 9.
+    const current = currentMessage("x".repeat(36));
     const ranked = item({ id: "multibyte", text: "界", acquisition: "retrieval", rank: 1 });
     const result = new ContextWindowPlanner().plan({
       model: "tiny",

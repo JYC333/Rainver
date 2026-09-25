@@ -13,6 +13,7 @@ import { registerPlansSystemActionExecutors } from "../plans/plansSystemActionEx
 import { registerProjectWorkSystemActionExecutors } from "../projectWork/projectWorkSystemActionExecutors.js";
 import { registerPolicySystemActionExecutors } from "../policy/policySystemActionExecutors.js";
 import { registerConversationInputResourceExecutors } from "../sessions/conversationInputResourceService.js";
+import { registerAgentHandoffExecutors } from "../agentGroups/sessionHandoff.js";
 
 /**
  * Central import of per-module `registerXxxSystemActionExecutors` functions,
@@ -51,6 +52,8 @@ export function registerModuleSystemActionExecutors(
   // reason rather than by being invisible.
   if (granted.generic && config.databaseUrl) {
     registerMemoryDirectWriteExecutors(executors, config, run);
+    // Registers only for a Room handoff turn; every other Run is left without it.
+    registerAgentHandoffExecutors(executors, config, run);
     if (context.messageId) {
       registerConversationInputResourceExecutors(executors, config, run, context.messageId);
     }
