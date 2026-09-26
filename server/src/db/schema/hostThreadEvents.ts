@@ -39,8 +39,12 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// mutated — readers take the thread's latest one).
 	text: text(),
 	// tool_activity_started/finished: projected as one entry by toolCallId.
-	toolCallId: varchar("tool_call_id", { length: 128 }),
-	toolName: varchar("tool_name", { length: 128 }),
+	// Vendor correlation ids are opaque and must remain byte-for-byte intact;
+	// truncating them would split one lifecycle into several tool rows.
+	toolCallId: text("tool_call_id"),
+	// Normalizers redact and bound this display label, while text storage keeps
+	// a future provider title from turning event persistence into a Run failure.
+	toolName: text("tool_name"),
 	toolInputSummary: text("tool_input_summary"),
 	// ACP runtime replatform P3 (A9): tool_call.kind (execute/edit/read/...),
 	// initially set on tool_activity_started and patchable by finished updates.

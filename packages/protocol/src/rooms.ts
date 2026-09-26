@@ -462,6 +462,8 @@ export const SendRoomMessageRequestSchema = z.object({
   content: z.string().trim().max(8000).default(""),
   input_parts: ConversationInputPartsSchema.default([]),
   focus_refs: z.array(RoomMessageFocusRefSchema).max(4).nullish(),
+  /** Join this exact active discussion; omitted means an ordinary Room message. */
+  discussion_id: IdSchema.nullish(),
   /**
    * Wait for the turn instead of being refused: when another turn holds the
    * conversation, the message is queued and posted at the next turn boundary
@@ -508,6 +510,8 @@ export const QueuedRoomMessageSchema = z.object({
   session_id: IdSchema,
   user_id: IdSchema,
   content: z.string(),
+  /** Saved send choice; absent on older queued rows. */
+  discussion_id: IdSchema.nullish(),
   status: z.enum(["queued", "released", "withdrawn", "failed"]),
   released_message_id: IdSchema.nullable(),
   failure_reason: z.string().nullable(),

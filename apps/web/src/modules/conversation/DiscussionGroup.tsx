@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight, MessagesSquare } from 'lucide-react'
+import { MessagesSquare } from 'lucide-react'
 import { toast } from 'sonner'
 import { ROOM_DISCUSSION_DEFAULT_ROUND_CAP } from '@rainver/protocol'
 import { Button } from '../../components/ui/button'
@@ -15,11 +15,9 @@ import type {
 } from '../../types/api'
 
 /**
- * A discussion, folded into the one timeline it lives in (`architecture/CONVERSATION.md`, "Rendering").
- *
- * Storage and replay keep a single order; the discussion is only a wrapper
- * around the messages that carry its id, so there is no second navigation
- * level and every message inside still renders exactly as it would outside.
+ * One consecutive, always-visible discussion segment in the Room timeline.
+ * An ordinary interjection breaks the rail; the next stretch gets a new
+ * marker at its actual chronological position, never a nested transcript.
  */
 
 type AgentLabel = { id: string; name: string }
@@ -47,11 +45,9 @@ export function messageDiscussionId(message: RoomMessage, originIds: ReadonlyMap
 }
 
 /**
- * The timeline with each discussion's consecutive messages folded into one
- * entry. The conversation keeps one order: when other messages come between
- * two stretches of a discussion — it was concluded, the person talked on,
- * someone added rounds — its later stretch is a block of its own where it
- * happened, not appended above what came after.
+ * Partition the timeline into consecutive discussion stretches without
+ * changing its order. An ordinary message between two stretches stays there;
+ * the later one gets a new marker where it actually happened.
  */
 export function groupDiscussionMessages(
   messages: readonly RoomMessage[],
@@ -165,6 +161,8 @@ function statusLabel(discussion: Pick<RoomDiscussion, 'status' | 'stop_reason'>)
 export function DiscussionGroup({
   discussionId,
   discussion,
+  segment = 0,
+  latest = true,
   detail,
   warnPct,
   messages,
@@ -175,7 +173,11 @@ export function DiscussionGroup({
   children,
 }: {
   discussionId: string
-  /** Absent until the discussion list has been read; the group still folds its messages. */
+  /** Consecutive stretch of the discussion in the one chronological timeline. */
+  segment?: number
+  /** Only the newest stretch offers controls and the live cost/status details. */
+  latest?: boolean
+  /** Absent until the discussion list has been read; messages still keep their identity. */
   discussion?: RoomDiscussion
   /** Its cost lines and quota hold, read when the record changes; absent until then. */
   detail?: Pick<RoomDiscussionDetail, 'usage' | 'quota_hold'>
@@ -190,12 +192,8 @@ export function DiscussionGroup({
   onContinueAnyway?: () => Promise<void>
   children: ReactNode
 }) {
-  // A concluded discussion folds to its header and conclusion; one still
-  // running stays open. Once the person toggles it, their choice holds.
-  const [expanded, setExpanded] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
-  const open = expanded ?? discussion?.status !== 'closed'
-  const topic = discussion?.topic?.trim() || messages[0]?.content.trim() || 'Discussion'
+  const topic = discussion?.topic?.trim() || (segment === 0 ? messages[0]?.content.trim() : null) || 'Discussion'
   const participants = (discussion?.participant_agent_ids ?? [])
     .map(agentId => agents.find(agent => agent.id === agentId)?.name ?? 'Agent')
   const conclusion = discussion?.conclusion_message_id
@@ -218,21 +216,15 @@ export function DiscussionGroup({
 
   return (
     <section
-      className="rounded-lg border border-border bg-muted/20"
-      data-testid={`discussion-${discussionId}`}
+      className="w-full min-w-0 border-l-2 border-primary/35 pl-3"
+      data-testid={`discussion-${discussionId}${segment ? `-${segment}` : ''}`}
       aria-label={`Discussion: ${topic}`}
     >
-      <header className="flex flex-wrap items-start gap-2 px-3 py-2">
-        <button
-          type="button"
-          className="flex min-w-0 flex-1 items-start gap-2 text-left"
-          aria-expanded={open}
-          onClick={() => setExpanded(!open)}
-        >
-          {open ? <ChevronDown className="mt-0.5 size-3.5 shrink-0" /> : <ChevronRight className="mt-0.5 size-3.5 shrink-0" />}
+      <header className="flex flex-wrap items-start gap-2 py-1">
+        <div className="flex min-w-0 flex-1 items-start gap-2">
           <MessagesSquare className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium">{topic}</span>
+            <span className="block truncate text-sm font-medium">{segment ? `Discussion continues${topic === 'Discussion' ? '' : ` · ${topic}`}` : topic}</span>
             {discussion && (
               <span className="block text-[11px] text-muted-foreground">
                 {participants.length > 0 && <>{participants.join(', ')} · </>}
@@ -240,13 +232,13 @@ export function DiscussionGroup({
               </span>
             )}
           </span>
-        </button>
-        {(discussion?.status === 'active' || discussion?.status === 'cap_reached') && (
+        </div>
+        {latest && (discussion?.status === 'active' || discussion?.status === 'cap_reached') && (
           <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => void act(() => onStop(discussionId))}>
             Stop
           </Button>
         )}
-        {discussion?.status === 'cap_reached' && onExtend && canContinue(discussion) && (
+        {latest && discussion?.status === 'cap_reached' && onExtend && canContinue(discussion) && (
           <Button
             size="sm"
             variant="outline"
@@ -257,7 +249,7 @@ export function DiscussionGroup({
             {discussionExtendLabel(discussion)}
           </Button>
         )}
-        {detail && (pricedLine || detail.usage.subscription.length > 0) && (
+        {latest && detail && (pricedLine || detail.usage.subscription.length > 0) && (
           <ul className="w-full space-y-0.5 pl-9 text-[11px] text-muted-foreground" data-testid={`discussion-cost-${discussionId}`}>
             {pricedLine && <li>{pricedLine}</li>}
             {detail.usage.subscription.map(line => (
@@ -270,7 +262,7 @@ export function DiscussionGroup({
             ))}
           </ul>
         )}
-        {hold && (
+        {latest && hold && (
           <p className="flex w-full flex-wrap items-center gap-1 pl-9 text-xs text-amber-700 dark:text-amber-400" data-testid={`discussion-quota-hold-${discussionId}`}>
             <span>
               {hold.can_continue ? 'Waiting for the window' : `Waiting for ${hold.account_label}'s window`}
@@ -292,13 +284,13 @@ export function DiscussionGroup({
             )}
           </p>
         )}
-        {conclusion && (
+        {latest && conclusion && (
           <p className="line-clamp-2 w-full pl-9 text-xs text-muted-foreground" data-testid={`discussion-conclusion-${discussionId}`}>
             Conclusion: {conclusion}
           </p>
         )}
       </header>
-      {open && <div className="space-y-4 border-t border-border px-3 py-3">{children}</div>}
+      <div className="space-y-4 pt-2">{children}</div>
     </section>
   )
 }
@@ -333,7 +325,7 @@ export function DiscussionNoticeCard({
   const selfExplained = notice.kind === 'quota_hold' || notice.kind === 'cap_reached'
   return (
     <div className="flex justify-start pr-6" data-role="system" data-testid={`discussion-notice-${message.id}`}>
-      <div className="max-w-[82%] rounded-md border border-border bg-background p-3 text-foreground">
+      <div className="w-full min-w-0 rounded-md border border-border bg-background p-3 text-foreground">
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-medium">
             {noticeTitle(notice)}

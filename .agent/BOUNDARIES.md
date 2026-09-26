@@ -644,17 +644,20 @@ previous build — expand in the release that needs the new shape, contract in a
 later one. That is a constraint on what a single release may drop or rename, not
 a licence for compatibility code: B58 still applies to the application.
 
-The chain has two explicitly authorized pre-release folds. The
+The chain has three explicitly authorized schema-epoch replacements. The
 **2026-09-21 ACP runtime-authority schema epoch**
 ([ADR 0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) §5)
 first replaced the preceding chain. The **2026-09-23 authentication-foundation
 schema epoch**
 ([ADR 0023](decisions/0023-authentication-foundation-schema-epoch.md)) then
 folded the provisional authentication add/correct/drop migrations into the
-current Drizzle-generated `0000_baseline.sql`, after the operator confirmed
-that no schema history or user data needed preservation. A database from before
-the current epoch has no upgrade path or compatible backup restore: it must be
-recreated from the baseline. Neither decision itself authorizes deleting a
+then-current Drizzle-generated `0000_baseline.sql`, after the operator confirmed
+that no schema history or user data needed preservation. The **2026-09-26
+host-thread-tool-field schema epoch** folded the applied `0001` widening into
+a new baseline after the operator explicitly accepted recreating affected
+databases. A database from before the current
+epoch has no upgrade path or compatible backup restore: it must be recreated
+from the baseline. None of these decisions itself authorizes deleting a
 running database.
 
 `server/migrations/README.md` states the current epoch beside the chain, and

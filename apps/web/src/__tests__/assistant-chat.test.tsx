@@ -4,7 +4,7 @@ import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
 
 // vi.mock factories are hoisted above the module body, so anything they reference
 // must be created via vi.hoisted (which runs first) to avoid a TDZ error.
-const { agent, getMock, messagesMock, backendsMock, hostsMock, turnMock, runGetMock } = vi.hoisted(() => ({
+const { agent, getMock, messagesMock, backendsMock, hostsMock, turnMock, runGetMock, proposalGetMock } = vi.hoisted(() => ({
   agent: {
     id: 'a1', space_id: 'personal-1', created_by_user_id: 'u1', name: 'Assistant',
     description: null, visibility: 'private', role_instruction: null, status: 'active',
@@ -18,6 +18,7 @@ const { agent, getMock, messagesMock, backendsMock, hostsMock, turnMock, runGetM
   hostsMock: vi.fn(),
   turnMock: vi.fn(),
   runGetMock: vi.fn(),
+  proposalGetMock: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -25,6 +26,7 @@ vi.mock('../api/client', () => ({
   sessionsApi: { messages: messagesMock },
   hostsApi: { list: hostsMock },
   runsApi: { get: runGetMock, turn: turnMock },
+  proposalsApi: { get: proposalGetMock },
 }))
 
 vi.mock('../contexts/SpaceContext', () => ({
@@ -84,14 +86,15 @@ describe('AssistantChatPage conversation backends', () => {
     turnMock.mockRejectedValue(new Error('no turn'))
     runGetMock.mockReset()
     runGetMock.mockRejectedValue(new Error('no run'))
+    proposalGetMock.mockReset()
+    proposalGetMock.mockResolvedValue({ status: 'pending' })
     // jsdom doesn't implement Element.scrollTo, which ChatPanel calls on mount.
     Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo
   })
 
-  it('keeps a reply\'s work on reload, and says when a turn is still blocked', async () => {
-    // D3's fold has to survive a reload, not exist only in the page session
-    // that watched the turn stream. The panel reads each saved reply's turn
-    // back, exactly as the Room does.
+  it('reads a reply\'s turn on reload without exposing completed tools', async () => {
+    // The panel reads each saved reply's turn back exactly as the Room does,
+    // while the conversation projection keeps successful tools out of view.
     messagesMock.mockResolvedValue([
       {
         id: 'm1', role: 'user', content: 'Do the thing.',
@@ -114,7 +117,8 @@ describe('AssistantChatPage conversation backends', () => {
     renderPage('/agents/a1/chat?session=session-past')
 
     expect(await screen.findByText('Here is what I found.')).toBeInTheDocument()
-    expect(await screen.findByText('show work (1 step)')).toBeInTheDocument()
+    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(turnMock).toHaveBeenCalledWith('run-past')
   })
 
@@ -166,7 +170,7 @@ describe('AssistantChatPage conversation backends', () => {
     // `chatTurnFinalizer` writes the reply before it appends `chat_completed`,
     // so a turn read back can legitimately still say `working` beside a
     // finished answer. Nothing here streams history, so it would sit as a
-    // permanent "Working…" with the fold withheld.
+    // permanent "Working…" beside a completed answer.
     messagesMock.mockResolvedValue([{
       id: 'm2', role: 'assistant', content: 'The answer is 42.',
       metadata_json: null, run_id: 'run-lagging',
@@ -183,7 +187,8 @@ describe('AssistantChatPage conversation backends', () => {
     renderPage('/agents/a1/chat?session=session-lagging')
 
     expect(await screen.findByText('The answer is 42.')).toBeInTheDocument()
-    expect(await screen.findByText('show work (1 step)')).toBeInTheDocument()
+    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(screen.queryByText('Working…')).not.toBeInTheDocument()
   })
 
@@ -374,13 +379,14 @@ describe('AssistantChatPage conversation backends', () => {
     await screen.findByText(/could not complete/i)
     expect(screen.getByText(/partial reply/)).toBeInTheDocument()
     expect(screen.getAllByText(/stream disconnected/)).toHaveLength(1)
-    // A break is the third way a turn settles, and the steps explain it just
-    // as they do on a reported failure.
-    expect(screen.getByText('probe_tool')).toBeInTheDocument()
+    // A break is the third way a turn settles. The partial reply and error
+    // remain visible, but a successful call is still audit-only.
+    expect(screen.queryByText(/tool call completed/)).not.toBeInTheDocument()
+    expect(screen.queryByText('probe_tool')).not.toBeInTheDocument()
     expect(screen.getByTestId('location')).toHaveTextContent('session=session-new')
   })
 
-  it('keeps the work folded above a finished reply, not only while it streams', async () => {
+  it('keeps completed tools out of a finished reply', async () => {
     vi.mocked(agentsApi.chat).mockImplementation(async (_agentId, _body, options) => {
       options?.onAccepted?.({
         schema_version: 'chat_turn_accepted.v1',
@@ -428,11 +434,9 @@ describe('AssistantChatPage conversation backends', () => {
     fireEvent.change(input, { target: { value: 'hello' } })
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
 
-    // D3's finished state: the reply is the bubble, and the steps that
-    // produced it fold above it — not discarded the moment they become
-    // something to look back on.
     expect(await screen.findByText('Found three.')).toBeInTheDocument()
-    expect(await screen.findByText('show work (1 step)')).toBeInTheDocument()
+    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.queryByText('search')).not.toBeInTheDocument()
   })
 
   it('keeps the steps on a failed turn, because they are the explanation', async () => {
@@ -634,6 +638,26 @@ describe('AssistantChatPage conversation backends', () => {
     // The one anybody may decide is still there.
     expect(screen.getByText('Open a question about caching')).toBeInTheDocument()
     expect(screen.queryByText('Change what I have become')).not.toBeInTheDocument()
+  })
+
+  it('keeps an accepted proposal visible in direct chat through the shared card', async () => {
+    messagesMock.mockResolvedValue([{
+      id: 'm-accepted', session_id: 's1', space_id: 'personal-1', user_id: null,
+      role: 'assistant', content: 'The proposal was accepted.',
+      metadata_json: { action_previews: [{
+        action_id: 'project.propose_definition', status: 'proposed',
+        proposal_id: 'proposal-accepted', title: 'Project definition',
+      }] },
+      created_at: '',
+    }])
+    proposalGetMock.mockResolvedValue({ status: 'accepted' })
+
+    renderPage('/agents/a1/chat?session=s1')
+
+    expect(await screen.findByText('Accepted')).toBeInTheDocument()
+    expect(screen.getByText('Project definition')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Review proposal' })).toBeInTheDocument()
+    expect(proposalGetMock).toHaveBeenCalledWith('proposal-accepted')
   })
 
   it('shows managed workspace state and sends an explicit restore choice', async () => {

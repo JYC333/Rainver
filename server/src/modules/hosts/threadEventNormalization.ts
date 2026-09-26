@@ -1,5 +1,6 @@
 import type { HostThreadEventType } from "./threadEventRepository.js";
 import { createAcpToolCallLifecycle } from "../runtimeAdapters/acpToolCallLifecycle.js";
+import { normalizeToolName } from "../runtimeAdapters/toolName.js";
 
 export interface ThreadEventDraft {
   event_type: HostThreadEventType;
@@ -89,7 +90,7 @@ export function createThreadEventNormalizer(): {
     const callId = stringValue(update.toolCallId ?? update.tool_call_id);
     if (update.sessionUpdate === "tool_call") {
       const status = acpToolStatus(stringValue(update.status)) ?? "pending";
-      const toolName = stringValue(update.title ?? update.name);
+      const toolName = normalizeToolName(stringValue(update.title ?? update.name));
       const lifecycle = toolCalls.started({ callId, name: toolName, status: stringValue(update.status) });
       return [
         ...flushTextSegment(),
@@ -110,7 +111,7 @@ export function createThreadEventNormalizer(): {
     if (update.sessionUpdate === "tool_call_update") {
       const status = stringValue(update.status);
       if (status !== null && !["pending", "in_progress", "completed", "failed"].includes(status)) return [];
-      const toolName = stringValue(update.title ?? update.name);
+      const toolName = normalizeToolName(stringValue(update.title ?? update.name));
       const toolKind = stringValue(update.kind);
       const toolInput = summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS);
       const toolOutput = summarizeToolResultContent(update.content)

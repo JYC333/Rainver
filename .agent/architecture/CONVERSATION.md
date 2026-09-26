@@ -170,25 +170,37 @@ is in. `ConversationComposer` is the common input frame used by direct Agent
 chat, the Room page, and the Project sidecar; it owns runtime-control layout,
 focus treatment, and submission. Room injects its mention-capable editor while
 direct chat injects plain text. Both render the selected ACP installation's
-generic options in the same bottom row. `ConversationView` supplies the generic
+generic options through `ConversationAgentSessionConfigs`: one Agent keeps the
+fast inline controls, while two or more Agents share one **Agent settings**
+trigger whose dialog labels one option row per Agent. `ConversationView`
+supplies the generic
 message list used by direct and notebook chat; Room keeps its audience,
 reference, routing, and proposal-aware transcript while reusing
-`ConversationTurn` and `ConversationComposer`.
+`ConversationTurn` and `ConversationComposer`. Proposal cards, status
+reconciliation and action-preview filtering have one implementation in
+`ActionPreviewCard`; Room and Project sidecar offer inline decisions, while
+direct Agent chat links to Proposal review.
 
-The four states are one bubble, not four components. Within the bubble, parts
-remain in protocol order; the renderer does not regroup all work ahead of all
-assistant messages:
+The four states are one bubble, not four components. The conversation
+projection preserves assistant text in protocol order but deliberately omits
+reasoning parts and successful tool calls. Those records remain available in
+the durable Run audit; they are execution evidence, not conversation content.
+Active or failed calls, plans and diagnostics remain visible when they explain
+what is happening or what went wrong:
 
 - **working** — active and failed steps as they happen, text streaming under
-  them; consecutive successful tool calls collapse in place into disclosures
-  so a tool-heavy turn does not become a wall of completed cards and expanding
-  it restores the protocol chronology.
+  them; completed calls and reasoning do not produce conversation rows.
 - **blocked** — stopped, waiting on the person, said plainly and with somewhere
   to go and act.
-- **done** — the reply is the bubble; the work folds into one line above it.
-- **failed** — the same bubble carries the failure, and the steps stay open,
-  because when something went wrong the steps are what explains it.
+- **done** — the reply is the bubble; any remaining non-sensitive plan or
+  diagnostic work folds into one line above it.
+- **failed** — the same bubble carries the failure; failed calls and diagnostics
+  stay open as the explanation, while successful calls remain hidden.
 
+Completed action previews attached to older or newer assistant messages are
+also hidden from the conversation. They are execution records without a
+decision to make; proposed and decided Proposal cards, and failed action cards,
+remain visible through the shared viewer filter used by Room and direct chat.
 Nothing about a Run appears under the person's message. Run links are not part
 of the shared conversation rendering.
 
@@ -224,36 +236,48 @@ block (files, `+added -removed`, and a `rainver://artifacts/<id>` link it can
 read with `input_resource.read`) appended to a delegation result or to the
 replies a serialized recipient is given; the patch itself is never inlined
 (`modules/rooms.md`). A turn still working is headed by the Agent's name the
-way its finished reply is, and when one message started several Runs each
-control block under it is headed by its Agent too: the name comes from the
-Run record's `agent_id` resolved against the roster, so nothing new crosses
-the wire and a fan-out never reads as N anonymous bubbles. Failed turns can be retried with an idempotency key using
+way its finished reply is. When one message starts several serialized Runs,
+each Agent gets one named turn in the timeline: the first can work while later
+recipients say "Waiting for previous Agent" rather than three simultaneous
+"Working" labels. Stop, Retry and change controls stay with that Agent's turn
+or reply, never duplicated beneath the person's message. Names come from each
+Run's `agent_id` resolved against the roster. Failed turns can be retried with an idempotency key using
 the original persisted input and execution pin; the retry links new Run ids to
-the original user message rather than adding a duplicate message. Draft
+the original user message rather than adding a duplicate message. The prior
+failed Agent reply remains as audit evidence but is marked `retry_superseded`
+and leaves the shared visible-transcript predicate, so Room history, summaries
+and later prompt tails do not keep showing or replaying an error the person has
+already retried. The dispatching message similarly records
+`retry_superseded_run_ids`, replacing its old Run controls with the new ones. Draft
 recovery stores only validated text and logical input references in a
 destination-scoped, seven-day sessionStorage record.
 
-A Room discussion stays in the one timeline; the surface only folds it.
-Messages that carry the same `discussion_id` — plus a discussion notice's own
-reference and, for an emergent discussion, the person's message the row names
-as `origin_message_id` — render inside one `DiscussionGroup`
-(`modules/conversation/DiscussionGroup.tsx`) placed where the first of them
-is, each message still rendered exactly as outside. The header shows the
-topic (the first message's text for an emergent discussion), participants
-resolved against the roster, `Round x/y`, status and, once
-`conclusion_message_id` is present, a conclusion excerpt; a concluded group
-starts folded. Stop is offered while `active`, and the extend action while
-`cap_reached` — "Add N rounds" with N the shape's default round cap, or "Open
-a discussion" on an emergent row, which the same `extend` call upgrades. The
+A Room discussion stays in the one chronological timeline. Messages carrying
+its `discussion_id` — plus a notice's own reference and an emergent discussion's
+`origin_message_id` — form consecutive **segments** with a thin left rail and
+a lightweight topic/round/status label (`modules/conversation/DiscussionGroup.tsx`).
+An ordinary interjection breaks the rail; a later segment says "Discussion
+continues" where it occurs. No reply moves to a separate transcript or folds
+automatically when the discussion ends. The newest segment alone carries
+Stop while `active` and extend while `cap_reached` — "Add N rounds" with N the
+shape's default cap, or "Open a discussion" for an emergent row. Its header
+can also show participants, cost, quota hold and the conclusion excerpt. The
 list (`GET …/discussions`) is read with the message poll, and only while a
 referenced discussion is unknown, running, or has a message newer than the
 record held (a closing reply, a wave after another member added rounds); a
 read never overwrites a newer record from a stop or extend. Messages are
 merged by id, so a message the server revises after sending it — its
 discussion stamp, a delegated child listed on it — is picked up in place. A
-discussion's consecutive messages fold into one block; when other messages
-come between two stretches of it, the later stretch is a block of its own
-where it happened. A `system_notice` carrying `discussion_notice` renders as a
+discussion's consecutive messages form one marked segment; when other
+messages intervene, the later stretch is marked again where it happened. While a discussion is active, the shared Room/Project composer offers
+"Current discussion" or "Ordinary message". The former sends the exact
+`discussion_id`; the latter omits it. The server stores that choice through
+the queue and stamps only an explicitly joined message, so release timing
+cannot silently switch its destination. An ordinary message's Agent reply
+and controls stay in the main timeline at full available width; pending
+serialized recipients say they are waiting, not all "Working" at once.
+
+A `system_notice` carrying `discussion_notice` renders as a
 card: `cap_reached` offers the extend action while the discussion is still
 held there and something waits to continue (Agents held at the cap, or a
 debate's next round) — and a discussion held at its cap can be stopped for
@@ -273,20 +297,25 @@ line it adds "Waiting for the window (resets HH:MM) · continue anyway". Above
 the composer `ConversationQuotaLine` shows any login of the conversation past
 the warning line and any held turns with the same "continue anyway"
 (`GET …/quota`, re-read as the transcript grows and when a shown discussion's
-record changes; `POST …/quota/continue`). "Continue anyway" is offered only to
-a Project writer (`viewer_can_write`), and only on a hold whose login the
-viewer may spend (`can_continue`); a hold on someone else's login reads
-"Waiting for <account>'s window" with no action. The full Room variant has an "Open a discussion"
+record changes; `POST …/quota/continue`). The detail's `waves[].run_ids` is
+also the authoritative live index for Runs started by hidden continuation
+messages: the client loads and streams those Runs immediately, so later rounds
+show which Agent is working before any reply becomes a visible message.
+"Continue anyway" is offered only to a Project writer (`viewer_can_write`),
+and only on a hold whose login the viewer may spend (`can_continue`); a hold on
+someone else's login reads "Waiting for <account>'s window" with no action.
+The full Room variant has an "Open a discussion"
 dialog beside the composer (topic, participants or "All Agents", shape, round
 cap defaulting by shape, optional spend cap), refusing more than
 `ROOM_DISCUSSION_MAX_PARTICIPANTS` client-side; its returned message lands as
-a send's does. A live turn whose Run has `parent_run_id` — a delegated child,
-listed in `delegated_run_ids` on the nearest message a person can see (the
-dispatching message, or for a continuation the discussion's origin or the
-container's message), apart from the recipients' `run_ids`, and never
-offered a Retry — reads
-"delegated by <Agent>" beside its name, the parent Run's Agent resolved the
-same way as the name (the Room's Manager until that Run is read).
+a send's does. A live turn explicitly listed in `delegated_run_ids` on the
+nearest message a person can see (the dispatching message, or for a
+continuation the discussion's origin or the container's message), apart from
+the recipients' `run_ids`, and never offered a Retry, reads "delegated by
+<Agent>" beside its name; the parent Run's Agent is resolved the same way as
+the name (the Room's Manager until that Run is read). A recipient Run's
+technical `parent_run_id`, used to serialize a fan-out group in one workspace,
+does not by itself mean delegation and never produces that label.
 
 A message sent while a turn is running is not refused: the composer sends it
 with `queue: true` (unless it has attachments), and a 202 shows it at the end

@@ -5,6 +5,7 @@ import type {
 import { redactEvidenceText } from "./evidenceRedaction.js";
 import { isAcpRuntimeAdapter } from "../runtimeAdapters/specs.js";
 import { createAcpToolCallLifecycle } from "../runtimeAdapters/acpToolCallLifecycle.js";
+import { normalizeToolName } from "../runtimeAdapters/toolName.js";
 
 export function normalizeManagedModelEvents(
   events: CanonicalModelEvent[],
@@ -67,7 +68,7 @@ export function createVendorEventNormalizer(runtimeKey: string): {
     const update = recordValue(recordValue(event.params).update);
     const updateType = stringValue(update.sessionUpdate);
     const suppliedCallId = stringValue(update.toolCallId ?? update.tool_call_id);
-    const toolName = redactToolName(stringValue(update.title ?? update.name));
+    const toolName = normalizeToolName(stringValue(update.title ?? update.name));
     if (updateType?.toLowerCase().includes("compact")) {
       return [runtimeEvent("provider_compacted", occurredAt, null, "Provider compacted its session context.", {
         runtime_key: runtimeKey,
@@ -172,24 +173,6 @@ function runtimeEvent(
     summary,
     metadata_json: metadata as RuntimeSemanticEvent["metadata_json"],
   };
-}
-
-const MAX_TOOL_NAME_CHARS = 200;
-
-/**
- * Vendor `command_execution`/`local_shell_call` events fall back to the raw
- * shell command string for tool_name (no vendor exposes a short handle for
- * these). That raw text can contain embedded secrets or full command bodies,
- * and this metadata is persisted into a durable, replayable Run Event —
- * apply the same secret-pattern redaction used for error text plus a name-
- * sized length bound, not the much larger evidence-body bound.
- */
-function redactToolName(value: string | null): string | null {
-  const redacted = redactEvidenceText(value);
-  if (redacted === null) return null;
-  return redacted.length > MAX_TOOL_NAME_CHARS
-    ? `${redacted.slice(0, MAX_TOOL_NAME_CHARS)}...[truncated]`
-    : redacted;
 }
 
 function recordValue(value: unknown): Record<string, unknown> {

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { proposalsApi } from '../../api/client'
 import { Button } from '../../components/ui/button'
+import { SpaceLink } from '../../core/spaceNav'
 import { errMsg } from '../../lib/utils'
 import type { ChatActionPreview } from '../../types/api'
 
-export type RoomActionDecision = 'accept' | 'reject'
+export type ActionDecision = 'accept' | 'reject'
 
 /*
  * Not AI Elements' `Confirmation` (plan P2), deliberately.
@@ -17,22 +18,59 @@ export type RoomActionDecision = 'accept' | 'reject'
  * press. Swapping it would trade that for markup, and pull the AI SDK back
  * into the tree for a component that renders from props.
  */
-type RoomActionDisplayStatus = ChatActionPreview['status'] | 'superseded'
+type ActionDisplayStatus = ChatActionPreview['status'] | 'superseded'
 
-export function RoomActionPreviewCard({
+/** One decision-card entry for Room, Project sidecar and direct Agent chat. */
+export function ActionPreviewCards({
+  previews,
+  viewerUserId,
+  onDecision,
+  testId,
+}: {
+  previews: readonly ChatActionPreview[]
+  viewerUserId: string | null | undefined
+  onDecision?: (preview: ChatActionPreview, action: ActionDecision) => Promise<void>
+  testId?: string
+}) {
+  const cards = decidableByViewer(previews, viewerUserId)
+  if (cards.length === 0) return null
+  return (
+    <div className="mt-2 space-y-2" data-testid={testId}>
+      {cards.map((preview, index) => (
+        <ActionPreviewCard
+          key={`${preview.action_id}:${preview.proposal_id ?? index}`}
+          preview={preview}
+          onDecision={onDecision}
+        />
+      ))}
+    </div>
+  )
+}
+
+/** Completed actions belong to the Run audit; personal proposals stay private. */
+export function decidableByViewer(
+  previews: readonly ChatActionPreview[],
+  viewerUserId: string | null | undefined,
+): ChatActionPreview[] {
+  return previews.filter(preview =>
+    preview.status !== 'completed'
+    && (!preview.decidable_by_user_id || preview.decidable_by_user_id === viewerUserId))
+}
+
+function ActionPreviewCard({
   preview,
   onDecision,
 }: {
   preview: ChatActionPreview
-  onDecision: (preview: ChatActionPreview, action: RoomActionDecision) => Promise<void>
+  onDecision?: (preview: ChatActionPreview, action: ActionDecision) => Promise<void>
 }) {
-  const [status, setStatus] = useState<RoomActionDisplayStatus>(preview.status)
+  const [status, setStatus] = useState<ActionDisplayStatus>(preview.status)
   const [checkingStatus, setCheckingStatus] = useState(Boolean(preview.proposal_id))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [resultMessage, setResultMessage] = useState<string | null>(null)
-  const decidable = !checkingStatus && status === 'proposed' && Boolean(preview.proposal_id)
-  const canContinue = (status === 'auto_applied' || status === 'rejected') && !resultMessage
+  const decidable = Boolean(onDecision) && !checkingStatus && status === 'proposed' && Boolean(preview.proposal_id)
+  const canContinue = Boolean(onDecision) && (status === 'auto_applied' || status === 'rejected') && !resultMessage
 
   // Action previews are immutable Run snapshots. Always reconcile them with
   // the live Proposal so another member's decision cannot leave stale buttons.
@@ -49,7 +87,8 @@ export function RoomActionPreviewCard({
     return () => { cancelled = true }
   }, [preview.proposal_id])
 
-  const continueAfterDecision = async (action: RoomActionDecision) => {
+  const continueAfterDecision = async (action: ActionDecision) => {
+    if (!onDecision) return
     setResultMessage(action === 'accept'
       ? `${appliedActionDescription(preview)}正在让助手继续下一步…`
       : '已拒绝，正在让助手根据你的决定继续…')
@@ -64,8 +103,8 @@ export function RoomActionPreviewCard({
     }
   }
 
-  const decide = async (action: RoomActionDecision) => {
-    if (!preview.proposal_id) return
+  const decide = async (action: ActionDecision) => {
+    if (!onDecision || !preview.proposal_id) return
     setBusy(true)
     setError(null)
     try {
@@ -113,13 +152,18 @@ export function RoomActionPreviewCard({
           </Button>
         </div>
       )}
+      {!onDecision && preview.proposal_id && (
+        <SpaceLink className="mt-2 block w-fit text-[11px] text-accent-foreground hover:underline" to={`/proposals/${preview.proposal_id}`}>
+          Review proposal
+        </SpaceLink>
+      )}
       {description && <p className="mt-2 text-xs text-muted-foreground">{description}</p>}
       {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
     </div>
   )
 }
 
-function proposalStatus(status: string): RoomActionDisplayStatus {
+function proposalStatus(status: string): ActionDisplayStatus {
   if (status === 'pending') return 'proposed'
   if (status === 'accepted') return 'auto_applied'
   if (status === 'rejected') return 'rejected'
@@ -137,7 +181,7 @@ function appliedActionDescription(preview: ChatActionPreview): string {
   return '这项变更已确认并保存。'
 }
 
-function actionPreviewStatusLabel(status: RoomActionDisplayStatus): string {
+function actionPreviewStatusLabel(status: ActionDisplayStatus): string {
   return ({
     proposed: 'Needs confirmation',
     auto_applied: 'Accepted',

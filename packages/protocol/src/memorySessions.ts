@@ -89,6 +89,12 @@ const CommonMessageMetadata = {
   run_ids: z.array(IdSchema).nullish(),
   /** Additional Runs created by an explicit retry of this message. */
   retry_run_ids: z.array(IdSchema).nullish(),
+  /** Earlier Runs replaced by an explicit retry and no longer shown on the dispatching message. */
+  retry_superseded_run_ids: z.array(IdSchema).nullish(),
+  /** An Agent reply replaced by retry; retained for audit but hidden from the human transcript. */
+  retry_superseded: z.boolean().nullish(),
+  /** The replacement Runs that caused this reply to leave the visible transcript. */
+  retry_replacement_run_ids: z.array(IdSchema).nullish(),
   /** Runs a Manager delegated while answering this message, shown live as their own turns. */
   delegated_run_ids: z.array(IdSchema).nullish(),
   recipient_run_ids: z.array(IdSchema).nullish(),
@@ -119,6 +125,8 @@ const CommonMessageMetadata = {
 /** A person speaking, or an Agent replying. The default. */
 export const ConversationMessageMetadataSchema = z.object({
   room_display: z.literal("conversation").nullish(),
+  /** A person's choice when another discussion was active; never inferred from timing. */
+  discussion_intent: z.enum(["join", "separate"]).nullish(),
   ...CommonMessageMetadata,
 }).strict();
 

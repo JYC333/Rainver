@@ -95,6 +95,7 @@ export class RoomDiscussionService {
       const roundCap = request.round_cap ?? ROOM_DISCUSSION_DEFAULT_ROUND_CAP[request.shape];
       const dispatched = await new RoomService(this.config, this.pool).sendMessageInTransaction(client, identity, roomId, sessionId, {
         content: request.topic,
+        discussion_intent: "join",
         recipient_segments: [{
           recipient_agent_ids: participants,
           content: firstRoundInstruction(request.topic, request.shape, roundCap),
@@ -349,11 +350,11 @@ export class RoomDiscussionService {
         }
       }
       if (!await hasQueuedRoomMessage(client, spaceId, sessionId)) return "released" as const;
-      // The discussion's wave waits at the subscription reserve line without
-      // holding the conversation: a person's message goes ahead now, as a
-      // message sent directly would, outside the discussion.
+      // A quota-held wave may give up the conversation turn. Ordinary sends
+      // can proceed; an explicitly joined send remains queued until that
+      // discussion wave advances, as RoomService checks before stamping it.
       if (!await conversationTurnTaken(client, spaceId, sessionId)) {
-        return new RoomMessageQueue(this.config, this.pool).releaseNext(client, spaceId, sessionId, { joinDiscussion: false });
+        return new RoomMessageQueue(this.config, this.pool).releaseNext(client, spaceId, sessionId);
       }
       return "busy" as const;
     });
@@ -516,9 +517,21 @@ export class RoomDiscussionService {
       // addressed other Agents, so this becomes an emergent discussion.
       const prior = await discussions.getOpenForSession(spaceId, group.session_id!, { forUpdate: true });
       if (prior?.status === "active") {
-        // A person spoke while the discussion's wave waited (for the
-        // subscription window, say): the Agents their turn addressed follow
-        // in the discussion's next wave.
+        const source = (await client.query<{ discussion_intent: string | null }>(
+          `SELECT metadata_json->>'discussion_intent' AS discussion_intent
+             FROM messages WHERE space_id = $1 AND id = $2`,
+          [spaceId, group.trigger_message_id],
+        )).rows[0];
+        if (source?.discussion_intent === "separate") {
+          // A person chose an ordinary message. Its reply must not turn a
+          // later Agent mention into an implicit participant of this discussion.
+          await new PgSessionRepository(client).addRoomConversationNotice(spaceId, group.session_id!, {
+            content: `${targets.map((target) => agentName(roster, target.agent_id)).join(", ")} ${targets.length === 1 ? "was" : "were"} addressed, but this message was sent outside the current discussion. Open a discussion to continue with them.`,
+          });
+          return;
+        }
+        // Legacy unmarked sends can still feed an active discussion while
+        // its wave waits; the explicit ordinary-message choice cannot.
         if (prior.shape !== "debate") {
           await discussions.update(spaceId, prior.id, { heldMentions: mergeHeld(prior.held_mentions, targets) });
           return;
@@ -1313,7 +1326,7 @@ function firstRoundInstruction(topic: string, shape: "open" | "debate", roundCap
   return [
     topic,
     shape === "debate"
-      ? `[Debate · round 1 of ${roundCap}] Answer on your own: the other participants' answers are withheld this round. Later rounds put every answer in front of everyone to critique.`
+      ? `[Debate · round 1 of ${roundCap}] Answer the person's topic directly with your own position and reasoning. Other participants' answers are withheld this round. Do not @-address or ask another Agent to respond; every participant already has a turn. Later rounds will share everyone's answers for critique.`
       : `[Discussion · round 1 of ${roundCap}] Answer, and address another Agent with @Name only when you need their answer. A round in which nobody addresses anyone ends the discussion, and the Room's Manager then writes the conclusion.`,
   ].join("\n\n");
 }
@@ -1336,7 +1349,7 @@ function critiqueInstruction(round: number, roundCap: number, answers: string): 
   return [
     `[Debate · round ${round} of ${roundCap}] The answers of the last round:`,
     answers || "(no answers were given)",
-    "Critique the others: where you agree, where you disagree and why, and what you would change in your own answer.",
+    "Compare the positions for the person: where you agree, where you disagree and why, and what you would change in your own answer. Do not @-address or ask another Agent to respond; the system sends each round to every participant.",
   ].join("\n\n");
 }
 

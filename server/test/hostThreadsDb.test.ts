@@ -782,10 +782,23 @@ describe("host_threads owner constraints", () => {
          '{}'::jsonb,$4,now(),now(), 'agent')`,
       [runId, SPACE, AGENT, OWNER],
     );
+    const longCallId = `provider:${"call".repeat(100)}`;
+    const longToolName = `command ${"x".repeat(300)}`;
     const events = await new PgHostThreadEventRepository(db.pool).append(thread.id, runId, [
       { event_type: "status", status: "run_started" },
+      {
+        event_type: "tool_activity_started",
+        tool_call_id: longCallId,
+        tool_name: longToolName,
+        status: "pending",
+      },
     ]);
     expect(events[0]).toMatchObject({ project_id: null, event_type: "status", status: "run_started" });
+    expect(events[1]).toMatchObject({
+      project_id: null,
+      tool_call_id: longCallId,
+      tool_name: longToolName,
+    });
   });
 
   it("rejects a host binding when the caller or installation is not authorized", async (ctx) => {

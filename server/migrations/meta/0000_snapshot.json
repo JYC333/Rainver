@@ -1,5 +1,5 @@
 {
-  "id": "e9861847-3dc3-4d6c-88c5-e2aee25847aa",
+  "id": "110422aa-27f1-4ab8-a924-c57077676e2a",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -72282,13 +72282,13 @@
         },
         "tool_call_id": {
           "name": "tool_call_id",
-          "type": "varchar(128)",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
         "tool_name": {
           "name": "tool_name",
-          "type": "varchar(128)",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

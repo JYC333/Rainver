@@ -1,6 +1,10 @@
 import { SlidersHorizontal, Zap } from 'lucide-react'
 import type { RuntimeSessionConfigOption, RuntimeSessionConfigSelection } from '../../types/api'
 import { Select } from '../../components/ui/select'
+import { Button } from '../../components/ui/button'
+import {
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger,
+} from '../../components/ui/dialog'
 import { cn } from '../../lib/utils'
 
 export type SessionConfigSelection = RuntimeSessionConfigSelection
@@ -65,6 +69,81 @@ export function ConversationSessionConfig({
       />
     )
   })
+}
+
+export type AgentSessionConfiguration = {
+  id: string
+  name: string
+  options: RuntimeSessionConfigOption[]
+  value: SessionConfigSelection[]
+  onChange: (value: SessionConfigSelection[]) => void
+}
+
+/**
+ * The shared entry point for per-Agent runtime options in every conversation
+ * surface. One Agent keeps the fast inline controls. A Room with several
+ * Agents gets one compact trigger and a labelled row per Agent in a dialog,
+ * instead of an unscannable run of model selectors below the composer.
+ */
+export function ConversationAgentSessionConfigs({
+  agents,
+  disabled,
+}: {
+  agents: AgentSessionConfiguration[]
+  disabled?: boolean
+}) {
+  const configurable = agents.filter(agent => configurableOptions(agent.options).length > 0)
+  if (configurable.length === 0) return null
+  if (agents.length === 1) {
+    const agent = configurable[0]!
+    return (
+      <ConversationSessionConfig
+        options={agent.options}
+        value={agent.value}
+        onChange={agent.onChange}
+        disabled={disabled}
+      />
+    )
+  }
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1.5 px-2 text-xs"
+          disabled={disabled}
+        >
+          <SlidersHorizontal className="size-3.5" />
+          Agent settings · {configurable.length}
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Agent settings</DialogTitle>
+          <DialogDescription>
+            Choose the model and runtime options each Agent will use for the next message.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {configurable.map(agent => (
+            <section key={agent.id} className="rounded-lg border border-border p-3">
+              <h3 className="mb-2 text-sm font-medium">{agent.name}</h3>
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                <ConversationSessionConfig
+                  options={agent.options}
+                  value={agent.value}
+                  onChange={agent.onChange}
+                  disabled={disabled}
+                />
+              </div>
+            </section>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 export function defaultSessionConfig(options: RuntimeSessionConfigOption[]): SessionConfigSelection[] {

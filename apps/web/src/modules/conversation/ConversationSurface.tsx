@@ -26,13 +26,13 @@ import { Button } from '../../components/ui/button'
 import { ReferenceMessage, messageReference } from '../agent_groups/conversation/ReferenceMessage'
 import { DisclosureDialog } from '../agent_groups/conversation/DisclosureDialog'
 import { PickToolbar } from '../agent_groups/conversation/PickToolbar'
-import { RoomActionPreviewCard, type RoomActionDecision } from '../agent_groups/RoomActionPreviewCard'
+import { ActionPreviewCards, type ActionDecision } from './ActionPreviewCard'
 import { MessageResponse } from '../../components/ai-elements/message'
 import { AwaitingAnswerMarker, ConversationTurn } from './ConversationTurn'
 import { readBackTurnState, settledTurn } from './settledTurn'
 import { RoomMessageComposer, emptyRoomMessageComposerValue } from '../agent_groups/RoomMessageComposer'
 import {
-  ConversationSessionConfig,
+  ConversationAgentSessionConfigs,
   mergeSessionConfig,
   type SessionConfigSelection,
 } from './ConversationSessionConfig'
@@ -82,7 +82,7 @@ export type ConversationBackendSelection = {
 
 type PendingProposalContinuation = {
   proposalId: string
-  action: RoomActionDecision
+  action: ActionDecision
   phase: 'submitting' | 'running' | 'failed'
   runIds: string[]
   error?: string
@@ -151,7 +151,7 @@ export interface ConversationSurfaceProps {
    */
   onReferencesRejected?: () => void
   /** Runs once before an accepted proposal is continued from (the page refreshes the Project overview). */
-  onBeforeContinue?: (action: RoomActionDecision) => Promise<void>
+  onBeforeContinue?: (action: ActionDecision) => Promise<void>
   /** Rendered between the transcript and the composer (the page's run settings). */
   runSettings?: ReactNode
   /** Persistent execution selection shown immediately above the composer. */
@@ -228,6 +228,7 @@ export function ConversationSurface({
   const [discussions, setDiscussions] = useState<Record<string, RoomDiscussion>>({})
   const discussionsRef = useRef<Record<string, RoomDiscussion>>({})
   const [discussionDialogOpen, setDiscussionDialogOpen] = useState(false)
+  const [discussionSendMode, setDiscussionSendMode] = useState<'join' | 'separate'>('join')
   /**
    * Each discussion's cost lines and quota hold, read when
    * its record changes — once per wave, not on every poll.
@@ -263,6 +264,7 @@ export function ConversationSurface({
       setResetToken(value => value + 1)
     }
     previousConversationId.current = conversationId
+    setDiscussionSendMode('join')
   }, [conversationId])
 
   useEffect(() => {
@@ -338,6 +340,25 @@ export function ConversationSurface({
     return () => { active = false }
   }, [roomId, suppliedDetail])
 
+  const refreshRuns = useCallback(async (
+    runIds: readonly string[],
+    isCurrent: () => boolean = () => true,
+  ) => {
+    const idsToRefresh = uniqueIds([...runIds]).filter(id => {
+      const held = runsRef.current[id]
+      return !held || !isTerminalRunStatus(held.status) || held.status === 'waiting_for_review'
+    })
+    if (idsToRefresh.length === 0) return
+    const results = await Promise.all(idsToRefresh.map(async id => {
+      try { return await runsApi.get(id) } catch { return null }
+    }))
+    if (!isCurrent()) return
+    setRuns(current => ({
+      ...current,
+      ...Object.fromEntries(results.filter((run): run is Run => Boolean(run)).map(run => [run.id, run])),
+    }))
+  }, [])
+
   const refreshDiscussionDetails = useCallback((items: readonly RoomDiscussion[]) => {
     if (!conversationId) return
     for (const item of items) {
@@ -348,11 +369,20 @@ export function ConversationSurface({
       // last would otherwise leave a hold that has already lifted on screen.
       void roomsApi.discussion(roomId, conversationId, item.id)
         .then(next => {
-          if (detailVersions.current.get(item.id) === version) setDiscussionDetails(current => ({ ...current, [item.id]: next }))
+          if (detailVersions.current.get(item.id) !== version) return
+          setDiscussionDetails(current => ({ ...current, [item.id]: next }))
+          // Later discussion waves are dispatched by hidden internal messages,
+          // so their Runs do not appear in the visible transcript until they
+          // reply. The detail is the authoritative live wave index: load its
+          // Runs now, and the normal Run effect opens their turn streams.
+          void refreshRuns(
+            next.waves.flatMap(wave => wave.run_ids),
+            () => detailVersions.current.get(item.id) === version,
+          )
         })
         .catch(() => { if (detailVersions.current.get(item.id) === version) detailVersions.current.delete(item.id) })
     }
-  }, [conversationId, roomId])
+  }, [conversationId, refreshRuns, roomId])
 
   /**
    * Re-read the discussions these messages name, the way Runs are refreshed:
@@ -391,10 +421,10 @@ export function ConversationSurface({
         // Only the discussions this transcript shows get their cost lines read.
         refreshDiscussionDetails(list.items.filter(item => item.session_id === conversationId && referenced.includes(item.id)))
       })
-      .catch(() => { /* the group still folds its messages without its header facts */ })
+      .catch(() => { /* Messages remain visible even when discussion header facts cannot be read. */ })
   }, [conversationId, refreshDiscussionDetails, roomId])
 
-  const loadMessages = useCallback(async () => {
+  const loadMessages = useCallback(async (options: { replace?: boolean } = {}) => {
     // Nothing has been said, so there is nothing to read. Returning rather
     // than guarding each caller keeps the polling and stream effects below
     // unaware that a conversation can be absent.
@@ -411,7 +441,7 @@ export function ConversationSurface({
       conversationUpdatedRef.current?.(page.conversation)
     }
     setMessages(current =>
-      current.length > 0 && current.every(message => message.session_id === conversationId)
+      !options.replace && current.length > 0 && current.every(message => message.session_id === conversationId)
         ? mergeMessages(current, page.items)
         : page.items)
     setHasOlderMessages(page.items.length === MESSAGE_PAGE_SIZE)
@@ -423,15 +453,8 @@ export function ConversationSurface({
         .catch(() => { if (sequence === requestSequence.current) setSummary(null) })
     }
     const runIds = uniqueIds(page.items.flatMap(message => messageRunIds(message)))
-    const idsToRefresh = runIds.filter(id => !runsRef.current[id] || !isTerminalRunStatus(runsRef.current[id]!.status))
-    const results = await Promise.all(idsToRefresh.map(async id => {
-      try { return await runsApi.get(id) } catch { return null }
-    }))
+    await refreshRuns(runIds, () => sequence === requestSequence.current)
     if (sequence !== requestSequence.current) return
-    setRuns(current => ({
-      ...current,
-      ...Object.fromEntries(results.filter((run): run is Run => Boolean(run)).map(run => [run.id, run])),
-    }))
     // Whether a turn still belongs on screen is decided in one place, where
     // it is rendered: it stays until its reply is a message of its own.
     // Dropping it here on the Run's status instead would take it away at an
@@ -439,7 +462,7 @@ export function ConversationSurface({
     // its turn would simply vanish along with the only account of what went
     // wrong, and a succeeded one would blink out until the next poll brought
     // the message back.
-  }, [conversationId, refreshDiscussions, roomId, variant])
+  }, [conversationId, refreshDiscussions, refreshRuns, roomId, variant])
 
   const loadOlderMessages = useCallback(async () => {
     if (!hasOlderMessages || !conversationId) return
@@ -497,7 +520,7 @@ export function ConversationSurface({
     if (!conversationId) throw new Error('This conversation is no longer available')
     const retried = await roomsApi.retryMessage(roomId, conversationId, runId)
     watchRuns(retried.run_ids)
-    await loadMessages()
+    await loadMessages({ replace: true })
   }, [conversationId, loadMessages, roomId, watchRuns])
 
   // A new conversation starts from nothing and follows its tail.
@@ -555,6 +578,11 @@ export function ConversationSurface({
   // Runs whose reply is already a message here. Their turn has been said.
   const repliedRunIds = new Set(messages.flatMap(message =>
     message.role === 'assistant' ? messageRunIds(message) : []))
+  // Visible messages anchor ordinary recipients and real delegated children.
+  // A later discussion wave is started by a hidden internal message, so its
+  // live turn is rendered from the discussion detail until its reply lands.
+  const anchoredRunIds = new Set(messages.flatMap(message => messageRunIds(message)))
+  const allDelegatedRunIds = new Set(messages.flatMap(message => delegatedRunIds(message)))
 
   useEffect(() => {
     // A terminal Run this surface never streamed — it failed, was cancelled
@@ -714,6 +742,9 @@ export function ConversationSurface({
     })
   }, [backendCatalogs, backendsFor, sessionConfig])
 
+  const activeDiscussion = Object.values(discussions).find(item =>
+    item.session_id === conversationId && item.status === 'active') ?? null
+
   const sendMessage = useCallback(async (confirmDisclosure?: string[]) => {
     const text = composer.text.trim()
     if (!conversationId || sendingRef.current || !executionReady) return
@@ -748,6 +779,7 @@ export function ConversationSurface({
       }
       const dispatched = await roomsApi.sendMessage(roomId, conversationId, {
         content: text,
+        ...(activeDiscussion && discussionSendMode === 'join' ? { discussion_id: activeDiscussion.id } : {}),
         ...(effectiveInputParts.length > 0 ? { input_parts: effectiveInputParts } : {}),
         routing_mode: routingMode,
         // Mentions route in both places a conversation is read. The panel
@@ -811,10 +843,10 @@ export function ConversationSurface({
       sendingRef.current = false
       setSending(false)
     }
-  }, [composer, configuredBackendsFor, conversationId, executionReady, focusRefs, implicitInputResource, inputParts, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
+  }, [activeDiscussion, composer, configuredBackendsFor, conversationId, discussionSendMode, executionReady, focusRefs, implicitInputResource, inputParts, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
 
   // A decision made here continues the conversation here.
-  const continueAfterDecision = useCallback(async (preview: ChatActionPreview, action: RoomActionDecision) => {
+  const continueAfterDecision = useCallback(async (preview: ChatActionPreview, action: ActionDecision) => {
     if (!preview.proposal_id) throw new Error('The proposal is no longer available')
     if (sendingRef.current) throw new Error('Wait for the current reply before continuing')
     sendingRef.current = true
@@ -897,6 +929,7 @@ export function ConversationSurface({
     try {
       const opened = await roomsApi.openDiscussion(roomId, conversationId, request)
       keepDiscussion(opened.discussion)
+      setDiscussionSendMode('join')
       watchRuns(opened.run_ids)
       setMessages(current => uniqueMessages([...current, opened.message]))
       if (opened.conversation?.id === conversationId) conversationUpdatedRef.current?.(opened.conversation)
@@ -956,6 +989,9 @@ export function ConversationSurface({
   )
 
   const compact = variant === 'panel'
+  const timelineItems = groupDiscussionMessages(messages, discussions)
+  const lastSegment = new Map(timelineItems.flatMap(item =>
+    item.kind === 'discussion' ? [[item.discussionId, item.segment] as const] : []))
 
   /** One message as the transcript shows it, inside a discussion or not. */
   const renderMessage = (message: RoomMessage) => {
@@ -982,6 +1018,7 @@ export function ConversationSurface({
         projectId={detail?.room.project_id ?? null}
       />
     )
+    const delegatedIds = new Set(delegatedRunIds(message))
     return (
       <Fragment key={message.id}>
         <RoomMessageView
@@ -998,8 +1035,8 @@ export function ConversationSurface({
           turn={message.role === 'assistant'
             ? messageRunIds(message).map(runId => liveTurns[runId]).find(Boolean)
             : undefined}
-          runIds={message.role === 'user' ? messageRunIds(message) : []}
-          delegatedRunIds={message.role === 'user' ? delegatedRunIds(message) : []}
+          runIds={message.role === 'assistant' ? messageRunIds(message) : []}
+          delegatedRunIds={[...allDelegatedRunIds]}
           runs={runs}
           projectId={detail?.room.project_id ?? null}
           onRetry={retryRun}
@@ -1017,15 +1054,17 @@ export function ConversationSurface({
           // which renders an Agent reply through the same component when
           // a turn for it is held), so the steps fold above the reply
           // instead of disappearing with it.
-          .filter(runId => liveTurns[runId] && !repliedRunIds.has(runId))
+          .filter(runId => !repliedRunIds.has(runId))
           .map(runId => (
             <RoomAgentTurn
               key={runId}
               runId={runId}
-              turn={liveTurns[runId]!}
-              compact={compact}
+              turn={liveTurns[runId]}
               agentName={agentNameForRun(runId)}
-              delegatedBy={delegatorNameForRun(runId)}
+              delegatedBy={delegatedIds.has(runId) ? delegatorNameForRun(runId) : undefined}
+              run={runs[runId]}
+              projectId={detail?.room.project_id ?? null}
+              onRetry={allDelegatedRunIds.has(runId) ? undefined : retryRun}
             />
           ))}
       </Fragment>
@@ -1075,12 +1114,14 @@ export function ConversationSurface({
         {!messagesLoading && messages.length === 0 && (
           <p className="py-12 text-center text-sm text-muted-foreground">{emptyHint ?? 'No messages yet.'}</p>
         )}
-        {groupDiscussionMessages(messages, discussions).map(item => item.kind === 'message'
+        {timelineItems.map(item => item.kind === 'message'
           ? renderMessage(item.message)
           : (
             <DiscussionGroup
               key={`discussion:${item.discussionId}:${item.messages[0]!.id}`}
               discussionId={item.discussionId}
+              segment={item.segment}
+              latest={lastSegment.get(item.discussionId) === item.segment}
               discussion={discussions[item.discussionId]}
               detail={discussionDetails[item.discussionId]}
               warnPct={quota?.warn_pct}
@@ -1091,6 +1132,21 @@ export function ConversationSurface({
               onContinueAnyway={detail?.viewer_can_write ? continuePastQuota : undefined}
             >
               {item.messages.map(renderMessage)}
+              {lastSegment.get(item.discussionId) === item.segment && uniqueIds((discussionDetails[item.discussionId]?.waves ?? [])
+                .flatMap(wave => wave.run_ids))
+                .filter(runId => !repliedRunIds.has(runId)
+                  && !anchoredRunIds.has(runId))
+                .map(runId => (
+                  <RoomAgentTurn
+                    key={runId}
+                    runId={runId}
+                    turn={liveTurns[runId]}
+                    agentName={agentNameForRun(runId)}
+                    run={runs[runId]}
+                    projectId={detail?.room.project_id ?? null}
+                    onRetry={allDelegatedRunIds.has(runId) ? undefined : retryRun}
+                  />
+                ))}
             </DiscussionGroup>
           ))}
         {queued.map(item => (
@@ -1171,7 +1227,18 @@ export function ConversationSurface({
           />}
           controls={(
             <>
-              {variant === 'full' && detail?.viewer_can_write && (
+              {activeDiscussion && (
+                <div role="group" aria-label="Message destination" className="flex items-center gap-1 text-xs">
+                  <span className="mr-1 text-muted-foreground">Send to</span>
+                  <Button type="button" size="sm" variant={discussionSendMode === 'join' ? 'secondary' : 'ghost'}
+                    className="h-7 px-2 text-xs" aria-pressed={discussionSendMode === 'join'}
+                    disabled={sending} onClick={() => setDiscussionSendMode('join')}>Current discussion</Button>
+                  <Button type="button" size="sm" variant={discussionSendMode === 'separate' ? 'secondary' : 'ghost'}
+                    className="h-7 px-2 text-xs" aria-pressed={discussionSendMode === 'separate'}
+                    disabled={sending} onClick={() => setDiscussionSendMode('separate')}>Ordinary message</Button>
+                </div>
+              )}
+              {variant === 'full' && detail?.viewer_can_write && !activeDiscussion && (
                 <Button
                   type="button"
                   variant="ghost"
@@ -1183,23 +1250,21 @@ export function ConversationSurface({
                   <MessagesSquare className="size-3.5" />Open a discussion
                 </Button>
               )}
-              {roomAgents.filter(agent => backendCatalogs[agent.id]).map(agent => {
-                const catalog = backendCatalogs[agent.id]!
-                const backend = catalog.binding ?? catalog.options.find(option => option.usable !== false)
-                const option = catalog.options.find(candidate => candidate.runtime_profile_id === backend?.runtime_profile_id)
-                if (!option?.session_config_options?.length) return null
-                return (
-                  <div key={agent.id} className="flex min-w-0 flex-wrap items-center gap-1">
-                    {roomAgents.length > 1 && <span className="px-1 text-[11px] text-muted-foreground">{agent.name}</span>}
-                    <ConversationSessionConfig
-                      options={option.session_config_options}
-                      value={sessionConfig[agent.id] ?? []}
-                      onChange={value => setSessionConfig(current => ({ ...current, [agent.id]: value }))}
-                      disabled={sending}
-                    />
-                  </div>
-                )
-              })}
+              <ConversationAgentSessionConfigs
+                agents={roomAgents.flatMap(agent => {
+                  const catalog = backendCatalogs[agent.id]
+                  const backend = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
+                  const option = catalog?.options.find(candidate => candidate.runtime_profile_id === backend?.runtime_profile_id)
+                  return option?.session_config_options?.length ? [{
+                    id: agent.id,
+                    name: agent.name,
+                    options: option.session_config_options,
+                    value: sessionConfig[agent.id] ?? [],
+                    onChange: (value: SessionConfigSelection[]) => setSessionConfig(current => ({ ...current, [agent.id]: value })),
+                  }] : []
+                })}
+                disabled={sending}
+              />
             </>
           )}
           note={!executionReady ? 'Configure the execution context before sending.' : undefined}
@@ -1254,7 +1319,7 @@ function RoomMessageView({
   /** Child Runs an Agent delegated: shown live, never retried as a recipient. */
   delegatedRunIds: string[]
   onRetry: (runId: string) => Promise<void>
-  onActionDecision: (preview: ChatActionPreview, action: RoomActionDecision) => Promise<void>
+  onActionDecision: (preview: ChatActionPreview, action: ActionDecision) => Promise<void>
 }) {
   const mine = message.role === 'user'
   const system = message.role === 'system'
@@ -1264,12 +1329,11 @@ function RoomMessageView({
     : mine
     ? (human?.display_name ?? human?.email ?? (message.user_id === viewerUserId ? 'You' : 'Person'))
     : agents.find(agent => agent.id === message.sender_agent_id)?.name ?? 'Agent'
-  const previews = decidableByViewer(metadataActionPreviews(message.metadata_json), viewerUserId)
   return (
     // Who said it has to be readable at a glance in a column of mixed-language
     // text, so the two sides differ in alignment, fill and edge at once.
     <div
-      className={`group ${mine ? 'flex justify-end pl-6' : 'flex justify-start pr-6'} ${picked ? 'bg-accent/40' : ''}`}
+      className={`group ${mine ? 'flex justify-end pl-6' : 'flex w-full justify-start pr-6'} ${picked ? 'bg-accent/40' : ''}`}
       data-role={system ? 'system' : mine ? 'user' : 'agent'}
     >
       {pickable && (
@@ -1285,7 +1349,7 @@ function RoomMessageView({
           />
         </label>
       )}
-      <div className={`min-w-0 ${compact ? 'max-w-full' : 'max-w-[82%]'}`}>
+      <div className={`min-w-0 ${mine ? (compact ? 'max-w-full' : 'max-w-[82%]') : 'w-full max-w-none'}`}>
         <div className={system
           ? 'min-w-0 max-w-full rounded-lg border border-dashed border-border bg-muted/30 px-3 py-2 text-muted-foreground'
           : mine
@@ -1314,31 +1378,28 @@ function RoomMessageView({
               <ConversationTurn
                 turn={settledTurn(turn, turn.state, message.content)!}
                 runHref={`/runs/${turn.run_id}`}
+                className="max-w-none"
               />
             )
             : message.content && <MessageResponse>{message.content}</MessageResponse>}
           {message.metadata_json?.awaiting_answer && <AwaitingAnswerMarker />}
-          {previews.length > 0 && (
-            <div className="mt-2 space-y-2" data-testid={`previews-${message.id}`}>
-              {previews.map((preview, index) => (
-                <RoomActionPreviewCard
-                  key={`${preview.action_id}:${preview.proposal_id ?? index}`}
-                  preview={preview}
-                  onDecision={onActionDecision}
-                />
-              ))}
-            </div>
-          )}
+          <ActionPreviewCards
+            previews={metadataActionPreviews(message.metadata_json)}
+            viewerUserId={viewerUserId}
+            onDecision={onActionDecision}
+            testId={`previews-${message.id}`}
+          />
         </div>
-        {runIds.map(runId => (
+        {runIds.filter(runId => runs[runId]).map(runId => (
           <ConversationRunControls
             key={runId}
             runId={runId}
             run={runs[runId]}
             projectId={projectId}
             onRetry={delegatedRunIds.includes(runId) ? undefined : onRetry}
-            // A message to several Agents has several Stop / Retry / Changes
-            // blocks under it; unnamed, none says whose it is.
+            showStatus={false}
+            // If a saved Agent reply ever names several Runs, keep each
+            // reply-side control explicitly attributed to its Agent.
             agentLabel={runIds.length > 1 ? agents.find(agent => agent.id === runs[runId]?.agent_id)?.name ?? 'Agent' : undefined}
           />
         ))}
@@ -1356,24 +1417,30 @@ function RoomMessageView({
  * bubble at all, and after it replied the status stayed under the person.
  * This is the Agent speaking, in the place the Agent speaks.
  */
-function RoomAgentTurn({ runId, turn, compact, agentName, delegatedBy }: {
+function RoomAgentTurn({ runId, turn, agentName, delegatedBy, run, projectId, onRetry }: {
   runId: string
-  turn: RunTurn
-  compact: boolean
-  /** Who is working; the finished reply carries the same name in `RoomMessageView`. */
+  turn?: RunTurn
   agentName?: string
-  /** Set when a Manager delegated this Run: shown live, not nested. */
   delegatedBy?: string
+  run?: Run
+  projectId?: string | null
+  onRetry?: (runId: string) => Promise<void>
 }) {
+  const waiting = !run || run.status === 'queued' || run.status === 'waiting_for_dependency'
   return (
-    <div className="group flex justify-start pr-6" data-role="agent" data-testid={`turn-${runId}`}>
-      <div className={compact ? 'max-w-full' : 'max-w-[82%]'}>
+    <div className="group flex w-full justify-start pr-6" data-role="agent" data-testid={`turn-${runId}`}>
+      <div className="w-full min-w-0">
         <div className="mb-1 flex min-w-0 items-center gap-2 text-[11px] font-medium text-muted-foreground">
           <Bot className="size-3.5 shrink-0" />
           <span className="truncate">{agentName ?? 'Agent'}</span>
           {delegatedBy && <span className="shrink-0 font-normal">delegated by {delegatedBy}</span>}
         </div>
-        <ConversationTurn turn={turn} runHref={`/runs/${runId}`} />
+        {waiting
+          ? <p className="text-sm text-muted-foreground">{run?.status === 'waiting_for_dependency' ? 'Waiting for previous Agent…' : run?.status === 'queued' ? 'Queued…' : 'Checking status…'}</p>
+          : turn
+            ? <ConversationTurn turn={turn} runHref={`/runs/${runId}`} className="max-w-none" />
+            : <p className="text-sm text-muted-foreground">{run && ['failed', 'succeeded', 'degraded', 'cancelled', 'orphaned'].includes(run.status) ? 'Loading result…' : 'Starting…'}</p>}
+        {run && <ConversationRunControls runId={runId} run={run} projectId={projectId} onRetry={onRetry} showStatus={false} />}
       </div>
     </div>
   )
@@ -1456,7 +1523,7 @@ function QueuedMessageCard({ message, author, canWithdraw, onWithdraw }: {
       <p className="whitespace-pre-wrap">{message.content}</p>
       <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
         <span className={failed ? 'text-destructive' : undefined}>
-          {author} · {failed ? `could not be sent: ${message.failure_reason ?? 'unknown reason'}` : 'will be sent when the current turn ends'}
+          {author} · {message.discussion_id ? 'joining discussion' : 'ordinary message'} · {failed ? `could not be sent: ${message.failure_reason ?? 'unknown reason'}` : 'will be sent when the current turn ends'}
         </span>
         {canWithdraw && (
           <button
@@ -1515,10 +1582,13 @@ export function messageRunIds(message: {
 }): string[] {
   const fanout = message.metadata_json?.run_ids
   const retries = message.metadata_json?.retry_run_ids
+  const superseded = new Set(Array.isArray(message.metadata_json?.retry_superseded_run_ids)
+    ? message.metadata_json.retry_superseded_run_ids.filter((id): id is string => typeof id === 'string')
+    : [])
   const delegated = message.metadata_json?.delegated_run_ids
   const ids = [
-    ...(Array.isArray(fanout) ? fanout : []),
-    ...(Array.isArray(retries) ? retries : []),
+    ...(Array.isArray(fanout) ? fanout.filter(id => typeof id === 'string' && !superseded.has(id)) : []),
+    ...(Array.isArray(retries) ? retries.filter(id => typeof id === 'string' && !superseded.has(id)) : []),
     ...(Array.isArray(delegated) ? delegated : []),
     ...(message.run_id ? [message.run_id] : []),
   ]
@@ -1533,24 +1603,6 @@ export function delegatedRunIds(message: { metadata_json?: RoomMessage['metadata
 export function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {
   const value = metadata?.action_previews
   return Array.isArray(value) ? value as ChatActionPreview[] : []
-}
-
-/**
- * Drops the cards this person cannot decide.
- *
- * One kind names a single person by identity rather than by role — an Agent's
- * persona, which only its owner decides (ADR 0003 §5). A member who asked for
- * the change gets no card: they cannot accept it, and buttons that refuse are
- * worse than nothing. Filtered here rather than server-side because this list
- * is the shared snapshot on the message and is the only thing any surface
- * renders — dropping it there would take the card from the owner too.
- */
-export function decidableByViewer(
-  previews: readonly ChatActionPreview[],
-  viewerUserId: string | null | undefined,
-): ChatActionPreview[] {
-  return previews.filter(preview =>
-    !preview.decidable_by_user_id || preview.decidable_by_user_id === viewerUserId)
 }
 
 export function uniqueIds(values: string[]): string[] {

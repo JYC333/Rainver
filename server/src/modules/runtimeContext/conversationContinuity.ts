@@ -2,7 +2,7 @@ import type { MessageOut, SemanticCheckpoint } from "@rainver/protocol";
 import * as protocol from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import type { RoomSummaryCoverage } from "../rooms/conversationContext.js";
-import { visibleMessagePathSql } from "../sessions/messagePath.js";
+import { nonSupersededMessageSql, visibleMessagePathSql } from "../sessions/messagePath.js";
 
 interface MessageRow {
   id: string;
@@ -150,6 +150,7 @@ export async function loadRoomContinuityForRunRequest(
        FROM messages m
       WHERE m.space_id=$1 AND m.session_id=$2
         AND ${visibleMessagePathSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
+        AND ${nonSupersededMessageSql("m")}
         -- The coverage cursor names a message; what matters is everything
         -- after that message *on the path*. Filtering by its timestamp while
         -- taking the newest N by position mixes two keys, and the LIMIT can
@@ -237,6 +238,7 @@ async function loadRoomMessagesThrough(
            FROM messages message CROSS JOIN boundary
           WHERE message.space_id=$1 AND message.session_id=$2
             AND ${visibleMessagePathSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
+            AND ${nonSupersededMessageSql("message")}
             AND (
               message.path_depth < boundary.path_depth
               OR (message.path_depth = boundary.path_depth AND message.id <= boundary.id)

@@ -62,13 +62,22 @@ task/audit authority, not a second conversation UI.
   execution preflight, and turn rendering. See
   [`architecture/CONVERSATION.md`](../architecture/CONVERSATION.md).
 
-  Discussions render in that same component: messages sharing a
-  `discussion_id` fold into one collapsible `DiscussionGroup` with Stop /
-  extend controls, discussion notices render as cards, and the full Room
-  variant adds an "Open a discussion" dialog beside the composer. The client
+  Per-Agent ACP model/mode options also have one implementation there. A
+  single configurable Agent stays inline for speed; a multi-Agent Room shows
+  one **Agent settings** entry and a labelled row per configurable Agent in its
+  dialog, in both full and sidecar variants.
+
+  Discussions render in that same component: consecutive messages sharing a
+  `discussion_id` receive a thin rail and topic/round marker; interruptions
+  break the rail, later stretches say "Discussion continues", and replies
+  never auto-collapse. The newest stretch has Stop / extend controls and
+  notices render as cards. While one is active, both full Room and sidecar
+  composers choose "Current discussion" or "Ordinary message"; the full Room
+  variant also has an "Open a discussion" dialog. The client
   calls `roomsApi.openDiscussion` / `discussions` / `discussion` /
-  `stopDiscussion` / `extendDiscussion` (`apps/web/src/api/client.ts`); see
-  the Rendering section of `architecture/CONVERSATION.md`.
+  `stopDiscussion` / `extendDiscussion` (`apps/web/src/api/client.ts`) and
+  watches the detail's wave Run ids, including later rounds dispatched by
+  hidden messages; see the Rendering section of `architecture/CONVERSATION.md`.
 
 ## Navigation And Ordering
 
@@ -305,7 +314,9 @@ and for image-only messages, not only for the preflight UI.
 
 The shared conversation turn controls stop active Runs through the canonical
 Run stop route, retain partial output on cancellation, and show the exact
-per-Run `remote_diff` Artifact when a Host uploaded one. That Artifact is
+per-Run `remote_diff` Artifact when a Host uploaded one. An empty diff has no
+Changes card; a missing upload remains visibly unavailable with a retry action,
+not mislabeled as no change. That Artifact is
 this Run's own change: the daemon captures the working tree as a git tree
 object before the process starts and diffs it against the tree at exit,
 through a private index file, so a later recipient's diff does not repeat
@@ -316,8 +327,13 @@ serialized recipients below. Retry is manual and
 idempotent: it checks every failed/degraded recipient Run (`run_ids`; a
 delegated child in `delegated_run_ids` is not a recipient), revalidates the
 original image/file parts against current recipient capabilities, reuses the
-original user Message, and records new retry Run ids in that message. Drafts
-are kept in destination-scoped sessionStorage as validated logical references;
+original user Message, records new retry Run ids in that message, and marks the
+replaced recipient ids as `retry_superseded_run_ids`. Failed Agent replies for
+those Runs are retained in storage with `retry_superseded = true` for audit but
+excluded by the canonical Room transcript predicate; pagination, summaries,
+runtime-context tails and both conversation surfaces therefore agree that the
+old error is no longer history the person must read. Drafts are kept in
+destination-scoped sessionStorage as validated logical references;
 they never contain image bytes, absolute Host paths, or credentials.
 
 A message addressed to several Agents creates one Run per recipient in one
@@ -545,7 +561,8 @@ Agent-drafted changes that still wait for a person (see
 `architecture/SYSTEM_ACTIONS.md`; opening a Thread and recording a conclusion
 no longer do) surface back
 into the conversation as an inline Proposal review card
-(`RoomActionPreviewCard`, rendered by `modules/conversation/ConversationSurface.tsx`), reusing
+(`modules/conversation/ActionPreviewCard.tsx`, used by Room, Project sidecar,
+and direct Agent chat), reusing
 `loadProjectChatActionPreviews` — the same generic proposals-by-run-id lookup
 `finalizeChatTurn` already writes onto a Room assistant message's
 `metadata_json.action_previews` for every project-bound Room run. That
@@ -665,8 +682,11 @@ A Room turn's proposals (a research question, a Project definition, a
 conclusion, a promotion) are decided where they were made. The Run snapshots
 them onto its message as `action_previews`; the shared `ConversationSurface`
 component — so both the full Room page and the Project chat panel — renders
-each as a card with Accept / Reject, and a decision continues the
-conversation in place (`continueAfterProposal`). One kind of card is rendered
+Proposal cards with Accept / Reject, and a decision continues the conversation
+in place (`continueAfterProposal`). Direct Agent chat uses the same card with a
+Review proposal link. Its shared filter hides completed action records in every
+surface while keeping failed actions visible.
+One kind of Proposal card is rendered
 for one person only: a proposal that names its decider by identity rather than
 by role — an Agent's persona, which is its owner's alone
 ([ADR 0003](../decisions/0003-memory-proposal-flow.md) §5) — carries
@@ -912,10 +932,11 @@ timeline: every message and task group in a discussion carries
 `discussion_id`, and each message records the **wave** it belongs to in
 `metadata_json.wave`. A wave is one task group — the message that dispatched
 it and its recipients' replies — and waves count from the person's message
-(0). There is no second navigation level; the client folds a discussion into
-one block (*Room = channel, Conversation = thread, discussion = a grouped run
-inside a thread*; a second thread level waits on the trigger in the deferred
-register).
+(0). There is no second navigation level or enclosing conversation box: the
+client marks consecutive discussion messages with a thin rail and resumes it
+after ordinary interjections (*Room = channel, Conversation = thread,
+discussion = a marked series inside the thread*; a second thread level waits
+on the trigger in the deferred register).
 
 **The constraints a change must keep.** Agent-to-Agent discussion is bounded
 so that spend never grows without a person's say: every Agent-triggered turn
@@ -949,9 +970,9 @@ uses (`parseAgentMentions` in `packages/protocol/src/roomDiscussions.ts`; code
 spans are never read as addressing anyone). Mentions of another Agent open an
 **emergent** discussion on that message (the group's trigger message; for a
 wave started by a delegation or research result that is the continuation's
-hidden instruction, not the person's message — kept so, because the timeline
-folds a discussion from its origin and anchoring it on the person's message
-would split the block around the Manager's own reply): round cap 2 (the
+hidden instruction, not the person's message — kept so, because marking
+the person's message instead would put a discussion boundary before the
+Manager's own reply): round cap 2 (the
 person's round plus one the Agents opened) and the fan-out ceiling of 5 Agent-triggered turns
 (ADR 0017). Two replies of one wave addressing the same Agent give it one
 turn whose content is both addressed parts. A person opens an **explicit**
@@ -985,7 +1006,12 @@ Agent-triggered budgets").
 (`agent_mention`, keyed `<discussion>:<wave>`) with one recipient segment per
 addressed Agent, dispatched as the container's owner — so a wave has the
 serialization, identity block, prompt and authority of that person addressing
-the Agent directly (B8A) and no more. An Agent the owner could not trigger — an
+the Agent directly (B8A) and no more. The first admitted recipient is the task
+group's technical root and later recipients may point to it with
+`parent_run_id` solely to serialize the shared workspace. That ordering never
+changes the Room's permanent Manager: every group records the roster Manager
+in `manager_agent_id`, and only explicit `delegated_run_ids` identify actual
+delegation. An Agent the owner could not trigger — an
 owner-only specialist on someone else's machine, or a private Agent the
 dispatcher's own visibility check would refuse them — gets a `not_admitted`
 notice (`metadata_json.discussion_notice`) and no Run; when that leaves nobody
@@ -993,15 +1019,18 @@ to set working, no closing turn is spent either. A wave spans every task
 group stamped with it — its dispatch plus any delegation result joining it —
 and advances once, from the dispatching group, over all their replies.
 Participants read the shared window (messages since their own last turn). In
-a **debate** the first round answers independently — the serialized "replies
-already given" block is withheld — and every later round goes to all
-participants to critique, each handed every answer of the round before.
+a **debate** the first round answers the person independently, without
+`@`-addressing peers — the serialized "replies already given" block is withheld.
+Every later round goes to all participants with every answer of the previous
+round, and asks each to compare the positions for the person without `@`-addressing
+peers; routing never depends on their mentions.
 
 **Ending.** A wave in which nobody addresses anyone converges; a wave that
 would pass the round cap, a spend at or above the cap, or a spent fan-out
 budget stops at `cap_reached` with a `cap_reached` notice naming the Agents it
 held back (`held_mentions_json`); a person may stop it (`…/stop`, any member;
-the running turn finishes). Whatever the reason, the Manager then gets one
+the running turn finishes). Whatever the reason, the Room's permanent Manager
+— not the first participant or the task group's technical root — then gets one
 closing turn (`agent_discussion_closing`) addressed to the person — agreements,
 disagreements, next steps, who did not respond and why — outside the round cap
 and inside the spend cap; its reply is `conclusion_message_id` (only the
@@ -1048,13 +1077,17 @@ advance all take the conversation's `room-discussion:` advisory lock first; a
 send with attachments, or without `queue`, does not queue and so can go ahead
 of waiting messages when the turn is free.
 When a turn completes and the conversation's turn is free, the oldest waiting
-message is posted as an ordinary message with the request it was sent with, as
-its sender (`RoomDiscussionService.releaseQueued`). Inside a running
-discussion it is posted by the advance of the wave that just completed, in the
-same transaction, ahead of the wave the Agents' replies asked for: the
-person's message joins the discussion as a new first round (`round_base`; the
-round cap counts from it, the spend cap does not), and the Agents that wave
-addressed are held and follow it. Agents are held only behind a message that
+message is posted with its **saved destination choice**, as its original sender
+(`RoomDiscussionService.releaseQueued`). While a discussion is active the
+composer offers "Current discussion" (the exact `discussion_id`) and
+"Ordinary message" (no ID). The former is stamped into that discussion as a
+new first round (`round_base`; its round cap counts from it, its spend cap does
+not); the latter remains outside it. An explicitly joined message waits if a
+wave is not yet advanced, including a quota-held wave, rather than turning into
+an ordinary message. If its chosen discussion closes before release, posting
+fails visibly; it never joins a different discussion. At a wave boundary a
+posted message precedes the wave the Agents' replies asked for, and those
+Agents wait behind it. Agents are held only behind a message that
 was actually posted; a withdrawn or failed one lets the advance continue as
 usual, and a turn taken by something else retries the advance. From a Project
 writer (who may open and extend discussions) the new rounds are that person's
@@ -1072,10 +1105,9 @@ listed to its sender only, with the refusal's reason (an internal error reads
 queued message also enqueues a `room_queued_message_release` job
 (`rooms/queuedMessageReleaseJob.ts`), deferred while the turn is taken, so a
 message is released even when no turn boundary did it — the turn ended just
-before it was queued, or the server stopped in between (a release that lands
-in the moment between a wave's last Run ending and its advance posts the
-message outside the discussion; the wave then advances as usual and the
-Agents the message's turn addresses join its held Agents); a transient database
+before it was queued, or the server stopped in between (a release between a
+wave's last Run ending and its advance still honours the saved destination;
+a joined send waits for advance); a transient database
 error defers the job rather than spending an attempt, and a discussion whose
 advance failed and closed posts what waited for it at once. Its sender takes it
 back, or dismisses a failed one, with `DELETE …/queued-messages/:id`.
@@ -1147,13 +1179,16 @@ gave the turn up (its held Run was cancelled, say) checks the same
 carrying its job), which does not hold the turn either and is admitted when
 that turn completes (`admitTurnParkedRuns`, and on the minute pass). A person's message sent
 directly, or released from the queue, while the discussion's latest wave waits
-rather than being done stays outside the discussion (no new round, no change
-of owner). The Agents addressed by a non-discussion turn while a discussion is
-running — that person's turn, or a late delegation or research result — join
-the discussion's held Agents (in a debate they are named as not admitted
-instead); they are checked against the discussion owner's authority when it
-next advances and run in its next wave if it has one, or are named in its cap
-notice when it ends there, as an emergent discussion held at its first Agent
+stays outside it when sent as an ordinary message (no new round or owner
+change). An Agent reply to that ordinary message may still address another
+Agent, but does not enroll them in the active discussion: a visible notice
+outside the discussion explains why that follow-up was not admitted. Legacy
+unmarked non-discussion turns and Agent-origin continuations (late delegation
+or research result) can still add addressed Agents to the discussion's held
+Agents; in a debate they are named as not admitted instead. Those held Agents
+are checked against the discussion owner's authority when it next advances
+and run in its next wave if one remains, or are named in its cap notice when
+it ends there, as an emergent discussion held at its first Agent
 wave does. A refusal read through an unreadable probe keeps its effect:
 only a readable reading can say the window is no longer full. A notice is posted once per window —
 a `quota_hold` discussion notice, or, outside a discussion, a

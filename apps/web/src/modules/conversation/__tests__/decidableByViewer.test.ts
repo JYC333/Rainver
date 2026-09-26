@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { decidableByViewer, delegatedRunIds, mergeMessages, messageRunIds } from '../ConversationSurface'
+import { delegatedRunIds, mergeMessages, messageRunIds } from '../ConversationSurface'
+import { decidableByViewer } from '../ActionPreviewCard'
 import type { RoomMessage } from '../../../types/api'
 import type { ChatActionPreview } from '../../../types/api'
 
@@ -43,6 +44,13 @@ describe('which cards a person is shown', () => {
     expect(decidableByViewer(cards, null)).toEqual([])
   })
 
+  it('hides completed action records while keeping proposals and failed actions', () => {
+    const proposed = preview({ proposal_id: 'proposal-2' })
+    const completed = preview({ action_id: 'task.list', title: 'task.list', status: 'completed', proposal_id: null })
+    const failed = preview({ action_id: 'task.create', title: 'task.create', status: 'failed', proposal_id: null })
+    expect(decidableByViewer([completed, proposed, failed], MEMBER)).toEqual([proposed, failed])
+  })
+
   it('leaves the rest of the turn cards alone', () => {
     const shared = preview({ proposal_id: 'proposal-2', title: 'Split this question' })
     const owned = preview({ proposal_id: 'proposal-3', decidable_by_user_id: OWNER })
@@ -55,6 +63,16 @@ describe('which cards a person is shown', () => {
       run_id: 'run-original',
       metadata_json: { run_ids: ['run-original', 'run-recipient'], retry_run_ids: ['run-retry'] },
     })).toEqual(['run-original', 'run-recipient', 'run-retry'])
+  })
+
+  it('drops superseded Runs from the visible controls while keeping their metadata', () => {
+    expect(messageRunIds({
+      metadata_json: {
+        run_ids: ['run-original', 'run-recipient'],
+        retry_run_ids: ['run-retry'],
+        retry_superseded_run_ids: ['run-original', 'run-recipient'],
+      },
+    })).toEqual(['run-retry'])
   })
 })
 

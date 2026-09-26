@@ -55,6 +55,7 @@ vi.mock('../../../api/client', async () => {
     messages: vi.fn(),
     create: vi.fn(),
     sendMessage: vi.fn(),
+    retryMessage: vi.fn(),
     withdrawQueuedMessage: vi.fn(),
     continueAfterProposal: vi.fn(),
     openDiscussion: vi.fn(),
@@ -831,7 +832,12 @@ describe('Rooms page', () => {
       offset: 0,
     })
     vi.mocked(runsApi.get).mockImplementation(async runId => ({
-      id: runId, status: 'running', agent_id: runId === 'run-reviewer' ? 'agent-2' : 'agent-1',
+      id: runId,
+      status: runId === 'run-reviewer' ? 'waiting_for_dependency' : 'running',
+      agent_id: runId === 'run-reviewer' ? 'agent-2' : 'agent-1',
+      // Fan-out recipients share a technical root for serialization; that is
+      // not an Agent delegation and must not be labelled as one.
+      parent_run_id: runId === 'run-reviewer' ? 'run-manager' : null,
     }) as Run)
     vi.mocked(runsApi.streamTurn).mockImplementation(async (runId, options) => {
       options.onTurn(workingTurn(runId, [
@@ -843,19 +849,22 @@ describe('Rooms page', () => {
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('@Manager @Reviewer compare notes')).toBeInTheDocument()
-    // Both recipients' turns stream at once, each as its own turn after the
-    // person's message — neither hides the other.
+    // Both recipients have a place in the timeline, but the serialized
+    // second recipient is waiting rather than falsely shown as working.
     expect(await screen.findByText('run-manager started')).toBeInTheDocument()
-    expect(await screen.findByText('run-reviewer started')).toBeInTheDocument()
+    expect(screen.queryByText('run-reviewer started')).not.toBeInTheDocument()
     expect(runsApi.streamTurn).toHaveBeenCalledWith('run-manager', expect.anything())
     expect(runsApi.streamTurn).toHaveBeenCalledWith('run-reviewer', expect.anything())
-    // While they work, each turn says who is working, and so does each
-    // Stop block under the person's message — two anonymous bubbles and two
-    // identical Stop buttons said nothing about which was which.
+    // Status and Stop belong beside each Agent, never duplicated under the
+    // person's message.
     await waitFor(() => expect(within(screen.getByTestId('turn-run-reviewer')).getByText('Critical Reviewer')).toBeInTheDocument())
     expect(within(screen.getByTestId('turn-run-manager')).getByText('Space Assistant')).toBeInTheDocument()
-    expect(screen.getByTestId('conversation-run-controls-run-reviewer')).toHaveTextContent('Critical Reviewer')
-    expect(screen.getByTestId('conversation-run-controls-run-manager')).toHaveTextContent('Space Assistant')
+    expect(within(screen.getByTestId('turn-run-reviewer')).queryByText(/delegated by/)).not.toBeInTheDocument()
+    expect(within(screen.getByTestId('turn-run-reviewer')).getByText('Waiting for previous Agent…')).toBeInTheDocument()
+    expect(within(screen.getByTestId('turn-run-manager')).getByText('Working…')).toBeInTheDocument()
+    expect(within(screen.getByTestId('turn-run-reviewer')).getByTestId('conversation-run-controls-run-reviewer')).toBeInTheDocument()
+    expect(within(screen.getByTestId('turn-run-manager')).getByTestId('conversation-run-controls-run-manager')).toBeInTheDocument()
+    expect(screen.getAllByText('Working…')).toHaveLength(1)
   })
 
   it('keeps a failed turn on screen, because nothing else says what went wrong', async () => {
@@ -893,6 +902,66 @@ describe('Rooms page', () => {
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('No credential profile is available for this runtime.')).toBeInTheDocument()
+  })
+
+  it('removes the superseded failure from the visible Room history after Retry', async () => {
+    let retried = false
+    vi.mocked(roomsApi.messages).mockImplementation(async () => retried ? {
+      items: [{
+        id: 'message-user', session_id: 'session-1', space_id: 'space-1',
+        user_id: 'user-1', sender_agent_id: null, role: 'user', content: 'Try this.',
+        metadata_json: {
+          run_ids: ['run-old'], retry_run_ids: ['run-new'],
+          retry_superseded_run_ids: ['run-old'],
+        },
+        created_at: '2026-07-26T00:00:01.000Z',
+      }],
+      task_group_ids: ['group-1'], limit: 200, offset: 0,
+    } : {
+      items: [
+        {
+          id: 'message-user', session_id: 'session-1', space_id: 'space-1',
+          user_id: 'user-1', sender_agent_id: null, role: 'user', content: 'Try this.',
+          metadata_json: { run_ids: ['run-old'] }, created_at: '2026-07-26T00:00:01.000Z',
+        },
+        {
+          id: 'message-error', session_id: 'session-1', space_id: 'space-1',
+          user_id: null, sender_agent_id: 'agent-1', role: 'assistant',
+          content: 'Room task failed: upstream refused.', run_id: 'run-old',
+          metadata_json: { status: 'failed', error_code: 'runtime_nonzero_exit' },
+          created_at: '2026-07-26T00:00:02.000Z',
+        },
+      ],
+      task_group_ids: ['group-1'], limit: 200, offset: 0,
+    })
+    vi.mocked(runsApi.get).mockImplementation(async runId => ({
+      id: runId,
+      status: runId === 'run-old' ? 'failed' : 'queued',
+    }) as Run)
+    vi.mocked(runsApi.turn).mockResolvedValue({
+      ...workingTurn('run-old', []), state: 'failed',
+    })
+    vi.mocked(roomsApi.retryMessage).mockImplementation(async () => {
+      retried = true
+      return {
+        schema_version: 'conversation_retry.v1', session_id: 'session-1',
+        run_id: 'run-new', run_ids: ['run-new'], retry_of_run_id: 'run-old',
+        user_message_id: 'message-user', status: 'queued',
+        event_stream_url: '/api/v1/runs/run-new/turn/stream', reused: false,
+      }
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    await waitFor(() => expect(screen.getByText('Room task failed: upstream refused.')).toBeInTheDocument())
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry turn' }))
+
+    await waitFor(() => expect(roomsApi.retryMessage).toHaveBeenCalledWith(
+      'room-1', 'session-1', 'run-old',
+    ))
+    await waitFor(() => expect(screen.queryByText('Room task failed: upstream refused.')).not.toBeInTheDocument())
+    expect(screen.queryByTestId('conversation-run-controls-run-old')).not.toBeInTheDocument()
+    expect(screen.getByTestId('conversation-run-controls-run-new')).toBeInTheDocument()
   })
 
   it('asks once for a terminal Run\'s turn, and tries again if that ask fails', async () => {
@@ -970,7 +1039,7 @@ describe('Rooms page', () => {
     }
   })
 
-  it('folds a finished turn\'s work above the reply it produced', async () => {
+  it('hides a finished turn\'s successful tools beside its reply', async () => {
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [
         {
@@ -1005,11 +1074,9 @@ describe('Rooms page', () => {
 
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
-    // D3's finished state, in the Room: the reply is the bubble and the work
-    // that produced it folds above it — rather than vanishing the moment the
-    // reply is written.
     expect(await screen.findByText('Found three.')).toBeInTheDocument()
-    expect(await screen.findByText('show work (1 step)')).toBeInTheDocument()
+    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.queryByText('search')).not.toBeInTheDocument()
   })
 
   it('keeps saying it is blocked once the pause notice arrives as a reply', async () => {
@@ -1134,7 +1201,7 @@ describe('Rooms page', () => {
 
     await waitFor(() => {
       expect(screen.getByText('The answer is 42.')).toBeInTheDocument()
-      expect(screen.getByText('show work (1 step)')).toBeInTheDocument()
+      expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
     }, { timeout: 3000 })
     expect(screen.queryByText('Working…')).not.toBeInTheDocument()
   })
@@ -1203,8 +1270,9 @@ describe('Rooms page', () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
 
       expect(screen.getByText('Done here.')).toBeInTheDocument()
-      // Settled: the work folds, and nothing claims the Agent is still going.
-      expect(screen.getByText('show work (1 step)')).toBeInTheDocument()
+      // Settled: successful tools stay hidden, and nothing claims the Agent is still going.
+      expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+      expect(screen.queryByText('search')).not.toBeInTheDocument()
       expect(screen.queryByText('Working…')).not.toBeInTheDocument()
       expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-stranded')
     } finally {
@@ -1238,17 +1306,16 @@ describe('Rooms page', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Here is the answer you asked for.')).toBeInTheDocument()
-      // Finished work folds; failed work does not.
-      expect(screen.getByText('show work (1 step)')).toBeInTheDocument()
+      expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+      expect(screen.queryByText('search')).not.toBeInTheDocument()
     })
     expect(screen.queryByText('Could not complete')).not.toBeInTheDocument()
   })
 
   it('reads a replied turn back on reload, so its work is still there', async () => {
     // Nothing streams here: the Run was terminal before this surface existed,
-    // which is every reply on a reloaded page. An Agent reply renders *as* its
-    // turn, so without reading the turn back the fold exists only in the page
-    // session that happened to watch it live.
+    // which is every reply on a reloaded page. The turn is still read for
+    // failure/diagnostic facts even though successful tools stay hidden.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'message-reply', session_id: 'session-1', space_id: 'space-1',
@@ -1268,13 +1335,12 @@ describe('Rooms page', () => {
 
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
-    // The turn is read back after the Run refresh, so both the reply and its
-    // fold have to be waited for together — the reply alone is on screen from
-    // the first paint, and asserting it first proves nothing about the fold.
     await waitFor(() => {
       expect(screen.getByText('Found three.')).toBeInTheDocument()
-      expect(screen.getByText('show work (1 step)')).toBeInTheDocument()
+      expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old')
     })
+    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
+    expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old')
   })
 
@@ -1734,6 +1800,34 @@ describe('Rooms page', () => {
     })))
   })
 
+  it('keeps multi-Agent model controls behind one labelled settings entry', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    vi.mocked(agentsApi.conversationBackends).mockImplementation(async agentId => ({
+      options: [{
+        runtime_profile_id: `runtime-${agentId}`, name: 'Codex', runtime_key: 'codex_cli', model_name: null,
+        session_config_options: [{
+          id: 'model', name: 'Model', description: null, category: 'model', type: 'select' as const,
+          current_value: `${agentId}-default`, options: [{
+            value: `${agentId}-default`, name: `${agentId} model`, description: null, group: null,
+          }],
+        }],
+      }],
+      binding: { runtime_profile_id: `runtime-${agentId}`, runtime_key: 'codex_cli' },
+      session_config: [],
+    }))
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    const settings = await screen.findByRole('button', { name: 'Agent settings · 2' })
+    expect(screen.queryByRole('button', { name: 'Model' })).not.toBeInTheDocument()
+    fireEvent.click(settings)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Agent settings' })
+    expect(within(dialog).getByText('Space Assistant')).toBeInTheDocument()
+    expect(within(dialog).getByText('Critical Reviewer')).toBeInTheDocument()
+    expect(within(dialog).getAllByRole('button', { name: 'Model' })).toHaveLength(2)
+  })
+
   it('refreshes composer options from the CLI pinned during execution setup', async () => {
     let initialized = false
     const openCodeCatalog = {
@@ -2136,6 +2230,106 @@ describe('Rooms page', () => {
     expect(await within(group).findByText(/Round 1\/3 · Stopped/)).toBeInTheDocument()
   })
 
+  it('does not show completed action cards on an older discussion reply', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [
+        {
+          id: 'm-topic', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+          role: 'user', content: 'Discuss the Project', discussion_id: 'disc-1', metadata_json: { wave: 0 },
+          created_at: '2026-09-24T10:00:00.000Z',
+        },
+        {
+          id: 'm-conclusion', space_id: 'space-1', session_id: 'session-1', user_id: null,
+          sender_agent_id: 'agent-1', role: 'assistant', discussion_id: 'disc-1',
+          content: '本轮我创建了 0 个任务、0 个问题。',
+          metadata_json: {
+            wave: 0,
+            action_previews: ['task.list', 'inquiry.list_threads', 'proposal.list_pending'].map(action_id => ({
+              action_id, title: action_id, status: 'completed', proposal_id: null,
+            })),
+          },
+          created_at: '2026-09-24T10:00:05.000Z',
+        },
+      ],
+      task_group_ids: [], limit: 50, offset: 0,
+    })
+    vi.mocked(roomsApi.discussions).mockResolvedValue({ items: [activeDiscussion] })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    const group = await screen.findByTestId('discussion-disc-1')
+    expect(within(group).getByText('本轮我创建了 0 个任务、0 个问题。')).toBeInTheDocument()
+    for (const name of ['task.list', 'inquiry.list_threads', 'proposal.list_pending']) {
+      expect(within(group).queryByText(name)).not.toBeInTheDocument()
+    }
+    expect(within(group).queryByText('Completed')).not.toBeInTheDocument()
+  })
+
+  it('shows a later discussion round working before its hidden trigger gets a reply', async () => {
+    const roundTwo = {
+      ...activeDiscussion,
+      rounds_used: 2,
+      updated_at: '2026-09-24T10:01:00.000Z',
+    }
+    vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [
+        {
+          id: 'm-topic', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+          role: 'user', content: 'Pick a database', discussion_id: 'disc-1', metadata_json: { wave: 0 },
+          created_at: '2026-09-24T10:00:00.000Z',
+        },
+        {
+          id: 'm-interjection', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+          role: 'user', content: 'Separate interjection', metadata_json: {},
+          created_at: '2026-09-24T10:00:03.000Z',
+        },
+        {
+          id: 'm-later', space_id: 'space-1', session_id: 'session-1', user_id: null, sender_agent_id: 'agent-1',
+          role: 'assistant', content: 'Back to the discussion', discussion_id: 'disc-1', metadata_json: { wave: 1 },
+          created_at: '2026-09-24T10:00:05.000Z',
+        },
+      ],
+      task_group_ids: [], limit: 50, offset: 0,
+    })
+    vi.mocked(roomsApi.discussions).mockResolvedValue({ items: [roundTwo] })
+    vi.mocked(roomsApi.discussion).mockResolvedValue({
+      discussion: roundTwo,
+      waves: [{
+        wave: 1,
+        group_id: 'group-round-2',
+        trigger_message_id: 'hidden-round-2',
+        run_ids: ['run-round-2'],
+        closing: false,
+      }],
+      usage: { priced_usd: 0, subscription: [] },
+      quota_hold: null,
+    })
+    vi.mocked(runsApi.get).mockResolvedValue({
+      id: 'run-round-2', status: 'running', agent_id: 'agent-2', parent_run_id: null,
+    } as Run)
+    vi.mocked(runsApi.streamTurn).mockImplementation(async (runId, options) => {
+      options.onTurn(workingTurn(runId, [{
+        type: 'tool_call', index: 0, call_id: 'round-2-c1', name: 'round 2 started',
+        kind: null, status: 'running', input: null, output: null,
+      }]))
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    const first = await screen.findByTestId('discussion-disc-1')
+    const later = await screen.findByTestId('discussion-disc-1-1')
+    expect(await within(later).findByText(/Round 2\/3 · In progress/)).toBeInTheDocument()
+    expect(within(later).getByText('Discussion continues · Pick a database')).toBeInTheDocument()
+    expect(screen.getByText('Separate interjection')).toBeInTheDocument()
+    expect(within(first).queryByText('Separate interjection')).not.toBeInTheDocument()
+    expect(await within(later).findByText('round 2 started')).toBeInTheDocument()
+    expect(within(first).queryByTestId('turn-run-round-2')).not.toBeInTheDocument()
+    expect(within(later).getByTestId('turn-run-round-2')).toHaveTextContent('Critical Reviewer')
+    expect(runsApi.streamTurn).toHaveBeenCalledWith('run-round-2', expect.anything())
+  })
+
   it('opens an emergent discussion held at its cap from the notice card', async () => {
     const held: RoomDiscussion = {
       ...activeDiscussion, kind: 'emergent', topic: null, status: 'cap_reached', round_cap: 1, origin_message_id: 'm-origin',
@@ -2297,6 +2491,36 @@ describe('Rooms page', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     const group = await screen.findByTestId('discussion-disc-1')
     expect(within(group).getByText(/Round 1\/3 · In progress/)).toBeInTheDocument()
+  })
+
+  it('sends an explicit discussion reply or an ordinary message from one composer', async () => {
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'm-topic', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+        role: 'user', content: 'Pick a database', discussion_id: 'disc-1', metadata_json: { wave: 0 },
+        created_at: '2026-09-24T10:00:00.000Z',
+      }], task_group_ids: [], limit: 50, offset: 0,
+    })
+    vi.mocked(roomsApi.discussions).mockResolvedValue({ items: [activeDiscussion] })
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({
+      message: { id: 'm-sent', session_id: 'session-1', role: 'user', content: 'Reply', metadata_json: {} },
+      conversation: initialConversation, task_group_ids: [], run_ids: [],
+    } as never)
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    const destination = await screen.findByRole('group', { name: 'Message destination' })
+    expect(within(destination).getByRole('button', { name: 'Current discussion' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'Reply to the discussion' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1',
+      expect.objectContaining({ discussion_id: 'disc-1', content: 'Reply to the discussion' })))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
+    fireEvent.click(within(destination).getByRole('button', { name: 'Ordinary message' }))
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'Separate note' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(roomsApi.sendMessage).mock.calls[1]![2]).not.toHaveProperty('discussion_id')
   })
 
   it('renders execution system events as labeled timeline entries', async () => {

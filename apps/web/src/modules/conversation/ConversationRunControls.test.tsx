@@ -97,6 +97,61 @@ describe('ConversationRunControls', () => {
     expect(screen.getByTestId('changes-run-1')).toHaveClass('w-full', 'min-w-0', 'max-w-full')
   })
 
+  it('omits the Changes card when an uploaded diff is empty', async () => {
+    runsApiMock.artifacts.mockResolvedValue({ items: [diffSummary], total: 1, limit: 50, offset: 0 })
+    artifactsApiMock.get.mockResolvedValue({ ...diff, content: '', has_inline_content: false })
+
+    render(
+      <MemoryRouter>
+        <ConversationRunControls runId="run-1" run={run({ host_task_thread_id: 'host-thread-1' })} projectId="project-1" agentLabel="Reviewer" />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(artifactsApiMock.get).toHaveBeenCalledWith('artifact-diff'))
+    await waitFor(() => expect(screen.getByTestId('conversation-run-controls-run-1')).toBeEmptyDOMElement())
+    expect(screen.queryByTestId('changes-run-1')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reviewer')).not.toBeInTheDocument()
+    expect(screen.queryByText('Open exact diff')).not.toBeInTheDocument()
+  })
+
+  it('keeps the Changes card when diff content is withheld but the artifact has content', async () => {
+    runsApiMock.artifacts.mockResolvedValue({ items: [diffSummary], total: 1, limit: 50, offset: 0 })
+    artifactsApiMock.get.mockResolvedValue({ ...diff, content: null, has_inline_content: true })
+
+    render(
+      <MemoryRouter>
+        <ConversationRunControls runId="run-1" run={run({ host_task_thread_id: 'host-thread-1' })} agentLabel="Reviewer" />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByTestId('changes-run-1')).toHaveTextContent('Changes recorded.')
+    expect(screen.getByText('Reviewer')).toBeInTheDocument()
+    expect(screen.getByText('Open exact diff')).toBeInTheDocument()
+    expect(screen.queryByText('Preview diff')).not.toBeInTheDocument()
+  })
+
+  it('omits the Changes card for a terminal Run without a Host diff', async () => {
+    render(
+      <MemoryRouter>
+        <ConversationRunControls runId="run-1" run={run()} projectId="project-1" />
+      </MemoryRouter>,
+    )
+
+    expect(screen.queryByTestId('changes-run-1')).not.toBeInTheDocument()
+    expect(runsApiMock.artifacts).not.toHaveBeenCalled()
+  })
+
+  it('keeps upload failure visible instead of calling it no change', async () => {
+    render(
+      <MemoryRouter>
+        <ConversationRunControls runId="run-1" run={run({ host_task_thread_id: 'host-thread-1' })} />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText(/Changes are unavailable\./, {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+  })
+
   it('stops an active Run and renders its cancelled state', async () => {
     runsApiMock.stop.mockResolvedValue({})
     runsApiMock.get.mockResolvedValue(run({ status: 'cancelled' }))

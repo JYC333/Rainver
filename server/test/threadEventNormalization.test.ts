@@ -47,6 +47,27 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
     }]);
   });
 
+  it("redacts and bounds an ACP command title while preserving its opaque call id", () => {
+    const normalizer = createThreadEventNormalizer();
+    const callId = `provider:${"id".repeat(100)}`;
+    const secret = "sk-abcdefghijklmnop123456";
+    const drafts = normalizer.pushAcpProtocolEvent({
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: callId,
+          title: `curl -H 'Bearer ${secret}' https://example.test/${"x".repeat(5_000)}`,
+        },
+      },
+    });
+    expect(drafts[0]?.tool_call_id).toBe(callId);
+    expect(drafts[0]?.tool_name).not.toContain(secret);
+    expect(drafts[0]?.tool_name).toContain("[REDACTED_SECRET]");
+    expect(drafts[0]?.tool_name?.endsWith("...[truncated]")).toBe(true);
+    expect(drafts[0]?.tool_name?.length).toBeLessThan(256);
+  });
+
   it("flushes a pending text segment as a boundary before a tool activity event, even mid-line", () => {
     const normalizer = createThreadEventNormalizer();
     normalizer.pushAcpTextDelta("Reading the file");

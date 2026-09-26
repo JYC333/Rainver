@@ -306,8 +306,8 @@ successful commit and never participate in the critical write outcome.
   `server/migrations/` is both the drizzle-kit output directory (`meta/`
   journal and snapshots) and the **append-only chain** the server migration
   runner applies: the frozen `0000_baseline.sql` followed by one numbered file
-  per schema change. That baseline starts the 2026-09-23 authentication-
-  foundation schema epoch (ADR 0023, B59) — a pre-epoch database has no upgrade
+  per schema change. That baseline starts the 2026-09-26 host-thread-tool-field
+  schema epoch (B59) — a pre-epoch database has no upgrade
   path and must be recreated from it; within the epoch an older build's database
   is brought forward by the normal migrate step. Edit the Drizzle schema, then
   `pnpm run schema:generate -- --name <name>` appends the diff (`--custom`

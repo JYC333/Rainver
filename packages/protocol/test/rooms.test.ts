@@ -63,6 +63,7 @@ describe("Room contracts", () => {
 
     const messageRequest = SendRoomMessageRequestSchema.parse({
       content: "@Manager review this",
+      discussion_id: "discussion-1",
       recipient_segments: [{
         recipient_agent_ids: ["agent-1"],
         content: "review this",
@@ -73,6 +74,7 @@ describe("Room contracts", () => {
       }],
     });
     expect(messageRequest.backends[0]?.runtime_profile_id).toBe("runtime-cli");
+    expect(messageRequest.discussion_id).toBe("discussion-1");
     expect(ContinueRoomAfterProposalRequestSchema.parse({
       proposal_id: "proposal-1",
     })).toEqual({ proposal_id: "proposal-1", backends: [] });

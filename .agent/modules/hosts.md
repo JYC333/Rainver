@@ -1342,6 +1342,13 @@ the daemon on heartbeat.
 `run_timeout`), `diagnostic` (one stderr line each), and `assistant_thought`
 (reasoning, coalesced the same way as `assistant_text`).
 
+ACP `tool_call_id` values are opaque correlation keys and are stored as text,
+not truncated. Tool titles can be whole commands; both semantic and thread
+event normalizers pass them through the shared `runtimeAdapters/toolName.ts`
+secret redaction and 200-character display bound before persistence. The
+`tool_name` column is text as a defensive storage boundary, so a new provider's
+title shape cannot make the event insert fail.
+
 Reasoning follows the ACP channel exactly, as Zed's client does:
 `agent_thought_chunk` becomes `assistant_thought` and `agent_message_chunk`
 becomes `assistant_text`. The normalizer does not inspect prose or infer that

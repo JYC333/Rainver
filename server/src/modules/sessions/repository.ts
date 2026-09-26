@@ -644,6 +644,45 @@ export class PgSessionRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  /**
+   * Retires the failed reply and its Run controls after a Room retry without
+   * deleting either record. The visible transcript and summaries use
+   * `visibleRoomTranscriptSql`; prompt tails reuse its non-superseded clause,
+   * so the error leaves active conversation reads while remaining queryable
+   * as Run audit evidence.
+   */
+  async markRoomRetrySuperseded(input: {
+    space_id: string;
+    session_id: string;
+    user_message_id: string;
+    superseded_run_ids: string[];
+    replacement_run_ids: string[];
+  }): Promise<void> {
+    await this.db.query(
+      `UPDATE messages
+          SET metadata_json = COALESCE(metadata_json, '{}'::jsonb)
+            || jsonb_build_object('retry_superseded_run_ids', to_jsonb($4::text[]))
+        WHERE id = $3
+          AND space_id = $1
+          AND session_id = $2
+          AND role = 'user'`,
+      [input.space_id, input.session_id, input.user_message_id, input.superseded_run_ids],
+    );
+    await this.db.query(
+      `UPDATE messages
+          SET metadata_json = COALESCE(metadata_json, '{}'::jsonb)
+            || jsonb_build_object(
+                 'retry_superseded', true,
+                 'retry_replacement_run_ids', to_jsonb($4::text[])
+               )
+        WHERE space_id = $1
+          AND session_id = $2
+          AND role = 'assistant'
+          AND run_id = ANY($3::varchar[])`,
+      [input.space_id, input.session_id, input.superseded_run_ids, input.replacement_run_ids],
+    );
+  }
+
   async addRoomUserMessage(
     spaceId: string,
     userId: string,

@@ -4,9 +4,7 @@ import type { ServerConfig } from "../../config.js";
 import type { Pool, PoolClient } from "../../db/pool.js";
 import { HttpError, withDbTransaction, type Queryable } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
-import { canWriteProject } from "../projects/access.js";
 import { isConversationTurnInProgressError } from "../sessions/conversationRuntimeSessionRepository.js";
-import { PgRoomDiscussionRepository } from "./discussionRepository.js";
 import type { AgentGroupMessageRecipientSegment } from "../agentGroups/service.js";
 import { PgRoomRepository } from "./repository.js";
 import { RoomService, type RoomIdentity } from "./service.js";
@@ -17,13 +15,11 @@ import { RoomService, type RoomIdentity } from "./service.js";
  *
  * It waits in `room_queued_messages`, outside the message tree: nothing that
  * reads the conversation — a prompt, a replay, a summary — sees it, and it
- * takes its place in the timeline only when it is posted, as an ordinary
- * message, the moment the conversation's last running turn has completed.
- * Inside a discussion that is between waves, ahead of the next wave the
- * Agents' replies asked for, in the same transaction as that advance: the
- * person's message joins the discussion as a new first round — the round cap
- * counts again from it, the spend cap does not — and the Agents it held back
- * follow it (`discussionService.ts`). A message that cannot be posted stays
+ * takes its place in the timeline only when it is posted after the current
+ * turn. Its saved request names the exact discussion it joins, or none for
+ * an ordinary interjection; release timing cannot change that choice. A joined
+ * message waits for the current discussion wave to advance, then becomes a
+ * new first round. A message that cannot be posted stays
  * visible to its sender as failed, with the reason, until they dismiss it.
  * Every queued message also has a release job behind it, so one survives a
  * restart between a turn's completion and its release.
@@ -48,6 +44,7 @@ export interface QueuedSendRequest {
   recipient_segments: AgentGroupMessageRecipientSegment[] | null;
   focus_refs: Array<{ type: "task"; id: string }> | null;
   backends: Array<{ agent_id: string; runtime_profile_id: string; session_config?: unknown[] }>;
+  discussion_id?: string | null;
 }
 
 export const ROOM_QUEUED_MESSAGE_RELEASE_JOB = "room_queued_message_release";
@@ -131,9 +128,9 @@ export class RoomMessageQueue {
 
   /**
    * Post the oldest waiting message now that the conversation's turn is
-   * free. The caller holds `lockRoomConversationQueue`. It joins a running
-   * discussion (`joinDiscussion`, the default) unless it goes ahead of a
-   * wave that is waiting rather than done. A turn still taken
+   * free. The caller holds `lockRoomConversationQueue`. The saved request
+   * determines whether it joins the exact discussion or stays ordinary.
+   * A turn still taken
    * leaves it waiting; a message that cannot be posted for any other reason
    * is marked failed with the reason and the next one is tried, so it never
    * blocks the ones behind it.
@@ -142,7 +139,6 @@ export class RoomMessageQueue {
     client: PoolClient,
     spaceId: string,
     sessionId: string,
-    options: { joinDiscussion?: boolean } = {},
   ): Promise<"released" | "busy" | "empty"> {
     for (;;) {
       const next = (await client.query<QueuedRow>(
@@ -156,7 +152,7 @@ export class RoomMessageQueue {
       if (!next) return "empty";
       await client.query("SAVEPOINT release_queued_message");
       try {
-        const posted = await this.post(client, next, options.joinDiscussion ?? true);
+        const posted = await this.post(client, next);
         await client.query("RELEASE SAVEPOINT release_queued_message");
         await client.query(
           `UPDATE room_queued_messages SET status = 'released', released_message_id = $2, updated_at = now() WHERE id = $1`,
@@ -176,7 +172,7 @@ export class RoomMessageQueue {
     }
   }
 
-  private async post(client: PoolClient, queued: QueuedRow, joinDiscussion: boolean): Promise<string> {
+  private async post(client: PoolClient, queued: QueuedRow): Promise<string> {
     const request = queued.request_json as QueuedSendRequest;
     const identity = { spaceId: queued.space_id, userId: queued.user_id };
     const dispatched = await new RoomService(this.config, this.pool).sendMessageInTransaction(
@@ -186,38 +182,13 @@ export class RoomMessageQueue {
       queued.session_id,
       {
         content: queued.content,
+        discussion_id: request.discussion_id ?? null,
         recipient_segments: request.recipient_segments ?? null,
         routing_mode: request.routing_mode ?? "direct",
         focus_refs: request.focus_refs ?? null,
         backends: request.backends as never ?? [],
       },
     );
-    // A running discussion takes the person's message as its next round.
-    // From a Project writer — who may open and extend discussions — it is a
-    // new first round, and a new decision to spend: what follows runs for
-    // them (B8A), within the spend cap already set. Anyone else's message is
-    // one more round within the bound the discussion already has.
-    const discussions = new PgRoomDiscussionRepository(client);
-    const discussion = await discussions.getOpenForSession(queued.space_id, queued.session_id, { forUpdate: true });
-    if (joinDiscussion && discussion?.status === "active") {
-      const wave = discussion.rounds_used;
-      const room = await new PgRoomRepository(client).getVisibleRoom(queued.space_id, queued.user_id, queued.room_id, false);
-      const restarts = room !== null && await canWriteProject(client, queued.space_id, room.project_id, queued.user_id);
-      if (restarts && discussion.opened_by_user_id !== queued.user_id) {
-        await client.query(
-          `UPDATE room_discussions
-              SET opened_by_user_id = $3, quota_override_by_user_id = NULL, quota_override_at = NULL
-            WHERE space_id = $1 AND id = $2`,
-          [queued.space_id, discussion.id, queued.user_id],
-        );
-      }
-      await discussions.stampGroup(queued.space_id, dispatched.task_group_ids[0]!, discussion.id);
-      await discussions.stampMessages({
-        spaceId: queued.space_id, sessionId: queued.session_id, discussionId: discussion.id, wave,
-        messageIds: [dispatched.message.id],
-      });
-      await discussions.update(queued.space_id, discussion.id, { ...(restarts ? { roundBase: wave } : {}), roundsUsed: wave + 1 });
-    }
     return dispatched.message.id;
   }
 }
@@ -235,16 +206,7 @@ export function isTransientDatabaseError(error: unknown): boolean {
   );
 }
 
-/**
- * The conversation's turn is taken, or one addressed Agent's host thread is
- * still on the turn that just ended: either way the message waits rather
- * than fails.
- */
-/**
- * Whether posting into the conversation failed only for now: its turn, or an
- * addressed Agent's host thread, is taken, or the database failed transiently.
- * A continuation that meets one is retried, never dropped.
- */
+/** A temporary turn, host-thread or discussion-wave wait; never mark a queued message failed for it. */
 export function isRetryableRoomPostError(error: unknown): boolean {
   return isConversationTurnInProgressError(error) || isTurnTaken(error) || isTransientDatabaseError(error);
 }
@@ -254,7 +216,7 @@ export function isTurnTaken(error: unknown): boolean {
   const code = error.responseBody && typeof error.responseBody === "object"
     ? (error.responseBody as { code?: unknown }).code
     : undefined;
-  return code === "conversation_turn_in_progress" || code === "room_agent_turn_in_progress";
+  return code === "conversation_turn_in_progress" || code === "room_agent_turn_in_progress" || code === "discussion_wave_in_progress";
 }
 
 function queuedOut(row: QueuedRow): QueuedRoomMessage {
@@ -264,6 +226,7 @@ function queuedOut(row: QueuedRow): QueuedRoomMessage {
     session_id: row.session_id,
     user_id: row.user_id,
     content: row.content,
+    discussion_id: (row.request_json as QueuedSendRequest | null)?.discussion_id ?? null,
     status: row.status,
     released_message_id: row.released_message_id,
     failure_reason: row.failure_reason,

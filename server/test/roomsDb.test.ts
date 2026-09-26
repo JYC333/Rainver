@@ -1970,12 +1970,46 @@ describe("Room workflow (real Postgres)", () => {
         WHERE space_id = 'space-1' AND session_id = $1 AND agent_id = 'agent-1'`,
       [conversation.id],
     );
+    const sessions = new PgSessionRepository(db.pool);
+    const failedReply = await sessions.addRoomAgentMessageForRun({
+      space_id: "space-1",
+      session_id: conversation.id,
+      sender_agent_id: "agent-1",
+      run_id: sent.run_ids[0]!,
+      content: "Room task failed (runtime_nonzero_exit): upstream refused",
+      metadata: { status: "failed", error_code: "runtime_nonzero_exit" },
+    });
+    expect(failedReply).not.toBeNull();
+
     const retried = await service.retryMessage(owner, created.room.id, conversation.id, {
       run_id: sent.run_ids[0]!,
       idempotency_key: "retry-resource-turn",
     });
 
     expect(retried.reused).toBe(false);
+    const visibleMessages = await sessions.listRoomMessages(
+      "space-1", owner.userId, created.room.id, conversation.id, 50, 0,
+    );
+    expect(visibleMessages?.map(message => message.content)).not.toContain(
+      "Room task failed (runtime_nonzero_exit): upstream refused",
+    );
+    expect(visibleMessages?.find(message => message.role === "user")?.metadata_json).toMatchObject({
+      retry_superseded_run_ids: [sent.run_ids[0]!],
+      retry_run_ids: retried.value.run_ids,
+    });
+    await expect(db.pool.query(
+      `SELECT metadata_json->>'retry_superseded' AS superseded
+         FROM messages WHERE space_id='space-1' AND id=$1`,
+      [failedReply!.id],
+    )).resolves.toMatchObject({ rows: [{ superseded: "true" }] });
+    const continuity = await loadRoomContinuityForRunRequest(db.pool, {
+      spaceId: "space-1",
+      sessionId: conversation.id,
+    });
+    expect(continuity.messages.map(message => message.content)).not.toContain(
+      "Room task failed (runtime_nonzero_exit): upstream refused",
+    );
+
     const retriedRun = await runs.getRun("space-1", retried.value.run_ids[0]!);
     expect(retriedRun?.capabilities_json).toEqual(
       expect.arrayContaining(["input_resource.read", "input_resource.search"]),
@@ -2791,6 +2825,17 @@ describe("Room workflow (real Postgres)", () => {
       });
       expect(opened.discussion).toMatchObject({ kind: "explicit", round_cap: 3, rounds_used: 1, spend_cap_usd: 2 });
       expect(opened.message).toMatchObject({ discussion_id: opened.discussion.id, content: "Which database should we use?" });
+      // The first (and here only) participant is the specialist, so it becomes
+      // the group's technical root Run. The Room's permanent Manager remains
+      // authoritative for the group and for the closing turn.
+      const groupRoles = await db.pool.query<{ manager_agent_id: string; root_agent_id: string }>(
+        `SELECT grp.manager_agent_id, root.agent_id AS root_agent_id
+           FROM agent_run_groups grp
+           JOIN runs root ON root.id = grp.root_run_id
+          WHERE grp.id = $1`,
+        [opened.task_group_ids[0]],
+      );
+      expect(groupRoles.rows[0]).toEqual({ manager_agent_id: "agent-1", root_agent_id: "agent-2" });
       // A second one cannot open while this one runs.
       await expect(discussions.open(owner, created.room.id, conversation.id, {
         topic: "Another", participant_agent_ids: ["agent-2"], shape: "open",
@@ -2818,11 +2863,15 @@ describe("Room workflow (real Postgres)", () => {
       });
       expect(opened.discussion.round_cap).toBe(2);
       const [first, second] = opened.run_ids as [string, string];
+      const initial = (await new PgRunRepository(db.pool).getRun("space-1", first))!;
+      expect(initial.prompt).toContain("Do not @-address or ask another Agent to respond");
+      expect(initial.prompt).toContain("every participant already has a turn");
       await completeTurn(first, "Monolith: one team, one deploy.");
       const admitted = (await new PgRunRepository(db.pool).getRun("space-1", second))!;
       expect(admitted.status).toBe("queued");
       expect(admitted.prompt).not.toContain("Replies already given");
       expect(admitted.prompt).not.toContain("one team, one deploy");
+      expect(admitted.prompt).toContain("Do not @-address or ask another Agent to respond");
       await completeTurn(second, "Services: independent scaling.");
       const critique = await db.pool.query<{ id: string; prompt: string }>(
         `SELECT run.id, run.prompt FROM runs run JOIN agent_run_groups grp ON grp.id = run.run_group_id
@@ -2832,7 +2881,9 @@ describe("Room workflow (real Postgres)", () => {
       expect(critique.rows).toHaveLength(2);
       // Each is handed every answer of the first round, the one before its own included.
       for (const row of critique.rows) {
-        expect(row.prompt).toContain("Critique the others");
+        expect(row.prompt).toContain("Compare the positions for the person");
+        expect(row.prompt).toContain("Do not @-address or ask another Agent to respond");
+        expect(row.prompt).toContain("the system sends each round to every participant");
         expect(row.prompt).toContain("one team, one deploy");
         expect(row.prompt).toContain("independent scaling");
       }
@@ -2978,7 +3029,7 @@ describe("Room workflow (real Postgres)", () => {
         topic: "Plan the migration", participant_agent_ids: ["agent-2"], shape: "open", round_cap: 2,
       });
       const waiting = await service.sendOrQueueMessage(owner, created.room.id, conversation.id, {
-        content: "Keep it under a day of downtime.",
+        content: "Keep it under a day of downtime.", discussion_id: opened.discussion.id,
       });
       expect("queued" in waiting).toBe(true);
       // The specialist addressed the Manager; the person's message goes first.
@@ -3000,6 +3051,58 @@ describe("Room workflow (real Postgres)", () => {
       const [heldTurn] = await queuedRunsFor(conversation.id, "agent-1");
       expect(heldTurn!.prompt).toContain("size the downtime");
       expect(heldTurn!.prompt).toContain("round 2 of 2");
+    });
+
+    it("keeps an ordinary interjection outside an active discussion", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation, manager } = await roomWithSpecialist("Separate interjection");
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      const opened = await discussions.open(owner, created.room.id, conversation.id, {
+        topic: "Plan the migration", participant_agent_ids: ["agent-2"], shape: "open", round_cap: 2,
+      });
+      const waiting = await service.sendOrQueueMessage(owner, created.room.id, conversation.id, {
+        content: "Unrelated question.",
+      });
+      expect(waiting).toMatchObject({ queued: { status: "queued" } });
+      await completeTurn(opened.run_ids[0]!, `@${manager} size the downtime.`);
+      const posted = (await db.pool.query<{ discussion_id: string | null; group_discussion_id: string | null }>(
+        `SELECT message.discussion_id, grp.discussion_id AS group_discussion_id
+           FROM messages message
+           JOIN agent_run_groups grp ON grp.trigger_message_id = message.id
+          WHERE message.session_id = $1 AND message.content = 'Unrelated question.'`,
+        [conversation.id],
+      )).rows[0];
+      expect(posted).toEqual({ discussion_id: null, group_discussion_id: null });
+      expect(await discussionFor(conversation.id)).toMatchObject({ status: "active", round_base: 0, rounds_used: 1 });
+    });
+
+    it("keeps an explicit discussion reply queued while its wave waits for quota", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation, manager } = await roomWithSpecialist("Joined reply past quota hold");
+      await seedQuota(90, new Date(Date.now() + 2 * 3600_000).toISOString());
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      const opened = await discussions.open(owner, created.room.id, conversation.id, {
+        topic: "Plan the migration", participant_agent_ids: ["agent-2"], shape: "open", round_cap: 3,
+      });
+      await completeTurn(opened.run_ids[0]!, `@${manager} check the plan.`);
+      const [held] = await queuedRunsFor(conversation.id, "agent-1");
+      expect(await quotaMarker(held!.id)).not.toBeNull();
+
+      const waiting = await service.sendOrQueueMessage(owner, created.room.id, conversation.id, {
+        content: "One more constraint.", discussion_id: opened.discussion.id,
+      });
+      expect(waiting).toMatchObject({ queued: { status: "queued", discussion_id: opened.discussion.id } });
+      expect(await discussions.releaseQueued("space-1", conversation.id)).toBe("busy");
+      const before = await service.listMessages(owner, created.room.id, conversation.id, { limit: 50, offset: 0 });
+      expect(before.items.some((message) => message.content === "One more constraint.")).toBe(false);
+
+      expect(await releaseHeldRuns(db.pool, { source: fixedQuota(12) })).toBe(1);
+      await completeTurn(held!.id, "The plan works.");
+      const posted = (await db.pool.query<{ discussion_id: string | null }>(
+        `SELECT discussion_id FROM messages WHERE session_id = $1 AND content = 'One more constraint.'`,
+        [conversation.id],
+      )).rows[0];
+      expect(posted).toEqual({ discussion_id: opened.discussion.id });
     });
 
     it("posts waiting messages in order, keeping one that cannot be posted visible without blocking the rest", async (ctx) => {
@@ -3064,7 +3167,9 @@ describe("Room workflow (real Postgres)", () => {
       const opened = await discussions.open(owner, created.room.id, conversation.id, {
         topic: "Plan the migration", participant_agent_ids: ["agent-2"], shape: "open", round_cap: 2,
       });
-      await service.sendOrQueueMessage(member, created.room.id, conversation.id, { content: "Keep it cheap." });
+      await service.sendOrQueueMessage(member, created.room.id, conversation.id, {
+        content: "Keep it cheap.", discussion_id: opened.discussion.id,
+      });
       await completeTurn(opened.run_ids[0]!, `@${manager} can you size the downtime?`);
       const discussion = await db.pool.query<{ opened_by_user_id: string; round_base: number; spend_cap_usd: string | null }>(
         `SELECT opened_by_user_id, round_base, spend_cap_usd FROM room_discussions WHERE session_id = $1`,
@@ -3523,7 +3628,7 @@ describe("Room workflow (real Postgres)", () => {
       const spoken = await service.sendOrQueueMessage(owner, created.room.id, conversation.id, { content: "Meanwhile, draft the notes." });
       const waiting = await service.sendOrQueueMessage(owner, created.room.id, conversation.id, { content: "And the changelog." });
       expect(waiting).toMatchObject({ queued: { status: "queued" } });
-      // The person's turn addresses the Specialist too: it joins the discussion's waiting Agents.
+      // An Agent mention in the ordinary turn does not silently join the held discussion.
       await completeTurn((spoken as { run_ids: string[] }).run_ids[0]!, "Drafted. @Research Specialist please double-check the dates.");
 
       const posted = (await db.pool.query<{ discussion_id: string | null }>(
@@ -3533,7 +3638,12 @@ describe("Room workflow (real Postgres)", () => {
       expect(posted).toEqual({ discussion_id: null });
       const after = await discussionFor(conversation.id);
       expect(after).toMatchObject({ id: held!.id, status: "active", rounds_used: held!.rounds_used, round_base: held!.round_base });
-      expect(after!.held_mentions_json.map((mention) => mention.agent_id)).toEqual(["agent-2"]);
+      expect(after!.held_mentions_json).toEqual([]);
+      const outsideNotice = (await db.pool.query<{ discussion_id: string | null; content: string }>(
+        `SELECT discussion_id, content FROM messages WHERE session_id = $1 AND content LIKE '%outside the current discussion%'`,
+        [conversation.id],
+      )).rows[0];
+      expect(outsideNotice).toMatchObject({ discussion_id: null, content: expect.stringContaining("Research Specialist") });
     });
 
     it("opens a discussion through its route and answers 201 with a well-formed body", async (ctx) => {

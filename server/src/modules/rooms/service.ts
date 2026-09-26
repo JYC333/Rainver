@@ -597,7 +597,10 @@ export class RoomService {
 
   /** Speak in an explicitly-created, initialized Conversation in a Room. */
   async sendMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: RoomSendInput) {
-    return withDbTransaction(this.pool, async (client) => this.sendInTransaction(client, identity, roomId, sessionId, input));
+    return withDbTransaction(this.pool, async (client) => {
+      if (input.discussion_id) await lockRoomConversationQueue(client, identity.spaceId, sessionId);
+      return this.sendInTransaction(client, identity, roomId, sessionId, input);
+    });
   }
 
   /**
@@ -625,6 +628,7 @@ export class RoomService {
             recipient_segments: input.recipient_segments ?? null,
             focus_refs: input.focus_refs ?? null,
             backends: input.backends ?? [],
+            discussion_id: input.discussion_id ?? null,
           },
         }),
       });
@@ -649,7 +653,7 @@ export class RoomService {
     const rooms = new PgRoomRepository(client);
     const room = await requireRoom(rooms, identity, roomId, true);
     const conversation = await requireConversation(rooms, identity, roomId, sessionId);
-    return this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
+    const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
       content: input.content.trim(),
       input_parts: input.input_parts ?? [],
       focus_refs: input.focus_refs ?? null,
@@ -657,7 +661,14 @@ export class RoomService {
       recipient_segments: input.recipient_segments ?? null,
       backends: input.backends ?? [],
       kind: "user",
+      discussion_intent: input.discussion_id ? "join" : "separate",
     });
+    if (!input.discussion_id) return dispatched;
+    const wave = await joinPostedRoomMessage(client, identity, roomId, conversation.id, input.discussion_id, dispatched);
+    return { ...dispatched, message: {
+      ...dispatched.message, discussion_id: input.discussion_id,
+      metadata_json: { ...dispatched.message.metadata_json, wave },
+    } };
   }
 
   /**
@@ -667,6 +678,8 @@ export class RoomService {
    */
   async sendMessageInTransaction(client: PoolClient, identity: RoomIdentity, roomId: string, sessionId: string, input: {
     content: string;
+    discussion_id?: string | null;
+    discussion_intent?: "join" | "separate";
     recipient_segments: AgentGroupMessageRecipientSegment[] | null;
     routing_mode?: "direct" | "agent_coordination";
     focus_refs?: Array<{ type: "task"; id: string }> | null;
@@ -675,7 +688,7 @@ export class RoomService {
     const rooms = new PgRoomRepository(client);
     const room = await requireRoom(rooms, identity, roomId, true);
     const conversation = await requireConversation(rooms, identity, roomId, sessionId);
-    return this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
+    const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
       content: input.content.trim(),
       input_parts: [],
       focus_refs: input.focus_refs ?? null,
@@ -683,7 +696,14 @@ export class RoomService {
       recipient_segments: input.recipient_segments,
       backends: input.backends ?? [],
       kind: "user",
+      discussion_intent: input.discussion_intent ?? (input.discussion_id ? "join" : "separate"),
     });
+    if (!input.discussion_id) return dispatched;
+    const wave = await joinPostedRoomMessage(client, identity, roomId, conversation.id, input.discussion_id, dispatched);
+    return { ...dispatched, message: {
+      ...dispatched.message, discussion_id: input.discussion_id,
+      metadata_json: { ...dispatched.message.metadata_json, wave },
+    } };
   }
 
   async withdrawQueuedMessage(identity: RoomIdentity, roomId: string, sessionId: string, queuedId: string) {
@@ -731,10 +751,15 @@ export class RoomService {
         },
         async () => {
           const metadata = record(originalMessage.metadata_json);
+          const alreadySupersededRunIds = new Set(stringArray(metadata.retry_superseded_run_ids));
+          if (alreadySupersededRunIds.has(original.id)) {
+            throw new HttpError(409, "This failed Run has already been replaced by a retry");
+          }
           const originalRunIds = Array.from(new Set([
             ...stringArray(metadata.run_ids),
+            ...stringArray(metadata.retry_run_ids),
             original.id,
-          ]));
+          ])).filter(runId => !alreadySupersededRunIds.has(runId));
           const originalRuns = await Promise.all(originalRunIds.map(runId => runs.getRun(identity.spaceId, runId)));
           const completeRuns = originalRuns.filter(
             (run): run is AgentRunRecord => run?.execution_kind === "agent",
@@ -783,6 +808,16 @@ export class RoomService {
               run_id: runId,
             });
           }
+          await sessions.markRoomRetrySuperseded({
+            space_id: identity.spaceId,
+            session_id: conversation.id,
+            user_message_id: originalMessage.id,
+            superseded_run_ids: Array.from(new Set([
+              ...alreadySupersededRunIds,
+              ...originalRunIds,
+            ])),
+            replacement_run_ids: dispatched.run_ids,
+          });
           const runId = dispatched.run_ids[0];
           if (!runId) throw new HttpError(500, "Room retry created no recipient Run");
           return {
@@ -1087,6 +1122,8 @@ export class RoomService {
       created_at?: string;
       /** The discussion wave this message opens, stamped on it and on its group. */
       discussion?: RoomDispatchDiscussion | null;
+      /** Saved on a human message so later Agent mentions preserve its send choice. */
+      discussion_intent?: "join" | "separate";
       /** The container's remaining delegation budget; the per-turn default when absent. */
       delegation_budget?: RoomDelegationBudget | null;
     } & (
@@ -1228,7 +1265,10 @@ export class RoomService {
               identity.userId,
               roomId,
               sessionId,
-              { content, metadata: { room_id: roomId }, created_at: input.created_at },
+              { content, metadata: {
+                room_id: roomId,
+                ...(input.discussion_intent ? { discussion_intent: input.discussion_intent } : {}),
+              }, created_at: input.created_at },
             );
       if (!roomMessage) throw new HttpError(404, "Room conversation not found");
       if (!input.existing_user_message && preparedInputParts && preparedInputParts.length > 0) {
@@ -1396,6 +1436,52 @@ export class RoomService {
   }
 }
 
+/** Bind a person's explicit reply to the exact discussion they chose, in the send transaction. */
+async function joinPostedRoomMessage(
+  client: PoolClient,
+  identity: RoomIdentity,
+  roomId: string,
+  sessionId: string,
+  discussionId: string,
+  dispatched: { message: { id: string }; task_group_ids: string[] },
+): Promise<number> {
+  const discussions = new PgRoomDiscussionRepository(client);
+  const discussion = await discussions.get(identity.spaceId, discussionId, { forUpdate: true });
+  if (!discussion || discussion.room_id !== roomId || discussion.session_id !== sessionId || discussion.status !== "active") {
+    throw new HttpError(409, "This discussion is no longer active; choose ordinary message or another discussion.");
+  }
+  // A quota-held wave can release the conversation turn without finishing its
+  // discussion wave. A joined message must wait for that wave, not silently
+  // supersede it or become an ordinary message just because it arrived then.
+  const unfinished = await client.query(
+    `SELECT 1 FROM agent_run_groups grp
+      WHERE grp.space_id = $1 AND grp.discussion_id = $2 AND grp.id <> ALL($3::varchar[])
+        AND grp.advanced_at IS NULL
+      LIMIT 1`,
+    [identity.spaceId, discussionId, dispatched.task_group_ids],
+  );
+  if (unfinished.rowCount) {
+    throw new HttpError(409, "The discussion's current wave is still in progress", {
+      code: "discussion_wave_in_progress", detail: "The discussion's current wave is still in progress",
+    });
+  }
+  const wave = discussion.rounds_used;
+  const room = await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId, false);
+  const restarts = room !== null && await canWriteProject(client, identity.spaceId, room.project_id, identity.userId);
+  if (restarts && discussion.opened_by_user_id !== identity.userId) {
+    await client.query(
+      `UPDATE room_discussions
+          SET opened_by_user_id = $3, quota_override_by_user_id = NULL, quota_override_at = NULL
+        WHERE space_id = $1 AND id = $2`,
+      [identity.spaceId, discussionId, identity.userId],
+    );
+  }
+  await discussions.stampGroup(identity.spaceId, dispatched.task_group_ids[0]!, discussionId);
+  await discussions.stampMessages({ spaceId: identity.spaceId, sessionId, discussionId, wave, messageIds: [dispatched.message.id] });
+  await discussions.update(identity.spaceId, discussionId, { ...(restarts ? { roundBase: wave } : {}), roundsUsed: wave + 1 });
+  return wave;
+}
+
 function isConversationBackendRequired(error: unknown): boolean {
   return error instanceof HttpError
     && typeof error.responseBody === "object"
@@ -1447,6 +1533,7 @@ function cryptoRandomId(): string {
 /** What a person's send carries. */
 export interface RoomSendInput {
   content: string;
+  discussion_id?: string | null;
   input_parts?: ConversationInputPart[];
   focus_refs?: Array<{ type: "task"; id: string }> | null;
   routing_mode?: "direct" | "agent_coordination";

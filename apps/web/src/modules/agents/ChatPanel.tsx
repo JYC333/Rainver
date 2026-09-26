@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../core/spaceNav'
-import { agentsApi, conversationInputApi, hostsApi, proposalsApi, runsApi, sessionsApi } from '../../api/client'
+import { agentsApi, conversationInputApi, hostsApi, runsApi, sessionsApi } from '../../api/client'
 import type {
   AgentOut,
   ChatActionPreview,
@@ -17,7 +17,7 @@ import {
   type SessionConfigSelection,
 } from '../conversation/ConversationSessionConfig'
 import { readBackTurnState, settledTurn } from '../conversation/settledTurn'
-import { decidableByViewer } from '../conversation/ConversationSurface'
+import { ActionPreviewCards } from '../conversation/ActionPreviewCard'
 import { errMsg } from '../../lib/utils'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
@@ -162,7 +162,7 @@ export default function ChatPanel({
           role: m.role,
           content: m.content,
           inputParts: m.input_parts,
-          actionPreviews: await refreshActionPreviews(Array.isArray(m.metadata_json?.action_previews) ? m.metadata_json.action_previews as ChatActionPreview[] : undefined),
+          actionPreviews: Array.isArray(m.metadata_json?.action_previews) ? m.metadata_json.action_previews as ChatActionPreview[] : undefined,
           artifactRefs: Array.isArray(m.metadata_json?.artifact_refs) ? m.metadata_json.artifact_refs.filter((value): value is string => typeof value === 'string') : undefined,
           runId: m.run_id ?? undefined,
           runIds: uniqueRunIds(m.run_id, m.metadata_json?.retry_run_ids),
@@ -612,12 +612,7 @@ export default function ChatPanel({
             error: m.error,
             extra: (
               <>
-                {(() => {
-                  // Filtered here as in the Room: a card that names one decider
-                  // is rendered for that person only (ADR 0003 §5).
-                  const cards = decidableByViewer(m.actionPreviews ?? [], userId)
-                  return cards.length ? <div className="mt-2 space-y-2">{cards.map((preview, index) => <ActionPreviewCard key={`${preview.action_id}:${preview.proposal_id ?? index}`} preview={preview} />)}</div> : null
-                })()}
+                <ActionPreviewCards previews={m.actionPreviews ?? []} viewerUserId={userId} />
                 {m.artifactRefs?.length ? <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
                   {m.artifactRefs?.map((artifactId, index) => <Link key={artifactId} className="text-accent-foreground hover:underline" to={`/artifacts/${artifactId}`}>Produced artifact {index + 1}</Link>)}
                 </div> : null}
@@ -711,7 +706,6 @@ function backendKey(backend: Pick<ConversationBackendBinding, 'runtime_profile_i
   return backend.runtime_profile_id
 }
 
-
 function hostErrorStatus(error: unknown): number | null {
   if (!error || typeof error !== 'object' || !('status' in error)) return null
   const status = (error as { status?: unknown }).status
@@ -721,32 +715,4 @@ function hostErrorStatus(error: unknown): number | null {
 function uniqueRunIds(...values: unknown[]): string[] {
   const ids = values.flatMap(value => Array.isArray(value) ? value : [value])
   return [...new Set(ids.filter((value): value is string => typeof value === 'string' && value.length > 0))]
-}
-
-async function refreshActionPreviews(previews?: ChatActionPreview[]) {
-  if (!previews) return undefined
-  return Promise.all(previews.map(async preview => {
-    if (!preview.proposal_id) return preview
-    try {
-      const proposal = await proposalsApi.get(preview.proposal_id)
-      const status: ChatActionPreview['status'] = proposal.status === 'pending'
-        ? 'proposed'
-        : proposal.status === 'accepted'
-          ? 'completed'
-          : proposal.status === 'rejected'
-            ? 'rejected'
-            : 'failed'
-      return { ...preview, status }
-    } catch {
-      return preview
-    }
-  }))
-}
-
-function ActionPreviewCard({ preview }: { preview: ChatActionPreview }) {
-  return <div className="rounded-md border border-border bg-background p-3 text-foreground">
-    <div className="flex items-center justify-between gap-2"><span className="text-xs font-medium">{preview.title ?? preview.proposal_type ?? preview.action_id}</span><span className="text-[10px] uppercase text-muted-foreground">{preview.status.replace('_', ' ')}</span></div>
-    {preview.summary && <p className="mt-1 text-xs text-muted-foreground">{preview.summary}</p>}
-    <div className="mt-2 flex gap-3 text-[11px]">{preview.risk_level && <span>{preview.risk_level} risk</span>}{preview.proposal_id && <Link className="text-accent-foreground hover:underline" to={`/proposals/${preview.proposal_id}`}>Review proposal</Link>}</div>
-  </div>
 }

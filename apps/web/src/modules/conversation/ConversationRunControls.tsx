@@ -15,6 +15,7 @@ export function ConversationRunControls({
   projectId,
   onRetry,
   agentLabel,
+  showStatus = true,
 }: {
   runId: string
   run?: Run | null
@@ -22,6 +23,8 @@ export function ConversationRunControls({
   onRetry?: (runId: string) => Promise<void>
   /** Whose Run these controls belong to, when one message started several. */
   agentLabel?: string
+  /** Room Agent turns already state their own progress beside the work. */
+  showStatus?: boolean
 }) {
   const [run, setRun] = useState<Run | null>(suppliedRun ?? null)
   const [stopping, setStopping] = useState(false)
@@ -84,11 +87,12 @@ export function ConversationRunControls({
     }
   }
 
-  return <div className="mt-2 w-full min-w-0 max-w-full space-y-2" data-testid={`conversation-run-controls-${runId}`}>
-    {agentLabel && <div className="text-[11px] font-medium text-muted-foreground">{agentLabel}</div>}
+  const showStandaloneLabel = Boolean(agentLabel && (active || run?.status === 'failed' || run?.status === 'cancelled'))
+  return <div className="mt-2 w-full min-w-0 max-w-full space-y-2 empty:hidden" data-testid={`conversation-run-controls-${runId}`}>
+    {showStandaloneLabel && <div className="text-[11px] font-medium text-muted-foreground">{agentLabel}</div>}
     {active && (
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" role="status" aria-live="polite">
-        <span>{stopping || run?.status === 'cancelling' ? 'Stopping…' : run?.status === 'queued' ? 'Queued…' : 'Working…'}</span>
+        {showStatus && <span>{stopping || run?.status === 'cancelling' ? 'Stopping…' : run?.status === 'queued' ? 'Queued…' : run?.status === 'waiting_for_dependency' ? 'Waiting for previous Agent…' : 'Working…'}</span>}
         <Button type="button" size="sm" variant="outline" className="h-7" disabled={stopping || run?.status === 'cancelling'} onClick={() => void stop()}>
           <Square className="mr-1 size-3" />Stop
         </Button>
@@ -105,13 +109,14 @@ export function ConversationRunControls({
         {retryError && <span className="text-xs text-destructive" role="alert">{retryError}</span>}
       </div>
     )}
-    {terminal && run && <ConversationChangesCard run={run} projectId={projectId} refreshToken={refreshToken} onRefresh={() => setRefreshToken(value => value + 1)} />}
+    {terminal && run && <ConversationChangesCard run={run} projectId={projectId} agentLabel={showStandaloneLabel ? undefined : agentLabel} refreshToken={refreshToken} onRefresh={() => setRefreshToken(value => value + 1)} />}
   </div>
 }
 
-function ConversationChangesCard({ run, projectId, refreshToken, onRefresh }: {
+function ConversationChangesCard({ run, projectId, agentLabel, refreshToken, onRefresh }: {
   run: Run
   projectId?: string | null
+  agentLabel?: string
   refreshToken: number
   onRefresh: () => void
 }) {
@@ -136,9 +141,9 @@ function ConversationChangesCard({ run, projectId, refreshToken, onRefresh }: {
             const detail = await artifactsApi.get(summary.id)
             if (cancelled) return
             setArtifact(detail)
-            const content = detail.content ?? ''
+            const hasChanges = detail.has_inline_content || Boolean(detail.content)
             const truncated = detail.metadata_json?.truncated === true
-            setState(!content ? 'no-change' : truncated ? 'truncated' : 'ready')
+            setState(!hasChanges ? 'no-change' : truncated ? 'truncated' : 'ready')
             return
           }
         } catch {
@@ -151,14 +156,16 @@ function ConversationChangesCard({ run, projectId, refreshToken, onRefresh }: {
     return () => { cancelled = true }
   }, [hostRun, refreshToken, run.id])
 
-  const status = state === 'checking'
-    ? 'Changes upload pending…'
-    : state === 'no-change'
-      ? 'No workspace changes recorded for this Run.'
-      : state === 'unavailable'
-        ? run.status === 'failed' ? 'Changes unavailable because the Run failed before its diff was uploaded.' : 'Changes are unavailable.'
-        : state === 'truncated' ? 'Changes recorded (diff truncated).' : 'Changes recorded.'
+  // An empty diff is not an action or a result the conversation needs to show.
+  // Keep unavailable distinct: the upload may have failed, so it is not proof
+  // that the Run made no changes.
+  if (state === 'checking' || state === 'no-change') return null
+
+  const status = state === 'unavailable'
+    ? run.status === 'failed' ? 'Changes unavailable because the Run failed before its diff was uploaded.' : 'Changes are unavailable.'
+    : state === 'truncated' ? 'Changes recorded (diff truncated).' : 'Changes recorded.'
   return <div className="w-full min-w-0 max-w-full rounded-md border border-border bg-muted/20 px-2.5 py-2 text-xs" data-testid={`changes-${run.id}`}>
+    {agentLabel && <div className="mb-1 text-[11px] font-medium text-muted-foreground">{agentLabel}</div>}
     <div className="flex min-w-0 flex-wrap items-start gap-1.5 font-medium"><FileDiff className="mt-0.5 size-3.5 shrink-0" /><span>Changes</span><span className="min-w-0 break-words font-normal text-muted-foreground">· {status}</span></div>
     {artifact?.content && <details className="mt-1.5">
       <summary className="cursor-pointer text-muted-foreground">Preview diff</summary>

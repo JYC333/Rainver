@@ -80,11 +80,16 @@ export function visibleMessagePathSql(input: {
   )`;
 }
 
+/** A durable message replaced by Retry stays auditable but leaves active conversation reads. */
+export function nonSupersededMessageSql(alias: string): string {
+  return `COALESCE(${alias}.metadata_json->>'retry_superseded', 'false') <> 'true'`;
+}
+
 /**
  * The human transcript of a Room conversation: the visible path, minus
- * `room_display = internal` execution instructions. Agent replay and
- * continuation lookups still read those rows; list/preview/summary surfaces
- * that people see must not.
+ * `room_display = internal` execution instructions and retry-superseded
+ * replies. Agent replay and continuation lookups still read internal rows;
+ * list/preview/summary surfaces that people see must not.
  */
 export function visibleRoomTranscriptSql(input: {
   alias: string;
@@ -92,7 +97,8 @@ export function visibleRoomTranscriptSql(input: {
   sessionParam: string;
 }): string {
   return `${visibleMessagePathSql(input)}
-    AND COALESCE(${input.alias}.metadata_json->>'room_display', 'conversation') <> 'internal'`;
+    AND COALESCE(${input.alias}.metadata_json->>'room_display', 'conversation') <> 'internal'
+    AND ${nonSupersededMessageSql(input.alias)}`;
 }
 
 /**

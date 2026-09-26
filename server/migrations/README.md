@@ -5,12 +5,13 @@ append-only chain the server migration runner applies, and at the same time the
 drizzle-kit output directory: `NNNN_<name>.sql` files in order, plus `meta/`
 with the Drizzle journal and the snapshot each file was diffed from.
 
-**`0000_baseline.sql` starts the 2026-09-23 authentication-foundation schema
-epoch (ADR 0023).** It was regenerated on 2026-09-25 with every migration
-written before the first release folded back into it, since no instance
-carried data yet. It is drizzle-kit output generated from `src/db/schema/`
+**`0000_baseline.sql` starts the 2026-09-26 host-thread-tool-field schema
+epoch.** The operator accepted recreating affected databases, so the
+applied `0001_widen_host_thread_tool_fields.sql` has been folded into a new
+single-file baseline. It is drizzle-kit output generated from `src/db/schema/`
 against an empty chain, so every object in it has a Drizzle definition
-`schema:check` can see. The baseline contains the final Better Auth,
+`schema:check` can see. `host_thread_events.tool_call_id` and `tool_name` are
+`text` from creation. The baseline also contains the completed Better Auth,
 registration, invitation-reservation, security-event, Room discussion, and
 Task-merge schema directly; it has no legacy authentication tables, backfill,
 or compatibility path.
@@ -20,9 +21,10 @@ does not model and the `vector` columns need first. Never regenerate it from a
 `pg_dump` of a migrated database: a dump carries catalog names — renamed
 columns' NOT NULL constraints, for one — that no Drizzle definition mentions,
 and every new instance would then be created carrying them.
-Databases from an earlier epoch cannot be upgraded or restored into this epoch;
-they must be recreated from this baseline. The reset intentionally does not
-preserve or transform earlier rows. After this change the baseline is frozen
+Databases from an earlier epoch, including the dev database that applied
+`0000` and `0001`, cannot be upgraded or restored into this epoch; the operator
+must recreate them from this baseline. This repository change does not reset
+any database or preserve or transform earlier rows. The baseline is frozen
 and every later schema change is a new numbered file. A file that a database
 has applied is never edited: the runner records each file's checksum in
 `public.server_schema_migrations` and refuses to start against a changed one.

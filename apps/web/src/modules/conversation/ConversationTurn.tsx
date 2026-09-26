@@ -5,14 +5,13 @@ import { Message, MessageContent, MessageResponse } from '../../components/ai-el
 import {
   Tool, ToolContent, ToolHeader, ToolInput, ToolOutput, type ToolState,
 } from '../../components/ai-elements/tool'
-import { Reasoning, ReasoningContent, ReasoningTrigger } from '../../components/ai-elements/reasoning'
 import {
   Plan, PlanContent, PlanHeader, PlanTitle, PlanTrigger,
 } from '../../components/ai-elements/plan'
 import { Shimmer } from '../../components/ai-elements/shimmer'
 import { SpaceLink } from '../../core/spaceNav'
 import { cn } from '../../lib/utils'
-import { presentTurnParts } from './turnPresentation'
+import { presentConversationParts } from './turnPresentation'
 
 /**
  * One Agent turn, in whichever of its four states it is in.
@@ -24,13 +23,13 @@ import { presentTurnParts } from './turnPresentation'
  *
  * The four states are the same bubble, not four components:
  *
- * - **Working** — the steps as they happen, text streaming under them.
+ * - **Working** — active/failed steps as they happen, text streaming under them.
  * - **Blocked** — stopped, waiting on the person: an authorization to grant,
  *   a review somebody owes it. Said plainly, because a turn that looks busy
  *   while it is actually waiting on you is the worst of the four.
  * - **Done** — the reply is the bubble; the steps fold into one line above it.
- * - **Failed** — the same bubble carries the failure; the steps stay open,
- *   because when something went wrong the steps are what explains it.
+ * - **Failed** — the same bubble carries the failure; failed and diagnostic
+ *   steps stay open.
  *
  * Nothing about a Run is shown as a trailing action in the conversation. A
  * blocked turn can still link directly to the decision it needs from the
@@ -57,7 +56,8 @@ export function ConversationTurn({
   runHref?: string
   className?: string
 }) {
-  const steps = turn.parts.filter(isStep)
+  const presentedParts = presentConversationParts(turn.parts)
+  const steps = presentedParts.filter(isStep)
   const working = turn.state === 'working'
   const blocked = turn.state === 'blocked'
   // Finished work folds away; failed and blocked work does not, because it is
@@ -65,15 +65,9 @@ export function ConversationTurn({
   // what is happening.
   const [showWork, setShowWork] = useState(false)
   const stepsOpen = working || blocked || turn.state === 'failed' || showWork
-  const presentedParts = presentTurnParts(turn.parts, {
-    // Only a live turn summarizes successful calls. Blocked/failed turns keep
-    // their steps visible as the explanation for why they stopped.
-    groupCompletedTools: working,
-  })
-
   return (
     <Message from="assistant" className={cn('gap-1.5', className)}>
-      <MessageContent className="gap-2">
+      <MessageContent className="w-full gap-2">
         {/*
           Offered whenever the work *can* be folded — which is once the turn
           is over and went well. While it runs, and when it failed, the steps
@@ -91,16 +85,12 @@ export function ConversationTurn({
         )}
 
         <div className="flex flex-col gap-0.5">
-          {presentedParts.map(item => {
-            if (item.type === 'completed_tool_group') {
-              return stepsOpen ? <CompletedToolCalls key={item.key} tools={item.tools} /> : null
-            }
-            const part = item.part
+          {presentedParts.map(part => {
             if (part.type === 'text') {
-              return <MessageResponse key={item.key}>{part.text}</MessageResponse>
+              return <MessageResponse key={part.index}>{part.text}</MessageResponse>
             }
-            if (part.type === 'action_preview' || !stepsOpen) return null
-            return <TurnStep key={item.key} part={part} />
+            if (part.type === 'action_preview' || part.type === 'reasoning' || !stepsOpen) return null
+            return <TurnStep key={part.index} part={part} />
           })}
         </div>
 
@@ -158,41 +148,13 @@ export function AwaitingAnswerMarker() {
 }
 
 /** A part that is work rather than what the Agent said. */
-type StepPart = Extract<TurnPart, { type: 'tool_call' | 'reasoning' | 'plan' | 'diagnostic' }>
+type StepPart = Extract<TurnPart, { type: 'tool_call' | 'plan' | 'diagnostic' }>
 
 function isStep(part: TurnPart): part is StepPart {
-  return part.type === 'tool_call' || part.type === 'reasoning'
-    || part.type === 'plan' || part.type === 'diagnostic'
-}
-
-function CompletedToolCalls({ tools }: { tools: Extract<TurnPart, { type: 'tool_call' }>[] }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen(current => !current)}
-        className="flex min-h-7 w-fit items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-muted/40 hover:text-foreground"
-      >
-        <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
-        <span>{tools.length} tool {tools.length === 1 ? 'call' : 'calls'} completed</span>
-      </button>
-      {open && tools.map(tool => <TurnStep key={tool.index} part={tool} />)}
-    </div>
-  )
+  return part.type === 'tool_call' || part.type === 'plan' || part.type === 'diagnostic'
 }
 
 function TurnStep({ part }: { part: StepPart }) {
-  if (part.type === 'reasoning') {
-    return (
-      <Reasoning className="mb-0">
-        <ReasoningTrigger className="min-h-7 gap-1.5 rounded px-1.5 text-xs [&_svg]:size-3.5" />
-        <ReasoningContent className="ml-5 mt-1.5 px-1.5">{part.text}</ReasoningContent>
-      </Reasoning>
-    )
-  }
-
   if (part.type === 'plan') {
     return (
       <Plan defaultOpen className="mb-0 rounded border-0 p-0">

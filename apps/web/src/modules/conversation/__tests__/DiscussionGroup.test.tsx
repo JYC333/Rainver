@@ -63,7 +63,7 @@ function discussion(overrides: Partial<RoomDiscussion> = {}): RoomDiscussion {
 }
 
 describe('groupDiscussionMessages', () => {
-  it('folds a discussion\'s consecutive messages into one entry, keeping the timeline\'s order', () => {
+  it('marks consecutive discussion stretches without changing the timeline order', () => {
     const items = groupDiscussionMessages([
       message('m-before', { discussion_id: null }),
       // An emergent discussion's origin: the person's message, named by the row.
@@ -113,6 +113,17 @@ describe('DiscussionGroup', () => {
 
     fireEvent.click(within(group).getByRole('button', { name: 'Stop' }))
     await waitFor(() => expect(onStop).toHaveBeenCalledWith('disc-1'))
+  })
+
+  it('marks a later stretch as a continuation without duplicating actions', () => {
+    render(<DiscussionGroup discussionId="disc-1" segment={1} latest={false}
+      discussion={discussion()} messages={[message('m-later')]} agents={agents} onStop={vi.fn()}>
+      <p>Reply after an ordinary interjection</p>
+    </DiscussionGroup>)
+    const segment = screen.getByTestId('discussion-disc-1-1')
+    expect(within(segment).getByText('Discussion continues · Pick a database')).toBeInTheDocument()
+    expect(within(segment).getByText('Reply after an ordinary interjection')).toBeInTheDocument()
+    expect(within(segment).queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
   })
 
   it('offers more rounds once the cap is reached, sized to the shape', async () => {
@@ -253,7 +264,7 @@ describe('DiscussionGroup', () => {
     expect(screen.queryByTestId('discussion-quota-hold-disc-1')).not.toBeInTheDocument()
   })
 
-  it('folds a concluded discussion to its conclusion, and opens on request', () => {
+  it('keeps a concluded discussion visible in the timeline without auto-folding', () => {
     render(
       <DiscussionGroup
         discussionId="disc-1"
@@ -271,11 +282,9 @@ describe('DiscussionGroup', () => {
     )
     expect(screen.getByTestId('discussion-conclusion-disc-1')).toHaveTextContent('Conclusion: Both agree on Postgres.')
     expect(screen.getByText(/Round 2\/3 · Concluded/)).toBeInTheDocument()
-    expect(screen.queryByText('Inside')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { expanded: false }))
     expect(screen.getByText('Inside')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('discussion-disc-1')).not.toHaveAttribute('aria-expanded')
   })
 })
 
