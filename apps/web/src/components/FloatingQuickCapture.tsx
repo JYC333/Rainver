@@ -9,6 +9,7 @@ import { spacePath } from '../core/navigation'
 import { publishNoteChanged } from '../core/noteEvents'
 import { useProjectCaptureContext } from '../contexts/CaptureContext'
 import type { CaptureDestination } from '../types/api'
+import { useAppTranslation } from '../i18n'
 
 const URL_RE = /^https?:\/\/\S+$/i
 
@@ -27,6 +28,7 @@ const URL_RE = /^https?:\/\/\S+$/i
  * one click from being overridden.
  */
 export function FloatingQuickCapture() {
+  const { t } = useAppTranslation()
   const navigate = useNavigate()
   const { spaces, personalSpaceId, activeSpaceId } = useSpace()
   const { projectId, target } = useProjectCaptureContext()
@@ -80,26 +82,26 @@ export function FloatingQuickCapture() {
 
   const label = useCallback((value: CaptureDestination) => {
     const name =
-      value === 'object_marginalia' ? `marginalia on ${target?.title ?? 'this'}`
-      : value === 'project_marginalia' ? 'project marginalia'
-      : value === 'project_raw' ? 'project raw material'
-      : 'personal inbox'
+      value === 'object_marginalia' ? t('capture.object_marginalia', { target: target?.title ?? t('capture.this') })
+      : value === 'project_marginalia' ? t('capture.project_marginalia')
+      : value === 'project_raw' ? t('capture.project_raw')
+      : t('capture.personal_inbox')
     const consequence =
       value === 'object_marginalia' || value === 'project_marginalia'
-        ? (soloSpace ? [] : ['only you'])
-        : value === 'project_raw' ? ['pending', ...(soloSpace ? [] : ['team visible'])]
-        : ['pending', ...(soloSpace ? [] : ['only you'])]
+        ? (soloSpace ? [] : [t('capture.only_you')])
+        : value === 'project_raw' ? [t('capture.pending'), ...(soloSpace ? [] : [t('capture.team_visible')])]
+        : [t('capture.pending'), ...(soloSpace ? [] : [t('capture.only_you')])]
     return [name, ...consequence].join(' · ')
-  }, [target?.title, soloSpace])
+  }, [target?.title, soloSpace, t])
 
   // The segmented control has room for a name and nothing else, so every
   // destination also carries its consequence on the line below it.
   const short = useCallback((value: CaptureDestination) => (
-    value === 'object_marginalia' ? target?.title ?? 'This'
-    : value === 'project_marginalia' ? 'Project'
-    : value === 'project_raw' ? 'Raw'
-    : 'Inbox'
-  ), [target?.title])
+    value === 'object_marginalia' ? target?.title ?? t('capture.this_short')
+    : value === 'project_marginalia' ? t('capture.project_short')
+    : value === 'project_raw' ? t('capture.raw_short')
+    : t('capture.inbox_short')
+  ), [target?.title, t])
 
   const save = useCallback(async () => {
     const value = text.trim()
@@ -127,8 +129,10 @@ export function FloatingQuickCapture() {
         : result.project_id
           ? spacePath(result.space_id, `/projects/${result.project_id}/sources?tab=raw`)
           : spacePath(result.space_id, '/activity?status=raw')
-      toast.success(result.note_title ? `Captured to ${result.note_title}` : `Saved · ${label(destination)}`, {
-        action: { label: 'View', onClick: () => navigate(href) },
+      toast.success(result.note_title
+        ? t('capture.captured_to', { name: result.note_title })
+        : t('capture.saved', { destination: label(destination) }), {
+        action: { label: t('capture.view'), onClick: () => navigate(href) },
       })
       textRef.current?.focus()
     } catch (err) {
@@ -136,14 +140,14 @@ export function FloatingQuickCapture() {
     } finally {
       setBusy(false)
     }
-  }, [text, busy, destination, projectId, target, label, navigate, reset])
+  }, [text, busy, destination, projectId, target, label, navigate, reset, t])
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragOver(false)
     if (e.dataTransfer.files.length > 0) {
-      toast.message('File capture is coming soon', {
-        description: 'Drag-and-drop upload is not wired yet. Paste text or a link for now.',
+      toast.message(t('capture.file_soon'), {
+        description: t('capture.file_soon_description'),
       })
     }
   }
@@ -153,8 +157,8 @@ export function FloatingQuickCapture() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        aria-label="Quick capture"
-        title="Quick capture"
+        aria-label={t('capture.quick')}
+        title={t('capture.quick')}
         className="fixed bottom-20 right-5 md:bottom-5 z-40 flex items-center justify-center size-12 rounded-full shadow-lg transition-transform hover:scale-105 active:scale-95"
         style={{ background: 'var(--primary)', color: 'var(--primary-foreground)', border: '1px solid var(--primary)' }}
       >
@@ -171,11 +175,11 @@ export function FloatingQuickCapture() {
       onDrop={onDrop}
     >
       <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border">
-        <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">Quick capture</span>
+        <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">{t('capture.quick')}</span>
         <button
           type="button"
           onClick={close}
-          aria-label="Close quick capture"
+          aria-label={t('capture.close')}
           className="text-muted-foreground hover:text-foreground transition-colors"
         >
           <X className="size-3.5" />
@@ -188,7 +192,7 @@ export function FloatingQuickCapture() {
             because "where did that go" is the failure mode a capture box has,
             and an override that costs two clicks is an override nobody makes. */}
         {available.length > 1 && (
-          <div role="radiogroup" aria-label="Capture destination" className="flex w-full items-center gap-0.5 rounded-lg bg-muted p-1">
+          <div role="radiogroup" aria-label={t('capture.destination')} className="flex w-full items-center gap-0.5 rounded-lg bg-muted p-1">
             {available.map(value => (
               <button
                 key={value}
@@ -222,7 +226,7 @@ export function FloatingQuickCapture() {
           value={text}
           onChange={e => { setText(e.target.value); if (!e.target.value.trim()) setPasted(false) }}
           onPaste={() => setPasted(true)}
-          placeholder="Capture a thought or paste a link…"
+          placeholder={t('capture.placeholder')}
           rows={3}
           className="w-full resize-none bg-transparent border-none outline-none text-[14px] leading-relaxed text-foreground placeholder:text-muted-foreground"
           onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) save() }}
@@ -230,7 +234,7 @@ export function FloatingQuickCapture() {
 
         {URL_RE.test(text.trim()) && (
           <div className="flex items-center gap-1.5 text-[11px] text-accent-foreground">
-            <Link2 className="size-3" /> Saved as a link capture
+            <Link2 className="size-3" /> {t('capture.link_capture')}
           </div>
         )}
 
@@ -239,7 +243,7 @@ export function FloatingQuickCapture() {
             <button
               type="button"
               disabled
-              title="Attach file — coming soon"
+              title={t('capture.attach_soon')}
               className="flex items-center justify-center size-7 rounded-md border border-border text-muted-foreground opacity-50 cursor-not-allowed"
             >
               <Paperclip className="size-3.5" />
@@ -247,7 +251,7 @@ export function FloatingQuickCapture() {
             <button
               type="button"
               disabled
-              title="Voice capture — coming soon"
+              title={t('capture.voice_soon')}
               className="flex items-center justify-center size-7 rounded-md border border-border text-muted-foreground opacity-50 cursor-not-allowed"
             >
               <Mic className="size-3.5" />
@@ -261,13 +265,13 @@ export function FloatingQuickCapture() {
             style={{ background: 'var(--primary)', border: '1px solid var(--primary)', color: 'var(--primary-foreground)' }}
           >
             {busy ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />}
-            Capture
+            {t('capture.submit')}
           </button>
         </div>
         <p className="text-[10px] text-muted-foreground leading-snug">
           {destination === 'object_marginalia' || destination === 'project_marginalia'
-            ? 'Recorded as activity and written straight into your own note, not into the project\'s shared material.'
-            : 'Saved as activity first. Nothing becomes memory or changes files until you review and accept proposals.'}
+            ? t('capture.marginalia_explanation')
+            : t('capture.review_explanation')}
         </p>
       </div>
     </div>

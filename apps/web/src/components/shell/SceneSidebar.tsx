@@ -2,6 +2,7 @@ import { Link, useLocation, useSearchParams } from 'react-router-dom'
 import { PanelLeftClose } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { spacePath, stripSpacePrefix, type RouteSceneItem, type Scene } from '../../core/navigation'
+import { useAppTranslation } from '../../i18n'
 
 /** Build the in-space destination for a filter-scene item (value '' clears the filter). */
 function filterItemTo(spaceId: string | null, base: string, filterKey: string, value: string): string {
@@ -70,22 +71,24 @@ export function SceneSidebar({
   spaceId: string | null
 }) {
   const { pathname } = useLocation()
+  const { t } = useAppTranslation()
   const [searchParams] = useSearchParams()
   const searchValue = scene.kind === 'filter' ? searchParams.get(scene.filterKey) : null
   const items = sceneItems(scene, pathname, searchValue, spaceId)
+  const title = t(`nav.${scene.id}`, { defaultValue: t(`modules.${scene.id}`, { defaultValue: scene.title }) })
   const Icon = scene.icon
 
   return (
-    <aside aria-label={`${scene.title} navigation`} className="hidden md:flex shrink-0 w-[200px] flex-col border-r border-border bg-card/60">
+    <aside aria-label={t('shell.navigation', { name: title })} className="hidden md:flex shrink-0 w-[200px] flex-col border-r border-border bg-card/60">
       <div className="flex items-center justify-between h-11 px-3 border-b border-border">
         <span className="flex items-center gap-2 text-[12px] font-semibold text-foreground">
-          <Icon className="size-3.5" /> {scene.title}
+          <Icon className="size-3.5" /> {title}
         </span>
         <button
           type="button"
           onClick={onCollapse}
-          aria-label="Collapse sidebar"
-          title="Collapse sidebar"
+          aria-label={t('shell.collapse_sidebar')}
+          title={t('shell.collapse_sidebar')}
           className="text-muted-foreground hover:text-foreground transition-colors"
         >
           <PanelLeftClose className="size-3.5" />
@@ -105,7 +108,7 @@ export function SceneSidebar({
                 : 'text-muted-foreground hover:text-foreground hover:bg-accent',
             )}
           >
-            {it.label}
+            {t(`scene.${it.label.toLowerCase().replace(/ /g, '_')}`, { defaultValue: it.label })}
           </Link>
         ))}
       </div>
@@ -122,6 +125,7 @@ export function SceneTabs({
   spaceId: string | null
 }) {
   const { pathname } = useLocation()
+  const { t } = useAppTranslation()
   const [searchParams] = useSearchParams()
   const searchValue = scene.kind === 'filter' ? searchParams.get(scene.filterKey) : null
   const items = sceneItems(scene, pathname, searchValue, spaceId)
@@ -141,7 +145,7 @@ export function SceneTabs({
               : 'text-muted-foreground border-border hover:text-foreground',
           )}
         >
-          {it.label}
+          {t(`scene.${it.label.toLowerCase().replace(/ /g, '_')}`, { defaultValue: it.label })}
         </Link>
       ))}
     </div>

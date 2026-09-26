@@ -7,8 +7,10 @@ It organises activities, artifacts, proposals, agent runs, and owned Project Fol
 It is the stable ownership and context boundary for durable objects — not a task manager or execution environment.
 
 A Project may carry `focus_area_id`, pointing at the long-term focus area it
-serves. That is navigation only: it is not containment, it transfers no read
-access, and Project membership is unaffected. See
+serves. The Project detail page exposes that classification through the
+existing Domain picker to active Project writers. Clearing it is allowed. This
+is navigation only: it is not containment, it transfers no read access, and
+Project membership is unaffected. See
 [ADR 0015](../decisions/0015-focus-area-classification.md).
 
 ## What is a Project Folder?
@@ -60,6 +62,7 @@ Each step adds trust validation and human review opportunity.
 | `description` | text (nullable) | Optional long-form description |
 | `status` | string | `active` \| `archived` \| `deleted` |
 | `current_focus` | text (nullable) | Generic foreground/display focus for non-Inquiry work; Auto Research does not read or write it as a Question authority |
+| `focus_area_id` | FK → focus_areas (nullable) | Domain classification for navigation only; never changes Project access |
 | `settings_json` | JSON (nullable) | Flexible per-project configuration |
 | `active_brief_version_id` | FK → project_brief_versions | Current immutable Brief version, constrained to the same Project/Space |
 | `active_instruction_version_id` | FK → project_instruction_versions | Current approved Project Instruction, constrained to the same Project/Space |

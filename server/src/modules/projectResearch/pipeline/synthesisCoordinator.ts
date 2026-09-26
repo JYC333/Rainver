@@ -370,24 +370,24 @@ export class ProjectResearchSynthesisCoordinator {
 
   async reconcileStage(spaceId: string, row: SynthesisOperationRow, state: ResearchOperationState): Promise<void> {
     const runId = state.synthesis_run_id!;
-    const [run, job, event] = await Promise.all([
-      this.db.query<{ status: string; created_at: unknown; started_at: unknown; updated_at: unknown }>(
-        `SELECT status, created_at, started_at, updated_at FROM runs WHERE id=$1 AND space_id=$2`,
-        [runId, spaceId],
-      ),
-      this.db.query<{ id: string; status: string; attempts: number; heartbeat_at: unknown; updated_at: unknown }>(
-        `SELECT id, status, attempts, heartbeat_at, updated_at FROM jobs
-          WHERE space_id=$1 AND job_type='agent_run' AND payload_json->>'run_id'=$2
-          ORDER BY created_at DESC LIMIT 1`,
-        [spaceId, runId],
-      ),
-      this.db.query<{ event_type: string; created_at: unknown }>(
-        `SELECT event_type, created_at FROM run_events
-          WHERE space_id=$1 AND run_id=$2
-          ORDER BY created_at DESC, event_index DESC, id DESC LIMIT 1`,
-        [spaceId, runId],
-      ),
-    ]);
+    // A workflow action may pass its checked-out transaction Client here;
+    // issue its statements one at a time in the same order.
+    const run = await this.db.query<{ status: string; created_at: unknown; started_at: unknown; updated_at: unknown }>(
+      `SELECT status, created_at, started_at, updated_at FROM runs WHERE id=$1 AND space_id=$2`,
+      [runId, spaceId],
+    );
+    const job = await this.db.query<{ id: string; status: string; attempts: number; heartbeat_at: unknown; updated_at: unknown }>(
+      `SELECT id, status, attempts, heartbeat_at, updated_at FROM jobs
+        WHERE space_id=$1 AND job_type='agent_run' AND payload_json->>'run_id'=$2
+        ORDER BY created_at DESC LIMIT 1`,
+      [spaceId, runId],
+    );
+    const event = await this.db.query<{ event_type: string; created_at: unknown }>(
+      `SELECT event_type, created_at FROM run_events
+        WHERE space_id=$1 AND run_id=$2
+        ORDER BY created_at DESC, event_index DESC, id DESC LIMIT 1`,
+      [spaceId, runId],
+    );
     const value = run.rows[0];
     if (!value) {
       await this.ports.failOperation(row, "The queued synthesis run no longer exists; retry to queue a new synthesis run");

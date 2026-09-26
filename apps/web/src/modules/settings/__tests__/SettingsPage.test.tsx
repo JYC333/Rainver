@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SettingsPage from '../SettingsPage'
 import { spacesApi } from '../../../api/client'
+import { setLocale } from '../../../i18n'
 
 const navigateMock = vi.fn()
 const reloadSpacesMock = vi.fn()
@@ -34,6 +35,7 @@ vi.mock('../../../api/client', () => ({
 }))
 
 beforeEach(() => {
+  setLocale('en')
   vi.clearAllMocks()
   vi.mocked(spacesApi.create).mockResolvedValue({
     id: 'space-new',
@@ -49,6 +51,17 @@ beforeEach(() => {
 })
 
 describe('SettingsPage — create space', () => {
+  it('switches the interface to Chinese and remembers the browser language', async () => {
+    render(<SettingsPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: '简体中文' }))
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: '设置' })).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: '简体中文' })).toHaveAttribute('aria-pressed', 'true')
+    expect(document.documentElement.lang).toBe('zh-CN')
+    expect(localStorage.getItem('rainver:locale')).toBe('zh-CN')
+  })
+
   it('defaults to oversight_mode=none and creates a space without selecting an option', async () => {
     render(<SettingsPage />)
 

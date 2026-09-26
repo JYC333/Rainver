@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import {
   SemanticCheckpointExtractionSchema,
   type SemanticCheckpointExtraction,
+  type ExtractionOutcome,
 } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { HttpError, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
@@ -55,18 +56,6 @@ const MAX_RECORDS_PER_EXTRACTION = 400;
  * unextractable.
  */
 const MAX_CHARACTERS_PER_EXTRACTION = 400_000;
-
-export interface ExtractionOutcome {
-  /** Null when there was nothing new to read, or nothing worth proposing. */
-  brief_proposal_id: string | null;
-  memory_packet_proposal_id: string | null;
-  records_covered: number;
-  sessions_covered: number;
-  decisions: number;
-  facts: number;
-  /** Records still waiting after this batch. */
-  records_remaining: number;
-}
 
 interface PendingRecord {
   id: string;

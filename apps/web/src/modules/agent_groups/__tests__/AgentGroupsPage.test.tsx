@@ -1524,7 +1524,7 @@ describe('Rooms page', () => {
     ))
     expect(screen.queryByText('I accepted “Record conclusion: Does caching help?”. Continue now: confirm what was completed in one sentence, then begin the next step.')).not.toBeInTheDocument()
     expect(await screen.findByText('Accepted')).toBeInTheDocument()
-    expect(await screen.findByText('已提升为空间级知识。助手正在下方继续。')).toBeInTheDocument()
+    expect(await screen.findByText('Promoted to Space knowledge. The assistant is continuing below.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
   })
 
@@ -1646,8 +1646,8 @@ describe('Rooms page', () => {
 
     expect(await screen.findByText('A recovery attempted the same question again.')).toBeInTheDocument()
     expect(await screen.findByText('Duplicate research question')).toBeInTheDocument()
-    expect(await screen.findByText('重复 · 已合并')).toBeInTheDocument()
-    expect(screen.getByText('这是重复提案，已与已有研究问题合并，无需再次确认。')).toBeInTheDocument()
+    expect(await screen.findByText('Duplicate · merged')).toBeInTheDocument()
+    expect(screen.getByText('This duplicate proposal was merged with an existing research question. No further confirmation is needed.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Accept' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
   })
@@ -1709,9 +1709,9 @@ describe('Rooms page', () => {
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('Accepted')).toBeInTheDocument()
-    expect(screen.getByText('项目目标、范围和成功标准已保存。')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '继续下一步' }))
-    expect(await screen.findByText('已接受，正在启动下一步…')).toBeInTheDocument()
+    expect(screen.getByText('Project goal, scope, and success criteria saved.')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue to next step' }))
+    expect(await screen.findByText('Accepted. Starting the next step…')).toBeInTheDocument()
     await waitFor(() => expect(roomsApi.continueAfterProposal).toHaveBeenCalledWith(
       'room-1',
       'session-1',
@@ -1721,8 +1721,8 @@ describe('Rooms page', () => {
     ))
     await act(async () => resolveContinuation(continuationResult))
     expect(screen.queryByText('I accepted the definition. Continue.')).not.toBeInTheDocument()
-    expect(await screen.findByText('已接受，助手正在处理…')).toBeInTheDocument()
-    expect(await screen.findByText('项目目标、范围和成功标准已保存。助手正在下方继续。')).toBeInTheDocument()
+    expect(await screen.findByText('Accepted. The assistant is working…')).toBeInTheDocument()
+    expect(await screen.findByText('Project goal, scope, and success criteria saved. The assistant is continuing below.')).toBeInTheDocument()
 
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
@@ -1743,7 +1743,7 @@ describe('Rooms page', () => {
     await waitFor(() => expect(finalizeRun).not.toBeNull())
     act(() => finalizeRun?.())
     expect(await screen.findByText('下一步已经准备好了。')).toBeInTheDocument()
-    await waitFor(() => expect(screen.queryByText('已接受，助手正在处理…')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByText('Accepted. The assistant is working…')).not.toBeInTheDocument())
   })
 
   it('surfaces the canonical Host recovery link before the first message', async () => {

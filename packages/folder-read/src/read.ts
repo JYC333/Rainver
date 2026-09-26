@@ -85,7 +85,7 @@ export function decodeFileBytes(
   if (utf16LeBom || utf16BeBom) {
     const body = input.subarray(2);
     const decoded = decodeUtf16(body, utf16BeBom);
-    if (decoded !== null) {
+    if (decoded !== null && !decoded.includes("\0")) {
       const metadata = textMetadata(decoded, utf16BeBom ? "utf16be" : "utf16le", true, false, true);
       return {
         ...metadata,
@@ -94,10 +94,11 @@ export function decodeFileBytes(
         conversion_available: true,
       };
     }
-    return unknownMetadata("unknown", true, true);
+    return unknownMetadata(decoded === null ? "unknown" : "binary", true, false);
   }
 
   const body = utf8Bom ? input.subarray(3) : input;
+  if (hasNul(body)) return unknownMetadata("binary", utf8Bom, false);
   try {
     const content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body);
     return textMetadata(content, "utf8", utf8Bom, true, false);

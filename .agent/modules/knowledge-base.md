@@ -27,6 +27,11 @@ no automatic generation, assessment, or card-generation path.
   is only the default initialization template for a space. `NotesPage` claims
   `notes/*`, and the open note is read from the path, so the tree + tabs stay
   mounted while switching notes.
+- A Note or Wiki item can be filed into a Domain from its own detail surface.
+  The `focus_area_id` read projection shows the current classification, including
+  no Domain; the existing Focus Area endpoint enforces the owner/ownerless
+  readable-content write rule. Filing does not change content access or the
+  Note/Wiki write lifecycle (ADR 0015).
 - `NotesPage` and `NoteEditor` are **route-agnostic**. The page takes a
   `NotesSurfaceScope` (`basePath`, `tabsScopeKey`, `renderHeader`) and the editor
   takes `noteId` + `onNoteResolved` as props — no `useParams`, no

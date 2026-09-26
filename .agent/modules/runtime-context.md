@@ -52,6 +52,15 @@ user input, and places the current message last even when a Room recipient
 instruction is another `user_input` item. The ACP adapter preserves that
 Gateway-owned order.
 
+For an ordinary `chat_turn.v1` Run, the current input is the canonical user
+message. Acquisition includes that message's text and immutable
+`input_resource` descriptors in Delivery; conversation continuity excludes
+the same current message. At ACP dispatch, conversation-input hydration adds
+images and resource links, but does not add a second descriptor text block when
+Delivery already contains it. The adapter sends Delivery instead of the raw
+Run prompt. A session handoff uses its own Run request as current input and
+does not hydrate the pending user's message attachments.
+
 ## Continuity
 
 Conversation and task continuity is an ordered ledger of canonical refs, not a

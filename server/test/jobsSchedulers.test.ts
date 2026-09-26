@@ -39,9 +39,9 @@ vi.mock("../src/modules/retrieval/maintenance/service.js", async (importOriginal
   const actual = await importOriginal<typeof import("../src/modules/retrieval/maintenance/service.js")>();
   return {
     ...actual,
-    RetrievalMaintenanceService: vi.fn().mockImplementation(() => ({
-      scan: maintenanceScanMock,
-    })),
+    RetrievalMaintenanceService: vi.fn().mockImplementation(function () {
+      return { scan: maintenanceScanMock };
+    }),
   };
 });
 

@@ -10,6 +10,7 @@ import {
   type AmbientSessionCount,
   type AmbientSessionImport,
   type AmbientUsage,
+  type AmbientSyncReport,
 } from "@rainver/protocol";
 import { createHash } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
@@ -50,27 +51,6 @@ function usageFingerprint(usage: AmbientUsage): string {
     usage.reasoning_tokens ?? 0,
     usage.occurred_at ?? null,
   ])).digest("hex").slice(0, 32);
-}
-
-/** What a sync did, per runtime, for the caller and for the batch pointer. */
-export interface AmbientSyncReport {
-  location_id: string;
-  runtime_key: string;
-  installation: string;
-  sessions_seen: number;
-  sessions_written: number;
-  records_inserted: number;
-  records_unchanged: number;
-  records_conflicted: number;
-  marked_gone: number;
-  usage_events: number;
-  /** Ledger writes that were rejected; a short total must not look like no usage. */
-  usage_failures: number;
-  /** Sessions a daemon reported in a shape this server does not accept. */
-  malformed_sessions: number;
-  /** Sessions that could not be written; the rest of the sync still stands. */
-  failed_sessions: number;
-  error: string | null;
 }
 
 interface DispatchTarget {

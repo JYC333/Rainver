@@ -8,7 +8,7 @@ turns what it holds into proposals.
 
 The rollout plan (`ambient-session-import-plan.md`, both phases shipped
 2026-08-28 in `293023c3`, `d162aabf` and `178bd9a8`) is retired; its execution
-ledger is in git history and its two open leftovers are in
+ledger is in git history and its remaining citation-link item is in
 [`plans/backlog.md`](../plans/backlog.md) §9. **This document describes the
 system as it stands.**
 
@@ -149,6 +149,13 @@ Generating it therefore needs the same access gate the copy does — `full`,
 call is metered to the session's *owner*. Without that gate a session id alone
 would let anyone spend a colleague's budget, and the timing would tell them
 whether the session exists.
+
+The four public read-side shapes — session, record, sync report, and
+extraction outcome — come from `packages/protocol/src/ambientSessions.ts`.
+Repository row types derive from the session and record DTOs, widening only
+PostgreSQL timestamp columns to include `Date`. At the HTTP boundary,
+the server converts those timestamps to ISO strings and validates the
+strict protocol schemas before sending them.
 
 Each sync writes one `ActivityRecord` pointer (B24A: the Inbox holds pointers,
 never content) and forwards any reported token usage to the canonical ledger

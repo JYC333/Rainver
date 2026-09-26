@@ -11,6 +11,7 @@ import { Button } from '../../components/ui/button'
 import { Card } from '../../components/ui/card'
 import { Skeleton } from '../../components/ui/skeleton'
 import KnowledgeDetailHeader from './KnowledgeDetailHeader'
+import { FocusAreaField } from '../focusAreas/FocusAreaField'
 import KnowledgeProposalNotice from './KnowledgeProposalNotice'
 import KnowledgeRelationProposalForm from './KnowledgeRelationProposalForm'
 import KnowledgeRelationsPanel from './KnowledgeRelationsPanel'
@@ -18,7 +19,7 @@ import KnowledgeUpdateProposalForm from './KnowledgeUpdateProposalForm'
 
 export default function KnowledgeDetailPage() {
   const { itemId = '' } = useParams()
-  const { activeSpaceId, activeSpaceName } = useSpace()
+  const { activeSpaceId, activeSpaceName, userId } = useSpace()
   const [item, setItem] = useState<KnowledgeItem | null>(null)
   const [relations, setRelations] = useState<KnowledgeRelation[]>([])
   const [loadingItem, setLoadingItem] = useState(true)
@@ -107,6 +108,15 @@ export default function KnowledgeDetailPage() {
             activeSpaceId={activeSpaceId}
             archiving={archiving}
             onArchive={submitArchiveProposal}
+          />
+          <FocusAreaField
+            targetKind="object"
+            targetId={item.id}
+            focusAreaId={item.focus_area_id}
+            canEdit={Boolean(userId) && (item.owner_user_id === null || item.owner_user_id === userId)}
+            onChanged={(focusAreaId) => setItem((current) => current?.id === item.id
+              ? { ...current, focus_area_id: focusAreaId }
+              : current)}
           />
           {lastProposal && <KnowledgeProposalNotice proposal={lastProposal} />}
           <KnowledgeUpdateProposalForm item={item} onProposalCreated={setLastProposal} />

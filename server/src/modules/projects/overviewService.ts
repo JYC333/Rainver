@@ -43,15 +43,15 @@ export class ProjectOverviewService {
     // pointed at Areas the sidebar lists) and a per-entity summary row set
     // (the Areas list again, with counts). Nothing consumed either once the
     // front page stopped duplicating the sidebar, so they are gone.
-    const [brief, attention, inProgress, folders] = await Promise.all([
-      this.kernel.getActiveBriefVersion(identity, projectId),
-      this.attention.listAttentionItems(identity, projectId),
-      listRunningProjectOperations(this.db, identity.spaceId, projectId),
-      this.db.query(
-        `SELECT 1 FROM project_folders WHERE space_id = $1 AND project_id = $2 AND status = 'active' LIMIT 1`,
-        [identity.spaceId, projectId],
-      ),
-    ]);
+    // Room dispatch calls this with its transaction Client. Keep the reads
+    // in their existing order so no two queries are queued on one Client.
+    const brief = await this.kernel.getActiveBriefVersion(identity, projectId);
+    const attention = await this.attention.listAttentionItems(identity, projectId);
+    const inProgress = await listRunningProjectOperations(this.db, identity.spaceId, projectId);
+    const folders = await this.db.query(
+      `SELECT 1 FROM project_folders WHERE space_id = $1 AND project_id = $2 AND status = 'active' LIMIT 1`,
+      [identity.spaceId, projectId],
+    );
     // User-facing initialization means the Project has a formally published
     // goal/problem definition. Audit metadata and downstream work are separate.
     const goalOrProblem = typeof brief?.goal === "string" ? brief.goal.trim() : "";

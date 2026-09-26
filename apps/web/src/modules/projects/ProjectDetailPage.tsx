@@ -32,6 +32,7 @@ import ProjectPulse from './ProjectPulse'
 import { AmbientImportBanner } from './AmbientImportBanner'
 import EditProjectInstructionDialog from './EditProjectInstructionDialog'
 import ProjectConversationBackendCard from './ProjectConversationBackendCard'
+import { FocusAreaField } from '../focusAreas/FocusAreaField'
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
@@ -272,6 +273,15 @@ export default function ProjectDetailPage() {
               <p className="text-sm text-muted-foreground max-w-2xl">{project.description}</p>
             )}
             <p className="text-xs text-muted-foreground">Updated {fmt(project.updated_at)}</p>
+            <FocusAreaField
+              targetKind="project"
+              targetId={project.id}
+              focusAreaId={project.focus_area_id}
+              canEdit={project.current_user_can_write === true && project.status === 'active'}
+              onChanged={(focusAreaId) => setProject((current) => current?.id === project.id
+                ? { ...current, focus_area_id: focusAreaId }
+                : current)}
+            />
           </div>
         </div>
         <div className="flex gap-2 shrink-0">

@@ -34,6 +34,7 @@ export interface ProjectRow {
   description: string | null;
   status: string;
   current_focus: string | null;
+  focus_area_id: string | null;
   settings_json: unknown;
   active_brief_version_id: string | null;
   created_at: unknown;
@@ -71,7 +72,7 @@ export interface ProjectPublicSummaryRow {
 
 const PROJECT_COLUMNS = `
   id, space_id, owner_user_id, name, description, status, current_focus,
-  settings_json, active_brief_version_id,
+  focus_area_id, settings_json, active_brief_version_id,
   created_at, updated_at, archived_at
 `;
 
@@ -857,6 +858,7 @@ function projectToOut(
     description: row.description,
     status: row.status === "deleted" ? "archived" : row.status,
     current_focus: row.current_focus,
+    focus_area_id: row.focus_area_id,
     settings_json: includeSettings
       ? (row.settings_json === null ? null : objectValue(row.settings_json))
       : null,

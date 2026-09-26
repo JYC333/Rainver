@@ -17,10 +17,11 @@ import { Badge, StatusBadge } from '../../components/ui/badge'
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { SpaceBadge } from '../../components/SpaceBadge'
+import { useAppTranslation, type Locale } from '../../i18n'
 
 /* ── helpers ─────────────────────────────────────────────────────────────────── */
-function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'
+function fmt(dt: string | null | undefined, locale: Locale) {
+  return dt ? new Date(dt).toLocaleString(locale === 'zh-CN' ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'
 }
 
 function objectPath(type: string | null | undefined, id: string | null | undefined): string | null {
@@ -56,14 +57,15 @@ function NeedsAttention({
   failedRunSpaces: string[]
   onGo: (path: string) => void
 }) {
+  const { t } = useAppTranslation()
   const rows = [
-    { key: 'proposals', icon: Inbox, label: 'proposals waiting', value: summary.pending_proposals_count, warn: summary.pending_proposals_count > 0, to: '/proposals' },
-    { key: 'tasks', icon: ListTodo, label: 'tasks assigned to you', value: summary.assigned_tasks_count, warn: false, to: '/tasks' },
-    { key: 'failed', icon: AlertTriangle, label: 'failed runs (recent)', value: failedRunSpaces.length, warn: failedRunSpaces.length > 0, to: '/runs' },
+    { key: 'proposals', icon: Inbox, label: t('home.proposals_waiting'), value: summary.pending_proposals_count, warn: summary.pending_proposals_count > 0, to: '/proposals' },
+    { key: 'tasks', icon: ListTodo, label: t('home.tasks_assigned_to_you'), value: summary.assigned_tasks_count, warn: false, to: '/tasks' },
+    { key: 'failed', icon: AlertTriangle, label: t('home.failed_runs_recent'), value: failedRunSpaces.length, warn: failedRunSpaces.length > 0, to: '/runs' },
   ]
   return (
     <div>
-      <Eyebrow>Needs attention</Eyebrow>
+      <Eyebrow>{t('home.needs_attention')}</Eyebrow>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
         {rows.map(r => {
           const Icon = r.icon
@@ -88,6 +90,7 @@ function NeedsAttention({
 
 /* ── By space (per-space attention rollup) ───────────────────────────────────── */
 function BySpace({ spaces, onOpen }: { spaces?: MeSpaceRollup[]; onOpen: (spaceId: string, path: string) => void }) {
+  const { t } = useAppTranslation()
   // Only surface spaces that actually need attention; an all-zero list is noise on Home.
   const active = (spaces ?? []).filter(
     s => s.pending_proposals_count > 0 || s.assigned_tasks_count > 0 || s.recent_failed_runs_count > 0,
@@ -98,7 +101,7 @@ function BySpace({ spaces, onOpen }: { spaces?: MeSpaceRollup[]; onOpen: (spaceI
     s.pending_proposals_count > 0 ? '/proposals' : s.assigned_tasks_count > 0 ? '/tasks' : '/runs'
   return (
     <div>
-      <Eyebrow count={active.length}>By space</Eyebrow>
+      <Eyebrow count={active.length}>{t('home.by_space')}</Eyebrow>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
         {active.map(s => (
           <button
@@ -109,18 +112,18 @@ function BySpace({ spaces, onOpen }: { spaces?: MeSpaceRollup[]; onOpen: (spaceI
           >
             <div className="flex items-center gap-2 min-w-0">
               <SpaceBadge spaceId={s.space_id} />
-              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{s.type}</span>
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{t(`space.${s.type}`, { defaultValue: s.type })}</span>
             </div>
             <div className="flex items-center gap-4 mt-2.5" style={{ fontFamily: 'var(--font-mono)' }}>
-              <span className="flex items-center gap-1 text-[12px]" title="pending proposals">
+              <span className="flex items-center gap-1 text-[12px]" title={t('home.pending_proposals')}>
                 <Inbox className="size-3.5 text-muted-foreground" />
                 <span style={{ color: s.pending_proposals_count > 0 ? 'var(--warning)' : 'var(--foreground)' }}>{s.pending_proposals_count}</span>
               </span>
-              <span className="flex items-center gap-1 text-[12px]" title="tasks for you">
+              <span className="flex items-center gap-1 text-[12px]" title={t('home.tasks_for_you')}>
                 <ListTodo className="size-3.5 text-muted-foreground" />
                 <span>{s.assigned_tasks_count}</span>
               </span>
-              <span className="flex items-center gap-1 text-[12px]" title="failed runs (7d)">
+              <span className="flex items-center gap-1 text-[12px]" title={t('home.failed_runs_7d')}>
                 <AlertTriangle className="size-3.5 text-muted-foreground" />
                 <span style={{ color: s.recent_failed_runs_count > 0 ? 'var(--warning)' : 'var(--foreground)' }}>{s.recent_failed_runs_count}</span>
               </span>
@@ -134,12 +137,13 @@ function BySpace({ spaces, onOpen }: { spaces?: MeSpaceRollup[]; onOpen: (spaceI
 
 /* ── Review Packets (cross-space, labelled by source Space) ───────────────────── */
 function ReviewPackets({ pending, onOpen }: { pending: MePendingProposalItem[]; onOpen: (spaceId: string, path: string) => void }) {
+  const { t } = useAppTranslation()
   return (
     <div>
-      <Eyebrow count={pending.length}>Review packets</Eyebrow>
+      <Eyebrow count={pending.length}>{t('home.review_packets')}</Eyebrow>
       <Card className="p-0 overflow-hidden">
         {pending.length === 0 ? (
-          <EmptyState title="Nothing waiting for review" description="Proposals from any of your spaces will collect here." />
+          <EmptyState title={t('home.nothing_waiting_for_review')} description={t('home.proposals_collect_here')} />
         ) : (
           <ul className="m-0 p-0 list-none divide-y divide-border">
             {pending.slice(0, 8).map(p => (
@@ -175,13 +179,14 @@ function ContinueWorking({
   summary: MeSummaryOut
   onOpen: (spaceId: string, path: string) => void
 }) {
+  const { t, locale } = useAppTranslation()
   const hasContent = summary.recent_runs.length > 0 || summary.recent_participation.length > 0
   return (
     <div>
-      <Eyebrow>Continue working</Eyebrow>
+      <Eyebrow>{t('home.continue_working')}</Eyebrow>
       <Card className="p-0 overflow-hidden">
         {!hasContent ? (
-          <EmptyState title="No recent work yet" description="Runs you start and items you touch across spaces will appear here." />
+          <EmptyState title={t('home.no_recent_work_yet')} description={t('home.recent_work_description')} />
         ) : (
           <ul className="m-0 p-0 list-none divide-y divide-border">
             {summary.recent_runs.slice(0, 4).map(r => (
@@ -193,11 +198,11 @@ function ContinueWorking({
                 >
                   <Cpu className="size-3.5 text-muted-foreground shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[13px] text-foreground truncate">Run · {r.mode}</div>
+                    <div className="text-[13px] text-foreground truncate">{t('home.run_label', { mode: r.mode })}</div>
                     <div className="flex flex-wrap items-center gap-1.5 mt-1">
                       <StatusBadge status={r.status} />
                       <SpaceBadge spaceId={r.space_id} />
-                      <span className="text-[10px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{fmt(r.created_at)}</span>
+                      <span className="text-[10px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{fmt(r.created_at, locale)}</span>
                     </div>
                   </div>
                 </button>
@@ -215,10 +220,10 @@ function ContinueWorking({
                   >
                     <Clock className="size-3.5 text-muted-foreground shrink-0" />
                     <div className="flex-1 min-w-0">
-                      <div className="text-[13px] text-foreground truncate">{pt.role} · {pt.source_object_type}</div>
+                      <div className="text-[13px] text-foreground truncate">{t('home.participation_label', { role: pt.role, type: pt.source_object_type })}</div>
                       <div className="flex flex-wrap items-center gap-1.5 mt-1">
                         <SpaceBadge spaceId={pt.source_space_id} />
-                        <span className="text-[10px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{fmt(pt.occurred_at)}</span>
+                        <span className="text-[10px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{fmt(pt.occurred_at, locale)}</span>
                       </div>
                     </div>
                   </button>
@@ -234,15 +239,16 @@ function ContinueWorking({
 
 /* ── Recent Timeline (cross-space pointers) ──────────────────────────────────── */
 function RecentTimeline({ timeline, onOpen }: { timeline: MeTimelineEntry[]; onOpen: (spaceId: string, path: string) => void }) {
+  const { t, locale } = useAppTranslation()
   if (timeline.length === 0) return null
   return (
     <div>
-      <Eyebrow count={timeline.length}>Recent timeline</Eyebrow>
+      <Eyebrow count={timeline.length}>{t('home.recent_timeline')}</Eyebrow>
       <Card className="p-4">
         <ul className="m-0 p-0 list-none flex flex-col gap-2.5">
           {timeline.slice(0, 12).map(entry => {
             const path = objectPath(entry.source_object_type, entry.source_object_id)
-            const label = `${entry.role ?? 'touched'} ${entry.source_object_type ?? 'item'}`
+            const label = t('home.timeline_label', { role: entry.role ?? t('home.touched'), type: entry.source_object_type ?? t('home.item') })
             return (
               <li key={entry.id} className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex items-center gap-2">
@@ -256,7 +262,7 @@ function RecentTimeline({ timeline, onOpen }: { timeline: MeTimelineEntry[]; onO
                   )}
                   <SpaceBadge spaceId={entry.source_space_id} />
                 </div>
-                <span className="text-[10px] text-muted-foreground shrink-0" style={{ fontFamily: 'var(--font-mono)' }}>{fmt(entry.occurred_at)}</span>
+                <span className="text-[10px] text-muted-foreground shrink-0" style={{ fontFamily: 'var(--font-mono)' }}>{fmt(entry.occurred_at, locale)}</span>
               </li>
             )
           })}
@@ -270,10 +276,11 @@ function RecentTimeline({ timeline, onOpen }: { timeline: MeTimelineEntry[]; onO
 interface Suggestion { id: string; label: string; reason: string; to: string }
 
 function SuggestedActions({ suggestions, onGo }: { suggestions: Suggestion[]; onGo: (path: string) => void }) {
+  const { t } = useAppTranslation()
   if (suggestions.length === 0) return null
   return (
     <div>
-      <Eyebrow>Suggested</Eyebrow>
+      <Eyebrow>{t('home.suggested')}</Eyebrow>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
         {suggestions.map(s => (
           <button
@@ -302,25 +309,26 @@ function RightPanel({
   onGo: (path: string) => void
   canUseContextOps: boolean
 }) {
+  const { t } = useAppTranslation()
   const activeRuns = summary.recent_runs.filter(r => r.status === 'running' || r.status === 'queued')
   const contextLayerItems = [
-    ...(canUseContextOps ? [{ label: 'Context Health', path: '/context-ops' }] : []),
-    { label: 'Maintenance scans', path: '/automations' },
-    { label: 'Briefs and reports', path: '/artifacts' },
-    { label: 'Source governance', path: '/sources' },
-    { label: 'Retrieval settings', path: '/retrieval-settings' },
+    ...(canUseContextOps ? [{ label: t('home.context_health'), path: '/context-ops' }] : []),
+    { label: t('home.maintenance_scans'), path: '/automations' },
+    { label: t('home.briefs_and_reports'), path: '/artifacts' },
+    { label: t('home.source_governance'), path: '/sources' },
+    { label: t('home.retrieval_settings'), path: '/retrieval-settings' },
   ]
   return (
     <div className="flex flex-col gap-3 min-w-0">
       <Card className="p-4 flex flex-col gap-2.5">
         <div className="flex items-baseline justify-between">
-          <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">Pending review</span>
+          <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">{t('home.pending_review')}</span>
           <button onClick={() => onGo('/proposals')} className="text-[11px] text-accent-foreground flex items-center gap-1 hover:underline">
-            All <ChevronRight className="size-3" />
+            {t('home.all')} <ChevronRight className="size-3" />
           </button>
         </div>
         {pending.length === 0 ? (
-          <p className="text-[12px] text-muted-foreground">No pending proposals.</p>
+          <p className="text-[12px] text-muted-foreground">{t('home.no_pending_proposals')}</p>
         ) : pending.slice(0, 4).map(p => (
           <button key={p.id} onClick={() => onOpen(p.space_id, `/proposals/${p.id}`)} className="text-left rounded-md -mx-1 px-1 py-1 hover:bg-accent transition-colors">
             <div className="text-[12px] text-foreground truncate">{p.title}</div>
@@ -330,9 +338,9 @@ function RightPanel({
       </Card>
 
       <Card className="p-4 flex flex-col gap-2.5">
-        <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">Active runs</span>
+        <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">{t('home.active_runs')}</span>
         {activeRuns.length === 0 ? (
-          <p className="text-[12px] text-muted-foreground">No active runs.</p>
+          <p className="text-[12px] text-muted-foreground">{t('home.no_active_runs')}</p>
         ) : activeRuns.slice(0, 5).map(r => (
           <button key={r.id} onClick={() => onOpen(r.space_id, `/runs/${r.id}`)} className="text-left rounded-md -mx-1 px-1 py-1 hover:bg-accent transition-colors flex items-center gap-2">
             <StatusBadge status={r.status} />
@@ -342,9 +350,9 @@ function RightPanel({
       </Card>
 
       <Card className="p-4 flex flex-col gap-2.5">
-        <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">Your tasks</span>
+        <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">{t('home.your_tasks')}</span>
         {tasks.length === 0 ? (
-          <p className="text-[12px] text-muted-foreground">No tasks assigned.</p>
+          <p className="text-[12px] text-muted-foreground">{t('home.no_tasks_assigned')}</p>
         ) : tasks.slice(0, 5).map(t => (
           <button key={t.id} onClick={() => onOpen(t.space_id, `/tasks/${t.id}`)} className="text-left rounded-md -mx-1 px-1 py-1 hover:bg-accent transition-colors">
             <div className="text-[12px] text-foreground truncate">{t.title}</div>
@@ -354,7 +362,7 @@ function RightPanel({
       </Card>
 
       <Card className="p-4 flex flex-col gap-2.5">
-        <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">Context layer</span>
+        <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">{t('home.context_layer')}</span>
         {contextLayerItems.map(item => (
           <button
             key={item.path}
@@ -372,6 +380,7 @@ function RightPanel({
 
 /* ── Page ────────────────────────────────────────────────────────────────────── */
 export default function HomePage() {
+  const { t, locale } = useAppTranslation()
   const navigate = useNavigate()
   const { currentUser } = useAuth()
   const { spaces, preferredSpaceId } = useSpace()
@@ -447,10 +456,10 @@ export default function HomePage() {
 
   const greeting = useMemo(() => {
     const h = new Date().getHours()
-    return h < 5 ? 'Hello' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : h < 22 ? 'Good evening' : 'Hello'
+    return h < 5 ? 'hello' : h < 12 ? 'morning' : h < 17 ? 'afternoon' : h < 22 ? 'evening' : 'hello'
   }, [])
 
-  const displayName = currentUser?.display_name ?? 'there'
+  const displayName = currentUser?.display_name ?? t('home.there')
   const s = summary
   const canUsePreferredContextOps = canManagePreferredSpace || (
     preferredSpaceCanMemberReview
@@ -460,13 +469,13 @@ export default function HomePage() {
   const suggestions: Suggestion[] = useMemo(() => {
     if (!s) return []
     const out: Suggestion[] = []
-    if (s.pending_proposals_count > 0) out.push({ id: 'review', label: 'Review pending proposals', reason: `${s.pending_proposals_count} waiting across your spaces`, to: '/proposals' })
-    if (s.recent_runs.some(r => r.status === 'failed')) out.push({ id: 'failed', label: 'Inspect failed runs', reason: 'One or more recent runs failed', to: '/runs' })
-    if (s.assigned_tasks_count > 0) out.push({ id: 'tasks', label: 'Pick up your tasks', reason: `${s.assigned_tasks_count} assigned to you`, to: '/tasks' })
-    out.push({ id: 'review-artifacts', label: 'Review analysis artifacts', reason: 'Open saved Context Briefs, eval diagnostics, and maintenance reports', to: '/artifacts' })
-    out.push({ id: 'capture', label: 'Process your captures', reason: 'Open the Inbox to triage and consolidate', to: '/activity' })
+    if (s.pending_proposals_count > 0) out.push({ id: 'review', label: t('home.review_pending_proposals'), reason: t('home.proposals_waiting_across_spaces', { total: s.pending_proposals_count }), to: '/proposals' })
+    if (s.recent_runs.some(r => r.status === 'failed')) out.push({ id: 'failed', label: t('home.inspect_failed_runs'), reason: t('home.recent_runs_failed_reason'), to: '/runs' })
+    if (s.assigned_tasks_count > 0) out.push({ id: 'tasks', label: t('home.pick_up_your_tasks'), reason: t('home.tasks_assigned_count', { total: s.assigned_tasks_count }), to: '/tasks' })
+    out.push({ id: 'review-artifacts', label: t('home.review_analysis_artifacts'), reason: t('home.artifacts_reason'), to: '/artifacts' })
+    out.push({ id: 'capture', label: t('home.process_your_captures'), reason: t('home.captures_reason'), to: '/activity' })
     return out
-  }, [s])
+  }, [s, t, locale])
 
   const failedRunSpaces = useMemo(() => (s ? s.recent_runs.filter(r => r.status === 'failed').map(r => r.space_id) : []), [s])
 
@@ -476,13 +485,13 @@ export default function HomePage() {
       <div className="flex flex-col gap-5 min-w-0">
         <div className="flex flex-col gap-1">
           <div className="text-[10px] font-bold tracking-[.1em] uppercase" style={{ color: 'color-mix(in oklch, var(--muted-foreground) 70%, transparent)' }}>
-            Home · across {spaces.length || (s?.accessible_spaces_count ?? 0)} space{(spaces.length || s?.accessible_spaces_count) === 1 ? '' : 's'}
+            {t((spaces.length || s?.accessible_spaces_count) === 1 ? 'home.across_one' : 'home.across_many', { total: spaces.length || (s?.accessible_spaces_count ?? 0) })}
           </div>
           <h1 className="text-2xl font-semibold tracking-tight m-0">
-            {greeting}, <span className="text-accent-foreground">{displayName}</span>.
+            {t(`home.greeting_${greeting}`)}{t('home.greeting_separator')}<span className="text-accent-foreground">{displayName}</span>{t('home.greeting_end')}
           </h1>
           <p className="text-[13px] text-muted-foreground">
-            Your cross-space command center. Use Quick Capture (bottom-right) to save anything — it always writes to your Personal Space.
+            {t('home.command_center_description')}
           </p>
         </div>
 

@@ -32,6 +32,7 @@ vi.mock('../../../../api/client', () => {
   ]
   return {
     ApiRequestError: class ApiRequestError extends Error { status = 0 },
+    focusAreasApi: { list: vi.fn().mockResolvedValue([]), setForObject: vi.fn() },
     notesCollectionsApi: {
       list: vi.fn().mockResolvedValue(collections),
       ensureForProject: vi.fn().mockResolvedValue(collections[1]),

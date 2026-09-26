@@ -1603,6 +1603,7 @@ export interface KnowledgeItemSummary {
   space_id: string
   project_id: string | null
   project_folder_id: string | null
+  focus_area_id?: string | null
   knowledge_kind: KnowledgeItemKind
   slug: string | null
   title: string
@@ -1747,6 +1748,7 @@ export interface NoteSummary {
   status: NoteStatus
   content_format: NoteContentFormat
   primary_project_id: string | null
+  focus_area_id?: string | null
   /**
    * The system-reserved role this note holds in its project's notebook, or null.
    * One note per role per project — assigning a role another note holds moves it.
@@ -1789,6 +1791,7 @@ export interface NotePlacement {
 }
 
 export interface Note extends NoteSummary {
+  current_user_can_classify?: boolean
   content_json: Record<string, unknown> | null
   content_schema_version: number
   plain_text: string | null
@@ -4813,6 +4816,7 @@ export interface Project {
   description: string | null
   status: ProjectStatus
   current_focus: string | null
+  focus_area_id?: string | null
   settings_json: Record<string, unknown> | null
   active_brief_version_id: string | null
   current_user_can_approve_context?: boolean

@@ -29,6 +29,7 @@ export function knowledgeSummaryOut(row: WithAccessLevel<KnowledgeItemRow>): Rec
     space_id: row.space_id,
     project_id: row.project_id,
     project_folder_id: row.project_folder_id,
+    focus_area_id: row.focus_area_id,
     knowledge_kind: row.knowledge_kind,
     slug: row.slug,
     title: row.title,
@@ -193,6 +194,7 @@ export function noteSummaryOut(row: WithAccessLevel<NoteRow>): Record<string, un
     status: row.status,
     content_format: row.content_format,
     primary_project_id: row.primary_project_id,
+    focus_area_id: row.focus_area_id,
     project_role: row.project_role,
     role_project_id: row.role_project_id,
     placements: notePlacementsOut(row.placements),
@@ -207,7 +209,7 @@ export function noteSummaryOut(row: WithAccessLevel<NoteRow>): Record<string, un
   };
 }
 
-export function noteOut(row: WithAccessLevel<NoteRow>): Record<string, unknown> {
+export function noteOut(row: WithAccessLevel<NoteRow>, viewerUserId: string): Record<string, unknown> {
   const summaryOnly = isSummaryOnly(row);
   return {
     ...noteSummaryOut(row),
@@ -216,6 +218,7 @@ export function noteOut(row: WithAccessLevel<NoteRow>): Record<string, unknown> 
     plain_text: summaryOnly ? null : row.plain_text,
     created_from_activity_id: row.created_from_activity_id,
     created_by_user_id: row.created_by_user_id,
+    current_user_can_classify: row.owner_user_id === null || row.owner_user_id === viewerUserId,
     archived_at: dateIso(row.archived_at),
   };
 }

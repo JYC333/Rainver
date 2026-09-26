@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -34,6 +34,7 @@ function open() {
 
 describe('SpaceSwitcher', () => {
   beforeEach(() => { navigateMock.mockClear() })
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
   it('lists only real spaces — never Home/PersonalView/aggregate', () => {
     open()
@@ -45,6 +46,29 @@ describe('SpaceSwitcher', () => {
     expect(screen.queryByText(/personalview/i)).toBeNull()
     // No menu entry literally labelled "Home" (Home is not a Space).
     expect(screen.queryByText(/^Home$/)).toBeNull()
+  })
+
+  it('keeps the menu inside the viewport on narrow and resized screens', () => {
+    let anchorLeft = 18
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({
+      left: anchorLeft,
+    }) as DOMRect)
+    vi.stubGlobal('innerWidth', 289)
+    open()
+
+    const menu = screen.getByText('Spaces').parentElement!.parentElement!
+    function expectMenuFits() {
+      const left = anchorLeft + parseFloat(menu.style.left)
+      const right = left + parseFloat(menu.style.width)
+      expect(left).toBeGreaterThanOrEqual(16)
+      expect(right).toBeLessThanOrEqual(window.innerWidth - 16)
+    }
+    expectMenuFits()
+
+    anchorLeft = 140
+    vi.stubGlobal('innerWidth', 400)
+    fireEvent(window, new Event('resize'))
+    expectMenuFits()
   })
 
   it('activates the chosen space by navigating to its URL-scoped Today page', () => {

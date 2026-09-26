@@ -60,6 +60,20 @@ its generation, `(spaceId, runId)` scope, and normalized name/description snapsh
 the current dialog. Changing Run or Space closes and resets the dialog, so Save always requires
 a successful preview for the current Run and input.
 
+The frontend owns presentation locale. `apps/web/src/i18n/` uses `react-i18next`
+with bundled English and Simplified Chinese resources, English as the default
+and fallback, and a browser-local `rainver:locale` choice that survives logout.
+Settings and public authentication pages expose the switch. The Shell,
+navigation, Space switcher, Home, quick capture, Settings, public authentication,
+account security, Conversation action previews, and Evolution pages use it.
+Other module copy is migrated by its owning page. Add page dictionaries under
+`apps/web/src/i18n/` with matching English and Chinese keys, then register them
+in `index.ts` and render through `useAppTranslation`. The catalog test checks
+registered keys and interpolation placeholders across both languages. Locale
+changes do not alter route identifiers, API contracts, server-authored data,
+or authorization.
+User-authored and server-authored text is displayed in its original language.
+
 The frontend should guide users through the product loop rather than act as an app gallery.
 The goal is a working system the user interacts with daily — not a navigation menu of features.
 

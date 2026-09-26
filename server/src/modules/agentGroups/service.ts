@@ -1340,30 +1340,29 @@ export class AgentGroupRunService {
     input: SpawnChildRunInput,
   ): Promise<EnforceResult> {
     const registry = await loadActionRegistry();
-    const [requestingMember, targetMember, depth, fanoutCount, concurrencyCount] =
-      await Promise.all([
-        repo.getMemberWithAgentStatus({
-          space_id: input.space_id,
-          group_id: input.group_id,
-          agent_id: input.requesting_agent_id,
-          user_id: group.manager_user_id,
-        }),
-        repo.getMemberWithAgentStatus({
-          space_id: input.space_id,
-          group_id: input.group_id,
-          agent_id: input.target_agent_id,
-          user_id: group.manager_user_id,
-        }),
-        repo.runDepth({ space_id: input.space_id, run_id: input.parent_run_id }),
-        repo.countDelegationsForParent({
-          space_id: input.space_id,
-          parent_run_id: input.parent_run_id,
-        }),
-        repo.countActiveDelegationsForGroup({
-          space_id: input.space_id,
-          group_id: input.group_id,
-        }),
-      ]);
+    // Spawn runs inside the caller's transaction, so every repository read
+    // uses the same checked-out Client and must finish before the next starts.
+    const requestingMember = await repo.getMemberWithAgentStatus({
+      space_id: input.space_id,
+      group_id: input.group_id,
+      agent_id: input.requesting_agent_id,
+      user_id: group.manager_user_id,
+    });
+    const targetMember = await repo.getMemberWithAgentStatus({
+      space_id: input.space_id,
+      group_id: input.group_id,
+      agent_id: input.target_agent_id,
+      user_id: group.manager_user_id,
+    });
+    const depth = await repo.runDepth({ space_id: input.space_id, run_id: input.parent_run_id });
+    const fanoutCount = await repo.countDelegationsForParent({
+      space_id: input.space_id,
+      parent_run_id: input.parent_run_id,
+    });
+    const concurrencyCount = await repo.countActiveDelegationsForGroup({
+      space_id: input.space_id,
+      group_id: input.group_id,
+    });
     const widening = authorityWidening(parentRun, input.context_policy_json ?? {});
     const limits = delegationBudgetLimits(group.budget_json);
     // A Room turn's delegations also draw on its container's Agent-triggered

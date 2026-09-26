@@ -3,6 +3,7 @@ import { PanelLeftOpen, PanelLeftClose, Puzzle, BookOpen, Landmark, type LucideI
 import { cn } from '../../lib/utils'
 import { RAIL_ITEMS, sceneForPath, spacePath, stripSpacePrefix, type RailItem } from '../../core/navigation'
 import { ReviewAttentionIndicator } from './ReviewAttentionIndicator'
+import { useAppTranslation } from '../../i18n'
 
 /** Map lucide icon names (kebab-case) used by official plugins to icon components. */
 const PLUGIN_ICON_MAP: Record<string, LucideIcon> = {
@@ -68,6 +69,7 @@ export function GlobalRail({
   pluginModules?: PluginNavItem[]
 }) {
   const { pathname } = useLocation()
+  const { t } = useAppTranslation()
   const visibleItems = RAIL_ITEMS.filter(i =>
     (!i.requiresSpaceAdmin || canManageSpace) &&
     (!i.requiresInstanceAdmin || canManageInstance),
@@ -78,12 +80,13 @@ export function GlobalRail({
   function renderItem(item: RailItem) {
     const Icon = item.icon
     const active = railItemActive(item, pathname)
+    const label = t(`nav.${item.id.replace(/-/g, '_')}`, { defaultValue: item.label })
     return (
       <Link
         key={item.id}
         to={item.scope === 'space' ? spacePath(spaceId, item.to) : item.to}
-        title={item.label}
-        aria-label={item.label}
+        title={label}
+        aria-label={label}
         aria-current={active ? 'page' : undefined}
         className={cn(
           'relative flex items-center rounded-md transition-colors h-9',
@@ -94,7 +97,7 @@ export function GlobalRail({
         )}
       >
         <Icon className="size-[18px] shrink-0" />
-        {expanded && <span className="text-[13px] font-medium truncate">{item.label}</span>}
+        {expanded && <span className="text-[13px] font-medium truncate">{label}</span>}
         {item.id === 'review' && (
           <ReviewAttentionIndicator count={pendingReviewCount} compact={!expanded} />
         )}
@@ -104,14 +107,14 @@ export function GlobalRail({
 
   return (
     <nav
-      aria-label="Global navigation"
+      aria-label={t('shell.global_navigation')}
       className={cn('hidden md:flex shrink-0 flex-col border-r border-border bg-card py-2.5', expanded ? 'w-[180px]' : 'w-[60px]')}
     >
       <Link
         to="/home"
         className={cn('flex items-center h-9 mb-1.5', expanded ? 'gap-2.5 px-3' : 'justify-center')}
         style={{ textDecoration: 'none' }}
-        title="rainver — Home"
+        title={`rainver — ${t('nav.home')}`}
       >
         <ApertureMark size={22} />
         {expanded && <span className="font-bold text-[13px] tracking-tight text-accent-foreground">rainver</span>}
@@ -160,15 +163,15 @@ export function GlobalRail({
         <button
           type="button"
           onClick={onToggle}
-          aria-label={expanded ? 'Collapse rail' : 'Expand rail'}
-          title={expanded ? 'Collapse rail' : 'Expand rail'}
+          aria-label={expanded ? t('shell.collapse_rail') : t('shell.expand_rail')}
+          title={expanded ? t('shell.collapse_rail') : t('shell.expand_rail')}
           className={cn(
             'flex items-center rounded-md transition-colors h-9 text-muted-foreground hover:text-foreground hover:bg-accent',
             expanded ? 'gap-3 px-2.5 mx-1.5' : 'justify-center mx-auto w-9',
           )}
         >
           {expanded ? <PanelLeftClose className="size-[18px] shrink-0" /> : <PanelLeftOpen className="size-[18px] shrink-0" />}
-          {expanded && <span className="text-[13px] font-medium">Collapse</span>}
+          {expanded && <span className="text-[13px] font-medium">{t('shell.collapse')}</span>}
         </button>
       </div>
     </nav>

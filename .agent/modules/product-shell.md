@@ -15,6 +15,7 @@ quick capture, and account controls.
 - Scene sidebar / scene tabs (`SceneSidebar`, `SceneTabs`)
 - Floating capture (`FloatingQuickCapture`)
 - User menu, theme toggle, logout
+- Browser-local UI locale (`en` default, `zh-CN` available), changed in Settings or on public authentication pages and shared across tabs
 
 ## Does Not Own
 - Page content (feature modules)
@@ -29,7 +30,9 @@ Evolution · Instance Settings (instance admin) · Space Settings (space
 admin) · Settings.
 
 The mobile tab bar is the short daily subset: Home · Inbox · Library ·
-Review · Tasks. Command Center remains a rail destination.
+Review · Tasks. Command Center remains a rail destination. Static shell and
+navigation labels are translated through `apps/web/src/i18n/`; route IDs, Space
+scope, and permission gates remain language-independent.
 
 Knowledge has no scene sidebar; sub-areas switch via
 `KnowledgeSectionHeader`. There is no `CommandPalette`, Project Folder
@@ -40,6 +43,7 @@ switcher, or `RuntimeStatusBar`.
 - `apps/web/src/core/navigation.tsx`
 - `apps/web/src/components/shell/`
 - `apps/web/src/modules/registry.ts`
+- `apps/web/src/i18n/`
 
 ## Related Decisions
 - [0001-space-model.md](../decisions/0001-space-model.md)

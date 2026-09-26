@@ -62,6 +62,9 @@ export async function writeFolderFile(
   options: FileWriteOptions = {},
 ): Promise<FileWriteResult> {
   const bytes = Buffer.from(content, "utf8");
+  if (bytes.includes(0)) {
+    throw new FolderWriteError("not_text", "Files containing NUL bytes cannot be edited");
+  }
   if (bytes.byteLength > MAX_WRITE_FILE_BYTES) {
     throw new FolderWriteError("too_large", `File is too large to write (max ${MAX_WRITE_FILE_BYTES} bytes)`);
   }
@@ -276,6 +279,9 @@ async function readState(
       }
     }
     throw new FolderWriteError("not_text", "Only UTF-8 text files can be edited");
+  }
+  if (bytes.includes(0)) {
+    throw new FolderWriteError("not_text", "Files containing NUL bytes cannot be edited");
   }
   return { path: relativePath, exists: true, content, sha256: hash(bytes) };
 }

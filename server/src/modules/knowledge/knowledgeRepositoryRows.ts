@@ -6,6 +6,7 @@ export interface KnowledgeItemRow {
   space_id: string;
   project_id: string | null;
   project_folder_id: string | null;
+  focus_area_id: string | null;
   root_item_id: string | null;
   supersedes_item_id: string | null;
   redirect_to_item_id: string | null;
@@ -143,6 +144,7 @@ export interface NoteRow {
   excerpt: string | null;
   status: string;
   primary_project_id: string | null;
+  focus_area_id: string | null;
   placements: unknown;
   created_from_activity_id: string | null;
   created_by_user_id: string | null;
@@ -182,7 +184,7 @@ export interface ProvenanceLinkRow {
 
 export const KNOWLEDGE_ITEM_COLUMNS = `
   ki.object_id AS id, ki.space_id, so.primary_project_id AS project_id,
-  so.project_folder_id, ki.root_item_id, ki.supersedes_item_id,
+  so.project_folder_id, so.focus_area_id, ki.root_item_id, ki.supersedes_item_id,
   ki.redirect_to_item_id, ki.knowledge_kind, ki.slug, ki.aliases_json,
   so.title, ki.content, ki.content_json, ki.content_format,
   ki.content_schema_version, ki.plain_text, so.summary AS excerpt,
@@ -252,7 +254,7 @@ export const SOURCE_FROM = `
 export const NOTE_COLUMNS = `
   n.object_id AS id, n.space_id, so.title, n.content_json, n.content_format,
   n.content_schema_version, n.plain_text, so.summary AS excerpt, n.status,
-  so.primary_project_id, n.created_from_activity_id, so.created_by_user_id,
+  so.primary_project_id, so.focus_area_id, n.created_from_activity_id, so.created_by_user_id,
   so.created_at, so.updated_at, so.archived_at, so.deleted_at,
   n.version, n.content_hash, n.updated_by_user_id, n.updated_by_run_id,
   n.project_role, n.role_project_id,

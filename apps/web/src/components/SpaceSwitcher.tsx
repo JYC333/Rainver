@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import type { CSSProperties } from 'react'
 import { Plus, Check, ChevronDown, Users, Home, Heart } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useSpace } from '../contexts/SpaceContext'
@@ -6,6 +7,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { cn } from '../lib/utils'
 import { spacePath } from '../core/navigation'
 import type { SpaceType } from '../types/api'
+import { useAppTranslation } from '../i18n'
 
 const TYPE_ICON: Record<SpaceType, typeof Home> = {
   personal: Home,
@@ -18,22 +20,18 @@ function SpaceIcon({ type, size = 12 }: { type: SpaceType; size?: number }) {
   return <Icon size={size} />
 }
 
-function spaceSubtitle(type: SpaceType): string {
-  if (type === 'personal') return 'Personal Space'
-  if (type === 'household') return 'Family Space'
-  return 'Team Space'
-}
-
 /**
  * Switches between the user's real Spaces only. It never lists Home, "My View", or any
  * cross-space aggregate — those are not Spaces. Selecting a Space activates it and lands on
  * that Space's Today page; it never mutates the user-scoped Home.
  */
 export function SpaceSwitcher() {
+  const { t } = useAppTranslation()
   const { activeSpaceId, preferredSpaceId, spaces } = useSpace()
   const { currentUser } = useAuth()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({})
   const ref = useRef<HTMLDivElement>(null)
 
   // On a space route this is the URL's Space; on a user-scoped surface it previews the Space a
@@ -48,6 +46,23 @@ export function SpaceSwitcher() {
     document.addEventListener('mousedown', onClickOutside)
     return () => document.removeEventListener('mousedown', onClickOutside)
   }, [])
+
+  useLayoutEffect(() => {
+    if (!open) return
+
+    function positionMenu() {
+      if (!ref.current) return
+      const viewportWidth = document.documentElement.clientWidth || window.innerWidth
+      const width = Math.min(320, viewportWidth - 32)
+      const anchorLeft = ref.current.getBoundingClientRect().left
+      const menuLeft = Math.max(16, Math.min(anchorLeft, viewportWidth - width - 16))
+      setMenuStyle({ width, left: menuLeft - anchorLeft })
+    }
+
+    positionMenu()
+    window.addEventListener('resize', positionMenu)
+    return () => window.removeEventListener('resize', positionMenu)
+  }, [open])
 
   function selectSpace(id: string) {
     setOpen(false)
@@ -69,22 +84,22 @@ export function SpaceSwitcher() {
         onClick={() => setOpen(o => !o)}
         disabled={spaces.length === 0}
         className="flex items-center gap-1.5 h-8 max-w-[42vw] px-2.5 border border-border rounded-md hover:bg-accent transition-colors shrink-0 disabled:opacity-50 sm:max-w-none"
-        aria-label="Switch space"
+        aria-label={t('space.switch')}
       >
         {active && <SpaceIcon type={active.type} size={11} />}
         <span className="text-[13px] text-foreground font-medium min-w-0 max-w-[5.5rem] truncate sm:max-w-[140px]">
-          {active?.name ?? (spaces.length === 0 ? '…' : 'Select space')}
+          {active?.name ?? (spaces.length === 0 ? '…' : t('space.select'))}
         </span>
         <ChevronDown size={11} className="text-muted-foreground shrink-0" />
       </button>
 
       {open && (
-        <div className="absolute top-[calc(100%+6px)] left-0 min-w-[220px] bg-card border border-border rounded-lg shadow-lg z-50 py-1 overflow-hidden">
+        <div className="absolute top-[calc(100%+16px)] bg-card border border-border rounded-lg shadow-lg z-50 py-1 overflow-hidden" style={menuStyle}>
           {spaces.length > 0 && (
             <>
               <div className="px-3 py-1.5">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Spaces
+                  {t('space.spaces')}
                 </span>
               </div>
               {spaces.map(s => (
@@ -99,9 +114,9 @@ export function SpaceSwitcher() {
                   <span className="mt-0.5"><SpaceIcon type={s.type} size={12} /></span>
                   <span className="flex-1 min-w-0">
                     <span className="block text-[13px] font-medium truncate">{s.name}</span>
-                    <span className="block text-[10px] text-muted-foreground">{spaceSubtitle(s.type)}</span>
+                    <span className="block text-[10px] text-muted-foreground">{t(`space.${s.type}`)}</span>
                   </span>
-                  <span className="text-[10px] text-muted-foreground">{s.role}</span>
+                  <span className="text-[10px] text-muted-foreground">{t(`space.role_${s.role}`, { defaultValue: s.role })}</span>
                   {s.id === activeSpaceId && <Check size={12} className="text-accent-foreground shrink-0 mt-0.5" />}
                 </button>
               ))}
@@ -114,7 +129,7 @@ export function SpaceSwitcher() {
             className="w-full flex items-center gap-2.5 px-3 py-2 text-left text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           >
             <Plus size={12} />
-            <span className="text-[13px]">Create space…</span>
+            <span className="text-[13px]">{t('space.create')}</span>
           </button>
         </div>
       )}

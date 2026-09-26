@@ -105,8 +105,8 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - File admission is strict and byte-honest. UTF-8 (including BOM and LF/CRLF
   metadata) is writable; mixed endings are reported; UTF-16 BOM files are
   read-only until the explicit `convert=utf8` preview action; malformed or
-  binary/unknown bytes return an empty read-only body rather than replacement
-  characters or guessed encoding.
+  binary/unknown bytes, including NUL-containing UTF-8, return an empty
+  read-only body rather than replacement characters or guessed encoding.
 - Files & Code tree/file/status/diff reads enforce `project_folder.read` before data is returned.
 - The active remote Location is authorized on the server (including an audit
   record with `host_id`) and served live over the `folder_read` channel by the

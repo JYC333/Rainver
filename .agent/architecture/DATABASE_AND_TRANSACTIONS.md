@@ -17,7 +17,9 @@ either a pool or an already checked-out `pg` `PoolClient`. It identifies an
 existing client by its `release()` method; `pg` clients also expose `connect()`
 on their prototype, so `connect` alone is not a valid Pool discriminator.
 Existing clients join the caller's transaction without issuing a nested
-`BEGIN`/`COMMIT`.
+`BEGIN`/`COMMIT`. Code given a checked-out Client must await each query before
+starting the next; `Promise.all` of queries on that Client queues them concurrently
+and triggers the pg@9 deprecation warning.
 
 ## Transaction Ownership Rules
 

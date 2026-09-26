@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 vi.mock('../../../contexts/SpaceContext', () => ({
@@ -8,6 +8,7 @@ vi.mock('../../../contexts/SpaceContext', () => ({
     personalSpaceId: 'personal-1',
     activeSpaceId: 'personal-1',
     activeSpaceName: 'My Personal',
+    userId: 'user-1',
     preferredSpaceId: 'personal-1',
   }),
 }))
@@ -15,6 +16,7 @@ vi.mock('../../../contexts/SpaceContext', () => ({
 vi.mock('../../../api/client', () => {
   const emptyPage = { items: [], total: 0, limit: 100, offset: 0 }
   return {
+    focusAreasApi: { list: vi.fn().mockResolvedValue([]), setForObject: vi.fn().mockResolvedValue(undefined) },
     ApiRequestError: class ApiRequestError extends Error { status = 0 },
     notesApi: {
       get: vi.fn(),
@@ -58,7 +60,7 @@ vi.mock('../../../components/editor', async () => {
 })
 
 import NoteEditor from '../NoteEditor'
-import { notesApi } from '../../../api/client'
+import { focusAreasApi, notesApi } from '../../../api/client'
 import { publishNoteChanged } from '../../../core/noteEvents'
 import type { Note } from '../../../types/api'
 
@@ -74,6 +76,7 @@ function makeNote(overrides: Partial<Note> = {}): Note {
     content_schema_version: 1,
     plain_text: null,
     primary_project_id: null,
+    current_user_can_classify: true,
     project_role: null,
     role_project_id: null,
     placements: [],
@@ -93,6 +96,7 @@ function makeNote(overrides: Partial<Note> = {}): Note {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(focusAreasApi.list).mockResolvedValue([])
 })
 
 /**
@@ -103,6 +107,40 @@ beforeEach(() => {
  * nor an Outlet is the test that the coupling is gone.
  */
 describe('NoteEditor is route-agnostic', () => {
+  it('files the open note from its editor and shows its current Domain', async () => {
+    vi.mocked(notesApi.get).mockResolvedValue(makeNote({ focus_area_id: 'domain-1' }))
+    vi.mocked(focusAreasApi.list).mockResolvedValue([
+      { id: 'domain-1', name: 'Work', archived_at: null },
+      { id: 'domain-2', name: 'Health', archived_at: null },
+    ] as never)
+    render(
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <NoteEditor noteId="note-1" onNoteResolved={vi.fn()} />
+      </MemoryRouter>,
+    )
+
+    const selector = await screen.findByRole('button', { name: 'Domain' })
+    await waitFor(() => expect(selector).toHaveTextContent('Work'))
+    fireEvent.click(selector)
+    fireEvent.click(screen.getByRole('option', { name: 'Health' }))
+    await waitFor(() => expect(focusAreasApi.setForObject).toHaveBeenCalledWith('note-1', 'domain-2'))
+    expect(selector).toHaveTextContent('Health')
+  })
+
+  it('does not offer classification of another person’s note', async () => {
+    vi.mocked(notesApi.get).mockResolvedValue(makeNote({ current_user_can_classify: false, focus_area_id: 'domain-1' }))
+    vi.mocked(focusAreasApi.list).mockResolvedValue([{ id: 'domain-1', name: 'Work', archived_at: null }] as never)
+    render(
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <NoteEditor noteId="note-1" onNoteResolved={vi.fn()} />
+      </MemoryRouter>,
+    )
+
+    const selector = await screen.findByRole('button', { name: 'Domain' })
+    await waitFor(() => expect(selector).toHaveTextContent('Work'))
+    expect(selector).toBeDisabled()
+    expect(focusAreasApi.setForObject).not.toHaveBeenCalled()
+  })
   it('renders from props with no route params and no Outlet context', async () => {
     vi.mocked(notesApi.get).mockResolvedValue(makeNote())
     const onNoteResolved = vi.fn()

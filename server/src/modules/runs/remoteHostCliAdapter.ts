@@ -152,6 +152,9 @@ function chatTurnMessageId(value: unknown): string | null {
   const turn = root.chat_turn && typeof root.chat_turn === "object" && !Array.isArray(root.chat_turn)
     ? root.chat_turn as Record<string, unknown>
     : {};
+  // A handoff prepares the next vendor session before the person's turn. Its
+  // Gateway current ref is the handoff Run, not the pending message.
+  if (turn.schema_version !== "chat_turn.v1" || turn.kind === "handoff") return null;
   return typeof turn.user_message_id === "string" && turn.user_message_id.trim() ? turn.user_message_id : null;
 }
 
@@ -318,7 +321,7 @@ export async function executeRemoteHostCliAdapter(
     // issued an identity simply matches no row. The tool surface must not
     // outlive the process that was allowed to use it.
     if (deps.config?.databaseUrl) {
-      await new PgRunToolIdentityRepository(getDbPool(deps.config.databaseUrl))
+      await new PgRunToolIdentityRepository(deps.db ?? getDbPool(deps.config.databaseUrl))
         .revoke(input.run.id)
         .catch(() => undefined);
     }
@@ -591,6 +594,7 @@ async function runRemoteHostCliAdapter(
         messageId,
         embeddedContext: chatTurnPromptCapabilities(input.run.model_override_json).embedded_context === true,
         useImmutableSnapshot: chatTurnRetryOfRunId(input.run.model_override_json) !== null,
+        descriptorsInDelivery: Boolean(input.invocation_delivery),
         executionHostId: hostId,
       });
       hydratedBlocks = hydrated.blocks as ContentBlock[];
@@ -623,7 +627,7 @@ async function runRemoteHostCliAdapter(
   // Named here because the result envelope reports it too, and both must be
   // the same answer.
   const installation = dispatchInstallation(input.run);
-  const strictHost = await hostIsStrict(deps.config?.databaseUrl, hostId);
+  const strictHost = await hostIsStrict(deps.config?.databaseUrl, hostId, deps.db);
   const egressTransport = !deps.executor && strictHost && deps.config
     ? managedHostEgressTransport(await readInstanceOperationsPolicy(deps.config))
     : { mode: "direct" } satisfies HostEgressTransport;
@@ -976,9 +980,9 @@ export function executionTaskId(run: TaskWorktreeRun): string | null {
   return kind === "task" && typeof id === "string" && id.length > 0 ? id : null;
 }
 
-async function hostIsStrict(databaseUrl: string | null | undefined, hostId: string): Promise<boolean> {
+async function hostIsStrict(databaseUrl: string | null | undefined, hostId: string, db?: Queryable): Promise<boolean> {
   if (!databaseUrl) return false;
-  const result = await getDbPool(databaseUrl)
+  const result = await (db ?? getDbPool(databaseUrl))
     .query<{ kind: string }>(`SELECT kind FROM hosts WHERE id = $1 LIMIT 1`, [hostId])
     .catch(() => null);
   return result?.rows[0]?.kind === "server";

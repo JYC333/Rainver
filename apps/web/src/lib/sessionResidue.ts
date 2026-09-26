@@ -18,6 +18,7 @@ export const API_KEY_STORAGE = 'rainver:api-key'
  */
 const KEEP_LOCAL_EXACT = [
   'rainver:theme',
+  'rainver:locale',
   'rainver:rail-expanded',
   // A map keyed by scene id. Safe while scene ids come from the static module
   // registry; if one ever became a Space or Project id, a content key would be

@@ -53,6 +53,10 @@ currently available. The login page uses that flag to show administrator setup
 for an empty instance or a resumable pending bootstrap, and hides the generic
 registration entry after initialization; invited users always enter through
 their dedicated invitation link.
+The public Login, registration, invitation-claim, and password-reset pages offer
+a browser-local English/Simplified Chinese UI choice. English is the default
+and fallback; this presentation preference survives logout and never changes
+invitation-token handling, session authority, or API payloads.
 
 ## Account security
 

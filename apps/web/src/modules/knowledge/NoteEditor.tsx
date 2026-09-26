@@ -19,6 +19,7 @@ import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { Skeleton } from '../../components/ui/skeleton'
 import { SaveStatusIndicator } from '../../components/SaveStatusIndicator'
+import { FocusAreaField } from '../focusAreas/FocusAreaField'
 import { useAutosave } from '../../hooks/useAutosave'
 import {
   RichTextEditor,
@@ -566,6 +567,18 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
             placeholder="Untitled note"
             aria-label="Note title"
             className="w-full bg-transparent text-3xl font-semibold tracking-tight text-foreground outline-none placeholder:text-muted-foreground/60"
+          />
+          <FocusAreaField
+            targetKind="object"
+            targetId={note.id}
+            focusAreaId={note.focus_area_id}
+            canEdit={note.current_user_can_classify === true}
+            onChanged={(focusAreaId) => {
+              const updated = { ...note, focus_area_id: focusAreaId }
+              noteCacheRef.current.set(updated.id, updated)
+              setNote(updated)
+              onNoteResolved(updated)
+            }}
           />
           {note.updated_by_run_id && note.version > 1 && saveState === 'saved' && (
             <div className="mt-4">

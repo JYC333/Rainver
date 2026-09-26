@@ -55,10 +55,10 @@ const STATUS_VARIANT: Record<string, BadgeProps['variant']> = {
   disabled:   'destructive',
 }
 
-export function StatusBadge({ status, className }: { status: string; className?: string }) {
+export function StatusBadge({ status, label, className }: { status: string; label?: string; className?: string }) {
   return (
     <Badge variant={STATUS_VARIANT[status] ?? 'muted'} className={className}>
-      {status}
+      {label ?? status}
     </Badge>
   )
 }

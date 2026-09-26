@@ -254,10 +254,10 @@ describe('Evolution module', () => {
   it('renders the /evolution page and empty states from empty backend arrays', async () => {
     renderPage()
 
-    expect(await screen.findByRole('heading', { name: '自进化' })).toBeInTheDocument()
-    expect(screen.getByText('改进目标、触发信号、策略选择、验证经验和待审核改进的审计闭环。')).toBeInTheDocument()
-    expect(await screen.findByText('暂无活跃目标。')).toBeInTheDocument()
-    expect(screen.getByText('未选择改进目标。')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Self evolution' })).toBeInTheDocument()
+    expect(screen.getByText('The audit trail for improvement targets, trigger signals, strategy selection, validated experience, and proposed changes.')).toBeInTheDocument()
+    expect(await screen.findByText('No active targets.')).toBeInTheDocument()
+    expect(screen.getByText('No improvement target selected.')).toBeInTheDocument()
   })
 
   it('renders overview counts from backend summary', async () => {
@@ -272,7 +272,7 @@ describe('Evolution module', () => {
 
     renderPage()
 
-    expect(await screen.findAllByText('改进目标')).not.toHaveLength(0)
+    expect(await screen.findAllByText('Improvement targets')).not.toHaveLength(0)
     expect(screen.getByText('2')).toBeInTheDocument()
     expect(screen.getByText('7')).toBeInTheDocument()
     expect(screen.getByText('1')).toBeInTheDocument()
@@ -488,25 +488,25 @@ describe('Evolution module', () => {
     expect(await screen.findAllByText('Capture Memory Extraction')).not.toHaveLength(0)
     expect(evolutionApi.targetSignals).toHaveBeenCalledWith('target-1', { limit: 50 })
 
-    await user.click(screen.getByRole('tab', { name: '触发信号' }))
+    await user.click(screen.getByRole('tab', { name: 'Trigger signals' }))
     expect(await screen.findAllByText('exploration_misclassified_as_decision')).not.toHaveLength(0)
 
-    await user.click(screen.getByRole('tab', { name: '选择的策略' }))
+    await user.click(screen.getByRole('tab', { name: 'Selected strategies' }))
     expect(screen.getByText('repair.runtime_failure')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: '选择记录' }))
+    await user.click(screen.getByRole('tab', { name: 'Selection records' }))
     expect(screen.getByText('Selected repair.runtime_failure from 1 compatible active strategies.')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: '验证经验' }))
+    await user.click(screen.getByRole('tab', { name: 'Validated experience' }))
     expect(screen.getByText('Runtime repair plan passed review.')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: '运行记录' }))
+    await user.click(screen.getByRole('tab', { name: 'Runs' }))
     expect(screen.getByText('codex_cli')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: '待审核改进' }))
+    await user.click(screen.getByRole('tab', { name: 'Pending proposals' }))
     expect(screen.getByText('capability_update')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: '验证' }))
+    await user.click(screen.getByRole('tab', { name: 'Validation' }))
     expect(screen.getByText('Memory candidate reject rate')).toBeInTheDocument()
     expect(screen.getByText('memory_candidate_reject_rate')).toBeInTheDocument()
     expect(screen.getByText('0.25')).toBeInTheDocument()
@@ -541,9 +541,9 @@ describe('Evolution module', () => {
     const user = userEvent.setup({ delay: null })
 
     expect(await screen.findAllByText('Capture Memory Extraction')).not.toHaveLength(0)
-    await user.click(screen.getByRole('button', { name: /复制目标/i }))
-    expect(screen.getByRole('heading', { name: '复制改进目标' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /创建目标/i }))
+    await user.click(screen.getByRole('button', { name: /Copy target/i }))
+    expect(screen.getByRole('heading', { name: 'Copy target' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Create target/i }))
 
     await waitFor(() => expect(evolutionApi.createTarget).toHaveBeenCalled())
     expect(evolutionApi.updateTarget).not.toHaveBeenCalled()
@@ -583,7 +583,7 @@ describe('Evolution module', () => {
 
     renderPage()
     expect(await screen.findAllByText('Capture Memory Extraction')).not.toHaveLength(0)
-    const button = screen.getByRole('button', { name: /创建改进计划/i })
+    const button = screen.getByRole('button', { name: /Create improvement plan/i })
     fireEvent.click(button)
 
     await waitFor(() => expect(evolutionApi.runTarget).toHaveBeenCalled())

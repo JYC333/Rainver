@@ -1,4 +1,14 @@
 import { randomUUID } from "node:crypto";
+import { loadConfig } from "../src/config.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { importedSessionsModule } from "../src/modules/importedSessions/index.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import {
+  AmbientSyncReportSchema,
+  ExtractionOutcomeSchema,
+  ImportedSessionRecordSchema,
+  ImportedSessionSchema,
+} from "@rainver/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -53,7 +63,10 @@ async function importedSessionAudienceForTest(sessionId: string): Promise<string
   return (await audienceForTest(db.pool!, SPACE, sessionId)).sort();
 }
 
-afterEach(() => { vi.restoreAllMocks(); });
+afterEach(() => {
+  vi.restoreAllMocks();
+  __setAuthIdentityForTests(null);
+});
 
 function record(overrides: Partial<AmbientRecord> & Pick<AmbientRecord, "record_key">): AmbientRecord {
   return {
@@ -160,6 +173,64 @@ describe("imported session reconciliation", () => {
     expect(outcome.session.record_count).toBe(1);
     expect(outcome.session.visibility).toBe("space_shared");
     expect(outcome.session.source_state).toBe("present");
+  });
+
+  it("serves all four imported-history read shapes through their protocol contracts", async () => {
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    const app = buildModuleServer(
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
+      [importedSessionsModule],
+    );
+    try {
+      // No records yet: extraction returns a real zero-work outcome without a
+      // provider call, so the public route can be checked deterministically.
+      const extraction = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${PROJECT}/imported-sessions/extraction`,
+        payload: {},
+      });
+      expect(extraction.statusCode).toBe(200);
+      expect(ExtractionOutcomeSchema.parse(extraction.json())).toMatchObject({
+        records_covered: 0,
+        records_remaining: 0,
+      });
+
+      const repository = new PgImportedSessionRepository(db.pool);
+      const imported = await repository.reconcile(reconcileInput());
+      const list = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${PROJECT}/imported-sessions`,
+      });
+      expect(list.statusCode).toBe(200);
+      const listed = ImportedSessionSchema.parse(list.json().sessions[0]);
+      expect(listed.id).toBe(imported.session.id);
+      expect(listed.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(listed.workspace_location_id).toBe(LOCATION);
+
+      const detail = await app.inject({
+        method: "GET",
+        url: `/api/v1/imported-sessions/${imported.session.id}`,
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(ImportedSessionSchema.parse(detail.json().session).id).toBe(imported.session.id);
+      const detailRecord = ImportedSessionRecordSchema.parse(detail.json().records[0]);
+      expect(detailRecord.record_key).toBe("message:msg-1");
+      expect(detailRecord.created_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+      await db.pool.query(`UPDATE hosts SET status = 'offline' WHERE id = $1`, [HOST]);
+      const sync = await app.inject({
+        method: "POST",
+        url: `/api/v1/workspace-locations/${LOCATION}/ambient-sessions/sync`,
+        payload: { runtime_key: "claude_code" },
+      });
+      expect(sync.statusCode).toBe(200);
+      expect(AmbientSyncReportSchema.parse(sync.json())).toMatchObject({
+        location_id: LOCATION,
+        error: "host_offline",
+      });
+    } finally {
+      await app.close();
+    }
   });
 
   it("inserts nothing on a second import of the same replay", async () => {

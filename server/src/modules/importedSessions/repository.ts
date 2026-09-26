@@ -1,58 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
-import { AMBIENT_PARSER_VERSION, type AmbientRecord, type AmbientSessionSummary } from "@rainver/protocol";
+import { AMBIENT_PARSER_VERSION, type AmbientRecord, type AmbientSessionSummary, type ImportedSession, type ImportedSessionRecord } from "@rainver/protocol";
 import { ambientRecordHash } from "./records.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentAccessSql } from "../access/contentAccessSql.js";
 
-export interface ImportedSessionRow {
-  id: string;
-  space_id: string;
-  project_id: string;
-  project_folder_id: string | null;
-  workspace_location_id: string | null;
-  execution_host_id: string | null;
-  owner_user_id: string;
-  runtime_key: string;
-  installation: string;
-  vendor_session_id: string;
-  cwd: string | null;
-  title: string | null;
-  visibility: string;
-  access_level: string;
-  source_state: "present" | "gone";
-  load_state: "complete" | "partial";
-  last_error: string | null;
-  record_count: number;
-  first_record_at: string | null;
-  last_record_at: string | null;
-  vendor_updated_at: string | null;
-  last_synced_at: string | null;
-  last_seen_on_host_at: string | null;
-  created_at: string;
-  updated_at: string;
-}
+/**
+ * PostgreSQL returns timestamptz columns as Date objects. Keep those internal
+ * values explicit while deriving every other field from the public wire DTO.
+ */
+type SessionTimestamp = "first_record_at" | "last_record_at" | "vendor_updated_at"
+  | "last_synced_at" | "last_seen_on_host_at" | "created_at" | "updated_at";
+export type ImportedSessionRow = Omit<ImportedSession, SessionTimestamp> & {
+  [K in SessionTimestamp]: ImportedSession[K] | Date;
+};
 
-export interface ImportedSessionRecordRow {
-  id: string;
-  imported_session_id: string;
-  record_key: string;
-  content_hash: string;
-  conflict_hash: string | null;
-  kind: string;
-  sequence: number;
-  occurred_at: string | null;
-  text: string | null;
-  tool_name: string | null;
-  tool_status: string | null;
-  tool_input: string | null;
-  tool_output: string | null;
-  raw_json: unknown;
-  truncated: boolean;
-  parser_version: string;
-  extracted_in: string | null;
-  created_at: string;
-}
+type RecordTimestamp = "occurred_at" | "created_at";
+export type ImportedSessionRecordRow = Omit<ImportedSessionRecord, RecordTimestamp> & {
+  [K in RecordTimestamp]: ImportedSessionRecord[K] | Date;
+};
 
 const SESSION_COLUMNS = `id, space_id, project_id, project_folder_id, workspace_location_id,
   execution_host_id, owner_user_id, runtime_key, installation, vendor_session_id, cwd, title,

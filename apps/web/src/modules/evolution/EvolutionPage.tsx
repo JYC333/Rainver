@@ -5,6 +5,7 @@ import { evolutionApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { errMsg } from '../../lib/utils'
+import { useAppTranslation } from '../../i18n'
 import type {
   EvolutionExperience,
   EvolutionProposal,
@@ -22,7 +23,8 @@ import type {
   EvolvableAssetPin,
   EvolvableAssetVersion,
 } from '../../types/api'
-import { Badge, StatusBadge } from '../../components/ui/badge'
+import { Badge } from '../../components/ui/badge'
+import { EvolutionStatusBadge } from './EvolutionStatusBadge'
 import { Button } from '../../components/ui/button'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Skeleton } from '../../components/ui/skeleton'
@@ -70,8 +72,9 @@ function AssetList({
   selectedAssetId: string | null
   onSelect: (assetId: string) => void
 }) {
+  const { t } = useAppTranslation()
   if (assets.length === 0) {
-    return <EmptyState title="No prompt/template assets." description="Registered evolvable assets will appear here." />
+    return <EmptyState title={t('evolution.no_assets')} description={t('evolution.no_assets_description')} />
   }
   return (
     <div className="space-y-2">
@@ -87,7 +90,7 @@ function AssetList({
         >
           <div className="flex items-center justify-between gap-2">
             <span className="truncate text-sm font-medium">{assetLabel(asset)}</span>
-            <StatusBadge status={asset.status} />
+            <EvolutionStatusBadge status={asset.status} />
           </div>
           <div className="mt-1 flex flex-wrap gap-1.5">
             <Badge variant="outline">{asset.asset_type}</Badge>
@@ -101,8 +104,9 @@ function AssetList({
 }
 
 function AssetPinList({ pins }: { pins: EvolvableAssetPin[] }) {
+  const { t } = useAppTranslation()
   if (pins.length === 0) {
-    return <EmptyState title="No active pins." description="Runtime resolution is using approved scoped versions or system baselines." />
+    return <EmptyState title={t('evolution.no_active_pins')} description={t('evolution.no_active_pins_description')} />
   }
   return (
     <div className="space-y-2">
@@ -111,9 +115,9 @@ function AssetPinList({ pins }: { pins: EvolvableAssetPin[] }) {
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline">{pin.scope_type}</Badge>
             <span className="font-mono text-xs">{pin.scope_id}</span>
-            <StatusBadge status={pin.status} />
+            <EvolutionStatusBadge status={pin.status} />
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">version {pin.version_id.slice(-8)} · {pin.reason ?? 'no reason'}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t('evolution.pin_version', { version: pin.version_id.slice(-8), reason: pin.reason ?? t('evolution.no_reason') })}</p>
         </div>
       ))}
     </div>
@@ -121,8 +125,9 @@ function AssetPinList({ pins }: { pins: EvolvableAssetPin[] }) {
 }
 
 function AssetEvaluationList({ evaluations }: { evaluations: EvolvableAssetEvaluationRun[] }) {
+  const { t, locale } = useAppTranslation()
   if (evaluations.length === 0) {
-    return <EmptyState title="No evaluation runs." description="Candidate versions need passed evaluation before promotion." />
+    return <EmptyState title={t('evolution.no_evaluation_runs')} description={t('evolution.no_evaluation_runs_description')} />
   }
   return (
     <div className="space-y-2">
@@ -130,14 +135,14 @@ function AssetEvaluationList({ evaluations }: { evaluations: EvolvableAssetEvalu
         <div key={run.id} className="rounded-md border border-border p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={run.status} />
+              <EvolutionStatusBadge status={run.status} />
               <Badge variant="outline">{run.evaluator_version}</Badge>
               <span className="font-mono text-xs text-muted-foreground">{run.candidate_version_id.slice(-8)}</span>
             </div>
-            <span className="text-xs text-muted-foreground">{fmt(run.created_at)}</span>
+            <span className="text-xs text-muted-foreground">{fmt(run.created_at, locale)}</span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            suite {String(run.eval_suite_ref.name ?? run.eval_suite_ref.kind ?? '-')} · metrics {jsonSummary(run.metrics)}
+            {t('evolution.evaluation_suite', { suite: String(run.eval_suite_ref.name ?? run.eval_suite_ref.kind ?? '-') })} · {t('evolution.evaluation_metrics', { metrics: jsonSummary(run.metrics) })}
           </p>
         </div>
       ))}
@@ -146,11 +151,12 @@ function AssetEvaluationList({ evaluations }: { evaluations: EvolvableAssetEvalu
 }
 
 export default function EvolutionPage() {
+  const { t, locale } = useAppTranslation()
   const { activeSpaceId, preferredSpaceId, spaces } = useSpace()
   const viewSpaceId = activeSpaceId ?? preferredSpaceId
   const viewSpaceName = useMemo(
-    () => spaces.find(space => space.id === viewSpaceId)?.name ?? viewSpaceId ?? 'No operational space selected',
-    [spaces, viewSpaceId],
+    () => spaces.find(space => space.id === viewSpaceId)?.name ?? viewSpaceId ?? t('evolution.no_space_selected'),
+    [spaces, viewSpaceId, t],
   )
 
   const [summary, setSummary] = useState<EvolutionSummaryOut>(EMPTY_SUMMARY)
@@ -381,7 +387,7 @@ export default function EvolutionPage() {
     try {
       const resolved = await evolutionApi.resolveAsset(selectedAssetId)
       const fallback = resolved.fallbackReason ? ` · ${resolved.fallbackReason}` : ''
-      toast.success(`Resolved ${resolved.versionId.slice(-8)}${fallback}`)
+      toast.success(t('evolution.asset_resolved', { version: resolved.versionId.slice(-8), fallback }))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -391,14 +397,15 @@ export default function EvolutionPage() {
 
   async function runTarget(targetId: string) {
     if (!selectedAgentId) {
-      toast.error('创建改进计划需要显式选择 Agent。')
+      toast.error(t('evolution.need_agent_to_run'))
       return
     }
     setRunningTargetId(targetId)
     try {
       const result = await evolutionApi.runTarget(targetId, { agent_id: selectedAgentId, mode: 'dry_run' })
-      const proposalNote = result.proposal_ids.length > 0 ? `，已创建 ${result.proposal_ids.length} 个提案` : ''
-      toast.success(`运行完成${proposalNote}。`)
+      toast.success(result.proposal_ids.length > 0
+        ? t('evolution.run_complete_with_proposals', { count: result.proposal_ids.length })
+        : t('evolution.run_complete'))
       await load()
       await loadTargetSignals(targetId)
     } catch (e) {
@@ -420,7 +427,7 @@ export default function EvolutionPage() {
     setSavingSignal(true)
     try {
       await evolutionApi.createSignal(selectedTargetId, body)
-      toast.success('Signal recorded.')
+      toast.success(t('evolution.signal_recorded'))
       setSignalOpen(false)
       await load()
       await loadTargetSignals(selectedTargetId)
@@ -443,13 +450,13 @@ export default function EvolutionPage() {
     try {
       if (mode === 'edit') {
         const updated = await evolutionApi.updateTarget(targetDialogTarget!.id, body as EvolutionTargetUpdateBody)
-        toast.success('Target updated.')
+        toast.success(t('evolution.target_updated'))
         setTargetDialogOpen(false)
         await load()
         setSelectedTargetId(updated.id)
       } else {
         const created = await evolutionApi.createTarget(body as EvolutionTargetCreateBody)
-        toast.success('Target created.')
+        toast.success(t('evolution.target_created'))
         setTargetDialogOpen(false)
         await load()
         setSelectedTargetId(created.id)
@@ -465,7 +472,7 @@ export default function EvolutionPage() {
     setSavingTarget(true)
     try {
       const updated = await evolutionApi.updateTarget(target.id, { enabled: !target.enabled })
-      toast.success(updated.enabled ? 'Target activated.' : 'Target deactivated.')
+      toast.success(updated.enabled ? t('evolution.target_activated') : t('evolution.target_deactivated'))
       await load()
       setSelectedTargetId(updated.id)
     } catch (e) {
@@ -479,7 +486,7 @@ export default function EvolutionPage() {
     setSavingTarget(true)
     try {
       const updated = await evolutionApi.updateTarget(target.id, { status: 'archived', enabled: false })
-      toast.success('Target archived.')
+      toast.success(t('evolution.target_archived'))
       setTargetListTab('archived')
       await load()
       setSelectedTargetId(updated.id)
@@ -494,7 +501,7 @@ export default function EvolutionPage() {
     setSavingTarget(true)
     try {
       const updated = await evolutionApi.updateTarget(target.id, { status: 'active', enabled: true })
-      toast.success('Target restored.')
+      toast.success(t('evolution.target_restored'))
       setTargetListTab('active')
       await load()
       setSelectedTargetId(updated.id)
@@ -527,18 +534,16 @@ export default function EvolutionPage() {
             <GitBranch className="size-5 text-accent-foreground" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">自进化</h1>
-            <p className="text-sm text-muted-foreground">
-              改进目标、触发信号、策略选择、验证经验和待审核改进的审计闭环。
-            </p>
-            <p className="text-xs text-muted-foreground">当前空间：{viewSpaceName}</p>
+            <h1 className="text-xl font-semibold tracking-tight">{t('evolution.title')}</h1>
+            <p className="text-sm text-muted-foreground">{t('evolution.description')}</p>
+            <p className="text-xs text-muted-foreground">{t('evolution.current_space', { name: viewSpaceName })}</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" asChild><Link to="/evolution/inbox"><InboxIcon className="size-3.5" /> Evolution Inbox</Link></Button>
+          <Button size="sm" variant="outline" asChild><Link to="/evolution/inbox"><InboxIcon className="size-3.5" /> {t('evolution.inbox')}</Link></Button>
           <Button size="sm" variant="outline" onClick={load} disabled={loading || !viewSpaceId}>
             {loading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-            Refresh
+            {t('evolution.refresh')}
           </Button>
         </div>
       </div>
@@ -554,15 +559,15 @@ export default function EvolutionPage() {
           <OverviewCards summary={summary} />
 
           <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-            <SectionCard title="改进目标" count={visibleTargets.length}>
+            <SectionCard title={t('evolution.targets')} count={visibleTargets.length}>
               <Button size="sm" variant="outline" className="mb-3 w-full justify-center" onClick={() => openTargetDialog('create')} disabled={!viewSpaceId}>
                 <Plus className="size-3.5" />
-                新建目标
+                {t('evolution.new_target')}
               </Button>
               <Tabs value={targetListTab} onValueChange={value => setTargetListTab(value as TargetListTab)}>
                 <TabsList className="mb-3 grid w-full grid-cols-2">
-                  <TabsTrigger value="active">活跃 {activeTargets.length}</TabsTrigger>
-                  <TabsTrigger value="archived">归档 {archivedTargets.length}</TabsTrigger>
+                  <TabsTrigger value="active">{t('evolution.active_count', { count: activeTargets.length })}</TabsTrigger>
+                  <TabsTrigger value="archived">{t('evolution.archived_count', { count: archivedTargets.length })}</TabsTrigger>
                 </TabsList>
                 <TabsContent value="active">
                   <TargetList
@@ -570,8 +575,8 @@ export default function EvolutionPage() {
                     selectedTargetId={selectedTargetId}
                     onSelect={setSelectedTargetId}
                     onConfigure={target => openTargetDialog('edit', target)}
-                    emptyTitle="暂无活跃目标。"
-                    emptyDescription="活跃或暂停的改进目标会显示在这里。"
+                    emptyTitle={t('evolution.no_active_targets')}
+                    emptyDescription={t('evolution.active_targets_description')}
                   />
                 </TabsContent>
                 <TabsContent value="archived">
@@ -580,28 +585,28 @@ export default function EvolutionPage() {
                     selectedTargetId={selectedTargetId}
                     onSelect={setSelectedTargetId}
                     onConfigure={target => openTargetDialog('edit', target)}
-                    emptyTitle="暂无归档目标。"
-                    emptyDescription="归档目标会和当前改进工作分开显示。"
+                    emptyTitle={t('evolution.no_archived_targets')}
+                    emptyDescription={t('evolution.archived_targets_description')}
                   />
                 </TabsContent>
               </Tabs>
             </SectionCard>
 
-            <SectionCard title={selectedTarget ? displayTargetName(selectedTarget) : 'Target'} count={selectedTarget ? selectedTarget.recent_signal_count : undefined}>
+            <SectionCard title={selectedTarget ? displayTargetName(selectedTarget) : t('evolution.target')} count={selectedTarget ? selectedTarget.recent_signal_count : undefined}>
               {selectedTarget ? (
                 <div className="space-y-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0 space-y-2">
                       <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="secondary">{selectedTarget.target_type}</Badge>
-                        <Badge variant={riskVariant(selectedTarget.risk_level)}>{selectedTarget.risk_level} 风险级别</Badge>
-                        <StatusBadge status={selectedTarget.enabled ? selectedTarget.status : 'disabled'} />
+                        <Badge variant="secondary">{t('evolution.target_type.' + selectedTarget.target_type, { defaultValue: selectedTarget.target_type })}</Badge>
+                        <Badge variant={riskVariant(selectedTarget.risk_level)}>{t('evolution.risk_level_value', { level: t('evolution.risk.' + selectedTarget.risk_level, { defaultValue: selectedTarget.risk_level }) })}</Badge>
+                        <EvolutionStatusBadge status={selectedTarget.enabled ? selectedTarget.status : 'disabled'} />
                       </div>
                       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                        <span>范围 {selectedTarget.scope ?? '-'}</span>
-                        <span>版本 {selectedTarget.current_version ?? selectedTarget.current_version_id ?? '-'}</span>
-                        <span>触发信号 {selectedTarget.recent_signal_count}</span>
-                        <span>最近运行 {fmt(selectedTarget.last_run_at)}</span>
+                        <span>{t('evolution.scope_value', { value: selectedTarget.scope ?? '-' })}</span>
+                        <span>{t('evolution.version_value', { value: selectedTarget.current_version ?? selectedTarget.current_version_id ?? '-' })}</span>
+                        <span>{t('evolution.signals_value', { count: selectedTarget.recent_signal_count })}</span>
+                        <span>{t('evolution.last_run_value', { value: fmt(selectedTarget.last_run_at, locale) })}</span>
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -611,7 +616,7 @@ export default function EvolutionPage() {
                         onClick={() => openTargetDialog('edit', selectedTarget)}
                       >
                         <Pencil className="size-3.5" />
-                        编辑目标
+                        {t('evolution.edit_target')}
                       </Button>
                       <Button
                         size="sm"
@@ -619,49 +624,49 @@ export default function EvolutionPage() {
                         onClick={() => openTargetDialog('copy', selectedTarget)}
                       >
                         <CopyIcon className="size-3.5" />
-                        复制目标
+                        {t('evolution.copy_target')}
                       </Button>
                       {selectedTarget.status === 'archived' ? (
                         <Button size="sm" variant="outline" onClick={() => restoreTarget(selectedTarget)} disabled={savingTarget}>
-                          恢复
+                          {t('evolution.restore')}
                         </Button>
                       ) : (
                         <>
                           <Button size="sm" variant="outline" onClick={() => toggleTargetEnabled(selectedTarget)} disabled={savingTarget}>
-                            {selectedTarget.enabled ? '停用' : '启用'}
+                            {t(selectedTarget.enabled ? 'evolution.deactivate' : 'evolution.activate')}
                           </Button>
                           <Button size="sm" variant="outline" onClick={() => archiveTarget(selectedTarget)} disabled={savingTarget}>
-                            归档
+                            {t('evolution.archive')}
                           </Button>
                         </>
                       )}
                       <Button size="sm" variant="outline" onClick={() => setSignalOpen(true)}>
                         <Plus className="size-3.5" />
-                        记录信号
+                        {t('evolution.record_signal')}
                       </Button>
                       <Button size="sm" variant="outline" disabled={!canRunSelected || runningSelected} onClick={() => runTarget(selectedTarget.id)}>
                         {runningSelected ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
-                        创建改进计划
+                        {t('evolution.create_improvement_plan')}
                       </Button>
                     </div>
                   </div>
                   {selectedTarget.recent_signal_count === 0 && selectedTarget.enabled && selectedTarget.status === 'active' && (
-                    <p className="text-xs text-muted-foreground">创建改进计划需要至少一个触发信号。</p>
+                    <p className="text-xs text-muted-foreground">{t('evolution.need_signal_to_run')}</p>
                   )}
                   {!selectedAgentId && (
-                    <p className="text-xs text-muted-foreground">创建改进计划需要在目标 metadata 中提供 agent_id，或由调用方在请求体中提供。</p>
+                    <p className="text-xs text-muted-foreground">{t('evolution.need_agent_metadata')}</p>
                   )}
 
                   <Tabs value={detailTab} onValueChange={value => setDetailTab(value as DetailTab)}>
                     <TabsList className="flex h-auto w-full flex-wrap justify-start">
-                      <TabsTrigger value="definition">定义</TabsTrigger>
-                      <TabsTrigger value="signals">触发信号</TabsTrigger>
-                      <TabsTrigger value="strategies">选择的策略</TabsTrigger>
-                      <TabsTrigger value="decisions">选择记录</TabsTrigger>
-                      <TabsTrigger value="experiences">验证经验</TabsTrigger>
-                      <TabsTrigger value="runs">运行记录</TabsTrigger>
-                      <TabsTrigger value="proposals">待审核改进</TabsTrigger>
-                      <TabsTrigger value="validation">验证</TabsTrigger>
+                      <TabsTrigger value="definition">{t('evolution.tab_definition')}</TabsTrigger>
+                      <TabsTrigger value="signals">{t('evolution.tab_signals')}</TabsTrigger>
+                      <TabsTrigger value="strategies">{t('evolution.tab_strategies')}</TabsTrigger>
+                      <TabsTrigger value="decisions">{t('evolution.tab_decisions')}</TabsTrigger>
+                      <TabsTrigger value="experiences">{t('evolution.tab_experiences')}</TabsTrigger>
+                      <TabsTrigger value="runs">{t('evolution.tab_runs')}</TabsTrigger>
+                      <TabsTrigger value="proposals">{t('evolution.tab_proposals')}</TabsTrigger>
+                      <TabsTrigger value="validation">{t('evolution.tab_validation')}</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="definition" className="mt-4">
@@ -691,17 +696,17 @@ export default function EvolutionPage() {
                   </Tabs>
                 </div>
               ) : (
-                <EmptyState title="未选择改进目标。" description="先选择或注册一个目标。" />
+                <EmptyState title={t('evolution.no_target_selected')} description={t('evolution.select_or_register_target')} />
               )}
             </SectionCard>
           </div>
 
           <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
-            <SectionCard title="Prompt / workflow assets" count={assets.length}>
+            <SectionCard title={t('evolution.assets')} count={assets.length}>
               <AssetList assets={assets} selectedAssetId={selectedAssetId} onSelect={setSelectedAssetId} />
             </SectionCard>
 
-            <SectionCard title={selectedAsset ? assetLabel(selectedAsset) : 'Asset'} count={assetVersions.length}>
+            <SectionCard title={selectedAsset ? assetLabel(selectedAsset) : t('evolution.asset')} count={assetVersions.length}>
               {selectedAsset ? (
                 <div className="space-y-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -709,22 +714,22 @@ export default function EvolutionPage() {
                       <div className="flex flex-wrap items-center gap-2">
                         <Badge variant="secondary">{selectedAsset.asset_type}</Badge>
                         <Badge variant="outline">{selectedAsset.owner_scope_type}</Badge>
-                        <StatusBadge status={selectedAsset.status} />
+                        <EvolutionStatusBadge status={selectedAsset.status} />
                       </div>
                       <p className="truncate font-mono text-xs text-muted-foreground">{selectedAsset.asset_key}</p>
                       {selectedAsset.description && <p className="text-sm text-muted-foreground">{selectedAsset.description}</p>}
                     </div>
                     <Button size="sm" variant="outline" onClick={resolveSelectedAsset} disabled={assetLoading}>
                       {assetLoading ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
-                      Resolve default
+                      {t('evolution.resolve_default')}
                     </Button>
                   </div>
 
                   <Tabs defaultValue="versions">
                     <TabsList className="flex h-auto w-full flex-wrap justify-start">
-                      <TabsTrigger value="versions">Versions</TabsTrigger>
-                      <TabsTrigger value="pins">Pins</TabsTrigger>
-                      <TabsTrigger value="evaluations">Evaluations</TabsTrigger>
+                      <TabsTrigger value="versions">{t('evolution.versions')}</TabsTrigger>
+                      <TabsTrigger value="pins">{t('evolution.pins')}</TabsTrigger>
+                      <TabsTrigger value="evaluations">{t('evolution.evaluations')}</TabsTrigger>
                     </TabsList>
                     <TabsContent value="versions" className="mt-4">
                       <AssetLifecyclePanel asset={selectedAsset} versions={assetVersions} evaluations={assetEvaluations} onReload={() => loadAssetDetails(selectedAsset.id)} />
@@ -738,7 +743,7 @@ export default function EvolutionPage() {
                   </Tabs>
                 </div>
               ) : (
-                <EmptyState title="No asset selected." description="Register prompt or workflow-template assets to inspect versions, pins, and evaluations." />
+                <EmptyState title={t('evolution.no_asset_selected')} description={t('evolution.no_asset_selected_description')} />
               )}
             </SectionCard>
           </div>

@@ -1,6 +1,6 @@
 import { useState, useId } from 'react'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
-import { Settings, Sun, Moon, Plus, KeyRound, BarChart3 } from 'lucide-react'
+import { Settings, Sun, Moon, Plus, KeyRound, BarChart3, Globe } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '../../contexts/AuthContext'
 import { useSpace } from '../../contexts/SpaceContext'
@@ -12,25 +12,18 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { cn, errMsg } from '../../lib/utils'
 import type { SpaceOversightMode, SpaceType } from '../../types/api'
+import { useAppTranslation, type Locale } from '../../i18n'
 
-const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun; description: string }[] = [
-  { value: 'dark',  label: 'Dark',  icon: Moon, description: 'Deep navy — default' },
-  { value: 'light', label: 'Light', icon: Sun,  description: 'Light purple skin'    },
+const THEME_OPTIONS: { value: Theme; icon: typeof Sun }[] = [
+  { value: 'dark', icon: Moon },
+  { value: 'light', icon: Sun },
 ]
 
-const SPACE_TYPES: { value: Exclude<SpaceType, 'personal'>; label: string; description: string }[] = [
-  { value: 'team',   label: 'Team',   description: 'Collaborative Space for a team' },
-  { value: 'household', label: 'Family', description: 'Shared space for household members' },
-]
-
-const OVERSIGHT_MODE_OPTIONS: { value: SpaceOversightMode; label: string; description: string }[] = [
-  { value: 'none',    label: 'None',    description: "Owners/admins see only what any member would — no extra visibility." },
-  { value: 'summary', label: 'Summary', description: "Owners/admins can see a summary of other members' private content." },
-  { value: 'content', label: 'Content', description: "Owners/admins can see the full content of other members' private content." },
-  { value: 'full',    label: 'Full',    description: "Owners/admins can see everything, including highly restricted memory." },
-]
+const SPACE_TYPES: Exclude<SpaceType, 'personal'>[] = ['team', 'household']
+const OVERSIGHT_MODE_OPTIONS: SpaceOversightMode[] = ['none', 'summary', 'content', 'full']
 
 export default function SettingsPage() {
+  const { t, locale, setLocale } = useAppTranslation()
   const { currentUser } = useAuth()
   const { reloadSpaces } = useSpace()
   const navigate = useNavigate()
@@ -54,7 +47,7 @@ export default function SettingsPage() {
         type: newSpaceType,
         oversight_mode: newSpaceOversightMode,
       })
-      toast.success(`Space "${space.name}" created`)
+      toast.success(t('settings.created', { name: space.name }))
       setNewSpaceName('')
       setNewSpaceOversightMode('none')
       await reloadSpaces()
@@ -81,51 +74,51 @@ export default function SettingsPage() {
           <Settings className="size-5 text-accent-foreground" />
         </div>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-          <p className="text-sm text-muted-foreground">Configure your account credentials, personal spaces, and preferences.</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t('settings.title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('settings.subtitle')}</p>
         </div>
       </div>
 
       {/* Model providers */}
       <Card>
-        <CardTitle className="flex items-center gap-2"><KeyRound className="size-3.5" /> Account security</CardTitle>
-        <p className="text-sm text-muted-foreground mb-3">Manage password, Google login, reauthentication, and active sessions.</p>
-        <Button asChild variant="outline" size="sm"><Link to="/settings/security">Open Security</Link></Button>
+        <CardTitle className="flex items-center gap-2"><KeyRound className="size-3.5" /> {t('settings.account_security')}</CardTitle>
+        <p className="text-sm text-muted-foreground mb-3">{t('settings.account_security_description')}</p>
+        <Button asChild variant="outline" size="sm"><Link to="/settings/security">{t('settings.open_security')}</Link></Button>
       </Card>
 
       {/* Model providers */}
       <Card>
         <CardTitle className="flex items-center gap-2">
-          <KeyRound className="size-3.5" /> Model Providers
+          <KeyRound className="size-3.5" /> {t('settings.model_providers')}
         </CardTitle>
         <p className="text-sm text-muted-foreground mb-3">
-          Configure LLM backends (OpenAI, Anthropic, OpenRouter, Ollama). A CLI runtime is logged in on its execution host instead, from the Command Center.
+          {t('settings.model_providers_description')}
         </p>
         <Button asChild variant="outline" size="sm">
-          <Link to="/providers">Open Model Providers</Link>
+          <Link to="/providers">{t('settings.open_model_providers')}</Link>
         </Button>
       </Card>
 
       {/* Token usage */}
       <Card>
         <CardTitle className="flex items-center gap-2">
-          <BarChart3 className="size-3.5" /> Usage
+          <BarChart3 className="size-3.5" /> {t('settings.usage')}
         </CardTitle>
         <p className="text-sm text-muted-foreground mb-3">
-          Review your token usage, estimated cost, sessions, and usage shared within the active Space.
+          {t('settings.usage_description')}
         </p>
         <Button asChild variant="outline" size="sm">
-          <Link to="/usage">Open Usage</Link>
+          <Link to="/usage">{t('settings.open_usage')}</Link>
         </Button>
       </Card>
 
       {/* Appearance */}
       <Card>
         <CardTitle className="flex items-center gap-2">
-          <Sun className="size-3.5" /> Appearance
+          <Sun className="size-3.5" /> {t('settings.appearance')}
         </CardTitle>
         <div className="grid grid-cols-2 gap-2">
-          {THEME_OPTIONS.map(({ value, label, icon: Icon, description }) => (
+          {THEME_OPTIONS.map(({ value, icon: Icon }) => (
             <button
               key={value}
               onClick={() => setTheme(value)}
@@ -138,12 +131,33 @@ export default function SettingsPage() {
             >
               <Icon className="size-4 shrink-0" />
               <div>
-                <div className="text-[13px] font-medium leading-none">{label}</div>
-                <div className="text-[11px] mt-1 text-muted-foreground">{description}</div>
+                <div className="text-[13px] font-medium leading-none">{t(`settings.${value}`)}</div>
+                <div className="text-[11px] mt-1 text-muted-foreground">{t(`settings.${value}_description`)}</div>
               </div>
               {theme === value && (
                 <span className="ml-auto w-2 h-2 rounded-full shrink-0" style={{ background: 'var(--primary)' }} />
               )}
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      <Card>
+        <CardTitle className="flex items-center gap-2"><Globe className="size-3.5" /> {t('settings.language')}</CardTitle>
+        <p className="text-sm text-muted-foreground mb-3">{t('settings.language_description')}</p>
+        <div className="grid grid-cols-2 gap-2" role="group" aria-label={t('settings.language')}>
+          {([{ value: 'en', key: 'english' }, { value: 'zh-CN', key: 'chinese' }] as const satisfies readonly { value: Locale; key: string }[]).map(option => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={locale === option.value}
+              onClick={() => setLocale(option.value)}
+              className={cn(
+                'rounded-lg border p-3 text-left text-[13px] transition-colors',
+                locale === option.value ? 'border-primary/50 bg-primary/8 text-foreground' : 'border-border hover:bg-accent text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {t(`settings.${option.key}`)}
             </button>
           ))}
         </div>
@@ -155,62 +169,62 @@ export default function SettingsPage() {
           {/* Create space — anchor target */}
           <Card id="spaces">
             <CardTitle className="flex items-center gap-2">
-              <Plus className="size-3.5" /> Create space
+              <Plus className="size-3.5" /> {t('settings.create_space')}
             </CardTitle>
             <form onSubmit={handleCreateSpace} className="space-y-3">
               <div className="space-y-1.5">
-                <Label htmlFor="space-name">Space name</Label>
+                <Label htmlFor="space-name">{t('settings.space_name')}</Label>
                 <Input
                   id="space-name"
                   value={newSpaceName}
                   onChange={e => setNewSpaceName(e.target.value)}
-                  placeholder="My Team"
+                  placeholder={t('settings.space_name_placeholder')}
                 />
               </div>
               <div className="grid grid-cols-2 gap-2">
-                {SPACE_TYPES.map(t => (
+                {SPACE_TYPES.map(typeOption => (
                   <button
-                    key={t.value}
+                    key={typeOption}
                     type="button"
-                    onClick={() => setNewSpaceType(t.value)}
+                    onClick={() => setNewSpaceType(typeOption)}
                     className={cn(
                       'flex flex-col gap-1 p-3 rounded-lg border text-left transition-colors',
-                      newSpaceType === t.value
+                      newSpaceType === typeOption
                         ? 'border-primary/50 bg-primary/8 text-foreground'
                         : 'border-border hover:bg-accent text-muted-foreground hover:text-foreground',
                     )}
                   >
-                    <span className="text-[13px] font-medium">{t.label}</span>
-                    <span className="text-[11px]">{t.description}</span>
+                    <span className="text-[13px] font-medium">{t(`settings.${typeOption === 'household' ? 'family' : typeOption}`)}</span>
+                    <span className="text-[11px]">{t(`settings.${typeOption === 'household' ? 'family' : typeOption}_description`)}</span>
                   </button>
                 ))}
               </div>
               <div className="space-y-1.5">
-                <Label>Oversight mode</Label>
+                <Label>{t('settings.oversight_mode')}</Label>
                 <p className="text-[11px] text-muted-foreground">
-                  How much this Space's owner/admins can see of other members' otherwise-private content. Read-only, Space-internal, and cannot be changed after creation.
+                  {t('settings.oversight_description')}
                 </p>
-                <div className="grid grid-cols-2 gap-2" role="group" aria-label="Oversight mode">
-                  {OVERSIGHT_MODE_OPTIONS.map(o => (
+                <div className="grid grid-cols-2 gap-2" role="group" aria-label={t('settings.oversight_mode')}>
+                  {OVERSIGHT_MODE_OPTIONS.map(mode => (
                     <button
-                      key={o.value}
+                      key={mode}
                       type="button"
-                      onClick={() => setNewSpaceOversightMode(o.value)}
+                      onClick={() => setNewSpaceOversightMode(mode)}
                       className={cn(
                         'flex flex-col gap-1 p-3 rounded-lg border text-left transition-colors',
-                        newSpaceOversightMode === o.value
+                        newSpaceOversightMode === mode
                           ? 'border-primary/50 bg-primary/8 text-foreground'
                           : 'border-border hover:bg-accent text-muted-foreground hover:text-foreground',
                       )}
                     >
-                      <span className="text-[13px] font-medium">{o.label}</span>
-                      <span className="text-[11px]">{o.description}</span>
+                      <span className="text-[13px] font-medium">{t(`settings.oversight_${mode}`)}</span>
+                      <span className="text-[11px]">{t(`settings.oversight_${mode}_description`)}</span>
                     </button>
                   ))}
                 </div>
               </div>
               <Button type="submit" size="sm" disabled={!newSpaceName.trim() || creating}>
-                {creating ? 'Creating…' : 'Create space'}
+                {creating ? t('settings.creating') : t('settings.create_space')}
               </Button>
             </form>
           </Card>

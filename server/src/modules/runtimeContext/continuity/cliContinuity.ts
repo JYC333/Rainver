@@ -734,41 +734,39 @@ async function loadBindingGenerations(db: Queryable, input: {
   runtimeProfileId: string;
   providerId: string | null;
 }): Promise<{ egress: unknown; runtime: unknown; provider: unknown }> {
-  const [egress, runtime, provider] = await Promise.all([
-    db.query(
-      `SELECT settings_json FROM settings
-        WHERE scope_type='space' AND scope_id=$1
-          AND settings_key='runtime_context.cli_egress_generation'`,
-      [input.spaceId],
-    ),
-    db.query(
-      `SELECT updated_at,runtime_key,model_provider_id,model_name,
-              runtime_config_json,runtime_policy_json,enabled
-         FROM agent_runtime_profiles
-        WHERE id=$1 AND space_id=$2 AND agent_id=$3`,
-      [input.runtimeProfileId, input.spaceId, input.agentId],
-    ),
-    input.providerId
-      ? db.query(
-          `SELECT provider.updated_at AS provider_updated_at,provider.provider_type,provider.base_url,
-                  provider.network_profile_id AS provider_network_profile_id,
-                  provider.default_model,provider.enabled AS provider_enabled,
-                  provider.credential_id,provider.capabilities_json,provider.config_json,
-                  grant_row.updated_at AS grant_updated_at,
-                  grant_row.enabled AS grant_enabled,grant_row.is_default,
-                  grant_row.network_profile_id AS grant_network_profile_id,
-                  network.updated_at AS network_updated_at,network.mode AS network_mode,
-                  network.enabled AS network_enabled
-             FROM model_provider_space_grants grant_row
-             JOIN model_providers provider ON provider.id=grant_row.provider_id
-             LEFT JOIN network_profiles network
-               ON network.id=COALESCE(grant_row.network_profile_id,provider.network_profile_id)
-            WHERE grant_row.provider_id=$1 AND grant_row.space_id=$2
-              AND grant_row.enabled=TRUE AND provider.enabled=TRUE`,
-          [input.providerId, input.spaceId],
-        )
-      : Promise.resolve({ rows: [] }),
-  ]);
+  const egress = await db.query(
+    `SELECT settings_json FROM settings
+      WHERE scope_type='space' AND scope_id=$1
+        AND settings_key='runtime_context.cli_egress_generation'`,
+    [input.spaceId],
+  );
+  const runtime = await db.query(
+    `SELECT updated_at,runtime_key,model_provider_id,model_name,
+            runtime_config_json,runtime_policy_json,enabled
+       FROM agent_runtime_profiles
+      WHERE id=$1 AND space_id=$2 AND agent_id=$3`,
+    [input.runtimeProfileId, input.spaceId, input.agentId],
+  );
+  const provider = input.providerId
+    ? await db.query(
+        `SELECT provider.updated_at AS provider_updated_at,provider.provider_type,provider.base_url,
+                provider.network_profile_id AS provider_network_profile_id,
+                provider.default_model,provider.enabled AS provider_enabled,
+                provider.credential_id,provider.capabilities_json,provider.config_json,
+                grant_row.updated_at AS grant_updated_at,
+                grant_row.enabled AS grant_enabled,grant_row.is_default,
+                grant_row.network_profile_id AS grant_network_profile_id,
+                network.updated_at AS network_updated_at,network.mode AS network_mode,
+                network.enabled AS network_enabled
+           FROM model_provider_space_grants grant_row
+           JOIN model_providers provider ON provider.id=grant_row.provider_id
+           LEFT JOIN network_profiles network
+             ON network.id=COALESCE(grant_row.network_profile_id,provider.network_profile_id)
+          WHERE grant_row.provider_id=$1 AND grant_row.space_id=$2
+            AND grant_row.enabled=TRUE AND provider.enabled=TRUE`,
+        [input.providerId, input.spaceId],
+      )
+    : { rows: [] };
   if (!runtime.rows[0]) throw new HttpError(409, "CLI runtime profile is no longer authoritative");
   if (input.providerId && !provider.rows[0]) {
     throw new HttpError(409, "CLI provider configuration is no longer authoritative");

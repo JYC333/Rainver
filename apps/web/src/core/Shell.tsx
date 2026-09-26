@@ -17,6 +17,7 @@ import { moduleForPath } from '../modules/registry'
 import { useEffectiveModules } from '../modules/plugins/useEffectivePlugins'
 import { proposalsApi } from '../api/client'
 import { REVIEW_ATTENTION_CHANGED_EVENT } from './reviewAttention'
+import { useAppTranslation } from '../i18n'
 
 const RAIL_KEY = 'rainver:rail-expanded'
 const SCENE_COLLAPSE_KEY = 'rainver:scene-collapsed'
@@ -31,11 +32,12 @@ function readMap(key: string): Record<string, boolean> {
 /* ── Theme toggle ──────────────────────────────────────────────────────────── */
 function ThemeToggle() {
   const { theme, toggleTheme } = useTheme()
+  const { t } = useAppTranslation()
   return (
     <button
       onClick={toggleTheme}
       className="flex items-center justify-center w-8 h-8 rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-      title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+      title={theme === 'dark' ? t('shell.switch_to_light') : t('shell.switch_to_dark')}
     >
       {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
     </button>
@@ -45,6 +47,7 @@ function ThemeToggle() {
 /* ── User menu ─────────────────────────────────────────────────────────────── */
 function UserMenu() {
   const { currentUser, logout } = useAuth()
+  const { t } = useAppTranslation()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -63,7 +66,7 @@ function UserMenu() {
         onClick={() => navigate('/login')}
         className="flex items-center gap-1.5 h-8 px-2.5 rounded-md border border-border text-[12px] font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
       >
-        Sign in
+        {t('shell.sign_in')}
       </button>
     )
   }
@@ -90,7 +93,7 @@ function UserMenu() {
             className="w-full flex items-center gap-2 px-3 py-2 text-left text-[13px] text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           >
             <LogOut size={13} />
-            Sign out
+            {t('shell.sign_out')}
           </button>
         </div>
       )}
@@ -108,6 +111,7 @@ function SceneHeader({
   hasSidebar: boolean
   onExpandSidebar: () => void
 }) {
+  const { t } = useAppTranslation()
   return (
     <header
       className="shrink-0 flex items-center gap-2.5 h-14 px-4 border-b border-border bg-card"
@@ -118,8 +122,8 @@ function SceneHeader({
           type="button"
           onClick={onExpandSidebar}
           className="hidden md:flex items-center gap-2 h-8 px-2.5 rounded-md border border-border text-[13px] font-semibold text-foreground hover:bg-accent transition-colors"
-          title="Show sidebar"
-          aria-label="Show sidebar"
+          title={t('shell.show_sidebar')}
+          aria-label={t('shell.show_sidebar')}
         >
           <Menu className="size-4" /> {title}
         </button>
@@ -129,7 +133,7 @@ function SceneHeader({
 
       {isHome && (
         <span className="hidden sm:inline-flex items-center gap-1 h-7 px-2 rounded-md border border-border text-[11px] text-muted-foreground">
-          <Globe className="size-3" /> Showing: All spaces
+          <Globe className="size-3" /> {t('shell.all_spaces')}
         </span>
       )}
 
@@ -146,6 +150,7 @@ function SceneHeader({
 
 /* ── Shell ─────────────────────────────────────────────────────────────────── */
 export default function Shell() {
+  const { t } = useAppTranslation()
   const { theme } = useTheme()
   const { currentUser } = useAuth()
   const { activeSpaceId, preferredSpaceId, spaces } = useSpace()
@@ -199,7 +204,10 @@ export default function Shell() {
 
   const sceneCollapsed = scene ? (collapsedScenes[scene.id] ?? false) : false
   const showSidebar = Boolean(scene) && !sceneCollapsed
-  const title = scene?.title ?? (isHome ? 'Home' : moduleForPath(logicalPath, effectiveModules)?.label ?? 'rainver')
+  const module = moduleForPath(logicalPath, effectiveModules)
+  const title = scene
+    ? t(`nav.${scene.id}`, { defaultValue: t(`modules.${scene.id}`, { defaultValue: scene.title }) })
+    : isHome ? t('nav.home') : module ? t(`modules.${module.id}`, { defaultValue: module.label }) : 'rainver'
   const permissionSpaceId = activeSpaceId ?? preferredSpaceId
   const permissionRole = spaces.find(s => s.id === permissionSpaceId)?.role
   const canManageSpace = permissionRole === 'owner' || permissionRole === 'admin'
@@ -208,7 +216,7 @@ export default function Shell() {
   const pluginNavItems: PluginNavItem[] = effectiveModules
     .filter(m => m.source === 'official_plugin' && m.enabled && m.perspectiveType !== 'neutral')
     .map(m => ({
-      id: m.id, label: m.label, path: m.path, icon: m.icon,
+      id: m.id, label: t(`modules.${m.id}`, { defaultValue: m.label }), path: m.path, icon: m.icon,
       scope: m.perspectiveType === 'space-scoped' ? 'space' as const : 'personal' as const,
     }))
 

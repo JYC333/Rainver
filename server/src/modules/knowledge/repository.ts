@@ -1265,7 +1265,7 @@ export class PgKnowledgeRepository {
       resourceType: "space_object",
       resourceId: noteId,
     });
-    return noteOut(row);
+    return noteOut(row, identity.userId);
   }
 
   async createNote(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {

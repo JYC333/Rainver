@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { agentsApi, ApiRequestError, conversationInputApi, roomsApi, runsApi } from '../../api/client'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { useSpace } from '../../contexts/SpaceContext'
+import { useAppTranslation } from '../../i18n'
 import { errMsg } from '../../lib/utils'
 import type {
   ThreadReferencePick,
@@ -1450,24 +1451,24 @@ function ProposalContinuationStatus({ continuation, turns }: {
   continuation: PendingProposalContinuation
   turns: Record<string, RunTurn>
 }) {
+  const { t } = useAppTranslation()
   // The newest step the follow-up turn has taken, which is the closest thing
   // to a status while it runs.
   const activeLabel = continuation.runIds.reduce<string | null>((latest, runId) => {
     const step = [...(turns[runId]?.parts ?? [])].reverse().find(part => part.type === 'tool_call')
     return step?.type === 'tool_call' ? step.name : latest
   }, null)
-  const actionLabel = continuation.action === 'accept' ? '已接受' : '已拒绝'
   const statusText = continuation.phase === 'failed'
-    ? `后续处理未能启动：${continuation.error || '未知错误'}`
+    ? t('mixed_surfaces.continuation.failed', { error: continuation.error || t('mixed_surfaces.continuation.unknown_error') })
     : continuation.phase === 'submitting'
-      ? `${actionLabel}，正在启动下一步…`
-      : activeLabel || `${actionLabel}，助手正在处理…`
+      ? t(continuation.action === 'accept' ? 'mixed_surfaces.continuation.starting_after_accept' : 'mixed_surfaces.continuation.starting_after_reject')
+      : activeLabel || t(continuation.action === 'accept' ? 'mixed_surfaces.continuation.processing_after_accept' : 'mixed_surfaces.continuation.processing_after_reject')
   return (
     <div className="flex justify-start" role="status" aria-live="polite">
       <div className={`max-w-[82%] rounded-lg border px-3 py-2 ${continuation.phase === 'failed' ? 'border-destructive/40 bg-destructive/5' : 'border-border bg-muted/30'}`}>
         <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
           {continuation.phase === 'failed' ? <Bot className="size-3.5" /> : <Loader2 className="size-3.5 animate-spin" />}
-          <span>系统状态</span>
+          <span>{t('mixed_surfaces.continuation.system_status')}</span>
         </div>
         <p className="text-sm">{statusText}</p>
       </div>

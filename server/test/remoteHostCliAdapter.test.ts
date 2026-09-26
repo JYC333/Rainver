@@ -16,6 +16,8 @@ import { buildUnboundRuntimeProfile } from "../src/modules/runs/remoteProviderBi
 import { HostConnectionRegistry, type HostFrameSink } from "../src/modules/hosts/connectionRegistry.js";
 import type { CliProcessRegistry } from "../src/modules/runs/localCliExecution.js";
 import type { ThreadEventDraft } from "../src/modules/hosts/threadEventNormalization.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { renderConversationInputResourceDescriptors } from "../src/modules/sessions/conversationInputService.js";
 
 /** The Run executor's policy seam, allowing: these tests cover the launch frame, not the decision. */
 const allowCredentialSpend = async () => ({ status: "allow" as const, policy_decision_record_id: null });
@@ -128,6 +130,38 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(threadEventSink).toHaveBeenCalledWith([{ event_type: "status", status: "run_failed" }]);
   });
 
+  it("keeps a pending user message's attachments out of a session handoff", async () => {
+    const runCommand = vi.fn(async () => ({
+      returncode: 0, stdout: "", stderr: "", timed_out: false,
+    }));
+    const result = await executeRemoteHostCliAdapter(
+      {
+        run: run({
+          runtime_key: "opencode",
+          prompt: "Write the session handoff",
+          model_override_json: {
+            chat_turn: {
+              schema_version: "chat_turn.v1",
+              kind: "handoff",
+              user_message_id: "pending-message-with-attachments",
+            },
+          },
+        }),
+        prompt: "Write the session handoff",
+        invocation_delivery: runtimeContextDelivery("Write the session handoff"),
+        model: null,
+        resume_session_id: null,
+      },
+      "host-1",
+      "folder-1",
+      { executor: { runCommand }, bindings: NO_PROVIDER_BINDINGS },
+    );
+    // No database was provided: the handoff must not try to hydrate the
+    // following person's message before it reaches that person's own Run.
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(result.error_code).not.toBe("conversation_input_unavailable");
+  });
+
   it("drives opencode's ACP controller over the daemon's duplex stdin frames and reports success (ACP runtime replatform P2)", async () => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();
@@ -192,6 +226,7 @@ describe("executeRemoteHostCliAdapter", () => {
       .flatMap((block) => block.type === "text" && block.text ? [block.text] : [])
       .join("\n");
     expect(promptText).toContain("Use the authorized current request only.");
+    expect(promptText.split("Use the authorized current request only.")).toHaveLength(2);
     expect(promptText).toContain("## Current user input");
     expect(promptText).not.toContain("add a test");
 
@@ -229,6 +264,97 @@ describe("executeRemoteHostCliAdapter", () => {
     // The initialize-response echo (forwarded for diagnostics by
     // AcpController) must not produce a spurious runtime event.
     expect(runtimeEvents).toEqual([]);
+  });
+
+  it("sends an input-resource descriptor once through Delivery and keeps its ACP resource link", async () => {
+    const registry = new HostConnectionRegistry();
+    const sink = new FakeSink();
+    registry.registerConnection("host-1", sink);
+    const descriptorText = renderConversationInputResourceDescriptors([{
+      resource_id: "resource-1",
+      source_state: "draft",
+      display_name: "README.md",
+      media_type: "text/markdown",
+      relative_path: "README.md",
+      byte_size: 12,
+      sha256: "a".repeat(64),
+      captured_at: "2026-09-18T12:00:00.000Z",
+    }]);
+    const resourcePart = {
+      part_id: "part-1", kind: "input_resource", media_id: null, resource_id: "resource-1",
+      display_name: "README.md", media_type: "text/markdown", byte_size: 12,
+      storage_path: null, relative_path: null, workspace_location_id: null, snapshot_id: null,
+      resource_source_state: "draft", resource_sha256: "a".repeat(64),
+      resource_captured_at: "2026-09-18T12:00:00.000Z",
+      resource_relative_path: "README.md",
+      resource_workspace_location_id: "location-1", resource_selection_start_line: null,
+      resource_selection_start_column: null, resource_selection_end_line: null,
+      resource_selection_end_column: null, location_root_path: null,
+      location_host_id: null, location_host_kind: null,
+    };
+    const db: Queryable = {
+      async query<Row = Record<string, unknown>>(sql: string) {
+        const rows: unknown[] = sql.startsWith("SELECT part.id AS part_id")
+          ? [resourcePart]
+          : sql.startsWith("SELECT kind FROM hosts") ? [{ kind: "remote" }] : [];
+        return { rows: rows as Row[], rowCount: rows.length };
+      },
+    };
+    const executePromise = executeRemoteHostCliAdapter(
+      {
+        run: run({
+          runtime_key: "opencode",
+          model_override_json: {
+            chat_turn: { schema_version: "chat_turn.v1", user_message_id: "message-1" },
+          },
+        }),
+        prompt: "Use the draft.",
+        invocation_delivery: runtimeContextDelivery(`Use the draft.\n\n${descriptorText}`),
+        model: null,
+        resume_session_id: null,
+      },
+      "host-1",
+      "folder-1",
+      {
+        connectionRegistry: registry,
+        bindings: NO_PROVIDER_BINDINGS,
+        config: loadConfig({
+          SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
+          SERVER_INTERNAL_TOKEN: "internal-token",
+        }),
+        db,
+      },
+    );
+
+    await vi.waitUntil(() => sink.sent.length >= 1);
+    registry.receiveLaunched("host-1", "run-1", launchIdOf(sink));
+    await vi.waitUntil(() => sink.sent.length >= 2);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchIdOf(sink));
+    await vi.waitUntil(() => sink.sent.length >= 3);
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } })}\n`, launchIdOf(sink));
+    await vi.waitUntil(() => sink.sent.length >= 4);
+    const promptRequest = JSON.parse((sink.sent[3] as { value: string }).value) as {
+      method: string;
+      params: { prompt: Array<{ type: string; text?: string }> };
+    };
+    expect(promptRequest.method).toBe("session/prompt");
+    const promptText = promptRequest.params.prompt
+      .flatMap((block) => block.type === "text" && block.text ? [block.text] : [])
+      .join("\n");
+    expect(promptText.split("[Attached immutable input resources]")).toHaveLength(2);
+    expect(promptText.split('"resource_id":"resource-1"')).toHaveLength(2);
+    expect(promptRequest.params.prompt).toContainEqual({
+      type: "resource_link",
+      uri: "rainver:conversation-input-resource:resource-1",
+      name: "README.md",
+      mimeType: "text/markdown",
+      size: 12,
+    });
+
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } })}\n`, launchIdOf(sink));
+    await vi.waitUntil(() => sink.sent.at(-1)?.type === "stdin_close");
+    registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink));
+    expect(await executePromise).toMatchObject({ success: true, exit_code: 0 });
   });
 
   it("dispatches a native Server Agent Run without a Host thread or Location using stable Agent-scoped state", async () => {

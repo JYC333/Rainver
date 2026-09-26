@@ -4,6 +4,8 @@ import { authApi } from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
 import { Button } from '../components/ui/button'
 import { useAuthConfiguration } from '../hooks/useAuthConfiguration'
+import { useAppTranslation } from '../i18n'
+import { PublicLocaleSwitcher } from '../i18n/PublicLocaleSwitcher'
 
 /* ── Aperture A mark (inline, no deps) ────────────────────────────────────── */
 function ApertureMark({ size = 56 }: { size?: number }) {
@@ -19,13 +21,14 @@ function ApertureMark({ size = 56 }: { size?: number }) {
   )
 }
 
-const ERROR_MESSAGES: Record<string, string> = {
-  csrf:               'Login was cancelled or took too long. Please try again.',
-  google_failed:      'Could not connect to Google. Please try again.',
-  incomplete_profile: 'Google did not provide a complete profile. Please try again.',
+const ERROR_MESSAGE_KEYS: Record<string, string> = {
+  csrf: 'login.csrf',
+  google_failed: 'login.google_failed',
+  incomplete_profile: 'login.incomplete_profile',
 }
 
 export default function LoginPage() {
+  const { t } = useAppTranslation()
   const { currentUser, isLoading, reloadUser } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
@@ -39,7 +42,7 @@ export default function LoginPage() {
   const [rememberMe, setRememberMe] = useState(true)
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState('')
-  const [resetSent, setResetSent] = useState('')
+  const [resetSent, setResetSent] = useState(false)
   const [registrationCompleting, setRegistrationCompleting] = useState(false)
   const attemptedRegistration = useRef<string | null>(null)
 
@@ -59,7 +62,7 @@ export default function LoginPage() {
     void authApi.completeRegistration({ intent_id: registrationId })
       .then(async () => { await reloadUser(); navigate(from, { replace: true }) })
       .catch(() => {
-        setFormError('Google registration could not be completed. Please retry from the invitation.')
+        setFormError('login.registration_failed')
         const next = new URLSearchParams(params)
         next.delete('registration')
         setParams(next, { replace: true })
@@ -68,7 +71,7 @@ export default function LoginPage() {
   }, [params, reloadUser, navigate, from, setParams])
 
   const error = params.get('error')
-  const errorMsg = error ? (ERROR_MESSAGES[error] ?? 'An error occurred. Please try again.') : null
+  const errorMsg = error ? t(ERROR_MESSAGE_KEYS[error] ?? 'login.unknown_error') : null
 
   async function signIn(event: FormEvent) {
     event.preventDefault()
@@ -79,22 +82,23 @@ export default function LoginPage() {
       await reloadUser()
       navigate(from, { replace: true })
     } catch {
-      setFormError('Invalid email or password.')
+      setFormError('login.invalid_credentials')
     } finally {
       setBusy(false)
     }
   }
 
   async function requestReset() {
-    setResetSent('')
-    try { await authApi.requestPasswordReset(email); setResetSent('If this email exists, a reset link will be prepared by the instance administrator.') }
-    catch { setResetSent('If this email exists, a reset link will be prepared by the instance administrator.') }
+    setResetSent(false)
+    try { await authApi.requestPasswordReset(email) } catch { /* avoid revealing whether the address exists */ }
+    setResetSent(true)
   }
 
   if (isLoading || registrationCompleting) return null
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
+    <div className="relative min-h-screen flex items-center justify-center bg-background">
+      <PublicLocaleSwitcher />
       <div
         className="flex flex-col items-center gap-8 p-10 rounded-2xl border border-border"
         style={{ background: 'var(--card)', minWidth: 340, maxWidth: 400 }}
@@ -104,24 +108,24 @@ export default function LoginPage() {
           <ApertureMark size={56} />
           <div className="text-center">
             <h1 className="text-xl font-bold tracking-tight text-foreground">rainver</h1>
-            <p className="text-sm text-muted-foreground mt-1">Sign in to continue</p>
+            <p className="text-sm text-muted-foreground mt-1">{t('login.continue')}</p>
           </div>
         </div>
 
         {(errorMsg || formError) && (
-          <div className="w-full text-sm px-3 py-2.5 rounded-lg border text-destructive">{formError || errorMsg}</div>
+          <div className="w-full text-sm px-3 py-2.5 rounded-lg border text-destructive">{formError ? t(formError) : errorMsg}</div>
         )}
 
         <form onSubmit={signIn} className="w-full space-y-3">
-          <input value={email} onChange={event => setEmail(event.target.value)} type="email" autoComplete="email" required placeholder="Email" className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm" />
-          <input value={password} onChange={event => setPassword(event.target.value)} type="password" autoComplete="current-password" required placeholder="Password" className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm" />
-          <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={rememberMe} onChange={event => setRememberMe(event.target.checked)} /> Keep me signed in</label>
-          <Button type="submit" disabled={busy} className="w-full h-10">{busy ? 'Signing in…' : 'Sign in'}</Button>
-          <button type="button" onClick={() => void requestReset()} className="w-full cursor-pointer text-xs text-muted-foreground underline">Forgot password?</button>
+          <input value={email} onChange={event => setEmail(event.target.value)} type="email" autoComplete="email" required placeholder={t('login.email')} className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm" />
+          <input value={password} onChange={event => setPassword(event.target.value)} type="password" autoComplete="current-password" required placeholder={t('login.password')} className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm" />
+          <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={rememberMe} onChange={event => setRememberMe(event.target.checked)} /> {t('login.remember')}</label>
+          <Button type="submit" disabled={busy} className="w-full h-10">{busy ? t('login.signing_in') : t('login.sign_in')}</Button>
+          <button type="button" onClick={() => void requestReset()} className="w-full cursor-pointer text-xs text-muted-foreground underline">{t('login.forgot_password')}</button>
         </form>
-        {resetSent && <p className="w-full text-xs text-muted-foreground" role="status">{resetSent}</p>}
+        {resetSent && <p className="w-full text-xs text-muted-foreground" role="status">{t('login.reset_sent')}</p>}
 
-        <div className="w-full flex items-center gap-2 text-xs text-muted-foreground"><span className="h-px bg-border flex-1" />or<span className="h-px bg-border flex-1" /></div>
+        <div className="w-full flex items-center gap-2 text-xs text-muted-foreground"><span className="h-px bg-border flex-1" />{t('login.or')}<span className="h-px bg-border flex-1" /></div>
 
         {/* Google sign in */}
         {googleAuthAvailable ? (
@@ -132,7 +136,7 @@ export default function LoginPage() {
             className="w-full h-10 gap-3 text-foreground"
           >
             <GoogleIcon />
-            Sign in with Google
+            {t('login.sign_in_google')}
           </Button>
         ) : (
           <div className="w-full text-center space-y-2">
@@ -144,18 +148,16 @@ export default function LoginPage() {
                 color: 'var(--warning)',
               }}
             >
-              Google OAuth is not configured.
+              {t('login.google_unconfigured')}
             </div>
             <p className="text-xs text-muted-foreground">
-              Set <code className="font-mono">GOOGLE_CLIENT_ID</code> and{' '}
-              <code className="font-mono">GOOGLE_CLIENT_SECRET</code> in your{' '}
-              <code className="font-mono">.env</code> file.
+              {t('login.google_setup', { clientId: 'GOOGLE_CLIENT_ID', clientSecret: 'GOOGLE_CLIENT_SECRET', envFile: '.env' })}
             </p>
           </div>
         )}
 
         {bootstrapRegistrationAvailable && (
-          <button type="button" onClick={() => navigate('/register')} className="cursor-pointer text-xs text-muted-foreground underline">Set up administrator account</button>
+          <button type="button" onClick={() => navigate('/register')} className="cursor-pointer text-xs text-muted-foreground underline">{t('login.setup_admin')}</button>
         )}
       </div>
     </div>

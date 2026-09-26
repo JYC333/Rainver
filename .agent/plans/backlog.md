@@ -261,14 +261,14 @@ target schemas constrain delegation to active Room members, and the Runtime
 Context Delivery remains the authoritative instruction source. The former
 managed-loop prompt override is not retained. `managedAgentDelegationTools`
 tests assert both tool behavior and the guidance delivered with those tools.
-- [ ] Focus areas: classify from where content lives. The first slice shipped
-  ([ADR 0015](../decisions/0015-focus-area-classification.md)) with
-  classification available only from a focus area's own page, through pickers
-  that list the first 100 notes and knowledge items. That does not scale and it
-  is the wrong direction of travel: filing something should be possible from the
-  note, the knowledge item or the Project itself. `focusAreasApi.setForObject`
-  and `setForProject` already exist, so this is a front-end affordance rather
-  than new API. The aggregation page also caps objects at 200 with no paging.
+- [x] File a Note, Knowledge Item, or Project into a Domain from its own
+  detail page. The first slice ([ADR 0015](../decisions/0015-focus-area-classification.md))
+  only offered classification from a Domain page's first-100-object pickers.
+  Detail read projections now include `focus_area_id`, and the existing
+  `focusAreasApi.setForObject` / `setForProject` write gates remain authoritative.
+- [ ] Page the Domain aggregation and classification pickers: the Domain page
+  still caps listed objects at 200 and its older pickers at the first 100 Notes
+  and Knowledge Items. These lists are incomplete for large Spaces.
 - [ ] [capability-shrink-plan.md](capability-shrink-plan.md) — the authority
   documents and the workflow template layer landed on 2026-08-14. The remaining
   items collapse the implementation to
@@ -348,19 +348,6 @@ execution-topology work doesn't touch, not a broken or duplicated one — no
 urgency, real payoff. `queueAdvance.ts`'s own pg-advisory-lock serialization
 (the "one active Run per thread" invariant) is a separate concern this
 migration would not remove.
-
-### `server` and `sandbox-runner` must now be deployed together
-
-Recorded 2026-08-28. `SANDBOX_RUNNER_PROTOCOL_VERSION` went to 2 when the
-runner's `tool_channel` stopped naming an MCP endpoint and became the work
-surface, and `validateRequest` accepts only its own version. That is deliberate
-— a stale runner would otherwise hand a Run a live token with no command — but
-it breaks in both directions: a version-1 runner refuses every request from a
-current server, and a version-2 runner refuses every request from a rolled-back
-one, including `verification` runs that have nothing to do with tools. Nothing
-in `ops/compose/*.yml` or `ops/scripts/` records that the two images are now a
-unit. Either write that down where a deploy reads it, or make the runner accept
-a request whose `tool_channel` it fully understands regardless of version.
 
 ### A sandboxed Run cannot declare a Task's output
 
@@ -504,21 +491,31 @@ registry declaration or a UI label (plan decision recorded in ROUTING.md).
 ## 9. Imported CLI History
 
 From the ambient-session-import integration gate (2026-08-28); the feature
-shipped in `293023c3` / `d162aabf` and neither item blocks it.
+shipped in `293023c3` / `d162aabf` and the remaining citation-link item does not block it.
 
-- [ ] Render an extracted statement's citations as links back to the imported
-  record they came from. The refs are stored — on the Brief version's
-  `source_refs` and inside the memory packet's candidates — but nothing opens
-  them, which is the one part of the plan's Phase 2 acceptance condition 2 that
-  is not built.
-- [ ] Make the four read-side wire shapes (`ImportedSession`,
-  `ImportedSessionRecord`, `AmbientSyncReport`, `ExtractionOutcome`) actually
-  enforced rather than merely declared. They now live in
-  `packages/protocol/src/ambientSessions.ts` and the web forwards them, but the
-  server still declares its own row and report types independently and the web
-  client's `get<T>` is an assertion, so a future server change would not be
-  caught by typecheck. The declaration that had already drifted is gone; the
-  mechanism that let it drift is not.
+- [ ] Make imported-history extraction citations navigable to their source
+  records. The Brief stores goal and decision refs as one flat version-level
+  `source_refs` array while `confirmed_decisions` remains strings, so the
+  statement-to-record pairing no longer exists after extraction. Memory packet
+  candidates retain record and session id arrays in the proposal payload, but
+  the proposal read DTO does not expose them. The imported-session read route
+  takes a session id and returns only the first 2,000 records; there is no
+  record-id locator or direct record read route.
+
+  Decide whether the Brief needs a version-level **source records** list or
+  exact citations beside each extracted statement. A version-level list must
+  not imply that every listed record supports every statement. Exact links
+  require preserving statement-to-record refs in the reviewed Brief contract
+  and a record-target deep link backed by a read-only locator under the
+  imported session's existing `full` access gate. The memory packet surface
+  likewise needs a gated candidate projection before its stored refs can be
+  rendered. This is the remaining part of the retired plan's Phase 2
+  acceptance condition 2.
+- [x] Enforce the four read-side wire shapes (`ImportedSession`,
+  `ImportedSessionRecord`, `AmbientSyncReport`, `ExtractionOutcome`).
+  Server row and outcome types now derive from the protocol DTOs, and the
+  HTTP routes validate the strict schemas after normalizing PostgreSQL
+  timestamps. A real-PostgreSQL route test covers all four shapes.
 
 ## 10. Agent Identity
 

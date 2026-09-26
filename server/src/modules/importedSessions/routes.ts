@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { AmbientSyncReportSchema, ExtractionOutcomeSchema } from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
@@ -10,6 +11,7 @@ import {
 } from "../routeUtils/common.js";
 import { ImportedSessionService } from "./service.js";
 import { ImportedHistoryExtractionService } from "./extraction.js";
+import { importedSessionRecordToWire, importedSessionToWire } from "./wire.js";
 
 /**
  * Ambient session import lives on the Location, because consent is about one
@@ -92,7 +94,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send({ sessions: await service().list(identity, locationId(request)) });
+      return reply.send({ sessions: (await service().list(identity, locationId(request))).map(importedSessionToWire) });
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -108,12 +110,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const sessionIds = Array.isArray(body.session_ids)
         ? body.session_ids.filter((value): value is string => typeof value === "string")
         : null;
-      return reply.send(await service().sync(identity, locationId(request), {
+      return reply.send(AmbientSyncReportSchema.parse(await service().sync(identity, locationId(request), {
         runtime_key: runtimeKey,
         installation: typeof body.installation === "string" ? body.installation : undefined,
         session_ids: sessionIds,
         visibility: visibility(body.visibility),
-      }));
+      })));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -125,7 +127,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const projectId = params(request).projectId;
       if (typeof projectId !== "string" || !projectId) throw new HttpError(422, "projectId is required");
-      return reply.send({ sessions: await service().listForProject(identity, projectId) });
+      return reply.send({ sessions: (await service().listForProject(identity, projectId)).map(importedSessionToWire) });
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -149,7 +151,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const projectId = params(request).projectId;
       if (typeof projectId !== "string" || !projectId) throw new HttpError(422, "projectId is required");
-      return reply.send(await extraction().extract(identity, projectId, { kind: "person", user_id: identity.userId }));
+      return reply.send(ExtractionOutcomeSchema.parse(await extraction().extract(identity, projectId, { kind: "person", user_id: identity.userId })));
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -159,7 +161,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(await service().records(identity, sessionId(request)));
+      const read = await service().records(identity, sessionId(request));
+      return reply.send({
+        session: importedSessionToWire(read.session),
+        records: read.records.map(importedSessionRecordToWire),
+        truncated: read.truncated,
+      });
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -171,7 +178,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const wanted = visibility(jsonBody(request).visibility);
       if (!wanted) throw new HttpError(422, "visibility is required");
-      return reply.send(await service().setVisibility(identity, sessionId(request), wanted));
+      return reply.send(importedSessionToWire(await service().setVisibility(identity, sessionId(request), wanted)));
     } catch (error) {
       return sendRouteError(reply, error);
     }

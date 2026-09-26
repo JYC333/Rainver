@@ -237,6 +237,7 @@ what is installed.
 |---|---|---|
 | HTTP calls to the backend | the typed API client — never bare `fetch` in a component | `apps/web/src/api/client.ts` |
 | Routing | `react-router-dom` + the module registry | `apps/web/src/modules/registry.ts`, `apps/web/src/App.tsx` |
+| UI localization | `i18next` + `react-i18next`, initialized once with bundled resources; use `useAppTranslation` in rendered components | `apps/web/src/i18n/` |
 | Module/nav registration | module registry with lazy entry points | `apps/web/src/modules/registry.ts` |
 | Form controls and primitives (incl. `Select`, `DatePicker`) | `apps/web/src/components/ui/` over Radix — **never a bare `<select>`** | `apps/web/src/components/ui/` |
 | Class composition | `cn()` over `clsx` + `tailwind-merge`, with `class-variance-authority` for variants | `apps/web/src/lib/utils.ts` |

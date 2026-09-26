@@ -418,12 +418,14 @@ Direct chat sends the same block, with the person in that chat as the audience:
 they receive the persona and the notes learned in Rooms whose roster still
 contains them, plus notes taken in that chat when they are the Agent's owner.
 
-Like the conversation history beside it, the block is prompt content and not
-server-brokered Runtime Context: it enters no Delivery, no snapshot and no
-checkpoint of its own, and it is regenerated every turn rather than replayed.
-A run dispatched to the **server** host is still brokered through the Runtime
-Context Gateway for everything else it is given — only a remote host skips that
-— so "not Runtime Context" describes this block, not the whole turn.
+When the standing context is due on a turn, `roomRunPrompt` includes it in
+the Run prompt with the assigned task. The Runtime Context Gateway acquires
+that prompt as a required Room recipient-instruction item before the canonical
+current user message; the accepted Delivery and Invocation Snapshot include
+its safe projection. The ACP adapter renders the Delivery and does not append
+the raw Run prompt again. The freshness and landed-outcome digest gates above
+still decide when standing context is included. Both server and remote Host
+Agent Runs pass through this Gateway.
 
 The Agent's CLI state on that machine is scoped the same way. Its runtime
 profile — login, vendor sessions, and whatever the CLI remembers on its own —

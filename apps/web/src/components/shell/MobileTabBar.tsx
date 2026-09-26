@@ -2,6 +2,7 @@ import { Link, useLocation } from 'react-router-dom'
 import { cn } from '../../lib/utils'
 import { MOBILE_TAB_ITEMS, sceneForPath, spacePath, stripSpacePrefix, type RailItem } from '../../core/navigation'
 import { ReviewAttentionIndicator } from './ReviewAttentionIndicator'
+import { useAppTranslation } from '../../i18n'
 
 function tabActive(item: RailItem, pathname: string): boolean {
   const logical = stripSpacePrefix(pathname)
@@ -14,9 +15,10 @@ function tabActive(item: RailItem, pathname: string): boolean {
 /** Mobile bottom navigation for the key destinations. Home is always first. */
 export function MobileTabBar({ spaceId, pendingReviewCount = 0 }: { spaceId: string | null; pendingReviewCount?: number }) {
   const { pathname } = useLocation()
+  const { t } = useAppTranslation()
   return (
     <nav
-      aria-label="Primary"
+      aria-label={t('shell.primary_navigation')}
       className="md:hidden shrink-0 flex items-stretch border-t border-border bg-card"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
@@ -35,7 +37,7 @@ export function MobileTabBar({ spaceId, pendingReviewCount = 0 }: { spaceId: str
             )}
           >
             <Icon className="size-[18px]" />
-            {item.label}
+            {t(`nav.${item.id.replace(/-/g, '_')}`, { defaultValue: item.label })}
             {item.id === 'review' && <ReviewAttentionIndicator count={pendingReviewCount} compact />}
           </Link>
         )

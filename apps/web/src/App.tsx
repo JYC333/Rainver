@@ -15,6 +15,7 @@ import SecurityPage from './pages/SecurityPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
 import { useAuth } from './contexts/AuthContext'
 import { RequireInstanceAdmin, RequireSpaceAdmin } from './core/RequireRole'
+import './i18n'
 
 const HomePage = lazy(() => import('./modules/home/HomePage'))
 

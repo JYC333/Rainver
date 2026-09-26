@@ -43,6 +43,7 @@ vi.mock('../contexts/SpaceContext', () => ({
 
 import { FloatingQuickCapture } from '../components/FloatingQuickCapture'
 import { subscribeNoteChanged } from '../core/noteEvents'
+import { setLocale } from '../i18n'
 
 const routerFuture = { v7_relativeSplatPath: true, v7_startTransition: true } as const
 const PLACEHOLDER = 'Capture a thought or paste a link…'
@@ -54,6 +55,7 @@ function open() {
 }
 
 beforeEach(() => {
+  setLocale('en')
   vi.clearAllMocks()
   captureContext.value = { projectId: null, target: null }
   spaceState.memberCount = 3
@@ -163,6 +165,23 @@ describe('FloatingQuickCapture destination override', () => {
 })
 
 describe('FloatingQuickCapture in a single-member Space', () => {
+  it('shows Chinese destination consequences without changing the destination sent to the server', async () => {
+    setLocale('zh-CN')
+    captureContext.value = { projectId: 'project-1', target: null }
+    render(<MemoryRouter future={routerFuture}><FloatingQuickCapture /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: '快速采集' }))
+    const box = screen.getByPlaceholderText('记录想法或粘贴链接…')
+    fireEvent.paste(box)
+    fireEvent.change(box, { target: { value: '共享的资料' } })
+    expect(screen.getByRole('radio', { name: '项目原始材料 · 待处理 · 团队可见', checked: true })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '采集' }))
+    await waitFor(() => expect(createCapture).toHaveBeenCalledWith({
+      text: '共享的资料',
+      destination: 'project_raw',
+      project_id: 'project-1',
+    }))
+  })
+
   it('keeps the team wording until the Space list has actually loaded', () => {
     spaceState.memberCount = undefined
     captureContext.value = { projectId: 'project-1', target: null }

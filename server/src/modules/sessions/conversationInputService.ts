@@ -842,6 +842,8 @@ export class ConversationInputService {
     embeddedContext: boolean;
     /** Manual retries must retain the original immutable file input. */
     useImmutableSnapshot?: boolean;
+    /** The Gateway already placed input-resource descriptors in the current-user Delivery block. */
+    descriptorsInDelivery?: boolean;
     executionHostId?: string;
   }): Promise<{
     blocks: Array<Record<string, unknown>>;
@@ -985,10 +987,12 @@ export class ConversationInputService {
         mimeType: part.media_type,
         size: part.byte_size,
       });
-      blocks.push({
-        type: "text",
-        text: renderConversationInputResourceDescriptors([descriptor]),
-      });
+      if (!input.descriptorsInDelivery) {
+        blocks.push({
+          type: "text",
+          text: renderConversationInputResourceDescriptors([descriptor]),
+        });
+      }
     }
     return { blocks, resources };
   }

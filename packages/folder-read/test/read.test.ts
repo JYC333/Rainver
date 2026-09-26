@@ -64,6 +64,7 @@ describe("folder-read filesystem operations", () => {
     await writeFile(join(root, "mixed.txt"), "one\r\ntwo\nthree\r", "utf8");
     await writeFile(join(root, "invalid.txt"), Buffer.from([0xc3, 0x28]));
     await writeFile(join(root, "binary.dat"), Buffer.from([0x00, 0xff, 0x01]));
+    await writeFile(join(root, "nul.dat"), Buffer.from([0x61, 0x00, 0x62]));
 
     await expect(readFolderFile(root, "bom.txt")).resolves.toMatchObject({
       content: "one\r\ntwo\r\n",
@@ -88,6 +89,12 @@ describe("folder-read filesystem operations", () => {
       content: "",
       encoding: "binary",
       writable: false,
+    });
+    await expect(readFolderFile(root, "nul.dat")).resolves.toMatchObject({
+      content: "",
+      encoding: "binary",
+      writable: false,
+      conversion_available: false,
     });
   });
 
@@ -117,6 +124,17 @@ describe("folder-read filesystem operations", () => {
       encoding: "utf16be",
       writable: false,
     });
+  });
+
+  it("keeps malformed and NUL-containing UTF-16 read-only without a conversion option", async () => {
+    const root = await tempRoot();
+    await writeFile(join(root, "truncated.txt"), Buffer.from([0xff, 0xfe, 0x61]));
+    await writeFile(join(root, "nul.txt"), Buffer.from([0xff, 0xfe, 0x61, 0x00, 0x00, 0x00]));
+
+    await expect(readFolderFile(root, "truncated.txt", { includeUtf16Preview: true }))
+      .resolves.toMatchObject({ content: "", encoding: "unknown", writable: false, conversion_available: false });
+    await expect(readFolderFile(root, "nul.txt", { includeUtf16Preview: true }))
+      .resolves.toMatchObject({ content: "", encoding: "binary", writable: false, conversion_available: false });
   });
 
   it("does not follow symlinks outside the registered root", async () => {
@@ -229,6 +247,22 @@ describe("folder-read filesystem operations", () => {
       expectedExists: true,
       expectedSha256: createHash("sha256").update(Buffer.from([0xff, 0xfe, 0x00])).digest("hex"),
     })).rejects.toMatchObject({ code: "not_text" });
+  });
+
+  it("refuses NUL-containing files even when their bytes are valid UTF-8", async () => {
+    const root = await tempRoot();
+    const bytes = Buffer.from("before\0after", "utf8");
+    await writeFile(join(root, "nul.dat"), bytes);
+    await expect(writeFolderFile(root, "nul.dat", "replacement", {
+      expectedExists: true,
+      expectedSha256: createHash("sha256").update(bytes).digest("hex"),
+    })).rejects.toMatchObject({ code: "not_text" });
+    await expect(readFile(join(root, "nul.dat"))).resolves.toEqual(bytes);
+    await expect(writeFolderFile(root, "new.dat", "a\0b", {
+      expectedExists: false,
+      expectedSha256: null,
+    })).rejects.toMatchObject({ code: "not_text" });
+    await expect(readFile(join(root, "new.dat"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("converts valid BOM-marked UTF-16 only when explicit and restores its original encoding", async () => {

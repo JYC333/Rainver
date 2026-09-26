@@ -1,9 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import ProjectDetailPage from '../ProjectDetailPage'
-import { projectsApi } from '../../../api/client'
+import { focusAreasApi, projectsApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn(), dismiss: vi.fn() },
@@ -26,6 +26,7 @@ vi.mock('../../../core/spaceNav', () => ({
 }))
 
 vi.mock('../../../api/client', () => ({
+  focusAreasApi: { list: vi.fn().mockResolvedValue([]), setForProject: vi.fn().mockResolvedValue(undefined) },
   projectsApi: {
     get: vi.fn(),
     getOverview: vi.fn(),
@@ -73,6 +74,7 @@ function setup(overrides: {
   project?: Partial<typeof project>
   overview?: Partial<Awaited<ReturnType<typeof projectsApi.getOverview>>>
 } = {}) {
+  vi.mocked(focusAreasApi.list).mockResolvedValue([])
   vi.mocked(projectsApi.get).mockResolvedValue({ ...project, ...overrides.project } as never)
   vi.mocked(projectsApi.getOverview).mockResolvedValue({
     project: { id: 'project-1', name: 'Project One', status: 'active' },
@@ -108,6 +110,33 @@ function renderPage() {
  * from `ProjectPulse`. Nothing here duplicates the sidebar or an Area.
  */
 describe('ProjectDetailPage (Pulse)', () => {
+  beforeEach(() => vi.clearAllMocks())
+  it('files a writable Project in a Domain from its own page', async () => {
+    setup({ project: { focus_area_id: 'domain-1', current_user_can_write: true } })
+    vi.mocked(focusAreasApi.list).mockResolvedValue([
+      { id: 'domain-1', name: 'Work', archived_at: null },
+      { id: 'domain-2', name: 'Health', archived_at: null },
+    ] as never)
+    renderPage()
+
+    const selector = await screen.findByRole('button', { name: 'Domain' })
+    await waitFor(() => expect(selector).toHaveTextContent('Work'))
+    fireEvent.click(selector)
+    fireEvent.click(screen.getByRole('option', { name: 'Health' }))
+    await waitFor(() => expect(focusAreasApi.setForProject).toHaveBeenCalledWith('project-1', 'domain-2'))
+    expect(selector).toHaveTextContent('Health')
+  })
+
+  it('shows a Project Domain read-only when this viewer cannot write the Project', async () => {
+    setup({ project: { focus_area_id: 'domain-1', current_user_can_write: false } })
+    vi.mocked(focusAreasApi.list).mockResolvedValue([{ id: 'domain-1', name: 'Work', archived_at: null }] as never)
+    renderPage()
+
+    const selector = await screen.findByRole('button', { name: 'Domain' })
+    await waitFor(() => expect(selector).toHaveTextContent('Work'))
+    expect(selector).toBeDisabled()
+    expect(focusAreasApi.setForProject).not.toHaveBeenCalled()
+  })
   it('shows the goal and the situation, and fetches nothing an Area owns', async () => {
     setup()
     renderPage()

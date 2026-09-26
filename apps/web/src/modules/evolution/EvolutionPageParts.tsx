@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Loader2 } from 'lucide-react'
 import { SpaceLink as Link } from '../../core/spaceNav'
+import { useAppTranslation, type Locale } from '../../i18n'
 import { errMsg } from '../../lib/utils'
 import type {
   EvolutionExperience,
@@ -16,7 +17,8 @@ import type {
   EvolutionValidationResult,
 } from '../../types/api'
 import { Card, CardTitle } from '../../components/ui/card'
-import { Badge, StatusBadge } from '../../components/ui/badge'
+import { Badge } from '../../components/ui/badge'
+import { EvolutionStatusBadge } from './EvolutionStatusBadge'
 import { Button } from '../../components/ui/button'
 import {
   Dialog,
@@ -40,37 +42,20 @@ export const EMPTY_SUMMARY: EvolutionSummaryOut = {
   recent_runs: 0,
 }
 
-const SIGNAL_TYPE_LABELS: Record<string, string> = {
-  runtime_failure: '运行失败',
-  adapter_failed: '适配器失败',
-  tool_error: '工具错误',
-  validation_failure: '验证失败',
-  run_validation_failed: '运行验证失败',
-  proposal_rejected: '改进被拒绝',
-  stable_preference_missed: '稳定偏好遗漏',
-  prompt_gap: '提示资产缺口',
-  user_repeated_same_correction: '重复修正',
-  capability_gap: '能力缺口',
-  policy_boundary: '策略边界',
-  memory_health: '记忆健康',
-  retrieval_gap: '检索缺口',
-  review_requested: '请求审核',
-}
+const SIGNAL_TYPE_VALUES = [
+  'runtime_failure', 'adapter_failed', 'tool_error', 'validation_failure',
+  'run_validation_failed', 'proposal_rejected', 'stable_preference_missed',
+  'prompt_gap', 'user_repeated_same_correction', 'capability_gap',
+  'policy_boundary', 'memory_health', 'retrieval_gap', 'review_requested',
+]
 
-const SIGNAL_TYPES = Object.entries(SIGNAL_TYPE_LABELS).map(([value, label]) => ({ value, label }))
-
-const SIGNAL_SEVERITIES = ['low', 'medium', 'high', 'critical'].map(value => ({ value, label: value }))
+const RISK_LEVEL_VALUES = ['low', 'medium', 'high', 'critical']
 export type DetailTab = 'definition' | 'signals' | 'strategies' | 'decisions' | 'experiences' | 'runs' | 'proposals' | 'validation'
 export type TargetDialogMode = 'create' | 'copy' | 'edit'
 export type TargetListTab = 'active' | 'archived'
 
-const TARGET_TYPES = ['agent_version', 'capability', 'runtime_skill_binding', 'memory', 'knowledge', 'workflow', 'project_folder', 'system'].map(value => ({ value, label: value }))
-const RISK_LEVELS = ['low', 'medium', 'high', 'critical'].map(value => ({ value, label: value }))
-const TARGET_STATUSES = ['active', 'paused', 'archived'].map(value => ({ value, label: value }))
-const ENABLED_OPTIONS = [
-  { value: 'true', label: 'Enabled' },
-  { value: 'false', label: 'Disabled' },
-]
+const TARGET_TYPE_VALUES = ['agent_version', 'capability', 'runtime_skill_binding', 'memory', 'knowledge', 'workflow', 'project_folder', 'system']
+const TARGET_STATUS_VALUES = ['active', 'paused', 'archived']
 const DEFAULT_ENGINE_POLICY = {
   max_strategy_risk: 'medium',
   allow_direct_apply: false,
@@ -88,8 +73,12 @@ const DEFAULT_VALIDATION = {
   }],
 }
 
-export function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '-'
+export function fmt(dt: string | null | undefined, locale: Locale) {
+  return dt ? new Date(dt).toLocaleString(locale === 'zh-CN' ? 'zh-CN' : 'en-US') : '-'
+}
+
+function formatCount(value: number, locale: Locale) {
+  return new Intl.NumberFormat(locale).format(value)
 }
 
 export function shortId(id: string | null | undefined) {
@@ -100,22 +89,24 @@ export function displayTargetName(row: { target_name?: string | null; capability
   return row.target_name ?? row.capability_key ?? shortId(row.target_id ?? row.id)
 }
 
-function displaySignalType(signalType: string) {
-  return SIGNAL_TYPE_LABELS[signalType] ?? signalType
+function displaySignalType(signalType: string, t: ReturnType<typeof useAppTranslation>['t']) {
+  return SIGNAL_TYPE_VALUES.includes(signalType)
+    ? t('evolution.signal_type.' + signalType)
+    : signalType
 }
 
 function jsonText(value: unknown) {
   return JSON.stringify(value ?? {}, null, 2)
 }
 
-function parseJsonObject(text: string, label: string): Record<string, unknown> {
+function parseJsonObject(text: string, errorMessage: string): Record<string, unknown> {
   try {
     const value = JSON.parse(text)
     if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
   } catch {
     // handled below
   }
-  throw new Error(`${label} must be a JSON object.`)
+  throw new Error(errorMessage)
 }
 
 function stringListFromText(text: string) {
@@ -133,19 +124,20 @@ export function riskVariant(risk: string): 'default' | 'secondary' | 'muted' | '
 }
 
 export function OverviewCards({ summary }: { summary: EvolutionSummaryOut }) {
+  const { t, locale } = useAppTranslation()
   const cards = [
-    { label: '改进目标', value: summary.active_targets, empty: '暂无改进目标' },
-    { label: '触发信号', value: summary.signals_collected, empty: '暂无触发信号' },
-    { label: '待审核改进', value: summary.pending_proposals, empty: '暂无待审核改进' },
-    { label: '运行记录', value: summary.recent_runs, empty: '暂无运行记录' },
+    { label: t('evolution.targets'), value: summary.active_targets, empty: t('evolution.no_targets') },
+    { label: t('evolution.signals'), value: summary.signals_collected, empty: t('evolution.no_signals') },
+    { label: t('evolution.pending_proposals'), value: summary.pending_proposals, empty: t('evolution.no_pending_proposals') },
+    { label: t('evolution.runs'), value: summary.recent_runs, empty: t('evolution.no_runs') },
   ]
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       {cards.map(card => (
         <Card key={card.label} className="mb-0 p-4">
           <div className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{card.label}</div>
-          <div className="mt-2 text-2xl font-semibold leading-none" style={{ fontFamily: 'var(--font-mono)' }}>{card.value}</div>
-          <div className="mt-1 text-xs text-muted-foreground">{card.value === 0 ? card.empty : '当前空间'}</div>
+          <div className="mt-2 text-2xl font-semibold leading-none" style={{ fontFamily: 'var(--font-mono)' }}>{formatCount(card.value, locale)}</div>
+          <div className="mt-1 text-xs text-muted-foreground">{card.value === 0 ? card.empty : t('evolution.current_space_short')}</div>
         </Card>
       ))}
     </div>
@@ -156,13 +148,14 @@ export function SectionCard({ title, count, children }: {
   count?: number
   children: React.ReactNode
 }) {
+  const { locale } = useAppTranslation()
   return (
     <Card className="mb-0">
       <div className="mb-4 flex items-center justify-between gap-3">
         <CardTitle className="mb-0">{title}</CardTitle>
         {count !== undefined && (
           <span className="text-[11px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>
-            {String(count).padStart(2, '0')}
+            {new Intl.NumberFormat(locale, { minimumIntegerDigits: 2 }).format(count)}
           </span>
         )}
       </div>
@@ -186,6 +179,7 @@ export function TargetList({
   emptyTitle?: string
   emptyDescription?: string
 }) {
+  const { t, locale } = useAppTranslation()
   if (targets.length === 0) {
     return (
       <EmptyState
@@ -211,12 +205,12 @@ export function TargetList({
           >
             <div className="flex min-w-0 items-center justify-between gap-3">
               <span className="truncate text-sm font-medium text-foreground">{target.target_name ?? target.capability_key ?? shortId(target.id)}</span>
-              <StatusBadge status={target.enabled ? target.status : 'disabled'} />
+              <EvolutionStatusBadge status={target.enabled ? target.status : 'disabled'} />
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5">
-              <Badge variant="secondary">{target.target_type}</Badge>
-              <Badge variant={riskVariant(target.risk_level)}>{target.risk_level}</Badge>
-              <Badge variant="outline">{target.recent_signal_count} 触发信号</Badge>
+              <Badge variant="secondary">{t('evolution.target_type.' + target.target_type, { defaultValue: target.target_type })}</Badge>
+              <Badge variant={riskVariant(target.risk_level)}>{t('evolution.risk.' + target.risk_level, { defaultValue: target.risk_level })}</Badge>
+              <Badge variant="outline">{t('evolution.signal_count', { count: formatCount(target.recent_signal_count, locale) })}</Badge>
             </div>
             <p className="mt-2 truncate text-xs text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>
               {target.capability_key ?? target.target_ref_id ?? target.id}
@@ -238,7 +232,7 @@ export function TargetList({
                 }}
                 className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
               >
-                编辑
+                {t('evolution.edit')}
               </span>
             </div>
           </button>
@@ -249,6 +243,7 @@ export function TargetList({
 }
 
 export function EvolutionSignalsList({ signals, loading }: { signals: EvolutionSignal[]; loading?: boolean }) {
+  const { t, locale } = useAppTranslation()
   if (loading) {
     return (
       <div className="space-y-2">
@@ -260,8 +255,8 @@ export function EvolutionSignalsList({ signals, loading }: { signals: EvolutionS
   if (signals.length === 0) {
     return (
       <EmptyState
-        title="暂无触发信号。"
-        description="这个目标的类型化证据会显示在这里。"
+        title={t('evolution.no_signals_title')}
+        description={t('evolution.no_signals_description')}
       />
     )
   }
@@ -270,14 +265,14 @@ export function EvolutionSignalsList({ signals, loading }: { signals: EvolutionS
       {signals.map(signal => (
         <div key={signal.id} className="py-3 first:pt-0 last:pb-0">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary">{displaySignalType(signal.signal_type)}</Badge>
-            <Badge variant={riskVariant(signal.severity)}>{signal.severity}</Badge>
+            <Badge variant="secondary">{displaySignalType(signal.signal_type, t)}</Badge>
+            <Badge variant={riskVariant(signal.severity)}>{t('evolution.risk.' + signal.severity, { defaultValue: signal.severity })}</Badge>
             <span className="text-sm font-medium text-foreground">{displayTargetName(signal)}</span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{signal.signal_type}</p>
-          <p className="mt-2 text-sm text-muted-foreground">{signal.summary ?? 'No summary provided.'}</p>
+          <p className="mt-2 text-sm text-muted-foreground">{signal.summary ?? t('evolution.no_summary')}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            证据 {signal.source_type}{signal.source_id ? ` ${shortId(signal.source_id)}` : ''} - {fmt(signal.created_at)}
+            {t('evolution.evidence_source', { source: signal.source_type })}{signal.source_id ? ' ' + shortId(signal.source_id) : ''} - {fmt(signal.created_at, locale)}
           </p>
         </div>
       ))}
@@ -286,11 +281,12 @@ export function EvolutionSignalsList({ signals, loading }: { signals: EvolutionS
 }
 
 export function EvolutionRunsList({ runs }: { runs: EvolutionRunListItem[] }) {
+  const { t, locale } = useAppTranslation()
   if (runs.length === 0) {
     return (
       <EmptyState
-        title="暂无运行记录。"
-        description="自进化运行会显示在这里。"
+        title={t('evolution.no_runs_title')}
+        description={t('evolution.no_runs_description')}
       />
     )
   }
@@ -300,19 +296,19 @@ export function EvolutionRunsList({ runs }: { runs: EvolutionRunListItem[] }) {
         <div key={run.run_id} className="flex flex-col gap-3 py-3 first:pt-0 last:pb-0 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={run.status} />
-              <Badge variant="outline">{run.engine ?? 'unknown engine'}</Badge>
+              <EvolutionStatusBadge status={run.status} />
+              <Badge variant="outline">{run.engine ?? t('evolution.unknown_engine')}</Badge>
               {run.strategy_key && <Badge variant="secondary">{run.strategy_key}</Badge>}
               <span className="font-mono text-xs text-muted-foreground">{shortId(run.run_id)}</span>
             </div>
             <p className="text-sm font-medium text-foreground">{displayTargetName(run)}</p>
             <p className="text-xs text-muted-foreground">
-              创建 {fmt(run.created_at)} - 启动 {fmt(run.started_at)} - artifact {run.artifact_count}
+              {t('evolution.run_timing', { created: fmt(run.created_at, locale), started: fmt(run.started_at, locale), artifacts: formatCount(run.artifact_count, locale) })}
             </p>
 
           </div>
           <Button size="sm" variant="outline" asChild>
-            <Link to={`/runs/${run.run_id}`}>打开运行</Link>
+            <Link to={`/runs/${run.run_id}`}>{t('evolution.open_run')}</Link>
           </Button>
         </div>
       ))}
@@ -321,11 +317,12 @@ export function EvolutionRunsList({ runs }: { runs: EvolutionRunListItem[] }) {
 }
 
 export function EvolutionProposalsList({ proposals }: { proposals: EvolutionProposal[] }) {
+  const { t, locale } = useAppTranslation()
   if (proposals.length === 0) {
     return (
       <EmptyState
-        title="暂无待审核改进。"
-        description="通过 proposal 边界创建的改进会显示在这里。"
+        title={t('evolution.no_pending_proposals_title')}
+        description={t('evolution.no_pending_proposals_description')}
       />
     )
   }
@@ -335,13 +332,13 @@ export function EvolutionProposalsList({ proposals }: { proposals: EvolutionProp
         <div key={proposal.id} className="py-3 first:pt-0 last:pb-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{proposal.proposal_type}</Badge>
-            <StatusBadge status={proposal.status} />
+            <EvolutionStatusBadge status={proposal.status} />
             <Link to={`/proposals/${proposal.id}`} className="text-sm font-medium text-accent-foreground hover:underline">
               {displayTargetName(proposal)}
             </Link>
           </div>
-          <p className="mt-2 text-sm text-muted-foreground">{proposal.summary ?? '暂无摘要。'}</p>
-          <p className="mt-1 text-xs text-muted-foreground">创建 {fmt(proposal.created_at)}</p>
+          <p className="mt-2 text-sm text-muted-foreground">{proposal.summary ?? t('evolution.no_summary')}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{t('evolution.created_at', { date: fmt(proposal.created_at, locale) })}</p>
         </div>
       ))}
     </div>
@@ -349,11 +346,12 @@ export function EvolutionProposalsList({ proposals }: { proposals: EvolutionProp
 }
 
 export function EvolutionStrategiesList({ strategies }: { strategies: EvolutionStrategy[] }) {
+  const { t, locale } = useAppTranslation()
   if (strategies.length === 0) {
     return (
       <EmptyState
-        title="暂无可用策略。"
-        description="内置或空间级 EvolutionStrategy 会显示在这里。"
+        title={t('evolution.no_strategies_title')}
+        description={t('evolution.no_strategies_description')}
       />
     )
   }
@@ -363,17 +361,17 @@ export function EvolutionStrategiesList({ strategies }: { strategies: EvolutionS
         <div key={strategy.id} className="py-3 first:pt-0 last:pb-0">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{strategy.category}</Badge>
-            <Badge variant={riskVariant(strategy.risk_level)}>{strategy.risk_level}</Badge>
-            <StatusBadge status={strategy.status} />
+            <Badge variant={riskVariant(strategy.risk_level)}>{t('evolution.risk.' + strategy.risk_level, { defaultValue: strategy.risk_level })}</Badge>
+            <EvolutionStatusBadge status={strategy.status} />
             <span className="text-sm font-medium text-foreground">{strategy.name}</span>
           </div>
           <p className="mt-1 font-mono text-xs text-muted-foreground">{strategy.strategy_key}</p>
-          <p className="mt-2 text-sm text-muted-foreground">{strategy.description ?? '暂无描述。'}</p>
+          <p className="mt-2 text-sm text-muted-foreground">{strategy.description ?? t('evolution.no_description')}</p>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <Badge variant="outline">{strategy.target_type}</Badge>
-            <Badge variant="outline">confidence {strategy.confidence_score.toFixed(2)}</Badge>
-            <Badge variant="outline">success {strategy.success_count}</Badge>
-            <Badge variant="outline">failure {strategy.failure_count}</Badge>
+            <Badge variant="outline">{t('evolution.target_type.' + strategy.target_type, { defaultValue: strategy.target_type })}</Badge>
+            <Badge variant="outline">{t('evolution.confidence_value', { value: new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(strategy.confidence_score) })}</Badge>
+            <Badge variant="outline">{t('evolution.success_value', { count: formatCount(strategy.success_count, locale) })}</Badge>
+            <Badge variant="outline">{t('evolution.failure_value', { count: formatCount(strategy.failure_count, locale) })}</Badge>
           </div>
         </div>
       ))}
@@ -382,11 +380,12 @@ export function EvolutionStrategiesList({ strategies }: { strategies: EvolutionS
 }
 
 export function EvolutionSelectorDecisionsList({ decisions }: { decisions: EvolutionSelectorDecision[] }) {
+  const { t, locale } = useAppTranslation()
   if (decisions.length === 0) {
     return (
       <EmptyState
-        title="暂无选择记录。"
-        description="EvolutionSelector 选择策略后的审计记录会显示在这里。"
+        title={t('evolution.no_decisions_title')}
+        description={t('evolution.no_decisions_description')}
       />
     )
   }
@@ -398,13 +397,13 @@ export function EvolutionSelectorDecisionsList({ decisions }: { decisions: Evolu
             <Badge variant="secondary">{decision.selected_strategy_key ?? 'no_strategy'}</Badge>
             <span className="font-mono text-xs text-muted-foreground">{shortId(decision.id)}</span>
           </div>
-          <p className="mt-2 text-sm text-muted-foreground">{decision.decision_reason ?? '暂无选择理由。'}</p>
+          <p className="mt-2 text-sm text-muted-foreground">{decision.decision_reason ?? t('evolution.no_decision_reason')}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            候选 {decision.candidate_strategy_ids.length} - 证据 {decision.input_signal_ids.length} - {fmt(decision.created_at)}
+            {t('evolution.decision_counts', { candidates: formatCount(decision.candidate_strategy_ids.length, locale), evidence: formatCount(decision.input_signal_ids.length, locale), date: fmt(decision.created_at, locale) })}
           </p>
           {decision.run_id && (
             <Link to={`/runs/${decision.run_id}`} className="mt-1 inline-block text-xs text-accent-foreground hover:underline">
-              运行记录 {shortId(decision.run_id)}
+              {t('evolution.run_record', { id: shortId(decision.run_id) })}
             </Link>
           )}
         </div>
@@ -414,11 +413,12 @@ export function EvolutionSelectorDecisionsList({ decisions }: { decisions: Evolu
 }
 
 export function EvolutionExperiencesList({ experiences }: { experiences: EvolutionExperience[] }) {
+  const { t, locale } = useAppTranslation()
   if (experiences.length === 0) {
     return (
       <EmptyState
-        title="暂无验证经验。"
-        description="EvolutionSolidifier 固化后的验证经验会显示在这里。"
+        title={t('evolution.no_experiences_title')}
+        description={t('evolution.no_experiences_description')}
       />
     )
   }
@@ -427,13 +427,13 @@ export function EvolutionExperiencesList({ experiences }: { experiences: Evoluti
       {experiences.map(experience => (
         <div key={experience.id} className="py-3 first:pt-0 last:pb-0">
           <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={experience.outcome_status} />
+            <EvolutionStatusBadge status={experience.outcome_status} />
             <Badge variant="secondary">{experience.strategy_key ?? 'unknown_strategy'}</Badge>
             <span className="font-mono text-xs text-muted-foreground">{experience.experience_key}</span>
           </div>
           <p className="mt-2 text-sm text-muted-foreground">{experience.summary}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            confidence {experience.confidence_score.toFixed(2)} - 证据 {experience.trigger_signals.length} - {fmt(experience.created_at)}
+            {t('evolution.experience_summary', { confidence: new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(experience.confidence_score), evidence: formatCount(experience.trigger_signals.length, locale), date: fmt(experience.created_at, locale) })}
           </p>
         </div>
       ))}
@@ -442,11 +442,12 @@ export function EvolutionExperiencesList({ experiences }: { experiences: Evoluti
 }
 
 export function EvolutionValidationPanel({ results }: { results: EvolutionValidationResult[] }) {
+  const { t, locale } = useAppTranslation()
   if (results.length === 0) {
     return (
       <EmptyState
-        title="No validation configured for this target."
-        description="Configured evaluator results appear here."
+        title={t('evolution.no_validation_title')}
+        description={t('evolution.no_validation_description')}
       />
     )
   }
@@ -458,11 +459,11 @@ export function EvolutionValidationPanel({ results }: { results: EvolutionValida
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-sm font-medium text-foreground">{result.label}</p>
               <Badge variant="outline">{result.evaluator}</Badge>
-              <StatusBadge status={result.status} />
+              <EvolutionStatusBadge status={result.status} />
             </div>
             <p className="mt-1 text-xs text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{result.metric_id}</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              window {result.window ?? 'all'} - sample {result.sample_size}
+              {t('evolution.validation_window_sample', { window: result.window ?? t('evolution.all'), sample: formatCount(result.sample_size, locale) })}
               {result.numerator_count !== null && result.denominator_count !== null
                 ? ` - ${result.numerator_count}/${result.denominator_count}`
                 : ''}
@@ -470,9 +471,9 @@ export function EvolutionValidationPanel({ results }: { results: EvolutionValida
           </div>
           <div className="text-left sm:text-right">
             <p className="text-sm" style={{ fontFamily: 'var(--font-mono)' }}>
-              {result.value === null || result.value === undefined ? 'No data yet' : String(result.value)}
+              {result.value === null || result.value === undefined ? t('evolution.no_data_yet') : typeof result.value === 'number' ? new Intl.NumberFormat(locale).format(result.value) : String(result.value)}
             </p>
-            <p className="text-xs text-muted-foreground">{fmt(result.updated_at)}</p>
+            <p className="text-xs text-muted-foreground">{fmt(result.updated_at, locale)}</p>
           </div>
         </div>
       ))}
@@ -495,6 +496,7 @@ export function TargetConfigDialog({
   onOpenChange: (open: boolean) => void
   onSubmit: (body: EvolutionTargetCreateBody | EvolutionTargetUpdateBody, mode: TargetDialogMode) => Promise<void>
 }) {
+  const { t } = useAppTranslation()
   const isEdit = mode === 'edit'
   const isCopy = mode === 'copy'
   const [targetName, setTargetName] = useState('')
@@ -515,7 +517,7 @@ export function TargetConfigDialog({
     if (!open) return
     const meta = target?.metadata_json ?? {}
     const nextName = target ? (target.target_name || '') : ''
-    setTargetName(mode === 'copy' && nextName ? `${nextName} copy` : nextName)
+    setTargetName(mode === 'copy' && nextName ? t('evolution.copy_name', { name: nextName }) : nextName)
     setTargetType(target?.target_type ?? 'agent_version')
     setTargetRefType(target?.target_ref_type ?? 'capability')
     setTargetRefId(target?.target_ref_id ?? '')
@@ -534,8 +536,8 @@ export function TargetConfigDialog({
     event.preventDefault()
     setError(null)
     try {
-      const enginePolicy = parseJsonObject(enginePolicyJson, 'Engine policy')
-      const validation = parseJsonObject(validationJson, 'Validation')
+      const enginePolicy = parseJsonObject(enginePolicyJson, t('evolution.engine_policy_json_invalid'))
+      const validation = parseJsonObject(validationJson, t('evolution.validation_json_invalid'))
       const metadata: Record<string, unknown> = { ...(target?.metadata_json ?? {}) }
       metadata.validation = validation
       if (isCopy) {
@@ -585,69 +587,69 @@ export function TargetConfigDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{isCopy ? '复制改进目标' : isEdit ? '编辑改进目标' : '新建改进目标'}</DialogTitle>
+          <DialogTitle>{isCopy ? t('evolution.copy_target') : isEdit ? t('evolution.edit_target') : t('evolution.new_target')}</DialogTitle>
           <DialogDescription>
-            配置自进化可以审计的目标、风险级别和验证策略。
+            {t('evolution.target_dialog_description')}
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={submit}>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label>名称</Label>
+              <Label>{t('evolution.name')}</Label>
               <Input value={targetName} onChange={event => setTargetName(event.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label>目标类型</Label>
-              <Select value={targetType} onChange={setTargetType} options={TARGET_TYPES} />
+              <Label>{t('evolution.target_type_label')}</Label>
+              <Select value={targetType} onChange={setTargetType} options={TARGET_TYPE_VALUES.map(value => ({ value, label: t('evolution.target_type.' + value) }))} />
             </div>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label>能力 key</Label>
+              <Label>{t('evolution.capability_key')}</Label>
               <Input value={capabilityKey} onChange={event => setCapabilityKey(event.target.value)} />
             </div>
-            <p className="self-end rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">对象引用由已选择的能力或服务端上下文绑定，不在普通表单中粘贴内部标识符。</p>
+            <p className="self-end rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">{t('evolution.object_reference_hint')}</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="space-y-1.5">
-              <Label>风险级别</Label>
-              <Select value={riskLevel} onChange={setRiskLevel} options={RISK_LEVELS} />
+              <Label>{t('evolution.risk_level')}</Label>
+              <Select value={riskLevel} onChange={setRiskLevel} options={RISK_LEVEL_VALUES.map(value => ({ value, label: t('evolution.risk.' + value) }))} />
             </div>
             <div className="space-y-1.5">
-              <Label>状态</Label>
-              <Select value={status} onChange={setStatus} options={TARGET_STATUSES} />
+              <Label>{t('evolution.status_label')}</Label>
+              <Select value={status} onChange={setStatus} options={TARGET_STATUS_VALUES.map(value => ({ value, label: t('evolution.status.' + value) }))} />
             </div>
             <div className="space-y-1.5">
-              <Label>启用</Label>
-              <Select value={enabled} onChange={setEnabled} options={ENABLED_OPTIONS} />
+              <Label>{t('evolution.enabled_label')}</Label>
+              <Select value={enabled} onChange={setEnabled} options={[{ value: 'true', label: t('evolution.enabled') }, { value: 'false', label: t('evolution.disabled') }]} />
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label>目的</Label>
+            <Label>{t('evolution.purpose')}</Label>
             <Textarea value={purpose} onChange={event => setPurpose(event.target.value)} rows={3} />
           </div>
           <div className="space-y-1.5">
-            <Label>约束</Label>
+            <Label>{t('evolution.constraints')}</Label>
             <Textarea value={constraints} onChange={event => setConstraints(event.target.value)} rows={5} />
           </div>
           <div className="grid gap-3 lg:grid-cols-2">
             <div className="space-y-1.5">
-              <Label>策略边界 JSON</Label>
+              <Label>{t('evolution.engine_policy_json')}</Label>
               <Textarea value={enginePolicyJson} onChange={event => setEnginePolicyJson(event.target.value)} rows={9} className="font-mono text-xs" />
             </div>
             <div className="space-y-1.5">
-              <Label>验证 JSON</Label>
+              <Label>{t('evolution.validation_json')}</Label>
               <Textarea value={validationJson} onChange={event => setValidationJson(event.target.value)} rows={9} className="font-mono text-xs" />
             </div>
           </div>
           {error && <p className="text-xs text-destructive">{error}</p>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
-              取消
+              {t('evolution.cancel')}
             </Button>
             <Button type="submit" disabled={saving}>
               {saving && <Loader2 className="size-3.5 animate-spin" />}
-              {isEdit ? '保存目标' : '创建目标'}
+              {isEdit ? t('evolution.save_target') : t('evolution.create_target')}
             </Button>
           </DialogFooter>
         </form>
@@ -657,44 +659,45 @@ export function TargetConfigDialog({
 }
 
 export function TargetDefinition({ target }: { target: EvolutionTarget }) {
+  const { t, locale } = useAppTranslation()
   const enginePolicy = target.engine_policy_json ?? {}
   const maxStrategyRisk = typeof enginePolicy.max_strategy_risk === 'string' ? enginePolicy.max_strategy_risk : target.risk_level
   const agentId = typeof target.metadata_json.agent_id === 'string' ? target.metadata_json.agent_id : null
   const rows = [
-    ['范围', target.scope ?? '-'],
-    ['类型', target.target_type],
-    ['引用', target.target_ref_id ?? '-'],
-    ['能力', target.capability_key ?? '-'],
-    ['当前版本', target.current_version ?? target.current_version_id ?? '-'],
-    ['agent_id', agentId ?? '-'],
-    ['最近运行', fmt(target.last_run_at)],
+    { label: t('evolution.scope'), value: target.scope ?? '-', mono: false },
+    { label: t('evolution.type'), value: t('evolution.target_type.' + target.target_type, { defaultValue: target.target_type }), mono: false },
+    { label: t('evolution.reference'), value: target.target_ref_id ?? '-', mono: true },
+    { label: t('evolution.capability'), value: target.capability_key ?? '-', mono: true },
+    { label: t('evolution.current_version'), value: target.current_version ?? target.current_version_id ?? '-', mono: false },
+    { label: 'agent_id', value: agentId ?? '-', mono: true },
+    { label: t('evolution.last_run'), value: fmt(target.last_run_at, locale), mono: false },
   ]
   return (
     <div className="space-y-4">
       {target.purpose && <p className="text-sm text-muted-foreground">{target.purpose}</p>}
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-md border border-border p-3">
-          <div className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">选择的策略</div>
+          <div className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t('evolution.selected_strategy')}</div>
           <div className="mt-1 text-sm text-foreground" style={{ fontFamily: 'var(--font-mono)' }}>EvolutionSelector</div>
         </div>
         <div className="rounded-md border border-border p-3">
-          <div className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">风险级别</div>
-          <div className="mt-1 text-sm text-foreground">{maxStrategyRisk}</div>
+          <div className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t('evolution.risk_level')}</div>
+          <div className="mt-1 text-sm text-foreground">{t('evolution.risk.' + maxStrategyRisk, { defaultValue: maxStrategyRisk })}</div>
         </div>
         <div className="rounded-md border border-border p-3">
-          <div className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">证据</div>
-          <div className="mt-1 text-sm text-foreground">目标 metadata + 触发信号</div>
+          <div className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t('evolution.evidence')}</div>
+          <div className="mt-1 text-sm text-foreground">{t('evolution.target_evidence_description')}</div>
         </div>
         <div className="rounded-md border border-border p-3">
-          <div className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">输出</div>
-          <div className="mt-1 text-sm text-foreground">待审核 plan artifact</div>
+          <div className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t('evolution.output')}</div>
+          <div className="mt-1 text-sm text-foreground">{t('evolution.pending_plan_artifact')}</div>
         </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
-        {rows.map(([label, value]) => (
+        {rows.map(({ label, value, mono }) => (
           <div key={label} className="rounded-md border border-border p-3">
             <div className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{label}</div>
-            <div className="mt-1 break-words text-sm text-foreground" style={{ fontFamily: label === '引用' || label === '能力' || label === 'agent_id' ? 'var(--font-mono)' : undefined }}>
+            <div className="mt-1 break-words text-sm text-foreground" style={{ fontFamily: mono ? 'var(--font-mono)' : undefined }}>
               {value}
             </div>
           </div>
@@ -732,13 +735,14 @@ export function SignalDialog({
     payload_json: Record<string, unknown>
   }) => void
 }) {
-  const [signalType, setSignalType] = useState(SIGNAL_TYPES[0].value)
+  const { t } = useAppTranslation()
+  const [signalType, setSignalType] = useState(SIGNAL_TYPE_VALUES[0])
   const [severity, setSeverity] = useState('medium')
   const [summary, setSummary] = useState('')
 
   useEffect(() => {
     if (!open) {
-      setSignalType(SIGNAL_TYPES[0].value)
+      setSignalType(SIGNAL_TYPE_VALUES[0])
       setSeverity('medium')
       setSummary('')
     }
@@ -748,9 +752,9 @@ export function SignalDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>记录触发信号</DialogTitle>
+          <DialogTitle>{t('evolution.record_signal')}</DialogTitle>
           <DialogDescription>
-            触发信号是目标的类型化证据，不是自动写入或自动应用。
+            {t('evolution.signal_dialog_description')}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -768,31 +772,31 @@ export function SignalDialog({
           }}
         >
           <div className="space-y-1.5">
-            <Label>改进目标</Label>
+            <Label>{t('evolution.target')}</Label>
             <Input value={target ? displayTargetName(target) : ''} disabled />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label>证据类型</Label>
-              <Select value={signalType} onChange={setSignalType} options={SIGNAL_TYPES} />
+              <Label>{t('evolution.evidence_type')}</Label>
+              <Select value={signalType} onChange={setSignalType} options={SIGNAL_TYPE_VALUES.map(value => ({ value, label: t('evolution.signal_type.' + value) }))} />
             </div>
             <div className="space-y-1.5">
-              <Label>严重性</Label>
-              <Select value={severity} onChange={setSeverity} options={SIGNAL_SEVERITIES} />
+              <Label>{t('evolution.severity')}</Label>
+              <Select value={severity} onChange={setSeverity} options={RISK_LEVEL_VALUES.map(value => ({ value, label: t('evolution.risk.' + value) }))} />
             </div>
           </div>
-          <p className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">手动信号由当前目标和提交人提供来源上下文；自动采集的信号由服务端附加不可编辑的来源引用。</p>
+          <p className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">{t('evolution.manual_signal_hint')}</p>
           <div className="space-y-1.5">
-            <Label>摘要</Label>
+            <Label>{t('evolution.summary')}</Label>
             <Textarea value={summary} onChange={event => setSummary(event.target.value)} />
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
-              取消
+              {t('evolution.cancel')}
             </Button>
             <Button type="submit" disabled={saving || !target}>
               {saving && <Loader2 className="size-3.5 animate-spin" />}
-              保存信号
+              {t('evolution.save_signal')}
             </Button>
           </DialogFooter>
         </form>

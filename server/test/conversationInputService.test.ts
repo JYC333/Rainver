@@ -380,8 +380,17 @@ describe("ConversationInputService image storage", () => {
     expect(hydrated.blocks[1]?.text).toContain("read that resource's complete draft with input_resource.read");
     expect(hydrated.blocks[1]?.text).toContain("continue from next_line while truncated=true");
     expect(hydrated.blocks[1]?.text).toContain("do not base the change on the same-path workspace file");
-    // New resource ids are resolved through the Run-scoped System Actions,
-    // never sent as Host workspace locators.
+    // Runtime Context already placed this descriptor in the immutable current
+    // user block. ACP still receives the resource link, but not a second copy.
+    const withDelivery = await service.loadPromptParts({
+      spaceId: "space-1", messageId: "message-1", embeddedContext: false,
+      useImmutableSnapshot: true, descriptorsInDelivery: true,
+    });
+    expect(withDelivery.blocks).toEqual([hydrated.blocks[0]]);
+    // The ACP resource link stays in the prompt. The Host locator list is
+    // reserved for legacy file references; new resource ids are resolved
+    // through Run-scoped System Actions.
     expect(hydrated.resources).toEqual([]);
+    expect(withDelivery.resources).toEqual([]);
   });
 });
