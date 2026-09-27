@@ -52,6 +52,21 @@ class StartProdTest(unittest.TestCase):
         self.assertEqual(second.returncode, 22, second.stderr)
         self.assertIn(password_line, env_file.read_text())
 
+    def test_first_start_refuses_existing_postgres_container_even_with_empty_data(self) -> None:
+        docker = self.root / "bin/docker"
+        docker.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1 $2\" = \"container inspect\" ]; then\n"
+            "  printf 'existing-container-id\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 22\n"
+        )
+        result = self.run_start()
+        self.assertNotEqual(result.returncode, 22)
+        self.assertIn("already exists", result.stderr)
+        self.assertFalse((self.root / "data/prod/.env").exists())
+
     def test_missing_env_with_existing_postgres_data_is_refused(self) -> None:
         pgdata = self.root / "data/prod/db/postgres"
         pgdata.mkdir(parents=True)

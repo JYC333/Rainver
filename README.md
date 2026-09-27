@@ -99,8 +99,11 @@ the administrator email, and starts the stack. Existing valid database
 passwords are preserved on later runs; a placeholder is replaced only when
 PostgreSQL data is absent or the data directory is empty. If initialized
 PostgreSQL data exists without its original `.env`, installation stops
-rather than generating a password that cannot unlock that database. Run it as the same
-host user on each update, without `sudo`.
+rather than generating a password that cannot unlock that database. First setup
+also stops if an old `rainver-prod-postgres` container exists, even when the
+host directory appears empty: deleting that directory does not stop the container.
+Inspect the old container before removing it, then retry. Run the installer as
+the same host user on each update, without `sudo`.
 The bundle lives under `~/.local/share/rainver-prod`; instance data stays in
 `~/.rainver-data/prod` (or `$RAINVER_ROOT/prod`). If a directory is owned by
 another user, fix that specific directory on the host before retrying. Never

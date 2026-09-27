@@ -137,11 +137,16 @@ COPY catalog ./catalog
 COPY server/package.json ./server/package.json
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=prod-deps /app/packages/protocol/node_modules ./packages/protocol/node_modules
+# pnpm keeps each workspace package's dependencies beside that package. The
+# server's own undici installation cannot satisfy outbound-guard's import.
+COPY --from=prod-deps /app/packages/outbound-guard/node_modules ./packages/outbound-guard/node_modules
 COPY --from=prod-deps /app/server/node_modules ./server/node_modules
 WORKDIR /app/server
 
 COPY server/migrations ./migrations
 COPY --from=build /app/server/dist ./dist
+# Fail the image build if a workspace package cannot resolve its runtime deps.
+RUN node --input-type=module -e "await import('@rainver/outbound-guard')"
 
 # CLI login helper processes need a writable HOME before their state is synced
 # into the managed profile dir under RAINVER_HOME.

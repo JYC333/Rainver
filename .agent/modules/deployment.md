@@ -39,13 +39,20 @@ Existing valid database passwords are preserved. An old placeholder is
 replaced only when PostgreSQL data is absent or the data directory is empty.
 An initialized PostgreSQL data directory without its original credential blocks
 password generation, because a new value would not update the database's
-credential. The installer checks directory
-permissions as the calling host user and does not change ownership recursively.
+credential. A leftover `rainver-prod-postgres` container also blocks first-run
+password generation: deleting the host directory does not stop a running
+container, which could still hold the old database. The operator must inspect
+and remove that container only after deciding its data is disposable.
+The installer checks directory permissions as the calling host user and does not
+change ownership recursively.
 
 Production compose files reference the images CI publishes to GHCR
 (`ghcr.io/jyc333/rainver-<name>:${RAINVER_IMAGE_TAG:-stable}`; see the
 `publish-images` job in `.github/workflows/ci.yml`). A prod machine pulls; it
-never builds. dev and test still build from the checkout.
+never builds. dev and test still build from the checkout. The server image
+copies runtime dependencies for each workspace package it loads; its Dockerfile
+imports `@rainver/outbound-guard` during the image build to catch missing
+package-local dependencies before publication.
 
 The bundled deployer is a separate privileged sidecar with docker.sock, `ops/` mounted
 read-only, and the instance mode root mounted at its host path. docker.sock alone is

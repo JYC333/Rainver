@@ -79,6 +79,20 @@ prepare_prod_first_run() {
     fi
   fi
 
+  # Removing the host data directory does not remove an existing Docker
+  # container. A running postgres can keep its old database mounted even while
+  # this path looks empty; generating a new password would then fail at the
+  # migration connection. Do not stop or remove that container automatically.
+  local postgres_container="${COMPOSE_PROJECT}-postgres" existing_container=""
+  existing_container="$(docker container inspect --format '{{.Id}}' "$postgres_container" 2>/dev/null || true)"
+  if [[ -n "$existing_container" ]]; then
+    echo "ERROR: $postgres_container already exists while $ENV_FILE needs a new database password." >&2
+    echo "       An existing container may still hold PostgreSQL data even if the host directory looks empty." >&2
+    echo "       If its data must be kept, restore the original .env. Otherwise stop and remove only" >&2
+    echo "       that container, verify $MODE_ROOT/db/postgres is empty, then retry." >&2
+    return 1
+  fi
+
   # An empty directory may be left by an earlier failed first start. Any data
   # or unreadable PGDATA must keep its original credential.
   local pgdata="$MODE_ROOT/db/postgres" first_entry=""
