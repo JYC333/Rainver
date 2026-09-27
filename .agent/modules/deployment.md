@@ -24,6 +24,24 @@ Both entries live in the same process and share nothing else: the socket allowli
 is exactly three job types, the pull loop's is exactly two, and neither takes caller
 arguments.
 
+For a host without a checkout, the `prod-stable` release publishes a small
+installer and a `BUILD_ID` pointer. The installer downloads the immutable
+`prod-sha-<commit>` bundle, verifies its SHA-256 checksum, and activates
+`~/.local/share/rainver-prod/current/ops`. The bundle contains tracked `ops/`,
+`server/migrations/` for restore inspection, and `server/package.json` for
+backup metadata. Runtime data and secrets remain under `RAINVER_ROOT/prod`.
+On a new instance the installer invokes `start.sh --prod --detach`;
+`start.sh` asks for the administrator email, generates the database password,
+and writes the production `.env`. The installer pins images to the bundle's
+commit for that invocation. By default the `.env` stays on the stable
+channel for later in-app updates; `--sha` pins it.
+Existing valid database passwords are preserved. An old placeholder is
+replaced only when PostgreSQL data is absent or the data directory is empty.
+An initialized PostgreSQL data directory without its original credential blocks
+password generation, because a new value would not update the database's
+credential. The installer checks directory
+permissions as the calling host user and does not change ownership recursively.
+
 Production compose files reference the images CI publishes to GHCR
 (`ghcr.io/jyc333/rainver-<name>:${RAINVER_IMAGE_TAG:-stable}`; see the
 `publish-images` job in `.github/workflows/ci.yml`). A prod machine pulls; it
@@ -131,11 +149,13 @@ nothing rolls back automatically.
 
 **What an update does not carry.** It moves the four services' images and
 nothing else. The compose files, `ops/scripts` and `migrate.sh` the stages run
-are the *host checkout's*, mounted read-only, and the deployer's own image is
-never recreated (ADR 0020 §6). A release that changes any of them needs a host
-step — `git pull && ops/scripts/start.sh --prod` — and the update button cannot
-perform it. `deployer_behind` makes the skew visible instead of silent, and it compares
-content rather than commits: every image CI publishes carries
+are the host's `ops/` tree, mounted read-only, and the deployer's own image is
+never recreated (ADR 0020 §6). That tree may come from a checkout or the
+versioned production bundle published after CI pushes all four images. A release
+that changes it or the deployer needs a host step — rerun the standalone
+`install-prod.sh` or `git pull && ops/scripts/start.sh --prod` — and the update
+button cannot perform it. `deployer_behind` makes the skew visible instead
+of silent, and it compares content rather than commits: every image CI publishes carries
 `com.rainver.deployment-surface`, a content digest of `deployer/` and `ops/`,
 and the deployer reports it beside `org.opencontainers.image.revision` for each
 service. The commit would be the wrong comparison — an update cannot recreate
@@ -143,7 +163,7 @@ the deployer, so its commit differs from the server's after *every* update
 whether or not anything about it changed, and an alarm that is always on is no
 alarm. The surface differs only when that part of a release actually moved, and
 the panel turns it into the host command. Null when either image carries no
-label, which is every locally built instance. The `ops/` checkout itself
+label, which is every locally built instance. The host's `ops/` tree itself
 carries no version the instance can read, so the deployer's image is the proxy
 for it — they move together in the one command that moves either.
 
@@ -238,7 +258,7 @@ block every later update.
   leave it unset for the default host checks. Machine-specific domains stay out
   of the source configuration.
 - The deployer socket is private to the privileged sidecar and is never exposed on TCP.
-- The sidecar's repository mount is `ops/` read-only; it holds no writable checkout.
+- The sidecar's `ops/` mount is read-only; it holds no writable checkout.
   Compose volume sources are resolved by the host daemon, so the mode root is mounted at
   its host path and `RAINVER_HOST_MODE_ROOT` carries that path to
   `ops/scripts/lib/local-compose.sh`.

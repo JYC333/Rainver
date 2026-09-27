@@ -72,6 +72,9 @@ jobs:
       - name: Test backup archive safety
         run: python3 -m unittest discover -s ops/scripts/system -p 'test_*.py'
 
+      - name: Test standalone production installer
+        run: python3 -m unittest discover -s ops/scripts -p 'test_*.py'
+
       - name: Typecheck server
         run: pnpm --filter @rainver/server typecheck
       # The only guard that the migration baseline still matches the schema
@@ -187,3 +190,68 @@ jobs:
             RAINVER_BUILD_SHA=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  # A production host needs only this bundle and the images above, not a Git
+  # checkout. Publish only after every image at this commit was pushed.
+  publish-prod-bundle:
+    needs: [verify, publish-images]
+    if: github.event_name == 'push' && github.ref_name == 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: rainver-prod-bundle
+      cancel-in-progress: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assemble production bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="$(mktemp -d)"
+          mkdir -p release
+          git archive HEAD ops server/migrations server/package.json | tar -xf - -C "$package_dir"
+          printf '%s\n' "$GITHUB_SHA" > "$package_dir/BUILD_ID"
+          tar -czf release/rainver-prod.tar.gz -C "$package_dir" .
+          (cd release && sha256sum rainver-prod.tar.gz > rainver-prod.tar.gz.sha256)
+          cp "$package_dir/BUILD_ID" release/BUILD_ID
+          cp ops/scripts/install-prod.sh release/install-prod.sh
+
+      - name: Publish immutable bundle and stable installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          immutable_tag="prod-sha-$GITHUB_SHA"
+          if ! gh release view "$immutable_tag" >/dev/null 2>&1; then
+            gh release create "$immutable_tag" \
+              release/rainver-prod.tar.gz release/rainver-prod.tar.gz.sha256 \
+              --target "$GITHUB_SHA" --title "Rainver production bundle $GITHUB_SHA" \
+              --notes "Production deployment files matching image tag sha-$GITHUB_SHA." \
+              --latest=false
+          fi
+
+          git fetch origin master
+          if [[ "$(git rev-parse origin/master)" != "$GITHUB_SHA" ]]; then
+            echo "A newer master commit exists; keeping the current stable pointer."
+            exit 0
+          fi
+          git tag --force prod-stable "$GITHUB_SHA"
+          git push origin +refs/tags/prod-stable
+          if gh release view prod-stable >/dev/null 2>&1; then
+            gh release upload prod-stable release/BUILD_ID release/install-prod.sh --clobber
+            gh release edit prod-stable --title "Rainver production installer" \
+              --notes "Stable installer; BUILD_ID points to the verified immutable bundle." \
+              --latest=false
+          else
+            gh release create prod-stable release/BUILD_ID release/install-prod.sh \
+              --title "Rainver production installer" \
+              --notes "Stable installer; BUILD_ID points to the verified immutable bundle." \
+              --latest=false
+          fi

@@ -9,7 +9,7 @@ this container and never talks to Docker itself.
 
 The deployer sidecar has docker.sock, which is host-equivalent authority. Its Unix
 socket stays private to the sidecar so app and agent runtimes cannot bypass product
-approval boundaries. Its repository mount is `ops/` read-only, and the instance mode
+approval boundaries. Its `ops/` mount is read-only, and the instance mode
 root is mounted at its host path so that `docker compose` resolves env files and volume
 sources to the same directory the host daemon sees.
 
@@ -123,10 +123,11 @@ The process must have Docker CLI access (`docker` on PATH, user in `docker` grou
   migrations, both run through Compose in other containers — and Compose reads
   `POSTGRES_PASSWORD` from the instance `.env` to do it. docker.sock already
   implies that authority; the boundary is who may create the job.
-- An update never recreates this container and never touches the `ops/` checkout
+- An update never recreates this container and never touches the host's `ops/` tree
   it runs from. A release that changes the compose files, the ops scripts or the
-  server↔deployer contract needs `git pull && ops/scripts/start.sh --prod` on the
-  host; the server reports the skew as `deployer_behind`, comparing the
+  server↔deployer contract needs a host step: rerun the standalone production
+  installer, or `git pull && ops/scripts/start.sh --prod` from a checkout.
+  The server reports the skew as `deployer_behind`, comparing the
   `com.rainver.deployment-surface` label CI stamps on every image rather than the
   commit — the deployer is a commit behind after every update by design.
 - If the pull loop ever ends, this process exits so `restart: unless-stopped`

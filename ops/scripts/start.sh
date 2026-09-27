@@ -8,8 +8,8 @@
 #
 # dev and test build their images from this checkout. prod never builds: it
 # pulls the images CI published to GHCR for the channel or commit named by
-# RAINVER_IMAGE_TAG in the prod .env (default stable), so the machine needs
-# the checkout only for these scripts and the compose files.
+# RAINVER_IMAGE_TAG in the prod .env (default stable). The standalone installer
+# supplies these scripts and compose files without a checkout.
 #
 # Usage:
 #   ./ops/scripts/start.sh              — dev (default)
@@ -64,33 +64,134 @@ fi
 local_compose_init "$MODE"
 ENV_TEMPLATE="$ENV_DIR/.env.$MODE.example"
 
+# A new production instance gets its database credential exactly once, before
+# PostgreSQL can initialize PGDATA. Existing instances keep their .env verbatim.
+new_prod_env=0
+prod_admin_email=""
+prod_password=""
+prepare_prod_first_run() {
+  [[ "$MODE" == "prod" ]] || return 0
+  local current_pw=""
+  if [[ -f "$ENV_FILE" ]]; then
+    current_pw="$(local_compose_env_value POSTGRES_PASSWORD || true)"
+    if ! local_compose_is_placeholder_value "$current_pw" && [[ "$current_pw" != rainver_dev_password ]]; then
+      return 0
+    fi
+  fi
+
+  # An empty directory may be left by an earlier failed first start. Any data
+  # or unreadable PGDATA must keep its original credential.
+  local pgdata="$MODE_ROOT/db/postgres" first_entry=""
+  if [[ -e "$pgdata" ]]; then
+    if [[ ! -d "$pgdata" || -L "$pgdata" || ! -r "$pgdata" || ! -x "$pgdata" ]]; then
+      echo "ERROR: $pgdata already exists and cannot be verified empty." >&2
+      echo "       Restore the original $ENV_FILE instead of generating a new database password." >&2
+      return 1
+    fi
+    first_entry="$(find "$pgdata" -mindepth 1 -print -quit 2>/dev/null)" || {
+      echo "ERROR: cannot inspect $pgdata; refusing to change the database password." >&2
+      return 1
+    }
+    if [[ -n "$first_entry" ]]; then
+      echo "ERROR: PostgreSQL data exists but $ENV_FILE has no usable password." >&2
+      echo "       Restore the original .env; generating a new password would not update PostgreSQL." >&2
+      return 1
+    fi
+  fi
+
+  prod_admin_email="$(local_compose_env_value INSTANCE_ADMIN_EMAIL || true)"
+  prod_admin_email="${prod_admin_email:-${RAINVER_ADMIN_EMAIL:-${INSTANCE_ADMIN_EMAIL:-}}}"
+  if [[ -z "$prod_admin_email" ]]; then
+    if [[ -t 0 ]]; then
+      read -r -p "Instance administrator email: " prod_admin_email || return 1
+    else
+      prod_admin_email="$(
+        { exec 3<>/dev/tty; } 2>/dev/null || exit 1
+        printf 'Instance administrator email: ' >&3
+        IFS= read -r answer <&3 || exit 1
+        printf '%s' "$answer"
+      )" || {
+        echo "ERROR: set RAINVER_ADMIN_EMAIL or run from a terminal to configure the first administrator." >&2
+        return 1
+      }
+    fi
+  fi
+  [[ "$prod_admin_email" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || {
+    echo "ERROR: enter a valid administrator email." >&2
+    return 1
+  }
+
+  if ! command -v openssl >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: openssl or python3 is required to generate the database password." >&2
+    return 1
+  fi
+  prod_password="$(local_compose_random_hex 32)" || return 1
+  [[ "$prod_password" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "ERROR: database password generator returned an invalid value." >&2
+    return 1
+  }
+  new_prod_env=1
+}
+
+initialize_prod_env() {
+  [[ "$new_prod_env" == 1 ]] || return 0
+  local_compose_set_env_value POSTGRES_PASSWORD "$prod_password"
+  local_compose_set_env_value INSTANCE_ADMIN_EMAIL "$prod_admin_email"
+  if [[ -n "${RAINVER_INITIAL_IMAGE_TAG:-}" ]]; then
+    [[ "$RAINVER_INITIAL_IMAGE_TAG" =~ ^(stable|edge|sha-[0-9a-f]{40})$ ]] || {
+      echo "ERROR: invalid RAINVER_INITIAL_IMAGE_TAG." >&2
+      return 1
+    }
+    local_compose_set_env_value RAINVER_IMAGE_TAG "$RAINVER_INITIAL_IMAGE_TAG"
+  fi
+  echo "Created $ENV_FILE with a generated database password and administrator email."
+}
+
 # ── Initialize data root directories (idempotent) ──────────────────────────────
 init_data_dirs() {
   echo "  → rainver root: $RAINVER_ROOT"
   echo "  → mode root:   $MODE_ROOT"
 
-  install -d -m 700 "$RAINVER_ROOT"
-  install -d -m 700 "$MODE_ROOT"
-  install -d -m 700 "$MODE_ROOT/storage"
-  install -d -m 700 "$MODE_ROOT/logs"
-  install -d -m 700 "$MODE_ROOT/db"
-  install -d -m 700 "$MODE_ROOT/db/postgres"
-  install -d -m 700 "$MODE_ROOT/db/dumps"
-  install -d -m 700 "$MODE_ROOT/secrets"
-  install -d -m 700 "$MODE_ROOT/artifacts"
-  install -d -m 700 "$MODE_ROOT/cache"
-  install -d -m 700 "$MODE_ROOT/cache/runtime-homes"
-  install -d -m 700 "$MODE_ROOT/cache/conversation-runtime-homes"
-  install -d -m 700 "$MODE_ROOT/cache/login-homes"
+  private_dir "$RAINVER_ROOT"
+  private_dir "$MODE_ROOT"
+  private_dir "$MODE_ROOT/storage"
+  private_dir "$MODE_ROOT/logs"
+  private_dir "$MODE_ROOT/db"
+  # PostgreSQL may take ownership of PGDATA after first boot. Existing data
+  # is managed by that container; only create the directory on first boot.
+  if [[ ! -d "$MODE_ROOT/db/postgres" ]]; then
+    private_dir "$MODE_ROOT/db/postgres"
+  fi
+  private_dir "$MODE_ROOT/db/dumps"
+  private_dir "$MODE_ROOT/secrets"
+  private_dir "$MODE_ROOT/artifacts"
+  private_dir "$MODE_ROOT/cache"
+  private_dir "$MODE_ROOT/cache/runtime-homes"
+  private_dir "$MODE_ROOT/cache/conversation-runtime-homes"
+  private_dir "$MODE_ROOT/cache/login-homes"
   # The built-in execution host: where the server publishes its registration
   # credential, and where its daemon keeps everything it owns. Created here
   # because Docker would otherwise create the bind source as root and the
   # daemon runs as an unprivileged user.
-  install -d -m 700 "$MODE_ROOT/cache/builtin-host"
-  install -d -m 700 "$MODE_ROOT/cache/host-daemon"
-  install -d -m 700 "$MODE_ROOT/run"
-  install -d -m 700 "$MODE_ROOT/sandboxes"
-  install -d -m 700 "$MODE_ROOT/workspaces"
+  private_dir "$MODE_ROOT/cache/builtin-host"
+  private_dir "$MODE_ROOT/cache/host-daemon"
+  private_dir "$MODE_ROOT/run"
+  private_dir "$MODE_ROOT/sandboxes"
+  private_dir "$MODE_ROOT/workspaces"
+}
+
+private_dir() {
+  local path="$1"
+  if install -d -m 700 "$path"; then
+    return 0
+  fi
+  echo "ERROR: cannot set private permissions on $path as $(id -un)." >&2
+  if [[ -e "$path" ]]; then
+    stat -c '       Current owner: %U:%G; permissions: %a' "$path" >&2 || true
+  fi
+  echo "       Check ownership on this host (stat -c '%U:%G %a' '$path')." >&2
+  echo "       If root owns Rainver data, change only this directory's owner; do not recursively chown PostgreSQL data." >&2
+  return 1
 }
 
 # ── Retired directories ───────────────────────────────────────────────────────
@@ -127,6 +228,11 @@ validate_prod_env() {
   pw="$(local_compose_env_value POSTGRES_PASSWORD || true)"
   local lower="${pw,,}"
 
+  if [[ -n "${POSTGRES_PASSWORD:-}" && "$POSTGRES_PASSWORD" != "$pw" ]]; then
+    echo "Refusing to start prod: exported POSTGRES_PASSWORD differs from $ENV_FILE." >&2
+    echo "       Unset it so Compose and the generated server database URL use the saved credential." >&2
+    exit 1
+  fi
   if [[ -z "$pw" ]]; then
     echo "Refusing to start prod: POSTGRES_PASSWORD is empty in $ENV_FILE" >&2
     exit 1
@@ -263,8 +369,12 @@ run_maintenance_upgrade() {
   echo "  ${COMPOSE[*]} ps"
 }
 
+private_dir "$RAINVER_ROOT"
+private_dir "$MODE_ROOT"
+prepare_prod_first_run
 init_data_dirs
 ensure_env
+initialize_prod_env
 validate_prod_env
 local_compose_ensure_server_database_env
 local_compose_generate_server_env

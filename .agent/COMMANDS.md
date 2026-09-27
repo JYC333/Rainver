@@ -13,9 +13,15 @@ pnpm install --frozen-lockfile
 # start; it never generates a migration (that is a developer step, below).
 ./ops/scripts/start.sh
 
-# Other profiles
+# Other profiles (from a checkout)
 ./ops/scripts/start.sh --test
 ./ops/scripts/start.sh --prod
+
+# Production host without a checkout: one-line bootstrap and start.
+curl -fsSL https://github.com/jyc333/rainver/releases/download/prod-stable/install-prod.sh | bash
+# It prompts for the administrator email; start.sh generates the DB password.
+# To run noninteractively, set RAINVER_ADMIN_EMAIL for the bash process.
+# Later, rerun the same command for a host-side deployment-surface upgrade.
 
 # Force rebuild images (dev/test only; prod never builds on the host)
 ./ops/scripts/start.sh --build
@@ -31,10 +37,15 @@ pnpm install --frozen-lockfile
 # master pushes `stable`, every push also tags `sha-<commit>`. The prod
 # compose file pulls `${RAINVER_IMAGE_TAG:-stable}`; set RAINVER_IMAGE_TAG in
 # $RAINVER_ROOT/prod/.env to follow edge or pin/roll back to a sha tag. The
-# checkout on a prod machine exists only for these scripts and compose files.
+# checkout is optional on a prod machine; the standalone bundle carries the
+# scripts, compose files, and restore migration metadata.
 # Update a running prod instance (pull images, migrate with pg_dump, recreate):
+# Checkout deployment: update ops and recreate the stack.
 git pull && ./ops/scripts/start.sh --prod --detach
-# Roll back: set RAINVER_IMAGE_TAG=sha-<previous commit> and run the same command.
+# Standalone deployment: download the current installer above and run it again.
+# For a pinned bundle: curl -fsSL <installer URL above> | bash -s -- --sha <40-character commit SHA>
+# An existing prod .env must set RAINVER_IMAGE_TAG=sha-<same commit>.
+# Rolling back across a database migration also requires a compatible dump restore.
 # The GHCR packages are linked to this repository by the workflow push and
 # inherit its public visibility; a prod machine pulls without logging in.
 ```

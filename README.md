@@ -84,6 +84,28 @@ API:              http://localhost:3000/api/v1   # server entrypoint
 ```
 
 Test mode exposes the same API through `http://localhost:3100/api/v1`. The test frontend talks to the server service inside the compose network.
+For a production host that does not have a repository checkout, download the
+[standalone installer](https://github.com/jyc333/rainver/releases/download/prod-stable/install-prod.sh):
+
+```bash
+curl -fsSL https://github.com/jyc333/rainver/releases/download/prod-stable/install-prod.sh | bash
+# The script asks for the first administrator's email and starts the stack.
+# Noninteractive: curl -fsSL https://github.com/jyc333/rainver/releases/download/prod-stable/install-prod.sh | RAINVER_ADMIN_EMAIL=owner@example.com bash
+```
+
+The installer downloads a verified deployment bundle and calls `start.sh --prod`.
+That script generates a database password only for a new instance, records
+the administrator email, and starts the stack. Existing valid database
+passwords are preserved on later runs; a placeholder is replaced only when
+PostgreSQL data is absent or the data directory is empty. If initialized
+PostgreSQL data exists without its original `.env`, installation stops
+rather than generating a password that cannot unlock that database. Run it as the same
+host user on each update, without `sudo`.
+The bundle lives under `~/.local/share/rainver-prod`; instance data stays in
+`~/.rainver-data/prod` (or `$RAINVER_ROOT/prod`). If a directory is owned by
+another user, fix that specific directory on the host before retrying. Never
+recursively change ownership of PostgreSQL data.
+
 Production binds the web UI to `127.0.0.1:28400` and the provider proxy to
 `127.0.0.1:28421` by default, avoiding the development ports. Override
 `RAINVER_WEB_BIND`, `RAINVER_WEB_PORT`, `PROVIDER_PROXY_BIND`, or

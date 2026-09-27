@@ -147,6 +147,11 @@ the checkout it runs from, which is exactly the authority §6 removes; making it
 recreate the deployer would mean a container replacing itself mid-job. Both are
 refused, and the visible skew is the price.
 
+The host step may instead install a versioned production deployment bundle
+containing `ops/`, then run `start.sh --prod` from that bundle. This changes
+only how the operator supplies the read-only tree. The deployer still never
+writes that tree or recreates itself; the update job still carries only images.
+
 ### 7. Observation flows from the deployer, on a heartbeat
 
 Every thirty seconds the deployer reports what it can see through

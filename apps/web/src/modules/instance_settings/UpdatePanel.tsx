@@ -176,8 +176,8 @@ export function UpdatePanel() {
   const offline = status !== null && !status.deployer_online
   const unsupported = status !== null && !status.updates_supported
   // The deployer is the one component an update cannot move (ADR 0020 §6), and
-  // the compose files and ops scripts it runs come from the host checkout with
-  // it — so this is the signal that the host step is due.
+  // the compose files and ops scripts it runs come from the host's ops tree
+  // with it — so this is the signal that the host step is due.
   const behind = status?.deployer_behind === true
   // "since never" is not a sentence: an instance that has never seen a deployer
   // and one whose deployer went quiet are different things to look into.
@@ -245,9 +245,9 @@ export function UpdatePanel() {
             <li className="flex items-start gap-1.5">
               <CircleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
               The deployer is running a different build from the server. It never updates itself, and
-              the compose files and ops scripts come from the host checkout with it: run
-              <span className="font-mono"> git pull &amp;&amp; ops/scripts/start.sh --prod </span>
-              on the host.
+              the compose files and ops scripts come from the host with it. On that host, rerun
+              the standalone production installer, or update the checkout and run
+              <span className="font-mono"> ops/scripts/start.sh --prod </span>.
             </li>
           )}
         </ul>
