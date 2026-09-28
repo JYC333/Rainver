@@ -10,7 +10,7 @@ import { recordAuthSecurityEvent } from "./securityEvents.js";
 import { consumeManualResetLink } from "./recovery.js";
 import { clearReauthGrant, hasRecentReauth, recentReauthExpiresAt, setReauthGrant } from "./reauth.js";
 import { guardedHibpRangeTransport, isPasswordCompromised } from "./hibp.js";
-import { consumeGoogleReauth, issueGoogleReauth } from "./googleReauth.js";
+import { consumeGoogleReauth, issueGoogleReauth, markGoogleReauthVerified } from "./googleReauth.js";
 import { authCookieHeader } from "./authCookie.js";
 
 type LoginLimit = { failures: number; blockedUntil: number; lastSeen: number };
@@ -117,7 +117,7 @@ async function passwordAllowed(runtime: NonNullable<ModuleContext["authRuntime"]
   return true;
 }
 
-async function forwardBetterAuth(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, reply: FastifyReply, path: string, method = request.method, overrideBody?: Record<string, unknown>): Promise<void> {
+async function forwardBetterAuth(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, reply: FastifyReply, path: string, method = request.method, overrideBody?: Record<string, unknown>, onResponse?: (response: Response) => void): Promise<void> {
   const headers = new Headers();
   for (const [key, value] of Object.entries(request.headers)) {
     if (value !== undefined && key.toLowerCase() !== "content-length") headers.set(key, Array.isArray(value) ? value[0]! : value);
@@ -126,6 +126,7 @@ async function forwardBetterAuth(runtime: NonNullable<ModuleContext["authRuntime
   const init: RequestInit = { method, headers, redirect: "manual" };
   if (payload !== undefined && method !== "GET" && method !== "HEAD") { headers.set("content-type", "application/json"); init.body = JSON.stringify(payload) }
   const response = await runtime.auth.handler(new Request(`${runtime.auth.options.baseURL}${runtime.auth.options.basePath}${path}`, init));
+  onResponse?.(response);
   reply.code(response.status);
   const setCookie = (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.();
   if (setCookie?.length) reply.header("set-cookie", setCookie); else if (response.headers.get("set-cookie")) reply.header("set-cookie", response.headers.get("set-cookie")!);
@@ -226,7 +227,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/auth/callback/google", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
     const queryString = new URLSearchParams(Object.entries(query(request)).filter((entry): entry is [string, string] => typeof entry[1] === "string")).toString();
-    return forwardBetterAuth(runtime, request, reply, `/callback/google${queryString ? `?${queryString}` : ""}`, "GET");
+    return forwardBetterAuth(runtime, request, reply, `/callback/google${queryString ? `?${queryString}` : ""}`, "GET", undefined, (response) => {
+      const reauthUrl = `${context.config.frontendUrl.replace(/\/$/, "")}/settings/security?google_reauth=1`;
+      if (response.status < 300 || response.status >= 400 || response.headers.get("location") !== reauthUrl) return;
+      const nonce = requestCookie(request, "rainver.google_reauth");
+      const cookieName = sessionCookieName(context.config);
+      const sessionCookie = authSetCookies(response.headers).find((cookie) => cookie.startsWith(`${cookieName}=`));
+      const encodedToken = sessionCookie?.slice(cookieName.length + 1).split(";", 1)[0];
+      if (!nonce || !encodedToken) return;
+      try { markGoogleReauthVerified(nonce, hashOpaqueToken(decodeURIComponent(encodedToken).split(".", 1)[0]!)); } catch { /* invalid cookie */ }
+    });
   });
 
   app.get("/api/v1/auth/introspect", async (request, reply) => {
@@ -283,9 +293,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!runtime || !googleAuthConfigured(context.config)) return reply.code(501).send({ code: "google_unavailable", message: "Google OAuth is not configured" });
     const user = await currentUser(context, request);
     if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
-    const nonce = issueGoogleReauth(user.id);
+    const token = sessionTokenFromRequest(request);
+    if (!token) return genericAuthFailure(reply, 401);
+    const previous = await runtime.pool.query<{ id: string }>("SELECT id FROM user_sessions WHERE user_id = $1 AND token_hash = $2 AND expires_at > now() LIMIT 1", [user.id, hashOpaqueToken(token.split(".", 1)[0]!)]);
+    if (!previous.rows[0]) return genericAuthFailure(reply, 401);
     const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/settings/security?google_reauth=1` });
     if (result.status >= 400 || typeof result.body.url !== "string") return genericAuthFailure(reply, 400);
+    const nonce = issueGoogleReauth(user.id, previous.rows[0].id);
     reply.header("set-cookie", [
       ...authSetCookies(result.headers),
       authCookieHeader(context.config, { name: "rainver.google_reauth", value: nonce, maxAgeSeconds: 600 }),
@@ -296,11 +310,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.post("/api/v1/auth/reauth/google/complete", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
     const nonce = requestCookie(request, "rainver.google_reauth"); const pendingReauth = nonce ? consumeGoogleReauth(nonce) : null;
-    if (!pendingReauth) return genericAuthFailure(reply, 401);
-    const session = await runtime.auth.api.getSession({ headers: new Headers({ cookie: `${sessionCookieName(context.config)}=${encodeURIComponent(sessionTokenFromRequest(request) ?? "")}` }) });
-    if (!session?.user?.id || session.user.id !== pendingReauth.userId || new Date(session.session.createdAt).getTime() < pendingReauth.issuedAt) return genericAuthFailure(reply, 401);
+    const currentToken = sessionTokenFromRequest(request);
+    if (!pendingReauth || !currentToken) return genericAuthFailure(reply, 401);
+    const session = await runtime.auth.api.getSession({ headers: new Headers({ cookie: `${sessionCookieName(context.config)}=${encodeURIComponent(currentToken)}` }) });
+    if (!session?.user?.id || session.user.id !== pendingReauth.userId || pendingReauth.verifiedSessionTokenHash !== hashOpaqueToken(currentToken.split(".", 1)[0]!)) return genericAuthFailure(reply, 401);
     const account = await runtime.pool.query("SELECT 1 FROM auth_accounts WHERE user_id = $1 AND provider_id = 'google' LIMIT 1", [session.user.id]);
     if (!account.rowCount) return genericAuthFailure(reply, 401);
+    await runtime.pool.query("DELETE FROM user_sessions WHERE id = $1 AND user_id = $2 AND id <> $3", [pendingReauth.previousSessionId, session.user.id, session.session.id]);
     setReauthGrant(reply, context.config, session.user.id);
     return reply.send({ ok: true, expires_in: 600 });
   });

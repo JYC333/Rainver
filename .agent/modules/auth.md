@@ -80,8 +80,11 @@ Google provider access, refresh and ID tokens are scrubbed before persistence;
 linking Google requires an explicit authenticated action, and unlinking cannot
 remove the last remaining login account. Later Google sign-ins do not overwrite
 the Rainver profile. Every Better Auth session creation records `last_login_at`.
-A Google reauthentication nonce is one-time and bound to the user who initiated
-it before a recent-auth grant can be issued.
+A Google reauthentication nonce is one-time and bound to the user and session
+that initiated it. Successful reauthentication replaces the browser's session;
+Rainver records the session issued by a successful Google callback, then revokes
+only the prior session after the browser presents that exact new session and
+issues the recent-auth grant.
 
 `/settings/security` wraps recent password or Google reauthentication, password setup/change,
 Google link/unlink and safe session list/revoke operations. Session responses

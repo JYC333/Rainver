@@ -5,6 +5,7 @@ import { migrate } from "../src/db/migrator.js";
 import { createBetterAuth } from "../src/modules/auth/betterAuth.js";
 import { PgAuthRepository } from "../src/modules/auth/identity.js";
 import { authModule } from "../src/modules/auth/index.js";
+import { markGoogleReauthVerified } from "../src/modules/auth/googleReauth.js";
 import { RegistrationService } from "../src/modules/auth/registration.js";
 import { hashOpaqueToken } from "../src/modules/auth/securityPolicy.js";
 import { buildModuleServer } from "./support/moduleServer.js";
@@ -150,6 +151,91 @@ describe("registration and Better Auth facade primitives", () => {
       await app.close();
     }
   });
+  it("replaces only the prior session after successful Google reauthentication", async () => {
+    if (!db.available) return;
+    const config = authConfig("owner@example.test", true);
+    const registrations = new RegistrationService(db.pool, config);
+    const intent = await registrations.issueIntent({ email: "owner@example.test" });
+    const { raw, userId } = await signUp(config, "owner@example.test", "Owner");
+    await registrations.complete({ intentId: intent.intentId, claimSecret: intent.claimSecret, userId });
+    await db.pool.query(
+      "INSERT INTO auth_accounts (id, account_id, provider_id, user_id, created_at, updated_at) VALUES ('google-account', 'google-user', 'google', $1, now(), now())",
+      [userId],
+    );
+    const app = buildModuleServer(config, [authModule]);
+    const oldCookie = `better-auth.session_token=${encodeURIComponent(raw)}`;
+    try {
+      const otherSignIn = await app.inject({
+        method: "POST", url: "/api/v1/auth/sign-in/email",
+        headers: { origin: config.frontendUrl, "content-type": "application/json", "x-forwarded-for": "192.0.2.208" },
+        payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
+      });
+      expect(otherSignIn.statusCode).toBe(200);
+      const otherCookie = String(otherSignIn.headers["set-cookie"]).split(";", 1)[0];
+      const otherToken = decodeURIComponent(otherCookie.slice(otherCookie.indexOf("=") + 1)).split(".", 1)[0]!;
+
+      const start = await app.inject({
+        method: "POST", url: "/api/v1/auth/reauth/google",
+        headers: { cookie: oldCookie, origin: config.frontendUrl, "x-forwarded-for": "192.0.2.206" },
+        payload: {},
+      });
+      expect(start.statusCode).toBe(200);
+      const cookies = Array.isArray(start.headers["set-cookie"]) ? start.headers["set-cookie"] : [String(start.headers["set-cookie"])];
+      const nonceCookie = cookies.find(cookie => cookie.startsWith("rainver.google_reauth="))?.split(";", 1)[0];
+      expect(nonceCookie).toBeTruthy();
+
+      const signIn = await app.inject({
+        method: "POST", url: "/api/v1/auth/sign-in/email",
+        headers: { origin: config.frontendUrl, "content-type": "application/json", "x-forwarded-for": "192.0.2.205" },
+        payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
+      });
+      expect(signIn.statusCode).toBe(200);
+      const newCookie = String(signIn.headers["set-cookie"]).split(";", 1)[0];
+      const newToken = decodeURIComponent(newCookie.slice(newCookie.indexOf("=") + 1)).split(".", 1)[0]!;
+      await db.pool.query("UPDATE user_sessions SET created_at = now() + interval '2 seconds' WHERE token_hash = $1", [hashOpaqueToken(newToken)]);
+
+      const unverified = await app.inject({
+        method: "POST", url: "/api/v1/auth/reauth/google/complete",
+        headers: { cookie: `${newCookie}; ${nonceCookie}`, origin: config.frontendUrl },
+        payload: {},
+      });
+      expect(unverified.statusCode).toBe(401);
+      expect((await db.pool.query("SELECT 1 FROM user_sessions WHERE user_id = $1", [userId])).rowCount).toBe(3);
+
+      const retry = await app.inject({
+        method: "POST", url: "/api/v1/auth/reauth/google",
+        headers: { cookie: oldCookie, origin: config.frontendUrl, "x-forwarded-for": "192.0.2.207" },
+        payload: {},
+      });
+      expect(retry.statusCode).toBe(200);
+      const retryCookies = Array.isArray(retry.headers["set-cookie"]) ? retry.headers["set-cookie"] : [String(retry.headers["set-cookie"])];
+      const retryNonceCookie = retryCookies.find(cookie => cookie.startsWith("rainver.google_reauth="))?.split(";", 1)[0];
+      expect(retryNonceCookie).toBeTruthy();
+      const retryNonce = retryNonceCookie!.slice("rainver.google_reauth=".length);
+      markGoogleReauthVerified(retryNonce, hashOpaqueToken(newToken));
+      const complete = await app.inject({
+        method: "POST", url: "/api/v1/auth/reauth/google/complete",
+        headers: { cookie: `${newCookie}; ${retryNonceCookie}`, origin: config.frontendUrl },
+        payload: {},
+      });
+      expect(complete.statusCode).toBe(200);
+      expect(complete.json()).toMatchObject({ ok: true });
+      const sessions = await db.pool.query<{ token_hash: string }>("SELECT token_hash FROM user_sessions WHERE user_id = $1 ORDER BY token_hash", [userId]);
+      expect(sessions.rows.map(row => row.token_hash)).toEqual([hashOpaqueToken(newToken), hashOpaqueToken(otherToken)].sort());
+      expect((await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie: newCookie } })).statusCode).toBe(200);
+      const logout = await app.inject({
+        method: "POST", url: "/api/v1/auth/logout",
+        headers: { cookie: newCookie, origin: config.frontendUrl },
+        payload: {},
+      });
+      expect(logout.statusCode).toBe(200);
+      const afterLogout = await db.pool.query<{ token_hash: string }>("SELECT token_hash FROM user_sessions WHERE user_id = $1", [userId]);
+      expect(afterLogout.rows).toEqual([{ token_hash: hashOpaqueToken(otherToken) }]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("reads the secure Better Auth session cookie on HTTPS", async () => {
     if (!db.available) return;
     const config = loadConfig({
