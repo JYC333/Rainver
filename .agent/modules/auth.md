@@ -12,9 +12,15 @@ administrator policy and public response contracts.
 composition. `server/src/modules/auth/betterAuth.ts` is the only production
 Better Auth factory; `server/src/db/betterAuthPgAdapter.ts` is the typed custom
 PostgreSQL adapter. Runtime auth code does not import the Drizzle query adapter.
-The session cookie is `better-auth.session_token`; there is no legacy
-`session_id` cookie or handwritten OAuth/session writer. Rainver-owned cookies add
+Better Auth names the session cookie `better-auth.session_token` on HTTP and
+`__Secure-better-auth.session_token` on HTTPS. Rainver reads and clears the name
+issued by Better Auth; there is no legacy `session_id` cookie or handwritten
+OAuth/session writer. Rainver-owned cookies add
 `Secure` whenever `FRONTEND_URL` is HTTPS and remain usable on loopback HTTP.
+The auth facade forwards Better Auth's `Set-Cookie` headers from every Google
+OAuth start response, including login, registration, reauthentication and account
+linking. Its OAuth errors return to `/login?error=...` rather than an unmounted
+Better Auth error endpoint.
 
 ## Admission and registration
 
