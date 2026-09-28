@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Host-only production CLI. The installer places a launcher in ~/.local/bin.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat <<'USAGE'
+Usage: rainver <command> [options]
+
+Commands:
+  install, update [--sha SHA]  Install or update the production bundle and images
+  start                        Start stopped production containers
+  stop                         Stop production containers without deleting data
+  restart [service]            Restart containers without pulling images
+  status                       Show all production containers
+  logs [-f] [service]          Show recent logs; -f follows them
+  version                      Show the installed bundle commit
+
+Services: postgres, server, frontend, sandbox-runner, deployer
+USAGE
+}
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+service_allowed() {
+  case "$1" in
+    postgres|server|frontend|sandbox-runner|deployer) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+command_name="${1:-help}"
+if [[ $# -gt 0 ]]; then shift; fi
+case "$command_name" in
+  help|-h|--help)
+    [[ $# -eq 0 ]] || die "help takes no arguments"
+    usage
+    exit 0
+    ;;
+  version|-V|--version)
+    [[ $# -eq 0 ]] || die "version takes no arguments"
+    build_id_file="$SCRIPT_DIR/../../BUILD_ID"
+    [[ -f "$build_id_file" ]] || die "no installed bundle BUILD_ID found"
+    cat "$build_id_file"
+    exit 0
+    ;;
+  install|update)
+    exec "$SCRIPT_DIR/install-prod.sh" "$@"
+    ;;
+  start|stop|restart|status|logs) ;;
+  *) die "unknown command: $command_name (run rainver --help)" ;;
+esac
+
+# Every operation uses the same data root, project and Compose file as start.sh.
+# The installed launcher exports the configured RAINVER_ROOT for later shells.
+source "$SCRIPT_DIR/lib/local-compose.sh"
+local_compose_init prod
+[[ -f "$ENV_FILE" ]] || die "production instance is not configured at $ENV_FILE; run the installer first"
+
+case "$command_name" in
+  start)
+    [[ $# -eq 0 ]] || die "start takes no arguments"
+    for service in postgres server frontend sandbox-runner deployer; do
+      [[ -n "$("${COMPOSE[@]}" ps -aq "$service")" ]] || die "$service container is absent; run rainver update to install the stack"
+    done
+    exec "${COMPOSE[@]}" start
+    ;;
+  stop)
+    [[ $# -eq 0 ]] || die "stop takes no arguments"
+    exec "${COMPOSE[@]}" stop
+    ;;
+  restart)
+    [[ $# -le 1 ]] || die "restart accepts at most one service"
+    if [[ $# -eq 1 ]]; then
+      service_allowed "$1" || die "unknown service: $1"
+    fi
+    exec "${COMPOSE[@]}" restart "$@"
+    ;;
+  status)
+    [[ $# -eq 0 ]] || die "status takes no arguments"
+    exec "${COMPOSE[@]}" ps --all
+    ;;
+  logs)
+    follow=0
+    service=""
+    for arg in "$@"; do
+      case "$arg" in
+        -f|--follow) follow=1 ;;
+        -*) die "unknown logs option: $arg" ;;
+        *)
+          [[ -z "$service" ]] || die "logs accepts at most one service"
+          service_allowed "$arg" || die "unknown service: $arg"
+          service="$arg"
+          ;;
+      esac
+    done
+    logs_args=(logs --tail 100)
+    [[ "$follow" == 0 ]] || logs_args+=(-f)
+    [[ -z "$service" ]] || logs_args+=("$service")
+    exec "${COMPOSE[@]}" "${logs_args[@]}"
+    ;;
+esac

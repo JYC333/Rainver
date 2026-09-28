@@ -245,8 +245,10 @@ export function UpdatePanel() {
             <li className="flex items-start gap-1.5">
               <CircleAlert aria-hidden className="mt-0.5 size-3.5 shrink-0" />
               The deployer is running a different build from the server. It never updates itself, and
-              the compose files and ops scripts come from the host with it. On that host, rerun
-              the standalone production installer, or update the checkout and run
+              the compose files and ops scripts come from the host with it. On a
+              standalone installation, run <span className="font-mono">rainver update</span>
+              on that host (or rerun the installer if the CLI is not installed yet);
+              with a checkout, update it and run
               <span className="font-mono"> ops/scripts/start.sh --prod </span>.
             </li>
           )}

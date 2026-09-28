@@ -93,6 +93,24 @@ curl -fsSL https://github.com/jyc333/rainver/releases/download/prod-stable/insta
 # Noninteractive: curl -fsSL https://github.com/jyc333/rainver/releases/download/prod-stable/install-prod.sh | RAINVER_ADMIN_EMAIL=owner@example.com bash
 ```
 
+The installer also installs `~/.local/bin/rainver` (or
+`$RAINVER_BIN_DIR/rainver`). Add that directory to `PATH` if the command is
+not found in the current shell. After installation, use the host CLI:
+
+```bash
+rainver status              # include stopped and failed containers
+rainver logs -f server      # follow recent server logs
+rainver stop                # stop the stack; keep data and containers
+rainver start               # start the existing containers
+rainver restart             # restart the stack without pulling images
+rainver restart server      # restart just the server
+rainver update              # fetch the current release, back up/migrate, and start
+rainver version             # installed bundle commit
+```
+
+`start` and `restart` keep the installed image. Use `update` for a new release;
+it runs the verified standalone installer and the same production start path.
+
 The installer downloads a verified deployment bundle and calls `start.sh --prod`.
 That script generates a database password only for a new instance, records
 the administrator email, and starts the stack. Existing valid database

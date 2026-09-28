@@ -21,7 +21,18 @@ pnpm install --frozen-lockfile
 curl -fsSL https://github.com/jyc333/rainver/releases/download/prod-stable/install-prod.sh | bash
 # It prompts for the administrator email; start.sh generates the DB password.
 # To run noninteractively, set RAINVER_ADMIN_EMAIL for the bash process.
-# Later, rerun the same command for a host-side deployment-surface upgrade.
+# The installer adds ~/.local/bin/rainver; add ~/.local/bin to PATH if needed.
+# Host operations after installation:
+rainver status
+rainver logs -f server
+rainver stop
+rainver start
+rainver restart
+rainver restart server
+rainver update
+rainver version
+# start/restart use existing images; update downloads the current verified
+# production bundle, backs up/migrates, and starts the matching images.
 
 # Force rebuild images (dev/test only; prod never builds on the host)
 ./ops/scripts/start.sh --build
@@ -42,8 +53,8 @@ curl -fsSL https://github.com/jyc333/rainver/releases/download/prod-stable/insta
 # Update a running prod instance (pull images, migrate with pg_dump, recreate):
 # Checkout deployment: update ops and recreate the stack.
 git pull && ./ops/scripts/start.sh --prod --detach
-# Standalone deployment: download the current installer above and run it again.
-# For a pinned bundle: curl -fsSL <installer URL above> | bash -s -- --sha <40-character commit SHA>
+# Standalone deployment: rainver update (or rerun the one-line installer).
+# For a pinned bundle: rainver update --sha <40-character commit SHA>
 # An existing prod .env must set RAINVER_IMAGE_TAG=sha-<same commit>.
 # Rolling back across a database migration also requires a compatible dump restore.
 # The GHCR packages are linked to this repository by the workflow push and

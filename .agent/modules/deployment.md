@@ -44,7 +44,13 @@ password generation: deleting the host directory does not stop a running
 container, which could still hold the old database. The operator must inspect
 and remove that container only after deciding its data is disposable.
 The installer checks directory permissions as the calling host user and does not
-change ownership recursively.
+change ownership recursively. It installs a user-owned `~/.local/bin/rainver`
+launcher that records the selected data and install roots. The host-only CLI
+uses the shared Compose resolver for `start`, `stop`, `restart`, `status`, and
+`logs`; those commands manage installed containers without pulling images or
+migrating. `rainver update` invokes the bundled verified installer and the
+production start path, including the pre-migration backup. The CLI has no
+deployer socket or product API entry point.
 
 Production compose files reference the images CI publishes to GHCR
 (`ghcr.io/jyc333/rainver-<name>:${RAINVER_IMAGE_TAG:-stable}`; see the
@@ -159,8 +165,9 @@ nothing else. The compose files, `ops/scripts` and `migrate.sh` the stages run
 are the host's `ops/` tree, mounted read-only, and the deployer's own image is
 never recreated (ADR 0020 §6). That tree may come from a checkout or the
 versioned production bundle published after CI pushes all four images. A release
-that changes it or the deployer needs a host step — rerun the standalone
-`install-prod.sh` or `git pull && ops/scripts/start.sh --prod` — and the update
+that changes it or the deployer needs a host step — `rainver update` (or
+rerun the standalone installer) or `git pull && ops/scripts/start.sh --prod` —
+and the update
 button cannot perform it. `deployer_behind` makes the skew visible instead
 of silent, and it compares content rather than commits: every image CI publishes carries
 `com.rainver.deployment-surface`, a content digest of `deployer/` and `ops/`,

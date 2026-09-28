@@ -30,7 +30,9 @@ done
 data_root="${RAINVER_ROOT:-$HOME/.rainver-data}"
 data_root="${data_root/#\~/$HOME}"
 install_root="${RAINVER_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/rainver-prod}"
-[[ "$data_root" == /* && "$install_root" == /* ]] || die "RAINVER_ROOT and RAINVER_INSTALL_DIR must be absolute paths"
+bin_dir="${RAINVER_BIN_DIR:-$HOME/.local/bin}"
+bin_dir="${bin_dir/#\~/$HOME}"
+[[ "$data_root" == /* && "$install_root" == /* && "$bin_dir" == /* ]] || die "RAINVER_ROOT, RAINVER_INSTALL_DIR and RAINVER_BIN_DIR must be absolute paths"
 export RAINVER_ROOT="$data_root"
 
 private_dir() {
@@ -52,10 +54,12 @@ release_base="${RAINVER_RELEASE_BASE_URL:-https://github.com/jyc333/rainver/rele
 scratch="$(mktemp -d)"
 stage=""
 next_link=""
+cli_stage=""
 cleanup() {
   rm -rf "$scratch"
   [[ -z "$stage" ]] || rm -rf "$stage"
   [[ -z "$next_link" ]] || rm -f "$next_link"
+  [[ -z "$cli_stage" ]] || rm -f "$cli_stage"
 }
 trap cleanup EXIT
 
@@ -76,9 +80,17 @@ if [[ ! -d "$release_dir" ]]; then
   tar -xzf "$scratch/rainver-prod.tar.gz" -C "$stage"
   [[ -f "$stage/BUILD_ID" ]] || die "release is missing BUILD_ID"
   [[ "$(tr -d '\r\n' < "$stage/BUILD_ID")" == "$selected_sha" ]] || die "release commit does not match archive"
-  [[ -x "$stage/ops/scripts/start.sh" && -f "$stage/ops/compose/docker-compose.prod.yml" ]] || die "incomplete production bundle"
+  [[ -x "$stage/ops/scripts/start.sh" && -x "$stage/ops/scripts/rainver" && -f "$stage/ops/compose/docker-compose.prod.yml" ]] || die "incomplete production bundle"
   mv "$stage" "$release_dir"
   stage=""
+fi
+[[ -x "$release_dir/ops/scripts/rainver" ]] || die "installed production bundle has no CLI"
+
+# Do not activate a new release if its command would overwrite another program.
+mkdir -p "$bin_dir"
+if [[ -e "$bin_dir/rainver" || -L "$bin_dir/rainver" ]] \
+    && ! grep -Fq '# Rainver production CLI launcher (managed by install-prod.sh).' "$bin_dir/rainver"; then
+  die "$bin_dir/rainver already exists and is not managed by this installer"
 fi
 
 [[ ! -e "$install_root/current" || -L "$install_root/current" ]] || die "$install_root/current is not a symlink"
@@ -87,6 +99,19 @@ ln -s "releases/$selected_sha" "$next_link"
 mv -Tf "$next_link" "$install_root/current"
 next_link=""
 echo "Installed production scripts for $selected_sha at $install_root/current"
+
+# Keep the command stable while current/ changes atomically between releases.
+# The launcher records non-default roots so later shells manage this instance.
+cli_stage="$(mktemp "$bin_dir/.rainver.XXXXXXXX")"
+printf '#!/usr/bin/env bash\n# Rainver production CLI launcher (managed by install-prod.sh).\nexport RAINVER_ROOT=%q\nexport RAINVER_INSTALL_DIR=%q\nexport RAINVER_BIN_DIR=%q\nexec %q "$@"\n' \
+  "$data_root" "$install_root" "$bin_dir" "$install_root/current/ops/scripts/rainver" > "$cli_stage"
+chmod 755 "$cli_stage"
+mv -f "$cli_stage" "$bin_dir/rainver"
+cli_stage=""
+echo "Installed command: $bin_dir/rainver"
+if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
+  echo "Add $bin_dir to PATH to run it as 'rainver' in this shell."
+fi
 
 # A pinned image needs the matching deployment scripts. The stable channel is
 # allowed to move normally; the deployer reports when its surface lags.
