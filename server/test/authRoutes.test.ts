@@ -522,6 +522,16 @@ describe("native server auth routes", () => {
     expect(res.statusCode).toBe(204);
     expect(deleted).toBe(true);
     expect(String(res.headers["set-cookie"])).toContain("better-auth.session_token=;");
+
+    await app.close();
+    app = server({ FRONTEND_URL: "https://rainver.example.test" });
+    const secure = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/logout",
+      headers: { cookie: "__Secure-better-auth.session_token=raw-token" },
+    });
+    expect(secure.statusCode).toBe(204);
+    expect(String(secure.headers["set-cookie"])).toContain("__Secure-better-auth.session_token=;");
   });
 
   it("forwards repository auth failures from /me", async () => {

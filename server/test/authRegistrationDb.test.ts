@@ -29,11 +29,13 @@ function authConfig(instanceAdminEmail = "owner@example.test", google = false): 
   });
 }
 
+let signUpSourceCounter = 10;
 async function signUp(config: ServerConfig, email: string, name: string, sourceIp?: string) {
   const auth = createBetterAuth(config, db.pool);
-  const response = await auth.handler(new Request("http://localhost:5173/api/v1/auth/sign-up/email", {
+  const requestSourceIp = sourceIp ?? `192.0.2.${signUpSourceCounter++}`;
+  const response = await auth.handler(new Request(`${config.frontendUrl}/api/v1/auth/sign-up/email`, {
     method: "POST",
-    headers: { "content-type": "application/json", origin: "http://localhost:5173", ...(sourceIp ? { "x-forwarded-for": sourceIp } : {}) },
+    headers: { "content-type": "application/json", origin: config.frontendUrl, "x-forwarded-for": requestSourceIp },
     body: JSON.stringify({ email, password: "a password with at least fifteen characters", name }),
   }));
   expect(response.status).toBe(200);
@@ -46,6 +48,41 @@ async function signUp(config: ServerConfig, email: string, name: string, sourceI
 }
 
 describe("registration and Better Auth facade primitives", () => {
+  it("returns the OAuth state cookie with Google login and routes callback errors to login", async () => {
+    if (!db.available) return;
+    const app = buildModuleServer(authConfig("owner@example.test", true), [authModule]);
+    try {
+      const start = await app.inject({ method: "GET", url: "/api/v1/auth/google" });
+      expect(start.statusCode).toBe(307);
+      expect(start.headers.location).toContain("accounts.google.com");
+      expect(String(start.headers["set-cookie"])).toMatch(/better-auth\.state=/);
+
+      const failedCallback = await app.inject({ method: "GET", url: "/api/v1/auth/callback/google?state=missing" });
+      expect(failedCallback.statusCode).toBe(302);
+      expect(failedCallback.headers.location).toBe("http://localhost:5173/login?error=state_mismatch");
+    } finally {
+      await app.close();
+    }
+  });
+  it("keeps both Google state and registration claim cookies", async () => {
+    if (!db.available) return;
+    const config = authConfig("owner@example.test", true);
+    const intent = await new RegistrationService(db.pool, config).issueIntent({ email: "owner@example.test" });
+    const app = buildModuleServer(config, [authModule]);
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/api/v1/auth/register/google",
+        headers: { origin: "http://localhost:5173", "content-type": "application/json" },
+        payload: JSON.stringify({ intent_id: intent.intentId, claim_secret: intent.claimSecret }),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(String(response.headers["set-cookie"])).toMatch(/better-auth\.state=/);
+      expect(String(response.headers["set-cookie"])).toMatch(/rainver\.registration_claim=/);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("starts Google linking after a password reauthentication grant", async () => {
     if (!db.available) return;
     const config = authConfig("owner@example.test", true);
@@ -99,10 +136,87 @@ describe("registration and Better Auth facade primitives", () => {
       });
       expect(link.statusCode).toBe(200);
       expect(link.json().url).toContain("accounts.google.com");
+      expect(String(link.headers["set-cookie"])).toMatch(/better-auth\.state=/);
+
+      const googleReauth = await app.inject({
+        method: "POST", url: "/api/v1/auth/reauth/google",
+        headers: { cookie: sessionCookie, origin: "http://localhost:5173" },
+        payload: {},
+      });
+      expect(googleReauth.statusCode).toBe(200);
+      expect(String(googleReauth.headers["set-cookie"])).toMatch(/better-auth\.state=/);
+      expect(String(googleReauth.headers["set-cookie"])).toMatch(/rainver\.google_reauth=/);
     } finally {
       await app.close();
     }
   });
+  it("reads the secure Better Auth session cookie on HTTPS", async () => {
+    if (!db.available) return;
+    const config = loadConfig({
+      SERVER_DATABASE_URL: db.connectionUri,
+      BETTER_AUTH_SECRET: "registration-test-secret-that-is-long-enough",
+      FRONTEND_URL: "https://rainver.example.test",
+      INSTANCE_ADMIN_EMAIL: "owner@example.test",
+    });
+    const intent = await new RegistrationService(db.pool, config).issueIntent({ email: "owner@example.test" });
+    const { userId } = await signUp(config, "owner@example.test", "Owner");
+    await new RegistrationService(db.pool, config).complete({ intentId: intent.intentId, claimSecret: intent.claimSecret, userId });
+    const app = buildModuleServer(config, [authModule]);
+    try {
+      const signIn = await app.inject({
+        method: "POST", url: "/api/v1/auth/sign-in/email",
+        headers: { origin: config.frontendUrl, "content-type": "application/json", "x-forwarded-for": "192.0.2.201" },
+        payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
+      });
+      expect(signIn.statusCode).toBe(200);
+      const cookie = String(signIn.headers["set-cookie"]).split(";", 1)[0];
+      expect(cookie).toMatch(/^__Secure-better-auth\.session_token=/);
+      const me = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie } });
+      expect(me.statusCode).toBe(200);
+      expect(me.json()).toMatchObject({ id: userId });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("signs in through the facade after setting a password on an existing account", async () => {
+    if (!db.available) return;
+    const config = authConfig();
+    const intent = await new RegistrationService(db.pool, config).issueIntent({ email: "owner@example.test" });
+    const { raw, userId } = await signUp(config, "owner@example.test", "Owner");
+    await new RegistrationService(db.pool, config).complete({ intentId: intent.intentId, claimSecret: intent.claimSecret, userId });
+    const app = buildModuleServer(config, [authModule]);
+    const sessionCookie = `better-auth.session_token=${encodeURIComponent(raw)}`;
+    try {
+      const reauth = await app.inject({
+        method: "POST", url: "/api/v1/auth/reauth",
+        headers: { cookie: sessionCookie, origin: "http://localhost:5173", "content-type": "application/json" },
+        payload: JSON.stringify({ password: "a password with at least fifteen characters" }),
+      });
+      expect(reauth.statusCode).toBe(200);
+      const grant = String(reauth.headers["set-cookie"]).split(";", 1)[0];
+      await db.pool.query("DELETE FROM auth_accounts WHERE user_id = $1 AND provider_id = 'credential'", [userId]);
+      const setPassword = await app.inject({
+        method: "POST", url: "/api/v1/auth/password/set",
+        headers: { cookie: `${sessionCookie}; ${grant}`, origin: "http://localhost:5173", "content-type": "application/json" },
+        payload: JSON.stringify({ new_password: "a new password with at least fifteen characters" }),
+      });
+      expect(setPassword.statusCode).toBe(200);
+      const signIn = await app.inject({
+        method: "POST", url: "/api/v1/auth/sign-in/email",
+        headers: { origin: "http://localhost:5173", "content-type": "application/json", "x-forwarded-for": "192.0.2.202" },
+        payload: JSON.stringify({ email: "owner@example.test", password: "a new password with at least fifteen characters" }),
+      });
+      expect(signIn.statusCode).toBe(200);
+      const cookie = String(signIn.headers["set-cookie"]).split(";", 1)[0];
+      expect(cookie).toMatch(/^better-auth\.session_token=/);
+      const me = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie } });
+      expect(me.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("admits the configured bootstrap email, provisions one identity, and records each login", async () => {
     if (!db.available) return;
     const config = authConfig("Owner@Example.test");
@@ -126,12 +240,29 @@ describe("registration and Better Auth facade primitives", () => {
     await db.pool.query("UPDATE users SET last_login_at = NULL WHERE id = $1", [userId]);
     const signIn = await auth.handler(new Request("http://localhost:5173/api/v1/auth/sign-in/email", {
       method: "POST",
-      headers: { "content-type": "application/json", origin: "http://localhost:5173" },
+      headers: { "content-type": "application/json", origin: "http://localhost:5173", "x-forwarded-for": "192.0.2.203" },
       body: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
     }));
     expect(signIn.status).toBe(200);
     const login = await db.pool.query<{ last_login_at: Date | null }>("SELECT last_login_at FROM users WHERE id = $1", [userId]);
     expect(login.rows[0]?.last_login_at).toBeInstanceOf(Date);
+
+    const app = buildModuleServer(config, [authModule]);
+    try {
+      const routeLogin = await app.inject({
+        method: "POST", url: "/api/v1/auth/sign-in/email",
+        headers: { origin: "http://localhost:5173", "content-type": "application/json", "x-forwarded-for": "192.0.2.204" },
+        payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters", rememberMe: true }),
+      });
+      expect(routeLogin.statusCode).toBe(200);
+      const cookie = String(routeLogin.headers["set-cookie"]).split(";", 1)[0];
+      expect(cookie).toMatch(/^better-auth\.session_token=/);
+      const me = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie } });
+      expect(me.statusCode).toBe(200);
+      expect(me.json()).toMatchObject({ id: userId, email: "owner@example.test" });
+    } finally {
+      await app.close();
+    }
 
     const duplicate = await registrations.issueIntent({ email: "owner@example.test" }).catch((error: Error) => error.message);
     expect(duplicate).toBe("registration_invitation_required");

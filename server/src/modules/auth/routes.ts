@@ -4,7 +4,7 @@ import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { PASSWORD_MAX_LENGTH, assertPasswordPolicy, hashOpaqueToken, normalizeAuthEmail, passwordMinimumLength } from "./securityPolicy.js";
 import { googleAuthConfigured } from "./betterAuth.js";
-import { authRepositoryFromConfig, createAuthRuntime, introspectIdentity, sessionTokenFromRequest, setAuthRuntimeForComposition, type AuthFailure } from "./identity.js";
+import { authRepositoryFromConfig, createAuthRuntime, introspectIdentity, sessionCookieName, sessionTokenFromRequest, setAuthRuntimeForComposition, type AuthFailure } from "./identity.js";
 import { RegistrationService } from "./registration.js";
 import { recordAuthSecurityEvent } from "./securityEvents.js";
 import { consumeManualResetLink } from "./recovery.js";
@@ -51,10 +51,14 @@ function loginFailure(key: string): number {
 
 function loginSuccess(key: string): void { loginLimits.delete(key); }
 
+function authSetCookies(headers: Headers): string[] {
+  const cookies = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.();
+  return cookies?.length ? cookies : headers.get("set-cookie") ? [headers.get("set-cookie")!] : [];
+}
+
 async function sendAuthResult(reply: FastifyReply, result: { status: number; body: Record<string, unknown>; headers: Headers }): Promise<void> {
-  const setCookie = (result.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.();
-  if (setCookie?.length) reply.header("set-cookie", setCookie);
-  else if (result.headers.get("set-cookie")) reply.header("set-cookie", result.headers.get("set-cookie")!);
+  const setCookie = authSetCookies(result.headers);
+  if (setCookie.length) reply.header("set-cookie", setCookie);
   if (result.status === 204) { reply.code(204).send(); return; }
   reply.code(result.status).send(result.body);
 }
@@ -189,7 +193,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const repository = authRepositoryFromConfig(context.config);
       if (!repository) return runtimeOrError(context, reply);
       await repository.logout(sessionTokenFromRequest(request));
-      reply.header("set-cookie", authCookieHeader(context.config, { name: "better-auth.session_token", value: "", maxAgeSeconds: 0 }));
+      reply.header("set-cookie", authCookieHeader(context.config, { name: sessionCookieName(context.config), value: "", maxAgeSeconds: 0 }));
       return reply.code(204).send();
     }
     return forwardBetterAuth(runtime, request, reply, "/sign-out", "POST", {});
@@ -201,6 +205,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const callbackURL = `${context.config.frontendUrl.replace(/\/$/, "")}/login?redirect=${encodeURIComponent(next)}`;
     const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", callbackURL });
     if (result.status >= 400 || typeof result.body.url !== "string") return reply.code(502).send({ code: "google_unavailable", message: "Google OAuth is unavailable" });
+    const setCookie = authSetCookies(result.headers);
+    if (setCookie.length) reply.header("set-cookie", setCookie);
     return reply.redirect(result.body.url, 307);
   });
   app.post("/api/v1/auth/register/google", async (request, reply) => {
@@ -210,7 +216,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!check.rowCount) return reply.code(400).send({ code: "registration_invalid", message: "Registration authority is invalid" });
     const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", requestSignUp: true, callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/login?registration=${encodeURIComponent(intentId)}`, additionalData: { registration_intent_id: intentId, claim_secret: claimSecret } });
     if (result.status >= 400 || typeof result.body.url !== "string") return reply.code(502).send({ code: "google_unavailable", message: "Google OAuth is unavailable" });
-    reply.header("set-cookie", authCookieHeader(context.config, { name: "rainver.registration_claim", value: `${intentId}.${claimSecret}`, maxAgeSeconds: 1800 }));
+    reply.header("set-cookie", [
+      ...authSetCookies(result.headers),
+      authCookieHeader(context.config, { name: "rainver.registration_claim", value: `${intentId}.${claimSecret}`, maxAgeSeconds: 1800 }),
+    ]);
     return reply.send({ url: result.body.url });
   });
 
@@ -277,7 +286,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const nonce = issueGoogleReauth(user.id);
     const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/settings/security?google_reauth=1` });
     if (result.status >= 400 || typeof result.body.url !== "string") return genericAuthFailure(reply, 400);
-    reply.header("set-cookie", authCookieHeader(context.config, { name: "rainver.google_reauth", value: nonce, maxAgeSeconds: 600 }));
+    reply.header("set-cookie", [
+      ...authSetCookies(result.headers),
+      authCookieHeader(context.config, { name: "rainver.google_reauth", value: nonce, maxAgeSeconds: 600 }),
+    ]);
     return reply.send({ url: result.body.url });
   });
 
@@ -285,7 +297,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!runtime) return runtimeOrError(context, reply);
     const nonce = requestCookie(request, "rainver.google_reauth"); const pendingReauth = nonce ? consumeGoogleReauth(nonce) : null;
     if (!pendingReauth) return genericAuthFailure(reply, 401);
-    const session = await runtime.auth.api.getSession({ headers: new Headers({ cookie: `better-auth.session_token=${encodeURIComponent(sessionTokenFromRequest(request) ?? "")}` }) });
+    const session = await runtime.auth.api.getSession({ headers: new Headers({ cookie: `${sessionCookieName(context.config)}=${encodeURIComponent(sessionTokenFromRequest(request) ?? "")}` }) });
     if (!session?.user?.id || session.user.id !== pendingReauth.userId || new Date(session.session.createdAt).getTime() < pendingReauth.issuedAt) return genericAuthFailure(reply, 401);
     const account = await runtime.pool.query("SELECT 1 FROM auth_accounts WHERE user_id = $1 AND provider_id = 'google' LIMIT 1", [session.user.id]);
     if (!account.rowCount) return genericAuthFailure(reply, 401);
@@ -367,6 +379,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!hasRecentReauth(request, context.config, user.id)) return reply.code(403).send({ code: "reauthentication_required", message: "Recent reauthentication required" });
     const result = await authResponse(runtime, request, "/link-social", { provider: "google", disableRedirect: true, callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/settings/security` });
     if (result.status >= 400 || typeof result.body.url !== "string") return genericAuthFailure(reply, 400);
+    const setCookie = authSetCookies(result.headers);
+    if (setCookie.length) reply.header("set-cookie", setCookie);
     return reply.send({ url: result.body.url });
   });
 

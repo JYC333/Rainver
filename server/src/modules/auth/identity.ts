@@ -1,11 +1,11 @@
 import type { FastifyRequest } from "fastify";
+import { getCookies, getSessionCookie } from "better-auth/cookies";
 import type { ServerConfig } from "../../config.js";
 import type { AuthenticatedIdentity } from "../../gateway/requestContext.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import { createBetterAuth } from "./betterAuth.js";
 import { hashOpaqueToken } from "./securityPolicy.js";
 
-const SESSION_COOKIE = "better-auth.session_token";
 export const API_KEYS_NOT_IMPLEMENTED = "API key storage is not in the canonical schema (ApiKey is deferred).";
 
 export type IntrospectionResult =
@@ -64,18 +64,13 @@ export async function introspectIdentity(config: ServerConfig, request: FastifyR
   const requestedSpaceHeader = headerValue(request.headers["x-rainver-space-id"]);
   return repository.resolveIdentity({ authorization: headerValue(request.headers.authorization), sessionToken: sessionTokenFromRequest(request), requestedSpaceId: requestedSpaceHeader ?? (typeof query?.space_id === "string" ? query.space_id : undefined) });
 }
-export function sessionTokenFromRequest(request: FastifyRequest): string | undefined { return cookieValue(headerValue(request.headers.cookie), SESSION_COOKIE) }
+export function sessionCookieName(config: ServerConfig): string { return getCookies({ baseURL: config.frontendUrl }).sessionToken.name }
+export function sessionTokenFromRequest(request: FastifyRequest): string | undefined {
+  const cookie = headerValue(request.headers.cookie);
+  return cookie ? getSessionCookie(new Headers({ cookie })) ?? undefined : undefined;
+}
 export function authFailureBody(detail: string): string { return JSON.stringify({ detail }) }
 function headerValue(value: string | string[] | undefined): string | undefined { return Array.isArray(value) ? value[0] : value }
-function cookieValue(header: string | undefined, name: string): string | undefined {
-  if (!header) return undefined;
-  for (const raw of header.split(";")) {
-    const part = raw.trim(); const eq = part.indexOf("=");
-    if (eq <= 0 || part.slice(0, eq) !== name) continue;
-    try { return decodeURIComponent(part.slice(eq + 1)) } catch { return part.slice(eq + 1) }
-  }
-  return undefined;
-}
 function logicalSessionToken(token: string): string { return token.split(".", 1)[0]! }
 function asIso(value: Date | string | null): string | null { if (value === null) return null; return value instanceof Date ? value.toISOString() : new Date(value).toISOString() }
 function isInstanceAdminEmail(email: string | null, admin: string | null): boolean { return Boolean(email && admin && email.trim().toLowerCase() === admin.trim().toLowerCase()) }
@@ -125,7 +120,7 @@ export class PgAuthRepository implements AuthRepository {
     if (!token) return null;
     if (this.auth) {
       try {
-        const session = await this.auth.api.getSession({ headers: new Headers({ cookie: `${SESSION_COOKIE}=${encodeURIComponent(token)}` }) });
+        const session = await this.auth.api.getSession({ headers: new Headers({ cookie: `${getCookies(this.auth.options).sessionToken.name}=${encodeURIComponent(token)}` }) });
         if (session?.session?.userId) return { id: session.session.id, user_id: session.session.userId, expires_at: session.session.expiresAt };
       } catch { /* fall through to the same generic SQL read */ }
     }

@@ -109,6 +109,7 @@ export function createBetterAuth(config: ServerConfig, pool: Pool) {
       storeIdentifier: "hashed",
     },
     trustedOrigins: [config.frontendUrl],
+    onAPIError: { errorURL: `${authBaseUrl(config)}/login` },
     rateLimit: { enabled: true, window: 60, max: 20 },
   };
   return betterAuth(options);
