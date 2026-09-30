@@ -300,6 +300,18 @@ describe("experimentsDb", () => {
       const candidateRun = await runs.createRun(identity, PROJECT, definition.id as string, version.id as string, { is_baseline: false });
       expect(candidateRun.is_baseline).toBe(false);
 
+      // A Project writer cannot point the Run at an Agent they cannot read.
+      const admin = randomUUID();
+      await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1,$1,'active',now(),now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [admin]);
+      await db.pool.query(`INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'admin','active',now(),now())`, [randomUUID(), SPACE, admin]);
+      await expect(runs.launchManagedRun(
+        { spaceId: SPACE, userId: admin },
+        PROJECT,
+        definition.id as string,
+        version.id as string,
+        { agent_id: AGENT, is_baseline: false },
+      )).rejects.toMatchObject({ statusCode: 404 });
+
       const launched = await runs.launchManagedRun(
         identity,
         PROJECT,

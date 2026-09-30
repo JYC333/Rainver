@@ -13,6 +13,7 @@ import { assertProjectReadable, assertProjectWriter, assertProjectFolderInProjec
 import { ExperimentDefinitionService } from "./definitionService.js";
 import { enumValue, managedScopeViolation, stringArray } from "./common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
+import { canReadAgent } from "../agents/agentAccess.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 
@@ -163,6 +164,7 @@ export class ExperimentRunService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const agentId = optionalString(body.agent_id);
     if (!agentId) throw new HttpError(422, "agent_id is required");
+    if (!(await canReadAgent(this.db, identity, agentId))) throw new HttpError(404, "Agent not found");
     return withQueryableTransaction(this.db, async db => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
