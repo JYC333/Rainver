@@ -4,6 +4,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
 import { resolveEvolvableAssetVersion } from "../src/modules/evolution/assetResolutionService.js";
+import { assertCanResolveForScopes } from "../src/modules/evolution/assetAccess.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
@@ -137,6 +138,17 @@ async function insertApprovedVersion(
 }
 
 describe("Evolvable asset/version/pin (real Postgres)", () => {
+  it("lets an HTTP caller resolve only for a Project and Agent whose versions it could list", async () => {
+    if (!db.available) return;
+    await expect(assertCanResolveForScopes(db.pool, identity, { projectId: PROJECT, agentId: AGENT })).resolves.toBeUndefined();
+    const outsider: SpaceUserIdentity = { spaceId: SPACE, userId: OUTSIDER };
+    await expect(assertCanResolveForScopes(db.pool, outsider, { projectId: PROJECT, agentId: null }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await expect(assertCanResolveForScopes(db.pool, outsider, { projectId: null, agentId: AGENT }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await expect(assertCanResolveForScopes(db.pool, outsider, { projectId: null, agentId: null })).resolves.toBeUndefined();
+  });
+
   it("rejects capability rows because CapabilityVersion is the canonical model", async () => {
     if (!db.available) return;
     await expect(repo().createAsset(identity, {

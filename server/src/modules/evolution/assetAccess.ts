@@ -189,6 +189,24 @@ export async function canViewVersionScope(
   return canViewScopedRef(db, identity, row.scope_type, row.scope_id);
 }
 
+/**
+ * An HTTP resolution names the Project and Agent it resolves for. The caller
+ * may name only ones whose scoped versions it could list; runtime resolution
+ * derives these from the Run and does not come through here.
+ */
+export async function assertCanResolveForScopes(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  scopes: { projectId: string | null; agentId: string | null },
+): Promise<void> {
+  if (scopes.projectId && !(await canViewScopedRef(db, identity, "project", scopes.projectId))) {
+    throw new HttpError(404, "Project not found");
+  }
+  if (scopes.agentId && !(await canViewScopedRef(db, identity, "agent", scopes.agentId))) {
+    throw new HttpError(404, "Agent not found");
+  }
+}
+
 export async function assertCanPinScope(db: Queryable, identity: SpaceUserIdentity, scopeType: string, scopeId: string): Promise<void> {
   if (scopeType === "project") {
     await assertProjectWriter(db, identity.spaceId, scopeId, identity.userId);
