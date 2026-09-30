@@ -17,7 +17,7 @@ import type {
   ProposalApplyResult,
   ProposalApplierRegistry,
 } from "../proposals/applierRegistry.js";
-import { locationGitOutput, runLocationGit, validatePath } from "@rainver/folder-read";
+import { assertWriteStaysInsideRoot, FolderWriteError, locationGitOutput, runLocationGit, validatePath } from "@rainver/folder-read";
 import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "./workspaceLocations.js";
 import { PgProjectFolderRepository } from "./repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
@@ -450,6 +450,7 @@ class CodePatchFileTransaction {
     const updated: Array<{ path: string; sha256: string }> = [];
     for (const operation of operations) {
       const target = this.validateOperation(operation);
+      await assertCodePatchTargetInsideRoot(this.root, target, operation.path);
       const existing = await readFile(target).catch((error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return null;
         throw error;
@@ -511,6 +512,18 @@ class CodePatchFileTransaction {
       protectedFolder: this.protectedFolder,
       forTrustedCodePatchApply: true,
     });
+  }
+}
+
+/** A symbolic link inside the checkout must not carry an approved patch out of it. */
+export async function assertCodePatchTargetInsideRoot(root: string, target: string, path: string): Promise<void> {
+  try {
+    await assertWriteStaysInsideRoot(root, target);
+  } catch (error) {
+    if (error instanceof FolderWriteError) {
+      throw new HttpError(422, `Unsafe code_patch path ${JSON.stringify(path)}: ${error.message}`);
+    }
+    throw error;
   }
 }
 

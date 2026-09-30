@@ -27,6 +27,7 @@ import { proposalActivityAudience } from "./decisionActivity.js";
 import { PgSnapshotStore } from "../projectFolders/snapshotStore.js";
 import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
+import { assertCodePatchTargetInsideRoot } from "../projectFolders/codePatch.js";
 import { validatePath } from "@rainver/folder-read";
 import { HttpError } from "../routeUtils/common.js";
 import type {
@@ -571,18 +572,22 @@ export class PgProposalApplyService {
         throw error instanceof HttpError ? new ProposalApplyHttpError(error.statusCode, error.message) : error;
       }
       const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
-      const target = (path: string) => validatePath({
-        path: resolve(root, path),
-        allowedRoot: root,
-        mode: "write",
-        protectedFolder: folder.protected,
-        forTrustedCodePatchApply: true,
-      });
+      const target = async (path: string) => {
+        const absolute = validatePath({
+          path: resolve(root, path),
+          allowedRoot: root,
+          mode: "write",
+          protectedFolder: folder.protected,
+          forTrustedCodePatchApply: true,
+        });
+        await assertCodePatchTargetInsideRoot(root, absolute, path);
+        return absolute;
+      };
       // Writing pre-apply content over a file someone has changed since would
       // silently discard that work, so every applied file must still hold
       // exactly what the patch wrote.
       for (const file of appliedCodePatchFiles(p.payload_json)) {
-        const current = await readFile(target(file.path)).catch((err: NodeJS.ErrnoException) => {
+        const current = await readFile(await target(file.path)).catch((err: NodeJS.ErrnoException) => {
           if (err.code === "ENOENT") return null;
           throw err;
         });
@@ -594,7 +599,7 @@ export class PgProposalApplyService {
       // Restore files to pre-apply state
       const restoredPaths: string[] = [];
       for (const file of snapshot.files) {
-        const absPath = target(file.path);
+        const absPath = await target(file.path);
         if (file.existed && file.content !== null) {
           await mkdir(dirname(absPath), { recursive: true });
           await writeFile(absPath, file.content, "utf8");

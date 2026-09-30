@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -101,5 +101,25 @@ describe("code patch file transaction", () => {
 
     await expect(readFile(join(root, "a.txt"), "utf8")).resolves.toBe("old a\n");
     await expect(readFile(join(root, "b.txt"), "utf8")).resolves.toBe("old b\n");
+  });
+
+  it("refuses to write through a directory link that leaves the Folder", async () => {
+    const root = await tmpRoot();
+    const outside = await tmpRoot();
+    await symlink(outside, join(root, "out"));
+    const tx = new __codePatchTestHooks.CodePatchFileTransaction(root, false);
+    const newFile = (path: string) => ({
+      type: "replace_file" as const, path, content: "planted\n", preimage_exists: false, preimage_sha256: null,
+    });
+
+    await expect(tx.apply([newFile("out/config.yaml")])).rejects.toMatchObject({ statusCode: 422 });
+    await expect(tx.apply([newFile("out/nested/deeper/config.yaml")])).rejects.toMatchObject({ statusCode: 422 });
+    await expect(stat(join(outside, "config.yaml"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(outside, "nested"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    // A new file under directories that do not exist yet is still allowed.
+    await mkdir(join(root, "src"));
+    await tx.apply([newFile("src/new/dir/file.txt")]);
+    await expect(readFile(join(root, "src/new/dir/file.txt"), "utf8")).resolves.toBe("planted\n");
   });
 });

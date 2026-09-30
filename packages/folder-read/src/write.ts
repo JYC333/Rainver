@@ -50,6 +50,29 @@ const WRITE_LOCK_STALE_MS = 5 * 60 * 1000;
 const WRITE_LOCK_WAIT_MS = 25;
 
 /**
+ * Refuses a write whose target, or else the nearest part of its path that
+ * exists, resolves outside the Folder root. `validatePath` is lexical, so on
+ * its own a write follows any directory link the checkout contains; a new file
+ * may also sit under directories the write is about to create.
+ */
+export async function assertWriteStaysInsideRoot(root: string, absoluteTarget: string): Promise<void> {
+  const canonicalRoot = await realpath(resolve(root)).catch(() => null);
+  if (!canonicalRoot) throw new FolderWriteError("not_found", "Project Folder directory not found on disk");
+  for (let probe = resolve(absoluteTarget); ; probe = dirname(probe)) {
+    const canonical = await realpath(probe).catch(() => null);
+    if (canonical) {
+      if (!isInside(canonical, canonicalRoot)) {
+        throw new FolderWriteError("path_forbidden", "File path escapes the registered Folder root");
+      }
+      return;
+    }
+    if (dirname(probe) === probe) {
+      throw new FolderWriteError("path_forbidden", "File path escapes the registered Folder root");
+    }
+  }
+}
+
+/**
  * Replace one UTF-8 text file atomically and return the exact preimage. The
  * caller supplies an optional preimage hash so a stale editor cannot silently
  * overwrite a newer change. Secret-like paths remain forbidden even for a

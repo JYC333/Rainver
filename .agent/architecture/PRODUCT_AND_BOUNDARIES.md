@@ -141,7 +141,7 @@ capture / trigger
 | Runtime credential use | Credential resolver + secret redaction | Active |
 | Project Folder file read | `project_folder.read` route check + `PathPolicy` | Active |
 | ACP workspace filesystem access | Direct access to the workspace assigned by the execution Host; strict-host namespace or trusted-host OS permissions, not a per-file Proposal/PathPolicy gate | Active |
-| Canonical `code_patch` apply | Approved `code_patch` Proposal gate + `PathPolicy` | Active |
+| Canonical `code_patch` apply | Approved `code_patch` Proposal gate + `PathPolicy` + `realpath` containment on apply and rollback, so a directory link cannot carry a write out of the Folder | Active |
 | Project Folder human File-page save | Draft-backed Save to Folder + `project_folder.apply_patch` audit + `PathPolicy` + optimistic draft/Host precondition; history is restore-as-draft only | Active |
 | Sandbox path access | Execution Project Folder boundary, worktree root validation | Active |
 | Deployment / deployer calls | Instance-admin job records + internal-token pull channel; operator-only deployer socket allowlist | Active |
