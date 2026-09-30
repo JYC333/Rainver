@@ -440,6 +440,9 @@ export class PgMemoryReadRepository {
          ) prov ON true
         WHERE me.space_id = $1 AND me.deleted_at IS NULL
           AND (me.id = $2 OR me.root_memory_id = $2)
+          AND ${contentReadSql("memory", "me", "$3")}
+          AND ${memorySensitivityReadSql("me", "$3")}
+          AND ${memoryAgentScopeReadSql("me", "$3")}
         ORDER BY me.created_at ASC`,
       [spaceId, rootId, userId],
     );

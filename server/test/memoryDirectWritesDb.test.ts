@@ -610,4 +610,19 @@ describe("memory version history for a Space member (real Postgres)", () => {
       expect.objectContaining({ memory: expect.objectContaining({ content: "SHARED MEMORY BODY" }) }),
     ]);
   });
+
+  it("does not serve another member's private memory through its history", async () => {
+    const memoryId = randomUUID();
+    await insertMemoryEntry(
+      db.pool,
+      SPACE,
+      { id: memoryId, owner_user_id: OWNER, content: "PRIVATE MEMORY BODY" },
+      { visibility: "private" },
+    );
+    const repository = new PgMemoryReadRepository(db.pool);
+    expect((await repository.versions(SPACE, OTHER, memoryId)).items).toEqual([]);
+    expect((await repository.versions(SPACE, OWNER, memoryId)).items).toEqual([
+      expect.objectContaining({ memory: expect.objectContaining({ content: "PRIVATE MEMORY BODY" }) }),
+    ]);
+  });
 });
