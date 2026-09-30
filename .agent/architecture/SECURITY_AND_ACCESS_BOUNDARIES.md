@@ -886,7 +886,8 @@ flow.
   `credentials`, `instance/secrets`, `config/secrets`, `.git/config`,
   `.env`, `.env.*` except template examples, private key filenames, and
   `*.pem` / `*.key`.
-- Full git diff output is bounded; secret-like diff paths are denied and
+- Full git diff output is bounded; secret-like diff paths are denied, a
+  whole-Folder diff is denied when any file it shows fails PathPolicy, and
   secret-like key/value lines are redacted.
 - Forbidden write suffixes: `.py`, `.sh`, `.bash`, `.zsh`, `.fish`.
 - Paths resolved to absolute before validation; no symlink race conditions.

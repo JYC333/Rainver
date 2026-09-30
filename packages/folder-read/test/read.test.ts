@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildTree,
@@ -188,6 +188,25 @@ describe("folder-read filesystem operations", () => {
     await writeFile(join(root, ".env.local"), "new", "utf8");
     await expect(folderGitDiff(root, null)).rejects.toThrow(/blocked path/);
     expect(await readFile(join(root, "README.md"), "utf8")).toContain("raw-secret");
+  });
+
+  it("refuses a whole-Folder diff that shows a file a direct read would refuse", async () => {
+    for (const blocked of ["credentials/service-account.json", ".gcp/key.json", "instance/secrets/app.yaml", "目录/.env"]) {
+      const root = await tempRoot();
+      await runGit(["init"], root);
+      await runGit(["config", "user.email", "test@example.invalid"], root);
+      await runGit(["config", "user.name", "Test"], root);
+      await mkdir(join(root, dirname(blocked)), { recursive: true });
+      await writeFile(join(root, blocked), "old\n", "utf8");
+      await writeFile(join(root, "README.md"), "before\n", "utf8");
+      await runGit(["add", "."], root);
+      await runGit(["commit", "-m", "initial"], root);
+      await writeFile(join(root, blocked), "private_key_id: 123\n", "utf8");
+      await writeFile(join(root, "README.md"), "after\n", "utf8");
+
+      await expect(folderGitDiff(root, null), blocked).rejects.toThrow(/blocked path/);
+      await expect(folderGitDiff(root, "README.md")).resolves.toMatchObject({ diff: expect.stringContaining("+after") });
+    }
   });
 
   it("exposes typed folder read errors", () => {

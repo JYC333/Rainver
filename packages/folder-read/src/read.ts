@@ -189,15 +189,14 @@ export async function folderGitDiff(
     await assertContainedPath(root, resolved.absolute, opts);
     safePath = resolved.relative;
   }
-  const args = safePath !== null
-    ? ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--", safePath]
-    : ["diff", "--no-ext-diff", "--no-textconv", "HEAD", "--"];
-  let diff = (await runLocationGit(args, root, 15_000)).stdout;
+  const pathspec = safePath !== null ? ["--", safePath] : ["--"];
+  let base = ["HEAD", ...pathspec];
+  let diff = (await runLocationGit(["diff", "--no-ext-diff", "--no-textconv", ...base], root, 15_000)).stdout;
   if (!diff) {
-    diff = (await runLocationGit(safePath !== null
-      ? ["diff", "--no-ext-diff", "--no-textconv", "--", safePath]
-      : ["diff", "--no-ext-diff", "--no-textconv", "--"], root, 15_000)).stdout;
+    base = pathspec;
+    diff = (await runLocationGit(["diff", "--no-ext-diff", "--no-textconv", ...base], root, 15_000)).stdout;
   }
+  if (safePath === null && diff) await assertDiffPathsReadable(root, base, opts);
   if (diffTouchesSecretLikePath(diff)) {
     throw new PathPolicyError("Diff includes blocked path");
   }
@@ -207,6 +206,30 @@ export async function folderGitDiff(
   const truncated = encoded.length > MAX_DIFF_BYTES;
   if (truncated) diff = encoded.subarray(0, MAX_DIFF_BYTES).toString("utf8");
   return { diff, path: safePath, truncated, redacted: redacted.redacted };
+}
+
+/**
+ * A whole-Folder diff shows the content of every changed file, so each of those
+ * files must pass the policy a single-file read of it would. Paths come from
+ * git as NUL-separated raw names, without the quoting a diff header applies to
+ * unusual names, and without rename pairing, so a file renamed away from a
+ * forbidden path is still checked under its old name.
+ */
+async function assertDiffPathsReadable(
+  root: string,
+  base: readonly string[],
+  opts: Pick<PathPolicyInput, "protectedFolder">,
+): Promise<void> {
+  const names = (await runLocationGit(["diff", "--name-only", "-z", "--no-renames", ...base], root, 15_000)).stdout;
+  for (const name of names.split("\0")) {
+    if (!name) continue;
+    try {
+      resolveRelativePath(root, name, opts);
+    } catch (error) {
+      if (error instanceof PathPolicyError) throw new PathPolicyError("Diff includes blocked path");
+      throw error;
+    }
+  }
 }
 
 export function resolveRelativePath(
