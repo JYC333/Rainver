@@ -26,7 +26,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["learning_item_mastery", "learning_items", "learning_objectives", "decision_option_scores", "decision_commitments", "decision_criteria", "decision_options", "decision_cases", "knowledge_items", "space_objects", "projects", "space_memberships", "users", "spaces"],
+    ["learning_item_mastery", "learning_items", "learning_objectives", "decision_option_scores", "decision_commitments", "decision_criteria", "decision_options", "decision_cases", "knowledge_items", "space_objects", "project_members", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -61,5 +61,17 @@ describe("Decision <-> Project Kernel integration (real Postgres)", () => {
       area_kind: "decision",
       href: `/projects/${project.id}/decisions?open=${decisionCase.id}`,
     });
+
+    // A Project member who cannot read the Case is not told it exists.
+    const member = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1, 'Member', 'active', $2, $2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [member, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'member', 'active', $4, $4)`, [randomUUID(), SPACE, member, now]);
+    await db.pool.query(`INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at) VALUES ($1, $2, $3, $4, 'viewer', 'active', $5, $5)`, [randomUUID(), SPACE, project.id, member, now]);
+    await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE space_id = $1 AND id = $2`, [SPACE, decisionCase.id]);
+    const memberItems = await new ProjectAttentionService(db.pool).listAttentionItems({ spaceId: SPACE, userId: member }, project.id as string);
+    expect(memberItems.filter((i) => i.source_type === "decision_case")).toEqual([]);
+    const ownerItems = await new ProjectAttentionService(db.pool).listAttentionItems(identity(), project.id as string);
+    expect(ownerItems.filter((i) => i.source_type === "decision_case")).toHaveLength(1);
   });
 });
