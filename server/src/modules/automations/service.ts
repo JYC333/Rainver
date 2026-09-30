@@ -9,6 +9,7 @@ import { getDbPool, type PoolClient } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { HttpError } from "../routeUtils/common.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
 import { enforce } from "../policy/index.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { computeDecision } from "../policy/gateway.js";
@@ -262,6 +263,17 @@ export class AutomationService {
     if (authorityProjectId) {
       await this.repo.assertProjectWriter(input.spaceId, authorityProjectId, input.actorUserId);
       hasProjectWriterAuthority = true;
+    }
+    // Moving an Automation takes authority over where it comes from, not only
+    // where it goes: its current Project's write access, or, for a personal
+    // one, being its owner or a Space owner/admin.
+    if (hasProjectKey && nextProjectId !== existing.project_id) {
+      if (existing.project_id) {
+        await this.repo.assertProjectWriter(input.spaceId, existing.project_id, input.actorUserId);
+      } else if (input.actorUserId !== existing.owner_user_id
+        && !isSpaceOwnerOrAdmin(await this.repo.getMembershipRole(input.spaceId, input.actorUserId))) {
+        throw new HttpError(403, "Only its owner can move a personal Automation into a Project");
+      }
     }
     await this.enforceAction("automation.update", input.spaceId, input.actorUserId, {
       agent_id: existing.agent_id,

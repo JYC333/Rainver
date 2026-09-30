@@ -280,6 +280,31 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     expect(rebound.project_id).toBe(PROJECT);
   });
 
+  it("does not let a member pull someone else's Automation into their own Project", async () => {
+    if (!db.available) return;
+    const personal = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: { name: "Owner's own", agent_id: AGENT, trigger_type: "manual", config_json: { target_type: "agent_run" } },
+    });
+    const theirProject = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+       VALUES ($1,$2,$3,'Member project','active',$4,$4)`,
+      [theirProject, SPACE, MEMBER, now],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+
+    await expect(service().update({
+      spaceId: SPACE,
+      automationId: personal.id,
+      actorUserId: MEMBER,
+      body: { project_id: theirProject, config_json: { target_type: "agent_run", prompt: "Do my bidding." } },
+    })).rejects.toMatchObject({ statusCode: 403 });
+    expect((await new PgAutomationRepository(db.pool).get(SPACE, personal.id))?.project_id).toBeNull();
+  });
+
   it("lists automations filtered by project_id", async () => {
     if (!db.available) return;
     const bound = await createAutomation({
