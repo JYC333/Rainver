@@ -19,6 +19,7 @@ import { parseRunContextTaint } from "../runs/contextTaint.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { ContentAccessAuditService } from "./audit.js";
 import { ContentDemotionService } from "./demotion.js";
+import { entityDefinition } from "../ontology/entities.js";
 
 interface ResourcePolicyRow {
   id: string;
@@ -165,6 +166,11 @@ export class ContentAccessService {
       }
       if (update.project_id !== null && !definition.projectColumn) {
         throw new HttpError(422, "This content type does not support Project scope");
+      }
+      if (update.project_id === null && resourceType === "space_object"
+        && await this.isProjectOwnedObject(client, identity.spaceId, resourceId)) {
+        // B12H: a null Project removes the Project gate on this object entirely.
+        throw new HttpError(422, "This object belongs to its Project and cannot be moved out of it");
       }
       const requiredApprovers = taintApprovers(resource.context_taint);
       if (widensVisibility(resource.visibility, update.visibility) && requiredApprovers.length > 0) {
@@ -347,6 +353,15 @@ export class ContentAccessService {
   }
 
   /** Whether this memory row is the Agent's own rather than a person's. */
+  private async isProjectOwnedObject(db: Queryable, spaceId: string, objectId: string): Promise<boolean> {
+    const found = await db.query<{ object_type: string }>(
+      `SELECT object_type FROM space_objects WHERE space_id = $1 AND id = $2`,
+      [spaceId, objectId],
+    );
+    const objectType = found.rows[0]?.object_type;
+    return Boolean(objectType && entityDefinition(objectType)?.requiresProjectScope);
+  }
+
   private async isAgentScopeMemory(db: Queryable, spaceId: string, resourceId: string): Promise<boolean> {
     const row = await db.query<{ scope_type: string }>(
       `SELECT scope_type FROM memory_entries WHERE space_id = $1 AND id = $2 LIMIT 1`,

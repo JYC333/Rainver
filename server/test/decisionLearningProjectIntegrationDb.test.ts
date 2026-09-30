@@ -7,6 +7,7 @@ import { ProjectAttentionService, registerBuiltInAttentionAdapters } from "../sr
 import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry.js";
 import { DecisionCaseService } from "../src/modules/decisions/caseService.js";
 import { registerDecisionsProjectIntegration } from "../src/modules/decisions/projectIntegration.js";
+import { ContentAccessService } from "../src/modules/contentAccess/service.js";
 
 // Proves the Decision <-> Project Kernel integration, mirroring
 // inquiryProjectIntegrationDb.test.ts: a Decision Case that is ready to decide
@@ -73,5 +74,14 @@ describe("Decision <-> Project Kernel integration (real Postgres)", () => {
     expect(memberItems.filter((i) => i.source_type === "decision_case")).toEqual([]);
     const ownerItems = await new ProjectAttentionService(db.pool).listAttentionItems(identity(), project.id as string);
     expect(ownerItems.filter((i) => i.source_type === "decision_case")).toHaveLength(1);
+
+    // B12H: even its owner cannot lift a Project-owned Case out of its Project.
+    await expect(new ContentAccessService(db.pool).updatePolicy(identity(), "space_object", decisionCase.id as string, {
+      visibility: "space_shared", access_level: "full", project_id: null, grants: [],
+    })).rejects.toMatchObject({ statusCode: 422 });
+    const scope = await db.pool.query<{ primary_project_id: string | null }>(
+      `SELECT primary_project_id FROM space_objects WHERE id = $1`, [decisionCase.id],
+    );
+    expect(scope.rows[0]?.primary_project_id).toBe(project.id);
   });
 });

@@ -179,7 +179,9 @@ twelfth, and the miss is silent (B12H).
 `(project IS NULL OR projectReadAccess)`. A null Project on a Project-owned
 object does not narrow access — it removes the Project gate entirely and
 leaves only visibility. A forgotten `primary_project_id` is a silent
-disclosure, not a stricter default.
+disclosure, not a stricter default. The one later write of that column, a
+content-access policy update, refuses to clear it for a `requiresProjectScope`
+type for the same reason.
 
 This is enforced by the single writer plus a source-scanning test, **not** by
 a database constraint, because such a constraint would have to name subtypes
