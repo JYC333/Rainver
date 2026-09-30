@@ -1208,7 +1208,8 @@ export class PgMemoryApplyRepository {
     const res = await this.db.query<AppliedMemoryRow>(
       `SELECT ${RETURNING_COLUMNS}
          FROM memory_entries
-        WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
+        WHERE id = $1 AND space_id = $2 AND status = 'active' AND deleted_at IS NULL
+        FOR UPDATE`,
       [memoryId, spaceId],
     );
     return res.rows[0] ?? null;

@@ -424,6 +424,27 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     ).rejects.toBeInstanceOf(MemoryApplyError);
   });
 
+  it("refuses a stale update or archive of a version that was already superseded", async () => {
+    if (!db.available || !repo || !db.pool) return;
+    await insertActiveMemory({ id: "mem-stale", content: "v1" });
+    await applyUpdate(
+      proposal({ proposal_type: "memory_update", payload_json: { target_memory_id: "mem-stale", proposed_content: "v2", provenance_entries: [userConf] } }),
+      USER,
+    );
+
+    await expect(applyUpdate(
+      proposal({ id: "prop-2", proposal_type: "memory_update", payload_json: { target_memory_id: "mem-stale", proposed_content: "stale edit", provenance_entries: [userConf] } }),
+      USER,
+    )).rejects.toBeInstanceOf(MemoryApplyError);
+    const archive = proposal({ id: "prop-3", proposal_type: "memory_archive", payload_json: { target_memory_id: "mem-stale", provenance_entries: [userConf] } });
+    await seedProposal(archive);
+    await expect(repo.applyArchive(archive, USER)).rejects.toBeInstanceOf(MemoryApplyError);
+    const chain = await db.pool.query<{ status: string }>(
+      `SELECT status FROM memory_entries WHERE id = 'mem-stale' OR root_memory_id = 'mem-stale' ORDER BY created_at`,
+    );
+    expect(chain.rows.map((row) => row.status)).toEqual(["superseded", "active"]);
+  });
+
   // ── applyOnly repository contract ────────────────────────────────────────
 
   it("applyOnly: applies create and returns the proposal payload patch", async () => {
