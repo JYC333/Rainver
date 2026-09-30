@@ -73,6 +73,25 @@ describe("knowledgeNotePurgeDb", () => {
       );
       expect(remaining.rows.map((row) => row.id)).toEqual([recent.id]);
     });
+
+    it("never purges a note that was restored after being deleted", async () => {
+      if (!db.available) return;
+      const identity = { spaceId: SPACE, userId: USER };
+      const repository = new PgKnowledgeRepository(db.pool);
+      const restored = await repository.createNote(identity, { title: "Deleted, then restored" }) as { id: string };
+      await repository.deleteNote(identity, restored.id);
+      await db.pool.query(
+        `UPDATE space_objects SET deleted_at = now() - interval '31 days' WHERE id = $1`,
+        [restored.id],
+      );
+      await repository.updateNote(identity, restored.id, { status: "active" });
+
+      expect(await repository.purgeDeletedNotes(identity)).toMatchObject({ deleted: 0 });
+      const row = await db.pool.query<{ deleted_at: string | null }>(
+        `SELECT deleted_at FROM space_objects WHERE id = $1`, [restored.id],
+      );
+      expect(row.rows[0]).toEqual({ deleted_at: null });
+    });
   });
 });
 

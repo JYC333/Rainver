@@ -1325,8 +1325,13 @@ export class PgKnowledgeRepository {
             SET title = COALESCE($3, title),
                 summary = CASE WHEN $6::boolean THEN $7 ELSE summary END,
                 primary_project_id = CASE WHEN $9::boolean THEN $10 ELSE primary_project_id END,
-                archived_at = CASE WHEN $8::varchar(32) = 'archived' THEN $11::timestamptz ELSE archived_at END,
-                deleted_at = CASE WHEN $8::varchar(32) = 'deleted' THEN $11::timestamptz ELSE deleted_at END,
+                -- A status change sets its own timestamp and clears the other:
+                -- restoring a note must clear deleted_at, or the purge, which
+                -- reads only that column, destroys a note in use.
+                archived_at = CASE WHEN $8::varchar(32) = 'archived' THEN $11::timestamptz
+                                   WHEN $8::varchar(32) IS NOT NULL THEN NULL ELSE archived_at END,
+                deleted_at = CASE WHEN $8::varchar(32) = 'deleted' THEN $11::timestamptz
+                                  WHEN $8::varchar(32) IS NOT NULL THEN NULL ELSE deleted_at END,
                 updated_at = $11
           WHERE id = $1 AND space_id = $2 AND object_type = 'note'
           RETURNING id
