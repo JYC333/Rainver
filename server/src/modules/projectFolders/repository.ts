@@ -917,6 +917,7 @@ export class PgProjectFolderRepository {
     const id = requiredText(revisionId, "revision_id");
     const revision = await new PgProjectFileRevisionStore(this.db).getAvailable(folder.space_id, projectId, folder.id, id);
     if (!revision) throw new HttpError(404, "File revision not found or expired");
+    await this.enforceRevisionRead(folder, identity.userId, revision);
     return {
       revision,
       content: revision.before_exists ? revision.before_content ?? "" : null,
@@ -1238,6 +1239,31 @@ export class PgProjectFolderRepository {
     });
   }
 
+  /**
+   * A revision holds the file's former body, so previewing it is a file read
+   * of the Location it was saved on: the same policy and audit, and for a
+   * paired Host the same owner-only rule as browsing that machine.
+   */
+  private async enforceRevisionRead(folder: ProjectFolderRow, userId: string, revision: ProjectFileRevisionOut): Promise<void> {
+    const result = await this.db.query<{
+      execution_host_kind: string; execution_host_id: string; host_owner_user_id: string | null; host_name: string;
+    }>(
+      `SELECT wl.execution_host_kind, wl.execution_host_id, h.owner_user_id AS host_owner_user_id, h.name AS host_name
+         FROM workspace_locations wl
+         JOIN hosts h ON h.id = wl.execution_host_id
+        WHERE wl.id = $1 AND wl.space_id = $2 AND wl.project_folder_id = $3`,
+      [revision.workspace_location_id, folder.space_id, folder.id],
+    );
+    const location = result.rows[0];
+    if (!location) throw new HttpError(404, "File revision not found or expired");
+    if (location.execution_host_kind !== "remote") {
+      await this.enforceFolderRead(folder, userId, "file", revision.path);
+      return;
+    }
+    await this.enforceFolderRead(folder, userId, "file", revision.path, { forceRecord: true, hostId: location.execution_host_id });
+    if (location.host_owner_user_id !== userId) throw hostNotOwnedError(location.host_name);
+  }
+
   private async readRemote<K extends FolderReadKind>(
     folder: ProjectFolderRow,
     userId: string,
@@ -1252,13 +1278,7 @@ export class PgProjectFolderRepository {
       throw new HttpError(403, detail, { detail, code: "path_forbidden" });
     }
     await this.enforceFolderRead(folder, userId, kind, requestedPath ?? null, { forceRecord: true, hostId: location.execution_host_id });
-    if (location.host_owner_user_id !== userId) {
-      throw new HttpError(403, `This Folder is on ${location.host_name}'s machine; only its owner can browse it here.`, {
-        detail: `This Folder is on ${location.host_name}'s machine; only its owner can browse it here.`,
-        code: "host_not_owned",
-        host_name: location.host_name,
-      });
-    }
+    if (location.host_owner_user_id !== userId) throw hostNotOwnedError(location.host_name);
     if (!location.host_online) {
       const detail = `This Folder is on ${location.host_name}, which is offline.`;
       throw new HttpError(409, detail, {
@@ -1602,4 +1622,9 @@ function dateIso(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string") return new Date(value).toISOString();
   return new Date(0).toISOString();
+}
+
+function hostNotOwnedError(hostName: string): HttpError {
+  const detail = `This Folder is on ${hostName}'s machine; only its owner can browse it here.`;
+  return new HttpError(403, detail, { detail, code: "host_not_owned", host_name: hostName });
 }

@@ -169,7 +169,12 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - Git operations must be scoped to the Folder root; no `..` traversal allowed.
 - Full git diff output is bounded. Full diff, protected-Folder, external-root,
   protected/restricted, and secret-like read attempts force policy audit records.
-- Secret-like diff values are redacted. Diffs touching secret-like paths are denied.
+- Secret-like diff values are redacted. Diffs touching secret-like paths are denied;
+  a whole-Folder diff is denied when any file it shows would be refused by PathPolicy
+  as a single-file read.
+- A file revision preview returns the file's former body, so it is a `file` read of
+  the Location the revision came from: `project_folder.read` policy and audit, and
+  for a paired Host only that Host's owner.
 - `resource_space_id` for policy enforcement comes from the actual Project Folder row,
   not caller-supplied input.
 - Archiving a Folder disables new Folder-backed execution but never touches disk.

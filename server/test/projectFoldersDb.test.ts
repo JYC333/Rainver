@@ -454,6 +454,42 @@ describe("Project Folder database invariants", () => {
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 
+  it("previews a file revision from someone else's paired Host only for that Host's owner", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const hostOwner = randomUUID();
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Host owner', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+      [hostOwner],
+    );
+    const issued = await new PgHostRepository(db.pool).issuePairingCode(hostOwner, "Their Laptop");
+    if ("statusCode" in issued) throw new Error("expected success");
+    const folderId = randomUUID();
+    const locationId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, protected, system_managed, registered_from, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'Their Folder','active','code',false,false,false,'daemon_registered',now(),now())`,
+      [folderId, SPACE, PROJECT, USER],
+    );
+    await db.pool.query(
+      `INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind, root_path, execution_ready, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'remote',NULL,false,'active',now(),now())`,
+      [locationId, SPACE, folderId, issued.host_id],
+    );
+    const revision = await new PgProjectFileRevisionStore(db.pool).createInTransaction(db.pool, {
+      spaceId: SPACE, projectId: PROJECT, projectFolderId: folderId, workspaceLocationId: locationId,
+      path: "src/config.ts", beforeExists: true, beforeContent: "THEIR FORMER FILE", afterExists: true,
+      afterSha256: null, userId: hostOwner,
+    });
+    const repo = new PgProjectFolderRepository(
+      db.pool,
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }),
+    );
+
+    await expect(repo.previewRevision({ spaceId: SPACE, userId: USER }, PROJECT, folderId, revision.id))
+      .rejects.toMatchObject({ statusCode: 403, responseBody: { code: "host_not_owned" } });
+  });
+
   it("rejects a remote-host Folder that carries a root_path at the database level", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = randomUUID();
