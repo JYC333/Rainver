@@ -165,6 +165,49 @@ describe("provider proxy server", () => {
     expect(response.headers.get("content-length")).not.toBe("999");
   });
 
+  it("ends a stream the provider breaks without taking the proxy down", async () => {
+    const leases = new ProviderProxyLeaseRegistry();
+    let calls = 0;
+    const proxy = await startProviderProxyServer(config(), {
+      leaseRegistry: leases,
+      commandStore: { async resolveProviderApiKey() { return "provider-secret"; } },
+      resolveUsageAttribution: testUsageAttribution,
+      async recordUsageObservation() {},
+      fetch: async () => {
+        calls += 1;
+        const broken = calls === 1;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(broken ? "data: one\n\n" : "data: two\n\n"));
+            if (!broken) controller.close();
+          },
+          pull(controller) {
+            if (broken) controller.error(new Error("terminated"));
+          },
+        });
+        return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    handles.push(proxy);
+    const lease = leases.create(authorizedFor("space-1", "run-stream", "provider-stream"), {
+      run_id: "run-stream",
+      space_id: "space-1",
+      provider_id: "provider-stream",
+      route: "openai",
+      upstream_base_url: "https://provider.example",
+      ttl_ms: 60_000,
+    });
+    const request = () => fetch(`${proxy.baseUrl}/openai/${lease.id}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${lease.token}`, "content-type": "application/json" },
+      body: "{}",
+    });
+
+    // The broken request fails, at the headers or mid-body; the proxy lives on.
+    await expect(request().then((response) => response.text())).rejects.toThrow();
+    await expect((await request()).text()).resolves.toContain("data: two");
+  });
+
   it("rejects invalid lease tokens before reaching the upstream provider", async () => {
     const upstream = await startMockUpstream();
     upstreams.push(upstream);

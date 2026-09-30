@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { once } from "node:events";
 import { connect, type AddressInfo } from "node:net";
 import { Duplex, Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { ServerConfig } from "../../../config.js";
 import {
   ProviderCommandValidationError,
@@ -290,7 +291,10 @@ async function forwardUpstreamResponse(
   }
 
   await recordProviderProxyUsage(config, lease, usageSequence, upstream, null, attribution, recordUsageObservation);
-  Readable.fromWeb(upstream.body).pipe(response);
+  // Awaited, so a stream the provider breaks mid-generation rejects this
+  // request instead of raising an unhandled 'error' that ends the process;
+  // a client that disconnects cancels the upstream body the same way.
+  await pipeline(Readable.fromWeb(upstream.body), response);
 }
 
 function shouldInspectJsonUsage(upstream: Response): boolean {
