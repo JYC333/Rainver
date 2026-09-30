@@ -25,7 +25,7 @@ import {
   encryptModelProviderApiKeySecretRefV1,
   loadOrCreateModelProviderApiKeyMasterKey,
 } from "../secretRefCrypto.js";
-import { mapProviderRowToDto } from "../dbReader.js";
+import { mapProviderRowToDto, resolveProvidersDbPort } from "../dbReader.js";
 import { providerVendor, type VendorDescriptor } from "../vendors.js";
 import { resolveManagedSubscriptionCredential } from "../subscriptionOAuth.js";
 import { resolveNetworkProfileRepository } from "../../networkProfiles/index.js";
@@ -459,7 +459,22 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
     const row = await this.providerById(spaceId, providerId);
     if (!row) throw new Error("created provider was not readable");
-    return mapProviderRowToDto(row);
+    return this.providerResponse(spaceId, userId, providerId, { ...row, manageable: true });
+  }
+
+  /**
+   * A command answers with the provider as the list shows it — key and
+   * subscription state, grant and ownership — so the page can place the card
+   * without reloading. `fallback` covers a provider the list no longer shows.
+   */
+  private async providerResponse(
+    spaceId: string,
+    userId: string,
+    providerId: string,
+    fallback: ProviderRow,
+  ): Promise<ReturnType<typeof mapProviderRowToDto>> {
+    const listed = await resolveProvidersDbPort(this.config)?.getProvider(spaceId, userId, providerId);
+    return listed ? listed as ReturnType<typeof mapProviderRowToDto> : mapProviderRowToDto(fallback);
   }
 
   async updateProvider(
@@ -572,7 +587,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
     const row = await this.providerById(spaceId, providerId);
     if (!row) return mapProviderRowToDto(updated.rows[0]);
-    return mapProviderRowToDto({ ...row, manageable: true });
+    return this.providerResponse(spaceId, userId, providerId, { ...row, manageable: true });
   }
 
   async deleteProvider(spaceId: string, userId: string, providerId: string): Promise<void> {
