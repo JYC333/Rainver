@@ -1141,12 +1141,14 @@ export class PgTaskRepository {
 
   async requestPlanningRun(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
     return withDbTransaction(this.pool, async (client) => {
-      const taskResult = await client.query<TaskRow>(
-        `SELECT ${TASK_COLUMNS} FROM tasks t WHERE t.space_id = $1 AND t.id = $2 AND t.deleted_at IS NULL FOR UPDATE`,
-        [identity.spaceId, taskId],
-      );
-      const task = taskResult.rows[0];
+      const task = await getVisibleTaskRow(client, identity, taskId, { lock: true });
       if (!task) throw new HttpError(404, "Task not found");
+      if (task.project_id) {
+        // A planning Run is a Task-owned Run like any other: the same writer
+        // gate as createTaskRunAdmission.
+        await lockActiveProjectForMutation(client, identity.spaceId, task.project_id);
+        await assertProjectWriterForMutation(client, identity.spaceId, task.project_id, identity.userId);
+      }
       if (task.task_role !== "source") throw new HttpError(409, "Only source tasks can request Agent planning");
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required when the Task has no assigned agent");

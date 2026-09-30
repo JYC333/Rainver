@@ -16,7 +16,8 @@ import { verifyIntegrationNode, verifyPlanIntegration } from "./integrationVerif
 import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler.js";
 import { InputBindingResolutionError, resolveNodeInputs } from "../execution/nodeInputResolver.js";
 import type { WorkflowNodeInputBinding } from "@rainver/protocol";
-import { runReadSql } from "../access/contentAccessSql.js";
+import { contentReadSql, runReadSql } from "../access/contentAccessSql.js";
+import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 
 export interface AgentPlanProposalInput {
   sourceTaskId: string;
@@ -107,6 +108,19 @@ interface PlanNodeRow {
   updated_at: string;
 }
 
+/**
+ * A Plan is read through its source Task: the graph, node descriptions and
+ * budget all derive from that Task's contract, so whoever cannot read the Task
+ * cannot read or operate its Plan.
+ */
+function planSourceTaskReadSql(alias: string, userParam: string): string {
+  return `EXISTS (
+    SELECT 1 FROM tasks t
+     WHERE t.space_id = ${alias}.space_id AND t.id = ${alias}.source_task_id AND t.deleted_at IS NULL
+       AND ${contentReadSql("task", "t", userParam)}
+  )`;
+}
+
 export class PgPlanRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -131,10 +145,11 @@ export class PgPlanRepository {
          LEFT JOIN plan_versions v ON v.id = p.current_plan_version_id AND v.space_id = p.space_id
          LEFT JOIN plan_nodes n ON n.plan_version_id = v.id AND n.space_id = p.space_id
         WHERE p.space_id = $1
+          AND ${planSourceTaskReadSql("p", "$4")}
         GROUP BY p.id, v.id
         ORDER BY p.updated_at DESC, p.id ASC
         LIMIT $2 OFFSET $3`,
-      [identity.spaceId, limit, offset],
+      [identity.spaceId, limit, offset, identity.userId],
     );
     return result.rows.map((row) => ({
       id: row.id,
@@ -168,8 +183,9 @@ export class PgPlanRepository {
       `SELECT id, space_id, project_folder_id, project_id, source_task_id, root_run_id,
               current_plan_version_id, name, description, status, created_by_user_id,
               created_by_agent_id, created_at, updated_at
-         FROM plans WHERE space_id = $1 AND id = $2`,
-      [identity.spaceId, planId],
+         FROM plans p WHERE space_id = $1 AND id = $2
+          AND ${planSourceTaskReadSql("p", "$3")}`,
+      [identity.spaceId, planId, identity.userId],
     );
     const plan = planResult.rows[0];
     if (!plan) return null;
@@ -419,11 +435,17 @@ export class PgPlanRepository {
                 v.id AS version_id, v.status AS version_status, v.budget_json AS version_budget_json,
                 p.created_by_agent_id AS root_agent_id
            FROM plans p JOIN plan_versions v ON v.id = p.current_plan_version_id AND v.space_id = p.space_id
-          WHERE p.space_id = $1 AND p.id = $2 FOR UPDATE OF p`,
-        [identity.spaceId, planId],
+          WHERE p.space_id = $1 AND p.id = $2
+            AND ${planSourceTaskReadSql("p", "$3")}
+          FOR UPDATE OF p`,
+        [identity.spaceId, planId, identity.userId],
       );
       const plan = result.rows[0];
       if (!plan) throw new HttpError(404, "Plan not found");
+      if (plan.project_id) {
+        await lockActiveProjectForMutation(client, identity.spaceId, plan.project_id);
+        await assertProjectWriterForMutation(client, identity.spaceId, plan.project_id, identity.userId);
+      }
       if (plan.version_status !== "approved") throw new HttpError(409, "Plan version must be approved before execution");
       const agentId = input.agentId ?? plan.root_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required to execute a Plan");

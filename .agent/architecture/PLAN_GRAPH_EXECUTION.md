@@ -80,6 +80,11 @@ The retained Plan API is read/operate only:
 - `POST /api/v1/plans/:planId/execute` for an approved Version
 - `POST /api/v1/plans/:planId/reconcile` for owner/admin recovery
 
+A Plan is read through its source Task: listing, reading and executing a Plan
+require that the caller can read that Task, and execution of a Project Plan also
+requires Project write access, the same gate as a Task-owned Run and an Agent
+planning request.
+
 Execution creates a parked coordinator Run and `plan_node_runs` for ready
 nodes. It never inserts graph nodes into `tasks` or `task_runs`. The scheduler
 waits for dependency completion, creates checkpoint Proposals when required,

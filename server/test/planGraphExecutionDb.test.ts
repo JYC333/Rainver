@@ -304,6 +304,61 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect((await db.pool.query<{ status: string }>(`SELECT status FROM plan_nodes WHERE id = $1`, [nodeRun!.node_id])).rows[0]?.status).toBe("done");
   });
 
+  it("refuses a planning request from a member who cannot see the Task", async () => {
+    const now = new Date().toISOString();
+    const member = "55555555-5555-4555-8555-555555555555";
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Other member', 'active', $2, $2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+      [member, now],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, $2, 'member', 'active', $3, $3)`,
+      [SPACE, member, now],
+    );
+    await db.pool.query(
+      `INSERT INTO tasks (
+         id, space_id, task_role, title, description, task_type, status, priority,
+         risk_level, owner_user_id, visibility, access_level, created_by_user_id,
+         created_at, updated_at
+       ) VALUES ($1, $2, 'source', 'Private task', 'Only its owner reads this.', 'general',
+                 'inbox', 'normal', 'medium', $3, 'private', 'full', $3, $4, $4)`,
+      [TASK, SPACE, USER, now],
+    );
+
+    await expect(new PgTaskRepository(db.pool).requestPlanningRun({ spaceId: SPACE, userId: member }, TASK, {
+      agent_id: AGENT,
+      prompt: "Plan this source task.",
+    })).rejects.toMatchObject({ statusCode: 404 });
+    const runs = await db.pool.query(`SELECT id FROM runs WHERE space_id = $1`, [SPACE]);
+    expect(runs.rows).toHaveLength(0);
+  });
+
+  it("hides and refuses to run a Plan whose source Task the caller cannot read", async () => {
+    const { plans, planId } = await createApprovedPlanWithBudget([]);
+    const now = new Date().toISOString();
+    const member = "55555555-5555-4555-8555-555555555555";
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Other member', 'active', $2, $2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+      [member, now],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, $2, 'member', 'active', $3, $3)`,
+      [SPACE, member, now],
+    );
+    await db.pool.query(`UPDATE tasks SET visibility = 'private' WHERE space_id = $1 AND id = $2`, [SPACE, TASK]);
+    const outsider = { spaceId: SPACE, userId: member };
+
+    expect(await plans.listPlans(outsider)).toEqual([]);
+    expect(await plans.getPlan(outsider, planId)).toBeNull();
+    await expect(plans.executePlan(outsider, planId, { agentId: AGENT }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    expect((await plans.getPlan(identity, planId))?.root_run_id).toBeNull();
+  });
+
   it("rejects an Agent plan proposal whose node declares a budget source that does not exist", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();
