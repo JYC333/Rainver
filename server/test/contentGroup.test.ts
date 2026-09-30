@@ -116,6 +116,32 @@ describe("contentAccessDefencesDb", () => {
       ]);
     });
 
+    it("asks the contributing owner before a tainted record gains a reader, not only a wider tier", async () => {
+      if (!db.available) return;
+      const tainted = randomUUID();
+      const taint = {
+        schema_version: 1, narrowest_visibility: "private", input_owner_user_ids: [VIEWER],
+        non_instructing_owner_user_ids: [VIEWER], personal_memory_grant_ids: [],
+      };
+      await db.pool.query(
+        `INSERT INTO artifacts
+           (id, space_id, artifact_type, title, export_formats_json, visibility,
+            access_level, owner_user_id, metadata_json, created_at, updated_at)
+         VALUES ($1, $2, 'report', 'Tainted', '[]'::jsonb, 'selected_users', 'summary', $3, $4::jsonb, now(), now())`,
+        [tainted, SPACE, OWNER, JSON.stringify({ context_taint: taint })],
+      );
+      const access = new ContentAccessService(db.pool);
+      const owner = { spaceId: SPACE, userId: OWNER };
+      const policy = (accessLevel: "full" | "summary", grants: Array<{ user_id: string; access_level: "full" | "summary" }>) => ({
+        visibility: "selected_users" as const, access_level: accessLevel, project_id: null, grants,
+      });
+
+      await expect(access.updatePolicy(owner, "artifact", tainted, policy("summary", [{ user_id: VIEWER, access_level: "summary" }])))
+        .rejects.toMatchObject({ statusCode: 409 });
+      await expect(access.updatePolicy(owner, "artifact", tainted, policy("full", [])))
+        .rejects.toMatchObject({ statusCode: 409 });
+    });
+
     it("discloses consuming Runs and derived outputs that remain shared", async () => {
       if (!db.available) return;
       await db.pool.query(

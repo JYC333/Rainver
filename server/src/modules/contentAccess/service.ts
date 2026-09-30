@@ -173,7 +173,11 @@ export class ContentAccessService {
         throw new HttpError(422, "This object belongs to its Project and cannot be moved out of it");
       }
       const requiredApprovers = taintApprovers(resource.context_taint);
-      if (widensVisibility(resource.visibility, update.visibility) && requiredApprovers.length > 0) {
+      if (requiredApprovers.length > 0 && widensAudience(
+        resource,
+        await this.loadGrants(client, identity.spaceId, resourceType, resourceId),
+        update,
+      )) {
         throw new HttpError(409, "Context-tainted content requires owner approval before publication", {
           code: "context_taint_approval_required",
           required_approver_user_ids: requiredApprovers,
@@ -442,6 +446,26 @@ function taintApprovers(value: unknown): string[] {
 function widensVisibility(current: string, requested: ContentVisibility): boolean {
   const rank: Record<ContentVisibility, number> = { private: 0, selected_users: 1, space_shared: 2 };
   return isContentVisibility(current) && rank[requested] > rank[current];
+}
+
+/**
+ * Whether an update lets anyone read more than before. A tainted record sits
+ * at `selected_users` by design, so a wider visibility tier is not the only
+ * widening: a new grantee, or a body raised from summary to full, is one too.
+ */
+function widensAudience(
+  resource: { visibility: string; access_level: string },
+  priorGrants: readonly { grantee_user_id: string; access_level: string }[],
+  update: ContentAccessUpdate,
+): boolean {
+  if (widensVisibility(resource.visibility, update.visibility)) return true;
+  if (update.visibility === "private") return false;
+  if (resource.access_level !== "full" && update.access_level === "full") return true;
+  const prior = new Map(priorGrants.map((grant) => [grant.grantee_user_id, grant.access_level]));
+  return update.grants.some((grant) => {
+    const before = prior.get(grant.user_id);
+    return before === undefined || (before !== "full" && grant.access_level === "full");
+  });
 }
 
 function narrowsVisibility(current: string, requested: ContentVisibility): boolean {
