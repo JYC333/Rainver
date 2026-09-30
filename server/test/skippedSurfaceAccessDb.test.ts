@@ -231,6 +231,19 @@ describe("skipped-surface access (real Postgres)", () => {
     });
   });
 
+  it("lets Space oversight read another member's private Activity but not act on it", async () => {
+    await db.pool.query(`UPDATE spaces SET oversight_mode = 'content' WHERE id = $1`, [SPACE]);
+    const activity = new PgActivityRepository(db.pool);
+    const theirs = await activity.create(other, { source_type: "user_capture", content: "MEMBER PRIVATE NOTE", visibility: "private" });
+    const id = String(theirs.id);
+
+    expect(await activity.get(owner, id)).not.toBeNull();
+    await expect(activity.setStatus(owner, id, "archived")).rejects.toMatchObject({ statusCode: 404 });
+    await expect(activity.consolidate(owner, id)).rejects.toMatchObject({ statusCode: 404 });
+    const row = await db.pool.query<{ status: string }>(`SELECT status FROM activity_records WHERE id = $1`, [id]);
+    expect(row.rows[0]?.status).not.toBe("archived");
+  });
+
   it("returns an Activity's body to its author on create", async () => {
     const created = await new PgActivityRepository(db.pool).create(owner, {
       source_type: "user_capture",

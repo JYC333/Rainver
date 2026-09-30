@@ -240,12 +240,21 @@ export class PgActivityRepository {
     return result.rows.map(activityToOut);
   }
 
-  async get(identity: SpaceUserIdentity, activityId: string): Promise<WithAccessLevel<ActivityRow> | null> {
+  /**
+   * `forChange` is the reach a person needs to act on a record: Space oversight
+   * lets an owner or admin read another member's private Activity, never
+   * archive, review or consolidate it.
+   */
+  async get(
+    identity: SpaceUserIdentity,
+    activityId: string,
+    options: { forChange?: boolean } = {},
+  ): Promise<WithAccessLevel<ActivityRow> | null> {
     const result = await this.db.query<WithAccessLevel<ActivityRow>>(
       `SELECT ${activitySelectSql("$3")}
          FROM activity_records ar
         WHERE id = $1 AND space_id = $2
-          AND ${contentReadSql("activity", "ar", "$3")}`,
+          AND ${contentReadSql("activity", "ar", "$3", { includeOversight: !options.forChange })}`,
       [activityId, identity.spaceId, identity.userId],
     );
     const row = result.rows[0];
@@ -269,7 +278,7 @@ export class PgActivityRepository {
     activityId: string,
     status: "processed" | "archived",
   ): Promise<Record<string, unknown>> {
-    const current = await this.get(identity, activityId);
+    const current = await this.get(identity, activityId, { forChange: true });
     if (!current) throw new HttpError(404, "Activity record not found");
     const now = new Date().toISOString();
     const result = await this.db.query<ActivityRow>(
@@ -289,7 +298,7 @@ export class PgActivityRepository {
   }
 
   async consolidate(identity: SpaceUserIdentity, activityId: string): Promise<ProposalOut[]> {
-    const activity = await this.get(identity, activityId);
+    const activity = await this.get(identity, activityId, { forChange: true });
     if (!activity || isSummaryOnly(activity)) throw new HttpError(404, "Activity record not found");
     if (activity.aggregate_key) {
       throw new HttpError(422, "Activity pointer records cannot be consolidated");
