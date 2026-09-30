@@ -838,6 +838,21 @@ describe("source post-processing repository (real Postgres)", () => {
     expect(detail!.item_decisions.find((d) => d.source_item_id === itemA)?.reason).toBe("Strong match.");
 
     expect(await repo().getBriefing({ spaceId: SPACE, userId: OWNER, connectionId: CONNECTION, date: "2099-01-01" })).toBeNull();
+
+    // A subscriber who cannot read the private digest sees the day, not its text.
+    const now = new Date().toISOString();
+    await db.pool.query(`UPDATE artifacts SET visibility = 'private', owner_user_id = $2 WHERE id = ANY($1::text[])`, [[digestArtifactId, summaryArtifactId], OWNER]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,$1,'active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [OTHER, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, OTHER, now]);
+    await db.pool.query(
+      `INSERT INTO source_channel_user_subscriptions (id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)`,
+      [randomUUID(), SPACE, CONNECTION, OTHER, now],
+    );
+    const theirList = await repo().listBriefings({ spaceId: SPACE, userId: OTHER, limit: 10, offset: 0 });
+    expect(theirList.items).toEqual([expect.objectContaining({ run_ids: [run.id], digest_preview: null })]);
+    const theirDetail = await repo().getBriefing({ spaceId: SPACE, userId: OTHER, connectionId: CONNECTION, date: "2026-07-08" });
+    expect(theirDetail?.runs).toEqual([expect.objectContaining({ run_id: run.id, summary: null })]);
   });
 
   it("emits and re-surfaces one daily Activity Inbox briefing pointer per source local day", async () => {

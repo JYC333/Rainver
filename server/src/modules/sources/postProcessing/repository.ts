@@ -786,7 +786,7 @@ export class PgSourcePostProcessingRepository {
     const buckets = groupBriefingRuns(result.rows);
     const total = buckets.length;
     const pageBuckets = buckets.slice(input.offset, input.offset + input.limit);
-    const items = await this.hydrateBriefingSummaries(input.spaceId, pageBuckets);
+    const items = await this.hydrateBriefingSummaries(input.spaceId, input.userId, pageBuckets);
     return page(items, total, input.limit, input.offset);
   }
 
@@ -837,6 +837,8 @@ export class PgSourcePostProcessingRepository {
           [input.spaceId, artifactIds, input.userId],
         )
       : { rows: [] };
+
+    const readableArtifactIds = new Set(artifacts.rows.map((row) => row.id));
 
     // artifacts.run_id is the underlying agent run id, not
     // source_post_processing_runs.id — map each artifact back to the
@@ -891,12 +893,18 @@ export class PgSourcePostProcessingRepository {
       connection_name: first.connection_name,
       project_id: first.project_id,
       date: input.date,
-      runs: runsResult.rows.map((row) => ({
-        run_id: row.run_id,
-        status: row.status,
-        created_at: timestampString(row.created_at) ?? "",
-        summary: row.summary,
-      })),
+      runs: runsResult.rows.map((row) => {
+        // A successful run's summary is the start of its digest, so it is
+        // shown only to a reader who can read one of the run's outputs.
+        const outputs = stringArray(row.output_artifact_ids_json);
+        const readable = outputs.length === 0 || outputs.some((id) => readableArtifactIds.has(id));
+        return {
+          run_id: row.run_id,
+          status: row.status,
+          created_at: timestampString(row.created_at) ?? "",
+          summary: readable ? row.summary : null,
+        };
+      }),
       digests,
       item_summaries: itemSummaries,
       item_decisions: decisionsResult.rows.map(decisionOut),
@@ -905,6 +913,7 @@ export class PgSourcePostProcessingRepository {
 
   private async hydrateBriefingSummaries(
     spaceId: string,
+    userId: string,
     buckets: BriefingBucket[],
   ): Promise<SourcePostProcessingBriefingDaySummaryOut[]> {
     if (buckets.length === 0) return [];
@@ -921,11 +930,13 @@ export class PgSourcePostProcessingRepository {
       ),
       artifactIds.length
         ? this.db.query<BriefingArtifactRow>(
-            `SELECT id, title, content, metadata_json
-               FROM artifacts
-              WHERE space_id = $1 AND id = ANY($2::text[])
-                AND metadata_json->>'action' = 'batch_digest'`,
-            [spaceId, artifactIds],
+            // The preview is the digest's body: the same read gate as getBriefing.
+            `SELECT a.id, a.title, a.content, a.metadata_json
+               FROM artifacts a
+              WHERE a.space_id = $1 AND a.id = ANY($2::text[])
+                AND a.metadata_json->>'action' = 'batch_digest'
+                AND ${artifactReadSql("$3")}`,
+            [spaceId, artifactIds, userId],
           )
         : Promise.resolve({ rows: [] as BriefingArtifactRow[] }),
     ]);
