@@ -295,7 +295,9 @@ describe("contentCreationContextDb", () => {
       expect(personalTask).toMatchObject({
         space_id: personalSpaceId,
         project_id: null,
+        owner_user_id: userId,
         visibility: "private",
+        access_level: "full",
       });
       expect(projectTask).toMatchObject({
         space_id: teamSpaceId,
