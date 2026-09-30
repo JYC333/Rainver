@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { buildListItems } from "../src/modules/sources/customSources/customSourceHtmlExtract.js";
 import { resetTables } from "./support/resetTables.js";
 import type { CustomSourceHandlerOutput, CustomSourcePolicyEnvelope } from "@rainver/protocol";
 import { loadConfig, type ServerConfig } from "../src/config.js";
@@ -285,6 +286,44 @@ describe("CustomSourceMaterializationService (real Postgres)", () => {
       content_state: "excerpt_saved",
       excerpt: "Short excerpt",
     });
+  });
+
+  it("reuses the Space's row for a URL it already holds instead of failing on it", async () => {
+    if (!db.available || !service) return;
+    const { connId, runId, versionId } = await seedRun();
+    const first = validOutput();
+    first.items[0]!.snapshots = [];
+    first.items[0]!.evidence = [];
+    await service.materialize({
+      run: { runId, spaceId: SPACE_A, sourceConnectionId: connId, handlerVersionId: versionId },
+      policyEnvelope: POLICY_ENVELOPE, sandboxFilesRoot: sandboxFilesRoot!, rawOutputJson: first,
+    });
+    // The same article, now under an identity an older handler did not use.
+    const again = validOutput();
+    again.items[0]!.external_id = "article-1-after-the-list-moved";
+    again.items[0]!.snapshots = [];
+    again.items[0]!.evidence = [];
+    const result = await service.materialize({
+      run: { runId: await seedAnotherRun(connId, versionId), spaceId: SPACE_A, sourceConnectionId: connId, handlerVersionId: versionId },
+      policyEnvelope: POLICY_ENVELOPE, sandboxFilesRoot: sandboxFilesRoot!, rawOutputJson: again,
+    });
+
+    expect(result).toMatchObject({ status: "succeeded", itemsCreated: 0, itemsUpdated: 1, errors: [] });
+    const items = await db.pool.query<{ source_external_id: string }>(
+      `SELECT source_external_id FROM source_items WHERE space_id = $1`, [SPACE_A]);
+    expect(items.rows).toEqual([{ source_external_id: "article-1-after-the-list-moved" }]);
+  });
+
+  it("gives a listed article the same identity wherever it sits in the list", () => {
+    const html = (order: string[]) => order.map((slug) => `<div class="post"><a href="/p/${slug}">${slug}</a></div>`).join("");
+    const ids = (order: string[]) => Object.fromEntries(
+      buildListItems({ html: html(order), cssClass: "post", baseUrl: "https://ex.com/list", maxItems: 10 })
+        .map((item) => [item.source_uri, item.external_id]),
+    );
+    const before = ids(["a", "b"]);
+    const after = ids(["new", "a", "b"]);
+    expect(after["https://ex.com/p/a"]).toBe(before["https://ex.com/p/a"]);
+    expect(after["https://ex.com/p/b"]).toBe(before["https://ex.com/p/b"]);
   });
 
   it("repairs previously misclassified excerpt-only items on re-materialization", async () => {

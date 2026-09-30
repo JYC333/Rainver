@@ -127,12 +127,14 @@ function buildListItems(input, html, maxItems) {
   const blocks = splitBlocksByClass(html || '', LIST_SELECTOR).slice(0, Math.max(1, maxItems));
   return blocks.map((block, index) => {
     const href = extractHref(block);
-    const link = resolveUrl(href, baseUrl) || baseUrl || input.source.name;
+    const resolved = resolveUrl(href, baseUrl);
+    const ownLink = href && resolved && resolved !== baseUrl ? resolved : null;
+    const link = resolved || baseUrl || input.source.name;
     const title =
       extractTagText(block, 'a') || extractTagText(block, 'h2') || extractTagText(block, 'h3') || ('Item ' + (index + 1));
     const excerpt = stripTags(block).slice(0, 2000) || null;
     return {
-      external_id: sha256(link + '#' + index),
+      external_id: sha256(ownLink || (link + '#' + index)),
       title: String(title).slice(0, 512),
       source_uri: link,
       excerpt,

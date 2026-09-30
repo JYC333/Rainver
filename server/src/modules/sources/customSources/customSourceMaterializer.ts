@@ -198,11 +198,21 @@ export class CustomSourceMaterializationService {
     descriptor: SourceMaterializationDescriptor,
   ): Promise<{ itemId: string; created: boolean }> {
     const now = new Date().toISOString();
+    // Found by this connection's own id first; failing that, by the URL the
+    // Space already holds in the same Project scope — the same reuse the
+    // built-in extraction does — since that URL is unique there and a second
+    // insert of it can only fail.
     const existing = await this.db.query<{ id: string; content_state: string }>(
       `SELECT id, content_state FROM source_items
         WHERE space_id = $1::varchar AND connection_id = $2::varchar AND source_external_id = $3::varchar
+        UNION ALL
+       (SELECT id, content_state FROM source_items
+         WHERE space_id = $1::varchar AND deleted_at IS NULL
+           AND project_id IS NOT DISTINCT FROM (SELECT project_id FROM source_connections WHERE space_id = $1::varchar AND id = $2::varchar)
+           AND (source_uri = $4::text OR canonical_uri = $4::text)
+         LIMIT 1)
         LIMIT 1`,
-      [run.spaceId, run.sourceConnectionId, item.external_id],
+      [run.spaceId, run.sourceConnectionId, item.external_id, item.source_uri],
     );
     const contentState = materializedItemContentState(item);
     const contentHash = sha256(item.excerpt ?? item.title ?? item.source_uri);
@@ -242,6 +252,7 @@ export class CustomSourceMaterializationService {
                 END,
                 retention_policy = $12,
                 metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $11::jsonb,
+                source_external_id = CASE WHEN connection_id = $13::varchar THEN $14::varchar ELSE source_external_id END,
                 updated_at = $9
           WHERE space_id = $1::varchar AND id = $2::varchar`,
         [
@@ -257,6 +268,8 @@ export class CustomSourceMaterializationService {
           contentState,
           metadata,
           retentionPolicy,
+          run.sourceConnectionId,
+          item.external_id,
         ],
       );
       return { itemId, created: false };
