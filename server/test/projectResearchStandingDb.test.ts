@@ -322,6 +322,25 @@ describe("project research standing comparison (real Postgres)", () => {
     )).rows[0]).toEqual({ status: "pending", count: 2 });
   });
 
+  it("re-arms a pending batch whose dispatch job gave up", async () => {
+    if (!db.available) return;
+    const service = new ProjectResearchStandingComparisonService(db.pool);
+    const start = new Date("2026-09-01T00:00:00.000Z");
+    const batchId = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: randomUUID() }, start);
+    const dispatchJobs = async () => (await db.pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM jobs WHERE job_type=$1 AND payload_json->>'batch_id'=$2`,
+      [STANDING_COMPARISON_JOB_TYPE, batchId],
+    )).rows[0]?.count;
+    expect(await dispatchJobs()).toBe(1);
+
+    // A day later the only job has failed for good and the batch is still pending.
+    const later = new Date(start.getTime() + 24 * 60 * 60_000);
+    await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: randomUUID() }, later);
+    expect(await dispatchJobs()).toBe(2);
+    await expect(service.retryBatch(identity, PROJECT, batchId, later)).resolves.toMatchObject({ status: "pending" });
+    expect(await dispatchJobs()).toBe(3);
+  });
+
   it("enforces the daily Project budget before attempting another execution", async () => {
     if (!db.available) return;
     await seedBaseline();

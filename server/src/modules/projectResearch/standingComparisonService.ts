@@ -35,6 +35,12 @@ type StandingBatchRow = {
   completed_at: unknown;
 };
 
+/** Pending past its window: the only dispatch it had is no longer coming. */
+function isOverdue(batch: { ready_at: unknown }, now: Date): boolean {
+  const readyAt = batch.ready_at instanceof Date ? batch.ready_at : new Date(String(batch.ready_at));
+  return !Number.isNaN(readyAt.getTime()) && readyAt.getTime() + STANDING_COMPARISON_WINDOW_MINUTES * 60_000 < now.getTime();
+}
+
 function stringIds(value: unknown): string[] {
   return Array.isArray(value)
     ? [...new Set(value.filter((item): item is string => typeof item === "string" && item.length > 0))]
@@ -67,6 +73,9 @@ export class ProjectResearchStandingComparisonService {
           WHERE id=$1 AND space_id=$2 AND project_id=$3`,
         [row.id, input.spaceId, input.projectId, JSON.stringify(ids), now.toISOString()],
       );
+      // A batch still pending after its window is one whose dispatch job gave
+      // up. New material re-arms it; dispatch is idempotent under its lock.
+      if (isOverdue(row, now)) await this.enqueueDispatch(input.spaceId, input.projectId, row.id, null, now);
       return row.id;
     }
 
@@ -78,14 +87,26 @@ export class ProjectResearchStandingComparisonService {
        ) VALUES ($1,$2,$3,'pending',$4::jsonb,$5,$6,$5,$5)`,
       [batchId, input.spaceId, input.projectId, JSON.stringify([input.sourceItemId]), now.toISOString(), readyAt.toISOString()],
     );
-    await new PgJobQueueRepository(this.db).enqueue({
-      job_type: STANDING_COMPARISON_JOB_TYPE,
-      space_id: input.spaceId,
-      user_id: null,
-      scheduled_at: readyAt,
-      payload: { batch_id: batchId, project_id: input.projectId },
-    }, now);
+    await this.enqueueDispatch(input.spaceId, input.projectId, batchId, null, now, readyAt);
     return batchId;
+  }
+
+  private async enqueueDispatch(
+    spaceId: string,
+    projectId: string,
+    batchId: string,
+    userId: string | null,
+    now: Date,
+    scheduledAt: Date = now,
+    db: Queryable = this.db,
+  ): Promise<void> {
+    await new PgJobQueueRepository(db).enqueue({
+      job_type: STANDING_COMPARISON_JOB_TYPE,
+      space_id: spaceId,
+      user_id: userId,
+      scheduled_at: scheduledAt,
+      payload: { batch_id: batchId, project_id: projectId },
+    }, now);
   }
 
   async dispatchBatch(spaceId: string, batchId: string, now = new Date()): Promise<Record<string, unknown>> {
@@ -265,6 +286,11 @@ export class ProjectResearchStandingComparisonService {
       );
       const batch = result.rows[0];
       if (!batch) throw new HttpError(404, "Standing comparison batch not found");
+      if (batch.status === "pending" && isOverdue(batch, now)) {
+        // Its dispatch job ran out of retries; retrying is how it runs again.
+        await this.enqueueDispatch(identity.spaceId, projectId, batchId, identity.userId, now, now, db);
+        return batchOut(batch);
+      }
       if (batch.status === "pending" || batch.status === "running") return batchOut(batch);
       if (!["blocked_baseline", "failed", "budget_exhausted"].includes(batch.status)) {
         throw new HttpError(409, "Standing comparison batch cannot be retried");
