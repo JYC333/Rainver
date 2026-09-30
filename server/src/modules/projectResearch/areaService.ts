@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { HttpError, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { assertProjectReadable, assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access.js";
 import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
 import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
@@ -256,6 +257,9 @@ export class ProjectResearchAreaService {
     } else {
       note = await this.resolveProjectNoteByExactTitle(identity, projectId, title);
     }
+    // The Run will rewrite this note, and its body goes into the prompt:
+    // reading a note is not permission for either, as in notebookChat.
+    if (note) await assertWritableSpaceObject(this.db, identity, note.id, "Note not found");
     if (!note) {
       const now = new Date().toISOString();
       const created = await withNoteWrites(this.db, (scope) =>
@@ -378,7 +382,7 @@ export class ProjectResearchAreaService {
     const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config)
       .resolveProvider(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
 
-    const notes = await this.listProjectNotes(identity, projectId);
+    const notes = (await this.listProjectNotes(identity, projectId)).filter((note) => !note.body_withheld);
     const notebookText = notes.map((note) => {
       const blocks = pmBlocksText(note.content_json ?? { type: "doc", content: [] });
       return `## [${note.id}] ${note.title} (base version ${note.version}, ${blocks.length} blocks)\n${blocks.map((value, index) => `[${index}] ${value || "(empty)"}`).join("\n") || "(empty document)"}`;
@@ -714,16 +718,23 @@ export class ProjectResearchAreaService {
    * notebook chat and ask-AI paths build — so an ungated read put another
    * member's private note body into a model call.
    */
-  private async listProjectNotes(identity: SpaceUserIdentity, projectId: string): Promise<Array<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null }>> {
-    const rows = await this.db.query<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null }>(
-      `SELECT n.object_id AS id, so.title, n.version, n.content_json, n.project_role
+  private async listProjectNotes(identity: SpaceUserIdentity, projectId: string): Promise<Array<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null; body_withheld: boolean }>> {
+    const definition = contentResourceDefinition("space_object");
+    if (!definition) throw new Error("space_object content resource is not registered");
+    const rows = await this.db.query<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null; effective_access_level: string }>(
+      `SELECT n.object_id AS id, so.title, n.version, n.content_json, n.project_role,
+              ${contentAccessLevelSql({ definition, alias: "so", userExpr: "$3" })} AS effective_access_level
          FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
         WHERE so.space_id=$1 AND so.primary_project_id=$2 AND n.status='active' AND so.deleted_at IS NULL
           AND ${contentReadSql("space_object", "so", "$3")}
         ORDER BY so.created_at ASC`,
       [identity.spaceId, projectId, identity.userId],
     );
-    return rows.rows;
+    // A summary-level reader sees that a note exists and its title, as every
+    // other Knowledge read gives them, and never its body.
+    return rows.rows.map(({ effective_access_level, ...note }) => effective_access_level === "full"
+      ? { ...note, body_withheld: false }
+      : { ...note, content_json: { type: "doc", content: [] }, body_withheld: true });
   }
 
   /**
