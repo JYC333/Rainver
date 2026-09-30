@@ -5,6 +5,7 @@ import { resetTables } from "./support/resetTables.js";
 import { seedRun } from "./support/domainSeeds.js";
 import { ROOT_BRANCH_PATH, childBranchPath, visibleMessagePathSql } from "../src/modules/sessions/messagePath.js";
 import { PgSessionRepository } from "../src/modules/sessions/repository.js";
+import { PgProposalRepository } from "../src/modules/proposals/repository.js";
 
 // Real-PostgreSQL integration tests for the server sessions repository. The unit
 // suites use a fake that records arguments but never runs SQL, so they cannot
@@ -351,6 +352,26 @@ describe("PgSessionRepository against real Postgres", () => {
         content: "x",
       }),
     ).rejects.toThrow();
+  });
+
+  it("keeps a reflection of a private chat private to the person who had it", async () => {
+    if (!db.available || !repo) return;
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, 'user-1', 'owner', 'active', now(), now()),
+              (gen_random_uuid()::text, $1, 'user-2', 'member', 'active', now(), now())`,
+      [SPACE],
+    );
+    const session = await repo.createSession(SPACE, USER, { title: "private chat" });
+    await repo.addMessage(SPACE, USER, session.id, { role: "user", content: "Something only I should see." });
+
+    expect(await repo.reflectSession(SPACE, USER, session.id)).toMatchObject({ proposals_created: 1 });
+    const { rows } = await db.pool.query<{ id: string }>(`SELECT id FROM proposals WHERE space_id = $1`, [SPACE]);
+    const proposals = new PgProposalRepository(db.pool);
+    expect(await proposals.getVisible(SPACE, USER, rows[0]!.id)).toMatchObject({
+      proposed_content: expect.stringContaining("Something only I should see."),
+    });
+    expect(await proposals.getVisible(SPACE, "user-2", rows[0]!.id)).toBeNull();
   });
 
   it("404s message listing for a session the user cannot see", async () => {

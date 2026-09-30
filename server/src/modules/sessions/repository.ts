@@ -1300,9 +1300,12 @@ export class PgSessionRepository {
         ],
       },
       projectFolderId: session.project_folder_id,
+      projectId: session.project_id,
       rationale: "Session reflection requested by the user.",
       createdByUserId: userId,
-      visibility: "space_shared",
+      // The payload is the person's own direct-chat transcript, so the review
+      // row is as private as the memory it proposes.
+      visibility: "private",
       riskLevel: "low",
     });
     return { session_id: sessionId, proposals_created: 1 };
