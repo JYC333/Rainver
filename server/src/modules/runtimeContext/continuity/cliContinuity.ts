@@ -239,12 +239,17 @@ export class RuntimeContextCliContinuityService {
     return bindingOut(result.rows[0]);
   }
 
-  async releaseExecutionLease(bindingId: string, leaseId: string): Promise<void> {
+  /**
+   * Released by the lease alone. An overflow rotation moves the lease onto a
+   * replacement binding mid-turn, so the binding the caller acquired it on may
+   * no longer hold it; the lease id is unique to one acquisition either way.
+   */
+  async releaseExecutionLease(leaseId: string): Promise<void> {
     await this.db.query(
       `UPDATE runtime_context_cli_bindings
           SET execution_lease_id=NULL,execution_lease_expires_at=NULL,updated_at=now()
-        WHERE id=$1 AND execution_lease_id=$2`,
-      [bindingId, leaseId],
+        WHERE execution_lease_id=$1`,
+      [leaseId],
     );
   }
 

@@ -2429,7 +2429,7 @@ export class RunOrchestrationService {
     if (prepared?.cli_execution_lease && this.cliContinuity) {
       const lease = prepared.cli_execution_lease;
       prepared.cli_execution_lease = null;
-      await this.cliContinuity.releaseExecutionLease(lease.binding_id, lease.lease_id).catch(() => {});
+      await this.cliContinuity.releaseExecutionLease(lease.lease_id).catch(() => {});
     }
     const executionPort = prepared?.execution_port ?? this.serverExecutionPort;
     if (prepared?.exchange) {

@@ -151,6 +151,7 @@ describe("runtimeContextCliContinuityDb", () => {
           JSON.stringify({ decisions: [{ text: "Bounded checkpoint" }] }),
           JSON.stringify({ type: "provider_task", id: randomUUID(), version: "test.v1" })],
       );
+      const lease = await cli.acquireExecutionLease(binding.id);
       const delivery = await cli.prepareDelivery({
         bindingId: binding.id,
         spaceId: SPACE,
@@ -160,6 +161,13 @@ describe("runtimeContextCliContinuityDb", () => {
         ownerUserId: USER,
         authorizedSourceRefs: [{ type: "message", id: currentMessage }],
       });
+      // The turn releases the lease it took on the old binding; the rotation
+      // carried it to the replacement, which must not stay held.
+      await cli.releaseExecutionLease(lease);
+      await expect(db.pool.query(
+        `SELECT execution_lease_id FROM runtime_context_cli_bindings WHERE id=$1`,
+        [delivery.id],
+      )).resolves.toMatchObject({ rows: [{ execution_lease_id: null }] });
       expect(delivery.mode).toBe("full");
       expect(delivery.id).not.toBe(binding.id);
       expect(delivery.rotation_reason).toBe("overflow_reconstruction");
@@ -376,10 +384,10 @@ describe("runtimeContextCliContinuityDb", () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 75));
       expect(secondAcquired).toBe(false);
-      await cli.releaseExecutionLease(first.id, firstLease);
+      await cli.releaseExecutionLease(firstLease);
       const acquired = await secondLease;
       expect(secondAcquired).toBe(true);
-      await cli.releaseExecutionLease(first.id, acquired);
+      await cli.releaseExecutionLease(acquired);
 
       await db.pool.query(
         `UPDATE agent_runtime_profiles
