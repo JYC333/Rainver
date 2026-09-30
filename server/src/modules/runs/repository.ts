@@ -9,7 +9,7 @@ import {
   sanitizeEvidenceJson,
 } from "./evidenceRedaction.js";
 import { assertProjectInSpace } from "../projects/access.js";
-import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { artifactReadSql, contentAccessLevelSql, contentReadSql, projectReadAccessSql, proposalReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 
@@ -1214,24 +1214,29 @@ export class PgRunRepository {
     };
   }
 
+  /** The Artifacts a Run produced that this viewer can read; the rest are not listed. */
   async listArtifactSummaries(
     spaceId: string,
     runId: string,
+    viewerUserId: string,
   ): Promise<ArtifactSummaryRecord[]> {
     const result = await this.db.query<ArtifactSummaryRecord>(
-      `SELECT id, space_id, run_id, proposal_id, artifact_type, title,
-              mime_type, visibility, created_at
-         FROM artifacts
-        WHERE space_id = $1 AND run_id = $2
-        ORDER BY created_at ASC, id ASC`,
-      [spaceId, runId],
+      `SELECT a.id, a.space_id, a.run_id, a.proposal_id, a.artifact_type, a.title,
+              a.mime_type, a.visibility, a.created_at
+         FROM artifacts a
+        WHERE a.space_id = $1 AND a.run_id = $2
+          AND ${artifactReadSql("$3", "a")}
+        ORDER BY a.created_at ASC, a.id ASC`,
+      [spaceId, runId, viewerUserId],
     );
     return result.rows;
   }
 
+  /** The Proposals a finished Run created that this viewer can read. */
   async listProposalSummaries(
     spaceId: string,
     runId: string,
+    viewerUserId: string,
   ): Promise<ProposalSummaryRecord[]> {
     const result = await this.db.query<ProposalSummaryRecord>(
       `SELECT proposal.id, proposal.space_id, proposal.proposal_type,
@@ -1247,8 +1252,9 @@ export class PgRunRepository {
           AND proposal.created_by_run_id = $2
           AND proposal.status <> 'staged'
           AND run.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
+          AND ${proposalReadSql("$3", "proposal")}
         ORDER BY proposal.created_at ASC, proposal.id ASC`,
-      [spaceId, runId],
+      [spaceId, runId, viewerUserId],
     );
     return result.rows;
   }

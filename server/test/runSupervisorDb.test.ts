@@ -1061,7 +1061,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       visibility: "space_shared",
       status: "pending",
     });
-    expect(await repository.listProposalSummaries(SPACE, runId)).toEqual([]);
+    expect(await repository.listProposalSummaries(SPACE, runId, USER)).toEqual([]);
     await db.pool.query(
       `UPDATE runs SET started_at = $3, updated_at = $3 WHERE space_id = $1 AND id = $2`,
       [SPACE, runId, startedAt],
@@ -1080,7 +1080,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     await repository.releaseExecutionLock(runId);
     expect((await repository.getRun(SPACE, runId))?.status).toBe("orphaned");
     expect((await repository.getLatestRunAttempt(SPACE, runId))?.status).toBe("orphaned");
-    expect((await repository.listProposalSummaries(SPACE, runId)).map((proposal) =>
+    expect((await repository.listProposalSummaries(SPACE, runId, USER)).map((proposal) =>
       proposal.status
     )).toEqual(["rejected", "rejected"]);
   });

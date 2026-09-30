@@ -459,8 +459,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const [steps, events, artifacts, proposals, children, invocationSnapshots, finalization] = await Promise.all([
       repository.listRunSteps(run.space_id, run.id),
       repository.listRunEvents(run.space_id, run.id),
-      repository.listArtifactSummaries(run.space_id, run.id),
-      repository.listProposalSummaries(run.space_id, run.id),
+      repository.listArtifactSummaries(run.space_id, run.id, identity.userId),
+      repository.listProposalSummaries(run.space_id, run.id, identity.userId),
       repository.listChildRuns(run.space_id, run.id, identity.userId),
       new InvocationSnapshotService(dbPool(context.config))
         .listSafeForInvocation(run.space_id, run.id),
