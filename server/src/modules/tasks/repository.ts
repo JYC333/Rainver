@@ -259,9 +259,25 @@ export class PgTaskRepository {
   }
 
   async updateBoard(identity: SpaceUserIdentity, boardId: string, body: Record<string, unknown>) {
-    if (!(await this.getBoard(identity, boardId))) throw new HttpError(404, "Board not found");
+    await withDbTransaction(this.pool, async (client) => {
+      const board = await this.getBoardFrom(client, identity, boardId);
+      if (!board) throw new HttpError(404, "Board not found");
+      // The same gate as a Task: changing, deleting or moving a Project's Board
+      // takes write access to the Project it is in and to the one it moves to.
+      const targetProjectId = Object.hasOwn(body, "project_id")
+        ? optionalString(body.project_id)
+        : board.project_id ?? null;
+      for (const projectId of new Set([board.project_id ?? null, targetProjectId])) {
+        if (projectId) await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
+      }
+      await this.writeBoardUpdate(client, identity, boardId, body);
+    });
+    return (await this.getBoard(identity, boardId))!;
+  }
+
+  private async writeBoardUpdate(client: Queryable, identity: SpaceUserIdentity, boardId: string, body: Record<string, unknown>) {
     const now = new Date().toISOString();
-    await this.pool.query(
+    await client.query(
       `UPDATE boards SET
          name = COALESCE($3, name),
          description = CASE WHEN $4::boolean THEN $5 ELSE description END,
@@ -298,7 +314,6 @@ export class PgTaskRepository {
         now,
       ],
     );
-    return (await this.getBoard(identity, boardId))!;
   }
 
   async listBoardTasks(identity: SpaceUserIdentity, boardId: string, limit: number, offset: number) {

@@ -651,6 +651,34 @@ describe("cross-Project task lists", () => {
   });
 });
 
+describe("who may change a Board", () => {
+  it("refuses a Project viewer who tries to delete or move the Project's Board", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const boardId = randomUUID();
+    await db.pool!.query(
+      `INSERT INTO boards (id, space_id, project_id, name, board_type, status, sort_order, created_at, updated_at)
+       VALUES ($1, $2, $3, 'Project board', 'kanban', 'active', 0, now(), now())`,
+      [boardId, SPACE, PROJECT],
+    );
+    await db.pool!.query(
+      `UPDATE project_members SET role = 'viewer' WHERE project_id = $1 AND user_id = $2`,
+      [PROJECT, OTHER],
+    );
+    const viewer = { spaceId: SPACE, userId: OTHER };
+    const repo = new PgTaskRepository(db.pool!);
+
+    await expect(repo.updateBoard(viewer, boardId, { deleted_at: "2026-01-01T00:00:00Z" }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    await expect(repo.updateBoard(viewer, boardId, { project_id: null }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    const untouched = await db.pool!.query<{ project_id: string | null; deleted_at: string | null }>(
+      `SELECT project_id, deleted_at FROM boards WHERE id = $1`, [boardId]);
+    expect(untouched.rows[0]).toEqual({ project_id: PROJECT, deleted_at: null });
+    await expect(repo.updateBoard({ spaceId: SPACE, userId: OWNER }, boardId, { name: "Renamed" }))
+      .resolves.toMatchObject({ name: "Renamed" });
+  });
+});
+
 describe("who may change a Task", () => {
   it("lets a viewer read the Board and refuses every write", async (ctx) => {
     if (!db.available) return ctx.skip();
