@@ -285,6 +285,52 @@ describe("sourcePostProcessingRecoveryDb", () => {
       });
     });
 
+    it("reconciles a run into the workflow watching its channel, not only the newest one", async () => {
+      if (!db.available) return;
+      const now = new Date().toISOString();
+      const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
+      const workflowFor = async (id: string, statement: string, channelIds: string[]) => {
+        const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, { kind: "question", statement });
+        await insertResearchWorkflowFixture(db.pool, {
+          id, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+          currentStage: "monitoring", primaryThreadId: String(thread.id), state: {
+            channel_ids: channelIds,
+            source_post_processing_rule_ids: [RULE],
+            monitoring: { active: true, field: "submittedDate" },
+            research_question: statement,
+            research_question_version: thread.version,
+            thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
+            report_depth: "full",
+            question_refine_skipped: false,
+            agent_id: AGENT,
+            runtime_profile_id: "profile-1",
+          }, now,
+        });
+      };
+      await workflowFor(WORKFLOW, "Research", [CHANNEL]);
+      const newer = randomUUID();
+      await workflowFor(newer, "Another question", ["another-channel"]);
+      await db.pool.query(`UPDATE space_objects SET updated_at = now() + interval '1 hour' WHERE id = $1`, [newer]);
+      const runId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO source_post_processing_runs (
+           id, space_id, source_channel_id, agent_id, project_id, rule_id, trigger_type,
+           status, input_item_ids_json, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,'manual','succeeded',$7::jsonb,$8)`,
+        [runId, SPACE, CHANNEL, AGENT, PROJECT, RULE, JSON.stringify([ITEM_3]), now],
+      );
+
+      await reconcileProjectResearch(db.pool, CONFIG);
+
+      const operations = await db.pool.query<{ progress_json: { workflow_id?: string; source_item_ids?: string[] } }>(
+        `SELECT progress_json FROM project_operations WHERE project_id=$1 AND kind='research'`,
+        [PROJECT],
+      );
+      expect(operations.rows.map((row) => row.progress_json)).toEqual([
+        expect.objectContaining({ workflow_id: WORKFLOW, source_item_ids: [ITEM_3] }),
+      ]);
+    });
+
     it("marks recovery reconciled without mutating an archived Project", async () => {
       if (!db.available) return;
       const now = new Date().toISOString();

@@ -279,110 +279,121 @@ export class ProjectResearchMonitoringCoordinator {
       for (const sourceItemId of processedSourceItemIds) {
         await syncProjectCorpusDecisionForSourceItem(this.db, { spaceId, sourceItemId, projectId: run.project_id });
       }
+      // A Project may run several one-Question Workflows; every one that
+      // watches this channel gets the run's items, not only the newest.
       const workflows = await this.db.query<{ id: string; state_json: unknown }>(
         `SELECT workflow.object_id AS id,workflow.state_json FROM project_research_workflows workflow
-          JOIN space_objects object ON object.id=workflow.object_id AND object.space_id=workflow.space_id
           WHERE workflow.space_id=$1 AND workflow.project_id=$2 AND workflow.status='active'
-          ORDER BY object.updated_at DESC LIMIT 1`,
-        [spaceId, run.project_id],
+            AND COALESCE(workflow.state_json->'channel_ids','[]'::jsonb) ? $3
+          ORDER BY workflow.object_id`,
+        [spaceId, run.project_id, run.source_channel_id],
       );
-      const workflow = workflows.rows[0];
-      if (!workflow) return;
-      const state = researchState(workflow.state_json);
-      if (!state.channel_ids.includes(run.source_channel_id)) return;
-      const monitoring = objectValue(objectValue(workflow.state_json).monitoring);
-      const monitoringActive = monitoring.active === true || state.monitoring_active;
-      const cursor = await this.db.query<{ metadata_json: unknown }>(
-        `SELECT metadata_json FROM scheduler_tasks WHERE task_type='source_channel_scan' AND task_key=$1 AND space_id=$2 LIMIT 1`,
-        [run.source_channel_id, spaceId],
-      );
-      const priorWatermark = optionalString(monitoring.watermark_after);
-      const observedWatermark = optionalString(
-        objectValue(objectValue(cursor.rows[0]?.metadata_json).cursor).last_published_at,
-      ) ?? await latestPublicationWatermarkForItems(this.db, {
-        spaceId,
-        sourceItemIds: processedSourceItemIds,
-        sourceChannelId: run.source_channel_id,
-      });
-      const watermarkAfter = laterPublicationWatermark(priorWatermark, observedWatermark);
-      if (!monitoringActive) {
-        if (state.source_backfill_plan_id) {
-          const baseline = await this.db.query<{ id: string; progress_json: unknown }>(
-            `SELECT id, progress_json FROM project_operations
-              WHERE space_id=$1 AND project_id=$2 AND kind='research'
-                AND ($3 = ANY(ARRAY(SELECT jsonb_array_elements_text(COALESCE(progress_json->'source_backfill_plan_ids', '[]'::jsonb)))) OR progress_json->>'source_backfill_plan_id'=$4)
-              ORDER BY created_at DESC LIMIT 1`,
-            [spaceId, run.project_id, state.source_backfill_plan_id, state.source_backfill_plan_id],
-          );
-          const baselineOperation = baseline.rows[0];
-          if (baselineOperation) {
-            const baselineState = researchState(baselineOperation.progress_json);
-            if (baselineState.current_stage === "backfill" || baselineState.current_stage === "screening") {
-              await this.ports.reconcileOperation(spaceId, baselineOperation.id);
-            } else {
-              await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, processedSourceItemIds);
-            }
-          }
-        }
-        return;
+      const projectId = run.project_id;
+      for (const workflow of workflows.rows) {
+        await this.reconcileRunForWorkflow(spaceId, { ...run, project_id: projectId }, workflow, processedSourceItemIds);
       }
-      const historical = await this.ports.activeHistoricalBackfill(spaceId, run.project_id, workflow.id);
-      if (historical) {
-        const origins = await this.ports.backfillPlanForItems(spaceId, processedSourceItemIds);
-        const historicalPlanIds = researchState(historical.progress_json).source_backfill_plan_ids;
-        const historicalIds = processedSourceItemIds.filter((id) => historicalPlanIds.includes(origins.get(id)?.created_plan_id ?? ""));
-        const historicalUpdates = processedSourceItemIds.filter((id) => historicalPlanIds.includes(origins.get(id)?.last_plan_id ?? ""));
-        const unscopedIds = processedSourceItemIds.filter((id) => !historicalIds.includes(id) && !historicalUpdates.includes(id));
-        const pendingIds = await filterItemsForPublicationWindow(this.db, {
-          spaceId,
-          sourceItemIds: unscopedIds,
-          watermark: priorWatermark,
-          overlapHours: state.watermark.overlap_hours,
-        });
-        if (historicalIds.length > 0) {
-          await refreshOperation(this.db, spaceId, historical.id, ({ state: current }) => {
-            current.source_item_ids = unique([...current.source_item_ids, ...historicalIds]);
-            current.watermark = { before: current.watermark.after, after: watermarkAfter, overlap_hours: current.watermark.overlap_hours };
-          });
-        }
-        if (pendingIds.length > 0) await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, pendingIds);
-        await this.ports.reconcileOperation(spaceId, historical.id);
-        return;
-      }
-      const sourceItemIds = await filterItemsForPublicationWindow(this.db, {
-        spaceId,
-        sourceItemIds: processedSourceItemIds,
-        watermark: priorWatermark,
-        overlapHours: state.watermark.overlap_hours,
-      });
-      if (sourceItemIds.length === 0) return;
-      if (await this.ports.hasResearchQuestionDrift(spaceId, run.project_id, workflow.state_json)) {
-        await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, sourceItemIds);
-        return;
-      }
-      const idempotencyKey = `source-post-processing:${run.source_channel_id}:${sourceItemIds[0]}`;
-      const prior = await this.ports.operationByIdempotency(spaceId, run.project_id, idempotencyKey);
-      if (prior && prior.status !== "failed" && prior.status !== "cancelled") return;
-      const active = await this.ports.activeIncremental(spaceId, run.project_id, workflow.id);
-      if (active) {
-        await refreshOperation(this.db, spaceId, active.id, ({ state: current }) => {
-          current.source_item_ids = unique([...current.source_item_ids, ...sourceItemIds]);
-          current.awaiting_source_scan = false;
-          current.watermark = { before: current.watermark.after, after: watermarkAfter, overlap_hours: current.watermark.overlap_hours };
-        });
-        await this.ports.reconcileOperation(spaceId, active.id);
-        return;
-      }
-      const actor = run.triggered_by_user_id ?? await this.ports.projectWriterActor(spaceId, run.project_id);
-      if (!actor) return;
-      const created = await this.ports.createIncrementalOperation({
-        identity: { spaceId, userId: actor }, projectId: run.project_id, workflowState: workflow.state_json,
-        workflowId: workflow.id, sourceItemIds, idempotencyKey, watermarkAfter,
-      });
-      await this.ports.reconcileOperation(spaceId, created.id);
     } finally {
       await this.markPostProcessingReconciled(spaceId, runId);
     }
+  }
+
+  private async reconcileRunForWorkflow(
+    spaceId: string,
+    run: { project_id: string; source_channel_id: string; triggered_by_user_id: string | null },
+    workflow: { id: string; state_json: unknown },
+    processedSourceItemIds: string[],
+  ): Promise<void> {
+    const state = researchState(workflow.state_json);
+    const monitoring = objectValue(objectValue(workflow.state_json).monitoring);
+    const monitoringActive = monitoring.active === true || state.monitoring_active;
+    const cursor = await this.db.query<{ metadata_json: unknown }>(
+      `SELECT metadata_json FROM scheduler_tasks WHERE task_type='source_channel_scan' AND task_key=$1 AND space_id=$2 LIMIT 1`,
+      [run.source_channel_id, spaceId],
+    );
+    const priorWatermark = optionalString(monitoring.watermark_after);
+    const observedWatermark = optionalString(
+      objectValue(objectValue(cursor.rows[0]?.metadata_json).cursor).last_published_at,
+    ) ?? await latestPublicationWatermarkForItems(this.db, {
+      spaceId,
+      sourceItemIds: processedSourceItemIds,
+      sourceChannelId: run.source_channel_id,
+    });
+    const watermarkAfter = laterPublicationWatermark(priorWatermark, observedWatermark);
+    if (!monitoringActive) {
+      if (state.source_backfill_plan_id) {
+        const baseline = await this.db.query<{ id: string; progress_json: unknown }>(
+          `SELECT id, progress_json FROM project_operations
+            WHERE space_id=$1 AND project_id=$2 AND kind='research'
+              AND ($3 = ANY(ARRAY(SELECT jsonb_array_elements_text(COALESCE(progress_json->'source_backfill_plan_ids', '[]'::jsonb)))) OR progress_json->>'source_backfill_plan_id'=$4)
+            ORDER BY created_at DESC LIMIT 1`,
+          [spaceId, run.project_id, state.source_backfill_plan_id, state.source_backfill_plan_id],
+        );
+        const baselineOperation = baseline.rows[0];
+        if (baselineOperation) {
+          const baselineState = researchState(baselineOperation.progress_json);
+          if (baselineState.current_stage === "backfill" || baselineState.current_stage === "screening") {
+            await this.ports.reconcileOperation(spaceId, baselineOperation.id);
+          } else {
+            await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, processedSourceItemIds);
+          }
+        }
+      }
+      return;
+    }
+    const historical = await this.ports.activeHistoricalBackfill(spaceId, run.project_id, workflow.id);
+    if (historical) {
+      const origins = await this.ports.backfillPlanForItems(spaceId, processedSourceItemIds);
+      const historicalPlanIds = researchState(historical.progress_json).source_backfill_plan_ids;
+      const historicalIds = processedSourceItemIds.filter((id) => historicalPlanIds.includes(origins.get(id)?.created_plan_id ?? ""));
+      const historicalUpdates = processedSourceItemIds.filter((id) => historicalPlanIds.includes(origins.get(id)?.last_plan_id ?? ""));
+      const unscopedIds = processedSourceItemIds.filter((id) => !historicalIds.includes(id) && !historicalUpdates.includes(id));
+      const pendingIds = await filterItemsForPublicationWindow(this.db, {
+        spaceId,
+        sourceItemIds: unscopedIds,
+        watermark: priorWatermark,
+        overlapHours: state.watermark.overlap_hours,
+      });
+      if (historicalIds.length > 0) {
+        await refreshOperation(this.db, spaceId, historical.id, ({ state: current }) => {
+          current.source_item_ids = unique([...current.source_item_ids, ...historicalIds]);
+          current.watermark = { before: current.watermark.after, after: watermarkAfter, overlap_hours: current.watermark.overlap_hours };
+        });
+      }
+      if (pendingIds.length > 0) await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, pendingIds);
+      await this.ports.reconcileOperation(spaceId, historical.id);
+      return;
+    }
+    const sourceItemIds = await filterItemsForPublicationWindow(this.db, {
+      spaceId,
+      sourceItemIds: processedSourceItemIds,
+      watermark: priorWatermark,
+      overlapHours: state.watermark.overlap_hours,
+    });
+    if (sourceItemIds.length === 0) return;
+    if (await this.ports.hasResearchQuestionDrift(spaceId, run.project_id, workflow.state_json)) {
+      await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, sourceItemIds);
+      return;
+    }
+    const idempotencyKey = `source-post-processing:${run.source_channel_id}:${workflow.id}:${sourceItemIds[0]}`;
+    const prior = await this.ports.operationByIdempotency(spaceId, run.project_id, idempotencyKey);
+    if (prior && prior.status !== "failed" && prior.status !== "cancelled") return;
+    const active = await this.ports.activeIncremental(spaceId, run.project_id, workflow.id);
+    if (active) {
+      await refreshOperation(this.db, spaceId, active.id, ({ state: current }) => {
+        current.source_item_ids = unique([...current.source_item_ids, ...sourceItemIds]);
+        current.awaiting_source_scan = false;
+        current.watermark = { before: current.watermark.after, after: watermarkAfter, overlap_hours: current.watermark.overlap_hours };
+      });
+      await this.ports.reconcileOperation(spaceId, active.id);
+      return;
+    }
+    const actor = run.triggered_by_user_id ?? await this.ports.projectWriterActor(spaceId, run.project_id);
+    if (!actor) return;
+    const created = await this.ports.createIncrementalOperation({
+      identity: { spaceId, userId: actor }, projectId: run.project_id, workflowState: workflow.state_json,
+      workflowId: workflow.id, sourceItemIds, idempotencyKey, watermarkAfter,
+    });
+    await this.ports.reconcileOperation(spaceId, created.id);
   }
 
   async queueComparison(input: {
