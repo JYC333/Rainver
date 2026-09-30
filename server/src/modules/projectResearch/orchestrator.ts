@@ -1751,6 +1751,7 @@ export class ProjectResearchOrchestrator {
     if (state.run_kind !== "baseline" && state.run_kind !== "historical_backfill") {
       throw new HttpError(409, "Only material backfill operations have an item limit");
     }
+    assertStillAcquiring(operation.status, state);
     const planIds = state.source_backfill_plan_ids?.length
       ? state.source_backfill_plan_ids
       : state.source_backfill_plan_id ? [state.source_backfill_plan_id] : [];
@@ -1817,6 +1818,7 @@ export class ProjectResearchOrchestrator {
     if (stage === "monitor_setup") {
       throw new HttpError(409, "This operation hasn't started importing material yet");
     }
+    assertStillAcquiring(operation.status, state);
     const active = await this.activeResearchOperation(identity.spaceId, projectId, state.workflow_id);
     if (active && active.id !== operation.id) throw new HttpError(409, "Another Project Research operation is already active for this workflow");
     const additionalItems = body.additional_max_items === undefined ? 0 : Number(body.additional_max_items);
@@ -3287,4 +3289,19 @@ function workflowRuleIds(state: Record<string, unknown>): string[] {
   const ids = stringArray(state.source_post_processing_rule_ids);
   const single = optionalString(state.source_post_processing_rule_id);
   return ids.length > 0 ? ids : single ? [single] : [];
+}
+
+/**
+ * Raising the limit or rescanning sends an operation back to backfill. One
+ * that has finished, or moved past screening, cannot re-enter from there: its
+ * decided screening gate keeps it from ever reaching screening again, so it
+ * would sit in backfill for good. Continuing past that point is a new
+ * historical operation.
+ */
+function assertStillAcquiring(status: string, state: { current_stage?: string | null; failed_stage?: string | null }): void {
+  const stage = state.failed_stage ?? state.current_stage;
+  if (status === "completed" || status === "cancelled"
+    || stage === "comparison" || stage === "synthesis" || stage === "idea_review" || stage === "complete") {
+    throw new HttpError(409, "This operation is past material import; start a historical extension to collect more");
+  }
 }
