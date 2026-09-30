@@ -926,12 +926,17 @@ function matchesPath(path: string, pattern: string): boolean {
   const normalizedPath = normalizeGitPath(path);
   const normalizedPattern = normalizeGitPath(pattern);
   if (normalizedPattern === "*") return true;
-  const regex = new RegExp(`^${escapeRegex(normalizedPattern).replaceAll("\\*\\*", ".*").replaceAll("\\*", "[^/]*").replaceAll("\\?", "[^/]")}$`);
+  const regex = new RegExp(`^${escapeRegex(normalizedPattern)
+    .replaceAll("\\*\\*/", "(?:.*/)?")
+    .replaceAll("\\*\\*", ".*")
+    .replaceAll("\\*", "[^/]*")
+    .replaceAll("\\?", "[^/]")}$`);
   return regex.test(normalizedPath) || normalizedPath === normalizedPattern || basename(normalizedPath) === normalizedPattern;
 }
 
+/** Escapes every regex metacharacter, `*` and `?` included, so the glob replacements above find them. */
 function escapeRegex(value: string): string {
-  return value.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return value.replace(/[.*?+^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeGitPath(value: string): string {

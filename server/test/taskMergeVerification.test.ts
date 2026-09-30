@@ -57,6 +57,29 @@ describe("a merge's verification", () => {
     expect(outcome.status).toBe("failed");
   });
 
+  it("reads path globs in diff scope and forbidden-path checks", async () => {
+    const changedFiles = (paths: string[]): VerificationCommandExecutor => ({
+      async run(input) {
+        const stdout = input.command[1] === "diff" ? `${paths.join("\n")}\n` : "";
+        return { returncode: 0, stdout, stderr: "", timed_out: false };
+      },
+    });
+    const verify = (paths: string[], acceptance: unknown) => verifyTaskWorkspace(emptyPlan, changedFiles(paths), {
+      run: runWith(acceptance), target, base_commit_sha: "a".repeat(40),
+    });
+
+    await expect(verify(["src/a/b.ts"], [{ type: "diff_scope", allowed_paths: ["src/**"] }]))
+      .resolves.toMatchObject({ status: "passed" });
+    await expect(verify(["docs/a.md"], [{ type: "diff_scope", allowed_paths: ["src/**"] }]))
+      .resolves.toMatchObject({ status: "failed" });
+    await expect(verify(["config/prod.yaml"], [{ type: "no_forbidden_change", forbidden_paths: ["config/*.yaml"] }]))
+      .resolves.toMatchObject({ status: "failed" });
+    await expect(verify(["secrets/key.txt"], [{ type: "no_forbidden_change", forbidden_paths: ["**/secrets/**"] }]))
+      .resolves.toMatchObject({ status: "failed" });
+    await expect(verify(["src/a.ts"], [{ type: "no_forbidden_change", forbidden_paths: ["**/secrets/**", "a?.md"] }]))
+      .resolves.toMatchObject({ status: "passed" });
+  });
+
   it("is not required when the Task declares nothing a workspace can answer", async () => {
     const outcome = await verifyTaskWorkspace(emptyPlan, executor(0), {
       run: runWith([{ type: "artifact_exists", artifact_type: "report" }]),
