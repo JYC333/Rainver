@@ -175,6 +175,20 @@ export async function canViewScopedRef(
   return false;
 }
 
+/**
+ * Whether the caller may see one version row: a built-in version is shared by
+ * every Space, anything else only inside its own Space and scope.
+ */
+export async function canViewVersionScope(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  row: { space_id: string | null; scope_type: string; scope_id: string | null },
+): Promise<boolean> {
+  if (row.space_id === null) return row.scope_type === "system";
+  if (row.space_id !== identity.spaceId) return false;
+  return canViewScopedRef(db, identity, row.scope_type, row.scope_id);
+}
+
 export async function assertCanPinScope(db: Queryable, identity: SpaceUserIdentity, scopeType: string, scopeId: string): Promise<void> {
   if (scopeType === "project") {
     await assertProjectWriter(db, identity.spaceId, scopeId, identity.userId);

@@ -144,6 +144,32 @@ describe("Prompt registry facade (real Postgres)", () => {
     await expect(repo().getAsset(otherIdentity, "custom.private")).rejects.toMatchObject({ statusCode: 404 });
   });
 
+  it("previews a shared prompt with the latest version the caller may see, not another Space's", async () => {
+    if (!db.available) return;
+    const assetId = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO evolvable_assets (
+         id, space_id, asset_type, asset_key, display_name, description, owner_scope_type, owner_scope_id,
+         status, metadata_json, created_at, updated_at
+       ) VALUES ($1, NULL, 'prompt_template', 'shared.preview', 'shared.preview', NULL, 'system', NULL, 'active', '{"prompt_type":"text"}'::jsonb, $2, $2)`,
+      [assetId, now],
+    );
+    const insertVersion = (spaceId: string | null, scopeType: string, version: number, template: string) =>
+      db.pool.query(
+        `INSERT INTO evolvable_asset_versions (
+           id, asset_id, space_id, scope_type, scope_id, version, status, source, content_json, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $3, $5, 'approved', 'built_in', $6::jsonb, $7, $7)`,
+        [randomUUID(), assetId, spaceId, scopeType, version,
+          JSON.stringify({ schema_version: "prompt_asset.v1", prompt_type: "text", template }), now],
+      );
+    await insertVersion(null, "system", 1, "Built-in text");
+    await insertVersion(OTHER_SPACE, "space", 2, "Other Space's customisation");
+
+    const preview = await repo().renderPreview(identity, "shared.preview", {});
+    expect(preview.rendered_text).toBe("Built-in text");
+  });
+
   it("does not expose user-owned prompt assets to other users in the same space", async () => {
     if (!db.available) return;
     await createPromptAsset("private.owner_prompt", "text", { owner_scope_type: "user" });

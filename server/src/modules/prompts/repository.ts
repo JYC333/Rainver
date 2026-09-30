@@ -7,6 +7,7 @@ import {
   assertCanWriteAssetOwnerScope,
   canReadAssetOwnerScope,
   canViewScopedRef,
+  canViewVersionScope,
   normalizeVersionScopeForWrite,
 } from "../evolution/assetAccess.js";
 import { EvolvableAssetEvaluationRepository } from "../evolution/assetEvaluationRepository.js";
@@ -108,7 +109,7 @@ export class PromptRepository {
     const versionId = optionalString(body.version_id);
     const content = body.content_json !== undefined
       ? await this.validatedPromptContent(promptType, body.content_json)
-      : await this.promptVersionContent(row.id, versionId, promptType);
+      : await this.promptVersionContent(identity, row.id, versionId, promptType);
     const variables = objectValue(body.variables);
     const errors = missingRequiredVariables(content.variables_schema, variables).map((name) => `Missing required variable '${name}'`);
     const warnings: string[] = [];
@@ -268,14 +269,29 @@ export class PromptRepository {
     return parsed.data;
   }
 
-  private async promptVersionContent(assetId: string, versionId: string | null, promptType: PromptType): Promise<PromptAssetContent> {
-    const result = await this.db.query<{ content_json: unknown }>(
-      versionId
-        ? `SELECT content_json FROM evolvable_asset_versions WHERE asset_id = $1 AND id = $2 LIMIT 1`
-        : `SELECT content_json FROM evolvable_asset_versions WHERE asset_id = $1 ORDER BY version DESC LIMIT 1`,
-      versionId ? [assetId, versionId] : [assetId],
+  private async promptVersionContent(
+    identity: SpaceUserIdentity,
+    assetId: string,
+    versionId: string | null,
+    promptType: PromptType,
+  ): Promise<PromptAssetContent> {
+    // Version numbers run across every Space and scope of a shared asset, so
+    // "latest" means the latest version this caller may see.
+    const result = await this.db.query<{ content_json: unknown; space_id: string | null; scope_type: string; scope_id: string | null }>(
+      `SELECT content_json, space_id, scope_type, scope_id
+         FROM evolvable_asset_versions
+        WHERE asset_id = $1 AND (space_id IS NULL OR space_id = $2)
+          ${versionId ? "AND id = $3" : ""}
+        ORDER BY version DESC`,
+      versionId ? [assetId, identity.spaceId, versionId] : [assetId, identity.spaceId],
     );
-    const row = result.rows[0];
+    let row: { content_json: unknown } | undefined;
+    for (const candidate of result.rows) {
+      if (await canViewVersionScope(this.db, identity, candidate)) {
+        row = candidate;
+        break;
+      }
+    }
     if (!row) {
       throw new HttpError(404, versionId ? "Prompt version not found for this asset" : "Prompt asset has no versions");
     }
