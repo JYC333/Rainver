@@ -47,6 +47,7 @@ import {
   type ProjectFileDraftMutation,
   type ProjectFileDraftRow,
 } from "./draftRepository.js";
+import { assertRemoteRepositoryUrl, CLONE_GIT_ALLOW_PROTOCOL } from "./repositoryUrl.js";
 
 const FOLDER_KINDS = new Set(["code", "data", "docs"]);
 
@@ -1085,8 +1086,11 @@ export class PgProjectFolderRepository {
   }
 
   private async cloneRepository(spaceId: string, name: string, repoUrl: string): Promise<string> {
+    assertRemoteRepositoryUrl(repoUrl);
     const target = await this.createManagedDir(spaceId, name);
-    const result = await runLocationGit(["clone", "--", repoUrl, target], resolve(this.config.workspaceRoot, spaceId), 120_000);
+    const result = await runLocationGit(["clone", "--", repoUrl, target], resolve(this.config.workspaceRoot, spaceId), 120_000, {
+      env: { GIT_ALLOW_PROTOCOL: CLONE_GIT_ALLOW_PROTOCOL },
+    });
     if (result.code !== 0) {
       throw new HttpError(422, `Failed to clone repository: ${result.stderr.slice(0, 400)}`);
     }

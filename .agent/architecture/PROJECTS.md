@@ -106,7 +106,7 @@ single-owner FK.
 | `kind` | string | `code` \| `data` \| `docs` |
 | `is_primary` | boolean | At most one primary Folder per Project |
 | `protected` | boolean | Safety flag gating destructive path operations; not an ACL |
-| `repo_url`, `default_branch` | string \| null | Logical repository metadata |
+| `repo_url`, `default_branch` | string \| null | Logical repository metadata; a Folder created from `repo_url` clones only a remote `https`/`http`/`ssh`/`git` source, never a server path or `file://` |
 | `snapshot_retention_days`, `snapshot_max_count` | int \| null | Code-patch rollback snapshot policy; falls back to the Space default |
 | `status` | string | `active` \| `archived` \| `stale` |
 | `created_at` / `updated_at` | datetime | |

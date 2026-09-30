@@ -9,6 +9,7 @@ import { projectFoldersModule } from "../src/modules/projectFolders/index.js";
 import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository.js";
 import { projectsModule } from "../src/modules/projects/index.js";
 import { buildModuleServer } from "./support/moduleServer.js";
+import { assertRemoteRepositoryUrl } from "../src/modules/projectFolders/repositoryUrl.js";
 
 describe("projectFoldersRoutes", () => {
   let app: FastifyInstance | undefined;
@@ -177,6 +178,19 @@ describe("projectFoldersRoutes", () => {
 });
 
 describe("projectFoldersSecurity", () => {
+  it("clones only from a remote repository, never a path on the server", () => {
+    for (const remote of [
+      "https://github.com/example/repo.git",
+      "ssh://git@example.com/repo.git",
+      "git@github.com:example/repo.git",
+    ]) {
+      expect(() => assertRemoteRepositoryUrl(remote)).not.toThrow();
+    }
+    for (const local of ["/srv/rainver/other-space/repo", "../repo", "file:///etc", "ext::sh -c id", "C:\\repo"]) {
+      expect(() => assertRemoteRepositoryUrl(local)).toThrow(expect.objectContaining({ statusCode: 422 }));
+    }
+  });
+
   type QueryResult = { rows: Record<string, unknown>[]; rowCount: number };
 
   class SecurityDb {
