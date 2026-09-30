@@ -218,6 +218,29 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     expect(updated.rows[0]?.state_json).toMatchObject({ monitoring: { active: true, channel_ids: [] } });
   });
 
+  it("reads a Workflow's monitor binding and rule from the singular keys intake used to write", async () => {
+    if (!db.available) return;
+    const thread = await new InquiryThreadService(db.pool).createThread(
+      identity, PROJECT, { kind: "question", statement: "Does X improve Y?" },
+    );
+    const workflowId = await seedWorkflow({
+      research_question: "Does X improve Y?",
+      thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
+      channel_ids: ["channel-1"],
+      project_source_binding_id: "binding-1",
+      source_post_processing_rule_id: "rule-1",
+      report_depth: "quick",
+      agent_id: AGENT,
+      monitoring: { active: true },
+    }, String(thread.id));
+
+    // Whatever else stops it, monitor setup is not what is missing.
+    const outcome = await new ProjectResearchOrchestrator(db.pool, CONFIG)
+      .startHistoricalBackfill(identity, PROJECT, workflowId, { from: "2025-01-01", to: "2025-02-01" })
+      .then(() => null, (error: Error) => error.message);
+    expect(outcome ?? "").not.toContain("has not completed monitor setup");
+  });
+
   it("bounds a daily update and defers the rest to the next one, without asking anybody", async () => {
     if (!db.available) return;
     // A daily update is bounded the same way a baseline is — an unbounded run

@@ -440,7 +440,7 @@ export class ProjectResearchOrchestrator {
     if (!workflow) throw new HttpError(409, "There is no active research workflow to update");
     const workflowState = objectValue(workflow.state_json);
     const workflowQuestion = optionalString(workflowState.research_question);
-    const ruleIds = stringArray(workflowState.source_post_processing_rule_ids);
+    const ruleIds = workflowRuleIds(workflowState);
     if (!workflowQuestion) throw new HttpError(409, "The research workflow has no question snapshot to update");
     const currentThreadScope = normalizeThreadScope(workflowState.thread_scope);
     const scopedThread = currentThreadScope[0];
@@ -624,8 +624,8 @@ export class ProjectResearchOrchestrator {
       throw new HttpError(409, "This research workflow already covers the earliest available history");
     }
     const channelIds = stringArray(workflowState.channel_ids);
-    const bindingIds = stringArray(workflowState.project_source_binding_ids);
-    const ruleIds = stringArray(workflowState.source_post_processing_rule_ids);
+    const bindingIds = workflowBindingIds(workflowState);
+    const ruleIds = workflowRuleIds(workflowState);
     if (!channelIds.length || channelIds.length !== bindingIds.length || channelIds.length !== ruleIds.length) throw new HttpError(409, "The research workflow has not completed monitor setup");
 
     const coverage = historyCoverage(workflowState);
@@ -1991,6 +1991,8 @@ export class ProjectResearchOrchestrator {
         channel_ids: state.channel_ids,
         project_source_binding_id: state.project_source_binding_id,
         source_post_processing_rule_id: state.source_post_processing_rule_id,
+        project_source_binding_ids: state.project_source_binding_ids,
+        source_post_processing_rule_ids: state.source_post_processing_rule_ids,
         source_backfill_plan_id: state.source_backfill_plan_id,
         source_backfill_plan_ids: state.source_backfill_plan_ids,
         agent_id: state.agent_id,
@@ -3130,8 +3132,8 @@ export function incrementalStateFromWorkflow(
     report_depth: normalizeReportDepth(workflow.report_depth),
     question_refine_skipped: workflow.question_refine_skipped === true,
     channel_ids: stringArray(workflow.channel_ids),
-    project_source_binding_ids: stringArray(workflow.project_source_binding_ids),
-    source_post_processing_rule_ids: stringArray(workflow.source_post_processing_rule_ids),
+    project_source_binding_ids: workflowBindingIds(workflow),
+    source_post_processing_rule_ids: workflowRuleIds(workflow),
     project_source_binding_id: optionalString(workflow.project_source_binding_id),
     source_post_processing_rule_id: optionalString(workflow.source_post_processing_rule_id),
     source_backfill_plan_id: null,
@@ -3183,8 +3185,8 @@ function historicalBackfillStateFromWorkflow(
     report_depth: normalizeReportDepth(workflow.report_depth),
     question_refine_skipped: workflow.question_refine_skipped === true,
     channel_ids: stringArray(workflow.channel_ids),
-    project_source_binding_ids: stringArray(workflow.project_source_binding_ids),
-    source_post_processing_rule_ids: stringArray(workflow.source_post_processing_rule_ids),
+    project_source_binding_ids: workflowBindingIds(workflow),
+    source_post_processing_rule_ids: workflowRuleIds(workflow),
     project_source_binding_id: optionalString(workflow.project_source_binding_id),
     source_post_processing_rule_id: optionalString(workflow.source_post_processing_rule_id),
     source_backfill_plan_id: null,
@@ -3268,4 +3270,21 @@ function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)]));
   return value;
+}
+
+/**
+ * A Workflow's monitor bindings and screening rules. Intake wrote only the
+ * singular id before it wrote these lists, so a Workflow from then reads its
+ * one binding and rule from the singular key.
+ */
+function workflowBindingIds(state: Record<string, unknown>): string[] {
+  const ids = stringArray(state.project_source_binding_ids);
+  const single = optionalString(state.project_source_binding_id);
+  return ids.length > 0 ? ids : single ? [single] : [];
+}
+
+function workflowRuleIds(state: Record<string, unknown>): string[] {
+  const ids = stringArray(state.source_post_processing_rule_ids);
+  const single = optionalString(state.source_post_processing_rule_id);
+  return ids.length > 0 ? ids : single ? [single] : [];
 }
