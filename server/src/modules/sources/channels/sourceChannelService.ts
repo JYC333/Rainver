@@ -464,6 +464,9 @@ export class SourceChannelService {
       ],
     );
     if (result.rows[0]) return result.rows[0];
+    // A Source that owns its connection must never fall back to someone
+    // else's: the only conflict left is its own name being taken.
+    if (body._force_create === true) throw new HttpError(409, `A source named "${name}" already exists`);
     const concurrent = await this.db.query<{ id: string; status: string }>(
       `SELECT id, status FROM source_connections
         WHERE space_id=$1 AND owner_user_id=$2 AND provider_connector_id=$3

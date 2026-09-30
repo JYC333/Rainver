@@ -96,6 +96,7 @@ export class CustomSourceCreateFlowService {
         visibility: optionalString(body.visibility),
         provider_key: "custom_source",
         name: requiredString(body.name, "name"),
+        source_name: requiredString(body.name, "name"),
         endpoint_url: endpointUrl,
         credential_id: credentialId,
         fetch_frequency: optionalString(body.fetch_frequency) ?? "manual",
@@ -104,6 +105,9 @@ export class CustomSourceCreateFlowService {
         capture_policy: optionalString(config.capture_policy) ?? settings.space.default_capture_policy,
         policy: { retention_policy: optionalString(config.retention_policy) ?? settings.space.default_retention_policy },
         status: "paused",
+        // Each Custom Source owns its connection, handler and repair state;
+        // reusing the owner's newest custom_source connection paused another.
+        _force_create: true,
         query: { config },
         config,
       });

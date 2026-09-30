@@ -186,6 +186,9 @@ export class SourceRecipeCreateService {
           },
           status: "paused",
           _initial_status: "paused",
+          // Each recipe Source owns its connection and active recipe version;
+          // reusing the owner's newest custom_source connection paused another.
+          _force_create: true,
           query: {},
         },
       );

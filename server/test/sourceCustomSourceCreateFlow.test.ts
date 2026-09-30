@@ -107,6 +107,19 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
     expect(connection.source_connection_id).toBeTruthy();
   });
 
+  it("gives each Custom Source its own connection and leaves an existing one running", async () => {
+    if (!db.available) return;
+    const first = await createDraftConnection();
+    await db.pool.query(`UPDATE source_connections SET status = 'active' WHERE id = $1`, [first.id]);
+    const second = await createDraftConnection({ name: "Other Source", endpoint_url: "https://example.com/news" });
+
+    expect(second.id).not.toBe(first.id);
+    const firstNow = await db.pool.query<{ status: string }>(`SELECT status FROM source_connections WHERE id = $1`, [first.id]);
+    expect(firstNow.rows[0]?.status).toBe("active");
+    await expect(createDraftConnection({ endpoint_url: "https://example.com/other" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+  });
+
   it("createDraft enforces Space Custom Source creator roles", async () => {
     if (!db.available) return;
     await db.pool.query(
