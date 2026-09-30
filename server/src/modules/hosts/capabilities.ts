@@ -55,16 +55,32 @@ function choices(value: unknown): RuntimeOptionChoice[] {
       })
     : [];
 }
+// The protocol's bounds on Agent-reported option text. One option the Agent
+// described too generously is dropped or shortened here; left to the final
+// schema parse it would fail the whole hello and close the Host's connection.
+const MAX_OPTION_ID = 256;
+const MAX_OPTION_DESCRIPTION = 2000;
+const MAX_OPTION_CATEGORY = 128;
+const MAX_AUTH_ARG = 2000;
+
+function identifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_OPTION_ID;
+}
+
+function description(value: unknown): string | null {
+  return typeof value === "string" ? value.slice(0, MAX_OPTION_DESCRIPTION) : null;
+}
+
 function configOptions(value: unknown): RuntimeSessionConfigOption[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item): RuntimeSessionConfigOption[] => {
     const entry = record(item);
-    if (typeof entry.id !== "string" || typeof entry.name !== "string") return [];
+    if (!identifier(entry.id) || !identifier(entry.name)) return [];
     const base = {
       id: entry.id,
       name: entry.name,
-      description: typeof entry.description === "string" ? entry.description : null,
-      category: typeof entry.category === "string" ? entry.category : null,
+      description: description(entry.description),
+      category: typeof entry.category === "string" && entry.category.length <= MAX_OPTION_CATEGORY ? entry.category : null,
     };
     if (entry.type === "boolean" && typeof entry.current_value === "boolean") {
       return [{ ...base, type: "boolean" as const, current_value: entry.current_value }];
@@ -79,13 +95,17 @@ function authMethods(value: unknown): RuntimeAuthMethod[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item): RuntimeAuthMethod[] => {
     const entry = record(item);
-    if (typeof entry.id !== "string" || typeof entry.name !== "string" || (entry.type !== "agent" && entry.type !== "terminal")) return [];
+    if (!identifier(entry.id) || !identifier(entry.name) || (entry.type !== "agent" && entry.type !== "terminal")) return [];
+    // Arguments are run, not shown, so an over-long one drops the method
+    // rather than being shortened into a different command.
+    const args = strings(entry.args);
+    if (args.some((arg) => arg.length > MAX_AUTH_ARG)) return [];
     return [{
       id: entry.id,
       name: entry.name,
-      description: typeof entry.description === "string" ? entry.description : null,
+      description: description(entry.description),
       type: entry.type,
-      args: strings(entry.args),
+      args,
       env: stringMap(entry.env),
     }];
   });
