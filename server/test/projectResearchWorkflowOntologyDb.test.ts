@@ -148,6 +148,30 @@ describe("Research Workflow ontology boundary (real Postgres)", () => {
     expect(edges).toEqual([]);
   });
 
+  it("does not let a Project member pin a Workflow to a Thread they cannot read", async () => {
+    if (!db.available) return;
+    const privateThread = await new InquiryThreadService(db.pool).createThread(
+      { spaceId: SPACE, userId: OWNER },
+      projectId,
+      { kind: "question", statement: "A question only its owner has seen" },
+    );
+    await db.pool.query(
+      `UPDATE space_objects SET visibility='private',owner_user_id=$2 WHERE space_id=$1 AND id=$3`,
+      [SPACE, OWNER, privateThread.id],
+    );
+    const memberWorkflowId = randomUUID();
+    const now = new Date().toISOString();
+    await withQueryableTransaction(db.pool, (db) => createResearchWorkflow(db, {
+      id: memberWorkflowId, spaceId: SPACE, projectId, title: "Member workflow", status: "active",
+      state: {}, startedByUserId: PROJECT_MEMBER, now,
+    }));
+
+    await expect(withQueryableTransaction(db.pool, (db) => setResearchWorkflowThread(db, {
+      spaceId: SPACE, projectId, workflowId: memberWorkflowId, threadId: String(privateThread.id),
+      userId: PROJECT_MEMBER, now,
+    }))).rejects.toMatchObject({ statusCode: 422 });
+  });
+
   it("enforces one non-archived Workflow pin per Thread", async () => {
     if (!db.available) return;
     const secondWorkflowId = randomUUID();
