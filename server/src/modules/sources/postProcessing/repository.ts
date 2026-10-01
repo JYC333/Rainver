@@ -1500,9 +1500,11 @@ export class PgSourcePostProcessingRepository {
     cursor: SourceWatermark | null;
   }): Promise<void> {
     const now = new Date().toISOString();
+    // A run over an empty batch has no last item to advance to; it keeps the
+    // watermark instead of sending the next run back to the oldest item.
     await this.db.query(
       `UPDATE source_post_processing_rules
-          SET cursor_json = $3::jsonb,
+          SET cursor_json = COALESCE($3::jsonb, cursor_json),
               last_fired_at = $4,
               updated_at = $4
         WHERE space_id = $1 AND id = $2`,

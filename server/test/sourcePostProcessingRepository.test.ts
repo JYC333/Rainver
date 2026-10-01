@@ -575,6 +575,12 @@ describe("source post-processing repository (real Postgres)", () => {
     });
     const drained = await repo().backlog(SPACE, CONNECTION);
     expect(drained.rules.find((row) => row.rule_id === rule.id)?.pending_item_count).toBe(0);
+
+    // A run over an empty batch has no last item; it keeps the watermark
+    // rather than sending the next run back to the oldest item.
+    await repo().advanceRuleCursor({ spaceId: SPACE, ruleId: rule.id, cursor: null });
+    const afterEmptyRun = await repo().backlog(SPACE, CONNECTION);
+    expect(afterEmptyRun.rules.find((row) => row.rule_id === rule.id)?.pending_item_count).toBe(0);
   });
 
   it("persists item decisions as a review read model", async () => {
