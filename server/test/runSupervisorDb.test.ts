@@ -1106,6 +1106,38 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     expect((await repository.getLatestRunAttempt(SPACE, runId))?.status).toBe("cancelled");
     expect(await repository.listOrphanedRunIds()).toEqual([]);
   });
+
+  it("keeps finalized orphaned Runs out of the startup orphan sweep", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgRunRepository(db.pool);
+    const finalized = await seedRun();
+    const fresh = await seedRun();
+    for (const [runId, age] of [[finalized, "2 hours"], [fresh, "1 minute"]] as const) {
+      await db.pool.query(
+        `UPDATE runs SET status = 'orphaned', error_json = '{"error_code":"orphaned"}'::jsonb,
+                updated_at = now() - $3::interval
+          WHERE space_id = $1 AND id = $2`,
+        [SPACE, runId, age],
+      );
+    }
+    // A chat or fail-fast Run the supervisor leaves orphaned stays that way
+    // after its finalization. Once a backlog of those filled the page, a
+    // newly orphaned Task Run never reached finalization at all.
+    await db.pool.query(
+      `INSERT INTO run_finalizations (id, space_id, run_id, attempt_number, status, finalized_at, created_at)
+       VALUES ($1, $2, $3, 1, 'completed', now(), now())`,
+      [randomUUID(), SPACE, finalized],
+    );
+    expect(await repository.listOrphanedRunIds(1)).toEqual([{ id: fresh, space_id: SPACE }]);
+
+    // A later attempt orphaned again has not been finalized.
+    await db.pool.query(
+      `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 2, 'orphaned', now(), now())`,
+      [randomUUID(), SPACE, finalized],
+    );
+    expect(await repository.listOrphanedRunIds(1)).toEqual([{ id: finalized, space_id: SPACE }]);
+  });
 });
 
 async function seedRun(contract: {

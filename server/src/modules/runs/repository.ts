@@ -235,13 +235,27 @@ export class PgRunRepository {
     return result.rows;
   }
 
+  /**
+   * Orphaned Runs whose current attempt has no finalization yet. A Run the
+   * supervisor leaves orphaned keeps that status after it is finalized, so
+   * without the finalization filter a backlog of finished ones would fill
+   * every page and starve a newly orphaned Task Run of its only sweep.
+   */
   async listOrphanedRunIds(limit = 100): Promise<Array<{ id: string; space_id: string }>> {
     const result = await this.db.query<{ id: string; space_id: string }>(
-      `SELECT id, space_id
-         FROM runs
-        WHERE status = 'orphaned'
-          AND error_json->>'error_code' = 'orphaned'
-        ORDER BY updated_at ASC, id ASC
+      `SELECT r.id, r.space_id
+         FROM runs r
+        WHERE r.status = 'orphaned'
+          AND r.error_json->>'error_code' = 'orphaned'
+          AND NOT EXISTS (
+            SELECT 1 FROM run_finalizations f
+             WHERE f.space_id = r.space_id AND f.run_id = r.id
+               AND f.attempt_number = COALESCE((
+                 SELECT max(a.attempt_number) FROM run_attempts a
+                  WHERE a.space_id = r.space_id AND a.run_id = r.id
+               ), 1)
+          )
+        ORDER BY r.updated_at ASC, r.id ASC
         LIMIT $1`,
       [Math.max(1, Math.min(500, Math.trunc(limit)))],
     );
