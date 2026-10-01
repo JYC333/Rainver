@@ -21,6 +21,7 @@ import { PgAgentRepository } from "../src/modules/agents/repository.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
 import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { ProjectPublicSummaryGenerator } from "../src/modules/projects/publicSummaryGenerator.js";
 import { seedProjectMainlineRoom, seedRoomManager } from "./support/domainSeeds.js";
 import { PgRoomRepository, type RoomAgentMemberRecord } from "../src/modules/rooms/repository.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
@@ -6536,6 +6537,49 @@ describe("Room workflow (real Postgres)", () => {
     const adminHome = await home("user-2");
     expect(adminHome).not.toContain(limitedRun);
     expect(adminHome).toContain(sharedRun);
+  });
+
+  it("keeps a limited Room's outputs out of a Project writer's public summary draft", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    await db.pool.query(`UPDATE project_members SET role = 'member' WHERE project_id = 'project-1' AND user_id = 'user-2'`);
+    const limited = await openSpokenRoom(owner, { project_id: "project-1", title: "Just the two of us" });
+    const dispatched = await service.sendMessage(owner, limited.room.id, limited.conversation.id, {
+      content: "Work on this quietly.",
+    });
+    const limitedRun = dispatched.run_ids[0]!;
+    await db.pool.query(
+      `INSERT INTO proposals (id, space_id, project_id, proposal_type, status, risk_level, urgency,
+                              title, rationale, payload_json, created_by_run_id, created_at, updated_at)
+       VALUES ($1, 'space-1', 'project-1', 'memory_create', 'pending', 'low', 'normal',
+               'Limited Room proposal', 'Limited Room rationale', '{}'::jsonb, $2, now(), now())`,
+      [randomUUID(), limitedRun],
+    );
+    await db.pool.query(
+      `INSERT INTO artifacts (id, space_id, project_id, run_id, artifact_type, title,
+                              surface_role, export_formats_json, created_at, updated_at)
+       VALUES ($1, 'space-1', 'project-1', $2, 'document', 'Limited Room artifact', 'user_output', '[]'::jsonb, now(), now()),
+              ($3, 'space-1', 'project-1', NULL, 'document', 'Project-wide artifact', 'user_output', '[]'::jsonb, now(), now())`,
+      [randomUUID(), limitedRun, randomUUID()],
+    );
+    let prompt = "";
+    const generator = new ProjectPublicSummaryGenerator(
+      db.pool,
+      { getTaskChain: async () => null } as unknown as ProviderCommandStore,
+      async (_spaceId, input) => {
+        prompt = `${input.system}\n${input.user}`;
+        return {
+          text: JSON.stringify({ summary_text: "A project.", topics: [], highlights: [], source_refs: [] }),
+          model: "test-model",
+          usage: {},
+        };
+      },
+    );
+
+    await generator.generateDraft({ spaceId: "space-1", userId: "user-2" }, "project-1", { providerId: "provider-1" });
+
+    expect(prompt).toContain("Project-wide artifact");
+    expect(prompt).not.toContain("Limited Room");
   });
 
   it("keeps the mainline the Room the Project was created with, and never promotes a later one", async (ctx) => {
