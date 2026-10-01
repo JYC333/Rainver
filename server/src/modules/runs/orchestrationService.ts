@@ -750,7 +750,14 @@ export class RunOrchestrationService {
           exit_code: 1,
           completed_at: startedAt,
         }, run, null, false);
+        // A failure cannot be published over a cancellation that arrived
+        // first; the execution owner publishes that cancellation instead.
+        const cancelled = rejected ? null : await this.publishPendingCancellation(run, startedAt);
+        if (cancelled) executionLockHeld = false;
         await releaseExecutionAuthority();
+        if (cancelled) {
+          return { run_id: run.id, status: "cancelled", error_code: "run_cancelled" };
+        }
         return {
           run_id: run.id,
           status: protocolRunStatus(rejected?.status ?? "failed"),
@@ -834,28 +841,7 @@ export class RunOrchestrationService {
           exit_code: 1,
           completed_at: startedAt,
         }, run, null, false);
-        if (!rejected) {
-          const current = await this.repository.getRun(run.space_id, run.id);
-          if (current?.status === "cancelling") {
-            rejected = await this.publishRunTerminalWithConversationRuntime({
-              run_id: run.id,
-              space_id: run.space_id,
-              status: "cancelled",
-              output_text: "",
-              output_json: canonicalRunOutput({
-                success: false,
-                outputText: "",
-                outputJson: { error_code: "run_cancelled" },
-              }),
-              error_json: {
-                error_code: "run_cancelled",
-                error_text: "Run cancellation won the terminal publication race.",
-              },
-              exit_code: 1,
-              completed_at: startedAt,
-            }, run, null, false);
-          }
-        }
+        if (!rejected) rejected = await this.publishPendingCancellation(run, startedAt);
         if (rejected) executionLockHeld = false;
         const finalization = await this.finalizeTerminalRunBestEffort(
           rejected ?? { ...run, status: "failed", ended_at: startedAt },
@@ -886,6 +872,14 @@ export class RunOrchestrationService {
         required_sandbox_level: run.required_sandbox_level,
       });
       if (!running) {
+        // Stopped after this worker took the lock: the public cancel could not
+        // publish under it, so the Run is `cancelling`, never ran, and only
+        // its execution owner can end it.
+        const cancelled = await this.publishPendingCancellation(run, startedAt);
+        if (cancelled) {
+          executionLockHeld = false;
+          return { run_id: run.id, status: "cancelled", error_code: "run_cancelled" };
+        }
         const current = await this.repository.getRun(run.space_id, run.id);
         return {
           run_id: run.id,
@@ -1036,6 +1030,31 @@ export class RunOrchestrationService {
         executionPort,
         effectiveBindings,
       );
+      // A stop that arrived while the Run was being prepared reached no
+      // process (the adapter registers one only when it dispatches) and could
+      // not publish under this lock. Dispatching now would run the whole turn
+      // and only then report it cancelled.
+      const cancelledBeforeDispatch = await this.publishPendingCancellation(effectiveRun, startedAt);
+      if (cancelledBeforeDispatch) {
+        executionLockHeld = false;
+        if (preparedRuntime.invocation_delivery && preparedRuntime.invocation_attempts) {
+          await preparedRuntime.invocation_attempts.acknowledge(
+            preparedRuntime.invocation_delivery,
+            adapterFailureEnvelope(effectiveRun, "run_cancelled", "The Run was cancelled before it was dispatched."),
+          );
+          await preparedRuntime.invocation_attempts.finalize(preparedRuntime.invocation_delivery, "run_cancelled");
+        }
+        if (step) await this.updateRunStepStatusBestEffort({
+          step_id: step.id,
+          run_id: effectiveRun.id,
+          space_id: effectiveRun.space_id,
+          status: "cancelled",
+          ended_at: new Date().toISOString(),
+          error_type: "run_cancelled",
+          error_message: "The Run was cancelled before it was dispatched.",
+        });
+        return { run_id: effectiveRun.id, status: "cancelled", error_code: "run_cancelled" };
+      }
       let adapterResult: RunAdapterResultEnvelope;
       try {
         adapterResult = await this.invokeAdapter(
@@ -3058,6 +3077,34 @@ export class RunOrchestrationService {
       }
     }
     return terminal;
+  }
+
+  /**
+   * Cancellation can linearize first by moving the Run to `cancelling` while
+   * this worker holds its execution lock; public cancellation never removes
+   * that lock, so the execution owner publishes the cancellation. Returns the
+   * cancelled Run, or null when the Run is not `cancelling`.
+   */
+  private async publishPendingCancellation(run: RunRecord, completedAt: string): Promise<RunRecord | null> {
+    const current = await this.repository.getRun(run.space_id, run.id);
+    if (current?.status !== "cancelling") return null;
+    return this.publishRunTerminalWithConversationRuntime({
+      run_id: run.id,
+      space_id: run.space_id,
+      status: "cancelled",
+      output_text: "",
+      output_json: canonicalRunOutput({
+        success: false,
+        outputText: "",
+        outputJson: { error_code: "run_cancelled" },
+      }),
+      error_json: {
+        error_code: "run_cancelled",
+        error_text: "Run cancellation won the terminal publication race.",
+      },
+      exit_code: 1,
+      completed_at: completedAt,
+    }, run, null, false);
   }
 
   private async publishRunTerminalWithConversationRuntime(

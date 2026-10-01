@@ -191,6 +191,8 @@ class FakeRepo implements RunExecutionRepositoryPort {
   dispatchAllowed = true;
   executionAllowed = true;
   dispatchHook: (() => Promise<void>) | null = null;
+  authorizationHook: (() => Promise<void>) | null = null;
+  runningHook: (() => Promise<void>) | null = null;
   failEvents = false;
   failSteps = false;
   executionLocked = false;
@@ -228,7 +230,9 @@ class FakeRepo implements RunExecutionRepositoryPort {
     this.calls.push(`running:${input.run_id}`);
     if (!this.run || this.run.status !== "queued") return null;
     this.run = { ...this.run, status: "running", started_at: input.started_at };
-    return this.run;
+    const running = this.run;
+    await this.runningHook?.();
+    return running;
   }
 
   async checkRunDispatchContract(): Promise<{ allowed: boolean; error_code?: string; error_message?: string }> {
@@ -244,6 +248,7 @@ class FakeRepo implements RunExecutionRepositoryPort {
     error_message?: string;
   }> {
     this.authorizationRuns.push(candidate);
+    await this.authorizationHook?.();
     return this.executionAllowed
       ? { allowed: true }
       : {
@@ -792,6 +797,9 @@ describe("RunOrchestrationService", () => {
       "actor:user-1",
       "step:adapter_started:running",
       "event:adapter_invoked:running",
+      // Re-read before dispatch: a stop that arrived while preparing is
+      // published instead of running the turn.
+      "get:space-1:run-1",
       "get:space-1:run-1",
       // Settling the turn reads the Run's own governed-tool evidence before it
       // decides between `succeeded` and `degraded`.
@@ -1657,6 +1665,78 @@ describe("RunOrchestrationService", () => {
     expect(repo.terminalUpdates.map((update) => update.status)).toEqual([
       "cancelled",
     ]);
+  });
+
+  it("publishes a cancellation that arrived while the Run was being prepared", async () => {
+    // Stop lands after the worker took the execution lock and before the Run
+    // went running: the public cancel cannot publish under that lock, and the
+    // Run is no longer queued, so only the execution owner can end it.
+    const repo = new FakeRepo();
+    let service: RunOrchestrationService;
+    repo.dispatchHook = async () => {
+      await service.cancelRun({ run_id: "run-1", space_id: "space-1", reason: "stopped while routing" });
+    };
+    service = orchestration(repo, { policyEnforcer: allowPolicy });
+
+    await expect(service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      command_source: "job",
+    })).resolves.toMatchObject({ status: "cancelled" });
+    expect(repo.run?.status).toBe("cancelled");
+    expect(repo.executionLocked).toBe(false);
+  });
+
+  it("does not dispatch a turn stopped while its runtime was being prepared", async () => {
+    // Stop lands after the Run went running and before the adapter registered
+    // anything to terminate: the cancel cannot reach a process and cannot
+    // publish under the lock, so dispatching anyway ran the whole turn.
+    const repo = new FakeRepo();
+    let dispatched = false;
+    let service: RunOrchestrationService;
+    repo.runningHook = async () => {
+      await service.cancelRun({ run_id: "run-1", space_id: "space-1", reason: "stopped while preparing" });
+    };
+    service = orchestration(repo, {
+      policyEnforcer: allowPolicy,
+      ...daemonCli({
+        async runCommand(input) {
+          dispatched = true;
+          await completeCodexProtocol(input.stdio_controller, "ACP run completed");
+          return { returncode: 0, stdout: "ACP run completed", stderr: "", timed_out: false };
+        },
+      }),
+    });
+
+    await expect(service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      command_source: "job",
+    })).resolves.toMatchObject({ status: "cancelled" });
+    expect(dispatched).toBe(false);
+    expect(repo.run?.status).toBe("cancelled");
+    expect(repo.executionLocked).toBe(false);
+  });
+
+  it("publishes a cancellation that raced a revoked execution authorization", async () => {
+    const repo = new FakeRepo();
+    repo.executionAllowed = false;
+    let service: RunOrchestrationService;
+    repo.authorizationHook = async () => {
+      await service.cancelRun({ run_id: "run-1", space_id: "space-1", reason: "stopped while authorizing" });
+    };
+    service = orchestration(repo, { policyEnforcer: allowPolicy });
+
+    await expect(service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      command_source: "job",
+    })).resolves.toMatchObject({ status: "cancelled" });
+    expect(repo.run?.status).toBe("cancelled");
+    expect(repo.executionLocked).toBe(false);
   });
 
   it("still resolves a CLI run's sandbox level from risk, and provisions nothing for it", async () => {

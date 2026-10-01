@@ -102,7 +102,11 @@ runtime state before publication. The repository then publishes the terminal
 Run/Attempt state, synchronizes conversation state, resolves staged proposals,
 and removes the execution lock in one database statement. A cancellation that
 reaches `cancelling` first forces the execution owner to publish `cancelled`;
-public cancellation cannot remove an active execution lock. Both local CLI
+public cancellation cannot remove an active execution lock. The owner checks
+for it wherever it would otherwise stop or proceed: when the Run will not go
+`running` (a stop during preparation, or a revoked authorization), and once
+more just before dispatch, so a stop that reached no process yet is published
+instead of running the turn. Both local CLI
 Runner callbacks and managed-provider AbortControllers are registered in the
 same process-wide active-execution registry, so cancellation waits for real
 execution exit/unwind before confirming terminal state. Crash recovery
