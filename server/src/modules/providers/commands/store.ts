@@ -18,7 +18,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "../../../db/pool.js";
 import { getDbPool, type Pool } from "../db.js";
+import { withTransaction } from "../../../db/tx.js";
 import type { ServerConfig } from "../../../config.js";
 import {
   decryptModelProviderApiKeySecretRefV1,
@@ -279,8 +281,12 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
   }
 
-  private async clearDefault(spaceId: string, exceptId?: string): Promise<void> {
-    await this.pool.query(
+  private async clearDefault(
+    spaceId: string,
+    exceptId?: string,
+    db: Pool | PoolClient = this.pool,
+  ): Promise<void> {
+    await db.query(
       `UPDATE model_provider_space_grants
           SET is_default = false,
               updated_at = $2
@@ -356,11 +362,13 @@ class PgProviderCommandStore implements ProviderCommandStore {
     providerName: string,
     existingCredentialId: string | null | undefined,
     apiKey: string,
+    db: Pool | PoolClient = this.pool,
+    masterKey?: Buffer,
   ): Promise<string> {
-    const secretRef = encryptModelProviderApiKeySecretRefV1(apiKey, await this.masterKey());
+    const secretRef = encryptModelProviderApiKeySecretRefV1(apiKey, masterKey ?? await this.masterKey());
     const now = new Date();
     if (existingCredentialId) {
-      const updated = await this.pool.query<{ id: string }>(
+      const updated = await db.query<{ id: string }>(
         `UPDATE credentials
             SET secret_ref = $3, owner_user_id = COALESCE(owner_user_id, $5), updated_at = $4
           WHERE id = $1 AND space_id = $2 AND credential_type = 'api_key'
@@ -369,7 +377,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       );
       if (updated.rows[0]) {
         // A re-keyed credential is healthy again until proven otherwise.
-        await this.pool.query(
+        await db.query(
           `UPDATE model_provider_credentials
               SET healthy = true, cooldown_until = NULL, last_failure_class = NULL, updated_at = $3
             WHERE space_id = $1 AND credential_id = $2`,
@@ -380,18 +388,18 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
 
     const credentialId = randomUUID();
-    await this.pool.query(
+    await db.query(
       `INSERT INTO credentials
         (id, space_id, owner_user_id, name, credential_type, secret_ref, scopes_json, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'api_key', $5, $6::jsonb, $7, $7)`,
       [credentialId, homeSpaceId, ownerUserId, `${providerName} API key`, secretRef, json([]), now],
     );
-    await this.pool.query(
+    await db.query(
       `UPDATE model_providers SET credential_id = $3, updated_at = $4
         WHERE id = $1 AND space_id = $2`,
       [providerId, homeSpaceId, credentialId, now],
     );
-    await this.pool.query(
+    await db.query(
       `INSERT INTO model_provider_credentials
         (id, space_id, provider_id, credential_id, position, enabled, healthy,
          request_count, failure_count, created_at, updated_at)
@@ -410,53 +418,59 @@ class PgProviderCommandStore implements ProviderCommandStore {
   ): Promise<unknown> {
     validateCreateFields(input);
     const isDefault = Boolean(input.is_default);
-    if (isDefault) await this.clearDefault(spaceId);
     const networkProfileId = await this.validateNetworkProfileId(
       spaceId,
       input.network_profile_id,
     );
+    const apiKey = input.api_key?.trim() ? input.api_key : null;
+    const masterKey = apiKey ? await this.masterKey() : undefined;
 
     const providerId = randomUUID();
     const now = new Date();
     const models = modelList(input.default_model, input.available_models ?? []);
     const name = input.name.trim();
     const baseUrl = normalizeBaseUrl(input.provider_type, input.base_url);
-    await this.pool.query(
-      `INSERT INTO model_providers
-        (id, space_id, owner_user_id, name, provider_type, base_url, default_model, enabled,
-         credential_id, network_profile_id, capabilities_json, config_json, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, $9::jsonb, $10::jsonb, $11, $11)`,
-      [
-        providerId,
-        spaceId,
-        userId,
-        name,
-        input.provider_type,
-        baseUrl,
-        input.default_model || (models[0] ?? null),
-        input.enabled ?? true,
-        json({ models }),
-        json({
-          ...(optionalTrimmedString(input.claude_compatible_base_url)
-            ? { claude_compatible_base_url: optionalTrimmedString(input.claude_compatible_base_url) }
-            : {}),
-          ...(optionalTrimmedString(input.openai_compatible_base_url)
-            ? { openai_compatible_base_url: optionalTrimmedString(input.openai_compatible_base_url) }
-            : {}),
-        }),
-        now,
-      ],
-    );
-    await this.pool.query(
-      `INSERT INTO model_provider_space_grants
-        (id, provider_id, space_id, owner_user_id, granted_by_user_id, enabled,
-         is_default, network_profile_id, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $4, true, $5, $6, $7, $7)`,
-      [randomUUID(), providerId, spaceId, userId, isDefault, networkProfileId, now],
-    );
-    if (input.api_key?.trim()) {
-      await this.attachApiKeyCredential(spaceId, userId, providerId, name, null, input.api_key);
-    }
+    // The new default replaces the old one only together with the provider,
+    // grant, and key writes, so a failed create leaves the Space default intact.
+    await withTransaction(this.pool, async (client) => {
+      if (isDefault) await this.clearDefault(spaceId, undefined, client);
+      await client.query(
+        `INSERT INTO model_providers
+          (id, space_id, owner_user_id, name, provider_type, base_url, default_model, enabled,
+           credential_id, network_profile_id, capabilities_json, config_json, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, $9::jsonb, $10::jsonb, $11, $11)`,
+        [
+          providerId,
+          spaceId,
+          userId,
+          name,
+          input.provider_type,
+          baseUrl,
+          input.default_model || (models[0] ?? null),
+          input.enabled ?? true,
+          json({ models }),
+          json({
+            ...(optionalTrimmedString(input.claude_compatible_base_url)
+              ? { claude_compatible_base_url: optionalTrimmedString(input.claude_compatible_base_url) }
+              : {}),
+            ...(optionalTrimmedString(input.openai_compatible_base_url)
+              ? { openai_compatible_base_url: optionalTrimmedString(input.openai_compatible_base_url) }
+              : {}),
+          }),
+          now,
+        ],
+      );
+      await client.query(
+        `INSERT INTO model_provider_space_grants
+          (id, provider_id, space_id, owner_user_id, granted_by_user_id, enabled,
+           is_default, network_profile_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $4, true, $5, $6, $7, $7)`,
+        [randomUUID(), providerId, spaceId, userId, isDefault, networkProfileId, now],
+      );
+      if (apiKey) {
+        await this.attachApiKeyCredential(spaceId, userId, providerId, name, null, apiKey, client, masterKey);
+      }
+    });
     const row = await this.providerById(spaceId, providerId);
     if (!row) throw new Error("created provider was not readable");
     return this.providerResponse(spaceId, userId, providerId, { ...row, manageable: true });

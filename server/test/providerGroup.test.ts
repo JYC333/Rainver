@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { beforeAll, describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ServerConfig } from "../src/config.js";
 import { providerSupportsTask, resolveProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import { effectiveProviderDefault, isProviderEligibleForUser, providerCredentialEligibilitySql } from "../src/modules/providers/eligibility.js";
@@ -145,6 +148,67 @@ describe("providerTaskAuditDb", () => {
         expect.objectContaining({ delivery_id: second.delivery_id, status: "failed", error_code: "provider_timeout", control_id: second.control_id, usage_source_id: second.usage_source_id }),
       ]));
     });
+  });
+});
+
+describe("providerCommandStoreDb", () => {
+  const SPACE = "72000000-0000-4000-8000-000000000011";
+  const USER = "72000000-0000-4000-8000-000000000012";
+  const db = useTestDatabase(`${import.meta.filename}#providerCommandStoreDb`);
+  let rainverHome = "";
+
+  beforeAll(async () => {
+    if (!db.available) return;
+    rainverHome = await mkdtemp(join(tmpdir(), "provider-command-store-"));
+    await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Provider commands','personal',now(),now())`, [SPACE]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Owner','active',now(),now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER]);
+    await db.pool.query(
+      `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+       VALUES ($1,$2,$3,'owner','active',now(),now())`,
+      [randomUUID(), SPACE, USER],
+    );
+  });
+
+  afterAll(async () => {
+    if (rainverHome) await rm(rainverHome, { recursive: true, force: true });
+  });
+
+  function store() {
+    return resolveProviderCommandStore({ databaseUrl: db.connectionUri, rainverHome } as ServerConfig);
+  }
+
+  async function createdProviderId(input: Record<string, unknown>): Promise<string> {
+    const created = await store().createProvider(SPACE, USER, {
+      provider_type: "openai",
+      api_key: "sk-test",
+      default_model: "gpt-test",
+      ...input,
+    } as never) as { id: string };
+    return created.id;
+  }
+
+  async function defaultProviderIds(): Promise<string[]> {
+    const rows = await db.pool.query<{ provider_id: string }>(
+      `SELECT provider_id FROM model_provider_space_grants WHERE space_id = $1 AND is_default = true`,
+      [SPACE],
+    );
+    return rows.rows.map((row) => row.provider_id);
+  }
+
+  it("keeps the Space default provider when creating a new default fails", async () => {
+    if (!db.available) return;
+    const current = await createdProviderId({ name: "Current default", is_default: true });
+    expect(await defaultProviderIds()).toEqual([current]);
+
+    await expect(createdProviderId({
+      name: "Broken default",
+      is_default: true,
+      network_profile_id: randomUUID(),
+    })).rejects.toThrow(/NetworkProfile/);
+
+    expect(await defaultProviderIds()).toEqual([current]);
+    const broken = await db.pool.query(`SELECT 1 FROM model_providers WHERE space_id = $1 AND name = 'Broken default'`, [SPACE]);
+    expect(broken.rowCount).toBe(0);
   });
 });
 
