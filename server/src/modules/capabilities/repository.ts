@@ -673,8 +673,8 @@ export async function approveSkillImportInTransaction(input: {
   const rows = await input.db.query<SkillPackageRow>(
     `UPDATE skill_packages
         SET status = 'reviewed',
-            manifest_json = manifest_json || $5::jsonb,
-            updated_at = $4
+            manifest_json = manifest_json || $4::jsonb,
+            updated_at = $3
       WHERE id = $1
         AND space_id = $2
         AND status = 'imported'
@@ -682,7 +682,6 @@ export async function approveSkillImportInTransaction(input: {
     [
       input.skillPackageId,
       input.spaceId,
-      input.userId,
       now,
       JSON.stringify({
         review: {
