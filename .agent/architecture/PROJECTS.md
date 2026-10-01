@@ -970,7 +970,9 @@ project's working corpus:
   SourceItem row whose Source links are gone, but never one a person added
   (`added_by_user_id` set);
 - an upsert that meets an existing row changes only the fields the request
-  names (status still defaults to `active`);
+  names (status still defaults to `active`); and when syncing merges a
+  SourceItem row into the Project's row for its Reference, upsert and update
+  answer with that Reference row;
 - `triage_status` is the project-level judgement (`new`, `relevant`, `maybe`,
   `excluded`, `included`);
 - `triage_confirmed_by_user` is set whenever a human explicitly sets

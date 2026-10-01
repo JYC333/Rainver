@@ -670,6 +670,40 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
     ).toBe(1);
   });
 
+  it("answers a triage update with the Reference row it merged into", async () => {
+    if (!db.available) return;
+    const { sourceItemId, corpusItemId } = await seedSourceItemOnlyCorpusItem();
+    const now = new Date().toISOString();
+    const objectId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Paper B',$3,$3)`,
+      [objectId, SPACE, now],
+    );
+    await db.pool.query(
+      `INSERT INTO sources (object_id, space_id, source_type, uri, metadata_json)
+       VALUES ($1,$2,'paper','https://example.test/paper-b','{}'::jsonb)`,
+      [objectId, SPACE],
+    );
+    await db.pool.query(
+      `INSERT INTO source_item_references (source_item_id, space_id, reference_object_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$4)`,
+      [sourceItemId, SPACE, objectId, now],
+    );
+    const canonicalId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO project_corpus_items (
+         id, space_id, project_id, object_id, role, status, triage_status, read_status,
+         metadata_json, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'candidate','active','new','unread','{}'::jsonb,$5,$5)`,
+      [canonicalId, SPACE, PROJECT, objectId, now],
+    );
+
+    const updated = await repo().update(identity, PROJECT, corpusItemId, { triage_status: "included" });
+
+    expect(updated).toMatchObject({ id: canonicalId, triage_status: "included", triage_confirmed_by_user: true });
+  });
+
   it("keeps a manually added SourceItem through a backfill that finds no Project link for it", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();

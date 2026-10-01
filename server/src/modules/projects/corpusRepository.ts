@@ -429,10 +429,10 @@ export class ProjectCorpusRepository {
         body.read_status !== undefined,
       ],
     );
-    const corpusItemId = result.rows[0]!.id;
+    const insertedOrUpdatedId = result.rows[0]!.id;
     if (target.provenanceSourceItemId) {
       await insertCorpusItemSourceProvenance(this.db, {
-        corpusItemId,
+        corpusItemId: insertedOrUpdatedId,
         spaceId: identity.spaceId,
         projectId,
         sourceItemId: target.provenanceSourceItemId,
@@ -440,9 +440,10 @@ export class ProjectCorpusRepository {
       });
     }
     if (target.sourceItemId) {
-      await materializePassingProjectCorpusItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: target.sourceItemId, corpusItemId });
+      await materializePassingProjectCorpusItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: target.sourceItemId, corpusItemId: insertedOrUpdatedId });
       await upsertProjectCorpusObjectsFromSourceItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: target.sourceItemId });
     }
+    const corpusItemId = await mergedCorpusItemId(this.db, identity.spaceId, projectId, insertedOrUpdatedId, target.sourceItemId);
     const item = await this.getById(identity, projectId, corpusItemId);
     if (!item) throw new HttpError(500, "Failed to upsert project corpus item");
     return projectCorpusItemOut(item);
@@ -525,7 +526,11 @@ export class ProjectCorpusRepository {
       await materializePassingProjectCorpusItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: current.source_item_id, corpusItemId });
       await upsertProjectCorpusObjectsFromSourceItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: current.source_item_id });
     }
-    const updated = await this.getById(identity, projectId, corpusItemId);
+    const updated = await this.getById(
+      identity,
+      projectId,
+      await mergedCorpusItemId(this.db, identity.spaceId, projectId, corpusItemId, current.source_item_id),
+    );
     if (!updated) throw new HttpError(404, "Project corpus item not found");
     return projectCorpusItemOut(updated);
   }
@@ -1429,6 +1434,37 @@ async function syncProjectCorpusSourceDecisions(
     [input.spaceId, input.sourceItemId ?? null, input.projectId ?? null, now],
   );
   return result.rowCount ?? 0;
+}
+
+/**
+ * Syncing a SourceItem row can merge it into the Project's row for the
+ * Reference the SourceItem resolves to, deleting the row itself; the caller
+ * then answers with that Reference row.
+ */
+async function mergedCorpusItemId(
+  db: Queryable,
+  spaceId: string,
+  projectId: string,
+  corpusItemId: string,
+  sourceItemId: string | null | undefined,
+): Promise<string> {
+  if (!sourceItemId) return corpusItemId;
+  const result = await db.query<{ id: string }>(
+    `SELECT COALESCE(
+       (SELECT id FROM project_corpus_items WHERE space_id = $1 AND project_id = $2 AND id = $3),
+       (SELECT canonical.id
+          FROM source_item_references sir
+          JOIN project_corpus_items canonical
+            ON canonical.space_id = sir.space_id
+           AND canonical.project_id = $5
+           AND canonical.object_id = sir.reference_object_id
+         WHERE sir.space_id = $4 AND sir.source_item_id = $6
+         LIMIT 1),
+       $7
+     ) AS id`,
+    [spaceId, projectId, corpusItemId, spaceId, projectId, sourceItemId, corpusItemId],
+  );
+  return result.rows[0]?.id ?? corpusItemId;
 }
 
 async function archiveCorpusSourceItemsWithoutActiveLinks(
