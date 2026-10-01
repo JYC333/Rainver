@@ -6,6 +6,7 @@ import { PgActivityConsolidationRepository } from "../src/modules/activity/conso
 import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
 import { ContentAccessAuditService } from "../src/modules/contentAccess/audit.js";
 import { ContentDemotionService } from "../src/modules/contentAccess/demotion.js";
+import { insertMemoryEntry } from "./support/memoryFixtures.js";
 import { ContentAccessService } from "../src/modules/contentAccess/service.js";
 import { PgProposalRepository } from "../src/modules/proposals/repository.js";
 import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
@@ -82,7 +83,12 @@ describe("contentAccessDefencesDb", () => {
   }
 
   /** A private Run whose context snapshot consumed SOURCE. */
-  async function seedConsumingRun(runId: string, ownerUserId: string, instruction: string | null) {
+  async function seedConsumingRun(
+    runId: string,
+    ownerUserId: string,
+    instruction: string | null,
+    sourceRef: { type: string; id: string } = { type: "artifact", id: SOURCE },
+  ) {
     await db.pool.query(
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json, instruction)
        VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', now(), now(), $5, 'private', 'full', 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), $6)`,
@@ -105,7 +111,7 @@ describe("contentAccessDefencesDb", () => {
       `INSERT INTO invocation_snapshots
          (id,space_id,invocation_id,delivery_id,attempt,safe_snapshot_json,status,created_at,updated_at)
        VALUES ($1,$2,$3,$4,1,$5::jsonb,'accepted',now(),now())`,
-      [randomUUID(), SPACE, runId, delivery, JSON.stringify({ source_refs: [{ type: "artifact", id: SOURCE }] })],
+      [randomUUID(), SPACE, runId, delivery, JSON.stringify({ source_refs: [sourceRef] })],
     );
   }
 
@@ -283,6 +289,28 @@ describe("contentAccessDefencesDb", () => {
       ]);
       expect(JSON.stringify(disclosure.exposure)).not.toContain("Viewer's private instruction");
       expect(JSON.stringify(disclosure.exposure)).not.toContain("Viewer private title");
+    });
+
+    it("discloses the Runs whose context retrieved a memory", async () => {
+      if (!db.available) return;
+      const memoryId = randomUUID();
+      const runId = randomUUID();
+      await insertMemoryEntry(db.pool, SPACE, {
+        id: memoryId, owner_user_id: OWNER, subject_user_id: OWNER,
+      }, { visibility: "space_shared" });
+      await seedAgent();
+      await seedConsumingRun(runId, OWNER, null, { type: "memory_entry", id: memoryId });
+
+      const disclosure = await new ContentDemotionService(db.pool).disclose(
+        { spaceId: SPACE, userId: OWNER },
+        "memory",
+        memoryId,
+        "private",
+      );
+
+      expect(disclosure.exposure.consuming_runs).toEqual([
+        expect.objectContaining({ run_id: runId, link: `/runs/${runId}` }),
+      ]);
     });
   });
 });

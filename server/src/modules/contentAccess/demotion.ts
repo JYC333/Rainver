@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { RETRIEVAL_OBJECT_TYPE_VALUES } from "@rainver/protocol";
 import { isContentVisibility, type ContentVisibility } from "../access/contentAccessTypes.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { artifactReadSql, proposalReadSql, runReadSql } from "../access/contentAccessSql.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { contentResourceTypeForRetrievalObject } from "./audit.js";
 
 const DISCLOSURE_TTL_MS = 15 * 60 * 1000;
 
@@ -236,7 +238,12 @@ export class ContentDemotionService {
     resourceType: string,
     resourceId: string,
   ): Promise<string[]> {
-    if (resourceType !== "space_object") return [resourceType];
+    // Runtime Context records a retrieved item under its retrieval object
+    // type (a memory as `memory_entry`), so look for those names too.
+    const retrievalTypes = RETRIEVAL_OBJECT_TYPE_VALUES.filter(
+      (objectType) => contentResourceTypeForRetrievalObject(objectType) === resourceType,
+    );
+    if (resourceType !== "space_object") return [...new Set([resourceType, ...retrievalTypes])];
     const result = await db.query<{ object_type: string }>(
       `SELECT object_type FROM space_objects WHERE space_id = $1 AND id = $2 LIMIT 1`,
       [spaceId, resourceId],
