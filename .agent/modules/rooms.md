@@ -1279,10 +1279,14 @@ is slow to answer is decided on the cached reading.
 - `GET /api/v1/rooms/:roomId/agent-candidates` — visible existing Agents and
   separately typed preset factories
 - `POST /api/v1/rooms/:roomId/agents` — add/reactivate a specialist with
-  explicit private Room-share confirmation and optional `restore_workspace`
+  explicit private Room-share confirmation and optional `restore_workspace`;
+  the Agent is added either way, and the response's
+  `managed_workspace_restore` carries the Host's outcome, which the roster
+  panel reports when nothing was restored
 - `POST /api/v1/rooms/:roomId/agent-presets` — instantiate and add a preset
 - `DELETE /api/v1/rooms/:roomId/agents/:agentId` — remove a specialist and
-  revoke future Room grants
+  revoke future Room grants; `managed_workspace_archive` lists one Host
+  outcome per archived thread
 - `POST /api/v1/rooms/:roomId/agents/:agentId/reset-context` — reset a
   host-bound specialist's vendor session (Host owner and Project writer)
 - `GET/POST /api/v1/rooms/:roomId/invitations` — list or create human

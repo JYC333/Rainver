@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { toast } from 'sonner'
 import AgentGroupsPage from '../AgentGroupsPage'
 import {
   ApiRequestError,
@@ -448,6 +449,32 @@ describe('Rooms page', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(roomsApi.removeAgent).toHaveBeenCalledWith('room-1', 'agent-2'))
     expect(browserConfirm).not.toHaveBeenCalled()
+  })
+
+  it('says so when a re-added specialist\'s host state was not restored', async () => {
+    const toastError = vi.spyOn(toast, 'error')
+    vi.mocked(roomsApi.agentCandidates).mockResolvedValue({
+      agents: [{
+        agent_id: 'agent-2', name: 'Critical Reviewer', agent_kind: 'standard', visibility: 'space_shared',
+        in_room: false, member_status: 'removed', private: false, shared_with_user_ids: [], host_state_archive_available: true,
+      }],
+      presets: [], total: 1, limit: 100, offset: 0,
+    })
+    vi.mocked(roomsApi.addAgent).mockResolvedValue({
+      ...detailWithReviewer,
+      revoked_grant_count: 0,
+      managed_workspace_restore: { agent_id: 'agent-2', ok: false, changed: false, error: 'host_offline' },
+    })
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Critical Reviewer/ }))
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Re-add Critical Reviewer to this Room?')
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Room' }))
+
+    await waitFor(() => expect(roomsApi.addAgent).toHaveBeenCalledWith('room-1', expect.objectContaining({ restore_workspace: true })))
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringContaining('previous host state was not restored')))
+    toastError.mockRestore()
   })
 
   it('shows host-bound specialist facts and lets the host owner reset context', async () => {

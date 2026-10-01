@@ -417,8 +417,26 @@ export const RoomDetailSchema = z.object({
 }).strict();
 export type RoomDetail = z.infer<typeof RoomDetailSchema>;
 
+/** What the execution Host reported for a managed-workspace restore or archive. */
+export const RoomManagedWorkspaceOutcomeSchema = z.object({
+  agent_id: IdSchema,
+  ok: z.boolean(),
+  changed: z.boolean(),
+  /** `host_offline`, `host_timeout`, or the Host's own reason; null on success. */
+  error: z.string().nullable(),
+}).strict();
+export type RoomManagedWorkspaceOutcome = z.infer<typeof RoomManagedWorkspaceOutcomeSchema>;
+
 export const RoomAgentMutationResponseSchema = RoomDetailSchema.extend({
   revoked_grant_count: z.number().int().nonnegative().default(0),
+  /**
+   * Present when re-adding an Agent asked to restore its host state. The Agent
+   * is added either way; `ok: false` or `changed: false` means nothing came
+   * back, which the person has to be told.
+   */
+  managed_workspace_restore: RoomManagedWorkspaceOutcomeSchema.optional(),
+  /** One entry per host thread archived when an Agent left the Room. */
+  managed_workspace_archive: z.array(RoomManagedWorkspaceOutcomeSchema).optional(),
 }).strict();
 export type RoomAgentMutationResponse = z.infer<typeof RoomAgentMutationResponseSchema>;
 

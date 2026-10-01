@@ -159,7 +159,7 @@ export class RoomRosterService {
         include_workspace: restoreTarget.includeWorkspace,
       },
     );
-    return { ...result, managed_workspace_restore: restored };
+    return { ...result, managed_workspace_restore: { agent_id: restoreTarget.agentId, ...restored } };
   }
 
   async addPresetAgent(identity: RoomIdentity, roomId: string, input: {
@@ -338,14 +338,14 @@ export class RoomRosterService {
           include_workspace: archiveTarget.includeWorkspace,
         },
       );
-      archived.push(response);
+      archived.push({ agent_id: archiveTarget.agentId, ...response });
       if (response.ok) {
         await new PgHostThreadRepository(this.pool)
           .acknowledgeManagedWorkspaceArchive(archiveTarget.threadId)
           .catch(() => undefined);
       }
     }
-    return { ...result, managed_workspace_archive: archived.length === 1 ? archived[0] : archived };
+    return { ...result, managed_workspace_archive: archived };
   }
 
   async resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string) {

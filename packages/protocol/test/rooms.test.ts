@@ -4,6 +4,7 @@ import {
   ContinueRoomAfterProposalRequestSchema,
   CreateRoomRequestSchema,
   RoomAgentAddRequestSchema,
+  RoomAgentMutationResponseSchema,
   RoomAgentPresetRequestSchema,
   RoomDetailSchema,
   RoomInvitationSchema,
@@ -14,52 +15,70 @@ import {
 
 const now = "2026-07-26T10:00:00.000Z";
 
+const roomDetail = {
+  room: {
+    id: "room-1",
+    space_id: "space-1",
+    project_id: "project-1",
+    created_by_user_id: "user-1",
+    title: "Delivery Room",
+    status: "active",
+    created_at: now,
+    updated_at: now,
+    archived_at: null,
+  },
+  user_members: [{
+    id: "room-user-1",
+    space_id: "space-1",
+    room_id: "room-1",
+    user_id: "user-1",
+    role: "owner",
+    status: "active",
+    created_at: now,
+    updated_at: now,
+  }],
+  agent_members: [{
+    id: "room-agent-1",
+    space_id: "space-1",
+    room_id: "room-1",
+    agent_id: "agent-1",
+    agent_name: "Space Assistant",
+    agent_kind: "system_assistant",
+    role: "manager",
+    status: "active",
+    trigger_policy: "owner_only",
+    created_at: now,
+    updated_at: now,
+  }],
+  viewer_can_write: true,
+  other_member_names: [],
+  agent_count: 1,
+};
+
 describe("Room contracts", () => {
+  it("carries the Host's restore and archive outcomes on a roster change", () => {
+    // The Agent is added either way; a restore that failed has to reach the
+    // client, which the strict contract would otherwise have no field for.
+    const added = RoomAgentMutationResponseSchema.parse({
+      ...roomDetail,
+      managed_workspace_restore: { agent_id: "agent-2", ok: false, changed: false, error: "host_offline" },
+    });
+    expect(added.managed_workspace_restore).toEqual({ agent_id: "agent-2", ok: false, changed: false, error: "host_offline" });
+    const removed = RoomAgentMutationResponseSchema.parse({
+      ...roomDetail,
+      revoked_grant_count: 1,
+      managed_workspace_archive: [{ agent_id: "agent-2", ok: true, changed: true, error: null }],
+    });
+    expect(removed.managed_workspace_archive).toHaveLength(1);
+  });
+
   it("parses project-bound rooms and per-recipient backend selections", () => {
     expect(CreateRoomRequestSchema.parse({
       project_id: "project-1",
       title: "Delivery Room",
     })).toEqual({ project_id: "project-1", title: "Delivery Room" });
 
-    expect(RoomDetailSchema.parse({
-      room: {
-        id: "room-1",
-        space_id: "space-1",
-        project_id: "project-1",
-        created_by_user_id: "user-1",
-        title: "Delivery Room",
-        status: "active",
-        created_at: now,
-        updated_at: now,
-        archived_at: null,
-      },
-      user_members: [{
-        id: "room-user-1",
-        space_id: "space-1",
-        room_id: "room-1",
-        user_id: "user-1",
-        role: "owner",
-        status: "active",
-        created_at: now,
-        updated_at: now,
-      }],
-      agent_members: [{
-        id: "room-agent-1",
-        space_id: "space-1",
-        room_id: "room-1",
-        agent_id: "agent-1",
-        agent_name: "Space Assistant",
-        agent_kind: "system_assistant",
-        role: "manager",
-        status: "active",
-        trigger_policy: "owner_only",
-        created_at: now,
-        updated_at: now,
-      }],
-      viewer_can_write: true,
-      other_member_names: [],
-      agent_count: 1,
-    }).room.project_id).toBe("project-1");
+    expect(RoomDetailSchema.parse(roomDetail).room.project_id).toBe("project-1");
 
     const messageRequest = SendRoomMessageRequestSchema.parse({
       content: "@Manager review this",
