@@ -132,5 +132,5 @@ const SETTING_FIELDS: Array<{ key: keyof InterestProfileSettings; label: string;
   { key: 'warm_min_covered_domains', label: 'Warm domain threshold', min: 1, max: 60 },
   { key: 'interesting_cooldown_days', label: 'Interesting cooldown (days)', min: 1, max: 365 },
   { key: 'neutral_cooldown_days', label: 'Neutral cooldown (days)', min: 1, max: 365 },
-  { key: 'probe_domain_budget', label: 'Weekly probe budget', min: 1, max: 10 },
+  { key: 'probe_domain_budget', label: 'Weekly probe budget', min: 1, max: 3 },
 ]

@@ -501,7 +501,8 @@ unchanged on repeated fires so standby items cannot be double-consumed.
 
 The weekly external probe never shares the delivery transaction. Its
 `information_digest_probe_runs` row is unique per `(space,user,period)` and
-constrains `request_count` to 0–3. Probe results and existing Source
+constrains `request_count` to 0–3, the same cap as the reader's
+`probe_domain_budget` setting. Probe results and existing Source
 recommendations land in the private standby pool before a later daily
 transaction selects them. Network work therefore cannot hold digest locks or
 turn daily delivery into an external-call transaction.
