@@ -11,6 +11,7 @@ export {
   estimateModelTokens,
   resolveModelWindow,
   trimTextToModelTokens,
+  trimTextToModelTokensFromEnd,
   type ModelWindowOverride,
   type ModelWindowSpec,
 } from "./modelCatalog.js";

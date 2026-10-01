@@ -1,7 +1,7 @@
 import type { MessageOut } from "@rainver/protocol";
 import { describe, expect, it } from "vitest";
 import { assembleRoomConversationContext, estimateRoomSummaryTokens, ROOM_CONTEXT_FLOOR_BUDGETS, ROOM_RECENT_TOKEN_BUDGET, ROOM_SUMMARY_SOURCE_TOKEN_BUDGET, roomContextBudgets, selectRoomCompactionBatch } from "../src/modules/rooms/conversationContext.js";
-import { estimateModelTokens, fitTextToTokenBudget, trimTextToModelTokens } from "../src/modules/usage/modelCatalog.js";
+import { estimateModelTokens, fitTextToTokenBudget, trimTextToModelTokens, trimTextToModelTokensFromEnd } from "../src/modules/usage/modelCatalog.js";
 import { parseSummary } from "../src/modules/rooms/conversationSummaryService.js";
 import { cleanGeneratedTitle, titleFromMessage } from "../src/modules/rooms/conversationTitleService.js";
 
@@ -134,6 +134,10 @@ describe("roomConversationContext", () => {
           expect(estimateModelTokens(cut)).toBeLessThanOrEqual(budget);
           expect(trimTextToModelTokens(text, estimateModelTokens(cut))).toBe(cut);
           expect(text.startsWith(cut)).toBe(true);
+          const tail = trimTextToModelTokensFromEnd(text, budget);
+          expect(estimateModelTokens(tail)).toBeLessThanOrEqual(budget);
+          expect(trimTextToModelTokensFromEnd(text, estimateModelTokens(tail))).toBe(tail);
+          expect(text.endsWith(tail)).toBe(true);
         }
       }
     });

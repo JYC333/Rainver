@@ -35,7 +35,7 @@ import {
   type InvocationDeliveryAuthorizer,
 } from "./invocationSnapshotService.js";
 import type { RuntimeContextPlanningService } from "./planningService.js";
-import { estimateModelTokens, trimTextToModelTokens } from "../usage/modelCatalog.js";
+import { estimateModelTokens } from "../usage/modelCatalog.js";
 import { loadConversationContinuityThroughMessage } from "./conversationContinuity.js";
 import { contextItemText } from "./itemNormalizer.js";
 import {
@@ -51,7 +51,7 @@ import {
   RuntimeContextCliContinuityService,
   authorizeCliDeltaItem,
 } from "./continuity/cliContinuity.js";
-import { ContextWindowPlanner } from "./windowPlanner.js";
+import { ContextWindowPlanner, trimContextText } from "./windowPlanner.js";
 import { PgRuntimeContextAcquisitionRepository } from "./acquisitionRepository.js";
 import { PgRuntimeSkillProvider, renderRuntimeSkillCandidate } from "../capabilities/runtimeSkillProvider.js";
 import { enforce } from "../policy/service.js";
@@ -902,7 +902,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     const decision = input.envelope.window_plan.decisions.find((entry) => entry.item_id === item.id);
     const canonicalTokens = rendered ? estimateModelTokens(rendered.text) : 0;
     const expectedText = rendered && decision?.decision === "trimmed"
-      ? trimTextToModelTokens(rendered.text, decision.planned_tokens)
+      ? trimContextText(rendered.text, item.acquisition, decision.planned_tokens)
       : rendered?.text;
     const trimIsCanonical = decision?.decision !== "trimmed"
       || (item.payload.trimmed_from_tokens === canonicalTokens

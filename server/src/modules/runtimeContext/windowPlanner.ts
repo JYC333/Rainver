@@ -8,6 +8,7 @@ import {
   estimateModelTokens,
   resolveModelWindow,
   trimTextToModelTokens,
+  trimTextToModelTokensFromEnd,
   type ModelWindowOverride,
 } from "../usage/modelCatalog.js";
 import { contextItemText } from "./itemNormalizer.js";
@@ -89,7 +90,7 @@ export class ContextWindowPlanner {
       let reason = item.selection === "ranked" ? "ranked_item_fits" : `${item.selection}_item_reserved`;
       if (item.selection === "ranked" && plannedTokens > remaining) {
         if (remaining > 0) {
-          const text = trimTextToModelTokens(contextItemText(item), remaining);
+          const text = trimContextText(contextItemText(item), item.acquisition, remaining);
           plannedTokens = estimateModelTokens(text);
           if (plannedTokens === 0) {
             decision = "blocked";
@@ -188,12 +189,24 @@ function assertItems(items: ContextItem[], currentMessageItemId: string): void {
   }
 }
 
+/**
+ * Conversation continuity runs oldest to newest, so a cut keeps its end — the
+ * turns just before the current message; anything else keeps its beginning.
+ */
+export function trimContextText(text: string, acquisition: ContextItem["acquisition"], maximumTokens: number): string {
+  return acquisition === "continuity"
+    ? trimTextToModelTokensFromEnd(text, maximumTokens)
+    : trimTextToModelTokens(text, maximumTokens);
+}
+
 function compareItems(left: ContextItem, right: ContextItem): number {
   const selection = { required: 0, pinned: 1, ranked: 2 } as const;
   const semantic = { delegated_instruction: 0, user_input: 1, reference_data: 2 } as const;
   return selection[left.selection] - selection[right.selection]
     || semantic[left.semantic_role] - semantic[right.semantic_role]
     || (left.rank ?? Number.MAX_SAFE_INTEGER) - (right.rank ?? Number.MAX_SAFE_INTEGER)
+    // At equal rank the conversation itself comes before a retrieved hit.
+    || Number(right.acquisition === "continuity") - Number(left.acquisition === "continuity")
     || left.id.localeCompare(right.id);
 }
 

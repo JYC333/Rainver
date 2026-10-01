@@ -42,7 +42,10 @@ before planning and recorded on the Delivery. ACP config options do not report
 model context limits, so every runtime-native ACP session uses a null window
 (`acp-runtime-managed.v1`) instead of a guessed 16K limit or per-model Rainver
 exceptions. Required and pinned content remains intact; optional ranked content
-has a separate 16,384-byte-estimate budget. The CLI enforces its actual model
+has a separate 16,384-byte-estimate budget. A ranked item that does not fit is
+cut to the remaining budget: conversation continuity keeps its end (the turns
+just before the current message), anything else its beginning, and at equal
+rank continuity is placed before a retrieved hit. The CLI enforces its actual model
 limit and any rejection is surfaced as a runtime error. A Profile bound to a
 Rainver ModelProvider still uses the shared model catalog and its numeric window
 plan, including the conservative unknown-model fallback.
