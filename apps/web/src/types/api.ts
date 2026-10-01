@@ -1,5 +1,7 @@
 // API response shapes shared with the server HTTP contracts.
 import type {
+  LINK_STATUS_VALUES,
+  LinkType,
   AgentRunGroup,
   AgentRunGroupMember,
   AgentRunGroupTimeline,
@@ -1907,10 +1909,9 @@ export interface NoteRevision {
 export type EntityType =
   | 'note' | 'knowledge_item' | 'source' | 'project'
   | 'project_folder' | 'activity' | 'run' | 'proposal'
-export type EntityLinkType =
-  | 'references' | 'related_to' | 'belongs_to'
-  | 'captured_from' | 'source_for' | 'derived_from'
-export type EntityLinkStatus = 'suggested' | 'accepted' | 'rejected'
+// The protocol's link vocabulary: the server rejects any other name.
+export type EntityLinkType = LinkType
+export type EntityLinkStatus = (typeof LINK_STATUS_VALUES)[number]
 
 export interface EntityLink {
   id: string

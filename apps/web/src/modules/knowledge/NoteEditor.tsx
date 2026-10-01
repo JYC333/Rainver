@@ -34,9 +34,9 @@ import {
 } from '../../components/editor'
 
 /**
- * Checked against the widened target list (NB): all five still read sensibly
+ * Checked against the widened target list (NB): all four still read sensibly
  * for every offered kind — a note references a Source, is derived from a
- * Claim, belongs to a Question. None needed constraining, because a
+ * Claim, is a source for a Question. None needed constraining, because a
  * `note_link` is navigational and carries no graph authority (N4); the
  * backend validates the link type's name but deliberately not its endpoints,
  * so a combination that reads oddly is a wording choice, not a broken edge.
@@ -46,7 +46,6 @@ const LINK_TYPE_OPTIONS: { value: EntityLinkType; label: string }[] = [
   { value: 'references', label: 'references' },
   { value: 'derived_from', label: 'derived from' },
   { value: 'source_for', label: 'source for' },
-  { value: 'belongs_to', label: 'belongs to' },
 ]
 
 const TARGET_KIND_LABELS: Record<NoteLinkTargetType, string> = {

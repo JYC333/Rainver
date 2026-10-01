@@ -213,7 +213,7 @@ function makeLink(overrides: Partial<EntityLink> = {}): EntityLink {
     target_id: 'note-beta',
     link_type: 'related_to',
     confidence: null,
-    status: 'accepted',
+    status: 'active',
     created_by_user_id: null,
     created_at: '',
     ...overrides,
