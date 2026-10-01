@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { COMPARISON_BATCH_SIZE } from "../src/modules/projectResearch/monitorComparisonService.js";
 import {
   ProjectResearchStandingComparisonService,
   STANDING_COMPARISON_DAILY_RUN_LIMIT,
@@ -339,6 +341,39 @@ describe("project research standing comparison (real Postgres)", () => {
     expect(await dispatchJobs()).toBe(2);
     await expect(service.retryBatch(identity, PROJECT, batchId, later)).resolves.toMatchObject({ status: "pending" });
     expect(await dispatchJobs()).toBe(3);
+  });
+
+  it("passes the items past the first comparison slice on when that slice had nothing eligible", async () => {
+    if (!db.available) return;
+    await seedBaseline();
+    const now = new Date().toISOString();
+    const provider = randomUUID();
+    await db.pool.query(
+      `INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at)
+       VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`,
+      [provider, SPACE, USER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO model_provider_space_grants (id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$4,true,true,$5,$5)`,
+      [randomUUID(), provider, SPACE, USER, now],
+    );
+    const service = new ProjectResearchStandingComparisonService(db.pool, loadConfig({
+      SERVER_DATABASE_URL: db.connectionUri,
+      SERVER_INTERNAL_TOKEN: "test-internal-token",
+    }));
+    // The first slice is items that never reached the corpus; the eligible one comes after it.
+    const unscreened = Array.from({ length: COMPARISON_BATCH_SIZE }, () => randomUUID());
+    const eligible = await seedSourceInCorpus();
+    let batchId = "";
+    for (const id of [...unscreened, eligible]) batchId = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: id });
+
+    await expect(service.dispatchBatch(SPACE, batchId)).resolves.toMatchObject({ status: "completed", compared: 0 });
+    const followup = await db.pool.query<{ source_item_ids_json: string[] }>(
+      `SELECT source_item_ids_json FROM project_research_standing_batches WHERE project_id=$1 AND status='pending'`,
+      [PROJECT],
+    );
+    expect(followup.rows).toEqual([{ source_item_ids_json: [eligible] }]);
   });
 
   it("enforces the daily Project budget before attempting another execution", async () => {

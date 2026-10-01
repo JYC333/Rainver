@@ -170,8 +170,11 @@ export class ProjectResearchStandingComparisonService {
         await markBatch(db, row, "blocked_baseline", now, { missingBaselineRole: queued.role });
         return { batch_id: row.id, status: "blocked_baseline", missing_baseline_role: queued.role };
       }
+      const remaining = allIds.filter((id) => !selectedIds.includes(id));
       if (queued.outcome === "no_eligible_material") {
         await markBatch(db, row, "completed", now);
+        // Only this slice had nothing to compare; the rest still gets its turn.
+        if (remaining.length > 0) await this.createFollowupBatch(db, spaceId, row.project_id, remaining, now);
         return { batch_id: row.id, status: "completed", compared: 0 };
       }
       await db.query(
@@ -180,7 +183,6 @@ export class ProjectResearchStandingComparisonService {
           WHERE id=$1 AND space_id=$2`,
         [row.id, spaceId, JSON.stringify(queued.sourceItemIds), queued.runId, now.toISOString()],
       );
-      const remaining = allIds.filter((id) => !selectedIds.includes(id));
       if (remaining.length > 0) await this.createFollowupBatch(db, spaceId, row.project_id, remaining, now);
       return {
         batch_id: row.id,
