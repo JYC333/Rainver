@@ -698,3 +698,25 @@ describe("automatic Custom Source repair status transitions", () => {
     expect(after.rows[0]?.repair_status).toBe("repair_pending");
   });
 });
+
+describe("due scan task batch", () => {
+
+  it("does not let a due task no scheduler can run hold the batch's place", async () => {
+    if (!db.available) return;
+    // An active channel whose connection still awaits activation.
+    const blocked = randomUUID();
+    await insertConnection({ id: blocked, handlerKind: "built_in", status: "paused" });
+    await db.pool.query(`UPDATE source_connections SET name = 'Blocked source' WHERE id = $1`, [blocked]);
+    await db.pool.query(`UPDATE source_channels SET status = 'active' WHERE id = $1`, [blocked]);
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET status = 'active', next_run_at = $2 WHERE task_type = 'source_channel_scan' AND task_key = $1`,
+      [blocked, new Date(0).toISOString()],
+    );
+    const runnable = randomUUID();
+    await insertConnection({ id: runnable, handlerKind: "built_in", nextCheckAt: new Date(1000).toISOString() });
+
+    expect(await enqueueDueSourceChannelScans(db.pool, 1)).toBe(1);
+    const jobs = await db.pool.query(`SELECT connection_id FROM extraction_jobs`);
+    expect(jobs.rows).toEqual([{ connection_id: runnable }]);
+  });
+});

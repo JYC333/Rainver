@@ -27,12 +27,54 @@ export async function getSourceChannelScanTask(
   return new PgSchedulerTaskStore(db).get(SOURCE_CHANNEL_SCAN_TASK_TYPE, sourceChannelSchedulerTaskKey(channelId));
 }
 
+/**
+ * Due scan tasks that a scan scheduler could act on now. The built-in, recipe
+ * and Custom Source schedulers share this batch and each skips what is not its
+ * own, so a task none of them can run — its channel or connection inactive,
+ * deleted or manual, or a scan already in flight — is left out here. Kept in
+ * the batch, it would stay due without ever being advanced, and enough of them
+ * would fill every tick's batch.
+ */
 export async function listDueSourceChannelScanTasks(
   db: Queryable,
   nowIso: string,
   limit: number,
 ): Promise<SchedulerTaskRow[]> {
-  return new PgSchedulerTaskStore(db).listDue(SOURCE_CHANNEL_SCAN_TASK_TYPE, nowIso, limit);
+  const result = await db.query<SchedulerTaskRow>(
+    `SELECT st.id, st.task_type, st.task_key, st.scope_type, st.scope_id, st.space_id, st.user_id, st.status,
+            st.next_run_at, st.last_run_at, st.state_json, st.metadata_json, st.created_at, st.updated_at
+       FROM scheduler_tasks st
+       JOIN source_channels ch ON ch.id = st.task_key AND ch.space_id = st.space_id
+       JOIN source_connections sc ON sc.id = ch.source_connection_id AND sc.space_id = ch.space_id
+      WHERE st.task_type = $1
+        AND st.status = 'active'
+        AND st.next_run_at IS NOT NULL
+        AND st.next_run_at <= $2
+        AND ch.status = 'active'
+        AND ch.fetch_frequency <> 'manual'
+        AND sc.status = 'active'
+        AND sc.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+            FROM extraction_jobs ej
+           WHERE ej.space_id = ch.space_id
+             AND ej.job_type = 'connection_scan'
+             AND ej.metadata_json->>'source_channel_id' = ch.id
+             AND ej.status IN ('pending', 'running')
+        )
+      ORDER BY st.next_run_at ASC
+      LIMIT $3`,
+    [SOURCE_CHANNEL_SCAN_TASK_TYPE, nowIso, limit],
+  );
+  return result.rows.map((row) => ({
+    ...row,
+    state_json: objectOrEmpty(row.state_json),
+    metadata_json: objectOrEmpty(row.metadata_json),
+  }));
+}
+
+function objectOrEmpty(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 export async function upsertSourceChannelScanTask(
