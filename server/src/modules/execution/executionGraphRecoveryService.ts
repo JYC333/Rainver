@@ -17,25 +17,35 @@ export class ExecutionGraphRecoveryService {
       (spaceId, userId, executionId) => new WorkflowExecutionService(config).reconcile(db, spaceId, executionId, userId),
   ) {}
 
+  // Where the previous scan stopped. Reconciling a graph that is simply still
+  // waiting writes nothing, so a scan that always restarted at the oldest rows
+  // would revisit the same `limit` graphs forever and never reach the rest.
+  private planCursor: ScanCursor | null = null;
+  private workflowCursor: ScanCursor | null = null;
+
   async reconcileActive(limit = 50): Promise<{ plans: number; workflows: number; failures: number }> {
-    const plans = await this.db.query<{ id: string; space_id: string; user_id: string | null }>(
-      `SELECT p.id, p.space_id, root.owner_user_id AS user_id
+    const plans = await this.db.query<ScanRow>(
+      `SELECT p.id, p.space_id, root.owner_user_id AS user_id, p.updated_at::text AS sort_at
          FROM plans p
          JOIN runs root ON root.id = p.root_run_id AND root.space_id = p.space_id
         WHERE p.status = 'active' AND root.status = 'waiting_for_dependency'
+          AND ($2::timestamptz IS NULL OR (p.updated_at, p.id) > ($2::timestamptz, $3::varchar))
         ORDER BY p.updated_at ASC, p.id ASC LIMIT $1`,
-      [limit],
+      [limit, this.planCursor?.sortAt ?? null, this.planCursor?.id ?? null],
     );
-    const workflows = await this.db.query<{ id: string; space_id: string; user_id: string | null }>(
-      `SELECT execution.id, execution.space_id, automation.owner_user_id AS user_id
+    this.planCursor = nextCursor(plans.rows, limit);
+    const workflows = await this.db.query<ScanRow>(
+      `SELECT execution.id, execution.space_id, automation.owner_user_id AS user_id, execution.updated_at::text AS sort_at
          FROM workflow_executions execution
          JOIN automations automation ON automation.id = execution.automation_id AND automation.space_id = execution.space_id
          LEFT JOIN runs root ON root.id = execution.root_run_id AND root.space_id = execution.space_id
         WHERE execution.status IN ('queued', 'running')
           AND (root.id IS NULL OR root.status = 'waiting_for_dependency')
+          AND ($2::timestamptz IS NULL OR (execution.updated_at, execution.id) > ($2::timestamptz, $3::varchar))
         ORDER BY execution.updated_at ASC, execution.id ASC LIMIT $1`,
-      [limit],
+      [limit, this.workflowCursor?.sortAt ?? null, this.workflowCursor?.id ?? null],
     );
+    this.workflowCursor = nextCursor(workflows.rows, limit);
     let recoveredPlans = 0;
     let recoveredWorkflows = 0;
     let failures = 0;
@@ -79,4 +89,22 @@ export class ExecutionGraphRecoveryService {
       payload: { graph_kind: kind, graph_id: id },
     });
   }
+}
+
+interface ScanRow {
+  id: string;
+  space_id: string;
+  user_id: string | null;
+  sort_at: string;
+}
+
+interface ScanCursor {
+  sortAt: string;
+  id: string;
+}
+
+/** Continue after the last row of a full page; wrap to the start after a short one. */
+function nextCursor(rows: readonly ScanRow[], limit: number): ScanCursor | null {
+  const last = rows.at(-1);
+  return rows.length >= limit && last ? { sortAt: last.sort_at, id: last.id } : null;
 }

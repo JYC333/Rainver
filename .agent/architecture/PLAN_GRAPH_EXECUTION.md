@@ -161,8 +161,10 @@ overwrite the outcome of a newer authoritative pass.
 Post-finalization reconciliation is the immediate path, not the only recovery
 path. `ExecutionGraphRecoveryService` scans active Plan and Workflow executions
 at startup and periodically, then idempotently reconciles each graph under its
-aggregate row lock. Per-graph failures are isolated and emit deduplicated
-operational alerts.
+aggregate row lock. Each scan is a bounded page that continues where the
+previous one stopped and wraps after the last page, so a graph that is still
+waiting cannot hold its place at the front and starve the rest. Per-graph
+failures are isolated and emit deduplicated operational alerts.
 
 AgentRunGroup owns interactive, policy-gated dynamic delegation inside an
 Agent Room. Plan and Workflow Execution own persistent, reviewable DAG nodes.

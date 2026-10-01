@@ -209,18 +209,21 @@ export function startBackgroundServices(
       },
     });
 
+    // One instance for the scheduler's lifetime: it carries the scan cursor
+    // from one tick to the next.
+    const executionGraphRecovery = new ExecutionGraphRecoveryService(
+      getDbPool(config.databaseUrl!),
+      config,
+      OperationalAlertService.fromConfig(config),
+      log,
+    );
     tasks.push({
       name: "execution_graph_recovery",
       intervalSeconds: 60,
       runOnStart: true,
       awaitRunOnStart: false,
       run: async () => {
-        const result = await new ExecutionGraphRecoveryService(
-          getDbPool(config.databaseUrl!),
-          config,
-          OperationalAlertService.fromConfig(config),
-          log,
-        ).reconcileActive();
+        const result = await executionGraphRecovery.reconcileActive();
         if (result.plans + result.workflows > 0 || result.failures > 0) {
           log?.info(`[scheduler] execution graph recovery plans=${result.plans} workflows=${result.workflows} failures=${result.failures}`);
         }
