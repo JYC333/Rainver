@@ -91,6 +91,11 @@ continue to require their own explicit pre-authorization.
   (`task_type='automation'`, `next_run_at`/`last_run_at`); the
   `automation_scheduler` heartbeat sweeps `listDue` and fires. There is no
   per-automation registration into the scheduler — it is a poll/sweep model.
+  A fire re-reads the Automation's status under its row lock in the
+  transaction that creates its work, so a pause or archive committed after
+  the sweep (or a manual fire) read the row stops it; schedule advancement
+  re-reads the row too and leaves a no-longer-active schedule as the pause or
+  archive wrote it.
 There is no external or webhook trigger kind.
 
 An update runs the target preflight only when the Automation will be active

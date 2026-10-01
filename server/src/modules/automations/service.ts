@@ -10,6 +10,7 @@ import { withTransaction } from "../../db/tx.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { HttpError } from "../routeUtils/common.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { lockActiveProjectForMutation } from "../projects/access.js";
 import { enforce } from "../policy/index.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { computeDecision } from "../policy/gateway.js";
@@ -39,7 +40,9 @@ import {
   automationScheduleWasHandled,
   fireResponsibility,
   type FireResponsibility,
+  lockActiveAutomation,
   lockAndCheckAutomationBudget,
+  AutomationNotActiveError,
 } from "./targetSupport.js";
 
 const VALID_TRIGGER_TYPES = new Set(["manual", "schedule"]);
@@ -520,6 +523,9 @@ export class AutomationService {
         });
         fired += 1;
       } catch (error) {
+        // Paused or archived after the scan read it: nothing failed, and the
+        // change that stopped it already wrote the schedule state.
+        if (error instanceof AutomationNotActiveError) continue;
         await safelyEmitOperationalAlert(this.alerts, {
           kind: "automation_fire_failed",
           title: `Automation failed: ${auto.name}`,
@@ -673,6 +679,9 @@ export class AutomationService {
       target,
     });
     const executionResult = await withTransaction(getDbPool(this.config.databaseUrl), async (client) => {
+      // Project before Automation, the order a PATCH takes them in.
+      if (auto.project_id) await lockActiveProjectForMutation(client, auto.space_id, auto.project_id);
+      await lockActiveAutomation(client, auto);
       const execution = await new WorkflowExecutionService(this.config).start({
         db: client,
         // Whose work the execution is, not who pressed the button: every Run

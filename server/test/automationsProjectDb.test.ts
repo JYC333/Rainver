@@ -493,6 +493,47 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     expect(run.rows[0]?.instructed_by_user_id).toBe(OWNER);
   });
 
+  it("does not fire, or re-arm, a scheduled Automation paused after the scan read it", async () => {
+    if (!db.available) return;
+    const created = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Nightly digest",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        trigger_type: "schedule",
+        config_json: { target_type: "agent_run", prompt: "Digest", cron: "0 9 * * *", timezone: "UTC" },
+      },
+    });
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET next_run_at = now() - interval '1 minute'
+        WHERE task_type = 'automation' AND task_key = $1`,
+      [created.id],
+    );
+    const repo = new PgAutomationRepository(db.pool);
+    const scanner = new AutomationService(config, repo);
+    // The scan holds the row it read while it works through the batch; the
+    // person pauses it in that window.
+    const listDue = repo.listDue.bind(repo);
+    vi.spyOn(repo, "listDue").mockImplementation(async (nowIso) => {
+      const due = await listDue(nowIso);
+      await service().update({
+        spaceId: SPACE, automationId: created.id, actorUserId: OWNER, body: { status: "paused" },
+      });
+      return due;
+    });
+
+    await expect(scanner.scanAndFire()).resolves.toBe(0);
+    const runs = await db.pool.query(`SELECT id FROM automation_runs WHERE automation_id = $1`, [created.id]);
+    expect(runs.rows).toEqual([]);
+    const task = await db.pool.query<{ status: string; next_run_at: Date | null }>(
+      `SELECT status, next_run_at FROM scheduler_tasks WHERE task_type = 'automation' AND task_key = $1`,
+      [created.id],
+    );
+    expect(task.rows[0]).toEqual({ status: "paused", next_run_at: null });
+  });
+
   it("runs the configured prompt as the automation's own work, whoever pressed fire", async () => {
     if (!db.available) return;
     // An admin or Project writer may fire another member's automation. Firing

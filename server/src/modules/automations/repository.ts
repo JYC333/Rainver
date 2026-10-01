@@ -517,20 +517,34 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
     return due;
   }
 
+  /**
+   * Moves a fired schedule to its next slot. The caller's row was read before
+   * the fire; a pause, archive or reschedule committed since then owns the
+   * schedule state, so the row is read again under its lock and a schedule
+   * that is no longer active is left exactly as that change wrote it.
+   */
   async advanceSchedule(automation: AutomationRow): Promise<void> {
-    const now = new Date().toISOString();
-    let nextRunAt: string | null = null;
-    try {
-      nextRunAt = computeNextRunAt(automation.config_json).toISOString();
-    } catch {
-      nextRunAt = null;
-    }
-    await this.upsertSchedulerTask({
-      automation,
-      nextRunAt,
-      lastRunAt: now,
-      status: schedulerStatusFromAutomationStatus(automation.status),
-      updatedAt: now,
+    await withQueryableTransaction(this.db, async (db) => {
+      const locked = await db.query<{ status: string; config_json: Record<string, unknown> | null }>(
+        `SELECT id, status, config_json FROM automations WHERE space_id = $1 AND id = $2 FOR UPDATE`,
+        [automation.space_id, automation.id],
+      );
+      const current = locked.rows[0];
+      if (!current || current.status !== "active") return;
+      const now = new Date().toISOString();
+      let nextRunAt: string | null = null;
+      try {
+        nextRunAt = computeNextRunAt(current.config_json ?? {}).toISOString();
+      } catch {
+        nextRunAt = null;
+      }
+      await new PgAutomationRepository(db).upsertSchedulerTask({
+        automation,
+        nextRunAt,
+        lastRunAt: now,
+        status: "active",
+        updatedAt: now,
+      });
     });
   }
 
