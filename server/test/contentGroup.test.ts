@@ -8,6 +8,7 @@ import { ContentAccessAuditService } from "../src/modules/contentAccess/audit.js
 import { ContentDemotionService } from "../src/modules/contentAccess/demotion.js";
 import { ContentAccessService } from "../src/modules/contentAccess/service.js";
 import { PgProposalRepository } from "../src/modules/proposals/repository.js";
+import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
 import { RunMaterializationService } from "../src/modules/runs/materializationService.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
@@ -140,6 +141,30 @@ describe("contentAccessDefencesDb", () => {
         .rejects.toMatchObject({ statusCode: 409 });
       await expect(access.updatePolicy(owner, "artifact", tainted, policy("full", [])))
         .rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it("asks the contributing owner before a tainted proposal is widened", async () => {
+      if (!db.available) return;
+      const taint = {
+        schema_version: 1, narrowest_visibility: "private", input_owner_user_ids: [VIEWER],
+        non_instructing_owner_user_ids: [VIEWER], personal_memory_grant_ids: [],
+      };
+      const proposal = await insertProposalRow(db.pool, {
+        spaceId: SPACE,
+        proposalType: "follow_up_task",
+        title: "Tainted proposal",
+        payload: { proposal_type: "follow_up_task", context_taint: taint },
+        rationale: "Derived from another member's content.",
+        createdByUserId: OWNER,
+        visibility: "selected_users",
+      });
+
+      await expect(new ContentAccessService(db.pool).updatePolicy(
+        { spaceId: SPACE, userId: OWNER },
+        "proposal",
+        proposal.id,
+        { visibility: "space_shared", access_level: "full", project_id: null, grants: [] },
+      )).rejects.toMatchObject({ statusCode: 409 });
     });
 
     it("discloses consuming Runs and derived outputs that remain shared", async () => {

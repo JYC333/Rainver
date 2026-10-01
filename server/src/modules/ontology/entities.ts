@@ -438,6 +438,8 @@ function registerCoreEntities(): void {
         ownerColumn: "owner_user_id",
         projectColumn: "project_id",
         projectFolderColumn: "project_folder_id",
+        // A Run-derived proposal carries its Run's taint in the payload.
+        contextTaintColumn: "payload_json",
         publishable: false,
       },
     },
