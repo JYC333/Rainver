@@ -221,6 +221,28 @@ describe("save run as workflow (real Postgres)", () => {
     expect(row.rows[0]).toEqual({ asset_type: "workflow_template", status: "active", version_status: "draft" });
   });
 
+  it("refuses to extract a workflow the plan executor could never run", async () => {
+    if (!db.available) return;
+    // Steps become a linear chain, and the executor runs at most three layers.
+    const runId = await seedRun("low");
+    for (const index of [1, 2, 3]) {
+      await db.pool.query(
+        `INSERT INTO run_steps (
+           id, space_id, run_id, actor_id, step_index, step_type, status, title,
+           input_summary, output_summary, metadata_json, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, 'completed', 'succeeded', $6, 'input', 'done', '{}'::jsonb, now(), now())`,
+        [randomUUID(), SPACE, runId, ACTOR, index, `Step ${index}`],
+      );
+    }
+    const service = new RunWorkflowService(db.pool);
+    const input = { run_id: runId, asset_key: "workflow.saved.deep", display_name: "Deep workflow" };
+
+    await expect(service.preview(IDENTITY, input)).rejects.toMatchObject({ statusCode: 422 });
+    await expect(service.save(IDENTITY, input)).rejects.toMatchObject({ statusCode: 422 });
+    const saved = await db.pool.query(`SELECT id FROM evolvable_assets WHERE asset_key = $1`, [input.asset_key]);
+    expect(saved.rows).toEqual([]);
+  });
+
   it("requires a proposal for high-risk extraction and applies it as a draft", async () => {
     if (!db.available) return;
     const runId = await seedRun("high");
