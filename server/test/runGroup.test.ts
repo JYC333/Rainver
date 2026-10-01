@@ -22,8 +22,9 @@ import {
   verificationResultToOut,
 } from "../src/modules/runs/runReadModel.js";
 import { resetTables } from "./support/resetTables.js";
-import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedServerHost } from "./support/domainSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { resolveExecutionHost } from "../src/modules/runs/executionHostResolution.js";
 
 describe("runContractSnapshot", () => {
   it("keeps the dispatch-time Git snapshot immutable in the Run contract", () => {
@@ -407,6 +408,21 @@ describe("runDelegationIdempotencyDb", () => {
       expect((await repo.listDelegations(SPACE, GROUP, USER)).map((row) => row.id)).toEqual([delegation.id]);
       expect(await repo.listDelegations(SPACE, GROUP, other)).toEqual([]);
     });
+  });
+});
+
+describe("runExecutionHostDb", () => {
+  const db = useTestDatabase(`${import.meta.filename}#runExecutionHostDb`);
+
+  it("resolves a Profile-pinned host to that host and no Location", async () => {
+    if (!db.available) return;
+    const hostId = randomUUID();
+    await resetTables(db.pool, ["hosts", "machines"], { cascade: true });
+    await seedServerHost(db.pool, { id: hostId });
+
+    await expect(resolveExecutionHost(db.pool, {
+      executionHostId: hostId, workspaceLocationId: null, projectFolderId: null, spaceId: randomUUID(),
+    })).resolves.toEqual({ hostKind: "server", hostId, workspaceLocationId: null });
   });
 });
 

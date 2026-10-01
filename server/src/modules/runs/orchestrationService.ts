@@ -111,6 +111,7 @@ import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { mergeRunQuota } from "../hosts/usageService.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { redactEvidenceText } from "./evidenceRedaction.js";
+import { resolveExecutionHost } from "./executionHostResolution.js";
 
 export interface RunExecutionRepositoryPort {
   getRun(spaceId: string, runId: string): Promise<RunRecord | null>;
@@ -573,31 +574,7 @@ export class RunOrchestrationService {
     this.builtinHostResolver = adapters.builtinHostResolver ?? null;
     this.hostKindResolver = adapters.hostKindResolver
       ?? (repository instanceof PgRunRepository && config.databaseUrl
-        ? async ({ executionHostId, workspaceLocationId, projectFolderId, spaceId }) => {
-            const pool = getDbPool(config.databaseUrl!);
-            const result = workspaceLocationId
-              ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
-                  `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE id = $1 AND space_id = $2 LIMIT 1`,
-                  [workspaceLocationId, spaceId],
-                )
-                : executionHostId
-                ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
-                    `SELECT id, kind AS execution_host_kind, id AS execution_host_id FROM hosts WHERE id = $1 LIMIT 1`,
-                    [executionHostId],
-                  )
-                : projectFolderId
-                ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
-                    `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE project_folder_id = $1 AND space_id = $2 AND status = 'active' LIMIT 1`,
-                    [projectFolderId, spaceId],
-                  )
-                : { rows: [] as Array<{ id: string; execution_host_kind: string; execution_host_id: string }> };
-            const row = result.rows[0];
-            return {
-              hostKind: (row?.execution_host_kind as HostKind | undefined) ?? "server",
-              hostId: row?.execution_host_id ?? "",
-              workspaceLocationId: row?.execution_host_kind === "remote" && !workspaceLocationId ? null : row?.id ?? null,
-            };
-          }
+        ? (input) => resolveExecutionHost(getDbPool(config.databaseUrl!), input)
         : null);
     this.usageRecorder = adapters.usageRecorder
       ?? (repository instanceof PgRunRepository && config.databaseUrl
