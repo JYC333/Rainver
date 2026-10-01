@@ -364,7 +364,9 @@ does not silently block canonical writes.
 
 Full-space retrieval reindex is a maintenance operation exposed at
 `POST /api/v1/knowledge/retrieval/reindex`. It rebuilds derived projection rows
-for the caller's space and requires space owner/admin authority.
+for the caller's space and requires space owner/admin authority. The rebuild
+runs in one transaction, serialized per space: a failure part-way leaves the
+previous index and its embeddings intact.
 
 ## Activity-First Input Boundary
 

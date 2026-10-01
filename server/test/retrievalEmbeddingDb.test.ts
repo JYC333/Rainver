@@ -106,6 +106,38 @@ describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
     ]);
   });
 
+  it("keeps the previous index when a whole-space rebuild fails part-way", async () => {
+    if (!db.available) return;
+    await new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(EMBED_DIMENSIONS)).backfillSpace(SPACE);
+    expect(await pendingCount()).toBe(0);
+    await insertKnowledgeItem(db.pool, { id: "embed-3", spaceId: SPACE, title: "Refused", content: "Cannot be projected.", slug: "embed-3" });
+    await db.pool.query(`
+      CREATE FUNCTION test_refuse_projection() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.object_id = 'embed-3' THEN RAISE EXCEPTION 'projection refused'; END IF;
+        RETURN NEW;
+      END $$`);
+    await db.pool.query(
+      `CREATE TRIGGER test_refuse_projection BEFORE INSERT ON retrieval_objects
+         FOR EACH ROW EXECUTE FUNCTION test_refuse_projection()`,
+    );
+    try {
+      await expect(new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE))
+        .rejects.toThrow("projection refused");
+    } finally {
+      await db.pool.query(`DROP TRIGGER test_refuse_projection ON retrieval_objects`);
+      await db.pool.query(`DROP FUNCTION test_refuse_projection()`);
+    }
+
+    const indexed = await db.pool.query<{ object_id: string }>(
+      `SELECT object_id FROM retrieval_objects WHERE space_id = $1 ORDER BY object_id`,
+      [SPACE],
+    );
+    expect(indexed.rows.map((row) => row.object_id)).toEqual(["embed-1", "embed-2"]);
+    // Nor were the paid-for embeddings dropped with the cleared rows.
+    expect(await pendingCount()).toBe(0);
+  });
+
   it("supports a vector distance query through the pgvector column/index", async () => {
     if (!db.available) return;
     await new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(EMBED_DIMENSIONS)).backfillSpace(SPACE);
