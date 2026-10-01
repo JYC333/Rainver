@@ -337,14 +337,7 @@ export class PgConversationBackendRepository {
     agent_id: string;
     requested?: { runtime_profile_id: string } | null;
   }): Promise<ResolvedConversationBackend> {
-    const executionContext = await this.db.query<{ state: string }>(
-      `SELECT state
-         FROM conversation_execution_contexts
-        WHERE space_id = $1 AND session_id = $2
-        LIMIT 1`,
-      [input.space_id, input.session_id],
-    );
-    const initialized = executionContext.rows[0]?.state === "initialized";
+    const initialized = await this.isInitialized(input.space_id, input.session_id);
     // Once initialized, the Conversation-scoped binding is authoritative.
     // Never let a member's user-scoped Room binding shadow the pinned runtime.
     const existing = initialized
@@ -439,10 +432,25 @@ export class PgConversationBackendRepository {
     sessionId: string,
     agentId: string,
   ): Promise<ConversationBackendBinding | null> {
-    const binding = await this.findResolvedBinding(spaceId, userId, sessionId, agentId);
+    // Like resolveBinding: once the Conversation is initialized, its one
+    // pinned binding answers for every member, not only the one who bound it.
+    const binding = await this.isInitialized(spaceId, sessionId)
+      ? await this.findConversationResolvedBinding(spaceId, sessionId, agentId)
+      : await this.findResolvedBinding(spaceId, userId, sessionId, agentId);
     return binding
       ? { runtime_profile_id: binding.runtime_profile_id, runtime_key: binding.runtime_key }
       : null;
+  }
+
+  private async isInitialized(spaceId: string, sessionId: string): Promise<boolean> {
+    const executionContext = await this.db.query<{ state: string }>(
+      `SELECT state
+         FROM conversation_execution_contexts
+        WHERE space_id = $1 AND session_id = $2
+        LIMIT 1`,
+      [spaceId, sessionId],
+    );
+    return executionContext.rows[0]?.state === "initialized";
   }
 
   private async findResolvedBinding(
