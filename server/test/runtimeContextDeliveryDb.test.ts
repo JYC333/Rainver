@@ -1316,6 +1316,164 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     await expect(createAttempt()).resolves.toBeDefined();
   });
 
+  it("delivers retrieved content readable through its own Project though it is shared to another", async () => {
+    if (!db.available) return;
+    const OTHER = randomUUID();
+    const SHARED_TO = randomUUID();
+    const CLAIM = randomUUID();
+    const authoritative = control(0);
+    authoritative.project_id = PROJECT;
+    authoritative.work_context_setup_ref = { type: "work_context_setup", id: SETUP, version: "1" };
+    authoritative.readable_scope.retrieval_enabled = true;
+    authoritative.readable_scope.retrieval_max_candidates = 10;
+    await db.pool.query(`UPDATE spaces SET type='team' WHERE id=$1`, [SPACE]);
+    await db.pool.query(
+      `INSERT INTO users (id,display_name,status,created_at,updated_at,email,registration_source)
+       VALUES ($1,'Other','active',now(),now(),lower(gen_random_uuid()::text || '@test.invalid'),'system')`,
+      [OTHER],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+       VALUES ($1,$2,$3,'member','active',now(),now())`,
+      [randomUUID(), SPACE, OTHER],
+    );
+    await db.pool.query(
+      `INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at)
+       VALUES ($1,$3,$4,'Own Project','active',now(),now()),($2,$3,$4,'Shared-to Project','active',now(),now())`,
+      [PROJECT, SHARED_TO, SPACE, OTHER],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+    await db.pool.query(
+      `INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
+      [randomUUID(), SPACE, PROJECT, USER],
+    );
+    const sessionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`,
+      [sessionId, SPACE, USER],
+    );
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: sessionId,
+      messages: [{ id: MESSAGE, role: "user", content: "Private question", userId: USER, runId: RUN }],
+    });
+    const setupDecisionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO policy_decision_records (
+         id,space_id,actor_type,actor_id,action,resource_type,resource_id,
+         decision,risk_level,policy_source,metadata_json,created_at
+       ) VALUES ($1,$2,'user',$3,'work_context_setup.change','work_context_setup',$4,
+                 'allow','medium','test','{}',now())`,
+      [setupDecisionId, SPACE, USER, SETUP],
+    );
+    await db.pool.query(
+      `INSERT INTO work_context_setups (
+         id,space_id,work_context_scope_id,scope_kind,version,user_id,project_id,agent_id,
+         runtime_ref_json,pinned_refs_json,excluded_refs_json,retrieval_preferences_json,
+         continuity_preferences_json,project_instruction_enabled,governing_policy_refs_json,
+         setup_fingerprint,base_version,typed_diff_json,reason,policy_decision_record_id,
+         created_by_user_id,created_at
+       ) VALUES ($1,$2,$3,'root_task',1,$4,$5,$6,NULL,'[]','[]','{}','{}',FALSE,'[]',
+                 'shared-claim-authority',NULL,'{}','test',$7,$4,now())`,
+      [SETUP, SPACE, RUN, USER, PROJECT, AGENT, setupDecisionId],
+    );
+    const claimUpdatedAt = "2026-08-12T02:00:00.000Z";
+    await db.pool.query(
+      `INSERT INTO space_objects (id,space_id,object_type,title,visibility,access_level,owner_user_id,primary_project_id,created_at,updated_at)
+       VALUES ($1,$2,'claim','Retention claim','space_shared','full',$3,$4,$5,$5)`,
+      [CLAIM, SPACE, OTHER, PROJECT, claimUpdatedAt],
+    );
+    await db.pool.query(
+      `INSERT INTO claims (object_id,space_id,subject_text,claim_kind,status,claim_text,normalized_claim_hash,confidence_method,resolution_state)
+       VALUES ($1,$2,'Retention','fact','active','Retention holds at ninety percent.','retention-hash','human_confirmed','unreviewed')`,
+      [CLAIM, SPACE],
+    );
+    await db.pool.query(
+      `INSERT INTO space_object_project_shares (id,space_id,object_id,project_id,shared_by_user_id,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,now(),now())`,
+      [randomUUID(), SPACE, CLAIM, SHARED_TO, OTHER],
+    );
+    await db.pool.query(
+      `INSERT INTO model_providers (
+         id,space_id,owner_user_id,name,provider_type,base_url,enabled,
+         capabilities_json,config_json,created_at,updated_at
+       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{}',now(),now())`,
+      [PROVIDER, SPACE, USER],
+    );
+    await db.pool.query(
+      `INSERT INTO model_provider_space_grants (
+         id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at
+       ) VALUES ($1,$2,$3,$4,$4,TRUE,FALSE,now(),now())`,
+      [randomUUID(), PROVIDER, SPACE, USER],
+    );
+    await db.pool.query(
+      `UPDATE runs SET model_provider_id=$2,project_id=$3,session_id=$4,prompt='Private question',
+         model_override_json=$5::jsonb WHERE id=$1`,
+      [RUN, PROVIDER, PROJECT, sessionId, JSON.stringify({
+        chat_turn: {
+          schema_version: "chat_turn.v1",
+          session_id: sessionId,
+          user_id: USER,
+          user_message_id: MESSAGE,
+          agent_id: AGENT,
+          agent_version_id: VERSION,
+          project_id: PROJECT,
+        },
+      })],
+    );
+    await db.pool.query(
+      `UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`,
+      [CONTROL, JSON.stringify(authoritative)],
+    );
+    const claim = normalizeContextItem({
+      sourceRef: { type: "claim", id: CLAIM },
+      acquisition: "retrieval",
+      selection: "ranked",
+      rank: 1,
+      semanticRole: "reference_data",
+      trust: "derived",
+      sensitivity: "normal",
+      visibility: "space_shared",
+      ownerUserId: OTHER,
+      spaceId: SPACE,
+      egressEligible: true,
+      text: "Retention claim\nRetention holds at ninety percent.",
+      revalidation: {
+        status: "live",
+        checked_at: claimUpdatedAt,
+        source_updated_at: claimUpdatedAt,
+        source_connection_ids: [],
+      },
+    });
+    const planned = envelope("user_confirmed");
+    const plan = new RuntimeContextPlanner().plan({
+      executionControlSnapshotId: CONTROL,
+      setupRef: authoritative.work_context_setup_ref,
+      turn: planned.turn_request,
+      model: "gpt-4o",
+      directItems: planned.items,
+      retrievalItems: [claim],
+    });
+    const snapshots = new InvocationSnapshotService(
+      db.pool,
+      new SealedPayloadCipher(Buffer.alloc(32, 13)),
+      new PgInvocationDeliveryAuthorizer(),
+    );
+
+    await expect(snapshots.createAttempt({
+      spaceId: SPACE,
+      invocationId: RUN,
+      envelope: plan,
+      control: authoritative,
+      runtimeKey: "opencode",
+      providerId: PROVIDER,
+      model: "gpt-4o",
+      usageSourceId: `run:${RUN}:claim`,
+      viewerUserId: USER,
+      requireLiveAuthorization: true,
+    })).resolves.toBeDefined();
+  });
+
   it("rolls back the window plan when Delivery rendering fails", async () => {
     if (!db.available) return;
     const deliveryId = "30000000-0000-4000-8000-000000000099";

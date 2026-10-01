@@ -1066,6 +1066,18 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     projectId: string,
     viewerUserId: string,
   ): Promise<void> {
+    if (!await this.lockReadableProject(db, spaceId, projectId, viewerUserId)) {
+      throw new HttpError(404, "Invocation Delivery referenced Project is no longer readable");
+    }
+  }
+
+  /** Locks the Project and the viewer's membership in it; true when the viewer may read it. */
+  private async lockReadableProject(
+    db: Queryable,
+    spaceId: string,
+    projectId: string,
+    viewerUserId: string,
+  ): Promise<boolean> {
     const project = await db.query<{ owner_user_id: string | null; space_type: string }>(
       `SELECT project.owner_user_id,space.type AS space_type
          FROM projects project JOIN spaces space ON space.id=project.space_id
@@ -1074,14 +1086,14 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       [projectId, spaceId],
     );
     const row = project.rows[0];
-    if (!row) throw new HttpError(404, "Invocation Delivery referenced Project is no longer readable");
-    if (row.space_type === "personal" || row.owner_user_id === viewerUserId) return;
+    if (!row) return false;
+    if (row.space_type === "personal" || row.owner_user_id === viewerUserId) return true;
     const member = await db.query(
       `SELECT 1 FROM project_members
         WHERE space_id=$1 AND project_id=$2 AND user_id=$3 AND status='active' FOR SHARE`,
       [spaceId, projectId, viewerUserId],
     );
-    if (!member.rows[0]) throw new HttpError(404, "Invocation Delivery referenced Project is no longer readable");
+    return Boolean(member.rows[0]);
   }
 
   private async lockContentAclDependencies(
@@ -1114,7 +1126,28 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     );
     const row = scope.rows[0];
     if (!row) throw new HttpError(409, "Invocation Delivery content authority no longer exists");
-    if (row.project_id) await this.authorizeReferencedProject(db, spaceId, row.project_id, viewerUserId);
+    // The read rule's Project scope is an OR: no Project, the object's own
+    // Project, or any Project it is shared to. The share rows are locked
+    // either way; one readable Project is enough.
+    const sharedProjectIds = definition.projectShare
+      ? (await db.query<{ project_id: string }>(
+          `SELECT ${definition.projectShare.projectColumn} AS project_id FROM ${definition.projectShare.tableName}
+            WHERE space_id=$1 AND ${definition.projectShare.resourceColumn}=$2 AND ${definition.projectShare.revokedColumn} IS NULL
+            ORDER BY ${definition.projectShare.projectColumn}
+            FOR SHARE`,
+          [spaceId, resourceId],
+        )).rows.map((share) => share.project_id)
+      : [];
+    if (row.project_id) {
+      let readable = false;
+      for (const projectId of [row.project_id, ...sharedProjectIds]) {
+        if (await this.lockReadableProject(db, spaceId, projectId, viewerUserId)) {
+          readable = true;
+          break;
+        }
+      }
+      if (!readable) throw new HttpError(404, "Invocation Delivery referenced Project is no longer readable");
+    }
     if (row.project_folder_id) {
       const folder = await db.query<{ project_id: string | null }>(
         `SELECT folder.project_id FROM project_folders folder
@@ -1126,18 +1159,6 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       if (!folder.rows[0]) throw new HttpError(409, "Invocation Delivery content Folder is no longer readable");
       if (folder.rows[0].project_id) {
         await this.authorizeReferencedProject(db, spaceId, folder.rows[0].project_id, viewerUserId);
-      }
-    }
-    if (definition.projectShare) {
-      const share = definition.projectShare;
-      const shares = await db.query<{ project_id: string }>(
-        `SELECT ${share.projectColumn} AS project_id FROM ${share.tableName}
-          WHERE space_id=$1 AND ${share.resourceColumn}=$2 AND ${share.revokedColumn} IS NULL
-          FOR SHARE`,
-        [spaceId, resourceId],
-      );
-      for (const activeShare of shares.rows) {
-        await this.authorizeReferencedProject(db, spaceId, activeShare.project_id, viewerUserId);
       }
     }
   }
