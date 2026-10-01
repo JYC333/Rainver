@@ -120,6 +120,15 @@ const SOURCE_POST_PROCESSING_PROMPT_BYTES_PER_CHAR = 3;
 const SOURCE_POST_PROCESSING_PROMPT_FIXED_RESERVE_CHARS = 12_000;
 const SOURCE_POST_PROCESSING_EXTRACTED_TEXT_SNIPPET_RESERVE_CHARS = 2_400;
 
+/**
+ * Only the cursor window moves between runs. A time window (`local_day`,
+ * `last_24h`) hands every run the same batch, so draining one would repeat
+ * that batch until the batch limit.
+ */
+function windowMovesWithCursor(rule: SourcePostProcessingRuleRow): boolean {
+  return normalizeInputConfig(rule.input_config_json).window === "new_since_last_success";
+}
+
 export class SourcePostProcessingService {
   constructor(
     private readonly db: Queryable,
@@ -374,6 +383,10 @@ export class SourcePostProcessingService {
       }
       if (run.input_item_ids.length === 0) {
         stoppedReason = "no_inputs";
+        break;
+      }
+      if (!windowMovesWithCursor(rule)) {
+        stoppedReason = "window_processed";
         break;
       }
     }
@@ -829,6 +842,10 @@ export class SourcePostProcessingService {
       }
       if (run.input_item_ids.length === 0) {
         stoppedReason = "no_inputs";
+        break;
+      }
+      if (!windowMovesWithCursor(rule)) {
+        stoppedReason = "window_processed";
         break;
       }
     }

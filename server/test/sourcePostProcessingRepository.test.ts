@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import {
@@ -8,10 +8,12 @@ import {
   normalizeActions,
   normalizeInputConfig,
   normalizeTriggerConfig,
+  type SourcePostProcessingRunOut,
 } from "../src/modules/sources/postProcessing/repository.js";
 import { withQueryableTransaction } from "../src/modules/routeUtils/common.js";
 import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows.js";
-import type { ServerConfig } from "../src/config.js";
+import { loadConfig, type ServerConfig } from "../src/config.js";
+import { SourcePostProcessingService } from "../src/modules/sources/postProcessing/service.js";
 import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
@@ -581,6 +583,35 @@ describe("source post-processing repository (real Postgres)", () => {
     await repo().advanceRuleCursor({ spaceId: SPACE, ruleId: rule.id, cursor: null });
     const afterEmptyRun = await repo().backlog(SPACE, CONNECTION);
     expect(afterEmptyRun.rules.find((row) => row.rule_id === rule.id)?.pending_item_count).toBe(0);
+  });
+
+  it("runs a time-window rule once per drain, since its batch does not move", async () => {
+    if (!db.available) return;
+    const item = await seedItem("Today's paper", new Date().toISOString());
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: null,
+      name: "Daily digest",
+      triggerType: "manual",
+      triggerConfig: normalizeTriggerConfig(null, "manual"),
+      inputConfig: normalizeInputConfig({ window: "local_day", max_batches_per_event: 5 }),
+      actions: normalizeActions(null),
+      createdByUserId: OWNER,
+    });
+    const executeRule = vi.spyOn(
+      SourcePostProcessingService.prototype as unknown as { executeRule: () => Promise<SourcePostProcessingRunOut> },
+      "executeRule",
+    ).mockImplementation(async () => ({ status: "succeeded", input_item_ids: [item] }) as unknown as SourcePostProcessingRunOut);
+    try {
+      const service = new SourcePostProcessingService(db.pool, loadConfig({}));
+      const drained = await service.drainRuleNow({ spaceId: SPACE, userId: OWNER }, CONNECTION, rule.id);
+      expect(drained.runs).toHaveLength(1);
+      expect(executeRule).toHaveBeenCalledTimes(1);
+    } finally {
+      executeRule.mockRestore();
+    }
   });
 
   it("persists item decisions as a review read model", async () => {
