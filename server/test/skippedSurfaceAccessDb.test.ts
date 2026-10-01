@@ -285,6 +285,17 @@ describe("skipped-surface access (real Postgres)", () => {
     });
   });
 
+  it("answers a manual URL already held by an item the caller cannot read with a conflict", async () => {
+    const sources = new PgSourcesRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+    await sources.createManualUrl(owner, { url: "https://example.com/shared-slot", visibility: "private" });
+
+    await expect(sources.createManualUrl(other, { url: "https://example.com/shared-slot" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+    // The caller's own repeat still lands on the row it can read.
+    const again = await sources.createManualUrl(owner, { url: "https://example.com/shared-slot" });
+    expect(again).toMatchObject({ source_uri: "https://example.com/shared-slot" });
+  });
+
   it("refuses code_patch rollback without the apply gate", async () => {
     if (!db.available) return;
     const proposal = await insertProposalRow(db.pool, {
