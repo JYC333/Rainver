@@ -133,4 +133,37 @@ describe("Inquiry <-> Project Kernel integration (real Postgres)", () => {
       href: `/projects/${project.id}/inquiry?candidate=${signal.candidate_id}`,
     });
   });
+
+  it("keeps a Candidate on another member's private Thread out of Attention", async () => {
+    if (!db.available) return;
+    const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Attention Project" });
+    const question = await new InquiryThreadService(db.pool).createThread(identity(), project.id as string, { kind: "question", statement: "Is Z private?" });
+    const corpusItemId = await createCorpusItem(project.id as string);
+    const signal = await new InquirySignalService(db.pool).createSignal(identity(), project.id as string, question.id as string, {
+      corpus_item_id: corpusItemId,
+      classification: "contradicts",
+    });
+    // The Thread becomes another member's private Thread; the shared Corpus
+    // behind the Candidate stays readable.
+    const other = randomUUID();
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Other', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+      [other],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'member', 'active', now(), now())`,
+      [randomUUID(), SPACE, other],
+    );
+    await db.pool.query(`UPDATE space_objects SET owner_user_id = $2, visibility = 'private' WHERE id = $1`, [question.id, other]);
+    await db.pool.query(
+      `UPDATE space_objects SET visibility = 'space_shared'
+        WHERE id = (SELECT object_id FROM project_corpus_items WHERE id = $1)`,
+      [corpusItemId],
+    );
+
+    const items = await new ProjectAttentionService(db.pool).listAttentionItems(identity(), project.id as string);
+
+    expect(items.some((item) => item.source_type === "inquiry_candidate" && item.source_id === signal.candidate_id)).toBe(false);
+  });
 });
