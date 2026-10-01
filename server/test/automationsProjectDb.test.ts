@@ -338,6 +338,48 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     ]);
   });
 
+  it("reads an Automation only where its Project and owner allow", async () => {
+    if (!db.available) return;
+    // A team Space, so Project membership decides who reads the Project.
+    await db.pool.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
+    const bound = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Project digest",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        trigger_type: "manual",
+        config_json: { target_type: "agent_run", prompt: "Summarize the Project's private notes" },
+      },
+    });
+    const unbound = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: { name: "General digest", agent_id: AGENT, trigger_type: "manual", config_json: { target_type: "agent_run" } },
+    });
+    const tick = await new PgAutomationRepository(db.pool).upsertAutonomyAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      agentId: AGENT,
+      name: "Always-on",
+      configJson: { target_type: "autonomous_tick", project_ids: [PROJECT], cron: "0 * * * *", timezone: "UTC" },
+      preflightSnapshot: {},
+    });
+
+    const repo = new PgAutomationRepository(db.pool);
+    const ids = async (userId: string) =>
+      (await repo.list(SPACE, { readableBy: userId })).map((row) => row.id).sort();
+    // Not in the Project, not the tick's owner: only the Space-level Automation.
+    expect(await ids(MEMBER)).toEqual([unbound.id]);
+    await expect(repo.get(SPACE, bound.id, { readableBy: MEMBER })).resolves.toBeNull();
+    await expect(repo.get(SPACE, tick.id, { readableBy: MEMBER })).resolves.toBeNull();
+    await expect(repo.listWorkflowExecutions(SPACE, bound.id, { readableBy: MEMBER })).rejects.toMatchObject({ statusCode: 404 });
+    // A Space admin manages ticks, but is not a Project reader by role alone.
+    expect(await ids(ADMIN)).toEqual([unbound.id, tick.id].sort());
+    expect(await ids(OWNER)).toEqual([bound.id, unbound.id, tick.id].sort());
+  });
+
   it("rejects project binding for non-agent_run targets with 422", async () => {
     if (!db.available) return;
     await expect(

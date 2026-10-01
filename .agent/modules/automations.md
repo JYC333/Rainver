@@ -46,6 +46,13 @@ twice reconfigures the same row rather than creating a second one. The
 the only place a non-admin/owner role is allowed to create, update, or fire an
 Automation, and it cannot reach another member's tick.
 
+The generic reads (`GET .../automations`, `GET .../automations/:automationId`,
+`GET .../automations/:automationId/workflow-executions`) apply a read rule: a
+Project-bound Automation is visible only to a reader of its Project (its
+`project_id` is not a read grant), and an `autonomous_tick` only to its owner
+and Space owners/admins, who may manage it. Space-level Automations of other
+targets stay visible to every active member.
+
 ## Purpose
 
 Automations are the user-facing objects that fire runs on demand (manual) or on
