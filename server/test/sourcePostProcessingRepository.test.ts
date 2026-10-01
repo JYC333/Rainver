@@ -1122,6 +1122,35 @@ describe("source post-processing repository (real Postgres)", () => {
     const pausedDue = await repo().listDueRules("2026-07-01T09:00:02.000Z", 10);
     expect(pausedDue).toHaveLength(0);
   });
+
+  it("settles a due task whose rule was paused behind the scheduler's back", async () => {
+    if (!db.available) return;
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: null,
+      name: "Scheduled digest",
+      triggerType: "schedule",
+      triggerConfig: normalizeTriggerConfig({ cron: "0 9 * * *", timezone: "UTC" }, "schedule"),
+      inputConfig: normalizeInputConfig(null),
+      actions: normalizeActions(null),
+      createdByUserId: OWNER,
+    });
+    // Archiving a Project pauses its rules with a direct UPDATE.
+    await db.pool.query(`UPDATE source_post_processing_rules SET status = 'paused' WHERE id = $1`, [rule.id]);
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET next_run_at = '2026-07-01T09:00:00.000Z' WHERE task_type = $1 AND task_key = $2`,
+      [SOURCE_POST_PROCESSING_TASK_TYPE, rule.id],
+    );
+
+    expect(await repo().listDueRules("2026-07-01T09:00:01.000Z", 10)).toHaveLength(0);
+    const task = await db.pool.query<{ status: string; next_run_at: string | null }>(
+      `SELECT status, next_run_at FROM scheduler_tasks WHERE task_type = $1 AND task_key = $2`,
+      [SOURCE_POST_PROCESSING_TASK_TYPE, rule.id],
+    );
+    expect(task.rows[0]).toEqual({ status: "paused", next_run_at: null });
+  });
 });
 
 describe("post-processing decision responses carry the reader's level", () => {

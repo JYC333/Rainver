@@ -1927,7 +1927,30 @@ export class PgSourcePostProcessingRepository {
     for (const task of tasks) {
       if (!task.space_id) continue;
       const row = await this.getRule(task.space_id, task.task_key);
-      if (row && row.status === "active" && row.trigger_type === "schedule") rules.push(row);
+      if (row && row.status === "active" && row.trigger_type === "schedule") {
+        rules.push(row);
+        continue;
+      }
+      // A rule paused, archived, or moved off its schedule without going
+      // through this repository (archiving a Project does so) leaves a due
+      // task behind. Settle it, or it holds a place in every batch.
+      if (row) {
+        await this.upsertRuleSchedule(row, nowIso);
+      } else {
+        await this.scheduler.upsert({
+          taskType: SOURCE_POST_PROCESSING_TASK_TYPE,
+          taskKey: task.task_key,
+          scopeType: task.scope_type,
+          scopeId: task.scope_id,
+          spaceId: task.space_id,
+          userId: task.user_id,
+          status: "archived",
+          nextRunAt: null,
+          stateJson: task.state_json,
+          metadataJson: task.metadata_json,
+          updatedAt: nowIso,
+        });
+      }
     }
     return rules;
   }
