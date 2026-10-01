@@ -4042,6 +4042,36 @@ describe("Room workflow (real Postgres)", () => {
     )).rejects.toMatchObject({ code: "23503" });
   });
 
+  it("gives a preset specialist the Manager's runtime profiles on their Hosts", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Preset runtime" });
+    const preset = await service.addAgentPreset(owner, created.room.id, {
+      preset_id: "research-analyst",
+      idempotency_key: "preset-runtime-test",
+    });
+    const specialist = preset.agent_members.find((row) => row.role === "member")!;
+    const managerId = preset.agent_members.find((row) => row.role === "manager")!.agent_id;
+    const profiles = async (agentId: string) => (await db.pool.query<{
+      runtime_key: string; execution_host_id: string | null; workspace_mode: string | null; is_default: boolean;
+    }>(
+      `SELECT runtime_key, execution_host_id, workspace_mode, is_default FROM agent_runtime_profiles
+        WHERE space_id = 'space-1' AND agent_id = $1 AND enabled = true ORDER BY is_default DESC, runtime_key`,
+      [agentId],
+    )).rows;
+    const managerDefault = (await profiles(managerId))[0]!;
+    expect(managerDefault).toMatchObject({ is_default: true, execution_host_id: expect.any(String) });
+
+    const copied = await profiles(specialist.agent_id);
+    expect(copied[0]).toMatchObject({
+      is_default: true,
+      runtime_key: managerDefault.runtime_key,
+      execution_host_id: managerDefault.execution_host_id,
+      workspace_mode: managerDefault.workspace_mode,
+    });
+    expect(copied.filter((profile) => profile.execution_host_id === null)).toEqual([]);
+  });
+
   it("keeps private specialists Room-scoped while allowing Room dispatch visibility", async (ctx) => {
     if (!db.available || !service || !groupService) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };

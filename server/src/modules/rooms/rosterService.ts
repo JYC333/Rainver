@@ -224,16 +224,29 @@ export class RoomRosterService {
         toolPermissionsJson: {},
       };
       const agent = await agentRepository.createInTransaction(client, agentInput);
+      // Each copy keeps the Host it runs on, admitted for the person adding
+      // the preset; one they cannot run there is left out, and the new
+      // Agent keeps its own Server Runtime default.
       for (const profile of runtimeProfiles) {
-        await agentRepository.ensureRuntimeProfileInTransaction(client, identity.spaceId, agent.id, {
-          name: profile.name,
-          runtimeKey: profile.runtime_key,
-          modelProviderId: profile.model_provider_id,
-          modelName: profile.model_name,
-          runtimeConfigJson: profile.runtime_config_json,
-          runtimePolicyJson: profile.runtime_policy_json,
-          isDefault: profile.is_default,
-        });
+        try {
+          await agentRepository.ensureRuntimeProfileInTransaction(client, identity.spaceId, agent.id, {
+            name: profile.name,
+            runtimeKey: profile.runtime_key,
+            backendMode: profile.backend_mode,
+            modelProviderId: profile.model_provider_id,
+            modelName: profile.model_name,
+            executionHostId: profile.execution_host_id,
+            workspaceLocationId: profile.workspace_location_id,
+            workspaceMode: profile.workspace_mode,
+            runtimeInstallation: profile.runtime_installation,
+            runtimeConfigJson: profile.runtime_config_json,
+            runtimePolicyJson: profile.runtime_policy_json,
+            isDefault: profile.is_default,
+            actorUserId: identity.userId,
+          });
+        } catch (error) {
+          if (!(error instanceof HttpError) || ![403, 404, 422].includes(error.statusCode)) throw error;
+        }
       }
       if (input.execution) {
         await agentRepository.ensureRuntimeProfileInTransaction(client, identity.spaceId, agent.id, {
@@ -939,32 +952,19 @@ export class RoomRosterService {
     return result.rows[0]?.user_id ?? null;
   }
 
-  private async presetRuntimeProfiles(client: PoolClient, spaceId: string, roomId: string): Promise<Array<{
-    name: string;
-    runtime_key: string;
-    model_provider_id: string | null;
-    model_name: string | null;
-    runtime_config_json: Record<string, unknown>;
-    runtime_policy_json: Record<string, unknown>;
-    is_default: boolean;
-  }>> {
-    const result = await client.query<{
-      name: string;
-      runtime_key: string;
-      model_provider_id: string | null;
-      model_name: string | null;
-      runtime_config_json: Record<string, unknown>;
-      runtime_policy_json: Record<string, unknown>;
-      is_default: boolean;
-    }>(
-      `SELECT profile.name, profile.runtime_key, profile.model_provider_id,
-              profile.model_name, profile.runtime_config_json,
+  private async presetRuntimeProfiles(client: PoolClient, spaceId: string, roomId: string): Promise<PresetRuntimeProfile[]> {
+    const result = await client.query<PresetRuntimeProfile>(
+      `SELECT profile.name, profile.runtime_key, profile.backend_mode, profile.model_provider_id,
+              profile.model_name, profile.execution_host_id, profile.workspace_location_id,
+              profile.workspace_mode, profile.runtime_installation, profile.runtime_config_json,
               profile.runtime_policy_json, profile.is_default
          FROM room_agent_members member
          JOIN agent_runtime_profiles profile
            ON profile.space_id = member.space_id
           AND profile.agent_id = member.agent_id
           AND profile.enabled = true
+          -- A profile without a Host runs nowhere; it is not worth copying.
+          AND profile.execution_host_id IS NOT NULL
         WHERE member.space_id = $1
           AND member.room_id = $2
           AND member.role = 'manager'
@@ -1103,4 +1103,19 @@ async function assertActiveSpaceUser(db: PoolClient, spaceId: string, userId: st
     [spaceId, userId],
   );
   if (!result.rows[0]) throw new HttpError(404, "User is not an active member of this Space");
+}
+
+interface PresetRuntimeProfile {
+  name: string;
+  runtime_key: string;
+  backend_mode: "runtime_native" | "model_provider";
+  model_provider_id: string | null;
+  model_name: string | null;
+  execution_host_id: string | null;
+  workspace_location_id: string | null;
+  workspace_mode: "location" | "managed" | null;
+  runtime_installation: string | null;
+  runtime_config_json: Record<string, unknown>;
+  runtime_policy_json: Record<string, unknown>;
+  is_default: boolean;
 }

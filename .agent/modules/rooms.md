@@ -465,7 +465,10 @@ Manager and is immutable through the roster API. Project-writer Room members
 may add visible existing Agents or instantiate one of the server-defined
 presets, and may remove specialists without deleting the Agent or historical
 messages. Preset creation is retry-safe when the caller supplies an
-`Idempotency-Key`.
+`Idempotency-Key`. A preset added without a chosen Host Profile copies the
+Manager's Host-bound runtime profiles, each on its own Host and admitted for the
+person adding it; a profile that person cannot run there is left out, and the new
+Agent keeps its own Server Runtime default.
 
 An Agent with `visibility=private` or `visibility=selected_users` remains
 restricted in all ordinary Agent surfaces. Adding it to a Room requires the
