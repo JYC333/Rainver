@@ -373,6 +373,37 @@ describe("registration and Better Auth facade primitives", () => {
     expect(retry.intentId).not.toBe(first.intentId);
   });
 
+  it("reclaims a pending signup no registration intent ever bound, reopening bootstrap", async () => {
+    if (!db.available) return;
+    const config = authConfig();
+    const registrations = new RegistrationService(db.pool, config);
+    await registrations.issueIntent({ email: "owner@example.test" });
+    // The Google account chosen at the provider was not the intent's email.
+    await db.pool.query(
+      `INSERT INTO users (id, email, display_name, email_verified, registration_source, status, created_at, updated_at)
+       VALUES ('wrong-account', 'someone@gmail.test', 'Someone', true, 'system', 'pending', now() - interval '31 minutes', now() - interval '31 minutes'),
+              ('fresh-signup', 'fresh@gmail.test', 'Fresh', true, 'system', 'pending', now(), now())`,
+    );
+    await db.pool.query(
+      `INSERT INTO auth_accounts (id, account_id, provider_id, user_id, created_at, updated_at)
+       VALUES ('wrong-account-google', 'wrong-google-sub', 'google', 'wrong-account', now(), now())`,
+    );
+    await db.pool.query(
+      `INSERT INTO user_sessions (id, user_id, token_hash, created_at, updated_at, expires_at)
+       VALUES ('wrong-account-session', 'wrong-account', $1, now(), now(), now() + interval '1 day')`,
+      [hashOpaqueToken("wrong-account-session-token")],
+    );
+    await db.pool.query("UPDATE registration_intents SET expires_at = now() - interval '1 minute'");
+
+    await registrations.reapStale();
+
+    expect((await db.pool.query("SELECT id FROM users ORDER BY id")).rows).toEqual([{ id: "fresh-signup" }]);
+    expect((await db.pool.query("SELECT 1 FROM auth_accounts WHERE user_id = 'wrong-account'")).rowCount).toBe(0);
+    expect((await db.pool.query("SELECT 1 FROM user_sessions WHERE user_id = 'wrong-account'")).rowCount).toBe(0);
+    await db.pool.query("DELETE FROM users WHERE id = 'fresh-signup'");
+    await expect(registrations.isBootstrapAvailable()).resolves.toBe(true);
+  });
+
   it("parses the gateway JSON body when issuing a bootstrap registration intent", async () => {
     if (!db.available) return;
     const config = authConfig();

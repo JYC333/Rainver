@@ -44,7 +44,9 @@ timestamp alone does not extend that deadline. The five-minute reconciliation
 job and a new admission attempt expire stale intents and release invitation
 reservations. Cleanup revokes incomplete sessions and accounts and deletes the
 now-unreferenced pending identity so the email can retry while the invitation
-remains valid.
+remains valid. The same cleanup deletes a pending identity that no active intent
+binds or names once it is 30 minutes old, such as one created when a different
+Google account was chosen, so it cannot hold the bootstrap user slot.
 
 Invitation links are `/invitations/claim#token=...`. The web page removes the
 fragment with `history.replaceState` before any network request, so the token is

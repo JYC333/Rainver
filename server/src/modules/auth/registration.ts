@@ -292,6 +292,42 @@ async function retireActiveIntents(client: RegistrationClient, pendingUserId: st
 }
 
 async function expireStaleIntents(client: RegistrationClient, now: Date): Promise<number> {
+  const expiredCount = await expireIntents(client, now);
+  await deleteUnboundPendingUsers(client, now);
+  return expiredCount;
+}
+
+/**
+ * A provider signup can create a pending identity whose email no intent
+ * names — at Google, the person picked another account — so no intent ever
+ * binds it and intent expiry never reclaims it. Once it is older than any
+ * intent could be, it is deleted like an expired intent's identity; left in
+ * place it would count as a user and close bootstrap registration for good.
+ */
+async function deleteUnboundPendingUsers(client: RegistrationClient, now: Date): Promise<void> {
+  const unbound = await client.query<{ id: string }>(
+    `SELECT u.id
+       FROM users u
+      WHERE u.status = 'pending'
+        AND u.created_at <= $1::timestamptz - interval '30 minutes'
+        AND NOT EXISTS (
+          SELECT 1 FROM registration_intents active
+           WHERE (active.pending_user_id = u.id OR active.email = u.email)
+             AND active.state IN ${ACTIVE_INTENT_STATES}
+        )
+        AND NOT EXISTS (SELECT 1 FROM space_memberships m WHERE m.user_id = u.id)
+      FOR UPDATE OF u`,
+    [now],
+  );
+  const userIds = unbound.rows.map((row) => row.id);
+  if (!userIds.length) return;
+  await client.query("UPDATE registration_intents SET pending_user_id = NULL WHERE pending_user_id = ANY($1::text[])", [userIds]);
+  await client.query("DELETE FROM user_sessions WHERE user_id = ANY($1::text[])", [userIds]);
+  await client.query("DELETE FROM auth_accounts WHERE user_id = ANY($1::text[])", [userIds]);
+  await client.query("DELETE FROM users WHERE id = ANY($1::text[]) AND status = 'pending'", [userIds]);
+}
+
+async function expireIntents(client: RegistrationClient, now: Date): Promise<number> {
   const expired = await client.query<{ id: string; pending_user_id: string | null }>(
     `UPDATE registration_intents
         SET state = 'expired', last_activity_at = $1
