@@ -281,6 +281,50 @@ describe("source post-processing repository (real Postgres)", () => {
     expect(Number(count.rows[0]!.count)).toBe(1);
   });
 
+  it("brings a reused Auto Research rule up to the restarted intake's execution and question", async () => {
+    if (!db.available) return;
+    const threadScope = [{ thread_id: "12345678-1234-4123-8123-123456789abc", version: 2, kind: "question" as const, statement: "How should agents forget?" }];
+    const existing = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: PROJECT,
+      name: "Auto Research 12345678: Monitor",
+      triggerType: "items_materialized",
+      triggerConfig: normalizeTriggerConfig({ min_new_items: 1 }, "items_materialized"),
+      inputConfig: normalizeInputConfig({
+        item_limit: 10,
+        runtime_profile_id: "old-runtime-profile",
+        summary_goal: "How should agents remember?",
+        retrieval_context: { enabled: true, domains: ["project"], query: "How should agents remember?", max_results_per_domain: 10, mode: "hybrid" },
+      }),
+      actions: normalizeActions({ batch_digest: true }),
+      createdByUserId: OWNER,
+    });
+
+    const reused = await new ProjectResearchInitialIntakeCoordinator(db.pool, {} as ServerConfig).ensurePostProcessingRule(
+      { spaceId: SPACE, userId: OWNER },
+      PROJECT,
+      CONNECTION,
+      {
+        researchQuestion: "How should agents forget?",
+        threadScope,
+        agentId: AGENT,
+        runtimeProfileId: "new-runtime-profile",
+        researchScope: { sub_questions: [], in: [], out: [], must_have: [], nice_to_have: [] },
+      },
+      "Monitor",
+      "arxiv",
+    );
+
+    expect(reused.id).toBe(existing.id);
+    expect(reused.input_config_json).toMatchObject({
+      runtime_profile_id: "new-runtime-profile",
+      summary_goal: "How should agents forget?",
+      retrieval_context: { query: "How should agents forget?", max_results_per_domain: 10 },
+    });
+  });
+
   it("joins a caller-owned transaction when creating a rule", async () => {
     if (!db.available) return;
     const created = await withQueryableTransaction(db.pool, (db) =>

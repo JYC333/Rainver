@@ -628,7 +628,8 @@ critique, monitoring comparison) it also reuses or provisions the
 system-managed research Agent and its Runtime Profile, and for bounded
 ProviderTask stages it resolves the provider and model alone. Research does not
 expose runtime adapter, CLI credential, Agent, or profile overrides. It reuses or creates the selected monitor's project binding,
-post-processing rule, and history plan. Research screening recovery batches
+post-processing rule, and history plan; a reused rule takes this start's Agent,
+Runtime Profile and research question, as a new one would. Research screening recovery batches
 are high-priority Source jobs. Each managed structured-output execution has a
 two-minute adapter deadline and at most two job attempts. Managed provider
 deadlines abort the underlying HTTP request; CLI deadlines terminate the child
