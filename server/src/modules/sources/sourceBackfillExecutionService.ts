@@ -145,7 +145,10 @@ export class SourceBackfillExecutionService {
       return null;
     }
 
-    const remainingBudget = await this.remainingBudgetLocked(spaceId, plan, segment);
+    const { remaining: remainingBudget, unsettled } = await this.remainingBudgetLocked(spaceId, plan, segment);
+    // A sibling's in-flight page holds budget it may not use. Wait for it to
+    // settle rather than skipping this plan's remaining history for good.
+    if (remainingBudget <= 0 && unsettled > 0) return null;
     if (remainingBudget <= 0) {
       await this.db.query(
         `UPDATE source_backfill_segments SET status='skipped'
@@ -214,10 +217,14 @@ export class SourceBackfillExecutionService {
    * the in-flight reservation. Standalone Source plans keep their own budget
    * in strategy_json.
    */
-  private async remainingBudgetLocked(spaceId: string, plan: PlanRow, segment: SegmentRow): Promise<number> {
+  /**
+   * `remaining` is what may be dispatched now; `unsettled` is the part of the
+   * budget held only by in-flight reservations, which may yet come back.
+   */
+  private async remainingBudgetLocked(spaceId: string, plan: PlanRow, segment: SegmentRow): Promise<{ remaining: number; unsettled: number }> {
     if (plan.project_operation_kind !== "research") {
       const configuredMax = integerValue(objectValue(plan.strategy_json).max_items) ?? integerValue(objectValue(segment.window_json).max_items) ?? 100;
-      return configuredMax - Number(plan.items_ingested ?? 0);
+      return { remaining: configuredMax - Number(plan.items_ingested ?? 0), unsettled: 0 };
     }
     const total = integerValue(plan.operation_max_items);
     if (!total || total < 1) throw new HttpError(409, "Project Research operation has no valid item budget");
@@ -234,7 +241,12 @@ export class SourceBackfillExecutionService {
         WHERE p.project_operation_id=$1 AND p.space_id=$2 AND s.status='running'`,
       [plan.project_operation_id, spaceId],
     );
-    return total - Number(settled.rows[0]?.settled ?? 0) - Number(reserved.rows[0]?.reserved ?? 0);
+    const settledRemaining = total - Number(settled.rows[0]?.settled ?? 0);
+    const reservedItems = Number(reserved.rows[0]?.reserved ?? 0);
+    return {
+      remaining: settledRemaining - reservedItems,
+      unsettled: Math.max(0, Math.min(settledRemaining, reservedItems)),
+    };
   }
 
   private async reconcileLocked(spaceId: string, planId: string) {

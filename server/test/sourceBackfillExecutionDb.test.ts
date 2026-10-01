@@ -136,6 +136,21 @@ describe("SourceBackfillExecutionService shared project budget (real Postgres)",
     expect(planB.rows[0]!.status).toBe("completed");
   });
 
+  it("leaves a sibling's segment pending while the budget is only held by an in-flight page", async () => {
+    if (!db.available) return;
+    await seedPlan(PLAN_A, CHANNEL_A, 100, 0, "running");
+    await seedSegment(randomUUID(), PLAN_A, "running", { page_size: 10 });
+    await seedPlan(PLAN_B, CHANNEL_B, 100, 0, "approved");
+    await seedSegment(randomUUID(), PLAN_B, "pending", { from: "2026-01-01T00:00:00.000Z", to: "2026-02-01T00:00:00.000Z", max_items: 10 });
+
+    await new SourceBackfillExecutionService(db.pool).executeNext(SPACE, PLAN_B);
+
+    const planB = await db.pool.query<{ status: string }>(`SELECT status FROM source_backfill_plans WHERE id=$1`, [PLAN_B]);
+    const segment = await db.pool.query<{ status: string }>(`SELECT status FROM source_backfill_segments WHERE plan_id=$1`, [PLAN_B]);
+    expect(segment.rows[0]!.status).toBe("pending");
+    expect(planB.rows[0]!.status).toBe("approved");
+  });
+
   it("keeps a standalone (non-Project) plan on its own independent budget", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();
