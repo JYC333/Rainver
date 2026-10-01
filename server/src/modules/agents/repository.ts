@@ -1084,9 +1084,14 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       actorUserId: input.actorUserId,
     });
     if (normalized.isDefault) await clearDefaultRuntimeProfile(client, spaceId, agentId);
+    // The match above is by backend, so the caller's display name may already
+    // belong to another of this Agent's profiles — two members' hosts can share
+    // a name. Keep the name readable and make it unique, as host profiles do.
+    const name = await unusedRuntimeProfileName(client, spaceId, agentId, normalized.name, existing.rows[0]?.id ?? null);
     if (existing.rows[0]) {
       return runtimeProfileOut(await updateRuntimeProfileRow(client, {
         ...normalized,
+        name,
         spaceId,
         agentId,
         profileId: existing.rows[0].id,
@@ -1094,6 +1099,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     }
     return runtimeProfileOut(await insertRuntimeProfile(client, {
       ...normalized,
+      name,
       spaceId,
       agentId,
     }));
@@ -1896,4 +1902,20 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     );
     return result.rows[0] ? agentOut(result.rows[0]) : null;
   }
+}
+
+async function unusedRuntimeProfileName(
+  db: Queryable,
+  spaceId: string,
+  agentId: string,
+  name: string,
+  ownProfileId: string | null,
+): Promise<string> {
+  const taken = await db.query(
+    `SELECT 1 FROM agent_runtime_profiles
+      WHERE space_id = $1 AND agent_id = $2 AND name = $3 AND id IS DISTINCT FROM $4
+      LIMIT 1`,
+    [spaceId, agentId, name, ownProfileId],
+  );
+  return taken.rows[0] ? `${name.slice(0, 112)} · ${randomUUID().slice(0, 8)}` : name;
 }
