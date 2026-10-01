@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { seedArxivSourceChain, seedResearchOperation } from "./support/researchSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService.js";
+import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import { __setArxivThrottleForTests } from "../src/modules/sources/connectors/arxivThrottle.js";
+import { loadConfig } from "../src/config.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
 
 // Real-Postgres coverage for the shared item budget across sibling
 // Project Research backfill plans (one plan per selected Source Monitor,
@@ -265,5 +270,77 @@ describe("SourceBackfillExecutionService shared project budget (real Postgres)",
     await expect(new SourceBackfillExecutionService(db.pool).rescanZeroYield(SPACE, PLAN_A, 0)).rejects.toThrow(
       "Cannot adjust the item budget for a source backfill plan in status failed",
     );
+  });
+});
+
+describe("history page completion against a concurrent reconcile (real Postgres)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    __setArxivThrottleForTests(null);
+  });
+
+  function arxivPage(ids: string[]): string {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+      <feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+        ${ids.map((id) => `<entry>
+          <id>http://arxiv.org/abs/${id}v1</id>
+          <updated>2026-01-10T00:00:00Z</updated>
+          <published>2026-01-10T00:00:00Z</published>
+          <title>Paper ${id}</title>
+          <summary>Abstract ${id}.</summary>
+          <author><name>Author</name></author>
+          <link href="http://arxiv.org/abs/${id}v1" rel="alternate" type="text/html"/>
+        </entry>`).join("")}
+      </feed>`;
+  }
+
+  it("never lets a reconcile settle a segment between a page's completion and its next page", async () => {
+    if (!db.available) return;
+    __setArxivThrottleForTests({ sleep: async () => {} });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(arxivPage(["2601.00001", "2601.00002"]), { status: 200, headers: { "content-type": "application/atom+xml" } }));
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO source_search_specs
+         (id,space_id,source_channel_id,provider_key,research_query_attempt_id,compiled_provider_query_json,query_fingerprint,active_version,activated_at,created_at,updated_at)
+       VALUES ($1,$2,$3,'arxiv',NULL,$4::jsonb,'fp-spec',1,$5,$5,$5)`,
+      [randomUUID(), SPACE, CHANNEL_A, JSON.stringify({ search_query: "cat:cs.AI", max_results: 100 }), now],
+    );
+    await seedStandalonePlan(PLAN_A, CHANNEL_A, 4, 0, "running");
+    const segmentId = randomUUID();
+    const jobId = randomUUID();
+    const window = { from: "2026-01-01T00:00:00.000Z", to: "2026-02-01T00:00:00.000Z", max_items: 4, remaining_items: 4, page_size: 2, cursor: 0 };
+    await seedSegment(segmentId, PLAN_A, "running", window);
+    await db.pool.query(
+      `INSERT INTO extraction_jobs (id, space_id, connection_id, job_type, status, metadata_json, created_at)
+       VALUES ($1,$2,$3,'connection_scan','pending',$4::jsonb,$5)`,
+      [jobId, SPACE, CONNECTION, JSON.stringify({ source_channel_id: CHANNEL_A, source_backfill_plan_id: PLAN_A, source_backfill_segment_id: segmentId, window }), now],
+    );
+    await db.pool.query(`UPDATE source_backfill_segments SET extraction_job_id=$2 WHERE id=$1`, [segmentId, jobId]);
+
+    // The reconciler runs on its own loop; here it runs the moment the page's
+    // job is recorded as succeeded.
+    let reconciled = false;
+    const racing: Queryable = {
+      query: (async (sql: string, params?: unknown[]) => {
+        const result = await db.pool.query(sql, params);
+        if (!reconciled && sql.includes("SET status = $3") && params?.[2] === "succeeded") {
+          reconciled = true;
+          await new SourceBackfillExecutionService(db.pool).reconcile(SPACE, PLAN_A);
+        }
+        return result;
+      }) as Queryable["query"],
+    };
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, ARTIFACT_STORAGE_ROOT: "/tmp/rainver-test-artifacts" });
+    await expect(new SourceExtractionWorker(racing, config, publicAddressGuard).runPendingJob(jobId, SPACE))
+      .resolves.toMatchObject({ status: "succeeded" });
+
+    expect(reconciled).toBe(true);
+    const segment = await db.pool.query<{ status: string; extraction_job_id: string; window_json: Record<string, unknown> }>(
+      `SELECT status, extraction_job_id, window_json FROM source_backfill_segments WHERE id=$1`,
+      [segmentId],
+    );
+    expect(segment.rows[0]).toMatchObject({ status: "running", window_json: { cursor: 1, offset: 2, consumed_items: 2 } });
+    expect(segment.rows[0]!.extraction_job_id).not.toBe(jobId);
   });
 });

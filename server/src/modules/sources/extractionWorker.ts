@@ -145,10 +145,13 @@ export class SourceExtractionWorker {
     }
 
     let runChildrenAfterSuccess = false;
-    let connectionScanResult: { seen: number; page_size: number } | null = null;
     try {
       if (job.job_type === "connection_scan") {
-        connectionScanResult = await this.executeConnectionScan(job);
+        const connectionScanResult = await this.executeConnectionScan(job);
+        // Settle the page on its segment before the job reads as succeeded:
+        // the backfill reconciler settles a segment whose current job has
+        // succeeded, and would otherwise close it before its next page.
+        await this.queueBackfillContinuationIfNeeded(job, connectionScanResult);
       } else if (job.job_type === "manual_url" || job.job_type === "extract_text") {
         await this.executeTextExtraction(job);
         await emitSourcePostProcessingDeepAnalysisEvent(this.db, {
@@ -189,7 +192,6 @@ export class SourceExtractionWorker {
       }
     }
     if (runChildrenAfterSuccess) {
-      if (connectionScanResult) await this.queueBackfillContinuationIfNeeded(job, connectionScanResult);
       await this.runPendingConnectionScanChildren(job);
     }
 
