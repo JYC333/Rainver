@@ -14,6 +14,14 @@ export type UsageSourceType =
   | "cross_instance_import"
   | "manual_import";
 
+/** Usage brought into the ledger from elsewhere, which "include imported" toggles. */
+export const IMPORTED_USAGE_SOURCE_TYPES = [
+  "cli_history_import",
+  "ambient_host_history",
+  "cross_instance_import",
+  "manual_import",
+] as const satisfies readonly UsageSourceType[];
+
 export type UsageExecutionChannel =
   | "managed_api"
   | "provider_proxy"

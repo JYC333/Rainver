@@ -9,7 +9,7 @@ import {
   contentVisibilityFilterSql,
 } from "../access/contentAccessSql.js";
 import { countFromRow, type Queryable } from "../routeUtils/common.js";
-import type { NormalizedUsageObservation } from "./types.js";
+import { IMPORTED_USAGE_SOURCE_TYPES, type NormalizedUsageObservation } from "./types.js";
 import { accuracyMixZero } from "./normalizer.js";
 
 export interface UsageEventRecord {
@@ -941,7 +941,7 @@ function buildWhere(
     clauses.push(`${contentAccessLevelSql({ definition, alias: "e", userExpr })} = 'full'`);
   }
   if (filters.includeImported === false) {
-    clauses.push(`e.source_type NOT IN ('cli_history_import', 'cross_instance_import', 'manual_import')`);
+    clauses.push(`e.source_type NOT IN (${IMPORTED_USAGE_SOURCE_TYPES.map((type) => `'${type}'`).join(", ")})`);
   }
   if (filters.accuracy) {
     params.push(filters.accuracy);

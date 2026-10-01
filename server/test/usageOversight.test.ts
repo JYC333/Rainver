@@ -125,6 +125,44 @@ describe("usage oversight visibility", () => {
     ]);
   });
 
+  it("leaves ambient host history out when imported usage is excluded", async () => {
+    if (!db.available) return;
+    const repository = await seed("none");
+    await repository.appendEvent(normalizeUsageObservation(
+      {
+        space_id: SPACE,
+        event_type: "cli.history_usage",
+        source_type: "ambient_host_history",
+        execution_channel: "local_cli_transcript",
+        provider_type: "anthropic",
+        provider_usage: { input_tokens: 100, output_tokens: 50 },
+        idempotency_key: "ambient-import",
+      },
+      "instance-1",
+      {
+        owner_user_id: MEMBER,
+        visibility: "private",
+        access_level: "full",
+        source_resource_type: null,
+        source_resource_id: null,
+        project_folder_id: null,
+        project_id: null,
+        grant_snapshots: [],
+      },
+      OCCURRED_AT,
+    ));
+    const filters = {
+      activeSpaceId: SPACE,
+      userId: MEMBER,
+      view: "mine" as const,
+      from: "2026-07-01T00:00:00.000Z",
+      to: "2026-08-01T00:00:00.000Z",
+    };
+
+    expect((await repository.aggregate(filters)).totals.event_count).toBe(2);
+    expect((await repository.aggregate({ ...filters, includeImported: false })).totals.event_count).toBe(1);
+  });
+
   it.each<[OversightMode, number, number]>([
     ["none", 0, 0],
     ["summary", 1, 0],
