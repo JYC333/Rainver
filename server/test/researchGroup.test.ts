@@ -19,6 +19,7 @@ import { SourceChannelService } from "../src/modules/sources/channels/sourceChan
 import { SearchExecutionAdapter } from "../src/modules/sources/search/searchExecutionAdapter.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 describe("researchCheckpointPolicy", () => {
   // The checkpoint reform's decision table. These assertions are
@@ -322,8 +323,25 @@ describe("researchMonitorMaterializerDb", () => {
       await queries.selectAttempt(SPACE, plan.id, attempt.id, { terminalDecision: "accept" });
       await queries.finalizeStrategy(SPACE, strategy.id);
 
+      // Three active workflows in the Project: one already on this context's
+      // strategy, one on another Thread's strategy, and a draft with none.
+      const workflowOn = async (state: Record<string, unknown>) => {
+        const id = randomUUID();
+        await insertResearchWorkflowFixture(db.pool, {
+          id, spaceId: SPACE, projectId: PROJECT, startedByUserId: USER, state, now: new Date().toISOString(),
+        });
+        return id;
+      };
+      const sameContext = await workflowOn({ query_strategy_id: strategy.id, channel_ids: [] });
+      const otherThread = await workflowOn({ query_strategy_id: "another-threads-strategy", channel_ids: ["their-channel"] });
+      const draft = await workflowOn({ channel_ids: [] });
+      const strategyOf = async (id: string) => (await db.pool.query<{ state_json: { query_strategy_id?: string; channel_ids?: string[] } }>(
+        `SELECT state_json FROM project_research_workflows WHERE object_id=$1`, [id])).rows[0]!.state_json;
+
       const materializer = new ResearchMonitorMaterializer(db.pool, {} as ServerConfig);
       const first = await materializer.materialize(identity, strategy.id, { providerKeys: ["openalex"] });
+      expect(await strategyOf(otherThread)).toEqual({ query_strategy_id: "another-threads-strategy", channel_ids: ["their-channel"] });
+      expect((await strategyOf(draft)).query_strategy_id).toBeUndefined();
       const second = await materializer.materialize(identity, strategy.id, { providerKeys: ["openalex"] });
       expect(second).toEqual(first);
       expect(first.sources).toHaveLength(1);
@@ -420,6 +438,8 @@ describe("researchMonitorMaterializerDb", () => {
       expect(switched.rows.find((row) => row.id === first.sources[0]!.source_channel_id)?.status).toBe("archived");
       expect(switched.rows.find((row) => row.id === first.sources[0]!.source_channel_id)?.scheduler_status).toBe("archived");
       expect(switched.rows.find((row) => row.id === replacementMaterialized.sources[0]!.source_channel_id)?.status).toBe("active");
+      expect((await strategyOf(sameContext)).query_strategy_id).toBe(replacement.id);
+      expect((await strategyOf(otherThread)).query_strategy_id).toBe("another-threads-strategy");
 
       await new ResearchStrategyActivationService(db.pool).activate({ identity, strategyId: strategy.id, reason: "rollback" });
       const history = await db.pool.query<{ strategy_id: string; reason: string; deactivated_at: string | null }>(
