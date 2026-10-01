@@ -113,6 +113,11 @@ gated by it. Any crossing of a Space boundary — by either verb, to any
 destination — announces itself to the other members as pointer metadata when
 the Space has egress notifications on.
 
+The capture and its note are read as the caller alone, without Space
+oversight: a relocated block becomes a row other people read, and oversight is
+audit, not a route to publish. A colleague's private capture an admin can read
+only by oversight answers 404 to both preview and relocation.
+
 What counts as leaving is the *resolved destination Space*, not the destination
 name: a Project destination takes its Space from the caller's `project_id`, so
 `project_marginalia` can cross a boundary too.

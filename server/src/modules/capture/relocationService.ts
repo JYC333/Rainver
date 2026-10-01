@@ -6,6 +6,7 @@ import { PgKnowledgeRepository } from "../knowledge/repository.js";
 import { noteBlocks, removeBlocks } from "../knowledge/noteBlockIds.js";
 import { withNoteWrites } from "../knowledge/noteWriter.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { CaptureService, type CaptureDestination } from "./service.js";
 import {
@@ -216,6 +217,10 @@ async function resolveDestinationSpace(
  * projected into a note" check runs first, so a colleague's private capture
  * answered 409 where a nonexistent one answered 404. A small oracle, and a real
  * hole the moment a relocation path appears that does not read the note.
+ *
+ * Read without oversight: a relocated block becomes a row other people read,
+ * so an admin's audit reach must not be what makes a colleague's private
+ * capture relocatable.
  */
 async function loadCapture(db: Queryable, userId: string, activityId: string): Promise<CaptureRow> {
   const result = await db.query<CaptureRow & { marginalia: { note_id?: string; block_id?: string } | null }>(
@@ -227,7 +232,7 @@ async function loadCapture(db: Queryable, userId: string, activityId: string): P
         AND membership.user_id = $2
         AND membership.status = 'active'
       WHERE ar.id = $1 AND ar.discarded_at IS NULL
-        AND ${contentReadSql("activity", "ar", "$2")}
+        AND ${contentReadSql("activity", "ar", "$2", { includeOversight: false })}
       LIMIT 1
       FOR UPDATE OF ar`,
     [activityId, userId],
@@ -250,10 +255,14 @@ async function loadCapture(db: Queryable, userId: string, activityId: string): P
  * the boundary a run of orphan blocks stops at.
  */
 async function noteState(db: Queryable, userId: string, capture: CaptureRow) {
-  const note = await new PgKnowledgeRepository(db).getNote(
-    { spaceId: capture.space_id, userId },
-    capture.note_id!,
-  );
+  const identity = { spaceId: capture.space_id, userId };
+  // The body is read as the caller alone, like the capture above: relocation
+  // turns it into a copy other people read, and oversight is audit, not a
+  // route to publish (SECURITY_AND_ACCESS_BOUNDARIES.md).
+  if (await contentDecisionFromDb(db, identity, "space_object", capture.note_id!, { includeOversight: false }) !== "full") {
+    throw new HttpError(404, "Capture note not found");
+  }
+  const note = await new PgKnowledgeRepository(db).getNote(identity, capture.note_id!);
   if (!note) throw new HttpError(404, "Capture note not found");
   const anchors = await db.query<{ block_id: string }>(
     `SELECT payload_json -> 'marginalia' ->> 'block_id' AS block_id
