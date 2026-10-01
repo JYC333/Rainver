@@ -359,6 +359,18 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect((await plans.getPlan(identity, planId))?.root_run_id).toBeNull();
   });
 
+  it("schedules nothing more once the coordinator Run is cancelled", async () => {
+    const { plans, planId } = await createApprovedPlanWithBudget([]);
+    const executed = await plans.executePlan(identity, planId, { agentId: AGENT }) as { root_run_id: string };
+    await db.pool.query(`UPDATE runs SET status = 'cancelled' WHERE space_id = $1 AND id = $2`, [SPACE, executed.root_run_id]);
+    const runsBefore = await db.pool.query(`SELECT id FROM runs WHERE space_id = $1`, [SPACE]);
+
+    await expect(plans.reconcilePlan(identity, planId)).resolves.toMatchObject({ status: "failed", scheduled_node_ids: [] });
+    expect((await plans.getPlan(identity, planId))?.status).toBe("failed");
+    const runsAfter = await db.pool.query(`SELECT id FROM runs WHERE space_id = $1`, [SPACE]);
+    expect(runsAfter.rows).toHaveLength(runsBefore.rows.length);
+  });
+
   it("rejects an Agent plan proposal whose node declares a budget source that does not exist", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();

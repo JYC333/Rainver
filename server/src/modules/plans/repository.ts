@@ -498,13 +498,13 @@ export class PgPlanRepository {
 
   async reconcilePlan(identity: SpaceUserIdentity, planId: string) {
     return withQueryableTransaction(this.db, async (client) => {
-      const result = await client.query<PlanRow & { version_id: string; version_status: string; version_budget_json: unknown; root_agent_id: string | null; root_prompt: string | null; root_runtime_profile_id: string | null }>(
+      const result = await client.query<PlanRow & { version_id: string; version_status: string; version_budget_json: unknown; root_agent_id: string | null; root_prompt: string | null; root_runtime_profile_id: string | null; root_status: string | null }>(
         `SELECT p.id, p.space_id, p.project_folder_id, p.project_id, p.source_task_id, p.root_run_id,
                 p.current_plan_version_id, p.name, p.description, p.status,
                 p.created_by_user_id, p.created_by_agent_id, p.created_at, p.updated_at,
                 v.id AS version_id, v.status AS version_status, v.budget_json AS version_budget_json,
                 p.created_by_agent_id AS root_agent_id, root.prompt AS root_prompt,
-                root.requested_runtime_profile_id AS root_runtime_profile_id
+                root.requested_runtime_profile_id AS root_runtime_profile_id, root.status AS root_status
            FROM plans p JOIN plan_versions v ON v.id = p.current_plan_version_id AND v.space_id = p.space_id
            LEFT JOIN runs root ON root.id = p.root_run_id AND root.space_id = p.space_id
           WHERE p.space_id = $1 AND p.id = $2 FOR UPDATE OF p, v`,
@@ -514,6 +514,15 @@ export class PgPlanRepository {
       if (!plan) throw new HttpError(404, "Plan not found");
       if (!plan.root_run_id) throw new HttpError(409, "Plan has not been executed");
       if (plan.version_status !== "approved") throw new HttpError(409, "Plan version must be approved before reconciliation");
+      // A coordinator that has ended — cancelled by a person, or already
+      // finished — schedules nothing more; a child finishing late must not
+      // start the next layer under it.
+      if (plan.status !== "active" || (plan.root_status && TERMINAL_ROOT_STATUSES.has(plan.root_status))) {
+        if (plan.status === "active") {
+          await client.query(`UPDATE plans SET status = 'failed', updated_at = $3 WHERE space_id = $1 AND id = $2`, [identity.spaceId, planId, new Date().toISOString()]);
+        }
+        return { plan_id: planId, status: plan.status === "active" ? "failed" : plan.status, scheduled_node_ids: [] };
+      }
       await this.projectLatestNodeRuns(client, identity.spaceId, plan.version_id);
       const nodes = await client.query<{ id: string; node_kind: string; status: string; depends_on: string[] }>(
         `SELECT n.id, n.node_kind, n.status,
@@ -882,6 +891,8 @@ function nonNegativeNumberOrNull(value: unknown): number | null {
 function workflowInputSuffix(value: Record<string, unknown> | null): string {
   return value && Object.keys(value).length > 0 ? `\n\nInput (JSON): ${JSON.stringify(value)}` : "";
 }
+
+const TERMINAL_ROOT_STATUSES = new Set(["succeeded", "failed", "degraded", "cancelled", "orphaned"]);
 
 function finishPlan(client: Queryable, spaceId: string, planId: string, rootRunId: string, status: "succeeded" | "failed", summary: string, verification: unknown): Promise<void> {
   const now = new Date().toISOString();
