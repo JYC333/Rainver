@@ -175,6 +175,7 @@ async function materializeAcademicPaperInTransaction(
           OR ($3::varchar IS NOT NULL AND ap.doi = $3)
           OR ($4::varchar IS NOT NULL AND ap.openalex_id = $4)
           OR ($5::varchar IS NOT NULL AND ap.semantic_scholar_id = $5))
+      ORDER BY so.created_at ASC, ap.object_id ASC
       LIMIT 1`,
     [input.spaceId, academic.arxivId, academic.doi, academic.openalexId, academic.semanticScholarId],
   );
@@ -185,10 +186,19 @@ async function materializeAcademicPaperInTransaction(
     throw new Error("Academic paper is already materialized for a different Project");
   }
   if (existingObjectId) {
+    // The item can match several papers when it bridges identities that
+    // arrived separately (a preprint's arXiv id, the published DOI). The
+    // earliest paper takes the link; an identity another paper already holds
+    // stays with that paper rather than colliding on its unique index.
+    const unclaimed = (column: string, param: string): string =>
+      `COALESCE(${column}, CASE WHEN NOT EXISTS (
+         SELECT 1 FROM academic_papers other
+          WHERE other.space_id = $1 AND other.object_id <> $2 AND other.${column} = ${param}
+       ) THEN ${param} END)`;
     await db.query(
       `UPDATE academic_papers
-          SET doi=COALESCE(doi,$3), arxiv_id=COALESCE(arxiv_id,$4),
-              openalex_id=COALESCE(openalex_id,$5), semantic_scholar_id=COALESCE(semantic_scholar_id,$6),
+          SET doi=${unclaimed("doi", "$3::varchar")}, arxiv_id=${unclaimed("arxiv_id", "$4::varchar")},
+              openalex_id=${unclaimed("openalex_id", "$5::varchar")}, semantic_scholar_id=${unclaimed("semantic_scholar_id", "$6::varchar")},
               publication_date=COALESCE(publication_date,$7::timestamptz), venue=COALESCE(venue,$8),
               cited_by_count=CASE WHEN $9::integer IS NULL THEN cited_by_count ELSE GREATEST(COALESCE(cited_by_count,$9),$9) END,
               reference_count=CASE WHEN $10::integer IS NULL THEN reference_count ELSE GREATEST(COALESCE(reference_count,$10),$10) END, updated_at=$11

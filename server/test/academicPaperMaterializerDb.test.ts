@@ -379,6 +379,34 @@ describe("Academic paper materialization from arXiv source items (real Postgres)
     expect((await db.pool.query(`SELECT count(*)::int AS total FROM academic_papers WHERE doi='10.1000/cross-provider'`)).rows[0].total).toBe(1);
   });
 
+  it("links a record that bridges two existing papers without taking either's identity", async () => {
+    if (!db.available) return;
+    const preprint = await materializeAcademicPaperFromSourceItem(db.pool, {
+      spaceId: SPACE, projectId: PROJECT, sourceItemId: await seedArxivItem("2401.00009"),
+    });
+    const published = await materializeAcademicPaperFromSourceItem(db.pool, {
+      spaceId: SPACE, projectId: PROJECT,
+      sourceItemId: await seedProviderItem({ academic_provider: "openalex", openalex_id: "W900", doi: "10.1000/bridge", source_url: "https://openalex.org/W900" }, "Published"),
+    });
+    expect(published?.objectId).not.toBe(preprint?.objectId);
+
+    // Carries both the preprint's arXiv id and the published version's DOI.
+    const bridging = await materializeAcademicPaperFromSourceItem(db.pool, {
+      spaceId: SPACE, projectId: PROJECT,
+      sourceItemId: await seedProviderItem({ academic_provider: "semantic_scholar", semantic_scholar_id: "s2-900", arxiv_id: "2401.00009", doi: "10.1000/bridge", source_url: "https://semanticscholar.org/paper/s2-900" }, "Bridging"),
+    });
+
+    expect(bridging).toEqual({ objectId: preprint!.objectId, created: false });
+    const rows = await db.pool.query<{ object_id: string; arxiv_id: string | null; doi: string | null; semantic_scholar_id: string | null }>(
+      `SELECT object_id, arxiv_id, doi, semantic_scholar_id FROM academic_papers WHERE space_id = $1`,
+      [SPACE],
+    );
+    expect(rows.rows.find((row) => row.object_id === preprint!.objectId))
+      .toMatchObject({ arxiv_id: "2401.00009", doi: null, semantic_scholar_id: "s2-900" });
+    expect(rows.rows.find((row) => row.object_id === published!.objectId))
+      .toMatchObject({ arxiv_id: null, doi: "10.1000/bridge" });
+  });
+
   it("promotes a source-target corpus row in place when the SourceItem gains a Reference", async () => {
     if (!db.available) return;
     await seedBinding(null);
