@@ -1079,6 +1079,16 @@ async function upsertProjectCorpusObjectsFromSourceItems(
            ON provenance.corpus_item_id = duplicates.duplicate_id
        ON CONFLICT (corpus_item_id, source_item_id) DO NOTHING
        RETURNING corpus_item_id
+     ), moved_signals AS (
+       -- Evidence Signals cascade with their Corpus item; deleting the
+       -- duplicate below would silently take them, and a Candidate's grounds
+       -- with them.
+       UPDATE inquiry_evidence_signals signal
+          SET corpus_item_id = duplicates.canonical_id
+         FROM duplicates
+        WHERE signal.corpus_item_id = duplicates.duplicate_id
+          AND signal.space_id = duplicates.space_id
+       RETURNING signal.id
      ), merged AS (
        UPDATE project_corpus_items canonical
           SET triage_status = CASE
@@ -1327,6 +1337,16 @@ async function upsertProjectCorpusObjectsFromEvidence(
            ON provenance.corpus_item_id = duplicates.duplicate_id
        ON CONFLICT (corpus_item_id, source_item_id) DO NOTHING
        RETURNING corpus_item_id
+     ), moved_signals AS (
+       -- Evidence Signals cascade with their Corpus item; deleting the
+       -- duplicate below would silently take them, and a Candidate's grounds
+       -- with them.
+       UPDATE inquiry_evidence_signals signal
+          SET corpus_item_id = duplicates.canonical_id
+         FROM duplicates
+        WHERE signal.corpus_item_id = duplicates.duplicate_id
+          AND signal.space_id = duplicates.space_id
+       RETURNING signal.id
      ), merged AS (
        UPDATE project_corpus_items canonical
           SET triage_status = CASE

@@ -7,6 +7,7 @@ import { materializeAcademicPaperFromSourceItem } from "../src/modules/academic/
 import { syncProjectCorpusForSourceItem } from "../src/modules/projects/corpusRepository.js";
 import { materializeProjectSourceItemLinks } from "../src/modules/projects/projectSourceRoutingService.js";
 import { GraphProjectionRepository } from "../src/modules/graph/projectionRepository.js";
+import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 
 // Real-Postgres coverage for Academic Research arXiv paper materialization:
 // arXiv source items materialize into academic_paper_v1 objects (deduped by
@@ -496,6 +497,43 @@ describe("Academic paper materialization from arXiv source items (real Postgres)
         read_status: "discussed",
       }),
     ]);
+  });
+
+  it("moves Evidence Signals onto the canonical Reference row when merging a duplicate", async () => {
+    if (!db.available) return;
+    await seedBinding(null);
+    const itemId = await seedArxivItem("2401.00010");
+    await materializeProjectSourceItemLinks(db.pool, { spaceId: SPACE, sourceItemId: itemId });
+    await syncProjectCorpusForSourceItem(db.pool, { spaceId: SPACE, sourceItemId: itemId });
+    const duplicate = await db.pool.query<{ id: string }>(
+      `SELECT id FROM project_corpus_items WHERE project_id = $1 AND source_item_id = $2`,
+      [PROJECT, itemId],
+    );
+    const thread = await new InquiryThreadService(db.pool).createThread(
+      { spaceId: SPACE, userId: OWNER }, PROJECT, { kind: "hypothesis", statement: "It holds" },
+    );
+    const signalId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO inquiry_evidence_signals (id, space_id, project_id, thread_id, corpus_item_id, classification, dedupe_key, status, created_at)
+       VALUES ($1,$2,$3,$4,$5,'supports','signal-dedupe','pending',now())`,
+      [signalId, SPACE, PROJECT, thread.id, duplicate.rows[0]!.id],
+    );
+
+    const materialized = await materializeAcademicPaperFromSourceItem(db.pool, { spaceId: SPACE, projectId: PROJECT, sourceItemId: itemId });
+    const canonicalId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO project_corpus_items (
+         id, space_id, project_id, object_id, role, status, triage_status, read_status,
+         metadata_json, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'candidate','active','new','unread','{}'::jsonb,now(),now())`,
+      [canonicalId, SPACE, PROJECT, materialized!.objectId],
+    );
+    await syncProjectCorpusForSourceItem(db.pool, { spaceId: SPACE, sourceItemId: itemId });
+
+    const signal = await db.pool.query<{ corpus_item_id: string }>(
+      `SELECT corpus_item_id FROM inquiry_evidence_signals WHERE id = $1`, [signalId],
+    );
+    expect(signal.rows).toEqual([{ corpus_item_id: canonicalId }]);
   });
 
   it("serializes concurrent promotions of two SourceItems to one Reference", async () => {
