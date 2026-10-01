@@ -175,10 +175,13 @@ export class RetrievalEmbeddingBackfillService {
     const sourceIds = uniqueSourceConnectionIds(pending);
     if (sourceIds.length === 0) return base;
     const snapshots = await loadSourcePolicySnapshots(this.db, spaceId, sourceIds);
+    // No `payloadSourceConnectionIds`: this policy filters chunk by chunk, so
+    // each chunk is judged on its own sources. Naming the whole claimed batch
+    // as every chunk's payload would let one restricted source withhold all of
+    // them.
     return {
       ...base,
       sourcePolicies: sourceEgressPoliciesForSnapshots(snapshots),
-      payloadSourceConnectionIds: sourceIds,
     };
   }
 

@@ -82,6 +82,30 @@ describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
     expect(second.embedded).toBe(0);
   });
 
+  it("withholds only the chunk whose source may not leave, not the rest of its batch", async () => {
+    if (!db.available) return;
+    // A source with no policy snapshot fails closed for egress.
+    await db.pool.query(
+      `UPDATE retrieval_objects SET source_connection_ids_json = '["unknown-source"]'::jsonb
+        WHERE space_id = $1 AND object_id = 'embed-1'`,
+      [SPACE],
+    );
+
+    const result = await new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(EMBED_DIMENSIONS))
+      .backfillSpace(SPACE, { batchLimit: 100 });
+
+    expect(result.embedded).toBeGreaterThan(0);
+    const embedded = await db.pool.query<{ object_id: string; has_vec: boolean }>(
+      `SELECT object_id, bool_and(embedding IS NOT NULL) AS has_vec
+         FROM retrieval_chunks WHERE space_id = $1 GROUP BY object_id ORDER BY object_id`,
+      [SPACE],
+    );
+    expect(embedded.rows).toEqual([
+      { object_id: "embed-1", has_vec: false },
+      { object_id: "embed-2", has_vec: true },
+    ]);
+  });
+
   it("supports a vector distance query through the pgvector column/index", async () => {
     if (!db.available) return;
     await new RetrievalEmbeddingBackfillService(db.pool, fakeEmbedder(EMBED_DIMENSIONS)).backfillSpace(SPACE);
