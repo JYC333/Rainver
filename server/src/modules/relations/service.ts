@@ -197,6 +197,10 @@ export class RelationsService {
 
   async updatePerson(identity: SpaceUserIdentity, objectId: string, body: Record<string, unknown>): Promise<PersonOut> {
     await this.requireOwnedRelationObject(identity, objectId);
+    // An organization is a relation object too; this route rewrites only a person.
+    if (!(await this.repository.getPerson(this.pool, identity.spaceId, objectId, identity.userId))) {
+      throw new HttpError(404, "Relation person not found");
+    }
     const patch: { title?: string; summary?: string | null; pronouns?: string | null; headline?: string | null } = {};
     if (body.title !== undefined) patch.title = requiredString(body.title, "title");
     if (body.summary !== undefined) patch.summary = optionalString(body.summary);

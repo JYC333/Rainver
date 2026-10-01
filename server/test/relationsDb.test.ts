@@ -99,6 +99,30 @@ describe("relations module (real Postgres)", () => {
     ).rejects.toMatchObject({ statusCode: 404 });
   });
 
+  it("rewrites only a person through the person route, never another owned object", async () => {
+    if (!db.available) return;
+    await db.pool.query(
+      `INSERT INTO space_objects (id, space_id, object_type, title, summary, visibility, owner_user_id, created_by_user_id, created_at, updated_at)
+       VALUES ('owned-note', $1, 'note', 'Original title', 'Original summary', 'private', $2, $2, now(), now())`,
+      [SPACE, USER],
+    );
+    const organization = await service().createOrganization({ spaceId: SPACE, userId: USER }, { title: "Analytical Society" });
+
+    await expect(
+      service().updatePerson({ spaceId: SPACE, userId: USER }, "owned-note", { title: "Rewritten", summary: null }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    await expect(
+      service().updatePerson({ spaceId: SPACE, userId: USER }, organization.object_id, { title: "Rewritten" }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+
+    const rows = await db.pool.query<{ id: string; title: string; summary: string | null }>(
+      `SELECT id, title, summary FROM space_objects WHERE id = ANY($1::varchar[]) ORDER BY title`,
+      [["owned-note", organization.object_id]],
+    );
+    expect(rows.rows.map((row) => row.title)).toEqual(["Analytical Society", "Original title"]);
+    expect(rows.rows.find((row) => row.id === "owned-note")?.summary).toBe("Original summary");
+  });
+
   it("paginates listPeople honoring the requested limit and offset", async () => {
     if (!db.available) return;
     for (const name of ["Person A", "Person B", "Person C", "Person D"]) {
