@@ -883,6 +883,7 @@ export class PgSourcePostProcessingRepository {
          LEFT JOIN source_post_processing_runs pr
            ON pr.space_id = d.space_id AND pr.id = d.run_id
         WHERE d.space_id = $1 AND d.run_id = ANY($2::text[])
+          AND ${sourceItemReadableClause("ii", "$3", false)}
         ORDER BY d.created_at DESC, d.id DESC`,
       [input.spaceId, runIds, input.userId],
     );

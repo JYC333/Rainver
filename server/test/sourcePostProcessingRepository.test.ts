@@ -851,8 +851,11 @@ describe("source post-processing repository (real Postgres)", () => {
     );
     const theirList = await repo().listBriefings({ spaceId: SPACE, userId: OTHER, limit: 10, offset: 0 });
     expect(theirList.items).toEqual([expect.objectContaining({ run_ids: [run.id], digest_preview: null })]);
+    await db.pool.query(`UPDATE source_items SET visibility = 'private', owner_user_id = $2 WHERE id = $1`, [itemB, OWNER]);
     const theirDetail = await repo().getBriefing({ spaceId: SPACE, userId: OTHER, connectionId: CONNECTION, date: "2026-07-08" });
     expect(theirDetail?.runs).toEqual([expect.objectContaining({ run_id: run.id, summary: null })]);
+    // A decision names its item, so one on an item the reader cannot read is left out.
+    expect(theirDetail!.item_decisions.map((d) => d.source_item_id)).not.toContain(itemB);
   });
 
   it("emits and re-surfaces one daily Activity Inbox briefing pointer per source local day", async () => {
