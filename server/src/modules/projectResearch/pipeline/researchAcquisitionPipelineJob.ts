@@ -62,6 +62,8 @@ interface PipelinePayload {
   /** Identifies *this* pipeline run, so its outcome is reported even when an
    *  earlier run for the same Thread already reported an identical one. */
   jobId: string;
+  /** The outcome an earlier run of this job computed before its report was deferred. */
+  recordedOutcome: Record<string, unknown> | null;
 }
 
 /** True for a domain/semantic rejection (bad input, business-rule conflict);
@@ -94,8 +96,21 @@ export class ResearchAcquisitionPipelineRunner {
     const payload = this.parsePayload(job.payload, job.job_id);
     const identity: SpaceUserIdentity = { spaceId: job.space_id, userId: requireUserId(job) };
 
-    const outcome = await this.runPipeline(identity, payload);
-    if (outcome.status !== "started") await this.recordFailedAttempt(identity, payload, outcome);
+    // A busy Room turn defers this job and the worker runs it again from the
+    // top. The outcome is kept on the job, so the rerun only reports it:
+    // running the pipeline again recorded another failed attempt, repeated
+    // the query evaluation, and with `since` turned a started acquisition
+    // into a 409 "already active" failure.
+    const recorded = payload.recordedOutcome;
+    const outcome = recorded ?? await this.runPipeline(identity, payload);
+    if (!recorded) {
+      if (outcome.status !== "started") await this.recordFailedAttempt(identity, payload, outcome);
+      await this.pool.query(
+        `UPDATE jobs SET payload_json = payload_json || jsonb_build_object('pipeline_outcome', $3::jsonb), updated_at = now()
+          WHERE id = $1 AND space_id = $2`,
+        [job.job_id, identity.spaceId, JSON.stringify(outcome)],
+      );
+    }
     await this.postOutcome(identity, payload, outcome);
     return outcome as unknown as JobHandlerResult;
   }
@@ -117,6 +132,9 @@ export class ResearchAcquisitionPipelineRunner {
         : null,
       since: optionalString(raw.since) ?? null,
       jobId,
+      recordedOutcome: raw.pipeline_outcome && typeof raw.pipeline_outcome === "object" && !Array.isArray(raw.pipeline_outcome)
+        ? raw.pipeline_outcome as Record<string, unknown>
+        : null,
     };
   }
 

@@ -673,7 +673,9 @@ retry after a mid-pipeline failure resumes rather than restarts. A second,
 fully-identical invocation coalesces onto the same Operation through
 `startInitialIntake`'s own idempotency-key fingerprint match; a *different*
 concurrent start on an already-active workflow surfaces as a reported stage
-failure instead of a duplicate Operation.
+failure instead of a duplicate Operation. The job keeps its outcome in its
+payload before reporting it to the Room, so a report deferred by a busy Room
+turn is retried on its own rather than by running the pipeline again.
 
 **Bounded before it runs.** The acquisition passes
 `max_items: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` (200). Unbounded — which is

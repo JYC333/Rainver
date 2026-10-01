@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
-import type { JobEnvelopeForHandler } from "../src/modules/jobs/handlerRegistry.js";
+import { JobDeferredError, type JobEnvelopeForHandler } from "../src/modules/jobs/handlerRegistry.js";
 import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
 import { RESEARCH_PIPELINE_START_JOB, ResearchAcquisitionPipelineRunner } from "../src/modules/projectResearch/pipeline/researchAcquisitionPipelineJob.js";
@@ -310,6 +310,42 @@ describe("researchAcquisitionPipelineDb", () => {
         outcome_status: "assessment_not_passed",
       });
       expect(operations.rows[0]!.intent_text).toContain("assessment");
+    });
+
+    it("keeps its first outcome while a busy Room turn defers the report, instead of running the pipeline again", async () => {
+      if (!db.available) return;
+      __setQuestionRefineInvokerForTests(failingAssessmentInvoker());
+      const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
+        kind: "question",
+        statement: "Tell me everything about everything.",
+      });
+      const job = await makeJob(String(thread.id));
+      await db.pool.query(
+        `INSERT INTO jobs (id, space_id, user_id, job_type, status, priority, payload_json, attempts, max_attempts, scheduled_at, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,'running',0,$5::jsonb,1,3,now(),now(),now())`,
+        [job.job_id, SPACE, OWNER, RESEARCH_PIPELINE_START_JOB, JSON.stringify(job.payload)],
+      );
+      // An Agent's chat turn still holds the Room conversation.
+      const turn = randomUUID();
+      await db.pool.query(
+        `INSERT INTO runs (id, space_id, agent_id, agent_version_id, session_id, run_type, trigger_origin, status, mode,
+                           owner_user_id, visibility, created_at, updated_at, execution_kind, model_override_json)
+         VALUES ($1,$2,$3,$4,$5,'agent','manual','queued','live',$6,'space_shared',now(),now(),'agent',
+                 '{"chat_turn":{"schema_version":"chat_turn.v1"}}'::jsonb)`,
+        [turn, SPACE, AGENT, AGENT_VERSION, SESSION, OWNER],
+      );
+      const runner = new ResearchAcquisitionPipelineRunner(db.pool, config!, { adaptiveQueryDependencies: FAKE_QUERY_DEPENDENCIES });
+      await expect(runner.run(job)).rejects.toBeInstanceOf(JobDeferredError);
+
+      // The worker runs the deferred job again from its stored payload.
+      const stored = await db.pool.query<{ payload_json: Record<string, unknown> }>(`SELECT payload_json FROM jobs WHERE id=$1`, [job.job_id]);
+      await expect(runner.run({ ...job, payload: stored.rows[0]!.payload_json })).rejects.toBeInstanceOf(JobDeferredError);
+
+      const attempts = await db.pool.query(
+        `SELECT id FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research'`,
+        [SPACE, PROJECT],
+      );
+      expect(attempts.rows).toHaveLength(1);
     });
 
     // Advance-to-done idempotency: a second, identical invocation reuses the
