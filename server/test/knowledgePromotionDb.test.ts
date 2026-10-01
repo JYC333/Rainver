@@ -272,6 +272,21 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     expect(replacement.rows[0]?.content).toBe("Block one: the finding now reads differently.");
     // The new version keeps what the update did not mention.
     expect(replacement.rows[0]).toMatchObject({ aliases_json: ["The finding"], tags_json: ["retrieval"], confidence: 0.8 });
+
+    // ...including the block it is pinned to, so the next edit is still judged
+    // against that block instead of failing the event for good.
+    const replacementRef = await db.pool.query<{ pinned_source_ref_json: { block_anchors?: number[] } }>(
+      `SELECT pinned_source_ref_json FROM knowledge_items WHERE supersedes_item_id=$1`, [knowledgeItemId],
+    );
+    expect(replacementRef.rows[0]?.pinned_source_ref_json.block_anchors).toEqual([1]);
+    await writeNote(db.pool, {
+      spaceId: SPACE, noteId, expectVersion: 3,
+      content: { kind: "doc", doc: doc(["Block zero: edited once more.", "Block one: the finding now reads differently."]) },
+      source: "user_edit",
+    });
+    sweep = await processUnclaimedDomainChangeEvents(db.pool, SPACE);
+    expect(sweep.processed).toBe(1);
+    expect(sweep.outcomes.candidate_created).toBe(0);
   });
 
   it("promotes a Knowledge Candidate from an Inquiry Thread revision, keyed to a material Iteration", async () => {

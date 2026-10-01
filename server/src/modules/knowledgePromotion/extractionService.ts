@@ -159,7 +159,7 @@ export class KnowledgeExtractionService {
       const value = row.rows[0];
       if (!value) throw new HttpError(404, "Note not found or inaccessible");
       return {
-        ref: { kind: "note_revision", note_id: sourceId, revision_id: value.revision_id, version: value.version, content_hash: value.content_hash },
+        ref: { kind: "note_revision", note_id: sourceId, revision_id: value.revision_id, version: value.version, content_hash: value.content_hash, block_anchors: [] },
         text: value.normalized_text,
         visibility: value.visibility,
         ownerUserId: value.owner_user_id,
