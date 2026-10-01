@@ -179,6 +179,9 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   not caller-supplied input.
 - Archiving a Folder disables new Folder-backed execution but never touches disk.
   Unregistering removes only the registration row; it also never touches disk.
+  A Folder that Runs, Activity, Proposals, Rooms or other records still reference
+  keeps its row: unregister answers 409 `project_folder_in_use`, and archiving is
+  the way to retire it.
 
 ## Related Files
 - `server/src/db/schema/projectFolders.ts` — Project Folder + execution-config schema; access derives from Space/Project authority

@@ -179,7 +179,8 @@ new Folder-backed execution but never deletes, moves, or rewrites the
 physical directory; all metadata (id, name, tasks, runs, artifacts,
 proposals, audit references) is fully preserved. Unregistering
 (`POST /projects/{id}/folders/{folderId}/unregister`) removes only the
-Rainver registration row — it never touches disk either. There is no
+Rainver registration row — it never touches disk either — and is refused with
+409 `project_folder_in_use` while any record still references the Folder. There is no
 automatic missing-path detection or stale-marking scan; `POST
 /projects/{id}/folders/scan` only lists unregistered directories eligible
 for the "connect existing" creation flow.

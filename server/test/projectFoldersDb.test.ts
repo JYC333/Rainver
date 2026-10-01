@@ -157,6 +157,34 @@ describe("Project Folder database invariants", () => {
     }
   });
 
+  it("refuses to unregister a Folder that history still references, with a reason", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = randomUUID();
+    const root = await mkdtemp(join(tmpdir(), "rainver-used-folder-"));
+    try {
+      await insertFolder(db.pool, { id: folderId, rootPath: root });
+      await db.pool.query(
+        `INSERT INTO activity_records (
+           id, space_id, user_id, project_folder_id, activity_type, title, content, payload_json,
+           occurred_at, created_at, status, updated_at, source_kind, source_trust, visibility, owner_user_id
+         ) VALUES ($1,$2,$3,$4,'note','Used','Used the Folder','{}'::jsonb,now(),now(),'processed',now(),
+                   'project_folder_event','internal_system','private',$3)`,
+        [randomUUID(), SPACE, USER, folderId],
+      );
+      const repo = new PgProjectFolderRepository(
+        db.pool,
+        loadConfig({ WORKSPACE_ROOT: root, SERVER_DATABASE_URL: db.connectionUri }),
+      );
+
+      await expect(repo.unregister({ spaceId: SPACE, userId: USER }, PROJECT, folderId, { confirm: true }))
+        .rejects.toMatchObject({ statusCode: 409, responseBody: { code: "project_folder_in_use" } });
+      await expect(db.pool.query(`SELECT id FROM project_folders WHERE id=$1`, [folderId]))
+        .resolves.toMatchObject({ rowCount: 1 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("treats expected_version null as an absent-draft precondition", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "14141414-1414-4414-8414-141414141414";

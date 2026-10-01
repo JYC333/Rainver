@@ -537,11 +537,23 @@ export class PgProjectFolderRepository {
         });
       }
       await new PgProjectFileDraftRepository(db).deleteForFolder(db, identity.spaceId, folderId);
-      const result = await db.query(
-        `DELETE FROM project_folders WHERE id = $1 AND space_id = $2 AND project_id = $3`,
-        [folderId, identity.spaceId, projectId],
-      );
-      return (result.rowCount ?? 0) > 0;
+      try {
+        const result = await db.query(
+          `DELETE FROM project_folders WHERE id = $1 AND space_id = $2 AND project_id = $3`,
+          [folderId, identity.spaceId, projectId],
+        );
+        return (result.rowCount ?? 0) > 0;
+      } catch (error) {
+        // Runs, Activity, Proposals and Rooms keep pointing at a Folder they
+        // used; its registration stays for them, and archiving is the way out.
+        if ((error as { code?: unknown }).code !== "23503") throw error;
+        const detail = "This Folder is referenced by existing Runs, Activity or other records; archive it instead";
+        throw new HttpError(409, detail, {
+          detail,
+          code: "project_folder_in_use",
+          constraint: (error as { constraint?: unknown }).constraint ?? null,
+        });
+      }
     });
   }
 
