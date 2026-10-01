@@ -400,19 +400,25 @@ export class InquiryThreadService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
+      // Only what `addRelation` writes: an active structure edge between two
+      // Threads of this Project. Any other edge leaving a Thread — a reviewed
+      // `supports` to a Claim, a Note link — has its own lifecycle and must
+      // not be hard-deleted and recorded as a structure change here.
       const removed = await db.query<{ from_thread_id: string; to_thread_id: string; relation_kind: string }>(
         `DELETE FROM object_relations
           WHERE id = $1 AND space_id = $2
+            AND status = 'active'
+            AND link_type = ANY($5::varchar[])
             AND from_object_id IN (
               SELECT t.object_id FROM ${THREAD_FROM}
                WHERE t.project_id = $3 AND t.space_id = $2 AND ${threadReadableSql("so", "$4", "change")}
             )
             AND to_object_id IN (
-              SELECT so.id FROM space_objects so
-               WHERE so.space_id = $2 AND ${threadReadableSql("so", "$4", "change")}
+              SELECT t.object_id FROM ${THREAD_FROM}
+               WHERE t.project_id = $3 AND t.space_id = $2 AND ${threadReadableSql("so", "$4", "change")}
             )
           RETURNING from_object_id AS from_thread_id, to_object_id AS to_thread_id, link_type AS relation_kind`,
-        [relationId, identity.spaceId, projectId, identity.userId],
+        [relationId, identity.spaceId, projectId, identity.userId, [...THREAD_RELATION_KINDS]],
       );
       const edge = removed.rows[0];
       if (edge) {

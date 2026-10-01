@@ -118,6 +118,35 @@ describe("Inquiry Core (real Postgres)", () => {
     expect(runCount.rows[0]?.total).toBe("0");
   });
 
+  it("removes only Thread structure edges through the structure command", async () => {
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "What holds?" });
+    const other = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "What else holds?" });
+    const structural = await threadSvc.addRelation(identity, PROJECT, {
+      from_thread_id: question.id, to_thread_id: other.id, relation_kind: "related_to",
+    });
+    // A reviewed edge from the Thread to another kind of object, as an
+    // accepted object_relation_create proposal writes it.
+    const noteId = await createNote();
+    const reviewedEdge = randomUUID();
+    await db.pool.query(
+      `INSERT INTO object_relations (id, space_id, from_object_id, to_object_id, link_type, status, created_by_user_id, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'supports', 'active', $5, now(), now())`,
+      [reviewedEdge, SPACE, question.id, noteId, OWNER],
+    );
+
+    await threadSvc.removeRelation(identity, PROJECT, reviewedEdge);
+    await threadSvc.removeRelation(identity, PROJECT, structural.id as string);
+
+    const remaining = await db.pool.query<{ id: string }>(
+      `SELECT id FROM object_relations WHERE id = ANY($1::varchar[])`,
+      [[reviewedEdge, structural.id]],
+    );
+    expect(remaining.rows.map((row) => row.id)).toEqual([reviewedEdge]);
+  });
+
   it("protected cognitive fields cannot be overwritten through the work-management command", async () => {
     if (!db.available) return;
     const threadSvc = new InquiryThreadService(db.pool);
