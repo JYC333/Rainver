@@ -211,6 +211,44 @@ describe("self-service Always-on activation (autonomous_tick)", () => {
     expect(ticks.rows).toEqual([{ owner_user_id: MEMBER, mode: "observe_only", status: "succeeded" }]);
   });
 
+  it("lets the owner pause and archive a tick whose Agent can no longer run it", async (ctx) => {
+    if (!db.available || !db.pool || !app) return ctx.skip();
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: MEMBER });
+    const enabled = await app!.inject({
+      method: "PUT",
+      url: `/api/v1/spaces/${SPACE}/automations/autonomy`,
+      payload: { agent_id: AGENT },
+    });
+    const automationId = enabled.json().id as string;
+    // The tick now fails every fire. Stopping it must not depend on it being
+    // runnable, or the only way out of a failing schedule is closed.
+    await db.pool.query(`UPDATE agents SET status = 'archived' WHERE id = $1`, [AGENT]);
+
+    const paused = await app!.inject({
+      method: "PATCH",
+      url: `/api/v1/spaces/${SPACE}/automations/${automationId}`,
+      payload: { status: "paused" },
+    });
+    expect(paused.statusCode).toBe(200);
+    expect(paused.json()).toMatchObject({ status: "paused" });
+
+    // Turning it back on is where runnability is checked.
+    const resumed = await app!.inject({
+      method: "PATCH",
+      url: `/api/v1/spaces/${SPACE}/automations/${automationId}`,
+      payload: { status: "active" },
+    });
+    expect(resumed.statusCode).toBe(422);
+
+    const archived = await app!.inject({
+      method: "PATCH",
+      url: `/api/v1/spaces/${SPACE}/automations/${automationId}`,
+      payload: { status: "archived" },
+    });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json()).toMatchObject({ status: "archived" });
+  });
+
   it("requires a complete autonomy_budget before enabling launch mode", async (ctx) => {
     if (!db.available || !db.pool || !app) return ctx.skip();
     __setAuthIdentityForTests({ spaceId: SPACE, userId: MEMBER });

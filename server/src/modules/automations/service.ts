@@ -282,7 +282,14 @@ export class AutomationService {
       project_writer: hasProjectWriterAuthority,
       actor_is_owner: input.actorUserId === existing.owner_user_id,
     }, input.automationId);
-    if (nextTargetType !== AUTOMATION_TARGET_AGENT_RUN) {
+    // Preflight gates an Automation that will run, as it will run. Pausing,
+    // archiving or renaming one changes neither, and must stay possible when
+    // the target has stopped being runnable — that is when it is needed.
+    const nextStatus = status ?? existing.status;
+    const runnableChange = configJson !== undefined
+      || (hasProjectKey && nextProjectId !== existing.project_id)
+      || nextStatus !== existing.status;
+    if (nextTargetType !== AUTOMATION_TARGET_AGENT_RUN && nextStatus === "active" && runnableChange) {
       await this.runTargetPreflight({
         targetType: nextTargetType,
         spaceId: input.spaceId,

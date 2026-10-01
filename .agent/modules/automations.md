@@ -93,6 +93,11 @@ continue to require their own explicit pre-authorization.
   per-automation registration into the scheduler — it is a poll/sweep model.
 There is no external or webhook trigger kind.
 
+An update runs the target preflight only when the Automation will be active
+and its runnable shape changes (config, Project, or the status turning
+active). Pausing, archiving, or renaming never preflights, so an Automation
+whose target stopped being runnable can always be stopped.
+
 `trigger_type` is not the Run's `trigger_origin`. `fireResponsibility`
 (`targetSupport.ts`) decides the origin and the instructing person from what
 the fire carried, because ADR 0003 §5 reads both off the Run:
