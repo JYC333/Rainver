@@ -242,6 +242,15 @@ describe("addressing Agents in an Agent's reply", () => {
     ]);
   });
 
+  it("finds mentions written against CJK text, which has no spaces between words", () => {
+    const cjkRoster = [...roster, { agent_id: "agent-researcher", label: "研究员" }];
+    expect(parseAgentMentions("我同意，@研究员请补充一下数据来源。", cjkRoster).mentioned_agent_ids).toEqual(["agent-researcher"]);
+    expect(parseAgentMentions("请@研究员 看看", cjkRoster).mentioned_agent_ids).toEqual(["agent-researcher"]);
+    expect(parseAgentMentions("@Coder请检查", cjkRoster).mentioned_agent_ids).toEqual(["agent-coder"]);
+    // Latin text keeps its word boundaries.
+    expect(parseAgentMentions("someone@Coder and @Coders", cjkRoster).mentioned_agent_ids).toEqual([]);
+  });
+
   it("keeps positions when lowercasing changes a character's length", () => {
     const parsed = parseAgentMentions("İİ @Coder look", roster);
     expect(parsed.mentioned_agent_ids).toEqual(["agent-coder"]);
