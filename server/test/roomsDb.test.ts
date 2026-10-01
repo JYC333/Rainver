@@ -2723,6 +2723,24 @@ describe("Room workflow (real Postgres)", () => {
       return { owner, created, conversation, manager };
     }
 
+    it("admits a recipient whose wait ended while its group was paused once the group resumes", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Paused wait");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
+        content: "Both of you, please.",
+        recipient_segments: [{ recipient_agent_ids: ["agent-1", "agent-2"], content: "Both of you, please." }],
+      });
+      const [managerRun, specialistRun] = sent.run_ids as [string, string];
+      const groupId = sent.task_group_ids[0]!;
+      await groupService.changeStatus(owner, groupId, "paused");
+      await completeTurn(managerRun, "Done here.");
+      expect(await hasRunJob(specialistRun)).toBe(false);
+
+      await groupService.changeStatus(owner, groupId, "active");
+
+      expect(await hasRunJob(specialistRun)).toBe(true);
+    });
+
     it("retries a multi-segment turn with each Agent's own task", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Retry segments");

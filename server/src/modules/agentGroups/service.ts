@@ -28,6 +28,7 @@ import { PgHostThreadRepository, type HostThread } from "../hosts/threadReposito
 import { renderRoomStandingContext, roomExecutionRules, standingContextRequired } from "./roomStandingContext.js";
 import { chargeContainer, containerGroupOf, DISCUSSION_FANOUT_CEILING } from "../rooms/discussionService.js";
 import { admitAgentOriginRun } from "../rooms/quotaGate.js";
+import { AgentGroupRunLifecycleProjector } from "./lifecycleProjector.js";
 import { liveQuotaSource } from "../rooms/subscriptionLogins.js";
 import {
   HANDOFF_TOOL_ALLOWANCE,
@@ -882,7 +883,7 @@ export class AgentGroupRunService {
     groupId: string,
     status: "active" | "paused" | "cancelled",
   ): Promise<AgentRunGroupRecord> {
-    return withDbTransaction(this.pool, async (client) => {
+    const updated = await withDbTransaction(this.pool, async (client) => {
       const repo = new PgAgentGroupRepository(client);
       await this.requireManagedGroup(repo, identity, groupId);
       const updated = await repo.updateGroupStatus({
@@ -895,6 +896,23 @@ export class AgentGroupRunService {
       }
       return updated;
     });
+    // A dependency that finished while the group was paused woke nobody:
+    // resuming re-evaluates every Run still parked on one.
+    if (updated.status === "active") {
+      const waiting = await this.pool.query<{ id: string }>(
+        `SELECT id FROM runs
+          WHERE space_id = $1 AND run_group_id = $2 AND status = 'waiting_for_dependency'
+          ORDER BY created_at, id`,
+        [identity.spaceId, groupId],
+      );
+      const projector = new AgentGroupRunLifecycleProjector(this.pool, this.config);
+      const runs = new PgRunRepository(this.pool);
+      for (const row of waiting.rows) {
+        const run = await runs.getRun(identity.spaceId, row.id);
+        if (run) await projector.reconcileWaitingRun(run);
+      }
+    }
+    return updated;
   }
 
   private repos(client: PoolClient): {
