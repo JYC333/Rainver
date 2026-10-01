@@ -254,6 +254,12 @@ export class ProjectResearchAreaService {
     if (role) {
       const resolution = await resolveNotebookNote(this.db, identity.spaceId, projectId, role, identity.userId);
       if (resolution.present) note = resolution.note;
+      // A role held by a note this caller cannot read is still held: creating
+      // a note in that role would take it from the holder and silently swap
+      // the Project's baseline for an empty note.
+      else if ((await resolveNotebookNote(this.db, identity.spaceId, projectId, role, null)).present) {
+        throw new HttpError(404, "Note not found");
+      }
     } else {
       note = await this.resolveProjectNoteByExactTitle(identity, projectId, title);
     }

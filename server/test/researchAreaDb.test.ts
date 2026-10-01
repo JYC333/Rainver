@@ -119,6 +119,27 @@ describe("Research Area (real Postgres)", () => {
     })).rejects.toMatchObject({ statusCode: 404 });
   });
 
+  it("does not move a role away from a note the ask-AI caller cannot read", async () => {
+    if (!db.available || !config) return;
+    const owner = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchAreaService(db.pool, config);
+    const understanding = (await service.initializeArea(owner, PROJECT)).notes[0]!;
+    await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [understanding.id]);
+    const member = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Member','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [member, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, member, now]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, PROJECT, member, now]);
+
+    await expect(service.askAi({ spaceId: SPACE, userId: member }, PROJECT, {
+      prompt: "Rewrite it.", execution: { model_provider_id: PROVIDER },
+    })).rejects.toMatchObject({ statusCode: 404 });
+    const holders = await db.pool.query<{ object_id: string }>(
+      `SELECT object_id FROM notes WHERE role_project_id = $1 AND project_role = 'understanding'`, [PROJECT],
+    );
+    expect(holders.rows).toEqual([{ object_id: understanding.id }]);
+  });
+
   it("nests the project's auto-created notes folder under the seeded PARA 'Projects' folder", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();
