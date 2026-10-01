@@ -93,7 +93,19 @@ export class SourceAnnotationService {
     // has to allow the destination. An item whose connection refuses is dropped
     // from the batch rather than failing it — one governed source must not stop
     // the rest of the space being annotated.
-    const allowedItemIds = await this.filterItemsByEgress(spaceId, itemIds, agentId, repo);
+    let allowedItemIds: string[];
+    try {
+      allowedItemIds = await this.filterItemsByEgress(spaceId, itemIds, agentId, repo);
+    } catch (error) {
+      // A 409 means the annotator itself cannot be resolved to a destination
+      // (no enabled runtime profile, provider not granted here). Like a missing
+      // agent, that is the space's setup, not the items, so they keep waiting
+      // with their retry budget intact.
+      if (error instanceof HttpError && error.statusCode === 409) {
+        return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: 0, failed: 0, run_id: null, status: "blocked", reason: "annotator_profile_unavailable" };
+      }
+      throw error;
+    }
     if (allowedItemIds.length === 0) {
       return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: itemIds.length, failed: 0, run_id: null, status: "blocked", reason: "source_egress_denied" };
     }
@@ -184,7 +196,11 @@ export class SourceAnnotationService {
         }
         try {
           await assertSourcePromptEgressAllowed(this.db, connection, agentId);
-        } catch {
+        } catch (error) {
+          // Only the gate's refusal parks items. Anything else — a profile
+          // that cannot be resolved, a failed query — is not a decision about
+          // this source and must not turn its items terminal.
+          if (!(error instanceof HttpError && error.statusCode === 403)) throw error;
           for (const id of connectionItemIds) denied.add(id);
         }
       }
