@@ -231,6 +231,31 @@ describe("SourceBackfillExecutionService shared project budget (real Postgres)",
     expect(segment.rows[0]!.window_json.page_size).toBe(3);
   });
 
+  it("continues a partial from the page after the last one it imported", async () => {
+    if (!db.available) return;
+    await seedStandalonePlan(PLAN_A, CHANNEL_A, 200, 200, "completed");
+    // Two full pages imported: the second started at item 100, and the budget
+    // ran out at its end.
+    await seedSegment(randomUUID(), PLAN_A, "succeeded", {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-02-01T00:00:00.000Z",
+      cursor: 1,
+      offset: 100,
+      consumed_items: 200,
+      next_cursor: 2,
+      partial: true,
+      exhausted: false,
+    });
+
+    const dispatched = await new SourceBackfillExecutionService(db.pool).continuePartial(SPACE, PLAN_A, 100);
+
+    const job = await db.pool.query<{ metadata_json: { window: Record<string, unknown> } }>(
+      `SELECT metadata_json FROM extraction_jobs WHERE id=$1`,
+      [(dispatched as { job_id: string }).job_id],
+    );
+    expect(job.rows[0]!.metadata_json.window).toMatchObject({ cursor: 2, offset: 200, consumed_items: 200 });
+  });
+
   it("keeps a page-numbered connector's page width when it resumes a segment", async () => {
     if (!db.available) return;
     await db.pool.query(`UPDATE source_connectors SET connector_key='openalex_api' WHERE id=$1`, [CONNECTOR]);

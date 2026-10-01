@@ -354,15 +354,23 @@ export class SourceBackfillExecutionService {
     const window = segment.window_json && typeof segment.window_json === "object" && !Array.isArray(segment.window_json)
       ? segment.window_json as Record<string, unknown>
       : {};
+    // The partial window still describes the last page imported; resume at
+    // the page after it, which the worker recorded as `next_cursor`, from the
+    // item the segment reached.
+    const cursor = (window.next_cursor == null ? null : integerValue(window.next_cursor))
+      ?? (window.cursor == null ? 0 : integerValue(window.cursor) ?? 0) + 1;
+    const consumedItems = window.consumed_items == null ? null : integerValue(window.consumed_items);
     const nextWindow = {
       ...window,
+      cursor,
+      ...(consumedItems !== null ? { offset: consumedItems } : {}),
       max_items: additionalItems,
       remaining_items: additionalItems,
       page_size: Math.min(100, additionalItems),
       partial: false,
       exhausted: false,
       has_more: true,
-      next_cursor: window.cursor ?? null,
+      next_cursor: cursor,
     };
     const currentMax = integerValue(objectValue(plan.strategy_json).max_items) ?? Number(plan.items_ingested ?? 0);
     if (plan.project_operation_kind === "research") {
