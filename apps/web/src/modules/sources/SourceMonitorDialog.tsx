@@ -87,6 +87,9 @@ export function SourceMonitorDialogContent({
   const searchMode = supportsSearch(provider)
   const isArxiv = provider?.provider_key === 'arxiv'
   const editing = Boolean(monitor)
+  // A search monitor's compiled query is versioned on the server and cannot be
+  // edited in place; editing changes only its name and schedule.
+  const queryLocked = editing && searchMode
 
   useEffect(() => {
     if (!open) return
@@ -158,7 +161,9 @@ export function SourceMonitorDialogContent({
       toast.error('Enter a source name')
       return
     }
-    if (searchMode) {
+    if (queryLocked) {
+      // The versioned query is not resubmitted.
+    } else if (searchMode) {
       if (isArxiv && arxivMode === 'search' && !searchQuery.trim()) {
         toast.error('Enter a search query')
         return
@@ -189,8 +194,7 @@ export function SourceMonitorDialogContent({
       if (editing && monitor) {
         await sourcesApi.updateChannel(monitor.id, {
           name: resolvedMonitorName,
-          query,
-          endpoint_url: searchMode ? null : endpointUrl.trim(),
+          ...(searchMode ? {} : { query, endpoint_url: endpointUrl.trim() }),
           fetch_frequency: frequency,
           schedule_rule: scheduleRule,
           ...(mode === 'source' ? { source_name: sourceName.trim() } : {}),
@@ -272,7 +276,11 @@ export function SourceMonitorDialogContent({
               <Input value={monitorName} onChange={event => setMonitorName(event.target.value)} placeholder={isArxiv ? 'Agent memory' : 'Research updates'} />
             </label>
 
-            {searchMode ? (
+            {queryLocked ? (
+              <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                This monitor's query is fixed. Create a new monitor to search for something else.
+              </div>
+            ) : searchMode ? (
               <>
                 {isArxiv && (
                   <label className="block space-y-1 text-sm">

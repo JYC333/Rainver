@@ -99,4 +99,22 @@ describe('Source detail', () => {
     expect(screen.getByLabelText('Search scope')).toBeInTheDocument()
     expect(screen.queryByLabelText('Source platform')).not.toBeInTheDocument()
   })
+
+  it('saves a search monitor edit without resubmitting its versioned query', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(sourcesApi.updateChannel).mockResolvedValue(monitor('monitor-1', 'Renamed', {}) as never)
+    renderPage()
+
+    await user.click((await screen.findAllByRole('button', { name: /edit/i }))[0]!)
+    const name = screen.getByDisplayValue('Agent memory')
+    await user.clear(name)
+    await user.type(name, 'Renamed')
+    await user.click(screen.getByRole('button', { name: 'Save monitor' }))
+
+    expect(sourcesApi.updateChannel).toHaveBeenCalledTimes(1)
+    const [, body] = vi.mocked(sourcesApi.updateChannel).mock.calls[0]!
+    expect(body).toMatchObject({ name: 'Renamed', fetch_frequency: 'daily' })
+    expect(body).not.toHaveProperty('query')
+    expect(body).not.toHaveProperty('endpoint_url')
+  })
 })
