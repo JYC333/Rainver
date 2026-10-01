@@ -272,6 +272,25 @@ describe("AdaptiveQueryOrchestrator", () => {
     });
     expect(store.createdStrategyInput).toMatchObject({ parentStrategyId: "strategy", adaptationDirection: "broaden" });
     expect(store.attempts[0]?.direction).toBe("broaden");
+    // Broadened from the monitored query itself (all three expansions), not
+    // from a re-truncated baseline that broadening only restored.
+    expect(store.attempts[0]?.semanticQuery).toMatchObject({ expansions: semanticIntent().expansions, qualifiers: [] });
+  });
+
+  it("refuses a replacement version when no monitored query can move in the requested direction", async () => {
+    const store = new FakeStore(["openalex"]);
+    store.seedMaterialized();
+    const orchestrator = new AdaptiveQueryOrchestrator({} as Queryable, {} as ServerConfig, {
+      repository: store,
+      contextRepository: { get: async () => contextVersion() },
+      previewGateway: { preview: async () => ({ providerHitCount: 50, accessibleHitCount: 50, candidates: [] }) },
+      assessor: { assess: () => observation(50) },
+    });
+    await expect(orchestrator.evaluateVersion({ spaceId: "space", userId: "user" }, {
+      projectId: "project", sourceStrategyId: "strategy", direction: "narrow", candidateBudget: 100,
+    })).rejects.toMatchObject({ statusCode: 409 });
+    expect(store.createdStrategyInput).toBeNull();
+    expect(store.attempts).toHaveLength(0);
   });
 
   describe("retryProvider", () => {

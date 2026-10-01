@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../../config.js";
 import { insertProposalRow } from "../../proposals/reviewPackets.js";
-import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common.js";
+import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
 import { AdaptiveQueryOrchestrator } from "./adaptiveQueryOrchestrator.js";
 import {
   DEFAULT_RESEARCH_MONITORING_FEEDBACK_POLICY,
@@ -106,12 +106,20 @@ export class ResearchMonitoringCoordinator {
       return { proposal_id: null, direction: null, reason: "Managed web credentials require an explicit user-led query reassessment." };
     }
     const candidateBudget = Math.max(1, Math.min(10_000, Number(source.execution_budget.candidate_budget) || 1_000));
-    const candidate = await new AdaptiveQueryOrchestrator(this.db, this.config).evaluateVersion(input.identity, {
-      projectId: input.projectId,
-      sourceStrategyId: input.strategyId,
-      direction: decision.direction,
-      candidateBudget,
-    });
+    let candidate;
+    try {
+      candidate = await new AdaptiveQueryOrchestrator(this.db, this.config).evaluateVersion(input.identity, {
+        projectId: input.projectId,
+        sourceStrategyId: input.strategyId,
+        direction: decision.direction,
+        candidateBudget,
+      });
+    } catch (error) {
+      // No replacement that differs from the monitored queries: proposing one
+      // would only swap a channel for an identical one and start a cooldown.
+      if (error instanceof HttpError && error.statusCode === 409) return { proposal_id: null, direction: null, reason: error.message };
+      throw error;
+    }
     if (!candidate.provider_plans.some((plan) => plan.status === "selected")) {
       return { proposal_id: null, direction: null, reason: "The replacement strategy produced no selectable provider query." };
     }

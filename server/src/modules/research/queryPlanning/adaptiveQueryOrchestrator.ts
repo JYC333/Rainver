@@ -162,6 +162,18 @@ export class AdaptiveQueryOrchestrator {
       return attempt ? [{ provider: plan.provider_key, intent: attempt.semantic_query }] : [];
     });
     if (selected.length === 0) throw new HttpError(409, "The active query strategy has no selected provider query");
+    // Each provider steps from the exact query it monitors with. Re-deriving
+    // `ladder.initial()` from it truncated away earlier adjustments, so the
+    // "adapted" query came out identical to the monitored one, or moved the
+    // other way. The stored query is also the only vocabulary left, so a
+    // direction may have no step at all: then there is nothing to propose.
+    const startingSteps = new Map(selected.map((item) => [item.provider, {
+      sequence: 1, direction: "initial" as const, semanticQuery: item.intent,
+    }]));
+    const changes = selected.some((item) => JSON.stringify(
+      this.ladder.next(startingSteps.get(item.provider)!, item.intent, input.direction, item.provider).semanticQuery,
+    ) !== JSON.stringify(item.intent));
+    if (!changes) throw new HttpError(409, `The monitored queries cannot ${input.direction} any further from their stored terms`);
     const contextVersion = await this.contextRepository.get(identity.spaceId, input.projectId, source.research_context_version_id);
     if (!contextVersion) throw new HttpError(404, "Research context version not found");
     const providerBudget = Math.max(1, Math.ceil(input.candidateBudget / selected.length));
@@ -191,6 +203,8 @@ export class AdaptiveQueryOrchestrator {
       intents.get(plan.provider_key)!,
       providerBudget,
       input.direction,
+      0,
+      startingSteps.get(plan.provider_key),
     )));
     await this.repository.finalizeStrategy(identity.spaceId, strategy.id);
     return (await this.repository.getStrategy(identity.spaceId, input.projectId, strategy.id))!;

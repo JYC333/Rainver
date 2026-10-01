@@ -802,7 +802,10 @@ high-relevance scans may propose broadening; only overloaded scans with weak
 conservative acceptance or sustained queue pressure may propose narrowing.
 
 A feedback decision evaluates a fresh, maximum-three-attempt strategy from the
-active strategy's stored semantic intent. It never recompiles the long research
+active strategy's stored semantic intent. Each provider steps in the decided
+direction from its selected query exactly as stored, not from a re-truncated
+baseline; when no provider's query can move that way, no replacement is
+evaluated or proposed. It never recompiles the long research
 question as a provider query and never edits an active Source Channel in place.
 The evaluated replacement is presented as a
 `research_query_strategy_activation` proposal. Approval materializes its exact
