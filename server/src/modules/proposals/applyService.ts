@@ -1,8 +1,8 @@
 import { isProjectOwnerLevel } from "../projects/access.js";
 import { createHash, randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
-import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { PoolClient } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -27,7 +27,7 @@ import { proposalActivityAudience } from "./decisionActivity.js";
 import { PgSnapshotStore } from "../projectFolders/snapshotStore.js";
 import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
-import { assertCodePatchTargetInsideRoot } from "../projectFolders/codePatch.js";
+import { assertCodePatchTargetInsideRoot, CodePatchFileTransaction } from "../projectFolders/codePatch.js";
 import { validatePath } from "@rainver/folder-read";
 import { HttpError } from "../routeUtils/common.js";
 import type {
@@ -535,6 +535,7 @@ export class PgProposalApplyService {
     identity: { spaceId: string; userId: string },
   ): Promise<{ rolled_back_paths: string[] } | null> {
     const client = await this.connect();
+    let restore: CodePatchFileTransaction | null = null;
     try {
       await client.query("BEGIN");
 
@@ -596,20 +597,11 @@ export class PgProposalApplyService {
         }
       }
 
-      // Restore files to pre-apply state
-      const restoredPaths: string[] = [];
-      for (const file of snapshot.files) {
-        const absPath = await target(file.path);
-        if (file.existed && file.content !== null) {
-          await mkdir(dirname(absPath), { recursive: true });
-          await writeFile(absPath, file.content, "utf8");
-        } else {
-          await unlink(absPath).catch((err: NodeJS.ErrnoException) => {
-            if (err.code !== "ENOENT") throw err;
-          });
-        }
-        restoredPaths.push(file.path);
-      }
+      // Restore files to pre-apply state. Should a later write or the commit
+      // fail, the catch below puts the applied content back, so the patch
+      // still matches its recorded hashes and the rollback can be retried.
+      restore = new CodePatchFileTransaction(root, folder.protected);
+      const restoredPaths = await restore.restore(snapshot.files);
 
       await new PgSnapshotStore(client).markRolledBack(snapshot.id, identity.userId);
 
@@ -650,7 +642,7 @@ export class PgProposalApplyService {
       return { rolled_back_paths: restoredPaths };
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
-      if (error instanceof ProposalApplyHttpError) throw error;
+      if (restore) await restore.rollback().catch(() => undefined);
       throw error;
     } finally {
       client.release();

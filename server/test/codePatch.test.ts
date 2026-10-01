@@ -103,6 +103,25 @@ describe("code patch file transaction", () => {
     await expect(readFile(join(root, "b.txt"), "utf8")).resolves.toBe("old b\n");
   });
 
+  it("puts the applied content back when restoring a snapshot fails part way", async () => {
+    const root = await tmpRoot();
+    await writeFile(join(root, "a.txt"), "new a\n", "utf8");
+    await writeFile(join(root, "added.txt"), "added\n", "utf8");
+    await writeFile(join(root, "blocker"), "a file where a folder was\n", "utf8");
+    const tx = new __codePatchTestHooks.CodePatchFileTransaction(root, false);
+
+    await expect(tx.restore([
+      { path: "a.txt", existed: true, content: "old a\n" },
+      { path: "added.txt", existed: false, content: null },
+      { path: "blocker/b.txt", existed: true, content: "old b\n" },
+    ])).rejects.toThrow();
+
+    await tx.rollback();
+
+    await expect(readFile(join(root, "a.txt"), "utf8")).resolves.toBe("new a\n");
+    await expect(readFile(join(root, "added.txt"), "utf8")).resolves.toBe("added\n");
+  });
+
   it("refuses to write through a directory link that leaves the Folder", async () => {
     const root = await tmpRoot();
     const outside = await tmpRoot();

@@ -44,6 +44,8 @@ Proposals are the product review and application boundary for durable mutations.
   has not already been used, and every applied file still holds what the patch
   wrote (409 otherwise). It sets the proposal's status to `rolled_back` and writes a
   `proposal.code_patch.rolled_back` activity at the proposal's own visibility.
+  If a file write or the commit fails, the restored files get the applied content
+  back, so the proposal stays `accepted` and the rollback can be retried.
 - Accept, reject, rollback and egress approval share one reach rule,
   `authorizeProposalDecision`: same Space, the state the decision acts on,
   content-readable, and — for a Run's proposal — inside a Room the caller can

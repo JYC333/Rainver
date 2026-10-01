@@ -430,7 +430,7 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
   };
 }
 
-class CodePatchFileTransaction {
+export class CodePatchFileTransaction {
   private readonly preimages: Array<{ path: string; absolutePath: string; existed: boolean; content: Buffer | null }> = [];
 
   constructor(
@@ -479,6 +479,39 @@ class CodePatchFileTransaction {
     return updated;
   }
 
+  /**
+   * Write a pre-apply snapshot back over the Folder, recording what each file
+   * held first so `rollback()` can put the applied content back if a later
+   * write or the database commit fails.
+   */
+  async restore(files: SnapshotFile[]): Promise<string[]> {
+    const restored: string[] = [];
+    for (const file of files) {
+      const target = this.targetPath(file.path);
+      await assertCodePatchTargetInsideRoot(this.root, target, file.path);
+      const existing = await readFile(target).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      this.preimages.push({
+        path: file.path,
+        absolutePath: target,
+        existed: existing !== null,
+        content: existing,
+      });
+      if (file.existed && file.content !== null) {
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, file.content, "utf8");
+      } else {
+        await unlink(target).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+      }
+      restored.push(file.path);
+    }
+    return restored;
+  }
+
   async rollback(): Promise<void> {
     for (const preimage of [...this.preimages].reverse()) {
       if (preimage.existed && preimage.content) {
@@ -505,8 +538,12 @@ class CodePatchFileTransaction {
     if (!operation.preimage_exists && operation.preimage_sha256 !== null) {
       throw new HttpError(422, `preimage_sha256 must be null for new file ${operation.path}`);
     }
+    return this.targetPath(operation.path);
+  }
+
+  private targetPath(path: string): string {
     return validatePath({
-      path: resolve(this.root, operation.path),
+      path: resolve(this.root, path),
       allowedRoot: this.root,
       mode: "write",
       protectedFolder: this.protectedFolder,
