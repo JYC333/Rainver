@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { redactEvidenceText } from "../runs/evidenceRedaction.js";
+import { isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
 import { runFinalizationReconcilerRegistry } from "../runs/finalizationReconcilerRegistry.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
 import type { Queryable, RunRecord } from "../runs/runRepositoryTypes.js";
 import { autonomyDiscovererRegistry, type AutonomyCandidateKind } from "./registry.js";
 
@@ -10,8 +12,22 @@ export function registerAutonomyRunFinalizationReconciler(): void {
   }, "autonomy");
 }
 
+/**
+ * The candidate lock, the report, the completion projection (link consumption
+ * and cursor advance), the candidate row and the coordinator settle as one
+ * transaction. Finalization hands this the pool; joined when the caller (the
+ * review-timeout recovery) already holds a transaction.
+ */
 export async function reconcileAutonomyRun(db: Queryable, run: RunRecord): Promise<void> {
   if (run.trigger_origin !== "autonomous") return;
+  // Finalization calls this after the Supervisor's decision. A failed child it
+  // requeued or held for review can still finish; it is settled when it ends
+  // (its next finalization, or the review-timeout cancellation), not now.
+  if (!isHardTerminalRunStatus(run.status)) return;
+  await withQueryableTransaction(db, (tx) => reconcileAutonomyRunInTransaction(tx, run));
+}
+
+async function reconcileAutonomyRunInTransaction(db: Queryable, run: RunRecord): Promise<void> {
   const candidateResult = await db.query<{
     id: string;
     owner_user_id: string;

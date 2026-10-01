@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, inject, it } from "vitest";
+import { beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { reconcileAutonomyRun } from "../src/modules/autonomy/finalizationReconciler.js";
 import { AutonomyRecoveryService } from "../src/modules/autonomy/recoveryService.js";
 import { autonomyDiscovererRegistry } from "../src/modules/autonomy/registry.js";
@@ -405,6 +405,36 @@ describeWithPostgres("bounded periodic digest launch", () => {
     expect(coordinator.rows[0]?.status).toBe("succeeded");
   });
 
+  it("leaves a child the Supervisor held for review or requeued unsettled", async () => {
+    await seedProject(PROJECT_A, "Held Project", beforeNow(6 * DAY_MS));
+    const launched = await launch();
+    const runId = launched.launched_run_ids[0]!;
+    await dispatchAutonomyRun(runId);
+    // Finalization runs this reconciler after the Supervisor's decision, so it
+    // sees a failed child already held for review (or requeued). Settling then
+    // marked the candidate failed while the Run could still finish, and the
+    // next tick relaunched the same facts beside it.
+    const held = await new PgRunRepository(db.pool).markRunWaitingForReview({
+      run_id: runId,
+      space_id: SPACE,
+      approval_code: "supervisor_review",
+      message: "Held for review after a failure.",
+      risk_level: "low",
+      paused_at: NOW.toISOString(),
+    });
+    await reconcileAutonomyRun(db.pool, held ?? (await new PgRunRepository(db.pool).getRun(SPACE, runId))!);
+    const candidate = await db.pool.query<{ status: string }>(
+      `SELECT status FROM autonomy_candidates WHERE run_id = $1`,
+      [runId],
+    );
+    expect(candidate.rows[0]?.status).toBe("launched");
+    const coordinator = await db.pool.query<{ status: string }>(
+      `SELECT status FROM runs WHERE id = $1`,
+      [launched.coordinator_run_id],
+    );
+    expect(coordinator.rows[0]?.status).toBe("waiting_for_dependency");
+  });
+
   it("records a domain-budget refusal without aborting partial fan-out", async () => {
     await seedProject(PROJECT_A, "Budget Project A", beforeNow(6 * DAY_MS));
     await seedProject(PROJECT_B, "Budget Project B", beforeNow(5 * DAY_MS));
@@ -518,6 +548,50 @@ describeWithPostgres("bounded evolution review launch", () => {
       { triage_status: "dismissed", total: 1 },
       { triage_status: "new", total: 4 },
     ]);
+  });
+
+  it("writes a review's report, cursor and candidate together or not at all", async () => {
+    await seedEvolutionSignals(5);
+    const launched = await launch();
+    const runId = launched.launched_run_ids[0]!;
+    await dispatchAutonomyRun(runId);
+    const terminal = await new PgRunRepository(db.pool).markRunTerminal({
+      run_id: runId,
+      space_id: SPACE,
+      status: "succeeded",
+      output_json: {
+        schema_version: "run_output.v1",
+        status: "succeeded",
+        summary: "# Retrospective",
+        result: {},
+        output_manifest: [],
+      },
+      error_json: {},
+      exit_code: 0,
+      completed_at: NOW.toISOString(),
+    });
+    // Finalization hands the reconciler the pool. A failure after the report
+    // was written left it orphaned, and the retry wrote a second one.
+    const handler = autonomyDiscovererRegistry.get("evolution_review")!;
+    const spy = vi.spyOn(handler, "onCompleted").mockRejectedValueOnce(new Error("connection reset"));
+    try {
+      await expect(reconcileAutonomyRun(db.pool, terminal!)).rejects.toThrow("connection reset");
+    } finally {
+      spy.mockRestore();
+    }
+    const reports = async () => (await db.pool.query<{ total: number }>(
+      `SELECT count(*)::int AS total FROM artifacts WHERE run_id = $1 AND artifact_type = 'autonomous_evolution_review'`,
+      [runId],
+    )).rows[0]?.total;
+    expect(await reports()).toBe(0);
+
+    await reconcileAutonomyRun(db.pool, terminal!);
+    expect(await reports()).toBe(1);
+    const candidate = await db.pool.query<{ status: string }>(
+      `SELECT status FROM autonomy_candidates WHERE run_id = $1`,
+      [runId],
+    );
+    expect(candidate.rows[0]?.status).toBe("completed");
   });
 
   it("advances the durable cursor only after a private report and does not relaunch the same set", async () => {

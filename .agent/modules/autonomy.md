@@ -67,7 +67,9 @@ candidate → Run → Artifact provenance. Evolution links are marked consumed
 and `autonomy_review_cursors` advances only in the same successful
 finalization transaction; signal triage state is unchanged. Candidate
 reconciliation is idempotent and settles the coordinator when all launched
-children are terminal.
+children are terminal. A child the Supervisor requeued or held for review is
+not terminal: its candidate stays `launched` until the Run finishes or the
+review timeout cancels it.
 
 The scheduler runs `autonomous_review_timeout_recovery` every five minutes.
 Autonomous Runs left in `waiting_for_review` for an hour are cancelled
