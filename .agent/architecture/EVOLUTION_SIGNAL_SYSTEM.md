@@ -81,9 +81,10 @@ rollback proposal is persisted when policy or preflight rejects the request.
 Pending rollback requests are idempotently reused. The applier takes the bundle
 advisory lock, then sorted asset-level transaction advisory locks shared with
 promotion apply, verifies that each asset is unchanged since the recorded
-post-apply snapshot, restores approved members in reverse bundle order, and
-writes an `evolution.bundle.rolled_back` activity record in the same
-transaction. Snapshot capture itself takes the asset lock before reading any
+post-apply snapshot, restores approved members in reverse approval order (one
+decision request approves its members in bundle order), and writes an
+`evolution.bundle.rolled_back` activity record in the same transaction.
+Snapshot capture itself takes the asset lock before reading any
 asset/version/reference state, so the snapshot and promotion apply share one
 serialized critical section. A mismatch or unsupported proposal type aborts the
 transaction and leaves the bundle unchanged; no best-effort partial restore is

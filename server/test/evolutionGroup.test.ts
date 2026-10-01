@@ -278,6 +278,49 @@ describe("evolutionBundlesDb", () => {
       expect(unsupportedRollbackProposals.rows).toHaveLength(0);
     });
 
+    it("rolls back same-asset members approved out of position order", async () => {
+      if (!db.available) return;
+      const assets = new EvolvableAssetRepository(db.pool);
+      const evaluations = new EvolvableAssetEvaluationRepository(db.pool);
+      const bundles = new EvolutionBundleRepository(db.pool);
+      const asset = await assets.createAsset(identity, {
+        asset_type: "prompt_template",
+        asset_key: `bundle.order.${randomUUID()}`,
+        display_name: "Ordered asset",
+      });
+      const versions: Array<Awaited<ReturnType<typeof assets.createVersion>>> = [];
+      for (const value of ["first", "second"]) {
+        const version = await assets.createVersion(identity, asset.id as string, {
+          scope_type: "space", scope_id: SPACE, content_json: { value },
+        });
+        await assets.transitionVersionStatus(identity, asset.id as string, version.id as string, { status: "candidate" });
+        versions.push(version);
+      }
+      const proposals: Array<Awaited<ReturnType<typeof evaluations.createPromotionProposal>>> = [];
+      for (const version of versions) {
+        proposals.push(await evaluations.createPromotionProposal(identity, asset.id as string, version.id as string, {
+          target_scope_type: "space", target_scope_id: SPACE, pin_after_approval: true,
+        }));
+      }
+      const created = await bundles.create(identity, {
+        title: "Out of order release",
+        proposalIds: proposals.map((proposal) => proposal.proposal_id as string),
+      });
+      const apply = PgProposalApplyService.fromConfig(loadConfig({
+        SERVER_DATABASE_URL: db.connectionUri,
+        SERVER_INTERNAL_TOKEN: "test-internal-token",
+      }));
+      await bundles.decide(identity, created.id as string, [{ proposalId: proposals[1]!.proposal_id as string, decision: "approve" }], apply);
+      await bundles.decide(identity, created.id as string, [{ proposalId: proposals[0]!.proposal_id as string, decision: "approve" }], apply);
+
+      await expect(bundles.requestRollback(identity, created.id as string, apply))
+        .resolves.toMatchObject({ status: "rolled_back", rollback_error: null });
+      const after = await assets.listVersions(identity, asset.id as string);
+      expect(after.filter((row) => versions.some((version) => version.id === row.id)).map((row) => row.status))
+        .toEqual(["candidate", "candidate"]);
+      expect(await assets.listPins(identity, asset.id as string)).toEqual([]);
+    });
+
     it("serializes same-asset approvals and refuses rollback over a later promotion", async () => {
       if (!db.available) {
         throw new Error("evolution bundle concurrency test requires the shared PostgreSQL Testcontainer");

@@ -448,9 +448,15 @@ export class EvolutionBundleRepository {
       throw new HttpError(409, `Evolution bundle is already ${String(initial.status)}`);
     }
 
+    // One request approves its members in position order, so a rollback that
+    // undoes approvals newest first meets them in reverse.
+    const positions = new Map((await this.memberRows(identity, bundleId)).map((member) => [member.proposal_id, member.position]));
+    const ordered = [...unique.values()].sort(
+      (left, right) => (positions.get(left.proposalId) ?? 0) - (positions.get(right.proposalId) ?? 0),
+    );
     const client = await this.db.connect();
     try {
-      for (const decision of unique.values()) {
+      for (const decision of ordered) {
         await client.query("BEGIN");
         let transactionResult: ProposalTransactionResult<unknown> | null = null;
         try {
@@ -833,7 +839,9 @@ export async function applyEvolutionBundleRollback(
        FROM evolution_bundle_members bm
        JOIN proposals p ON p.id = bm.proposal_id AND p.space_id = $2
       WHERE bm.bundle_id = $1 AND bm.status = 'approved'
-      ORDER BY bm.position DESC
+      -- Each snapshot is the asset as that approval left it, so members are
+      -- undone in the reverse of the order they were approved in.
+      ORDER BY bm.decided_at DESC, bm.position DESC
       FOR UPDATE OF bm`,
     [bundleId, identity.spaceId],
   );
