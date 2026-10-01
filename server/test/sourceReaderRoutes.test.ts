@@ -126,7 +126,9 @@ function sequentialDb(
   const db: Queryable = {
     async query<Row>(sql: string, params: readonly unknown[] = []) {
       calls.push({ sql, params });
-      if (sql.includes("AS effective_access_level")) {
+      // A single-resource decision query; a list query also selects a level
+      // but takes its rows in sequence.
+      if (sql.includes("AS effective_access_level") && sql.includes("content_resource")) {
         const resourceId = String(params[1] ?? "");
         const userId = String(params[2] ?? "");
         const resource = rowSets.flat().find((row) => {

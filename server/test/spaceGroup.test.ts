@@ -5,7 +5,7 @@ import type { PoolClient } from "../src/db/pool.js";
 import { setupTargetsForMissingBackend } from "../src/modules/agents/spaceAssistantService.js";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { knowledgeRetrievalAdapter } from "../src/modules/knowledge/retrievalAdapter.js";
-import { PgAnnotationRepository, PgReaderRepository } from "../src/modules/reader/repository.js";
+import { PgAnnotationRepository, PgCommentRepository, PgReaderRepository } from "../src/modules/reader/repository.js";
 import { seedSpaceDefaults } from "../src/modules/spaces/spaceSeeds.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
@@ -273,6 +273,43 @@ describe("spaceObjectContentAccessDb", () => {
         claim_text: "SECRET CLAIM TEXT",
         sources: [expect.objectContaining({ quote_excerpt: "SECRET EVIDENCE QUOTE" })],
       });
+    });
+
+    it("shows a summary-oversight admin that a private annotation exists, not what it marks or says", async () => {
+      const knowledge = new PgKnowledgeRepository(db.pool);
+      const note = await knowledge.createNote(owner, {
+        title: "Shared notebook",
+        primary_project_id: PROJECT,
+        plain_text: "Margin text to mark",
+      }) as { id: string };
+      await db.pool.query(`UPDATE space_objects SET visibility='space_shared' WHERE id=$1`, [note.id]);
+      const annotations = new PgAnnotationRepository(db.pool);
+      const annotation = await annotations.createAnnotation(owner, {
+        annotation_type: "highlight",
+        quote_text: "Margin",
+        label: "MY PRIVATE LABEL",
+        anchor_json: {
+          schema_version: 1,
+          quote_text: "Margin",
+          text_range: { start: 0, end: 6, unit: "utf16" },
+          before_context: "",
+          after_context: " text to mark",
+        },
+        document_type: "research_notebook",
+        document_id: note.id,
+      });
+      expect(annotation.visibility).toBe("private");
+      await db.pool.query(`UPDATE spaces SET oversight_mode='summary' WHERE id=$1`, [SPACE]);
+      await db.pool.query(`UPDATE space_memberships SET role='admin' WHERE space_id=$1 AND user_id=$2`, [SPACE, OTHER]);
+
+      const seen = await annotations.listAnnotations(other, "research_notebook", note.id);
+
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({ id: annotation.id, quote_text: "", anchor_json: {}, label: null });
+      await expect(new PgCommentRepository(db.pool).createComment(other, annotation.id, { body: "Oversight comment" }))
+        .rejects.toMatchObject({ statusCode: 404 });
+      expect((await annotations.listAnnotations(owner, "research_notebook", note.id))[0])
+        .toMatchObject({ quote_text: "Margin", label: "MY PRIVATE LABEL" });
     });
   });
 });

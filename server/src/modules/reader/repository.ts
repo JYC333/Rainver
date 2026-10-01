@@ -8,7 +8,9 @@ import { normalizeSourceConnectionReadGovernance, enforceSourceDerivedImportTarg
 import type { SourceItemRow } from "../sources/sourceRepositoryRows.js";
 import { ITEM_COLUMNS } from "../sources/sourceRepositoryRows.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
@@ -618,14 +620,30 @@ const ANNOTATION_COLUMNS = `id, space_id, project_id, document_type, document_id
   annotation_type, quote_text, anchor_json, color, label, visibility, access_level, status, anchor_state,
   created_by_user_id, owner_user_id, created_at, updated_at`;
 
+/**
+ * An annotation's comments are its body, and acting on it — commenting,
+ * filing evidence or a proposal from it — builds on that body, so both need
+ * `full` access. Writes answer as the person alone: Space oversight is a
+ * read-only audit capability and never a route to write on someone else's
+ * private margin (`architecture/SECURITY_AND_ACCESS_BOUNDARIES.md`).
+ */
 async function assertAnnotationReadable(
   db: Queryable,
   identity: SpaceUserIdentity,
   annotation: ReaderAnnotationRow,
+  purpose: "read" | "write",
 ): Promise<void> {
-  if ((await contentDecisionFromDb(db, identity, "reader_annotation", annotation.id)) === "deny") {
-    throw new HttpError(404, "Not found");
-  }
+  const decision = await contentDecisionFromDb(db, identity, "reader_annotation", annotation.id, {
+    includeOversight: purpose === "read",
+  });
+  if (decision !== "full") throw new HttpError(404, "Not found");
+}
+
+const READER_ANNOTATION_ACCESS = contentResourceDefinition("reader_annotation")!;
+
+/** The viewer's level on a listed annotation, which `annotationOut` honours. */
+function annotationAccessLevelSql(alias: string, userExpr: string): string {
+  return contentAccessLevelSql({ definition: READER_ANNOTATION_ACCESS, alias, userExpr });
 }
 
 export interface ReaderAnnotationOut {
@@ -649,7 +667,12 @@ export interface ReaderAnnotationOut {
   updated_at: string;
 }
 
-function annotationOut(row: ReaderAnnotationRow): ReaderAnnotationOut {
+/**
+ * A `summary` viewer learns that an annotation exists, not what it marks:
+ * the quote, its anchor context, and the label are withheld.
+ */
+function annotationOut(row: WithAccessLevel<ReaderAnnotationRow>): ReaderAnnotationOut {
+  const withheld = bodyWithheld(row.effective_access_level);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -657,10 +680,10 @@ function annotationOut(row: ReaderAnnotationRow): ReaderAnnotationOut {
     document_type: row.document_type,
     document_id: row.document_id,
     annotation_type: row.annotation_type,
-    quote_text: row.quote_text,
-    anchor_json: objectValue(row.anchor_json),
+    quote_text: withheld ? "" : row.quote_text,
+    anchor_json: withheld ? {} : objectValue(row.anchor_json),
     color: row.color,
-    label: row.label,
+    label: withheld ? null : row.label,
     visibility: row.visibility,
     access_level: row.access_level,
     owner_user_id: row.owner_user_id,
@@ -883,8 +906,8 @@ export class PgAnnotationRepository {
     // Verify caller can read the underlying document before returning any annotations.
     await assertDocumentReadable(this.db, identity, documentType, documentId);
 
-    const result = await this.db.query<ReaderAnnotationRow>(
-      `SELECT ${ANNOTATION_COLUMNS}
+    const result = await this.db.query<WithAccessLevel<ReaderAnnotationRow>>(
+      `SELECT ${ANNOTATION_COLUMNS}, ${annotationAccessLevelSql("ra", "$4")} AS effective_access_level
          FROM reader_annotations ra
         WHERE space_id = $1
           AND document_type = $2
@@ -991,7 +1014,7 @@ export class PgAnnotationRepository {
         inheritedAt: now,
       });
     }
-    return annotationOut(annotation);
+    return annotationOut({ ...annotation, effective_access_level: "full" });
   }
 
   async updateAnnotation(
@@ -1031,7 +1054,8 @@ export class PgAnnotationRepository {
         WHERE space_id = $1 AND id = $2 RETURNING ${ANNOTATION_COLUMNS}`,
       params,
     );
-    return annotationOut(result.rows[0]!);
+    // Only the annotation's creator reaches this point.
+    return annotationOut({ ...result.rows[0]!, effective_access_level: "full" });
   }
 
   async archiveAnnotation(
@@ -1147,7 +1171,7 @@ export class PgCommentRepository {
     );
     const ann = annResult.rows[0];
     if (!ann) throw new HttpError(404, "Annotation not found");
-    await assertAnnotationReadable(this.db, identity, ann);
+    await assertAnnotationReadable(this.db, identity, ann, "read");
     // Also verify the caller can still read the underlying document (e.g. space_shared
     // annotations remain accessible only while the document itself is accessible).
     const annDoc = annotationDocumentTarget(ann);
@@ -1195,7 +1219,7 @@ export class PgCommentRepository {
     const ann = annotation.rows[0];
     if (!ann) throw new HttpError(404, "Annotation not found");
 
-    await assertAnnotationReadable(this.db, identity, ann);
+    await assertAnnotationReadable(this.db, identity, ann, "write");
     const annDoc = annotationDocumentTarget(ann);
     if (annDoc) {
       await assertDocumentReadable(this.db, identity, annDoc.documentType, annDoc.documentId);
@@ -1297,7 +1321,7 @@ export class PgCommentRepository {
     );
     const ann = annResult.rows[0];
     if (!ann) throw new HttpError(404, "Not found");
-    await assertAnnotationReadable(this.db, identity, ann);
+    await assertAnnotationReadable(this.db, identity, ann, "write");
     const annDoc = annotationDocumentTarget(ann);
     if (annDoc) {
       await assertDocumentReadable(this.db, identity, annDoc.documentType, annDoc.documentId);
@@ -1390,7 +1414,7 @@ export class PgReaderActionRepository {
     );
     const ann = annResult.rows[0];
     if (!ann) throw new HttpError(404, "Not found");
-    await assertAnnotationReadable(this.db, identity, ann);
+    await assertAnnotationReadable(this.db, identity, ann, "write");
     const doc = annotationDocumentTarget(ann);
     if (doc) await assertDocumentReadable(this.db, identity, doc.documentType, doc.documentId);
 
@@ -1474,7 +1498,7 @@ export class PgReaderActionRepository {
     );
     const ann = annResult.rows[0];
     if (!ann) throw new HttpError(404, "Not found");
-    await assertAnnotationReadable(this.db, identity, ann);
+    await assertAnnotationReadable(this.db, identity, ann, "write");
     const doc = annotationDocumentTarget(ann);
     if (doc) await assertDocumentReadable(this.db, identity, doc.documentType, doc.documentId);
 
@@ -1552,8 +1576,8 @@ export class PgReaderActionRepository {
     const cols = `ra.id, ra.space_id, ra.document_type, ra.document_id,
   ra.annotation_type, ra.quote_text, ra.anchor_json, ra.color, ra.label, ra.visibility, ra.access_level,
   ra.status, ra.anchor_state, ra.created_by_user_id, ra.owner_user_id, ra.created_at, ra.updated_at`;
-    const r = await this.db.query<ReaderAnnotationRow>(
-      `SELECT ${cols}
+    const r = await this.db.query<WithAccessLevel<ReaderAnnotationRow>>(
+      `SELECT ${cols}, ${annotationAccessLevelSql("ra", "$3")} AS effective_access_level
          FROM reader_annotations ra
          JOIN source_items ii ON ii.id = ra.document_id AND ra.document_type = 'source_item'
               AND ii.space_id = $1 AND ii.deleted_at IS NULL
