@@ -323,6 +323,23 @@ describe("object kind proposal applier", () => {
     ]);
   });
 
+  it("applies a relation hint toward every retrievable base type the proposal accepted", async () => {
+    // Proposal creation validates endpoints against the ontology registry, so
+    // an Inquiry Thread endpoint is accepted there; the applier has to agree.
+    const db = new ObjectProfileApplyFakeDb();
+    await apply(db, proposal("object_profile_create", {
+      operation: "object_profile_create",
+      key: "summary",
+      label: "Summary",
+      base_object_type: "knowledge_item",
+      relation_hints: [{ endpoint_object_type: "inquiry_thread", link_type: "references", direction: "to" }],
+    }));
+
+    expect([...db.relationHints.values()]).toEqual([
+      expect.objectContaining({ endpoint_object_type: "inquiry_thread", link_type: "references" }),
+    ]);
+  });
+
   it("activates draft object kinds through update proposals only", async () => {
     const db = new ObjectProfileApplyFakeDb();
     const created = await apply(db, proposal("object_profile_create", {

@@ -25,11 +25,10 @@ import {
   isKnowledgeRetrievalObjectType,
   isKnowledgeRetrievalProjectedRelation,
 } from "./retrievalObjectTypes.js";
-import { RETRIEVAL_OBJECT_TYPE_VALUES } from "../retrieval/objectTypes.js";
 import { allowedObjectProfileKeys } from "../ontology/objectProfileSubtypeKeys.js";
 import { isContentOwner } from "../access/contentAccessPolicy.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
-import { isProvenanceSourceType } from "../ontology/entities.js";
+import { isProvenanceSourceType, retrievableEntityTypes } from "../ontology/entities.js";
 
 // The retrieval projection is a derived index. A projection failure must not
 // roll back an accepted canonical Knowledge mutation, but the reindex runs
@@ -339,7 +338,9 @@ const VALID_CLAIM_SOURCE_TRUST_LEVELS = new Set([
 ]);
 
 
-const VALID_OBJECT_PROFILE_BASE_TYPES = new Set<string>(RETRIEVAL_OBJECT_TYPE_VALUES);
+// The ontology registry, the same set proposal creation validates against
+// (B12G); a second copy here let a proposal be accepted that could never apply.
+const VALID_OBJECT_PROFILE_BASE_TYPES = new Set<string>(retrievableEntityTypes());
 const CREATE_OBJECT_PROFILE_STATUSES = new Set(["draft", "active"]);
 const OBJECT_PROFILE_RELATION_HINT_DIRECTIONS = new Set(["from", "to", "either"]);
 const OBJECT_PROFILE_KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
