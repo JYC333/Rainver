@@ -86,7 +86,11 @@ requires Project write access, the same gate as a Task-owned Run and an Agent
 planning request.
 
 Execution creates a parked coordinator Run and `plan_node_runs` for ready
-nodes. It never inserts graph nodes into `tasks` or `task_runs`. The scheduler
+nodes. Every layer is scheduled the same way: a node without its own Agent runs
+on the coordinator's Agent (the one execution chose, not necessarily the
+planner), with the caller's `workflow_input_json` from the coordinator's
+contract, and with the node title as its prompt unless the caller gave one.
+It never inserts graph nodes into `tasks` or `task_runs`. The scheduler
 waits for dependency completion, creates checkpoint Proposals when required,
 and consumes the latest `RunEvaluation`: a terminal adapter success without a
 passed evaluation does not complete a node. Finalization discovers the graph

@@ -498,12 +498,19 @@ export class PgPlanRepository {
 
   async reconcilePlan(identity: SpaceUserIdentity, planId: string) {
     return withQueryableTransaction(this.db, async (client) => {
-      const result = await client.query<PlanRow & { version_id: string; version_status: string; version_budget_json: unknown; root_agent_id: string | null; root_prompt: string | null; root_runtime_profile_id: string | null; root_status: string | null }>(
+      // Later layers are scheduled as `executePlan` scheduled the first: on the
+      // Agent the coordinator runs on (not necessarily the planner), with the
+      // caller's workflow input, and with their prompt only if they gave one —
+      // the coordinator's prompt falls back to the Plan name, which is not a
+      // node's task.
+      const result = await client.query<PlanRow & { version_id: string; version_status: string; version_budget_json: unknown; root_agent_id: string | null; root_prompt: string | null; root_workflow_input_json: unknown; root_runtime_profile_id: string | null; root_status: string | null }>(
         `SELECT p.id, p.space_id, p.project_folder_id, p.project_id, p.source_task_id, p.root_run_id,
                 p.current_plan_version_id, p.name, p.description, p.status,
                 p.created_by_user_id, p.created_by_agent_id, p.created_at, p.updated_at,
                 v.id AS version_id, v.status AS version_status, v.budget_json AS version_budget_json,
-                p.created_by_agent_id AS root_agent_id, root.prompt AS root_prompt,
+                COALESCE(root.agent_id, p.created_by_agent_id) AS root_agent_id,
+                NULLIF(root.prompt, p.name) AS root_prompt,
+                root.contract_snapshot_json->'workflow_input_json' AS root_workflow_input_json,
                 root.requested_runtime_profile_id AS root_runtime_profile_id, root.status AS root_status
            FROM plans p JOIN plan_versions v ON v.id = p.current_plan_version_id AND v.space_id = p.space_id
            LEFT JOIN runs root ON root.id = p.root_run_id AND root.space_id = p.space_id
@@ -553,7 +560,10 @@ export class PgPlanRepository {
         runtimeProfileSelectionSource: plan.root_runtime_profile_id ? "explicit" : "default",
         budgetSources: budgetSourcesFromPlan(plan.version_budget_json),
         userPrompt: plan.root_prompt,
-        workflowInputJson: null,
+        workflowInputJson: plan.root_workflow_input_json && typeof plan.root_workflow_input_json === "object"
+          && !Array.isArray(plan.root_workflow_input_json)
+          ? plan.root_workflow_input_json as Record<string, unknown>
+          : null,
       });
       return { plan_id: planId, status: "active", scheduled_node_ids: scheduled };
     });

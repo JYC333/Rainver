@@ -304,6 +304,97 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect((await db.pool.query<{ status: string }>(`SELECT status FROM plan_nodes WHERE id = $1`, [nodeRun!.node_id])).rows[0]?.status).toBe("done");
   });
 
+  it("runs every layer of a Plan on the executing Agent with the caller's input", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    const executor = "35555555-5555-4555-8555-555555555555";
+    const executorVersion = "45555555-5555-4555-8555-555555555555";
+    await db.pool.query(
+      `INSERT INTO agents (id, space_id, owner_user_id, name, status, current_version_id, created_at, updated_at, visibility)
+       VALUES ($1, $2, $3, 'Executing Agent', 'active', NULL, $4, $4, 'space_shared')`,
+      [executor, SPACE, USER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO agent_versions (
+         id, agent_id, space_id, version_label, system_prompt, context_policy_json,
+         memory_policy_json, capabilities_json, tool_permissions_json, risk_level, created_at
+       ) VALUES ($1, $2, $3, 'v1', 'Executor', '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb, 'low', $4)`,
+      [executorVersion, executor, SPACE, now],
+    );
+    await db.pool.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [executor, executorVersion]);
+    await seedServerRuntimeProfile(db.pool, { agent: executor, space: SPACE, hostId: SERVER_HOST, now });
+    await db.pool.query(
+      `INSERT INTO tasks (
+         id, space_id, task_role, title, description, task_type, status, priority,
+         risk_level, owner_user_id, visibility, access_level, created_by_user_id,
+         created_at, updated_at
+       ) VALUES ($1, $2, 'source', 'Two-step task', 'Task requiring two steps.', 'general',
+                 'inbox', 'normal', 'medium', $3, 'space_shared', 'full', $3, $4, $4)`,
+      [TASK, SPACE, USER, now],
+    );
+    const planningRun = await new PgTaskRepository(db.pool).requestPlanningRun(identity, TASK, {
+      agent_id: AGENT,
+      prompt: "Plan this source task.",
+    }) as { id: string };
+    const definition = agentPlanDefinition("low");
+    const step = definition.nodes[0]!;
+    definition.nodes = [
+      { ...step, id: "gather", title: "Gather the material" },
+      { ...step, id: "write", title: "Write it up", depends_on: ["gather"] as never[] },
+    ];
+    const plans = new PgPlanRepository(db.pool);
+    const created = await plans.createPlanFromAgent(identity, {
+      sourceTaskId: TASK,
+      planningRunId: planningRun.id,
+      planningToolCallId: "tool-call-layers",
+      agentId: AGENT,
+      definitionJson: definition,
+      budgetCap: 100,
+    });
+    const versionId = (created.current_version as { id: string }).id;
+    // The planner proposed it; another Agent is asked to carry it out.
+    await plans.executePlan(identity, String(created.id), {
+      agentId: executor,
+      workflowInputJson: { topic: "tides" },
+    });
+    const childRuns = async () => (await db.pool.query<{
+      node_key: string; run_id: string; agent_id: string; prompt: string | null;
+      contract_snapshot_json: { workflow_input_json?: unknown };
+    }>(
+      `SELECT n.node_key, r.id AS run_id, r.agent_id, r.prompt, r.contract_snapshot_json
+         FROM plan_node_runs pnr
+         JOIN plan_nodes n ON n.id = pnr.plan_node_id AND n.space_id = pnr.space_id
+         JOIN runs r ON r.id = pnr.run_id AND r.space_id = pnr.space_id
+        WHERE n.plan_version_id = $1
+        ORDER BY pnr.created_at, n.node_key`,
+      [versionId],
+    )).rows;
+    const [gather] = await childRuns();
+    expect(gather).toMatchObject({ node_key: "gather", agent_id: executor, prompt: "Gather the material" });
+
+    const runs = new PgRunRepository(db.pool);
+    await dispatchAgentRun(gather!.run_id, new Date().toISOString());
+    await runs.markRunTerminal({
+      run_id: gather!.run_id,
+      space_id: SPACE,
+      status: "succeeded",
+      output_json: canonicalRunOutput({ success: true, outputText: "done", outputJson: { result: "done" } }),
+      completed_at: new Date().toISOString(),
+    });
+    await runs.insertRunEvaluation({
+      space_id: SPACE,
+      run_id: gather!.run_id,
+      outcome_status: "passed",
+      trajectory_status: "acceptable",
+      evaluated_at: new Date().toISOString(),
+    });
+    await plans.reconcilePlan(identity, String(created.id));
+
+    const write = (await childRuns()).find((row) => row.node_key === "write");
+    expect(write).toMatchObject({ agent_id: executor, prompt: "Write it up" });
+    expect(write?.contract_snapshot_json.workflow_input_json).toEqual({ topic: "tides" });
+  });
+
   it("refuses a planning request from a member who cannot see the Task", async () => {
     const now = new Date().toISOString();
     const member = "55555555-5555-4555-8555-555555555555";
