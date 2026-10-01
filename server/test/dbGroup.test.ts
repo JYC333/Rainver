@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { withDedicatedSessionAdvisoryLock } from "../src/db/advisoryLock.js";
+import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("dbMigrationOps", () => {
   const repoRoot = join(import.meta.dirname, "..", "..");
@@ -131,5 +134,35 @@ describe("dbOwnerRoleCutover", () => {
         "env -u DEBUG docker compose",
       );
     });
+  });
+});
+
+describe("advisoryLockDb", () => {
+  const db = useTestDatabase(`${import.meta.filename}#advisoryLockDb`, { max: 2 });
+
+  it("survives losing the dedicated lock connection while the work runs", async () => {
+    const lockKey = `test-lock:${randomUUID()}`;
+    const result = await withDedicatedSessionAdvisoryLock(db.pool, lockKey, async () => {
+      const holder = await db.pool.query<{ pid: number }>(
+        `SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted AND pid <> pg_backend_pid()`,
+      );
+      const pid = holder.rows[0]!.pid;
+      await db.pool.query(`SELECT pg_terminate_backend($1)`, [pid]);
+      // Wait until the backend is gone; each round trip also lets the lock
+      // client read the termination off its socket.
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const alive = await db.pool.query(`SELECT 1 FROM pg_stat_activity WHERE pid = $1`, [pid]);
+        if (alive.rowCount === 0) break;
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      return "done";
+    });
+    expect(result).toBe("done");
+    // The lock went with its session, so the key is free again.
+    const free = await db.pool.query<{ acquired: boolean }>(
+      `SELECT pg_try_advisory_lock(hashtextextended($1::text, 0)) AS acquired`,
+      [lockKey],
+    );
+    expect(free.rows[0]?.acquired).toBe(true);
   });
 });
