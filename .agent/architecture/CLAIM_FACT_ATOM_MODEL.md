@@ -97,7 +97,10 @@ still describe a claim, but a durable fact/claim atom needs different behavior:
 `object_relations` replaced the older polymorphic and per-domain relation tables.
 Relation proposals resolve to FK-backed `space_objects` endpoints, and retrieval
 uses `retrieval_edges` only as a rebuildable projection of active
-`object_relations` plus curated source links.
+`object_relations` plus curated source links. A relation proposal names both
+endpoints, so it takes the source endpoint's visibility only when the target is
+`space_shared` in no other Project or Folder; otherwise it is private to its
+proposer.
 
 ### Constraint Lessons Apply Only At The Constraint Layer
 

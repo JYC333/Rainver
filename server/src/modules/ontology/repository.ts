@@ -60,6 +60,23 @@ export interface OntologyRepositorySeams {
   ) => Promise<OntologyObjectRef>;
 }
 
+/**
+ * A relation proposal names both endpoints — its title carries the target's
+ * title — so it must reach no one who cannot read the target. It takes the
+ * source endpoint's audience only when the target is shared at least that
+ * widely: `space_shared`, and in no other Project or Folder than the source.
+ * Otherwise it stays private to the person proposing it.
+ */
+function relationProposalVisibility(
+  from: OntologyObjectRef,
+  to: OntologyObjectRef,
+): ReturnType<typeof normalizedContentVisibility> {
+  const targetReachesSourceAudience = normalizedContentVisibility(to.visibility) === "space_shared"
+    && (!to.primary_project_id || to.primary_project_id === from.primary_project_id)
+    && (!to.project_folder_id || to.project_folder_id === from.project_folder_id);
+  return targetReachesSourceAudience ? normalizedContentVisibility(from.visibility) : "private";
+}
+
 export const OBJECT_PROFILE_COLUMNS = `
   id, space_id, key, label, description, base_object_type, status, version,
   field_schema_json, extraction_policy_json, retrieval_policy_json, ui_config_json,
@@ -529,7 +546,7 @@ export class PgOntologyRepository {
       rationale: optionalString(body.rationale) ?? "Object relation requested.",
       projectFolderId: fromObject.project_folder_id,
       projectId: fromObject.primary_project_id,
-      visibility: normalizedContentVisibility(fromObject.visibility),
+      visibility: relationProposalVisibility(fromObject, toObject),
     });
   }
 

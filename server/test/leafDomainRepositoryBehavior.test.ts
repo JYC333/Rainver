@@ -1115,6 +1115,37 @@ describe("Leaf domain repository behavior", () => {
     });
   });
 
+  it("keeps a relation proposal private when its target is narrower than its source", async () => {
+    const visibilities: unknown[] = [];
+    const db = new FakeDb((sql, params) => {
+      if (sql.includes("FROM space_objects")) {
+        return [{
+          id: params[0],
+          space_id: "space-1",
+          object_type: "claim",
+          title: params[0] === "claim-private" ? "Private title" : "Shared title",
+          status: "active",
+          visibility: params[0] === "claim-private" ? "private" : "space_shared",
+          owner_user_id: "user-1",
+          primary_project_id: null,
+          project_folder_id: null,
+          created_by_user_id: "user-1",
+        }];
+      }
+      if (sql.includes("INSERT INTO proposals")) {
+        visibilities.push(params[15]);
+        return [proposalRow(params)];
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    const repository = new PgKnowledgeRepository(db);
+
+    await repository.proposeObjectRelation(identity, { from_object_id: "claim-shared", to_object_id: "claim-private", link_type: "supports" });
+    await repository.proposeObjectRelation(identity, { from_object_id: "claim-shared", to_object_id: "claim-other", link_type: "supports" });
+
+    expect(visibilities).toEqual(["private", "space_shared"]);
+  });
+
   it("counts only what the viewer can read, in every part of the knowledge summary", async () => {
     // Three of these four used to be gated by Space membership alone while the
     // fourth applied the content gate. A count is a weaker leak than a list, but
