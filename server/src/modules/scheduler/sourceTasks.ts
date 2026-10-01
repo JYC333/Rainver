@@ -28,6 +28,7 @@ import {
 import { runPendingCustomSourceHandlerRuns } from "../sources/customSources/customSourceScanWorker.js";
 import {
   enqueueDueSourceRecipeScans,
+  reclaimStuckSourceRecipeScans,
   runPendingSourceRecipeScans,
 } from "../sources/sourceRecipes/recipeScanWorker.js";
 import { SourceBackfillExecutionService } from "../sources/sourceBackfillExecutionService.js";
@@ -86,6 +87,8 @@ export function buildSourceSchedulerTasks(
       runOnStart: true,
       run: async () => {
         const pool = db();
+        const reclaimed = await reclaimStuckSourceRecipeScans(pool);
+        if (reclaimed > 0) log?.warn(`[scheduler] source recipe reclaimed ${reclaimed} stuck scan(s)`);
         const enqueued = await enqueueDueSourceRecipeScans(pool);
         if (enqueued > 0) log?.info(`[scheduler] source recipe enqueued ${enqueued} scan job(s)`);
         const processed = await runPendingSourceRecipeScans(pool, config);

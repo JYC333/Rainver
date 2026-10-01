@@ -17,6 +17,7 @@ import { analyzeSourceRecipe, SOURCE_RECIPE_PRIMITIVE_REGISTRY } from "../src/mo
 import { SourceRecipeCreateService } from "../src/modules/sources/sourceRecipes/recipeCreateService.js";
 import { SourceRecipeDryRunService } from "../src/modules/sources/sourceRecipes/recipeDryRunService.js";
 import { insertSourceRecipeVersion } from "../src/modules/sources/sourceRecipes/recipeVersionStore.js";
+import { enqueueDueSourceRecipeScans, reclaimStuckSourceRecipeScans } from "../src/modules/sources/sourceRecipes/recipeScanWorker.js";
 import { listSourceRuns } from "../src/modules/sources/sourceRunReadModel.js";
 import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld.js";
 import { resetTables } from "./support/resetTables.js";
@@ -312,6 +313,52 @@ describe("sourceRecipeCreateFlow", () => {
           source_item_id: firstItem.rows[0]!.id,
         }),
       ]);
+    });
+
+    it("reclaims a recipe scan left running so its channel is scheduled again", async () => {
+      if (!db.available) return;
+      const endpointUrl = await startFixtureServer(RSS_FIXTURE);
+      const { created } = await createDryRunActivatedRecipeSource(endpointUrl);
+      const channelId = created.connection.source_channel_id;
+      const repo = new PgSourcesRepository(db.pool, config!, fixtureServerGuard);
+      const queued = await repo.scanChannel(IDENTITY, channelId);
+      // A restart mid-scan leaves the job running.
+      await db.pool.query(
+        `UPDATE extraction_jobs SET status = 'running', started_at = now() - interval '15 minutes' WHERE id = $1`,
+        [queued.id],
+      );
+      const makeDue = () => db.pool.query(
+        `UPDATE scheduler_tasks SET next_run_at = now() - interval '1 minute' WHERE task_type = 'source_channel_scan' AND task_key = $1`,
+        [channelId],
+      );
+      await makeDue();
+      expect(await enqueueDueSourceRecipeScans(db.pool)).toBe(0);
+
+      expect(await reclaimStuckSourceRecipeScans(db.pool)).toBe(1);
+      const job = await db.pool.query<{ status: string; error_code: string | null }>(
+        `SELECT status, error_code FROM extraction_jobs WHERE id = $1`,
+        [queued.id],
+      );
+      expect(job.rows[0]).toEqual({ status: "failed", error_code: "stuck_reclaimed" });
+      await makeDue();
+      expect(await enqueueDueSourceRecipeScans(db.pool)).toBe(1);
+    });
+
+    it("fails a recipe scan whose source cannot be loaded instead of leaving it running", async () => {
+      if (!db.available) return;
+      const endpointUrl = await startFixtureServer(RSS_FIXTURE);
+      const { created } = await createDryRunActivatedRecipeSource(endpointUrl);
+      const repo = new PgSourcesRepository(db.pool, config!, fixtureServerGuard);
+      const queued = await repo.scanChannel(IDENTITY, created.connection.source_channel_id);
+      await db.pool.query(
+        `UPDATE extraction_jobs SET metadata_json = metadata_json || '{"source_channel_id":"missing-channel"}'::jsonb WHERE id = $1`,
+        [queued.id],
+      );
+
+      await repo.runJob(IDENTITY, queued.id).catch(() => undefined);
+
+      const job = await db.pool.query<{ status: string }>(`SELECT status FROM extraction_jobs WHERE id = $1`, [queued.id]);
+      expect(job.rows[0]?.status).toBe("failed");
     });
 
     it("routes policy-envelope deltas through a source_recipe_activation proposal applier", async () => {

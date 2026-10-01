@@ -398,7 +398,8 @@ Implemented flow:
   activatable with a passing dry-run, and otherwise answers 409.
 - `recipeScanWorker` handles manual/scheduled scans for active recipe sources
   and materializes validated output through the shared Sources
-  materializer.
+  materializer. Its scheduler first reclaims a recipe scan job left `running`
+  for over ten minutes, so a crashed process cannot block a channel forever.
 - `listSourceRuns` projects product run history from extraction jobs, handler
   runs, and recipe dry-run results so the UI does not expose raw worker tables
   by default.

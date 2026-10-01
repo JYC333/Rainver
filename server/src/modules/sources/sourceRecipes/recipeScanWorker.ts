@@ -10,11 +10,9 @@ import { enqueueItemsForAnnotation } from "../../sourceAnnotation/index.js";
 import { fetchCustomSourceEndpointHtml } from "../customSources/customSourceEndpointFetch.js";
 import type { OutboundGuard } from "../outboundUrlSafety.js";
 import { cleanupSandbox } from "../customSources/customSourceRunner.js";
-import { computeNextCheckAt } from "../sourceScanCadence.js";
 import {
-  getSourceChannelScanTask,
   listDueSourceChannelScanTasks,
-  upsertSourceChannelScanTask,
+  rescheduleSourceChannelScanAfterRun,
 } from "../sourceConnectionScheduler.js";
 import { runSourceRecipe } from "./recipeInterpreter.js";
 
@@ -84,6 +82,36 @@ export async function enqueueDueSourceRecipeScans(db: Queryable, batchLimit = 25
     enqueued += 1;
   }
   return enqueued;
+}
+
+const STUCK_SCAN_AFTER_SECONDS = 600;
+
+/**
+ * A recipe scan left `running` by a restart mid-scan would count as in flight
+ * forever and stop its channel's scheduled scans. Recipe scans have no
+ * `source_handler_runs` row, so the Custom Source reclaim does not reach them;
+ * this is its counterpart on the scan job itself.
+ */
+export async function reclaimStuckSourceRecipeScans(
+  db: Queryable,
+  stuckAfterSeconds = STUCK_SCAN_AFTER_SECONDS,
+): Promise<number> {
+  const now = new Date().toISOString();
+  const stuck = await db.query<{ id: string; source_channel_id: string | null }>(
+    `UPDATE extraction_jobs
+        SET status = 'failed', completed_at = $1, error_code = 'stuck_reclaimed'
+      WHERE status = 'running'
+        AND job_type = 'connection_scan'
+        AND COALESCE(metadata_json->>'implementation', '') = $3
+        AND started_at IS NOT NULL
+        AND started_at <= $1::timestamptz - make_interval(secs => $2)
+      RETURNING id, metadata_json->>'source_channel_id' AS source_channel_id`,
+    [now, stuckAfterSeconds, RECIPE_SCAN_JOB_IMPLEMENTATION],
+  );
+  for (const row of stuck.rows) {
+    if (row.source_channel_id) await rescheduleSourceChannelScanAfterRun(db, { channelId: row.source_channel_id, completedAt: now });
+  }
+  return stuck.rows.length;
 }
 
 interface PendingRecipeJobRow {
@@ -159,31 +187,26 @@ async function runOne(db: Queryable, config: ServerConfig, job: PendingRecipeJob
   );
   if ((claimed.rowCount ?? 0) === 0) return false;
 
-  const connectionResult = await db.query<{
-    id: string;
-    space_id: string;
-    owner_user_id: string;
-    name: string;
-    endpoint_url: string | null;
-    fetch_frequency: string;
-    schedule_rule_json: unknown;
-    status: string;
-    active_recipe_version_id: string | null;
-    channel_id: string;
-  }>(
-    `SELECT sc.id, sc.space_id, sc.owner_user_id, sc.name,
-            ch.id AS channel_id, ch.endpoint_url, ch.fetch_frequency, ch.schedule_rule_json,
-            ch.status, sc.active_recipe_version_id
-       FROM source_connections sc
-       JOIN source_channels ch ON ch.source_connection_id = sc.id AND ch.id = $3
-      WHERE sc.id = $1 AND sc.space_id = $2`,
-    [job.connection_id, job.space_id, job.source_channel_id],
-  );
-  const connection = connectionResult.rows[0];
-  if (!connection) throw new Error(`Source connection ${job.connection_id} not found`);
-  const scheduleTask = await getSourceChannelScanTask(db, connection.channel_id);
-
   try {
+    const connectionResult = await db.query<{
+      id: string;
+      space_id: string;
+      owner_user_id: string;
+      name: string;
+      endpoint_url: string | null;
+      active_recipe_version_id: string | null;
+      channel_id: string;
+    }>(
+      `SELECT sc.id, sc.space_id, sc.owner_user_id, sc.name,
+              ch.id AS channel_id, ch.endpoint_url, sc.active_recipe_version_id
+         FROM source_connections sc
+         JOIN source_channels ch ON ch.source_connection_id = sc.id AND ch.id = $3
+        WHERE sc.id = $1 AND sc.space_id = $2`,
+      [job.connection_id, job.space_id, job.source_channel_id],
+    );
+    const connection = connectionResult.rows[0];
+    if (!connection) throw new Error(`Source connection ${job.connection_id} not found`);
+
     const recipeVersionId = metadataString(job.metadata_json, "recipe_version_id") ?? connection.active_recipe_version_id;
     if (!recipeVersionId) throw new Error("connection has no active recipe version");
     const versionResult = await db.query<{ id: string; recipe_json: unknown; policy_envelope_json: unknown }>(
@@ -290,21 +313,9 @@ async function runOne(db: Queryable, config: ServerConfig, job: PendingRecipeJob
   } finally {
     // Always advance the schedule, even on failed runs — otherwise a
     // permanently broken source would be re-enqueued on every tick.
-    const completedAt = new Date().toISOString();
-    await upsertSourceChannelScanTask(db, {
-      channel: {
-        id: connection.channel_id,
-        space_id: connection.space_id,
-        owner_user_id: connection.owner_user_id,
-        status: connection.status,
-        fetch_frequency: connection.fetch_frequency,
-      },
-      nextRunAt: computeNextCheckAt(connection.fetch_frequency, completedAt, {
-        existingNextCheckAt: scheduleTask?.next_run_at,
-        scheduleRule: connection.schedule_rule_json,
-      }),
-      lastRunAt: completedAt,
-      updatedAt: completedAt,
+    await rescheduleSourceChannelScanAfterRun(db, {
+      channelId: job.source_channel_id,
+      completedAt: new Date().toISOString(),
     });
   }
   return true;
