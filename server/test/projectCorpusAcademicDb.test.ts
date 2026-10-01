@@ -670,6 +670,25 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
     ).toBe(1);
   });
 
+  it("keeps a manually added SourceItem through a backfill that finds no Project link for it", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    const sourceItemId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO source_items (
+         id, space_id, owner_user_id, visibility, connection_id, item_type, title, first_seen_at, last_seen_at,
+         content_state, retention_policy, created_at, updated_at
+       ) VALUES ($1,$2,$3,'space_shared',$4,'feed_entry','Filed page',$5,$5,'excerpt_saved','summary_only',$5,$5)`,
+      [sourceItemId, SPACE, OWNER, CONNECTION, now],
+    );
+    const added = await repo().upsert(identity, PROJECT, { source_item_id: sourceItemId });
+
+    await repo().backfillFromSources(identity, PROJECT);
+
+    const row = await db.pool.query<{ status: string }>(`SELECT status FROM project_corpus_items WHERE id = $1`, [added.id]);
+    expect(row.rows[0]?.status).toBe("active");
+  });
+
   it("does not replace a newer canonical AI decision with an older duplicate decision", async () => {
     if (!db.available) return;
     const { sourceItemId, corpusItemId: duplicateId } = await seedSourceItemOnlyCorpusItem();

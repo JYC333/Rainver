@@ -1435,6 +1435,8 @@ async function archiveCorpusSourceItemsWithoutActiveLinks(
         AND pci.evidence_id IS NULL
         AND pci.source_item_id IS NOT NULL
         AND pci.status = 'active'
+        -- A person added this item by hand; no Source link ever backed it.
+        AND pci.added_by_user_id IS NULL
         AND ($2::varchar IS NULL OR pci.source_item_id = $2)
         AND ($3::varchar IS NULL OR pci.project_id = $3)
         AND NOT EXISTS (

@@ -966,7 +966,9 @@ project's working corpus:
   every Corpus sync to that set; stale links from archived Projects neither
   expand the lock set nor block an active Project's reconciliation;
 
-- `status` is link lifecycle (`active` / `archived`);
+- `status` is link lifecycle (`active` / `archived`). Reconciliation archives a
+  SourceItem row whose Source links are gone, but never one a person added
+  (`added_by_user_id` set);
 - `triage_status` is the project-level judgement (`new`, `relevant`, `maybe`,
   `excluded`, `included`);
 - `triage_confirmed_by_user` is set whenever a human explicitly sets
