@@ -61,7 +61,6 @@ describe("providerEligibility", () => {
     it("builds the same pool/primary credential predicate for every SQL caller", () => {
       const sql = providerCredentialEligibilitySql("provider.id", "provider.credential_id", "provider_credential");
       expect(sql).toContain("credential.credential_type = 'subscription_oauth'");
-      expect(sql).toContain("credential.healthy = true");
       expect(sql).toContain("credential.cooldown_until <= now()");
       expect(sql).toContain("enrolled.credential_id = provider.credential_id");
     });
@@ -209,6 +208,34 @@ describe("providerCommandStoreDb", () => {
     expect(await defaultProviderIds()).toEqual([current]);
     const broken = await db.pool.query(`SELECT 1 FROM model_providers WHERE space_id = $1 AND name = 'Broken default'`, [SPACE]);
     expect(broken.rowCount).toBe(0);
+  });
+
+  it("routes to a key marked unhealthy again once its cooldown has passed", async () => {
+    if (!db.available) return;
+    const providerId = await createdProviderId({ name: "Single key" });
+    const eligible = async () => {
+      const result = await db.pool.query<{ eligible: boolean }>(
+        `SELECT ${providerCredentialEligibilitySql("provider.id", "provider.credential_id", "provider_credential")} AS eligible
+           FROM model_providers provider
+           LEFT JOIN credentials provider_credential ON provider_credential.id = provider.credential_id
+          WHERE provider.id = $1`,
+        [providerId],
+      );
+      return result.rows[0]?.eligible;
+    };
+    await db.pool.query(
+      `UPDATE model_provider_credentials
+          SET healthy = false, last_failure_class = 'unauthorized', cooldown_until = now() + interval '1 day'
+        WHERE provider_id = $1`,
+      [providerId],
+    );
+    expect(await eligible()).toBe(false);
+
+    await db.pool.query(
+      `UPDATE model_provider_credentials SET cooldown_until = now() - interval '1 minute' WHERE provider_id = $1`,
+      [providerId],
+    );
+    expect(await eligible()).toBe(true);
   });
 });
 

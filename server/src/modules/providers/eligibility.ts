@@ -39,7 +39,9 @@ export function isProviderEligibleForUser(
 /**
  * SQL expression for credentials that the invocation store can actually use.
  * A primary API key is lazily eligible only while it has not been enrolled in
- * the pool; once enrolled, its enabled/healthy/cooldown state is authoritative.
+ * the pool; once enrolled, its enabled/cooldown state is authoritative. Like
+ * the store's key selection, it ignores `healthy`: an auth-class failure rests
+ * the key for its cooldown and does not outlive it.
  * Pool members are restricted to API-key credentials, matching poolMembers().
  * The arguments are internal SQL identifiers, never user input.
  */
@@ -58,7 +60,6 @@ export function providerCredentialEligibilitySql(
          AND pool_credential.credential_type = 'api_key'
        WHERE credential.provider_id = ${providerIdSql}
          AND credential.enabled = true
-         AND credential.healthy = true
          AND (credential.cooldown_until IS NULL OR credential.cooldown_until <= now())
     )
     OR (
