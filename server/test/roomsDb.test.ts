@@ -2722,6 +2722,39 @@ describe("Room workflow (real Postgres)", () => {
       return { owner, created, conversation, manager };
     }
 
+    it("retries a multi-segment turn with each Agent's own task", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Retry segments");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
+        content: "Two tasks.",
+        recipient_segments: [
+          { recipient_agent_ids: ["agent-1"], content: "Plan the release." },
+          { recipient_agent_ids: ["agent-2"], content: "Check the numbers." },
+        ],
+      });
+      await dispatchQueuedRoomRuns([sent.run_ids[0]!]);
+      await db.pool.query(`UPDATE runs SET status = 'failed', ended_at = now() WHERE id = ANY($1::varchar[])`, [sent.run_ids]);
+      await db.pool.query(
+        `UPDATE host_threads SET dispatch_lock_id = NULL, updated_at = now() WHERE space_id = 'space-1' AND session_id = $1`,
+        [conversation.id],
+      );
+
+      const retried = await service.retryMessage(owner, created.room.id, conversation.id, {
+        run_id: sent.run_ids[0]!,
+        idempotency_key: "retry-two-segments",
+      });
+
+      const tasks = await db.pool.query<{ agent_id: string; task: string }>(
+        `SELECT agent_id, model_override_json->'chat_turn'->>'assigned_task' AS task
+           FROM runs WHERE id = ANY($1::varchar[]) ORDER BY agent_id`,
+        [retried.value.run_ids],
+      );
+      expect(tasks.rows).toEqual([
+        { agent_id: "agent-1", task: "Plan the release." },
+        { agent_id: "agent-2", task: "Check the numbers." },
+      ]);
+    });
+
     it("turns an Agent's @ into a bounded emergent discussion that the Manager closes", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation, manager } = await roomWithSpecialist("Emergent");

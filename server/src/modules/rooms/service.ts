@@ -772,8 +772,11 @@ export class RoomService {
           for (const run of completeRuns) {
             const model = record(run.model_override_json);
             const turn = record(model.chat_turn);
-            const segmentIndex = typeof turn.current_segment_index === "number" ? turn.current_segment_index : 0;
-            const agentId = typeof turn.current_recipient_agent_id === "string" ? turn.current_recipient_agent_id : run.agent_id;
+            // A multi-recipient turn records each Run's segment under
+            // room_turn_routing; a single-recipient turn has the one segment.
+            const routing = record(model.room_turn_routing);
+            const segmentIndex = typeof routing.current_segment_index === "number" ? routing.current_segment_index : 0;
+            const agentId = typeof routing.current_recipient_agent_id === "string" ? routing.current_recipient_agent_id : run.agent_id;
             const content = typeof turn.assigned_task === "string" && turn.assigned_task.trim()
               ? turn.assigned_task
               : originalMessage.content;
