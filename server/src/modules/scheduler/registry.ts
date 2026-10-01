@@ -95,15 +95,18 @@ export class SchedulerRegistry implements SchedulerHandle {
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
   private startPromise: Promise<void> = Promise.resolve();
-  private stopSignal: Promise<void> = new Promise(() => {});
-  private releaseStopSignal: () => void = () => {};
+  /**
+   * Wakes the passes in flight at shutdown. Each pass registers its own waker
+   * and removes it when it ends; racing every pass against one promise that
+   * settles only at shutdown would chain each pass to it for the life of the
+   * process.
+   */
+  private readonly passStopWakers = new Set<() => void>();
 
   constructor(
     private readonly log?: SchedulerLogger,
     private readonly onTaskError?: SchedulerTaskErrorHandler,
-  ) {
-    this.resetStopSignal();
-  }
+  ) {}
 
   get started(): Promise<void> {
     return this.startPromise;
@@ -165,7 +168,6 @@ export class SchedulerRegistry implements SchedulerHandle {
     this.running = true;
     this.stopping = false;
     this.stopPromise = null;
-    this.resetStopSignal();
     this.startPromise = this.startInternal();
     return this.startPromise;
   }
@@ -176,7 +178,7 @@ export class SchedulerRegistry implements SchedulerHandle {
     this.stopping = true;
     // Release both waits a loop can be sitting in: the interval sleep and an
     // outstanding pass. Shutdown must not block for a task's full deadline.
-    this.releaseStopSignal();
+    for (const wake of Array.from(this.passStopWakers)) wake();
     for (const wake of Array.from(this.sleepers.values())) wake();
     this.stopPromise = Promise.allSettled([
       this.startPromise,
@@ -187,12 +189,6 @@ export class SchedulerRegistry implements SchedulerHandle {
       this.stopping = false;
     });
     return this.stopPromise;
-  }
-
-  private resetStopSignal(): void {
-    this.stopSignal = new Promise<void>((resolve) => {
-      this.releaseStopSignal = resolve;
-    });
   }
 
   private async startInternal(): Promise<void> {
@@ -243,12 +239,17 @@ export class SchedulerRegistry implements SchedulerHandle {
       timer = setTimeout(() => resolve("timeout"), timeoutSeconds * 1000);
       timer.unref?.();
     });
+    let wakeOnStop: (() => void) | null = null;
+    const stopped = new Promise<"stopped">((resolve) => {
+      wakeOnStop = () => resolve("stopped");
+      this.passStopWakers.add(wakeOnStop);
+    });
 
     try {
       const outcome = await Promise.race([
         pass.then(() => "done" as const, (error: unknown) => ({ error })),
         deadline,
-        this.stopSignal.then(() => "stopped" as const),
+        stopped,
       ]);
 
       if (outcome === "stopped") return;
@@ -276,6 +277,7 @@ export class SchedulerRegistry implements SchedulerHandle {
       state.consecutiveFailures = 0;
     } finally {
       if (timer) clearTimeout(timer);
+      if (wakeOnStop) this.passStopWakers.delete(wakeOnStop);
       if (settled) state.inFlight = null;
     }
   }
