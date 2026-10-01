@@ -18,6 +18,7 @@ import { fixtureServerGuard } from "./support/outboundGuard.js";
 import { generateCustomSourceHandlerSource } from "../src/modules/sources/customSources/customSourceHandlerTemplate.js";
 import { sha256 } from "../src/modules/sources/sourceRepositoryMappers.js";
 import { PgSourcesRepository } from "../src/modules/sources/repository.js";
+import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService.js";
 
 // Real-Postgres + real-child-process + real local HTTP server (not a live
 // external provider — a loopback server this test controls) integration
@@ -241,6 +242,26 @@ describe("enqueueDueSourceConnectionScans (built_in only)", () => {
     await insertConnection({ id: connId, handlerKind: "built_in" });
     const count = await enqueueDueSourceChannelScans(db.pool, 25);
     expect(count).toBe(1);
+  });
+});
+
+describe("Source channel schedule rule", () => {
+  it("keeps a custom schedule rule across pause and resume", async () => {
+    if (!db.available || !config) return;
+    const connId = randomUUID();
+    await insertConnection({ id: connId, handlerKind: "built_in", fetchFrequency: "daily" });
+    const channels = new SourceChannelService(db.pool, config);
+    const identity = { spaceId: SPACE_A, userId: "user-1" };
+    const rule = { frequency: "daily", hour: 9, minute: 30 };
+    await channels.update(identity, connId, { fetch_frequency: "daily", schedule_rule: rule });
+
+    const paused = await channels.update(identity, connId, { status: "paused" });
+    expect(paused).toMatchObject({ status: "paused", schedule_rule: rule, scan_state: { next_run_at: null } });
+
+    const resumed = await channels.update(identity, connId, { status: "active" });
+    expect(resumed?.schedule_rule).toEqual(rule);
+    const next = new Date(resumed!.scan_state.next_run_at as string);
+    expect([next.getUTCHours(), next.getUTCMinutes()]).toEqual([9, 30]);
   });
 });
 

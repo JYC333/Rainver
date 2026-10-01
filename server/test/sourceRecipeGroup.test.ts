@@ -103,9 +103,16 @@ describe("sourceRecipeCreateFlow", () => {
     });
     expect(created.connection.handler_kind).toBe("recipe");
     expect(created.connection.status).toBe("paused");
-    // Paused channels intentionally do not carry an active scheduler rule;
-    // activation applies the requested schedule atomically.
-    expect(created.connection.schedule_rule).toBeNull();
+    // A paused channel keeps the requested rule without a next run;
+    // activation schedules it.
+    expect(created.connection.schedule_rule).toEqual(HOURLY_SCHEDULE_RULE);
+    const draftTask = await db.pool.query<{ status: string; next_run_at: string | null }>(
+      `SELECT st.status, st.next_run_at
+         FROM scheduler_tasks st JOIN source_channels ch ON ch.id = st.task_key
+        WHERE st.task_type = 'source_channel_scan' AND ch.source_connection_id = $1`,
+      [created.connection.id],
+    );
+    expect(draftTask.rows).toEqual([{ status: "paused", next_run_at: null }]);
 
     const dryRun = await dryRunService!.dryRunRecipeVersion(IDENTITY, created.connection.id, {
       recipe_version_id: created.recipe_version.id,

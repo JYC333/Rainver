@@ -585,24 +585,23 @@ function genericChannelFingerprint(providerKey: string, connectorKey: string, en
     .digest("hex");
 }
 
+/**
+ * Only a manual frequency drops the rule. A paused or archived channel keeps
+ * its rule without a next run, so resuming it returns to the user's time.
+ */
 function resolveChannelSchedule(body: Record<string, unknown>, frequency: string, status: string, existingRule?: unknown): { nextRunAt: string | null; rule: SourceScheduleRule | null } {
-  if (frequency === "manual" || status !== "active") return { nextRunAt: null, rule: null };
+  if (frequency === "manual") return { nextRunAt: null, rule: null };
   const raw = body.schedule_rule && typeof body.schedule_rule === "object" ? body.schedule_rule as Record<string, unknown> : null;
-  const now = new Date();
-  if (raw) {
-    const rule = normalizeRule(raw, frequency);
-    return { nextRunAt: computeNextRunAtFromScheduleRule(rule, now), rule };
-  }
-  if (existingRule && typeof existingRule === "object") {
-    const rule = normalizeRule(existingRule as Record<string, unknown>, frequency);
-    return { nextRunAt: computeNextRunAtFromScheduleRule(rule, now), rule };
-  }
-  const rule = frequency === "hourly"
-    ? { frequency: "hourly", minute: 0 } as const
-    : frequency === "weekly"
-      ? { frequency: "weekly", weekday: 1, hour: 3, minute: 0 } as const
-      : { frequency: "daily", hour: 3, minute: 0 } as const;
-  return { nextRunAt: computeNextRunAtFromScheduleRule(rule, now), rule };
+  const rule: SourceScheduleRule = raw
+    ? normalizeRule(raw, frequency)
+    : existingRule && typeof existingRule === "object"
+      ? normalizeRule(existingRule as Record<string, unknown>, frequency)
+      : frequency === "hourly"
+        ? { frequency: "hourly", minute: 0 }
+        : frequency === "weekly"
+          ? { frequency: "weekly", weekday: 1, hour: 3, minute: 0 }
+          : { frequency: "daily", hour: 3, minute: 0 };
+  return { nextRunAt: status === "active" ? computeNextRunAtFromScheduleRule(rule, new Date()) : null, rule };
 }
 
 function normalizeRule(raw: Record<string, unknown>, frequency: string): SourceScheduleRule {
