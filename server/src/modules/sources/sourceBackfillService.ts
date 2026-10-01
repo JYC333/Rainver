@@ -4,7 +4,7 @@ import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError, objectValue, requiredString, withQueryableTransaction } from "../routeUtils/common.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import type { ProposalRow } from "../proposals/repository.js";
-import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
+import { assertSourceConnectionManageable, assertSourceConnectionReadable } from "./sourceConnectionAccess.js";
 import { ProjectOperationService } from "../projects/projectOperationService.js";
 import { PgProposalApplyService } from "../proposals/applyService.js";
 import {
@@ -127,26 +127,13 @@ export class SourceBackfillPlanningService {
 
   private async assertReadable(identity: SpaceUserIdentity, id: string): Promise<string> {
     const channel = await this.connection(identity.spaceId, id);
-    if ((await contentDecisionFromDb(this.db, identity, "source_connection", channel.source_connection_id)) === "deny") {
-      throw new HttpError(404, "Source connection not found");
-    }
+    await assertSourceConnectionReadable(this.db, identity, channel.source_connection_id);
     return channel.connector_key;
   }
 
   private async assertManage(identity: SpaceUserIdentity, id: string): Promise<string> {
     const channel = await this.connection(identity.spaceId, id);
-    if ((await contentDecisionFromDb(this.db, identity, "source_connection", channel.source_connection_id)) === "deny") {
-      throw new HttpError(404, "Source connection not found");
-    }
-    const r = await this.db.query(
-      `SELECT 1 FROM source_channels ch
-        JOIN source_connections sc ON sc.id=ch.source_connection_id
-        WHERE ch.id=$1 AND ch.space_id=$2 AND ch.status <> 'archived'
-          AND (sc.owner_user_id=$3
-               OR EXISTS(SELECT 1 FROM space_memberships sm WHERE sm.space_id=$2 AND sm.user_id=$3 AND sm.status='active' AND sm.role IN ('owner','admin')))`,
-      [id, identity.spaceId, identity.userId],
-    );
-    if (!r.rows[0]) throw new HttpError(403, "Source owner or space admin access required");
+    await assertSourceConnectionManageable(this.db, identity, channel.source_connection_id);
     return channel.connector_key;
   }
 

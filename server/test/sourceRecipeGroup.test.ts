@@ -11,6 +11,7 @@ import { loadConfig, type ServerConfig } from "../src/config.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { PgSourcesRepository } from "../src/modules/sources/repository.js";
+import { SourceRecipeService } from "../src/modules/sources/sourceRecipeService.js";
 import { analyzeSourceRecipe, SOURCE_RECIPE_PRIMITIVE_REGISTRY } from "../src/modules/sources/sourceRecipes/primitiveRegistry.js";
 import { SourceRecipeCreateService } from "../src/modules/sources/sourceRecipes/recipeCreateService.js";
 import { SourceRecipeDryRunService } from "../src/modules/sources/sourceRecipes/recipeDryRunService.js";
@@ -123,6 +124,39 @@ describe("sourceRecipeCreateFlow", () => {
   }
 
   describe("SourceRecipeCreateService (real Postgres)", () => {
+    it("reads a recipe source's versions only for a reader of its connection", async () => {
+      if (!db.available) return;
+      const plan = await createService!.planSource(IDENTITY, {
+        name: "Recipe Feed", endpoint_url: "https://example.com/feed.xml", fetch_frequency: "hourly",
+        capture_policy: "extract_text", fixture_content: RSS_FIXTURE,
+      });
+      const created = await createService!.createSource(IDENTITY, {
+        name: "Recipe Feed", endpoint_url: "https://example.com/feed.xml", fetch_frequency: "hourly",
+        capture_policy: "extract_text", recipe: plan.recipe,
+      });
+      const member = { spaceId: SPACE_A, userId: "user-member" };
+      await db.pool.query(
+        `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+         VALUES ($1, 'Member', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+        [member.userId],
+      );
+      await db.pool.query(
+        `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+         VALUES (gen_random_uuid()::text, $1, $2, 'member', 'active', now(), now())`,
+        [SPACE_A, member.userId],
+      );
+      const recipes = new SourceRecipeService(db.pool, config!);
+      const page = { limit: 10, offset: 0 };
+
+      await db.pool.query(`UPDATE source_connections SET visibility = 'private' WHERE id = $1`, [created.connection.id]);
+      await expect(recipes.listVersions(member, created.connection.id, page)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(recipes.getVersion(member, created.connection.id, created.recipe_version.id))
+        .rejects.toMatchObject({ statusCode: 404 });
+
+      await db.pool.query(`UPDATE source_connections SET visibility = 'space_shared' WHERE id = $1`, [created.connection.id]);
+      await expect(recipes.listVersions(member, created.connection.id, page)).resolves.toMatchObject({ total: 1 });
+    });
+
     it("plans, creates, dry-runs, activates, and scans a recipe source into Source", async () => {
       if (!db.available) return;
       const endpointUrl = await startFixtureServer(RSS_FIXTURE);

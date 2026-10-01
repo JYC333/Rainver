@@ -1,3 +1,4 @@
+import { assertSourceConnectionReadable } from "../sourceConnectionAccess.js";
 import type {
   CustomSourceInstanceRunnerSettingsUpdate,
   CustomSourceSpacePolicyUpdate,
@@ -332,13 +333,17 @@ export class PgCustomSourceHandlerRepository {
     this.settingsStore = new ScopedSettingsStore(db);
   }
 
-  /** Confirms the connection exists in this space; throws 404 otherwise. Every other method depends on this same-space gate. */
+  /**
+   * Confirms the connection exists in this space and the caller may read it;
+   * throws 404 otherwise. Every other read method depends on this gate.
+   */
   private async requireConnection(identity: SpaceUserIdentity, connectionId: string): Promise<void> {
     const result = await this.db.query<{ id: string }>(
       `SELECT id FROM source_connections WHERE space_id = $1 AND id = $2 AND deleted_at IS NULL`,
       [identity.spaceId, connectionId],
     );
     if (!result.rows[0]) throw new HttpError(404, "Source connection not found");
+    await assertSourceConnectionReadable(this.db, identity, connectionId);
   }
 
   private async getSpacePolicySettings(spaceId: string) {

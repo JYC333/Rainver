@@ -727,6 +727,13 @@ Custom Source policy adds a handler policy envelope for network origins,
 credentials, runtime language, browser automation, shell, dependency
 installation, resource limits, output limits, and log retention.
 
+Authority over an existing connection (`sources/sourceConnectionAccess.ts`):
+reading what hangs off it — Custom Source handler versions, runs and summary,
+recipe versions, history imports — takes the connection's own
+`source_connection` read decision; changing it — generating, testing,
+activating, repairing or rolling back a handler, managing a history import —
+takes its owner or a Space owner/admin who reads it without oversight.
+
 Space Settings owns product policy such as who can create custom sources,
 default source policy, allowed domains, per-space download cap, credentialed
 source policy, and whether same-envelope repair may auto-apply.

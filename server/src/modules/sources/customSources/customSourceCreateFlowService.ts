@@ -1,3 +1,4 @@
+import { assertSourceConnectionManageable } from "../sourceConnectionAccess.js";
 import { randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -557,6 +558,8 @@ export class CustomSourceCreateFlowService {
     );
     const row = result.rows[0];
     if (!row) throw new HttpError(404, "Source connection not found");
+    // Every caller changes the connection's handler.
+    await assertSourceConnectionManageable(this.pool, identity, row.id);
     if (row.handler_kind !== "generated_custom") {
       throw new HttpError(422, "Source connection is not a Custom Source");
     }
