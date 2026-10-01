@@ -337,8 +337,10 @@ covering `task.create`, `task.stage.advance`, `proposal.decide`,
 `inquiry.thread.create`, `inquiry.iteration.record`, `inquiry.advice.adopt`
 and `research.acquisition.start`). And **bounds set before the work runs**: at
 most five Threads opened per turn (`THREAD_FAN_OUT_PER_TURN`, counted from the
-Project's own event stream so a resumed Run cannot spend the budget twice),
-and a bounded acquisition corpus. Refusing a bound costs a turn, not a
+Project's own event stream so a resumed Run cannot spend the budget twice), at
+most five Tasks created per turn by `task.create` (`TASK_FAN_OUT_PER_TURN`,
+counted from the Tasks the Run itself created, under the Project lock), and a
+bounded acquisition corpus. Refusing a bound costs a turn, not a
 decision — the sixth question is opened in the next one.
 
 The counterpart is review-after: every such write is in the Project's updates
