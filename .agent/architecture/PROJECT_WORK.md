@@ -528,10 +528,14 @@ the current widening. A Task-domain change, recorded rather than done.
   [`../modules/agents.md`](../modules/agents.md).
 
 **Who may write.** Reading a Task is not licence to change it. `PATCH
-/tasks/:taskId`, `POST /tasks/:taskId/stage` and the four Task-addressed Agent
-actions all require Project **writer** authority
+/tasks/:taskId`, `POST /tasks/:taskId/stage`, `POST /tasks/:taskId/evaluations`
+(the newest evaluation decides the close gate) and the four Task-addressed
+Agent actions all require Project **writer** authority
 (`assertProjectWriterForMutation`) on the Task's Project — and, for a move, on
-the Project it is moving to. A Project `viewer` can read every shared Task and
+the Project it is moving to. `PATCH` and a new evaluation also take the
+archive fence (`lockActiveProjectForMutation`), so an archived Project's Task
+cannot be closed (queuing a merge), moved, or re-judged; a Board `PATCH` takes
+the same fence. A Project `viewer` can read every shared Task and
 change none of them, through an Agent exactly as directly. The Board says so
 (`viewer_can_write`) and offers a viewer no drag. `PATCH` also reads the row
 under the transaction's lock, so two people closing the same Task at once

@@ -267,8 +267,10 @@ export class PgTaskRepository {
       const targetProjectId = Object.hasOwn(body, "project_id")
         ? optionalString(body.project_id)
         : board.project_id ?? null;
-      for (const projectId of new Set([board.project_id ?? null, targetProjectId])) {
-        if (projectId) await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
+      for (const projectId of [...new Set([board.project_id ?? null, targetProjectId])].sort()) {
+        if (!projectId) continue;
+        await lockActiveProjectForMutation(client, identity.spaceId, projectId);
+        await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
       }
       await this.writeBoardUpdate(client, identity, boardId, body);
     });
@@ -513,12 +515,15 @@ export class PgTaskRepository {
       // every shared Task; without this they could drag one to Done, move its
       // Loop stage, or reassign it. The Project the Task is *moving to* is
       // gated too, or a viewer there could pull work into a Project they
-      // cannot write.
+      // cannot write. An archived Project is frozen for writers as well:
+      // closing a Task there would queue a merge on the host.
       const targetProjectId = Object.hasOwn(body, "project_id")
         ? optionalString(body.project_id)
         : currentTask.project_id;
-      for (const projectId of new Set([currentTask.project_id, targetProjectId])) {
-        if (projectId) await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
+      for (const projectId of [...new Set([currentTask.project_id, targetProjectId])].sort()) {
+        if (!projectId) continue;
+        await lockActiveProjectForMutation(client, identity.spaceId, projectId);
+        await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
       }
       if (Object.hasOwn(body, "parent_task_id")) {
         const parentTaskId = optionalString(body.parent_task_id);
@@ -1382,7 +1387,24 @@ export class PgTaskRepository {
   }
 
   async createTaskEvaluation(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
-    if (!(await getVisibleTaskRow(this.pool, identity, taskId))) throw new HttpError(404, "Task not found");
+    return withDbTransaction(this.pool, (client) => this.createTaskEvaluationIn(client, identity, taskId, body));
+  }
+
+  private async createTaskEvaluationIn(
+    client: Queryable,
+    identity: SpaceUserIdentity,
+    taskId: string,
+    body: Record<string, unknown>,
+  ) {
+    const task = await getVisibleTaskRow(client, identity, taskId);
+    if (!task) throw new HttpError(404, "Task not found");
+    // The newest evaluation decides the close gate for everyone, so recording
+    // one is a write to the Task: a Project viewer may read it, not judge it,
+    // and an archived Project takes no new judgements.
+    if (task.project_id) {
+      await lockActiveProjectForMutation(client, identity.spaceId, task.project_id);
+      await assertProjectWriterForMutation(client, identity.spaceId, task.project_id, identity.userId);
+    }
     const score = bounded01(body.score, "score");
     const confidence = bounded01(body.confidence, "confidence");
     const runId = optionalString(body.run_id);
@@ -1391,7 +1413,7 @@ export class PgTaskRepository {
       // 422-versus-201 is otherwise an existence oracle for Runs they cannot
       // see, and the evaluation they attach to it then decides the close gate
       // for everyone while `listTaskEvaluations` hides it from them.
-      const link = await this.pool.query<{ id: string }>(
+      const link = await client.query<{ id: string }>(
         `SELECT tr.id
            FROM task_runs tr
            JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
@@ -1406,7 +1428,7 @@ export class PgTaskRepository {
       : null;
     if (evidenceArtifactIds?.length) {
       const distinct = [...new Set(evidenceArtifactIds)];
-      const linked = await this.pool.query<{ total: string }>(
+      const linked = await client.query<{ total: string }>(
         `SELECT count(DISTINCT ta.artifact_id)::text AS total
            FROM task_artifacts ta
            JOIN artifacts a ON a.id = ta.artifact_id AND a.space_id = ta.space_id
@@ -1420,7 +1442,7 @@ export class PgTaskRepository {
       }
     }
     const now = new Date().toISOString();
-    const result = await this.pool.query<TaskEvaluationRow>(
+    const result = await client.query<TaskEvaluationRow>(
       `INSERT INTO task_evaluations (
          id, space_id, task_id, run_id, evaluator_type, evaluator_user_id,
          score, confidence, summary, checklist_json, known_issues_json,

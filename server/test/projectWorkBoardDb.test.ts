@@ -677,6 +677,20 @@ describe("who may change a Board", () => {
     await expect(repo.updateBoard({ spaceId: SPACE, userId: OWNER }, boardId, { name: "Renamed" }))
       .resolves.toMatchObject({ name: "Renamed" });
   });
+
+  it("refuses to change a Board while its Project is archived", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const boardId = randomUUID();
+    await db.pool!.query(
+      `INSERT INTO boards (id, space_id, project_id, name, board_type, status, sort_order, created_at, updated_at)
+       VALUES ($1, $2, $3, 'Project board', 'kanban', 'active', 0, now(), now())`,
+      [boardId, SPACE, PROJECT],
+    );
+    await db.pool!.query(`UPDATE projects SET status = 'archived', archived_at = now() WHERE id = $1`, [PROJECT]);
+    const repo = new PgTaskRepository(db.pool!);
+    await expect(repo.updateBoard(owner, boardId, { name: "Renamed" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+  });
 });
 
 describe("who may change a Task", () => {
@@ -707,6 +721,62 @@ describe("who may change a Task", () => {
     const untouched = await db.pool!.query<{ status: string; title: string }>(
       `SELECT status, title FROM tasks WHERE id = $1`, [task]);
     expect(untouched.rows[0]).toEqual({ status: "in_progress", title: "Work item" });
+  });
+
+  it("refuses to close or move a Task while its Project is archived", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask({ id: task, status: "in_progress" });
+    await makeRunWithEvaluation(task, "accept");
+    const archived = randomUUID();
+    await db.pool!.query(
+      `INSERT INTO projects (id, space_id, owner_user_id, name, status, archived_at, created_at, updated_at)
+       VALUES ($1, $2, $3, 'Archived Project', 'archived', now(), now(), now())`,
+      [archived, SPACE, OWNER],
+    );
+    const repo = new PgTaskRepository(db.pool!);
+
+    // Moving work into an archived Project restarts work there.
+    await expect(repo.updateTask(owner, task, { project_id: archived }))
+      .rejects.toMatchObject({ statusCode: 409 });
+
+    // Archive freezes the Project: closing a Task would queue a merge.
+    await db.pool!.query(`UPDATE projects SET status = 'archived', archived_at = now() WHERE id = $1`, [PROJECT]);
+    await expect(repo.updateTask(owner, task, { status: "done" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+    const untouched = await db.pool!.query<{ status: string; project_id: string }>(
+      `SELECT status, project_id FROM tasks WHERE id = $1`, [task]);
+    expect(untouched.rows[0]).toEqual({ status: "in_progress", project_id: PROJECT });
+  });
+
+  it("lets only a Project writer record the evaluation that decides the close gate", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask({ id: task, status: "in_progress" });
+    const run = await makeRunWithEvaluation(task, "accept");
+    await db.pool!.query(
+      `UPDATE project_members SET role = 'viewer' WHERE project_id = $1 AND user_id = $2`,
+      [PROJECT, OTHER],
+    );
+    const viewer = { spaceId: SPACE, userId: OTHER };
+    const repo = new PgTaskRepository(db.pool!);
+
+    await expect(repo.createTaskEvaluation(viewer, task, {
+      evaluator_type: "human", run_id: run, recommendation: "reject",
+    })).rejects.toMatchObject({ statusCode: 403 });
+
+    await db.pool!.query(`UPDATE projects SET status = 'archived', archived_at = now() WHERE id = $1`, [PROJECT]);
+    await expect(repo.createTaskEvaluation(owner, task, {
+      evaluator_type: "human", run_id: run, recommendation: "reject",
+    })).rejects.toMatchObject({ statusCode: 409 });
+
+    await db.pool!.query(`UPDATE projects SET status = 'active', archived_at = NULL WHERE id = $1`, [PROJECT]);
+    await expect(repo.createTaskEvaluation(owner, task, {
+      evaluator_type: "human", run_id: run, recommendation: "reject",
+    })).resolves.toMatchObject({ recommendation: "reject" });
+    const evaluations = await db.pool!.query<{ recommendation: string }>(
+      `SELECT recommendation FROM task_evaluations WHERE task_id = $1 ORDER BY created_at`, [task]);
+    expect(evaluations.rows.map((row) => row.recommendation)).toEqual(["accept", "reject"]);
   });
 
   it("records one acceptance when two people close the same Task at once", async (ctx) => {
