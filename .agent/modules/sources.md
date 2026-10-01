@@ -549,7 +549,11 @@ After a scan materializes new items, the scan paths emit a best-effort
 owns that job, the rule cursor, and the run audit rows:
 
 - `source_post_processing_rules` bind one source connection to one reusable
-  agent and define trigger, input window, and actions.
+  agent and define trigger, input window, and actions. Listing a channel's
+  rules, runs, backlog, briefings or source runs takes the connection's read
+  decision; creating, updating or running a rule takes authority over the
+  connection (`sourceConnectionAccess.ts`), an Agent the author can read, and
+  Project writer authority for a bound `project_id`.
 - `source_post_processing_runs` record each rule/manual execution, input item
   and evidence ids, associated agent run, output artifacts/proposals/jobs,
   cursor before/after, status, and errors.

@@ -39,6 +39,9 @@ import { readSpaceRetrievalSettings } from "../../retrieval/settings.js";
 import { resolveProviderCommandStore } from "../../providers/commands/store.js";
 import { contentDecisionFromDb } from "../../access/contentAccessQuery.js";
 import { assertSourcePromptEgressAllowed } from "../sourcePromptEgress.js";
+import { assertSourceConnectionManageable, assertSourceConnectionReadable } from "../sourceConnectionAccess.js";
+import { assertProjectReadable, assertProjectWriter } from "../../projects/access.js";
+import { canReadAgent } from "../../agents/agentAccess.js";
 import { sourceItemFullContentReadClause } from "../sourceItemAccess.js";
 import { itemColumnsForAlias, type EvidenceRow, type SourceItemRow, type SourceConnectionRow } from "../sourceRepositoryRows.js";
 import { sourceRetrievalRegistry } from "../retrievalAdapter.js";
@@ -124,7 +127,7 @@ export class SourcePostProcessingService {
   ) {}
 
   async listRules(identity: SpaceUserIdentity, connectionId: string): Promise<SourcePostProcessingRuleOut[]> {
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     return new PgSourcePostProcessingRepository(this.db).listRules(identity.spaceId, connectionId);
   }
 
@@ -133,7 +136,7 @@ export class SourcePostProcessingService {
     connectionId: string,
     body: Record<string, unknown>,
   ): Promise<SourcePostProcessingRuleOut> {
-    const connection = await this.requireConnection(identity.spaceId, connectionId);
+    const connection = await this.requireManagedConnection(identity, connectionId);
     const triggerType = normalizeTriggerType(body.trigger_type);
     const triggerConfig = normalizeTriggerConfig(body.trigger_config_json, triggerType);
     const inputConfig = normalizeInputConfig(body.input_config_json);
@@ -142,7 +145,7 @@ export class SourcePostProcessingService {
     await this.enforceSourceTargets(connection, actions);
     const agentId = await this.resolveAgentId(identity, optionalString(body.agent_id));
     const projectId = optionalString(body.project_id);
-    if (projectId) await this.assertProjectInSpace(identity.spaceId, projectId);
+    if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     this.validateInputContextBinding(projectId, inputConfig, actions);
     const name = optionalString(body.name) ?? defaultRuleName(triggerType, actions);
     return new PgSourcePostProcessingRepository(this.db).createRule({
@@ -170,7 +173,7 @@ export class SourcePostProcessingService {
     if (!existing || existing.source_channel_id !== connectionId) {
       throw new HttpError(404, "Post-processing rule not found");
     }
-    const connection = await this.requireConnection(identity.spaceId, connectionId);
+    const connection = await this.requireManagedConnection(identity, connectionId);
     const triggerType = Object.hasOwn(body, "trigger_type")
       ? normalizeTriggerType(body.trigger_type)
       : existing.trigger_type;
@@ -191,7 +194,7 @@ export class SourcePostProcessingService {
       ? await this.resolveAgentId(identity, optionalString(body.agent_id))
       : undefined;
     const projectId = Object.hasOwn(body, "project_id") ? optionalString(body.project_id) : undefined;
-    if (projectId) await this.assertProjectInSpace(identity.spaceId, projectId);
+    if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     this.validateInputContextBinding(
       projectId === undefined ? existing.project_id : projectId,
       inputConfig ?? normalizeInputConfig(existing.input_config_json),
@@ -219,6 +222,7 @@ export class SourcePostProcessingService {
     if (!rule || rule.source_channel_id !== connectionId) {
       throw new HttpError(404, "Post-processing rule not found");
     }
+    await this.requireManagedConnection(identity, connectionId);
     return this.executeRule(rule, {
       triggerType: "manual",
       actorUserId: identity.userId,
@@ -391,12 +395,12 @@ export class SourcePostProcessingService {
     limit: number,
     offset: number,
   ): Promise<{ items: SourcePostProcessingRunOut[]; total: number; limit: number; offset: number }> {
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     return new PgSourcePostProcessingRepository(this.db).listRuns(identity.spaceId, connectionId, limit, offset);
   }
 
   async backlog(identity: SpaceUserIdentity, connectionId: string): Promise<SourcePostProcessingBacklogOut> {
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     return new PgSourcePostProcessingRepository(this.db).backlog(identity.spaceId, connectionId);
   }
 
@@ -412,8 +416,8 @@ export class SourcePostProcessingService {
       offset: number;
     },
   ): Promise<{ items: SourcePostProcessingItemDecisionOut[]; total: number; limit: number; offset: number }> {
-    if (filters.connectionId) await this.requireConnection(identity.spaceId, filters.connectionId);
-    if (filters.projectId) await this.assertProjectInSpace(identity.spaceId, filters.projectId);
+    if (filters.connectionId) await this.requireReadableConnection(identity, filters.connectionId);
+    if (filters.projectId) await assertProjectReadable(this.db, identity.spaceId, filters.projectId, identity.userId);
     return new PgSourcePostProcessingRepository(this.db).listDecisions({
       spaceId: identity.spaceId,
       userId: identity.userId,
@@ -437,8 +441,8 @@ export class SourcePostProcessingService {
       offset: number;
     },
   ): Promise<{ items: SourcePostProcessingBriefingDaySummaryOut[]; total: number; limit: number; offset: number }> {
-    if (filters.connectionId) await this.requireConnection(identity.spaceId, filters.connectionId);
-    if (filters.projectId) await this.assertProjectInSpace(identity.spaceId, filters.projectId);
+    if (filters.connectionId) await this.requireReadableConnection(identity, filters.connectionId);
+    if (filters.projectId) await assertProjectReadable(this.db, identity.spaceId, filters.projectId, identity.userId);
     return new PgSourcePostProcessingRepository(this.db).listBriefings({
       spaceId: identity.spaceId,
       userId: identity.userId,
@@ -457,7 +461,7 @@ export class SourcePostProcessingService {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new HttpError(422, "date must be an ISO calendar date (YYYY-MM-DD)");
     }
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     const briefing = await new PgSourcePostProcessingRepository(this.db).getBriefing({
       spaceId: identity.spaceId,
       userId: identity.userId,
@@ -697,7 +701,7 @@ export class SourcePostProcessingService {
     await this.enforceSourceTargets(connection, actions);
     const agentId = await this.resolveAgentId(identity, optionalString(body.agent_id));
     const projectId = optionalString(body.project_id);
-    if (projectId) await this.assertProjectInSpace(identity.spaceId, projectId);
+    if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     this.validateInputContextBinding(projectId, normalizeInputConfig(body.input_config_json), actions);
     const batch = await repo.collectInputBatch({
       spaceId: identity.spaceId,
@@ -1786,7 +1790,7 @@ export class SourcePostProcessingService {
 
   private async resolveAgentId(identity: SpaceUserIdentity, requestedAgentId: string | null): Promise<string> {
     if (requestedAgentId) {
-      await this.assertAgentUsable(identity.spaceId, requestedAgentId);
+      await this.assertAgentUsable(identity, requestedAgentId);
       return requestedAgentId;
     }
     const pool = this.requirePool();
@@ -1794,25 +1798,34 @@ export class SourcePostProcessingService {
     return agent.id;
   }
 
-  private async assertAgentUsable(spaceId: string, agentId: string): Promise<void> {
+  /** A rule runs its Agent on its author's behalf, so the author must be able to read it. */
+  private async assertAgentUsable(identity: SpaceUserIdentity, agentId: string): Promise<void> {
     const row = await this.db.query<{ id: string }>(
       `SELECT id FROM agents WHERE space_id = $1 AND id = $2 AND status = 'active' LIMIT 1`,
-      [spaceId, agentId],
+      [identity.spaceId, agentId],
     );
-    if (!row.rows[0]) throw new HttpError(404, "Agent not found or inactive");
-  }
-
-  private async assertProjectInSpace(spaceId: string, projectId: string): Promise<void> {
-    const row = await this.db.query<{ id: string }>(
-      `SELECT id FROM projects WHERE space_id = $1 AND id = $2 AND status <> 'deleted' LIMIT 1`,
-      [spaceId, projectId],
-    );
-    if (!row.rows[0]) throw new HttpError(404, "Project not found");
+    if (!row.rows[0] || !(await canReadAgent(this.db, identity, agentId))) {
+      throw new HttpError(404, "Agent not found or inactive");
+    }
   }
 
   private async requireConnection(spaceId: string, connectionId: string): Promise<SourceConnectionRow> {
     const connection = await new PgSourcePostProcessingRepository(this.db).getConnection(spaceId, connectionId);
     if (!connection) throw new HttpError(404, "Source connection not found");
+    return connection;
+  }
+
+  /** A channel's rules, runs and briefings are read under its connection's read decision. */
+  private async requireReadableConnection(identity: SpaceUserIdentity, channelId: string): Promise<SourceConnectionRow> {
+    const connection = await this.requireConnection(identity.spaceId, channelId);
+    await assertSourceConnectionReadable(this.db, identity, connection.id);
+    return connection;
+  }
+
+  /** Writing or running a channel's rules takes authority over its connection. */
+  private async requireManagedConnection(identity: SpaceUserIdentity, channelId: string): Promise<SourceConnectionRow> {
+    const connection = await this.requireConnection(identity.spaceId, channelId);
+    await assertSourceConnectionManageable(this.db, identity, connection.id);
     return connection;
   }
 

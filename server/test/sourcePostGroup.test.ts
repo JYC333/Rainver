@@ -7,7 +7,8 @@ import { reconcileProjectResearch } from "../src/modules/scheduler/backgroundSer
 import { isRetryableSourcePostProcessingFailure, sourcePostProcessingFailureCode, SourcePostProcessingRecoveryService } from "../src/modules/sources/postProcessing/recoveryService.js";
 import { emitSourcePostProcessingDeepAnalysisEvent } from "../src/modules/sources/postProcessing/eventEmitter.js";
 import { normalizeActions, normalizeInputConfig, SOURCE_POST_PROCESSING_EVENT_JOB_TYPE, type SourcePostProcessingRunOut } from "../src/modules/sources/postProcessing/repository.js";
-import { promptBudgetCharsFor, sourcePostProcessingExecutionRequest, validateSourcePostProcessingInputContextBinding } from "../src/modules/sources/postProcessing/service.js";
+import { promptBudgetCharsFor, SourcePostProcessingService, sourcePostProcessingExecutionRequest, validateSourcePostProcessingInputContextBinding } from "../src/modules/sources/postProcessing/service.js";
+import { listSourceRuns } from "../src/modules/sources/sourceRunReadModel.js";
 import { seedAgentWithVersion, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { seedArxivSourceChain } from "./support/researchSeeds.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
@@ -459,5 +460,77 @@ describe("sourcePostProcessingFollowUpDb", () => {
     if (!db.available) return;
     await followUp({});
     expect(await queuedTriggerTypes()).toEqual([]);
+  });
+});
+
+describe("sourcePostProcessingAuthorityDb", () => {
+  const SPACE = "e7e7e7e7-0000-4000-8000-000000000001";
+  const OWNER = "e7e7e7e7-0000-4000-8000-000000000002";
+  const MEMBER = "e7e7e7e7-0000-4000-8000-000000000003";
+  const CONNECTION = "e7e7e7e7-0000-4000-8000-000000000004";
+  const CHANNEL = "e7e7e7e7-0000-4000-8000-000000000005";
+  const MEMBERS_PROJECT = "e7e7e7e7-0000-4000-8000-000000000006";
+  const AGENT = "e7e7e7e7-0000-4000-8000-000000000007";
+  const MEMBERS_AGENT = "e7e7e7e7-0000-4000-8000-000000000008";
+  const db = useTestDatabase(`${import.meta.filename}#sourcePostProcessingAuthorityDb`);
+  const owner = { spaceId: SPACE, userId: OWNER };
+  const member = { spaceId: SPACE, userId: MEMBER };
+  const service = () => new SourcePostProcessingService(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+
+  beforeEach(async () => {
+    if (!db.available) return;
+    await resetTables(db.pool, ["source_post_processing_rules", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "agents", "projects", "space_memberships", "users", "spaces"], { cascade: true });
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Team', 'team', $2, $2)`, [SPACE, now]);
+    // Both plain members: OWNER owns the Source connection, and a Space
+    // owner/admin would be a writer of every Project by role.
+    for (const [userId, role] of [[OWNER, "member"], [MEMBER, "member"]] as const) {
+      await db.pool.query(
+        `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+         VALUES ($1, $1, 'active', $2, $2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+        [userId, now],
+      );
+      await db.pool.query(
+        `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $5, $5)`,
+        [randomUUID(), SPACE, userId, role, now],
+      );
+    }
+    await seedArxivSourceChain(db.pool, { connector: randomUUID(), connection: CONNECTION, channel: CHANNEL, space: SPACE, owner: OWNER, now });
+    await db.pool.query(
+      `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 'Member only', 'active', $4, $4)`,
+      [MEMBERS_PROJECT, SPACE, MEMBER, now],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+    await seedAgentWithVersion(db.pool, { agent: AGENT, version: randomUUID(), space: SPACE, owner: OWNER, now });
+    await seedAgentWithVersion(db.pool, { agent: MEMBERS_AGENT, version: randomUUID(), space: SPACE, owner: MEMBER, now });
+    await db.pool.query(`UPDATE agents SET visibility = 'private' WHERE id = $1`, [MEMBERS_AGENT]);
+  });
+
+  it("keeps another member's private Source channel's rules and runs out of reach", async () => {
+    if (!db.available) return;
+    await expect(service().listRules(member, CHANNEL)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(service().listRuns(member, CHANNEL, 10, 0)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(service().backlog(member, CHANNEL)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(listSourceRuns(db.pool, member, CHANNEL, { limit: 10, offset: 0 })).rejects.toMatchObject({ statusCode: 404 });
+    await expect(service().createRule(member, CHANNEL, { trigger_type: "manual", agent_id: AGENT }))
+      .rejects.toMatchObject({ statusCode: 404 });
+
+    // Shared with the Space: readable, but still not the member's to change.
+    await db.pool.query(`UPDATE source_connections SET visibility = 'space_shared' WHERE id = $1`, [CONNECTION]);
+    await expect(service().listRules(member, CHANNEL)).resolves.toEqual([]);
+    await expect(service().createRule(member, CHANNEL, { trigger_type: "manual", agent_id: AGENT }))
+      .rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it("binds a rule only to a Project and an Agent its author may use", async () => {
+    if (!db.available) return;
+    await expect(service().createRule(owner, CHANNEL, { trigger_type: "manual", agent_id: AGENT, project_id: MEMBERS_PROJECT }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    await expect(service().createRule(owner, CHANNEL, { trigger_type: "manual", agent_id: MEMBERS_AGENT }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    const rules = await db.pool.query(`SELECT id FROM source_post_processing_rules WHERE space_id = $1`, [SPACE]);
+    expect(rules.rows).toEqual([]);
   });
 });
