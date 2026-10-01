@@ -26,7 +26,8 @@ export function scopePathArray(value: unknown, field: string): string[] {
     if (raw.includes("\0") || raw.includes("\\") || /^[A-Za-z]:/.test(raw) || pathPosix.isAbsolute(raw)) {
       throw new HttpError(422, `${field} entries must be relative POSIX Project Folder paths`);
     }
-    const normalized = pathPosix.normalize(raw);
+    // `normalize` keeps a trailing slash; a directory is the same scope either way.
+    const normalized = withoutTrailingSlash(pathPosix.normalize(raw));
     if (normalized === "." || normalized === ".." || normalized.startsWith("../")) {
       throw new HttpError(422, `${field} entries must stay inside the Project Folder`);
     }
@@ -41,8 +42,14 @@ export function scopePathArray(value: unknown, field: string): string[] {
   return paths;
 }
 
+function withoutTrailingSlash(path: string): string {
+  return path.length > 1 ? path.replace(/\/+$/, "") : path;
+}
+
 function scopeContains(parent: string, child: string): boolean {
-  return child === parent || child.startsWith(`${parent}/`);
+  // A scope stored before trailing slashes were normalized still names its directory.
+  const directory = withoutTrailingSlash(parent);
+  return child === directory || child.startsWith(`${directory}/`);
 }
 
 export function assertScopesDoNotOverlap(editable: string[], protectedPaths: string[]): void {

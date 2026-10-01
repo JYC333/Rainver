@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { seedServerHost, seedMainlineRoomsForAllProjects, seedServerRuntimeProfile } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it } from "vitest";
-import { normalizeExecutorConfig } from "../src/modules/experiments/common.js";
+import { assertScopesDoNotOverlap, managedScopeViolation, normalizeExecutorConfig, scopePathArray } from "../src/modules/experiments/common.js";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService.js";
 import { ExperimentInterpretationService } from "../src/modules/experiments/interpretationService.js";
 import { ExperimentRunService } from "../src/modules/experiments/runService.js";
@@ -29,6 +29,16 @@ describe("experimentsCommon", () => {
     ])("rejects %s", (_label, config) => {
       expect(() => normalizeExecutorConfig("managed_code_comparison", config))
         .toThrow(/positive integer/);
+    });
+
+    it("treats a scope directory written with a trailing slash as that directory", () => {
+      const editable = scopePathArray(["src/"], "editable_scope");
+      expect(editable).toEqual(["src"]);
+      expect(managedScopeViolation(["src/main.py"], editable, [])).toBeNull();
+      expect(managedScopeViolation(["src/main.py"], ["src/"], [])).toBeNull();
+      expect(managedScopeViolation(["docs/notes.md"], editable, [])).toMatch(/outside editable scope/);
+      expect(() => assertScopesDoNotOverlap(editable, scopePathArray(["src/secret"], "protected_scope")))
+        .toThrow(/overlaps protected scope/);
     });
 
     it("keeps positive integer budgets in the immutable normalized config", () => {
