@@ -689,6 +689,31 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
     expect(row.rows[0]?.status).toBe("active");
   });
 
+  it("keeps what a re-add does not mention on an existing Corpus row", async () => {
+    if (!db.available) return;
+    const { sourceItemId, corpusItemId } = await seedSourceItemOnlyCorpusItem();
+    await db.pool.query(
+      `UPDATE project_corpus_items
+          SET role = 'primary', read_status = 'read', relevance = 'relevant', confidence = 0.9,
+              reason = 'Screened in', metadata_json = '{"kept":true}'::jsonb
+        WHERE id = $1`,
+      [corpusItemId],
+    );
+
+    const readded = await repo().upsert(identity, PROJECT, { source_item_id: sourceItemId });
+
+    expect(readded).toMatchObject({
+      id: corpusItemId,
+      role: "primary",
+      read_status: "read",
+      relevance: "relevant",
+      confidence: 0.9,
+      reason: "Screened in",
+      metadata_json: { kept: true },
+      triage_confirmed_by_user: false,
+    });
+  });
+
   it("does not replace a newer canonical AI decision with an older duplicate decision", async () => {
     if (!db.available) return;
     const { sourceItemId, corpusItemId: duplicateId } = await seedSourceItemOnlyCorpusItem();

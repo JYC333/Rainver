@@ -373,22 +373,25 @@ export class ProjectCorpusRepository {
                      evidence_id = COALESCE(EXCLUDED.evidence_id, project_corpus_items.evidence_id),
                      source_connection_id = COALESCE(EXCLUDED.source_connection_id, project_corpus_items.source_connection_id),
                      source_decision_id = COALESCE(EXCLUDED.source_decision_id, project_corpus_items.source_decision_id),
-                     role = EXCLUDED.role,
+                     -- An existing row keeps what the request does not mention,
+                     -- as an update would: re-adding an item must not wipe its
+                     -- screening, reading progress or role.
+                     role = CASE WHEN $25::boolean THEN EXCLUDED.role ELSE project_corpus_items.role END,
                      status = EXCLUDED.status,
-                     triage_status = EXCLUDED.triage_status,
+                     triage_status = CASE WHEN EXCLUDED.triage_confirmed_by_user THEN EXCLUDED.triage_status ELSE project_corpus_items.triage_status END,
                      triage_confirmed_by_user = CASE
                        WHEN EXCLUDED.triage_confirmed_by_user THEN true
                        ELSE project_corpus_items.triage_confirmed_by_user
                      END,
-                     read_status = EXCLUDED.read_status,
-                     relevance = EXCLUDED.relevance,
-                     confidence = EXCLUDED.confidence,
-                     reason = EXCLUDED.reason,
-                     metadata_json = EXCLUDED.metadata_json,
+                     read_status = CASE WHEN $26::boolean THEN EXCLUDED.read_status ELSE project_corpus_items.read_status END,
+                     relevance = CASE WHEN $27::boolean THEN EXCLUDED.relevance ELSE project_corpus_items.relevance END,
+                     confidence = CASE WHEN $28::boolean THEN EXCLUDED.confidence ELSE project_corpus_items.confidence END,
+                     reason = CASE WHEN $29::boolean THEN EXCLUDED.reason ELSE project_corpus_items.reason END,
+                     metadata_json = CASE WHEN $30::boolean THEN EXCLUDED.metadata_json ELSE project_corpus_items.metadata_json END,
                      updated_at = EXCLUDED.updated_at,
                      last_reviewed_at = COALESCE(EXCLUDED.last_reviewed_at, project_corpus_items.last_reviewed_at),
                      last_read_at = CASE
-                       WHEN EXCLUDED.read_status <> project_corpus_items.read_status THEN EXCLUDED.updated_at
+                       WHEN $31::boolean AND EXCLUDED.read_status <> project_corpus_items.read_status THEN EXCLUDED.updated_at
                        ELSE project_corpus_items.last_read_at
                      END
        RETURNING id`,
@@ -417,6 +420,13 @@ export class ProjectCorpusRepository {
         now,
         readStatus,
         now,
+        body.role !== undefined,
+        body.read_status !== undefined,
+        body.relevance !== undefined,
+        body.confidence !== undefined,
+        body.reason !== undefined,
+        body.metadata_json !== undefined,
+        body.read_status !== undefined,
       ],
     );
     const corpusItemId = result.rows[0]!.id;

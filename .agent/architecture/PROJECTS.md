@@ -969,6 +969,8 @@ project's working corpus:
 - `status` is link lifecycle (`active` / `archived`). Reconciliation archives a
   SourceItem row whose Source links are gone, but never one a person added
   (`added_by_user_id` set);
+- an upsert that meets an existing row changes only the fields the request
+  names (status still defaults to `active`);
 - `triage_status` is the project-level judgement (`new`, `relevant`, `maybe`,
   `excluded`, `included`);
 - `triage_confirmed_by_user` is set whenever a human explicitly sets
