@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, objectValue, withQueryableTransaction } from "../routeUtils/common.js";
 import { consumeConnectionQuota } from "./sourceQuotaBucket.js";
+import { sourceConnectorRegistry } from "./catalog/sourceConnectorRegistry.js";
 import { nextBackfillRetryAt } from "./sourceBackfillRetry.js";
 
 interface PlanRow {
@@ -154,12 +155,22 @@ export class SourceBackfillExecutionService {
       await this.finishIfDone(spaceId, planId);
       return null;
     }
+    const channel = await this.db.query<{ source_connection_id: string; connector_key: string }>(
+      `SELECT ch.source_connection_id, c.connector_key
+         FROM source_channels ch
+         JOIN source_connections sc ON sc.id=ch.source_connection_id AND sc.space_id=ch.space_id
+         JOIN source_provider_connectors spc ON spc.id=sc.provider_connector_id
+         JOIN source_connectors c ON c.id=spc.connector_id
+        WHERE ch.id=$1 AND ch.space_id=$2 AND ch.status <> 'archived'`,
+      [plan.source_channel_id, spaceId],
+    );
+    if (!channel.rows[0]) throw new Error("Source channel not found for backfill plan");
     const window = objectValue(segment.window_json);
     const scheduledWindow = {
       ...window,
       max_items: remainingBudget,
       remaining_items: remainingBudget,
-      page_size: Math.min(100, remainingBudget),
+      page_size: resumedPageSize(window, channel.rows[0].connector_key) ?? Math.min(100, remainingBudget),
       partial: false,
       exhausted: false,
     };
@@ -169,11 +180,6 @@ export class SourceBackfillExecutionService {
     );
 
     const now = new Date().toISOString();
-    const channel = await this.db.query<{ source_connection_id: string }>(
-      `SELECT source_connection_id FROM source_channels WHERE id=$1 AND space_id=$2 AND status <> 'archived'`,
-      [plan.source_channel_id, spaceId],
-    );
-    if (!channel.rows[0]) throw new Error("Source channel not found for backfill plan");
     const quota = await consumeConnectionQuota(this.db, spaceId, channel.rows[0].source_connection_id, plan.quota_policy_json);
     if (!quota.allowed) {
       await this.db.query(
@@ -493,6 +499,24 @@ export class SourceBackfillExecutionService {
       [operationId, spaceId],
     );
   }
+}
+
+/**
+ * A page-numbered connector (OpenAlex) resuming a segment past its first page
+ * must keep the page width it started with: the same page number at another
+ * width is a different slice. The remaining budget then caps the items kept.
+ */
+function resumedPageSize(window: Record<string, unknown>, connectorKey: string): number | null {
+  const cursor = window.cursor == null ? 0 : integerValue(window.cursor) ?? 0;
+  const pageSize = window.page_size == null ? null : integerValue(window.page_size);
+  if (cursor < 1 || pageSize === null || pageSize < 1) return null;
+  let narrowable: boolean;
+  try {
+    narrowable = sourceConnectorRegistry.get(connectorKey).getCapabilities().supports_page_size_narrowing;
+  } catch {
+    return null;
+  }
+  return narrowable ? null : Math.min(100, pageSize);
 }
 
 function integerValue(value: unknown): number | null {

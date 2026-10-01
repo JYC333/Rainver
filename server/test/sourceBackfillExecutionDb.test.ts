@@ -231,6 +231,27 @@ describe("SourceBackfillExecutionService shared project budget (real Postgres)",
     expect(segment.rows[0]!.window_json.page_size).toBe(3);
   });
 
+  it("keeps a page-numbered connector's page width when it resumes a segment", async () => {
+    if (!db.available) return;
+    await db.pool.query(`UPDATE source_connectors SET connector_key='openalex_api' WHERE id=$1`, [CONNECTOR]);
+    await seedStandalonePlan(PLAN_A, CHANNEL_A, 250, 200, "approved");
+    await seedSegment(randomUUID(), PLAN_A, "pending", {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-02-01T00:00:00.000Z",
+      cursor: 2,
+      consumed_items: 200,
+      page_size: 100,
+    });
+
+    const dispatched = await new SourceBackfillExecutionService(db.pool).executeNext(SPACE, PLAN_A);
+
+    const job = await db.pool.query<{ metadata_json: { window: Record<string, unknown> } }>(
+      `SELECT metadata_json FROM extraction_jobs WHERE id=$1`,
+      [(dispatched as { job_id: string }).job_id],
+    );
+    expect(job.rows[0]!.metadata_json.window).toMatchObject({ cursor: 2, page_size: 100, remaining_items: 50 });
+  });
+
   it("raises the budget on a still-running plan without dispatching anything, since its own loop rebuilds the request from the live channel query next time it schedules a segment", async () => {
     if (!db.available) return;
     await seedStandalonePlan(PLAN_A, CHANNEL_A, 10, 4, "approved");

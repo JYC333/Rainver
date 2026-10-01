@@ -31,7 +31,12 @@ import {
   SourceFetchFailure,
   type SourceFetchFailureDiagnostics,
 } from "./sourceConnectionFetch.js";
-import { fetchBackfillPageWithNarrowing, type BackfillPageRequest } from "./sourceBackfillPageFetch.js";
+import {
+  backfillPageItemLimit,
+  fetchBackfillPageWithNarrowing,
+  nextBackfillWindow,
+  type BackfillPageRequest,
+} from "./sourceBackfillPageFetch.js";
 import {
   getSourceChannelScanTask,
   upsertSourceChannelScanTask,
@@ -305,7 +310,7 @@ export class SourceExtractionWorker {
     );
   }
 
-  private async executeConnectionScan(job: ExtractionJobRow): Promise<{ seen: number; page_size: number }> {
+  private async executeConnectionScan(job: ExtractionJobRow): Promise<{ seen: number; page_size: number; narrowable: boolean }> {
     if (!job.connection_id) throw new HttpError(422, "connection_scan requires connection_id");
     const channelId = stringValue(record(job.metadata_json).source_channel_id);
     const connection = await this.getConnection(job.space_id, job.connection_id, channelId);
@@ -324,6 +329,7 @@ export class SourceExtractionWorker {
     if (cursor.last_modified) headers["If-Modified-Since"] = cursor.last_modified;
 
     const handler = sourceConnectorRegistry.get(connection.connector_key);
+    const narrowable = handler.getCapabilities().supports_page_size_narrowing;
     const executableChannel = {
       endpoint_url: connection.endpoint_url,
       compiled_query: connection.provider_query_json,
@@ -385,7 +391,7 @@ export class SourceExtractionWorker {
           0,
         );
       }
-      return { seen: 0, page_size: pageSize };
+      return { seen: 0, page_size: pageSize, narrowable };
     }
     if (!response.isText || response.text === null) {
       throw new HttpError(415, `Source connection returned unsupported binary content (${response.contentType ?? "unknown"})`);
@@ -434,7 +440,7 @@ export class SourceExtractionWorker {
         result.created,
       );
     }
-    return { seen: result.seen, page_size: pageSize };
+    return { seen: result.seen, page_size: pageSize, narrowable };
   }
 
   private async recordJobFailureDiagnostics(
@@ -512,7 +518,7 @@ export class SourceExtractionWorker {
 
   private async queueBackfillContinuationIfNeeded(
     job: ExtractionJobRow,
-    result: { seen: number; page_size: number },
+    result: { seen: number; page_size: number; narrowable: boolean },
   ): Promise<void> {
     const metadata = record(job.metadata_json);
     const segmentId = stringValue(metadata.source_backfill_segment_id);
@@ -524,37 +530,19 @@ export class SourceExtractionWorker {
     );
     const current = segment.rows[0];
     if (!current || current.status !== "running") return;
-    const window = record(current.window_json);
-    const consumedItems = (integerValue(window.consumed_items) ?? 0) + result.seen;
-    const budget = integerValue(window.max_items);
-    const remaining = integerValue(window.remaining_items ?? window.max_items);
-    if (result.seen < result.page_size) {
+    const next = nextBackfillWindow(record(current.window_json), {
+      seen: result.seen,
+      pageSize: result.page_size,
+      narrowable: result.narrowable,
+    });
+    if (next.outcome !== "continue") {
       await this.db.query(
         `UPDATE source_backfill_segments SET window_json=$3::jsonb WHERE id=$1 AND space_id=$2 AND status='running'`,
-        [segmentId, job.space_id, JSON.stringify({ ...window, consumed_items: consumedItems, next_cursor: null, has_more: false, exhausted: true })],
+        [segmentId, job.space_id, JSON.stringify(next.window)],
       );
       return;
     }
-    if (budget === null || remaining === null || remaining <= result.seen) {
-      await this.db.query(
-        `UPDATE source_backfill_segments SET window_json=$3::jsonb WHERE id=$1 AND space_id=$2 AND status='running'`,
-        [segmentId, job.space_id, JSON.stringify({ ...window, consumed_items: consumedItems, next_cursor: (integerValue(window.cursor) ?? 0) + 1, has_more: true, exhausted: false, partial: true })],
-      );
-      return;
-    }
-    const nextRemaining = remaining - result.seen;
-    const nextWindow = {
-      ...window,
-      cursor: (integerValue(window.cursor) ?? 0) + 1,
-      // Item offset is the authority for where the next page starts. Page index
-      // times a fixed width was wrong for any page that was not full width.
-      offset: consumedItems,
-      remaining_items: nextRemaining,
-      // Stay at the width the provider just proved it can serve. Returning to
-      // the full page would re-earn the same failure on every subsequent page.
-      page_size: Math.min(result.page_size, nextRemaining),
-      consumed_items: consumedItems,
-    };
+    const nextWindow = next.window;
     const nextJobId = randomUUID();
     const now = new Date().toISOString();
     await this.db.query(
@@ -575,7 +563,7 @@ export class SourceExtractionWorker {
     raw: string,
     capturedAt: string,
   ): Promise<{ seen: number; created: number; updated: number; cursor: ScanCursor }> {
-    const items = handler.parseResponse(raw).slice(0, backfillMaxItems(job.metadata_json));
+    const items = handler.parseResponse(raw).slice(0, backfillPageItemLimit(record(record(job.metadata_json).window)));
     let created = 0;
     let updated = 0;
     let lastGuid: string | undefined;
@@ -1757,11 +1745,6 @@ function backfillMaxItems(metadata: unknown): number {
 function isBackfillJob(job: ExtractionJobRow): boolean {
   const metadata = record(job.metadata_json);
   return Boolean(stringValue(metadata.source_backfill_plan_id));
-}
-
-function integerValue(value: unknown): number | null {
-  const number = Number(value);
-  return Number.isInteger(number) && number >= 0 ? number : null;
 }
 
 function sha256(value: string | Uint8Array): string {

@@ -170,7 +170,9 @@ connectors declaring `supports_page_size_narrowing` (offset is counted in
 items: arXiv, Semantic Scholar); a page-numbered API such as OpenAlex cannot
 express "same position, fewer rows", so narrowing it would skip results. A
 width that succeeds is carried into subsequent pages rather than re-testing the
-full width each time.
+full width each time. For the same reason, the last page of a budget is
+shrunk to the remaining items only for item-offset connectors; a page-numbered
+API keeps its width and only the first remaining items of that page are kept.
 
 Backfill offsets are **item-based**, taken from `window.offset` /
 `consumed_items`. Deriving the offset as page index times a fixed width skipped

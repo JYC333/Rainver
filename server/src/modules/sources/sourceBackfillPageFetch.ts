@@ -92,3 +92,79 @@ function annotateNarrowingAttempts(error: unknown, pageSizes: number[]): unknown
   }
   return error;
 }
+
+/**
+ * How many of a history page's items count against the segment: the page
+ * width, capped at what is left of the segment's budget.
+ */
+export function backfillPageItemLimit(window: Record<string, unknown>): number {
+  const pageSize = wholeNumber(window.page_size ?? window.remaining_items ?? window.max_items) ?? 100;
+  const remaining = wholeNumber(window.remaining_items);
+  return Math.min(100, Math.max(1, remaining === null ? pageSize : Math.min(pageSize, remaining)));
+}
+
+/**
+ * The segment window after one history page. A short page means the provider
+ * has nothing more; reaching the segment's budget leaves it partial; anything
+ * else queues the next page at the item offset the pages so far reached
+ * (`window` is then that next page's window).
+ *
+ * Only a connector whose offset is counted in items may shrink the next page
+ * to the remaining budget. A page-numbered API (OpenAlex) answers the same page
+ * number at a narrower width with a different slice, so it keeps its width and
+ * the worker keeps only the first `remaining_items` of the last page.
+ */
+export function nextBackfillWindow(
+  window: Record<string, unknown>,
+  page: { seen: number; pageSize: number; narrowable: boolean },
+): { outcome: "exhausted" | "partial" | "continue"; window: Record<string, unknown> } {
+  const consumedItems = (wholeNumber(window.consumed_items) ?? 0) + page.seen;
+  const budget = wholeNumber(window.max_items);
+  const remaining = wholeNumber(window.remaining_items ?? window.max_items);
+  const budgetReached = remaining !== null && remaining <= page.seen;
+  if (page.seen < page.pageSize && !budgetReached) {
+    return {
+      outcome: "exhausted",
+      window: { ...window, consumed_items: consumedItems, next_cursor: null, has_more: false, exhausted: true },
+    };
+  }
+  if (budget === null || remaining === null || budgetReached) {
+    // A page cut short by the budget was not read to its end, so a later
+    // continuation of a page-numbered connector starts on that page again.
+    const pageCursor = wholeNumber(window.cursor) ?? 0;
+    return {
+      outcome: "partial",
+      window: {
+        ...window,
+        consumed_items: consumedItems,
+        next_cursor: page.seen < page.pageSize ? pageCursor : pageCursor + 1,
+        has_more: true,
+        exhausted: false,
+        partial: true,
+      },
+    };
+  }
+  const nextRemaining = remaining - page.seen;
+  const cursor = (wholeNumber(window.cursor) ?? 0) + 1;
+  return {
+    outcome: "continue",
+    window: {
+      ...window,
+      cursor,
+      // Item offset is the authority for where the next page starts. Page index
+      // times a fixed width was wrong for any page that was not full width.
+      offset: consumedItems,
+      remaining_items: nextRemaining,
+      // Stay at the width the provider just proved it can serve. Returning to
+      // the full page would re-earn the same failure on every subsequent page.
+      page_size: page.narrowable ? Math.min(page.pageSize, nextRemaining) : page.pageSize,
+      consumed_items: consumedItems,
+    },
+  };
+}
+
+function wholeNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
