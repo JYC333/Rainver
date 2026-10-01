@@ -91,6 +91,38 @@ describe("jot a note from an evidence card (real Postgres)", () => {
     expect(links[0]).toMatchObject({ target_id: sourceId, target_type: "source", link_type: "references" });
   });
 
+  it("keeps the jot when refreshing the target's search index fails", async () => {
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const sourceId = await seedSource("Index-poisoned paper");
+    // The derived index refuses this one object, as a concurrent reindex of the
+    // same target would through the unique index.
+    await db.pool.query(`
+      CREATE FUNCTION test_refuse_projection() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.object_id = '${sourceId}' THEN RAISE EXCEPTION 'projection refused'; END IF;
+        RETURN NEW;
+      END $$`);
+    await db.pool.query(
+      `CREATE TRIGGER test_refuse_projection BEFORE INSERT ON retrieval_objects
+         FOR EACH ROW EXECUTE FUNCTION test_refuse_projection()`,
+    );
+    try {
+      const note = await repository.jotNoteForObject(identity, {
+        target_id: sourceId,
+        text: "Written while the index is unavailable.",
+        project_id: PROJECT,
+      }) as { id: string; plain_text: string } | null;
+
+      expect(note?.plain_text).toContain("index is unavailable");
+      const links = await repository.noteLinks(identity, note!.id) as Array<{ target_id: string }>;
+      expect(links.map((link) => link.target_id)).toEqual([sourceId]);
+    } finally {
+      await db.pool.query(`DROP TRIGGER test_refuse_projection ON retrieval_objects`);
+      await db.pool.query(`DROP FUNCTION test_refuse_projection()`);
+    }
+  });
+
   it("appends to an existing note instead of littering the tree", async () => {
     if (!db.available) return;
     const repository = new PgKnowledgeRepository(db.pool);

@@ -1952,15 +1952,28 @@ export class PgKnowledgeRepository {
   }
 
   // Reindex is best-effort: the derived projection must never fail a canonical
-  // CRUD write. These repository methods run on a pool connection (no ambient
-  // transaction), so a thrown projection query is contained by this catch and
-  // logged rather than surfaced as a 500 on a write that already committed.
+  // CRUD write. On a pool connection a thrown projection query is contained by
+  // the catch and logged rather than surfaced as a 500 on a write that already
+  // committed. A repository built on a checked-out client (a jot, a marginalia
+  // capture) runs inside its caller's transaction, where a caught database
+  // error would still leave that transaction aborted and its COMMIT would
+  // silently roll the whole write back — so there the refresh runs behind a
+  // savepoint. A client with no open transaction cannot take one, and has
+  // nothing to abort either.
   private async safeReindex(
     run: (projection: RetrievalProjectionService) => Promise<void>,
   ): Promise<void> {
+    const db = this.db as Queryable & { release?: () => void; connect?: () => Promise<unknown> };
+    const onPool = typeof db.connect === "function" && typeof db.release !== "function";
+    const contained = !onPool && await this.db.query("SAVEPOINT knowledge_reindex").then(() => true, () => false);
     try {
       await run(new RetrievalProjectionService(this.db, knowledgeRetrievalRegistry));
+      if (contained) await this.db.query("RELEASE SAVEPOINT knowledge_reindex");
     } catch (error) {
+      if (contained) {
+        await this.db.query("ROLLBACK TO SAVEPOINT knowledge_reindex").catch(() => undefined);
+        await this.db.query("RELEASE SAVEPOINT knowledge_reindex").catch(() => undefined);
+      }
       process.stderr.write(
         `[knowledge.retrieval] reindex failed after canonical write: ${String((error as Error)?.message ?? error)}\n`,
       );
