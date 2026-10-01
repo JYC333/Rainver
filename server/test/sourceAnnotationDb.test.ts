@@ -4,6 +4,8 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository.js";
 import { ANNOTATION_ENQUEUE_WINDOW_MS } from "../src/modules/sourceAnnotation/eventEmitter.js";
+import { ensureSourceAnnotatorAgent } from "../src/modules/sourceAnnotation/agent.js";
+import { SOURCE_ANNOTATION_SCHEMA_ID } from "../src/modules/sourceAnnotation/resultParser.js";
 
 // Real-Postgres coverage for the system annotation queue: what gets enqueued,
 // what the queue guarantees about not paying twice, how failures terminate, and
@@ -333,5 +335,18 @@ describe("annotation outcomes", () => {
       `UPDATE source_item_annotations SET status = 'maybe' WHERE space_id = $1 AND source_item_id = $2`,
       [SPACE, itemId],
     )).rejects.toThrow(/ck_source_item_annotations_status/);
+  });
+});
+
+describe("annotation service", () => {
+  it("tells the annotator the schema version its output is parsed against", async () => {
+    if (!db.available) return;
+    const agent = await ensureSourceAnnotatorAgent(db.pool, SPACE);
+    const prompt = await db.pool.query<{ system_prompt: string }>(
+      `SELECT v.system_prompt FROM agents a JOIN agent_versions v ON v.id = a.current_version_id
+        WHERE a.space_id = $1 AND a.id = $2`,
+      [SPACE, agent.id],
+    );
+    expect(prompt.rows[0]?.system_prompt).toContain(`matching schema ${SOURCE_ANNOTATION_SCHEMA_ID}.`);
   });
 });

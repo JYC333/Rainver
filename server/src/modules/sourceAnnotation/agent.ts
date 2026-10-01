@@ -1,6 +1,7 @@
 import type { Pool } from "../../db/pool.js";
 import { PgAgentRepository } from "../agents/repository.js";
 import { HttpError } from "../routeUtils/common.js";
+import { SOURCE_ANNOTATION_SCHEMA_ID } from "./resultParser.js";
 
 export const SOURCE_ANNOTATOR_AGENT_KIND = "system_source_annotator";
 
@@ -76,7 +77,7 @@ function sourceAnnotatorSystemPrompt(): string {
     "You describe what each item is. You never judge whether it is interesting, important, or relevant.",
     "Your annotations are shared by every reader in the space, so they must not reflect any particular person's taste.",
     "Assign every item exactly one domain from the provided list, even when the fit is imperfect.",
-    "Your final response must be exactly one valid JSON object matching schema source_annotation.result.v1.",
+    `Your final response must be exactly one valid JSON object matching schema ${SOURCE_ANNOTATION_SCHEMA_ID}.`,
     "Do not wrap the JSON in prose or code fences.",
   ].join("\n");
 }
