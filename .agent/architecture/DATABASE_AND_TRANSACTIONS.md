@@ -496,7 +496,9 @@ snapshot, inserting all attributed item rows, and consuming selected
 day windows are explicit UTC instants and do not depend on the PostgreSQL
 session timezone.
 A lazy read-created snapshot may be replaced once by the authoritative
-scheduled Run; a snapshot already carrying `generated_by_run_id` is returned
+scheduled Run. The replacement keeps that snapshot's serendipity rows, whose
+pool items are already consumed and which may carry the reader's feedback,
+instead of selecting a second batch; a snapshot already carrying `generated_by_run_id` is returned
 unchanged on repeated fires so standby items cannot be double-consumed.
 
 The weekly external probe never shares the delivery transaction. Its

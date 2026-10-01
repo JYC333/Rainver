@@ -25,8 +25,8 @@ export class InformationDigestService {
   async personal(spaceId: string, userId: string, date: string, automationRunId?: string | null): Promise<PersistedDigest> {
     assertDate(date);
     const existing = await new PgInformationDigestRepository(this.db).findByScope(spaceId, "personal", userId, date);
-    // A read may materialize an early empty snapshot. The scheduled Automation
-    // fire is the authoritative once-daily pass and replaces that snapshot.
+    // A read may materialize an early snapshot. The scheduled Automation fire
+    // is the authoritative once-daily pass and replaces that snapshot.
     if (existing && (!automationRunId || existing.generated_by_automation_run_id)) {
       return (await new PgInformationDigestRepository(this.db).get(spaceId, existing.id, userId))!;
     }
@@ -42,24 +42,30 @@ export class InformationDigestService {
       const profileSettings = await profileService.settings(spaceId, userId);
       const inputs = await repo.maturityInputs(spaceId, userId);
       const maturity = profileMaturity(inputs, profileSettings);
-      const candidates = await repo.personalCandidates(spaceId, userId, date);
+      // Replacing a read-created snapshot keeps its serendipity rows: their
+      // pool items are already consumed and the reader may have answered
+      // them, so selecting again would drop both and consume a second batch.
+      const kept = lockedExisting ? await repo.serendipityItems(spaceId, lockedExisting.id) : [];
+      const keptSources = new Set(kept.map((item) => item.source_item_id));
+      const candidates = (await repo.personalCandidates(spaceId, userId, date))
+        .filter((candidate) => !keptSources.has(candidate.source_item_id));
       // Cold still maintains deterministic profile facts, but does not use
       // fine-grained topics as a ranking signal yet.
       const topics = maturity === "cold" ? [] : await repo.activeTopics(spaceId, userId);
       const ranked = rankPersonal(candidates, topics, date, maturity);
       const selected = diversify(ranked, profileSettings.interest_slots);
       const serendipityRepo = new PgSerendipityRepository(tx);
-      const readingShape = await serendipityRepo.readingShape(spaceId, userId);
       const digestCutoff = new Date(`${date}T23:59:59.999Z`);
-      const serendipity = selectSerendipity(
+      const serendipity = kept.length > 0 ? [] : selectSerendipity(
         await serendipityRepo.listStandby(spaceId, userId, digestCutoff.toISOString()),
-        readingShape,
+        await serendipityRepo.readingShape(spaceId, userId),
         maturity,
         profileSettings.serendipity_slots,
         digestCutoff,
       );
       const digestId = await repo.replace({
         spaceId, type: "personal", ownerUserId: userId, date, maturity, automationRunId,
+        keepItemIds: kept.map((item) => item.id),
         settings: { interest_slots: profileSettings.interest_slots, serendipity_slots: profileSettings.serendipity_slots, ranking: maturity === "cold" ? "recency_source_diversity" : "topic_recency_source_diversity" },
         items: [
           ...selected.map((item, position) => ({

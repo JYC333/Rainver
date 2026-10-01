@@ -469,6 +469,45 @@ describe("information digest persistence", () => {
     expect(poolState.rows).toEqual([{ status: "consumed" }]);
   });
 
+  it("keeps an early snapshot's serendipity items and their feedback when the scheduled run replaces it", async () => {
+    if (!db.available) return;
+    await seedItem({ title: "Familiar", hour: 10 });
+    const serendipity = new PgSerendipityRepository(db.pool);
+    for (const [title, hour] of [["Seen early", 11], ["Still waiting", 12]] as const) {
+      await serendipity.addPoolItem({
+        spaceId: SPACE, userId: OWNER, sourceItemId: await seedItem({ title, hour, linked: false }),
+        targetDomainKey: "artificial_intelligence", origin: "weekly_probe", probePeriod: DATE,
+      });
+    }
+    await new InterestProfileService(db.pool).updateSettings(SPACE, OWNER, { serendipity_slots: 1 });
+    const service = new InformationDigestService(db.pool);
+    const early = await service.personal(SPACE, OWNER, DATE);
+    const seen = early.items.find((item) => item.section === "serendipity")!;
+    await new SerendipityFeedbackService(db.pool).record(SPACE, OWNER, seen.id, "interesting", new Date(`${DATE}T05:00:00Z`));
+
+    const automation = randomUUID();
+    const automationRun = randomUUID();
+    await db.pool.query(
+      `INSERT INTO automations (id, space_id, owner_user_id, agent_id, name, trigger_type, status, config_json, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'Digest','schedule','active','{}'::jsonb,now(),now())`,
+      [automation, SPACE, OWNER, AGENT],
+    );
+    await db.pool.query(
+      `INSERT INTO automation_runs (id, automation_id, target_type, triggered_by_user_id, trigger_type, native_status, native_started_at, created_at)
+       VALUES ($1,$2,'information_digest',$3,'schedule','running',now(),now())`,
+      [automationRun, automation, OWNER],
+    );
+    const scheduled = await service.personal(SPACE, OWNER, DATE, automationRun);
+
+    expect(scheduled.generated_by_automation_run_id).toBe(automationRun);
+    expect(scheduled.items.filter((item) => item.section === "serendipity"))
+      .toEqual([expect.objectContaining({ id: seen.id, title: seen.title, serendipity_feedback: "interesting" })]);
+    const pool = await db.pool.query<{ status: string }>(
+      `SELECT status FROM information_digest_serendipity_pool WHERE user_id=$1 ORDER BY status`, [OWNER],
+    );
+    expect(pool.rows).toEqual([{ status: "consumed" }, { status: "standby" }]);
+  });
+
   it("records explicit feedback in independent cooldown state without touching the interest profile", async () => {
     if (!db.available) return;
     const outside = await seedItem({ title: "Outside feedback", hour: 11, linked: false });
