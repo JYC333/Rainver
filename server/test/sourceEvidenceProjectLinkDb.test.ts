@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import { fixtureServerGuard } from "./support/outboundGuard.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import {
@@ -672,4 +679,63 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     expect(links.rows).toEqual([{ target_id: PROJECT, reason: `project_source_binding:${bindingId}` }]);
   });
 
+});
+
+describe("Source extraction inside a Project", () => {
+  it("keeps the extracted Evidence and its artifacts in the item's Project", async () => {
+    if (!db.available) return;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<html><head><title>Project page</title></head><body><article><p>Project-only full text.</p></article></body></html>");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const artifactStorageRoot = await mkdtemp(join(tmpdir(), "source-project-extraction-"));
+    try {
+      await db.pool.query(
+        `UPDATE source_connections SET policy_json = policy_json || '{"retention_policy":"full_snapshot"}'::jsonb WHERE id = $1`,
+        [CONNECTION],
+      );
+      const itemId = randomUUID();
+      const now = new Date().toISOString();
+      await db.pool.query(
+        `INSERT INTO source_items (
+           id, space_id, project_id, owner_user_id, visibility, connection_id, item_type, title, source_uri,
+           first_seen_at, last_seen_at, content_state, retention_policy, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,'space_shared',$5,'external_url','Project page',$6,$7,$7,'content_queued','full_snapshot',$7,$7)`,
+        [itemId, SPACE, PROJECT, OWNER, CONNECTION, `http://127.0.0.1:${port}/page`, now],
+      );
+      const worker = new SourceExtractionWorker(db.pool, { ...loadConfig({}), artifactStorageRoot }, fixtureServerGuard);
+      for (const jobType of ["extract_text", "snapshot"]) {
+        const jobId = randomUUID();
+        await db.pool.query(
+          `INSERT INTO extraction_jobs (id, space_id, connection_id, source_item_id, job_type, status, metadata_json, created_at)
+           VALUES ($1,$2,$3,$4,$5,'pending','{}'::jsonb,$6)`,
+          [jobId, SPACE, CONNECTION, itemId, jobType, now],
+        );
+        await expect(worker.runPendingJob(jobId, SPACE)).resolves.toMatchObject({ status: "succeeded" });
+      }
+
+      const evidence = await db.pool.query<{ project_id: string | null }>(
+        `SELECT project_id FROM extracted_evidence WHERE source_item_id = $1`,
+        [itemId],
+      );
+      expect(evidence.rows.length).toBeGreaterThan(0);
+      expect(evidence.rows.map((row) => row.project_id)).toEqual(evidence.rows.map(() => PROJECT));
+      const artifacts = await db.pool.query<{ artifact_type: string; project_id: string | null }>(
+        `SELECT artifact_type, project_id FROM artifacts
+          WHERE id IN (SELECT artifact_id FROM source_snapshots WHERE source_item_id = $1)
+          ORDER BY artifact_type`,
+        [itemId],
+      );
+      expect(artifacts.rows.map((row) => row.artifact_type)).toEqual(
+        expect.arrayContaining(["source_raw_snapshot", "source_reader_document"]),
+      );
+      expect(artifacts.rows.every((row) => row.project_id === PROJECT)).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(artifactStorageRoot, { recursive: true, force: true });
+    }
+  });
 });

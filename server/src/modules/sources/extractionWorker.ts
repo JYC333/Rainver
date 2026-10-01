@@ -1315,7 +1315,7 @@ export class SourceExtractionWorker {
   private async getItem(spaceId: string, itemId: string): Promise<SourceItemRow | null> {
     const result = await this.db.query<SourceItemRow>(
       `SELECT id, space_id, connection_id, source_uri, canonical_uri, source_external_id,
-              title, excerpt, author, occurred_at, content_state, visibility
+              title, excerpt, author, occurred_at, content_state, visibility, project_id
          FROM source_items
         WHERE space_id = $1 AND id = $2 AND deleted_at IS NULL`,
       [spaceId, itemId],
@@ -1587,7 +1587,7 @@ export class SourceExtractionWorker {
       `INSERT INTO artifacts (
          id, space_id, artifact_type, title, content, storage_path, mime_type,
          exportable, export_formats_json, canonical_format, preview, metadata_json,
-         created_at, updated_at, visibility, access_level, owner_user_id, trust_level
+         created_at, updated_at, visibility, access_level, owner_user_id, trust_level, project_id
        ) VALUES (
          $1, $2, 'source_reader_document', $3, $4, $5, 'application/json',
          true, $6::jsonb, 'reader_document_json', false, $7::jsonb,
@@ -1595,7 +1595,8 @@ export class SourceExtractionWorker {
          (SELECT visibility FROM source_items WHERE space_id = $10::varchar AND id = $11::varchar),
          (SELECT access_level FROM source_items WHERE space_id = $12::varchar AND id = $13::varchar),
          (SELECT owner_user_id FROM source_items WHERE space_id = $14::varchar AND id = $15::varchar),
-         'medium'
+         'medium',
+         (SELECT project_id FROM source_items WHERE space_id = $10::varchar AND id = $11::varchar)
        )`,
       [
         artifactId,
@@ -1656,7 +1657,7 @@ export class SourceExtractionWorker {
       `INSERT INTO artifacts (
          id, space_id, artifact_type, title, content, storage_path, mime_type,
          exportable, export_formats_json, canonical_format, preview,
-         created_at, updated_at, visibility, access_level, owner_user_id, trust_level
+         created_at, updated_at, visibility, access_level, owner_user_id, trust_level, project_id
        ) VALUES (
          $1, $2, 'source_raw_snapshot', $3, NULL, $4, $5,
          false, $6::jsonb, $7, false,
@@ -1664,7 +1665,8 @@ export class SourceExtractionWorker {
          (SELECT visibility FROM source_items WHERE space_id = $10::varchar AND id = $11::varchar),
          (SELECT access_level FROM source_items WHERE space_id = $12::varchar AND id = $13::varchar),
          (SELECT owner_user_id FROM source_items WHERE space_id = $14::varchar AND id = $15::varchar),
-         'medium'
+         'medium',
+         (SELECT project_id FROM source_items WHERE space_id = $10::varchar AND id = $11::varchar)
        )`,
       [
         artifactId,
