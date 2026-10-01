@@ -1075,7 +1075,16 @@ export class AgentGroupRunService {
     // Policy preflight is deliberately before every domain write. The
     // delegation/message rows below are the authorized (or denied-evidence)
     // execution phase and reuse this durable decision.
-    const policy = preflightPolicy ?? await this.enforceSpawnPolicy(repos.groups, group, parentRun, input);
+    let policy = preflightPolicy ?? await this.enforceSpawnPolicy(repos.groups, group, parentRun, input);
+    // The preflight counted in its own transaction; another delegation may
+    // have been admitted since. Under this lock the counts are current again,
+    // and one past a limit is judged anew, to a recorded refusal.
+    if (preflightPolicy?.status === "allow") {
+      const counts = await this.spawnCounts(repos.groups, group, input);
+      if (counts.fanout_count > counts.max_fanout || counts.concurrency_count > counts.max_concurrency) {
+        policy = await this.enforceSpawnPolicy(repos.groups, group, parentRun, input);
+      }
+    }
     if (policy.status === "error") {
       throw new HttpError(503, policy.message ?? "Policy audit failed for child run delegation");
     }
@@ -1357,6 +1366,39 @@ export class AgentGroupRunService {
     };
   }
 
+  /**
+   * The fan-out and concurrency a delegation would bring the group to, and
+   * their limits. Every count is the prospective one — what the group holds
+   * if this delegation is admitted — because the policy compares `count > max`.
+   */
+  private async spawnCounts(
+    repo: PgAgentGroupRepository,
+    group: AgentRunGroupRecord,
+    input: SpawnChildRunInput,
+  ): Promise<{ fanout_count: number; max_fanout: number; concurrency_count: number; max_concurrency: number }> {
+    const fanoutCount = await repo.countDelegationsForParent({
+      space_id: input.space_id,
+      parent_run_id: input.parent_run_id,
+    });
+    const concurrencyCount = await repo.countActiveDelegationsForGroup({
+      space_id: input.space_id,
+      group_id: input.group_id,
+    });
+    const limits = delegationBudgetLimits(group.budget_json);
+    // A Room turn's delegations also draw on its container's Agent-triggered
+    // turns (the fan-out ceiling), which several recipients of one wave share:
+    // a parent's own `max_fanout` alone would let a wave spawn past it.
+    const containerLeft = group.room_id
+      ? Math.max(0, DISCUSSION_FANOUT_CEILING - await containerTurnsUsed(repo, group))
+      : Number.POSITIVE_INFINITY;
+    return {
+      fanout_count: fanoutCount + 1,
+      max_fanout: Math.min(limits.max_fanout, fanoutCount + containerLeft),
+      concurrency_count: concurrencyCount + 1,
+      max_concurrency: limits.max_concurrency,
+    };
+  }
+
   private async enforceSpawnPolicy(
     repo: PgAgentGroupRepository,
     group: AgentRunGroupRecord,
@@ -1379,23 +1421,9 @@ export class AgentGroupRunService {
       user_id: group.manager_user_id,
     });
     const depth = await repo.runDepth({ space_id: input.space_id, run_id: input.parent_run_id });
-    const fanoutCount = await repo.countDelegationsForParent({
-      space_id: input.space_id,
-      parent_run_id: input.parent_run_id,
-    });
-    const concurrencyCount = await repo.countActiveDelegationsForGroup({
-      space_id: input.space_id,
-      group_id: input.group_id,
-    });
+    const counts = await this.spawnCounts(repo, group, input);
     const widening = authorityWidening(parentRun, input.context_policy_json ?? {});
     const limits = delegationBudgetLimits(group.budget_json);
-    // A Room turn's delegations also draw on its container's Agent-triggered
-    // turns (the fan-out ceiling), which several recipients of one wave share:
-    // a parent's own `max_fanout` alone would let a wave spawn past it.
-    const containerLeft = group.room_id
-      ? Math.max(0, DISCUSSION_FANOUT_CEILING - await containerTurnsUsed(repo, group))
-      : Number.POSITIVE_INFINITY;
-    const maxFanout = Math.min(limits.max_fanout, fanoutCount + containerLeft);
     const req: PolicyCheckRequest = {
       action: "run.spawn_child",
       actor_type: "agent",
@@ -1427,10 +1455,10 @@ export class AgentGroupRunService {
         // for depth let a `max_fanout: 2` group admit a third delegation.
         depth: depth + 1,
         max_depth: limits.max_depth,
-        fanout_count: fanoutCount + 1,
-        max_fanout: maxFanout,
-        concurrency_count: concurrencyCount + 1,
-        max_concurrency: limits.max_concurrency,
+        fanout_count: counts.fanout_count,
+        max_fanout: counts.max_fanout,
+        concurrency_count: counts.concurrency_count,
+        max_concurrency: counts.max_concurrency,
         group_budget_json: group.budget_json ?? {},
         requested_budget_json: input.budget_json ?? {},
         ...widening,

@@ -2748,6 +2748,34 @@ describe("Room workflow (real Postgres)", () => {
       expect(retried.delegation.id).toBe(first.delegation.id);
     });
 
+    it("re-counts a preflighted delegation against delegations admitted since", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Concurrent delegations");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      const managerRun = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([managerRun]);
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      await db.pool.query(
+        `UPDATE agent_run_groups SET budget_json = COALESCE(budget_json, '{}'::jsonb) || '{"max_fanout":1}'::jsonb WHERE id = $1`,
+        [group.id],
+      );
+      const input = (toolCallId: string) => ({
+        space_id: "space-1", group_id: group.id, parent_run_id: managerRun, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
+        instruction: "Check the numbers.", tool_call_id: toolCallId,
+      });
+      // Both calls are judged before either is carried out.
+      const firstPolicy = await groupService.preflightSpawnChildRunPolicy(owner, input("call-a"));
+      const secondPolicy = await groupService.preflightSpawnChildRunPolicy(owner, input("call-b"));
+      expect([firstPolicy.status, secondPolicy.status]).toEqual(["allow", "allow"]);
+
+      const first = await groupService.spawnChildRunAuthorized(owner, input("call-a"), firstPolicy);
+      const second = await groupService.spawnChildRunAuthorized(owner, input("call-b"), secondPolicy);
+
+      expect(first.child_run_id).toBeTruthy();
+      expect(second).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+    });
+
     it("admits a recipient whose wait ended while its group was paused once the group resumes", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Paused wait");
