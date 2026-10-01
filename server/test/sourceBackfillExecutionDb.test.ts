@@ -5,6 +5,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService.js";
+import { consumeConnectionQuota } from "../src/modules/sources/sourceQuotaBucket.js";
 import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
 import { __setArxivThrottleForTests } from "../src/modules/sources/connectors/arxivThrottle.js";
 import { loadConfig } from "../src/config.js";
@@ -331,6 +332,20 @@ describe("SourceBackfillExecutionService shared project budget (real Postgres)",
     await expect(new SourceBackfillExecutionService(db.pool).rescanZeroYield(SPACE, PLAN_A, 0)).rejects.toThrow(
       "Cannot adjust the item budget for a source backfill plan in status failed",
     );
+  });
+});
+
+describe("source connection quota bucket (real Postgres)", () => {
+  it("takes the current limit when a window starts again, rather than the smallest ever seen", async () => {
+    if (!db.available) return;
+    // A query preview's small limit for one window...
+    expect(await consumeConnectionQuota(db.pool, SPACE, CONNECTION, { window: "minute", limit_count: 1 })).toEqual({ allowed: true });
+    await db.pool.query(`UPDATE source_quota_buckets SET reset_at = now() - interval '1 second' WHERE scope_key = $1`, [CONNECTION]);
+
+    // ...does not hold a later backfill to it once that window is over.
+    for (let index = 0; index < 3; index += 1) {
+      expect(await consumeConnectionQuota(db.pool, SPACE, CONNECTION, { window: "minute", limit_count: 5 })).toEqual({ allowed: true });
+    }
   });
 });
 

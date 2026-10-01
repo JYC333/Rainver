@@ -14,7 +14,9 @@ const WINDOW_MS: Record<string, number> = { minute: 60000, hour: 3600000, day: 8
  * same connection therefore share one throttle instead of each getting their
  * own budget, which is the actual protection this quota exists for (avoiding
  * remote rate-limit bans). When plans disagree on the limit for a window, the
- * bucket keeps the most conservative (smallest) limit currently proposed.
+ * bucket keeps the most conservative (smallest) limit proposed in that window;
+ * a new window starts from the limit its first caller proposes, so a small
+ * limit from one caller does not hold every later window to it.
  */
 export async function consumeConnectionQuota(
   db: Queryable,
@@ -35,7 +37,8 @@ export async function consumeConnectionQuota(
     `INSERT INTO source_quota_buckets (id, space_id, scope_kind, scope_key, "window", limit_count, used_count, window_started_at, reset_at)
       VALUES ($1,$2,'source_connection',$3,$4,$5,0,$6,$7)
       ON CONFLICT (space_id, scope_kind, scope_key, "window") DO UPDATE SET
-       limit_count = LEAST(source_quota_buckets.limit_count, EXCLUDED.limit_count),
+       limit_count = CASE WHEN source_quota_buckets.reset_at <= now() THEN EXCLUDED.limit_count
+                          ELSE LEAST(source_quota_buckets.limit_count, EXCLUDED.limit_count) END,
        used_count = CASE WHEN source_quota_buckets.reset_at <= now() THEN 0 ELSE source_quota_buckets.used_count END,
        window_started_at = CASE WHEN source_quota_buckets.reset_at <= now() THEN $6 ELSE source_quota_buckets.window_started_at END,
        reset_at = CASE WHEN source_quota_buckets.reset_at <= now() THEN $7 ELSE source_quota_buckets.reset_at END`,
