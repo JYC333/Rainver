@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isContentVisibility, type ContentVisibility } from "../access/contentAccessTypes.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { artifactReadSql, proposalReadSql, runReadSql } from "../access/contentAccessSql.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 
 const DISCLOSURE_TTL_MS = 15 * 60 * 1000;
@@ -175,8 +176,13 @@ export class ContentDemotionService {
       title: string;
       status: string;
     }>(
+      // Every consuming Run is disclosed, but its instruction is someone's
+      // text: a Run the owner cannot read is named by its pointer alone.
       `SELECT DISTINCT r.id AS run_id,
-              COALESCE(NULLIF(r.instruction, ''), NULLIF(r.prompt, ''), 'Run ' || left(r.id, 8)) AS title,
+              CASE WHEN ${runReadSql("$4", "r")}
+                   THEN COALESCE(NULLIF(r.instruction, ''), NULLIF(r.prompt, ''), 'Run ' || left(r.id, 8))
+                   ELSE 'Run ' || left(r.id, 8)
+              END AS title,
               r.status
          FROM invocation_snapshots snapshot
          JOIN runs r ON r.id = snapshot.invocation_id AND r.space_id = snapshot.space_id
@@ -188,21 +194,25 @@ export class ContentDemotionService {
                AND source_ref->>'type' = ANY($3::varchar[])
           )
         ORDER BY title, r.id`,
-      [spaceId, resourceId, contextTypes],
+      [spaceId, resourceId, contextTypes, ownerUserId],
     );
     const runIds = runs.rows.map((row) => row.run_id);
     const outputs = runIds.length === 0
       ? { rows: [] as Array<{ resource_type: "artifact" | "proposal"; id: string; title: string; visibility: string }> }
       : await db.query<{ resource_type: "artifact" | "proposal"; id: string; title: string; visibility: string }>(
-        `SELECT 'artifact'::text AS resource_type, id, title, visibility
-           FROM artifacts
-          WHERE space_id = $1 AND run_id = ANY($2::varchar[]) AND visibility <> 'private'
+        `SELECT 'artifact'::text AS resource_type, a.id,
+                CASE WHEN ${artifactReadSql("$3", "a")} THEN a.title ELSE 'Artifact ' || left(a.id, 8) END AS title,
+                a.visibility
+           FROM artifacts a
+          WHERE a.space_id = $1 AND a.run_id = ANY($2::varchar[]) AND a.visibility <> 'private'
          UNION ALL
-         SELECT 'proposal'::text AS resource_type, id, title, visibility
-           FROM proposals
-          WHERE space_id = $1 AND created_by_run_id = ANY($2::varchar[]) AND visibility <> 'private'
+         SELECT 'proposal'::text AS resource_type, p.id,
+                CASE WHEN ${proposalReadSql("$3", "p")} THEN p.title ELSE 'Proposal ' || left(p.id, 8) END AS title,
+                p.visibility
+           FROM proposals p
+          WHERE p.space_id = $1 AND p.created_by_run_id = ANY($2::varchar[]) AND p.visibility <> 'private'
          ORDER BY resource_type, title, id`,
-        [spaceId, runIds],
+        [spaceId, runIds, ownerUserId],
       );
     return {
       readers: readers.rows.map((row) => ({

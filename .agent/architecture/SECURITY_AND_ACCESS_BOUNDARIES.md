@@ -193,7 +193,9 @@ retention scheduler prunes this shared table.
 Visibility demotion is forward-only. Narrowing a resource first requires an
 owner-only disclosure request that lists recorded readers, Runs whose immutable
 Invocation Snapshot source refs consumed the resource, and artifacts/proposals from those Runs
-that remain non-private, with UI links. The subsequent policy update must carry
+that remain non-private, with UI links. A listed Run, artifact, or proposal the
+owner cannot read appears by pointer only, never with its instruction or title.
+The subsequent policy update must carry
 the short-lived confirmation id. Confirmation locks the disclosure, recomputes
 the exposure inside the policy transaction, rejects any changed snapshot, and
 consumes the id atomically with the update. Admin policy-management authority
