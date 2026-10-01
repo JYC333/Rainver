@@ -309,6 +309,7 @@ export class SourceRecipeCreateService {
         connectionId,
         versionId,
         previousActiveVersionId: activeVersionId,
+        expectedStatus: "draft",
         nextCheckAt: body.next_check_at,
         scheduleRule: body.schedule_rule,
       }),

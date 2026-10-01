@@ -6,9 +6,10 @@ import { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SourceRecipeDefinition } from "@rainver/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
+import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { PgSourcesRepository } from "../src/modules/sources/repository.js";
 import { SourceRecipeService } from "../src/modules/sources/sourceRecipeService.js";
@@ -162,6 +163,53 @@ describe("sourceRecipeCreateFlow", () => {
 
       await db.pool.query(`UPDATE source_connections SET visibility = 'space_shared' WHERE id = $1`, [created.connection.id]);
       await expect(recipes.listVersions(member, created.connection.id, page)).resolves.toMatchObject({ total: 1 });
+    });
+
+    it("activates one recipe version when another is activated while it was being checked", async () => {
+      if (!db.available) return;
+      const endpointUrl = await startFixtureServer(RSS_FIXTURE);
+      const plan = await createService!.planSource(IDENTITY, {
+        name: "Recipe Feed", endpoint_url: endpointUrl, fetch_frequency: "hourly", capture_policy: "extract_text", fixture_content: RSS_FIXTURE,
+      });
+      const created = await createService!.createSource(IDENTITY, {
+        name: "Recipe Feed", endpoint_url: endpointUrl, fetch_frequency: "hourly", capture_policy: "extract_text", recipe: plan.recipe,
+      });
+      const first = created.recipe_version.id;
+      const stored = await db.pool.query<{ recipe_json: SourceRecipeDefinition; policy_envelope_json: never; primitive_versions_json: Record<string, number> }>(
+        `SELECT recipe_json, policy_envelope_json, primitive_versions_json FROM source_recipe_versions WHERE id = $1`,
+        [first],
+      );
+      const second = (await insertSourceRecipeVersion(db.pool, {
+        spaceId: SPACE_A,
+        connectionId: created.connection.id,
+        recipe: stored.rows[0]!.recipe_json,
+        policyEnvelope: stored.rows[0]!.policy_envelope_json,
+        primitiveVersions: stored.rows[0]!.primitive_versions_json,
+        createdByUserId: IDENTITY.userId,
+      })).id;
+      for (const versionId of [first, second]) {
+        await dryRunService!.dryRunRecipeVersion(IDENTITY, created.connection.id, { recipe_version_id: versionId, fixture_content: RSS_FIXTURE });
+      }
+
+      // The second activation reads the connection, then the first one lands.
+      const original = PgCustomSourceHandlerRepository.prototype.getEffectiveSettings;
+      const settings = vi.spyOn(PgCustomSourceHandlerRepository.prototype, "getEffectiveSettings")
+        .mockImplementationOnce(async function (this: PgCustomSourceHandlerRepository, identity) {
+          await createService!.activateRecipe(IDENTITY, created.connection.id, { recipe_version_id: first });
+          return original.call(this, identity);
+        });
+      try {
+        await expect(createService!.activateRecipe(IDENTITY, created.connection.id, { recipe_version_id: second }))
+          .rejects.toMatchObject({ statusCode: 409 });
+      } finally {
+        settings.mockRestore();
+      }
+
+      const versions = await db.pool.query<{ id: string; status: string }>(
+        `SELECT id, status FROM source_recipe_versions WHERE source_connection_id = $1 AND status = 'active'`,
+        [created.connection.id],
+      );
+      expect(versions.rows).toEqual([{ id: first, status: "active" }]);
     });
 
     it("plans, creates, dry-runs, activates, and scans a recipe source into Source", async () => {

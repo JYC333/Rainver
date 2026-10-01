@@ -393,6 +393,9 @@ Implemented flow:
 - `activateRecipe` activates a dry-run-tested version directly when the policy
   envelope stays inside bounds; envelope broadening creates a
   `source_recipe_activation` proposal and binds the version until review.
+  Activation re-checks under the connection lock that the active version is
+  still the one the envelope was compared with and that the version is still
+  activatable with a passing dry-run, and otherwise answers 409.
 - `recipeScanWorker` handles manual/scheduled scans for active recipe sources
   and materializes validated output through the shared Sources
   materializer.

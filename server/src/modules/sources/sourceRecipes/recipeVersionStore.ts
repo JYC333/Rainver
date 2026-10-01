@@ -4,7 +4,7 @@ import type {
   SourceRecipeDefinition,
   SourceRecipeDryRunResult,
 } from "@rainver/protocol";
-import { dateIso, type Queryable } from "../../routeUtils/common.js";
+import { dateIso, HttpError, type Queryable } from "../../routeUtils/common.js";
 import { getSourceChannelScanTask, upsertSourceChannelScanTask } from "../sourceConnectionScheduler.js";
 import { resolveRequestedSourceSchedule } from "../sourceScheduleInput.js";
 
@@ -176,12 +176,26 @@ export async function activateSourceRecipeVersionTx(
     spaceId: string;
     connectionId: string;
     versionId: string;
+    /** The active version the caller checked the envelope against. */
     previousActiveVersionId: string | null;
+    /** `draft` for a direct activation, `pending_approval` for a proposal's. */
+    expectedStatus: "draft" | "pending_approval";
     nextCheckAt?: unknown;
     scheduleRule?: unknown;
   },
 ): Promise<string> {
   const now = new Date().toISOString();
+  // The caller's checks may have run outside this transaction. Under the
+  // connection lock, the active version must still be the one it checked
+  // against, and the version must still be activatable with a passing dry-run.
+  const locked = await db.query<{ active_recipe_version_id: string | null }>(
+    `SELECT active_recipe_version_id FROM source_connections WHERE id = $1 AND space_id = $2 FOR UPDATE`,
+    [input.connectionId, input.spaceId],
+  );
+  if (!locked.rows[0]) throw new HttpError(404, "Source connection not found");
+  if (locked.rows[0].active_recipe_version_id !== input.previousActiveVersionId) {
+    throw new HttpError(409, "Source active recipe version changed during activation");
+  }
   const existingScheduleTask = await db.query<{ id: string }>(
     `SELECT id FROM source_channels WHERE source_connection_id = $1 AND space_id = $2 AND status <> 'archived' ORDER BY updated_at DESC LIMIT 1`,
     [input.connectionId, input.spaceId],
@@ -219,10 +233,15 @@ export async function activateSourceRecipeVersionTx(
       [input.previousActiveVersionId, input.spaceId, now],
     );
   }
-  await db.query(
-    `UPDATE source_recipe_versions SET status = 'active', activated_at = $3 WHERE id = $1 AND space_id = $2`,
-    [input.versionId, input.spaceId, now],
+  const activated = await db.query(
+    `UPDATE source_recipe_versions SET status = 'active', activated_at = $3
+      WHERE id = $1 AND space_id = $2 AND source_connection_id = $4
+        AND status = $5 AND test_result_json->>'status' = 'succeeded'`,
+    [input.versionId, input.spaceId, now, input.connectionId, input.expectedStatus],
   );
+  if ((activated.rowCount ?? 0) === 0) {
+    throw new HttpError(409, "Recipe version is no longer eligible for activation");
+  }
   const updatedConnection = await db.query<{
     id: string;
     space_id: string;
