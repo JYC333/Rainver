@@ -1047,7 +1047,7 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | POST | `/projects/{id}/research/workflow/{workflowId}/trigger` | Trigger an incremental run after baseline monitoring is active |
 | POST | `/projects/{id}/research/workflow/{workflowId}/history-backfill` | Extend a bounded baseline into a non-overlapping earlier arXiv range |
 | GET | `/projects/{id}/research/workflow/{workflowId}/checkpoints` | List checkpoints for a workflow |
-| POST | `/projects/{id}/research/workflow/{workflowId}/checkpoints/{checkpointId}/decide` | Record a human decision (`approved` / `rejected` / `waived`) on a checkpoint |
+| POST | `/projects/{id}/research/workflow/{workflowId}/checkpoints/{checkpointId}/decide` | Record a human decision (`approved` / `rejected` / `waived`) on a pending checkpoint; a decided one accepts only the same decision again, anything else is 409 |
 | POST | `/projects/{id}/research/operations/{operationId}/retry` | Retry a failed managed research operation from its persisted stage |
 | POST | `/projects/{id}/research/operations/{operationId}/cancel` | Cancel a running research operation: the row goes terminal synchronously and a job kills its Runs, screening batches, backfill plans, and pass Execution, and waives its pending checkpoints |
 | POST | `/projects/{id}/research/operations/{operationId}/reconcile` | Repair a stale operation projection from the canonical run; never re-queues the run |

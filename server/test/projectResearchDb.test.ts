@@ -408,6 +408,12 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       reason: "looks good",
     });
     expect(decided).toMatchObject({ status: "approved", user_decision: "approved", decision_reason: "looks good" });
+    // A decided checkpoint is not decided again the other way; replaying the
+    // same decision stays allowed.
+    await expect(repo().decideCheckpoint(identity, PROJECT, workflowId, checkpoint.id as string, { decision: "rejected" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+    await expect(repo().decideCheckpoint(identity, PROJECT, workflowId, checkpoint.id as string, { decision: "approved" }))
+      .resolves.toMatchObject({ status: "approved", user_decision: "approved" });
 
     const checkpoints = await repo().listCheckpoints(identity, PROJECT, workflowId);
     expect(checkpoints).toHaveLength(1);
