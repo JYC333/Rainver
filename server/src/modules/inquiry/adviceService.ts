@@ -251,7 +251,10 @@ export class InquiryAdviceService {
         userId: identity.userId,
         eventKind: "thread.next_step_adopted",
         occurredAt: new Date().toISOString(),
-        idempotencySuffix: current.id,
+        // The advice row is one per Thread and keeps its id when regenerated,
+        // so the id alone would collapse every later adoption into the first.
+        // Its `updated_at` changes with each generation and not within one.
+        idempotencySuffix: `${current.id}:${current.updated_at}`,
         data: {
           statement: typeof updated.statement === "string" ? updated.statement : "",
           next_focus_kind: current.recommended_focus_kind,

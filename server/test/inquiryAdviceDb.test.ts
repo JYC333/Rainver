@@ -284,6 +284,26 @@ describe("Inquiry next-step advice (real Postgres)", () => {
     expect(dismissed?.updated_at).toBe(dismissedAt);
   });
 
+  it("records every adoption on the Project's account, not only the first", async () => {
+    if (!db.available) return;
+    const service = serviceReturning({
+      recommended_focus_kind: "search_acquisition",
+      rationale: "No evidence has arrived yet.",
+      cited_refs: [],
+    });
+    await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
+    await service.adoptAdvice(identity(), PROJECT, THREAD);
+    await service.generateAdvice(identity(), PROJECT, THREAD, "user_request");
+    await service.adoptAdvice(identity(), PROJECT, THREAD);
+
+    const events = await db.pool.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM project_work_events
+        WHERE project_id = $1 AND event_kind = 'thread.next_step_adopted'`,
+      [PROJECT],
+    );
+    expect(events.rows[0]!.n).toBe(2);
+  });
+
   it("fences an in-flight automatic generation and queues one fresh successor", async () => {
     if (!db.available) return;
     const current = serviceReturning({
