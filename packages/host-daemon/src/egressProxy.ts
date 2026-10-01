@@ -333,7 +333,13 @@ export async function startEgressProxy(
     if (useUpstream) {
       const opening = openUpstreamTunnel(upstreamProxy!, host, port);
       pendingRequest = opening.request;
-      opening.socket.then(onConnected, onConnectError);
+      // The HTTP client drops its own error listener when it hands over a
+      // CONNECT tunnel, so a reset after that is unhandled and ends the
+      // daemon unless the tunnel gets the same listener the direct socket has.
+      opening.socket.then((tunnel) => {
+        tunnel.on("error", onConnectError);
+        onConnected(tunnel);
+      }, onConnectError);
     } else {
       const direct = connect({ host: address, port }, () => onConnected(direct));
       upstream = direct;
