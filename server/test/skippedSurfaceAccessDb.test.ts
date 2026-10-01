@@ -231,6 +231,30 @@ describe("skipped-surface access (real Postgres)", () => {
     });
   });
 
+  it("withholds a Run contract's inputs from summary viewers while keeping its budget", async () => {
+    const now = new Date().toISOString();
+    const contract = {
+      contract_version: "run_contract.v1",
+      max_runs: 3,
+      definition_of_done: "SECRET DONE",
+      acceptance_criteria_json: { secret: "criteria" },
+      workflow_input_json: { query: "SECRET WORKFLOW INPUT" },
+      upstream_inputs_json: { values: { prior: "SECRET UPSTREAM OUTPUT" } },
+      attachment_manifest_json: [{ locator: "SECRET LOCATOR" }],
+    };
+    await db.pool.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, owner_user_id, visibility, access_level, contract_snapshot_json, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, 'space_shared', 'summary', $7::jsonb, $6, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
+      [RUN, SPACE, AGENT, VERSION, OWNER, now, JSON.stringify(contract)],
+    );
+    const runs = new PgRunRepository(db.pool);
+    // `/io` withholds the assembled input from this viewer; the contract it is
+    // assembled from must not hand it over instead.
+    const forOther = runToOut((await runs.getVisibleRun(SPACE, OTHER, RUN))!);
+    expect(JSON.stringify(forOther.contract_snapshot_json)).not.toContain("SECRET");
+    expect(forOther.contract_snapshot_json).toMatchObject({ contract_version: "run_contract.v1", max_runs: 3 });
+    expect(runToOut((await runs.getVisibleRun(SPACE, OWNER, RUN))!).contract_snapshot_json).toEqual(contract);
+  });
+
   it("lets Space oversight read another member's private Activity but not act on it", async () => {
     await db.pool.query(`UPDATE spaces SET oversight_mode = 'content' WHERE id = $1`, [SPACE]);
     const activity = new PgActivityRepository(db.pool);

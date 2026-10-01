@@ -151,6 +151,9 @@ A summary viewer is withheld, on these surfaces:
 - **Artifacts:** inline bodies and export.
 - **Runs:**
   - `output_json`, and the turn / turn-stream body;
+  - in `contract_snapshot_json`, the inputs the Run was given (workflow
+    input, upstream node outputs, attachment manifest, definition of done,
+    acceptance criteria); budget, source and policy metadata stay;
   - on `/trace`, the step input/output summaries, event summaries, and
     error text and metadata;
   - the free-text and JSON detail of attempts, supervisor decisions,
