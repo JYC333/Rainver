@@ -32,16 +32,22 @@ let config: ServerConfig | undefined;
 let artifactStorageRoot: string | undefined;
 let httpServer: Server | undefined;
 let serverPort = 0;
+/** Runs inside the fixture server before it answers, i.e. while a scan is in flight. */
+let duringFetch: (() => Promise<void>) | undefined;
 
 const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;
   httpServer = createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "text/html" });
-    res.end(`<html><body>
-      <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
-    </body></html>`);
+    const hook = duringFetch;
+    duringFetch = undefined;
+    void (hook ? hook() : Promise.resolve()).finally(() => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(`<html><body>
+        <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
+      </body></html>`);
+    });
   });
   await new Promise<void>((resolveListen) => httpServer!.listen(0, "127.0.0.1", resolveListen));
   const address = httpServer.address();
@@ -109,6 +115,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  duringFetch = undefined;
   if (artifactStorageRoot) await rm(artifactStorageRoot, { recursive: true, force: true });
 });
 
@@ -459,6 +466,55 @@ describe("runPendingCustomSourceHandlerRuns", () => {
     // Not re-enqueued immediately after failure (next_run_at moved into the future).
     const reEnqueued = await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
     expect(reEnqueued).toBe(0);
+  });
+
+  it("fails the run and advances the schedule when its credential cannot be resolved", async () => {
+    if (!db.available) return;
+    const connId = randomUUID();
+    await insertConnection({ id: connId, handlerKind: "generated_custom", nextCheckAt: new Date(0).toISOString() });
+    await insertActiveHandlerVersion(connId, {
+      policyEnvelope: {
+        ...POLICY_ENVELOPE,
+        allowed_network_origins: [`http://127.0.0.1:${serverPort}`],
+        credential_ref: "missing-credential",
+      },
+    });
+    await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
+
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10, fixtureServerGuard)).toBe(1);
+
+    const run = await db.pool.query<{ status: string }>(
+      `SELECT status FROM source_handler_runs WHERE source_connection_id = $1`,
+      [connId],
+    );
+    expect(run.rows.map((row) => row.status)).toEqual(["failed"]);
+    const scheduleTask = await db.pool.query<{ next_run_at: string | null }>(
+      `SELECT next_run_at FROM scheduler_tasks WHERE task_type = 'source_channel_scan' AND task_key = $1`,
+      [connId],
+    );
+    expect(new Date(scheduleTask.rows[0]!.next_run_at!).getTime()).toBeGreaterThan(Date.now());
+    expect(await enqueueDueCustomSourceHandlerRuns(db.pool, 25)).toBe(0);
+  });
+
+  it("keeps a pause made while the scan was running", async () => {
+    if (!db.available || !config) return;
+    const connId = randomUUID();
+    await insertConnection({ id: connId, handlerKind: "generated_custom", nextCheckAt: new Date(0).toISOString() });
+    await insertActiveHandlerVersion(connId);
+    await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
+    const channels = new SourceChannelService(db.pool, config);
+    duringFetch = async () => {
+      await channels.update({ spaceId: SPACE_A, userId: "user-1" }, connId, { status: "paused" });
+    };
+
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config, 10, fixtureServerGuard)).toBe(1);
+
+    const scheduleTask = await db.pool.query<{ status: string; next_run_at: string | null; last_run_at: string | null }>(
+      `SELECT status, next_run_at, last_run_at FROM scheduler_tasks WHERE task_type = 'source_channel_scan' AND task_key = $1`,
+      [connId],
+    );
+    expect(scheduleTask.rows[0]).toMatchObject({ status: "paused", next_run_at: null });
+    expect(scheduleTask.rows[0]?.last_run_at).not.toBeNull();
   });
 
   it("records a blocked handler run and fails the paired extraction_job", async () => {

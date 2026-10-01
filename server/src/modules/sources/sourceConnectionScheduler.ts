@@ -4,6 +4,7 @@ import {
   type SchedulerTaskStatus,
 } from "../scheduler/taskStore.js";
 import type { Queryable } from "../routeUtils/common.js";
+import { computeNextCheckAt } from "./sourceScanCadence.js";
 
 export const SOURCE_CHANNEL_SCAN_TASK_TYPE = "source_channel_scan";
 
@@ -64,6 +65,38 @@ export async function upsertSourceChannelScanTask(
     stateJson: existing?.state_json ?? {},
     metadataJson: metadata,
     updatedAt: input.updatedAt,
+  });
+}
+
+/**
+ * Reschedules a channel's scan task when a scan ends, from the channel as it
+ * is now rather than as it was when the scan started, so a pause, archive, or
+ * change of frequency or rule made while the scan ran is kept.
+ */
+export async function rescheduleSourceChannelScanAfterRun(
+  db: Queryable,
+  input: { channelId: string; completedAt: string },
+): Promise<void> {
+  const result = await db.query<SourceChannelScheduleTarget & { schedule_rule_json: unknown }>(
+    `SELECT ch.id, ch.space_id, sc.owner_user_id, ch.status, ch.fetch_frequency, ch.schedule_rule_json
+       FROM source_channels ch
+       JOIN source_connections sc ON sc.id = ch.source_connection_id AND sc.space_id = ch.space_id
+      WHERE ch.id = $1`,
+    [input.channelId],
+  );
+  const channel = result.rows[0];
+  if (!channel) return;
+  const task = await getSourceChannelScanTask(db, channel.id);
+  await upsertSourceChannelScanTask(db, {
+    channel,
+    nextRunAt: channel.status === "active"
+      ? computeNextCheckAt(channel.fetch_frequency, input.completedAt, {
+        existingNextCheckAt: task?.next_run_at,
+        scheduleRule: channel.schedule_rule_json,
+      })
+      : null,
+    lastRunAt: input.completedAt,
+    updatedAt: input.completedAt,
   });
 }
 

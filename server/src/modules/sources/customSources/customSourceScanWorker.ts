@@ -17,11 +17,7 @@ import { enqueueItemsForAnnotation } from "../../sourceAnnotation/index.js";
 import { fetchCustomSourceEndpointHtml } from "./customSourceEndpointFetch.js";
 import type { OutboundGuard } from "../outboundUrlSafety.js";
 import { CustomSourceCredentialService } from "./customSourceCredentialService.js";
-import { computeNextCheckAt } from "../sourceScanCadence.js";
-import {
-  getSourceChannelScanTask,
-  upsertSourceChannelScanTask,
-} from "../sourceConnectionScheduler.js";
+import { rescheduleSourceChannelScanAfterRun } from "../sourceConnectionScheduler.js";
 
 interface QueuedRunRow {
   id: string;
@@ -117,42 +113,37 @@ async function runOne(db: Queryable, config: ServerConfig, run: QueuedRunRow, gu
     );
   }
 
-  const connectionResult = await db.query<{
-    id: string;
-    space_id: string;
-    owner_user_id: string;
-    channel_id: string;
-    endpoint_url: string | null;
-    fetch_frequency: string;
-    schedule_rule_json: unknown;
-    status: string;
-  }>(
-    `SELECT sc.id, sc.space_id, sc.owner_user_id, ch.id AS channel_id,
-            ch.endpoint_url, ch.fetch_frequency, ch.schedule_rule_json, ch.status
-       FROM source_connections sc
-       JOIN source_channels ch ON ch.source_connection_id = sc.id AND ch.id = $3
-      WHERE sc.id = $1 AND sc.space_id = $2`,
-    [run.source_connection_id, run.space_id, run.source_channel_id],
-  );
-  const connection = connectionResult.rows[0];
-  if (!connection) throw new Error(`Custom Source connection ${run.source_connection_id} not found`);
-  const scheduleTask = await getSourceChannelScanTask(db, connection.channel_id);
-
-  const versionResult = await db.query<HandlerVersionRow>(
-    `SELECT ${HANDLER_VERSION_COLUMNS} FROM source_handler_versions WHERE id = $1 AND space_id = $2`,
-    [run.handler_version_id, run.space_id],
-  );
-  const version = versionResult.rows[0];
-  if (!version) throw new Error(`Handler version ${run.handler_version_id} not found`);
-  const policyEnvelope = version.policy_envelope_json as CustomSourcePolicyEnvelope;
-  const settings = await new PgCustomSourceHandlerRepository(db, config).getRunnerSettingsForSpace(run.space_id);
-  const blockReason = evaluateCustomSourceRunnerBlockReason(settings, policyEnvelope);
-  const credential = await new CustomSourceCredentialService(db, config).resolveCredentialHeader(
-    run.space_id,
-    policyEnvelope.credential_ref,
-  );
-
   try {
+    const connectionResult = await db.query<{
+      id: string;
+      space_id: string;
+      owner_user_id: string;
+      channel_id: string;
+      endpoint_url: string | null;
+    }>(
+      `SELECT sc.id, sc.space_id, sc.owner_user_id, ch.id AS channel_id, ch.endpoint_url
+         FROM source_connections sc
+         JOIN source_channels ch ON ch.source_connection_id = sc.id AND ch.id = $3
+        WHERE sc.id = $1 AND sc.space_id = $2`,
+      [run.source_connection_id, run.space_id, run.source_channel_id],
+    );
+    const connection = connectionResult.rows[0];
+    if (!connection) throw new Error(`Custom Source connection ${run.source_connection_id} not found`);
+
+    const versionResult = await db.query<HandlerVersionRow>(
+      `SELECT ${HANDLER_VERSION_COLUMNS} FROM source_handler_versions WHERE id = $1 AND space_id = $2`,
+      [run.handler_version_id, run.space_id],
+    );
+    const version = versionResult.rows[0];
+    if (!version) throw new Error(`Handler version ${run.handler_version_id} not found`);
+    const policyEnvelope = version.policy_envelope_json as CustomSourcePolicyEnvelope;
+    const settings = await new PgCustomSourceHandlerRepository(db, config).getRunnerSettingsForSpace(run.space_id);
+    const blockReason = evaluateCustomSourceRunnerBlockReason(settings, policyEnvelope);
+    const credential = await new CustomSourceCredentialService(db, config).resolveCredentialHeader(
+      run.space_id,
+      policyEnvelope.credential_ref,
+    );
+
     const fetchedHtml = blockReason
       ? ""
       : await fetchCustomSourceEndpointHtml(connection.endpoint_url, settings, policyEnvelope, credential, guard);
@@ -264,21 +255,7 @@ async function runOne(db: Queryable, config: ServerConfig, run: QueuedRunRow, gu
       ],
     );
     await updateRepairStatusAfterRun(db, run);
-    await upsertSourceChannelScanTask(db, {
-      channel: {
-        id: connection.channel_id,
-        space_id: connection.space_id,
-        owner_user_id: connection.owner_user_id,
-        status: connection.status,
-        fetch_frequency: connection.fetch_frequency,
-      },
-      nextRunAt: computeNextCheckAt(connection.fetch_frequency, completedAt, {
-        existingNextCheckAt: scheduleTask?.next_run_at,
-        scheduleRule: connection.schedule_rule_json,
-      }),
-      lastRunAt: completedAt,
-      updatedAt: completedAt,
-    });
+    await rescheduleSourceChannelScanAfterRun(db, { channelId: run.source_channel_id, completedAt });
   }
   return true;
 }
