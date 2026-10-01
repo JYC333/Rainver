@@ -274,14 +274,17 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
         text: run.system_prompt,
       }));
     }
-    if (project.instruction) items.push(normalizeOwned({
+    // The execution snapshot is the authority on whether the Project
+    // Instruction and Brief may reach this Run; a Work Context Setup only
+    // pins which versions they are.
+    if (project.instruction && authority.controlSnapshot.project_instruction_ref) items.push(normalizeOwned({
       authority, request,
       sourceRef: { type: "project_instruction_version", id: String(project.instruction.id), version: String(project.instruction.version) },
       selection: "required", semanticRole: "delegated_instruction", trust: "system_approved",
       text: String(project.instruction.instruction_text ?? ""),
       conflictKey: "project_instruction",
     }));
-    if (project.brief) items.push(normalizeOwned({
+    if (project.brief && authority.controlSnapshot.project_brief_ref) items.push(normalizeOwned({
       authority, request,
       sourceRef: { type: "project_brief_version", id: String(project.brief.id), version: String(project.brief.version) },
       selection: "required", semanticRole: "reference_data", trust: "domain_approved",

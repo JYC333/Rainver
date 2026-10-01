@@ -313,8 +313,17 @@ export class ExecutionControlSnapshotRepository {
     brief: { type: "project_brief_version"; id: string; version: string } | null;
     instruction: { type: "project_instruction_version"; id: string; version: string } | null;
   }> {
+    const briefAllowed = resolvedPolicy.policy.constraints.allow_project_brief !== false
+      && resolvedPolicy.policy.preferences.include_project_brief !== false;
+    const instructionAllowed = resolvedPolicy.policy.constraints.allow_project_instructions !== false
+      && resolvedPolicy.policy.preferences.include_project_instructions !== false;
+    // A Setup keeps the versions it was created with, but the policy in force
+    // now still decides whether either one may reach the Run.
     if (bindings.workContextSetupRef || !bindings.projectId) {
-      return { brief: bindings.projectBriefRef, instruction: bindings.projectInstructionRef };
+      return {
+        brief: briefAllowed ? bindings.projectBriefRef : null,
+        instruction: instructionAllowed ? bindings.projectInstructionRef : null,
+      };
     }
     const result = await this.db.query<{
       brief_id: string | null;
@@ -333,10 +342,6 @@ export class ExecutionControlSnapshotRepository {
       [bindings.projectId, spaceId],
     );
     const row = result.rows[0];
-    const briefAllowed = resolvedPolicy.policy.constraints.allow_project_brief !== false
-      && resolvedPolicy.policy.preferences.include_project_brief !== false;
-    const instructionAllowed = resolvedPolicy.policy.constraints.allow_project_instructions !== false
-      && resolvedPolicy.policy.preferences.include_project_instructions !== false;
     return {
       brief: briefAllowed && row?.brief_id && row.brief_version
         ? { type: "project_brief_version", id: row.brief_id, version: row.brief_version }
