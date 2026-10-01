@@ -252,6 +252,8 @@ export class ProjectResearchMonitorComparisonService {
 
   private async eligibleMaterial(spaceId: string, projectId: string, sourceItemIds: string[]) {
     if (sourceItemIds.length === 0) return [];
+    // `relevance` keeps the AI's verdict after a person triages the item, so
+    // an exclusion has to be checked on its own or it would be compared anyway.
     const rows = await this.db.query<{
       source_item_id: string; title: string | null; excerpt: string | null;
       why_md: string | null; how_md: string | null; what_md: string | null;
@@ -263,7 +265,8 @@ export class ProjectResearchMonitorComparisonService {
          JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
          LEFT JOIN research_evidence_cards pc ON pc.space_id=pci.space_id AND pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
         WHERE pci.space_id=$1 AND pci.project_id=$2 AND pcis.source_item_id=ANY($3::text[])
-          AND pci.status='active' AND (pci.triage_status IN ('relevant','included','maybe') OR pci.relevance IN ('relevant','maybe'))
+          AND pci.status='active' AND pci.triage_status<>'excluded'
+          AND (pci.triage_status IN ('relevant','included','maybe') OR pci.relevance IN ('relevant','maybe'))
         ORDER BY pcis.source_item_id,pci.updated_at DESC`,
       [spaceId, projectId, sourceItemIds],
     );

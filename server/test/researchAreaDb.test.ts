@@ -368,6 +368,29 @@ describe("Research Area (real Postgres)", () => {
     expect((await db.pool.query(`SELECT count(*)::int AS count FROM inquiry_evidence_signals WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT])).rows[0]?.count).toBe(2);
   });
 
+  it("keeps material a person excluded out of the monitoring comparison, whatever the AI relevance says", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString(); const item = randomUUID(); const corpusItemId = randomUUID();
+    await new ProjectResearchAreaService(db.pool).initializeArea({ spaceId: SPACE, userId: USER }, PROJECT);
+    await db.pool.query(
+      `INSERT INTO source_items (id,space_id,owner_user_id,visibility,item_type,title,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+       VALUES ($1,$2,$3,'space_shared','feed_entry','Excluded paper',$4,$4,'excerpt_saved','summary_only',$4,$4)`,
+      [item, SPACE, USER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO project_corpus_items (id,space_id,project_id,source_item_id,role,status,triage_status,triage_confirmed_by_user,relevance,read_status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'candidate','active','excluded',true,'relevant','unread',$5,$5)`,
+      [corpusItemId, SPACE, PROJECT, item, now],
+    );
+    await seedCorpusSourceProvenance(corpusItemId, item, now);
+    const result = await new ProjectResearchMonitorComparisonService(db.pool).queue({
+      spaceId: SPACE, userId: USER, projectId: PROJECT, agentId: randomUUID(), runtimeProfileId: null,
+      researchQuestion: "Does the effect replicate?", sourceItemIds: [item],
+      workflowId: randomUUID(), operationId: randomUUID(),
+    });
+    expect(result).toEqual({ outcome: "no_eligible_material" });
+  });
+
   it("deduplicates cited-DOI integrity alerts and creates review work", async () => {
     if (!db.available) return;
     const now = new Date().toISOString(); const workflow = randomUUID(); const sourceItem = randomUUID();
