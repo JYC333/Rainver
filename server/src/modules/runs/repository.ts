@@ -2359,7 +2359,7 @@ export class PgRunRepository {
     depends_on_run_ids: string[];
     paused_at: string;
   }): Promise<{
-    status: "waiting" | "ready" | "run_not_running" | "dependencies_changed";
+    status: "waiting" | "ready" | "run_not_running" | "dependencies_changed" | "dependency_cycle";
     dependency_statuses: Array<{ id: string; status: string }>;
     current_status?: string;
   }> {
@@ -2406,6 +2406,31 @@ export class PgRunRepository {
       }
       if (lockedDependencies.rows.every((dependency) => isHardTerminalRunStatus(dependency.status))) {
         return { status: "ready", dependency_statuses: lockedDependencies.rows };
+      }
+      // A dependency already waiting, directly or through others, for this Run
+      // would never be woken: each waits for the other to end. A later
+      // recipient of the same message is parked behind the first at creation,
+      // so the first waiting on `current_turn` closes exactly that loop.
+      const cycle = await db.query<{ waits_on_waiter: boolean }>(
+        `WITH RECURSIVE waits(id) AS (
+           SELECT unnest($3::varchar[])
+           UNION
+           SELECT next.id
+             FROM waits
+             JOIN runs r ON r.space_id = $1 AND r.id = waits.id
+             CROSS JOIN LATERAL jsonb_array_elements_text(
+               CASE WHEN jsonb_typeof(r.output_json->'waiting_for_results'->'depends_on_run_ids') = 'array'
+                    THEN r.output_json->'waiting_for_results'->'depends_on_run_ids'
+                    ELSE '[]'::jsonb END
+             ) AS next(id)
+            WHERE r.status = 'waiting_for_dependency'
+              AND r.output_json->'waiting_for_results'->>'status' = 'waiting'
+         )
+         SELECT EXISTS (SELECT 1 FROM waits WHERE id = $2) AS waits_on_waiter`,
+        [input.space_id, input.run_id, dependsOnRunIds],
+      );
+      if (cycle.rows[0]?.waits_on_waiter) {
+        return { status: "dependency_cycle", dependency_statuses: lockedDependencies.rows };
       }
       const runningAttempt = await db.query<{ id: string }>(
         `SELECT id

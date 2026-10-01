@@ -289,7 +289,11 @@ only the manager. Natural-language requests such as
 their answers. If the current agent needs sibling or delegated results before it
 can answer, it calls `agent.wait_for_results`; the run moves to
 `waiting_for_dependency`, releases the worker, and is requeued as the same run
-after all declared dependency runs are terminal.
+after all declared dependency runs are terminal. A wait on runs that are
+themselves waiting, directly or through others, for the caller is refused
+(`dependency_cycle`) instead of parking both: a later recipient of the same
+message is parked behind the first at creation, so the first waiting on
+`current_turn` would otherwise never wake.
 
 Product UI room messages create one manager/root run for an initialized
 Conversation, not at Room creation. Conversation setup is an explicit draft

@@ -3615,6 +3615,47 @@ describe("Room workflow (real Postgres)", () => {
       expect(await taken()).toBe(false);
     });
 
+    it("refuses to park a Run on Runs that are themselves waiting for it", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Mutual wait");
+      const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      const runId = first.run_ids[0]!;
+      await dispatchQueuedRoomRuns([runId]);
+      const runs = new PgRunRepository(db.pool);
+      const running = (await runs.getRun("space-1", runId))!;
+      const parkedOn = async (dependsOn: string) => {
+        const id = randomUUID();
+        await db.pool.query(
+          `INSERT INTO runs SELECT (jsonb_populate_record(NULL::runs, to_jsonb(run) || $2::jsonb)).* FROM runs run WHERE run.id = $1`,
+          [runId, JSON.stringify({
+            id,
+            status: "waiting_for_dependency",
+            host_task_thread_id: null,
+            output_json: { waiting_for_results: { status: "waiting", depends_on_run_ids: [dependsOn] } },
+          })],
+        );
+        return id;
+      };
+      // A later recipient of the same message is parked behind this Run at
+      // creation, and another waits on that one. Waiting on either closes a
+      // loop no completion can ever open.
+      const nextRecipient = await parkedOn(runId);
+      const behindIt = await parkedOn(nextRecipient);
+      const park = (dependsOn: string) => runs.parkRunForDependencyResults({
+        run_id: runId,
+        space_id: "space-1",
+        run_group_id: running.run_group_id!,
+        scope: "current_turn",
+        reason: null,
+        resume_instruction: null,
+        depends_on_run_ids: [dependsOn],
+        paused_at: new Date().toISOString(),
+      });
+      await expect(park(nextRecipient)).resolves.toMatchObject({ status: "dependency_cycle" });
+      await expect(park(behindIt)).resolves.toMatchObject({ status: "dependency_cycle" });
+      expect((await runs.getRun("space-1", runId))?.status).toBe("running");
+    });
+
     it("posts a message waiting behind a person's turn while a discussion's wave waits for the window, outside the discussion", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Queue past a hold");
