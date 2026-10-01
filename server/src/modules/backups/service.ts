@@ -306,6 +306,14 @@ export function automaticBackupIsDue(
   return latestCreatedAt + intervalHours * 60 * 60 * 1000 <= now.getTime();
 }
 
+/**
+ * Locks this process holds. In a container the server is always PID 1, so a
+ * lock a crashed predecessor left carries a pid that is alive again — this
+ * process's own. A lock naming this pid that this process does not hold is
+ * therefore a leftover, however live its pid looks.
+ */
+const HELD_LOCKS = new Set<string>();
+
 async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const content = `pid=${process.pid} acquired_at=${new Date().toISOString()}\n`;
@@ -319,10 +327,12 @@ async function acquireLock(lockPath: string): Promise<() => Promise<void>> {
         throw error;
       }
       await handle.close();
+      HELD_LOCKS.add(lockPath);
       let released = false;
       return async () => {
         if (released) return;
         released = true;
+        HELD_LOCKS.delete(lockPath);
         await unlink(lockPath).catch(() => undefined);
       };
     } catch (error) {
@@ -354,7 +364,8 @@ async function removeStaleLock(lockPath: string, now = new Date()): Promise<bool
   }
 
   const parsed = parseLockContent(content);
-  const pidAlive = parsed.pid === null ? null : isProcessAlive(parsed.pid);
+  const leftByPredecessor = parsed.pid === process.pid && !HELD_LOCKS.has(lockPath);
+  const pidAlive = parsed.pid === null ? null : leftByPredecessor ? false : isProcessAlive(parsed.pid);
   const ageAnchor = parsed.acquiredAt ?? lockStat.mtime;
   const staleByAge = now.getTime() - ageAnchor.getTime() > LOCK_STALE_AFTER_MS;
   const stale = pidAlive === false || (pidAlive === null && staleByAge);
