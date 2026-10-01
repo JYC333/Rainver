@@ -635,6 +635,22 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     expect(again.evidence_links).toBe(0);
   });
 
+  it("archives a binding's evidence links for an item its new filters exclude", async () => {
+    if (!db.available) return;
+    const { evidenceId } = await seedItemWithEvidence();
+    const bindingId = await seedBinding(PROJECT);
+    await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
+    await db.pool.query(
+      `UPDATE project_source_bindings SET filters_json = '{"exclude_keywords":["new paper"]}'::jsonb WHERE id = $1`,
+      [bindingId],
+    );
+
+    await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
+
+    const links = await db.pool.query(`SELECT status FROM evidence_links WHERE evidence_id = $1`, [evidenceId]);
+    expect(links.rows).toEqual([{ status: "archived" }]);
+  });
+
   it("two bindings to the same project produce one link; distinct projects each get one", async () => {
     if (!db.available) return;
     await seedBinding(PROJECT, "active", "default");

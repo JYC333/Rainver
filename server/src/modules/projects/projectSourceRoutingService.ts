@@ -249,17 +249,39 @@ async function materializeProjectSourceItemLinksFromPlan(
   for (const binding of bindings) {
     if (!sourceItemMatchesProjectFilters(item, binding.filters_json)) {
       if (input.archiveNonMatching) {
-        const result = await db.query(
-          `UPDATE project_source_item_links
-              SET status = 'archived',
-                  updated_at = $4
-            WHERE space_id = $1
-              AND project_source_binding_id = $2
-              AND source_item_id = $3
-              AND status = 'active'`,
-          [input.spaceId, binding.id, input.sourceItemId, now],
+        // As when the binding is paused: the binding's Evidence links for the
+        // item go with its item link, or routing would keep them active.
+        const result = await db.query<{ archived_links: number }>(
+          `WITH archived_links AS (
+             UPDATE project_source_item_links
+                SET status = 'archived',
+                    updated_at = $4
+              WHERE space_id = $1
+                AND project_source_binding_id = $2
+                AND source_item_id = $3
+                AND status = 'active'
+              RETURNING project_id
+           ), archived_evidence AS (
+             UPDATE evidence_links el
+                SET status = 'archived',
+                    updated_at = $5
+              WHERE el.space_id = $6
+                AND el.target_type = 'project'
+                AND el.target_id = $7
+                AND el.status = 'active'
+                AND el.reason = 'project_source_binding:' || $8::text
+                AND EXISTS (
+                  SELECT 1 FROM extracted_evidence ev
+                   WHERE ev.space_id = el.space_id
+                     AND ev.id = el.evidence_id
+                     AND ev.source_item_id = $9
+                )
+              RETURNING el.id
+           )
+           SELECT (SELECT count(*)::int FROM archived_links) AS archived_links`,
+          [input.spaceId, binding.id, input.sourceItemId, now, now, input.spaceId, binding.project_id, binding.id, input.sourceItemId],
         );
-        archived += result.rowCount ?? 0;
+        archived += result.rows[0]?.archived_links ?? 0;
       }
       continue;
     }

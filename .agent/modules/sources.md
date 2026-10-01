@@ -507,7 +507,9 @@ Projects-owned `ProjectSourceRoutingService` then creates active
 `context_candidate` `evidence_links` targeting that project. Item links are idempotent
 through `uq_project_source_item_links_binding_item`; evidence links remain
 idempotent through `uq_evidence_links_active_dedupe` and are what run-context
-evidence selection reads for project-bound agent runs.
+evidence selection reads for project-bound agent runs. When a binding is paused
+or removed, or its filters come to exclude an item, its item links are archived
+together with the evidence links it created for those items.
 
 The same materialization pass syncs Project corpus rows in
 `project_corpus_items`: SourceItem rows, Reference-object rows when a
