@@ -134,7 +134,10 @@ idempotent per space. Starting a plan is proposal-gated, and segment execution
 reuses ordinary `extraction_jobs`, so existing item/evidence dedupe and the
 Projects routing hook remain the only materialization path. Quota exhaustion
 pauses a plan until `next_eligible_at`; the Sources scheduler reconciles
-completed extraction jobs and resumes eligible plans. Project-initiated plans
+completed extraction jobs and resumes eligible plans, one plan at a time: a
+plan whose reconcile fails is moved to the back of the `updated_at` order and
+the rest of the pass continues, then the pass reports the failure.
+Project-initiated plans
 may link to a ProjectOperation for product-level progress.
 
 History-import fetches retry a transient network failure or upstream 5xx once

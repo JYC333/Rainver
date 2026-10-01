@@ -15,7 +15,7 @@
 
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import type { ScheduledTask } from "./registry.js";
+import { throwIfAnyFailed, type ScheduledTask } from "./registry.js";
 import type { PgJobQueueRepository } from "../jobs/repository.js";
 import { SourceExtractionWorker } from "../sources/extractionWorker.js";
 import { enqueueDueSourceChannelScans } from "../sources/scanSchedule.js";
@@ -123,21 +123,34 @@ export function buildSourceSchedulerTasks(
   return tasks;
 }
 
-async function reconcileSourceBackfills(db: ReturnType<typeof getDbPool>): Promise<void> {
+export async function reconcileSourceBackfills(db: ReturnType<typeof getDbPool>): Promise<void> {
   const plans = await db.query<{ id: string; space_id: string }>(
     `SELECT id,space_id FROM source_backfill_plans
       WHERE status IN ('approved','running')
          OR (status='paused' AND next_eligible_at<=now())
       ORDER BY updated_at LIMIT 25`,
   );
+  const failures: unknown[] = [];
   for (const plan of plans.rows) {
-    await db.query(
-      `UPDATE source_backfill_plans SET status='approved',next_eligible_at=NULL,updated_at=now()
-        WHERE id=$1 AND space_id=$2 AND status='paused' AND next_eligible_at<=now()`,
-      [plan.id, plan.space_id],
-    );
-    await new SourceBackfillExecutionService(db).reconcile(plan.space_id, plan.id);
+    try {
+      await db.query(
+        `UPDATE source_backfill_plans SET status='approved',next_eligible_at=NULL,updated_at=now()
+          WHERE id=$1 AND space_id=$2 AND status='paused' AND next_eligible_at<=now()`,
+        [plan.id, plan.space_id],
+      );
+      await new SourceBackfillExecutionService(db).reconcile(plan.space_id, plan.id);
+    } catch (error) {
+      failures.push(error);
+      // A failed reconcile rolls back its own `updated_at` bump, which would
+      // keep the plan first in line on every pass; move it to the back so the
+      // other plans keep being reconciled.
+      await db.query(
+        `UPDATE source_backfill_plans SET updated_at=now() WHERE id=$1 AND space_id=$2`,
+        [plan.id, plan.space_id],
+      ).catch((bumpError: unknown) => failures.push(bumpError));
+    }
   }
+  throwIfAnyFailed(failures, "Source backfill reconciliation");
 }
 
 async function processPendingSourceJobs(

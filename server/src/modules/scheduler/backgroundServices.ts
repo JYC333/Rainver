@@ -1,7 +1,7 @@
 import { SpaceAssistantService } from "../agents/spaceAssistantService.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import { startSchedulerRegistry, type ScheduledTask } from "./registry.js";
+import { startSchedulerRegistry, throwIfAnyFailed, type ScheduledTask } from "./registry.js";
 import { scanDailyReportsAndEnqueue } from "../dailyReports/scheduler.js";
 import { scanAutomationsAndFire } from "../automations/scheduler.js";
 import { automaticBackupIsDue, BackupService, runScheduledBackup } from "../backups/service.js";
@@ -448,8 +448,16 @@ export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>,
       ORDER BY COALESCE(completed_at, created_at) ASC, id ASC
       LIMIT 100`,
   );
+  // One run or Space that keeps failing (its rollback also undoes its mark,
+  // so it stays first in line) must not stop the rest of the Instance; the
+  // pass still fails so the scheduler reports it.
+  const failures: unknown[] = [];
   for (const run of unreconciledRuns.rows) {
-    await orchestrator.reconcilePostProcessingRun(run.space_id, run.id);
+    try {
+      await orchestrator.reconcilePostProcessingRun(run.space_id, run.id);
+    } catch (error) {
+      failures.push(error);
+    }
   }
 
   const spaces = await db.query<{ space_id: string }>(
@@ -458,7 +466,14 @@ export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>,
       WHERE kind='research' AND status IN ('active','waiting_review')
       ORDER BY space_id`,
   );
-  for (const row of spaces.rows) await orchestrator.reconcileAll(row.space_id);
+  for (const row of spaces.rows) {
+    try {
+      await orchestrator.reconcileAll(row.space_id);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  throwIfAnyFailed(failures, "Project Research reconciliation");
 }
 
 export async function pruneContentAccessLogs(

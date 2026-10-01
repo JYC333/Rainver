@@ -881,7 +881,10 @@ only one active/waiting-review research operation may exist per workflow.
 Creation and initial activation of a managed research operation are one
 transaction, so a uniqueness loser cannot leave a draft for the reconciler.
 Successful Source post-processing runs carry `research_reconciled_at` as the
-durable recovery marker consumed by level-triggered reconciliation. Extracted
+durable recovery marker consumed by level-triggered reconciliation; that scan
+reconciles each run and each Space on its own, so one that keeps failing (its
+rollback also undoes its marker) does not stop the rest, and the pass still
+reports the failure. Extracted
 Evidence deduplicates non-null content hashes per `(space_id, source_item_id)`
 regardless of extraction method, so crash/retry or alternate extractors cannot
 create two identities for the same source content. Each distinct extractor,

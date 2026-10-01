@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { ProjectResearchPipelineService } from "../src/modules/projectResearch/pipeline/researchPipelineService.js";
 import type { Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { reconcileProjectResearch } from "../src/modules/scheduler/backgroundServices.js";
 import { isRetryableSourcePostProcessingFailure, sourcePostProcessingFailureCode, SourcePostProcessingRecoveryService } from "../src/modules/sources/postProcessing/recoveryService.js";
@@ -355,6 +356,42 @@ describe("sourcePostProcessingRecoveryDb", () => {
       expect((await db.pool.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM project_corpus_items WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT],
       )).rows[0]?.count).toBe("0");
+    });
+
+    it("reconciles the rest of the backlog past a run that keeps failing", async () => {
+      if (!db.available) return;
+      const insertRun = async (createdAt: string) => {
+        const runId = randomUUID();
+        await db.pool.query(
+          `INSERT INTO source_post_processing_runs (
+             id,space_id,source_channel_id,agent_id,project_id,rule_id,trigger_type,status,input_item_ids_json,created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,'manual','succeeded',$7::jsonb,$8)`,
+          [runId, SPACE, CHANNEL, AGENT, PROJECT, RULE, JSON.stringify([ITEM_3]), createdAt],
+        );
+        return runId;
+      };
+      // The oldest run fails on every pass and rolls back its own mark, so it
+      // stays first in line; the scan must not stop there.
+      const stuck = await insertRun("2026-01-01T00:00:00.000Z");
+      const next = await insertRun("2026-01-02T00:00:00.000Z");
+      const original = ProjectResearchPipelineService.prototype.reconcilePostProcessingRun;
+      const spy = vi.spyOn(ProjectResearchPipelineService.prototype, "reconcilePostProcessingRun")
+        .mockImplementation(async function (this: ProjectResearchPipelineService, spaceId, runId) {
+          if (runId === stuck) throw new Error("stuck run");
+          return original.call(this, spaceId, runId);
+        });
+      try {
+        await expect(reconcileProjectResearch(db.pool, CONFIG)).rejects.toThrow(/stuck run/);
+      } finally {
+        spy.mockRestore();
+      }
+      const reconciled = await db.pool.query<{ id: string; research_reconciled_at: string | null }>(
+        `SELECT id, research_reconciled_at FROM source_post_processing_runs WHERE id = ANY($1::text[])`,
+        [[stuck, next]],
+      );
+      const byId = new Map(reconciled.rows.map((row) => [row.id, row.research_reconciled_at]));
+      expect(byId.get(stuck)).toBeNull();
+      expect(byId.get(next)).not.toBeNull();
     });
   });
 });

@@ -386,3 +386,13 @@ function validateTask(task: ScheduledTask): void {
     throw new Error("awaitRunOnStart requires runOnStart");
   }
 }
+
+/**
+ * Reports a batch's failures after every item had its turn, so one item that
+ * keeps failing neither stops the rest of a pass nor goes unreported.
+ */
+export function throwIfAnyFailed(failures: unknown[], what: string): void {
+  if (failures.length === 0) return;
+  const first = failures[0] instanceof Error ? failures[0].message : String(failures[0]);
+  throw new AggregateError(failures, `${what} failed for ${failures.length} item(s): ${first}`);
+}

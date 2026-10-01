@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { buildSourceSchedulerTasks } from "../src/modules/scheduler/sourceTasks.js";
+import { buildSourceSchedulerTasks, reconcileSourceBackfills } from "../src/modules/scheduler/sourceTasks.js";
+import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService.js";
 import type { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 
 const config = loadConfig({
@@ -52,5 +53,37 @@ describe("buildSourceSchedulerTasks", () => {
       expect(task.intervalSeconds).toBe(config.sourceExtractionSchedulerIntervalSeconds);
       expect(task.runOnStart).toBe(true);
     }
+  });
+});
+
+describe("reconcileSourceBackfills", () => {
+  it("reconciles every plan past one that keeps failing, and moves that one to the back", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      async query(sql: string, params: unknown[] = []) {
+        queries.push({ sql, params });
+        if (sql.includes("SELECT id,space_id FROM source_backfill_plans")) {
+          return { rows: [{ id: "plan-stuck", space_id: "space-1" }, { id: "plan-next", space_id: "space-1" }] };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+    };
+    const reconciled: string[] = [];
+    const spy = vi.spyOn(SourceBackfillExecutionService.prototype, "reconcile")
+      .mockImplementation(async (_spaceId: string, planId: string) => {
+        if (planId === "plan-stuck") throw new Error("Source channel not found for backfill plan");
+        reconciled.push(planId);
+        return undefined as never;
+      });
+    try {
+      await expect(reconcileSourceBackfills(db as never)).rejects.toThrow(/Source channel not found/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(reconciled).toEqual(["plan-next"]);
+    // Its failed reconcile rolled back its own bump; without this it would
+    // lead the `ORDER BY updated_at` page on every pass.
+    expect(queries.some(({ sql, params }) =>
+      /SET updated_at=now\(\)/.test(sql) && !sql.includes("status='approved'") && params[0] === "plan-stuck")).toBe(true);
   });
 });
