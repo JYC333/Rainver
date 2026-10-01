@@ -636,11 +636,16 @@ async function applyKnowledgeUpdateProposal(
     );
   }
 
-  const confidence = parseConfidence(payload.confidence);
+  // A field the update does not mention keeps the current version's value, as
+  // the format and status fields above do: a revalidation that only rewrites
+  // the content must not strip the item's aliases, tags, or confidence.
+  const confidence = hasPayloadKey(payload, "confidence")
+    ? parseConfidence(payload.confidence)
+    : current.confidence;
   const aliases = hasPayloadKey(payload, "aliases")
     ? toStringArray(payload.aliases)
-    : [];
-  const tags = hasPayloadKey(payload, "tags") ? toStringArray(payload.tags) : [];
+    : parseJsonArray(current.aliases_json);
+  const tags = hasPayloadKey(payload, "tags") ? toStringArray(payload.tags) : parseJsonArray(current.tags_json);
   const sourceRefs = provenanceEntriesFromPayload(payload.source_refs);
   const slug = optionalString(payload.slug) ?? current.slug;
   const pinnedSourceRef = optionalObject(payload.pinned_source_ref);

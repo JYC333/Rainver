@@ -215,6 +215,12 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     );
     expect(stored.rows[0]!.pinned_source_ref_json).toEqual(pinnedRef);
     expect(stored.rows[0]!.content).toBe("Block one: the finding that matters.");
+    // Curated metadata a revalidation payload does not carry.
+    await db.pool.query(
+      `UPDATE knowledge_items SET aliases_json='["The finding"]'::jsonb, tags_json='["retrieval"]'::jsonb, confidence=0.8
+        WHERE object_id=$1 AND space_id=$2`,
+      [knowledgeItemId, SPACE],
+    );
 
     // Edit block 0 only (the anchored block 1 is untouched) — irrelevant.
     await writeNote(db.pool, {
@@ -260,10 +266,12 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       [knowledgeItemId],
     );
     expect(original.rows[0]).toMatchObject({ status: "superseded", content: "Block one: the finding that matters." });
-    const replacement = await db.pool.query<{ content: string }>(
-      `SELECT content FROM knowledge_items WHERE supersedes_item_id=$1`, [knowledgeItemId],
+    const replacement = await db.pool.query<{ content: string; aliases_json: unknown; tags_json: unknown; confidence: number | null }>(
+      `SELECT content, aliases_json, tags_json, confidence FROM knowledge_items WHERE supersedes_item_id=$1`, [knowledgeItemId],
     );
     expect(replacement.rows[0]?.content).toBe("Block one: the finding now reads differently.");
+    // The new version keeps what the update did not mention.
+    expect(replacement.rows[0]).toMatchObject({ aliases_json: ["The finding"], tags_json: ["retrieval"], confidence: 0.8 });
   });
 
   it("promotes a Knowledge Candidate from an Inquiry Thread revision, keyed to a material Iteration", async () => {
