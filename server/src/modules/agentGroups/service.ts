@@ -822,6 +822,12 @@ export class AgentGroupRunService {
       if (!parentRun || parentRun.run_group_id !== group.id) throw new HttpError(404, "Parent run not found in this agent group");
       if (parentRun.agent_id !== input.requesting_agent_id) throw new HttpError(403, "requesting_agent_id must match the parent run agent");
       if ((parentRun.root_run_id ?? parentRun.id) !== group.root_run_id) throw new HttpError(409, "Parent run does not belong to the group root lineage");
+      // A retried call replays the delegation it already made; judged afresh,
+      // that delegation would count against itself and be refused.
+      if (input.tool_call_id) {
+        const existing = await repos.groups.findDelegationByToolCallId(input.space_id, input.parent_run_id, input.tool_call_id);
+        if (existing) return { status: "allow", policy_decision_record_id: existing.policy_decision_record_id };
+      }
       await assertAgentsExist(repos.groups, input.space_id, identity.userId, [input.requesting_agent_id, input.target_agent_id], group.room_id);
       return this.enforceSpawnPolicy(repos.groups, group, parentRun, input);
     });

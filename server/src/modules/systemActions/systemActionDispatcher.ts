@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import type {
   CanonicalToolCall,
   CanonicalToolDefinition,
@@ -147,7 +148,7 @@ export class SystemActionDispatcher {
       for (const tool of delegation.toolDefinitions) {
         executors.set(tool.name as SystemActionId, async (input, context) =>
           runAgentRoomToolCall(
-            { id: tool.name, name: tool.name, arguments_json: JSON.stringify(input) },
+            { id: delegationCallId(context.idempotency_key), name: tool.name, arguments_json: JSON.stringify(input) },
             delegation,
             run,
             context.policy_decision?.details as never,
@@ -203,7 +204,7 @@ export class SystemActionDispatcher {
 
     const gateway = new SystemActionGateway(
       executors,
-      (definition, input) => enforcePolicyForAction(config, definition, input, run, retrieval, actor, delegation),
+      (definition, input, context) => enforcePolicyForAction(config, definition, input, run, retrieval, actor, delegation, context),
       {
         onValidated: (definition, _input, context) => emitActionEvent(definition, "action_invoked", context),
         onCompleted: (definition, result, context) =>
@@ -286,6 +287,17 @@ export class SystemActionDispatcher {
   }
 }
 
+/**
+ * The key a delegation is replayed by: this call's own idempotency key, so a
+ * retry of the call replays it and a second call makes a second delegation.
+ * The tool name would make every delegation of a Run replay its first. Bounded
+ * to the column (128) by hashing a longer key; with no key there is no replay.
+ */
+function delegationCallId(idempotencyKey: string | null | undefined): string {
+  if (!idempotencyKey) return randomUUID();
+  return idempotencyKey.length <= 128 ? idempotencyKey : createHash("sha256").update(idempotencyKey).digest("hex");
+}
+
 function triggeringMessageId(value: unknown): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const chatTurn = (value as Record<string, unknown>).chat_turn;
@@ -310,9 +322,10 @@ async function enforcePolicyForAction(
   retrieval: ResolvedRetrievalToolBinding | null,
   actor: { spaceId: string; instructedByUserId: string; agentId: string; runId: string },
   delegation: Awaited<ReturnType<typeof resolveAgentDelegationToolBinding>>,
+  context: { idempotency_key?: string | null },
 ) {
   if (definition.policy_adapter === "agent_delegate" && delegation?.service.preflightSpawnChildRunPolicy) {
-    const call = { id: definition.id, name: definition.id, arguments_json: JSON.stringify(input) };
+    const call = { id: delegationCallId(context.idempotency_key), name: definition.id, arguments_json: JSON.stringify(input) };
     const prepared = agentDelegatePolicyInput(call, delegation, run);
     const decision = await delegation.service.preflightSpawnChildRunPolicy(prepared.identity, prepared.input);
     return {

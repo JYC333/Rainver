@@ -2723,6 +2723,31 @@ describe("Room workflow (real Postgres)", () => {
       return { owner, created, conversation, manager };
     }
 
+    it("replays a retried delegation even when the group has no fan-out left", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Retried delegation");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      const managerRun = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([managerRun]);
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      await db.pool.query(
+        `UPDATE agent_run_groups SET budget_json = COALESCE(budget_json, '{}'::jsonb) || '{"max_fanout":1}'::jsonb WHERE id = $1`,
+        [group.id],
+      );
+      const input = {
+        space_id: "space-1", group_id: group.id, parent_run_id: managerRun, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
+        instruction: "Check the numbers.", tool_call_id: "call-1",
+      };
+      const first = await groupService.spawnChildRunAuthorized(owner, input, await groupService.preflightSpawnChildRunPolicy(owner, input));
+      expect(first.child_run_id).toBeTruthy();
+
+      const retryPolicy = await groupService.preflightSpawnChildRunPolicy(owner, input);
+      expect(retryPolicy.status).toBe("allow");
+      const retried = await groupService.spawnChildRunAuthorized(owner, input, retryPolicy);
+      expect(retried.delegation.id).toBe(first.delegation.id);
+    });
+
     it("admits a recipient whose wait ended while its group was paused once the group resumes", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Paused wait");
