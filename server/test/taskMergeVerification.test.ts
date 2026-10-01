@@ -60,7 +60,8 @@ describe("a merge's verification", () => {
   it("reads path globs in diff scope and forbidden-path checks", async () => {
     const changedFiles = (paths: string[]): VerificationCommandExecutor => ({
       async run(input) {
-        const stdout = input.command[1] === "diff" ? `${paths.join("\n")}\n` : "";
+        // `git diff --name-only -z`: NUL-terminated names.
+        const stdout = input.command[1] === "diff" ? paths.map((path) => `${path}\0`).join("") : "";
         return { returncode: 0, stdout, stderr: "", timed_out: false };
       },
     });

@@ -838,14 +838,28 @@ async function changedFiles(
   if (!executor) return { paths: [], error: "Git verification could not be run on the execution host." };
   const base = baseCommitSha && /^[0-9a-f]{7,64}$/i.test(baseCommitSha) ? baseCommitSha : "HEAD";
   try {
-    const diff = await executor.run({ runId, target, command: ["git", "diff", "--name-only", base], timeoutSeconds: 30 });
-    const status = await executor.run({ runId, target, command: ["git", "status", "--porcelain"], timeoutSeconds: 30 });
+    // NUL-separated, so no path is quoted or split; every untracked file is
+    // listed rather than its new directory; and a rename names both ends, so
+    // moving a forbidden file away still changes it.
+    const diff = await executor.run({
+      runId, target, command: ["git", "diff", "--name-only", "--no-renames", "-z", base], timeoutSeconds: 30,
+    });
+    const status = await executor.run({
+      runId, target, command: ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], timeoutSeconds: 30,
+    });
     if (diff.returncode !== 0 || status.returncode !== 0 || diff.failure_code || status.failure_code || diff.timed_out || status.timed_out) throw new Error("git failed or returned incomplete evidence");
     const paths = new Set<string>();
-    for (const value of diff.stdout.split(/\r?\n/)) if (value.trim()) paths.add(normalizeGitPath(value.trim()));
-    for (const value of status.stdout.split(/\r?\n/)) {
-      const path = value.slice(3).trim();
-      if (path) paths.add(normalizeGitPath(path));
+    for (const value of diff.stdout.split("\0")) if (value) paths.add(normalizeGitPath(value));
+    const entries = status.stdout.split("\0");
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index]!;
+      if (entry.length < 4) continue;
+      paths.add(normalizeGitPath(entry.slice(3)));
+      // `XY to\0from`: a rename's source is a change, a copy's is not.
+      if (/[RC]/.test(entry.slice(0, 2))) {
+        const source = entries[(index += 1)];
+        if (source && entry.slice(0, 2).includes("R")) paths.add(normalizeGitPath(source));
+      }
     }
     return { paths: [...paths].sort(), error: null };
   } catch {

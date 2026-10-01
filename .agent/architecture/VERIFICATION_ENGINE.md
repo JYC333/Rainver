@@ -57,7 +57,9 @@ author a recipe, which is Project write access.
   commit that worktree stood at when the Run started (the daemon reports it on
   `complete`), so commits the Agent made itself count as its change
   ([hosts.md](../modules/hosts.md), "Location lease, Task worktrees and
-  `git_after`");
+  `git_after`"). Both are read NUL-separated, with every untracked file
+  listed (not just its new directory) and both ends of a rename, so a file
+  moved away from a forbidden path still counts as changing it;
 - a done Task's merge asks the Task's checks again of its merged worktree
   (`verifyTaskWorkspace`): only the checks a workspace can answer — commands,
   tests, lint, typecheck, file and git checks, recipe refs — declared from the

@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RunMaterializationItemSummary } from "@rainver/protocol";
 import type { AgentRunRecord, Queryable } from "../src/modules/runs/repository.js";
@@ -227,8 +231,59 @@ describe("verification engine", () => {
       output_json: {},
       materialization_items: [] as RunMaterializationItemSummary[],
     });
-    expect(calls).toContainEqual(["git", "diff", "--name-only", "HEAD"]);
-    expect(calls).toContainEqual(["git", "status", "--porcelain"]);
+    expect(calls.map((call) => call.slice(0, 2))).toEqual([["git", "diff"], ["git", "status"]]);
+  });
+
+  it("names every file a Run changed, inside new directories and across renames", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "rainver-verify-git-"));
+    try {
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: workspace, stdio: "pipe" });
+      git("init", "-q");
+      git("-c", "user.email=t@test.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base");
+      mkdirSync(join(workspace, "src"));
+      writeFileSync(join(workspace, "src", "a.ts"), "export const a = 1;\n");
+      writeFileSync(join(workspace, "src", "keys.pem"), "secret\n");
+      git("add", ".");
+      git("-c", "user.email=t@test.invalid", "-c", "user.name=t", "commit", "-q", "-m", "files");
+      // What the Run did: a file in a directory that did not exist, a rename,
+      // and a forbidden file moved away.
+      mkdirSync(join(workspace, "secrets"));
+      writeFileSync(join(workspace, "secrets", "key.pem"), "secret\n");
+      git("mv", "src/a.ts", "src/b.ts");
+      git("mv", "src/keys.pem", "src/moved.txt");
+
+      const engine = new PgVerificationEngine(new VerificationDb(), undefined, {
+        async run(input) {
+          const [command, ...args] = input.command;
+          const stdout = execFileSync(command!, args, { cwd: workspace, encoding: "utf8" });
+          return { returncode: 0, stdout, stderr: "", timed_out: false };
+        },
+      });
+      const results = await engine.verify({
+        run: run({
+          contract_snapshot_json: {
+            acceptance_criteria_json: {
+              checks: [
+                { type: "no_forbidden_change", forbidden_paths: ["secrets/key.pem", "src/keys.pem"] },
+                { type: "file_changed", path: "secrets/key.pem" },
+              ],
+            },
+          },
+        }),
+        execution_target: { host_id: "host-1", workspace_location_id: "loc-1" },
+        base_commit_sha: null,
+        output_json: {},
+        materialization_items: [] as RunMaterializationItemSummary[],
+      });
+      const forbidden = results.find((result) => result.verifier_type === "no_forbidden_change");
+      expect(forbidden).toMatchObject({ status: "failed" });
+      expect(String(forbidden?.evidence_refs_json)).toContain(JSON.stringify(
+        ["secrets/key.pem", "src/a.ts", "src/b.ts", "src/keys.pem", "src/moved.txt"],
+      ));
+      expect(results.find((result) => result.verifier_type === "file_changed")).toMatchObject({ status: "passed" });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it("reports a command verifier unavailable when the run has no host workspace", async () => {
