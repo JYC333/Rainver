@@ -139,7 +139,9 @@ product table; Context Events store ordered refs and typed continuity facts.
 - CLI continuity stores an acknowledged cursor and rotates its private vendor
   session when scope, generation, cursor, replay authority, or a bounded delta
   overflow is detected. Overflow rotation bootstraps from the latest authorized
-  checkpoint and transfers the execution lease to the replacement binding. A
+  checkpoint and transfers the execution lease to the replacement binding. Any
+  other rotation waits while another Run holds the binding's live execution
+  lease, so that Run keeps an active binding to acknowledge against. A
   successful bootstrap/delta phase advances that cursor before the current-user
   turn is sent, while the whole invocation Snapshot remains draft until its
   terminal acknowledgement.

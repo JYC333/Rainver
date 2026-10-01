@@ -452,6 +452,28 @@ describe("runtimeContextCliContinuityDb", () => {
       )).resolves.toMatchObject({ rows: [{ status: "rotated" }] });
     });
 
+    it("waits for a Run's execution lease before rotating the binding under it", async () => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const first = await cli.prepareBinding(bindingInput(control()));
+      const lease = await cli.acquireExecutionLease(first.id);
+      let rotatedYet = false;
+      const rotation = cli.prepareBinding({ ...bindingInput(control()), expectedVendorSessionId: "another-thread" })
+        .then((binding) => {
+          rotatedYet = true;
+          return binding;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(rotatedYet).toBe(false);
+      await expect(db.pool.query(`SELECT status FROM runtime_context_cli_bindings WHERE id=$1`, [first.id]))
+        .resolves.toMatchObject({ rows: [{ status: "active" }] });
+
+      await cli.releaseExecutionLease(lease);
+      await expect(rotation).resolves.toMatchObject({ rotation_reason: "vendor_session_mismatch" });
+      await expect(db.pool.query(`SELECT status FROM runtime_context_cli_bindings WHERE id=$1`, [first.id]))
+        .resolves.toMatchObject({ rows: [{ status: "rotated" }] });
+    });
+
     it("binds provider generations through the target Space grant", async () => {
       if (!db.available) return;
       await db.pool.query(
