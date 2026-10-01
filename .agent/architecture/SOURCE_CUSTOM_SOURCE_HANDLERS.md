@@ -433,8 +433,9 @@ While a repair attempt is in flight, `source_connections.repair_status` is
 `repair_pending`; any failure past that point (generation, the fixture test
 itself throwing rather than just failing, envelope evaluation, activation, or
 proposal creation) reverts it to `repair_required` rather than leaving it
-stuck `repair_pending` forever. A repair call rejects outright (409) if the
-connection is already `repair_pending`, so two repair attempts cannot race on
+stuck `repair_pending` forever, and so does rejecting the repair's proposal.
+A repair call rejects outright (409) if the connection is already
+`repair_pending`, so two repair attempts cannot race on
 the same connection through the API (this is an application-level guard, not
 a row lock — a true concurrent double-call at the database level is not
 separately interlocked).
@@ -684,7 +685,7 @@ hard limits are read-only via the existing
 active handler version and latest run:
 
 - `repair_status` — `ok`, `repair_required` (3+ consecutive non-succeeded
-  runs, or a failed repair attempt — see "Repair" above), `repair_pending`
+  runs, or a failed or rejected repair attempt — see "Repair" above), `repair_pending`
   (a repair or activation is awaiting either a live run or proposal review),
   or `disabled` (nothing sets this automatically).
 - `recent_run_status_counts` — a breakdown of the last 20

@@ -967,14 +967,33 @@ async function releaseRejectedCustomSourceHandlerVersion(
   proposalId: string,
   spaceId: string,
 ): Promise<void> {
-  await client.query(
+  const released = await client.query<{ source_connection_id: string }>(
     `UPDATE source_handler_versions
         SET status = 'draft',
             proposal_id = NULL
       WHERE space_id = $1
         AND proposal_id = $2
-        AND status = 'pending_approval'`,
+        AND status = 'pending_approval'
+      RETURNING source_connection_id`,
     [spaceId, proposalId],
+  );
+  // A rejected repair proposal ends that repair attempt like any other failed
+  // one; left at repair_pending, the connection could never be repaired again.
+  const connectionIds = released.rows.map((row) => row.source_connection_id);
+  if (connectionIds.length === 0) return;
+  await client.query(
+    `UPDATE source_connections
+        SET repair_status = 'repair_required', updated_at = now()
+      WHERE space_id = $1
+        AND id = ANY($2::text[])
+        AND repair_status = 'repair_pending'
+        AND NOT EXISTS (
+          SELECT 1 FROM source_handler_versions v
+           WHERE v.space_id = source_connections.space_id
+             AND v.source_connection_id = source_connections.id
+             AND v.status = 'pending_approval'
+        )`,
+    [spaceId, connectionIds],
   );
 }
 

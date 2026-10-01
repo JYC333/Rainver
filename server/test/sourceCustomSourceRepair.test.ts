@@ -12,6 +12,7 @@ import { CustomSourceRepairService } from "../src/modules/sources/customSources/
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository.js";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 
 // Real-Postgres integration tests for Phase 9 (repair/rollback), matching
 // the project-wide preference for real DB tests over fakes.
@@ -234,6 +235,24 @@ describe("CustomSourceRepairService.repairHandler", () => {
       userId: IDENTITY.userId,
     });
     expect(applied.result).toMatchObject({ status: "active", handler_version_id: result.handler_version.id });
+  });
+
+  it("ends the repair when its proposal is rejected, so the connection can be repaired again", async () => {
+    if (!db.available) return;
+    const { connectionId } = await createActiveConnection();
+    const result = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
+    if (result.status !== "pending_approval") throw new Error("expected a repair proposal");
+
+    const rejected = await PgProposalApplyService.fromConfig(config!).reject(result.proposal_id, IDENTITY);
+    expect(rejected?.status).toBe("rejected");
+
+    const connectionRow = await db.pool.query<{ repair_status: string }>(
+      `SELECT repair_status FROM source_connections WHERE id = $1`,
+      [connectionId],
+    );
+    expect(connectionRow.rows[0]?.repair_status).toBe("repair_required");
+    await expect(repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML }))
+      .resolves.toMatchObject({ status: "pending_approval" });
   });
 
   it("routes a permission-broadening repair through custom_source_policy_delta, not custom_source_repair_activation", async () => {
