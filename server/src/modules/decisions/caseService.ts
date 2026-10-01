@@ -273,9 +273,14 @@ export class DecisionCaseService {
     const now = new Date().toISOString();
     return withQueryableTransaction(this.pool, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
+      // The same read gate as requireCase: deciding is a mutation, and the
+      // response carries the Case's content.
       const lockedCase = await db.query<CaseRow>(
-        `SELECT ${CASE_COLUMNS} FROM ${CASE_FROM} WHERE c.object_id=$1 AND c.space_id=$2 AND c.project_id=$3 FOR UPDATE OF c`,
-        [caseId, identity.spaceId, projectId],
+        `SELECT ${CASE_COLUMNS} FROM ${CASE_FROM}
+          WHERE c.object_id=$1 AND c.space_id=$2 AND c.project_id=$3
+            AND ${contentReadSql("space_object", "so", "$4")}
+          FOR UPDATE OF c`,
+        [caseId, identity.spaceId, projectId, identity.userId],
       );
       const decisionCase = lockedCase.rows[0];
       if (!decisionCase) throw new HttpError(404, "Decision Case not found");

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { DecisionCaseService } from "../src/modules/decisions/caseService.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
@@ -121,6 +121,27 @@ describe("Decision Domain (real Postgres)", () => {
     const caseTwo = await cases.createCase(identity, PROJECT, { title: "Case Two" });
     const optionInCaseTwo = await cases.addOption(identity, PROJECT, caseTwo.id as string, { title: "Option in Two" });
     await expect(cases.decide(identity, PROJECT, caseOne.id as string, { option_id: optionInCaseTwo.id })).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("does not let a Project writer decide a Case they cannot read", async () => {
+    if (!db.available) return;
+    const writer = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    await seedSpaceMember(db.pool, { space: SPACE, user: writer });
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
+      [randomUUID(), SPACE, PROJECT, writer],
+    );
+    const cases = new DecisionCaseService(db.pool);
+    const privateCase = await cases.createCase(identity, PROJECT, { title: "Private deliberation", framing: "Mine alone" });
+    const option = await cases.addOption(identity, PROJECT, privateCase.id as string, { title: "Option" });
+    await db.pool.query(`UPDATE space_objects SET visibility='private' WHERE id=$1`, [privateCase.id]);
+    const asWriter = { spaceId: SPACE, userId: writer };
+    await expect(cases.getCase(asWriter, PROJECT, privateCase.id as string)).rejects.toMatchObject({ statusCode: 404 });
+
+    await expect(cases.decide(asWriter, PROJECT, privateCase.id as string, { option_id: option.id }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    expect((await cases.getCase(identity, PROJECT, privateCase.id as string)).status).toBe("open");
   });
 
   it("rejects a non-integer or missing Trade-off score instead of silently storing it", async () => {
