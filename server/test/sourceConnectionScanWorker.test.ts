@@ -692,6 +692,22 @@ describe("SourceExtractionWorker connection_scan", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("leaves the channel's monitoring schedule alone when a backfill page fails", async () => {
+    __setArxivThrottleForTests({ sleep: async () => {} });
+    const db = new ScanDb({
+      connectorKey: "arxiv_api",
+      capturePolicy: "reference_only",
+      policyRetention: "metadata_only",
+      backfill: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 400 }));
+
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
+      .resolves.toMatchObject({ status: "failed" });
+
+    expect(db.calls.some(call => call.sql.includes("INSERT INTO scheduler_tasks"))).toBe(false);
+  });
+
   it("fails closed before fetch when a search channel has no executable Search Spec", async () => {
     const db = new ScanDb({
       connectorKey: "arxiv_api",

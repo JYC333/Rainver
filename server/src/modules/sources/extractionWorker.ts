@@ -175,7 +175,9 @@ export class SourceExtractionWorker {
         await this.recordJobFailureDiagnostics(job, error.diagnostics);
       }
       await this.finishJob(jobId, spaceId, "failed", code, message);
-      if (job.job_type === "connection_scan" && job.connection_id) {
+      // A history page failure belongs to its segment; like a successful
+      // page, it never moves the channel's monitoring schedule.
+      if (job.job_type === "connection_scan" && job.connection_id && !isBackfillJob(job)) {
         await this.recordFailedConnectionScan(job);
       }
       if (job.source_item_id) {
