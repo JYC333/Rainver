@@ -1761,18 +1761,42 @@ export class PgKnowledgeRepository {
       }
     }
     if (purgeable.length === 0) return { deleted: 0, retention_days: NOTE_PURGE_RETENTION_DAYS };
-    // The retention predicate stays in the DELETE: a note pulled back out of
-    // the wastebasket between the two statements must not be destroyed anyway.
-    const result = await this.db.query<{ id: string }>(
-      `DELETE FROM space_objects
-        WHERE space_id = $1 AND id = ANY($2::varchar[])
-          AND deleted_at IS NOT NULL
-          AND deleted_at < now() - ($3 || ' days')::interval
-        RETURNING id`,
-      [identity.spaceId, purgeable, String(NOTE_PURGE_RETENTION_DAYS)],
-    );
+    const deleted = await withQueryableTransaction(this.db, async (tx) => {
+      // The retention predicate is re-checked under the row lock: a note
+      // pulled back out of the wastebasket since the candidate read must not
+      // be destroyed anyway.
+      const doomed = await tx.query<{ id: string }>(
+        `SELECT id FROM space_objects
+          WHERE space_id = $1 AND id = ANY($2::varchar[])
+            AND deleted_at IS NOT NULL
+            AND deleted_at < now() - ($3 || ' days')::interval
+          FOR UPDATE`,
+        [identity.spaceId, purgeable, String(NOTE_PURGE_RETENTION_DAYS)],
+      );
+      const ids = doomed.rows.map((row) => row.id);
+      if (ids.length === 0) return 0;
+      // Relations reference space_objects without ON DELETE, so one edge to a
+      // purged note (a Thread's `references`, say) would fail the whole batch,
+      // and every later purge with it. An edge to the note goes with the note;
+      // an edge between two surviving objects only loses its provenance pointer.
+      await tx.query(
+        `DELETE FROM object_relations
+          WHERE space_id = $1 AND (from_object_id = ANY($2::varchar[]) OR to_object_id = ANY($2::varchar[]))`,
+        [identity.spaceId, ids],
+      );
+      await tx.query(
+        `UPDATE object_relations SET source_object_id = NULL, updated_at = now()
+          WHERE space_id = $1 AND source_object_id = ANY($2::varchar[])`,
+        [identity.spaceId, ids],
+      );
+      const result = await tx.query<{ id: string }>(
+        `DELETE FROM space_objects WHERE space_id = $1 AND id = ANY($2::varchar[]) RETURNING id`,
+        [identity.spaceId, ids],
+      );
+      return result.rowCount ?? result.rows.length;
+    });
     return {
-      deleted: result.rowCount ?? result.rows.length,
+      deleted,
       retention_days: NOTE_PURGE_RETENTION_DAYS,
     };
   }

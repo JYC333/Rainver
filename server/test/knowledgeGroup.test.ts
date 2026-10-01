@@ -74,6 +74,34 @@ describe("knowledgeNotePurgeDb", () => {
       expect(remaining.rows.map((row) => row.id)).toEqual([recent.id]);
     });
 
+    it("purges a note another object still has a relation to", async () => {
+      if (!db.available) return;
+      const identity = { spaceId: SPACE, userId: USER };
+      const repository = new PgKnowledgeRepository(db.pool);
+      const stale = await repository.createNote(identity, { title: "Linked, then deleted" }) as { id: string };
+      const live = await repository.createNote(identity, { title: "Still here" }) as { id: string };
+      const other = await repository.createNote(identity, { title: "Also here" }) as { id: string };
+      const insertRelation = (from: string, to: string, source: string | null) => db.pool.query<{ id: string }>(
+        `INSERT INTO object_relations (id, space_id, from_object_id, to_object_id, link_type, status, source_object_id, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,'related_to','active',$5,now(),now()) RETURNING id`,
+        [randomUUID(), SPACE, from, to, source],
+      );
+      const toStale = (await insertRelation(live.id, stale.id, null)).rows[0]!.id;
+      const derived = (await insertRelation(live.id, other.id, stale.id)).rows[0]!.id;
+      await repository.deleteNote(identity, stale.id);
+      await db.pool.query(`UPDATE space_objects SET deleted_at = now() - interval '31 days' WHERE id = $1`, [stale.id]);
+
+      expect(await repository.purgeDeletedNotes(identity)).toMatchObject({ deleted: 1 });
+
+      const relations = await db.pool.query<{ id: string; source_object_id: string | null }>(
+        `SELECT id, source_object_id FROM object_relations WHERE space_id = $1`, [SPACE],
+      );
+      // An edge to the purged note goes with it; an edge between two live
+      // objects stays and only loses the provenance pointer.
+      expect(relations.rows).toEqual([{ id: derived, source_object_id: null }]);
+      expect(relations.rows.map((row) => row.id)).not.toContain(toStale);
+    });
+
     it("never purges a note that was restored after being deleted", async () => {
       if (!db.available) return;
       const identity = { spaceId: SPACE, userId: USER };

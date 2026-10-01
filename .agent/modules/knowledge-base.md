@@ -747,4 +747,7 @@ One read and one write check, and both are the module's own.
   only at `full` (`bodyMatchSql`). A search that matched a withheld body handed
   it back a character at a time.
 - **Purge:** `purgeDeletedNotes` deletes only notes its caller could have
-  deleted themselves. It used to be Space-wide.
+  deleted themselves. It used to be Space-wide. In the same transaction it
+  deletes `object_relations` with a purged note as an endpoint and clears
+  `source_object_id` on edges that only cite one, since those foreign keys have
+  no `ON DELETE` and one surviving edge would fail every later purge.
