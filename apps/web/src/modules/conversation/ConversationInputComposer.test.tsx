@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { sha256Utf8 } from '../project_files/draftController'
 import * as React from 'react'
 import type { ConversationInputMediaOut, RuntimePromptCapabilities } from '@rainver/protocol'
 import { ConversationComposer } from './ConversationComposer'
@@ -151,6 +152,9 @@ describe('shared conversation input composer', () => {
     await waitFor(() => expect(screen.getByText('src/App.tsx')).toBeInTheDocument())
     const parts = JSON.parse(screen.getByTestId('parts').textContent ?? '[]')
     expect(parts).toMatchObject([{ kind: 'file_reference', relative_path: 'src/App.tsx', workspace_location_id: 'location-1' }])
+    // The server admits the decoded body, so the part carries the body's digest,
+    // not `file.sha256`, which hashes the bytes on disk (a BOM included).
+    expect(parts[0]).toMatchObject({ byte_size: 20, sha256: await sha256Utf8('export const App = 1') })
     expect(screen.getByLabelText('Message').parentElement).toContainElement(screen.getByLabelText('Referenced files'))
     expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled()
   })

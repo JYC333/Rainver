@@ -321,7 +321,9 @@ export function useConversationInputDraft({
       if (bytes.byteLength > CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) {
         throw new Error(`file is too large to reference (max ${formatBytes(CONVERSATION_MAX_FILE_SNAPSHOT_BYTES)})`)
       }
-      const sha256 = content.sha256 ?? await digestHex(bytes)
+      // The server admits the decoded body it freezes, so the digest is the
+      // body's: `content.sha256` hashes the bytes on disk, a BOM included.
+      const sha256 = await digestHex(bytes)
       const part: ConversationInputFileReferencePart = {
         kind: 'file_reference',
         project_folder_id: candidate.projectFolderId,

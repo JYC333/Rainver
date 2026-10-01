@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { sha256Utf8 } from '../project_files/draftController'
 import { RoomMessageComposer, emptyRoomMessageComposerValue } from './RoomMessageComposer'
 import { projectFoldersApi } from '../../api/client'
 import type { ConversationInputPart } from '@rainver/protocol'
@@ -174,7 +175,10 @@ describe('RoomMessageComposer keyboard behavior', () => {
     fireEvent.keyDown(editor, { key: 'ArrowDown', bubbles: true, cancelable: true })
     fireEvent.keyDown(editor, { key: 'Enter', bubbles: true, cancelable: true })
     await waitFor(() => expect(screen.queryByRole('option', { name: /App\.tsx/ })).not.toBeInTheDocument())
-    expect(JSON.parse(screen.getByTestId('room-input-parts').textContent ?? '[]')).toMatchObject([{ kind: 'file_reference', relative_path: 'src/App.tsx' }])
+    // The body's digest, which the server admits, not the on-disk `sha256`.
+    expect(JSON.parse(screen.getByTestId('room-input-parts').textContent ?? '[]')).toMatchObject([{
+      kind: 'file_reference', relative_path: 'src/App.tsx', sha256: await sha256Utf8('export const App = 1'),
+    }])
     expect(document.querySelector('[data-file-reference]')).toHaveTextContent('src/App.tsx')
   })
 
