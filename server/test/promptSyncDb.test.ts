@@ -289,6 +289,38 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
     expect(resolved.resolution_trace[0]).toContain("production:system");
     expect(resolved.rendered_text).toBe("rollback v1");
   });
+  it("points the system baseline only at a built-in version, never at a Space's version with the same content", async () => {
+    if (!db.available) return;
+    const assetKey = "test.space_draft_same_hash";
+    const v1Content = { schema_version: "prompt_asset.v1", prompt_type: "text", template: "baseline v1" };
+    const v2Content = { schema_version: "prompt_asset.v1", prompt_type: "text", template: "baseline v2" };
+    const v1Dir = await singleManifestCatalog(assetKey, v1Content);
+    await syncBuiltinPrompts(db.pool, v1Dir);
+    await rm(v1Dir, { recursive: true, force: true });
+    tempCatalogRoot = undefined;
+
+    // A Space admin drafts the content the next release ships.
+    const draft = await new PromptRepository(db.pool).createVersion(identity, assetKey, { content_json: v2Content });
+
+    const v2Dir = await singleManifestCatalog(assetKey, v2Content);
+    const synced = await syncBuiltinPrompts(db.pool, v2Dir);
+    expect(synced.versionsCreated).toEqual([assetKey]);
+
+    const baseline = await db.pool.query<{ id: string; space_id: string | null; source: string }>(
+      `SELECT v.id, v.space_id, v.source
+         FROM evolvable_assets a JOIN evolvable_asset_versions v ON v.id = a.current_system_version_id
+        WHERE a.asset_key = $1 AND a.space_id IS NULL`,
+      [assetKey],
+    );
+    expect(baseline.rows[0]).toMatchObject({ space_id: null, source: "built_in" });
+    expect(baseline.rows[0]?.id).not.toBe(draft.id);
+    const refs = await db.pool.query<{ version_id: string }>(
+      `SELECT d.version_id FROM prompt_deployment_refs d JOIN evolvable_assets a ON a.id = d.asset_id
+        WHERE a.asset_key = $1 AND d.scope_type = 'system' AND d.label = 'production' AND d.status = 'active'`,
+      [assetKey],
+    );
+    expect(refs.rows.map((row) => row.version_id)).toEqual([baseline.rows[0]?.id]);
+  });
 });
 
 describe("resolvePrompt (real Postgres)", () => {
