@@ -23,6 +23,7 @@ import {
   requiredString,
   type Queryable,
   type SpaceUserIdentity,
+  withQueryableTransaction,
 } from "../../routeUtils/common.js";
 import { normalizeThreadScope, checkPinnedThreadDrift } from "../../projectResearch/threadScope.js";
 import {
@@ -74,6 +75,7 @@ import {
   type SourcePostProcessingRunOut,
   type SourcePostProcessingTriggerConfig,
   type SourcePostProcessingTriggerType,
+  bestEffortStep,
 } from "./repository.js";
 import { ProjectResearchAreaService } from "../../projectResearch/areaService.js";
 import { resolveProjectResearchEvidenceCardPrompt } from "../../projectResearch/promptRegistry.js";
@@ -1115,32 +1117,39 @@ export class SourcePostProcessingService {
         retrievalContextRefs(retrievalContext),
       );
       result.item_decisions = mergeSyntheticItemDecisions(result.item_decisions, prefilter.syntheticDecisions);
-      const materialized = await this.materializeOutputs({
-        triggerType: input.triggerType,
-        sourceChannelId: input.sourceChannelId,
-        connection: input.connection,
-        rule: input.rule,
-        postProcessingRunId: postRun.id,
-        agentRun,
-        actorUserId: input.actorUserId,
-        items: batch.items,
-        evidence: batch.evidence,
-        actions: input.actions,
-        inputConfig: input.inputConfig,
-        cursorBefore: batch.cursorBefore,
-        cursorAfter: batch.cursorAfter,
-        retrievalContext,
-        result,
-        evidenceCardPromptHash,
-      });
-      if (input.rule && input.inputConfig.window !== "explicit") {
-        await repo.advanceRuleCursor({
-          spaceId: input.rule.space_id,
-          ruleId: input.rule.id,
-          cursor: batch.cursorAfter,
+      // A run's outputs and its cursor advance commit together: a step that
+      // fails part-way must not leave a digest or Evidence behind for a batch
+      // the cursor will hand to the next run again.
+      const materialized = await withQueryableTransaction(this.db, async (db) => {
+        const outputs = await new SourcePostProcessingService(db, this.config).materializeOutputs({
+          triggerType: input.triggerType,
+          sourceChannelId: input.sourceChannelId,
+          connection: input.connection,
+          rule: input.rule,
+          postProcessingRunId: postRun.id,
+          agentRun,
+          actorUserId: input.actorUserId,
+          items: batch.items,
+          evidence: batch.evidence,
+          actions: input.actions,
+          inputConfig: input.inputConfig,
+          cursorBefore: batch.cursorBefore,
+          cursorAfter: batch.cursorAfter,
+          retrievalContext,
+          result,
+          evidenceCardPromptHash,
         });
-        await repo.recordRuleFire(input.rule.space_id, input.rule.id);
-      }
+        if (input.rule && input.inputConfig.window !== "explicit") {
+          const txRepo = new PgSourcePostProcessingRepository(db);
+          await txRepo.advanceRuleCursor({
+            spaceId: input.rule.space_id,
+            ruleId: input.rule.id,
+            cursor: batch.cursorAfter,
+          });
+          await txRepo.recordRuleFire(input.rule.space_id, input.rule.id);
+        }
+        return outputs;
+      });
       return repo.markRunFinished({
         runId: postRun.id,
         spaceId: input.connection.space_id,
@@ -1730,6 +1739,7 @@ export class SourcePostProcessingService {
       }
     }
     if (input.inputConfig.deep_analysis.enabled && input.rule) {
+      const rule = input.rule;
       const deepConfig = input.inputConfig.deep_analysis;
       const candidateItemIds = input.result.item_decisions
         .filter((decision) => deepConfig.trigger_relevance.includes(decision.relevance as "relevant" | "maybe"))
@@ -1738,14 +1748,14 @@ export class SourcePostProcessingService {
         .filter((id) => itemById.has(id))
         .slice(0, deepConfig.max_candidates_per_run);
       const uniqueCandidateItemIds = [...new Set(candidateItemIds)];
-      try {
+      await bestEffortStep(this.db, "source_deep_analysis_followup", async () => {
         const alreadyExtracted = await repo.loadExtractedTextSnippets(input.connection.space_id, uniqueCandidateItemIds, 1);
         const readyItemIds = uniqueCandidateItemIds.filter((id) => alreadyExtracted.has(id));
         if (readyItemIds.length > 0) {
           const followUp = await this.enqueueDeepAnalysisFollowUp({
             spaceId: input.connection.space_id,
             sourceChannelId: input.sourceChannelId,
-            ruleId: input.rule.id,
+            ruleId: rule.id,
             itemIds: readyItemIds,
             sourceRunId: input.postProcessingRunId,
             userId: input.actorUserId,
@@ -1762,16 +1772,16 @@ export class SourcePostProcessingService {
             source_post_processing_followups: [{
               phase: "deep_analysis",
               source_post_processing_run_id: input.postProcessingRunId,
-              source_post_processing_rule_id: input.rule.id,
+              source_post_processing_rule_id: rule.id,
               triggered_by_user_id: input.actorUserId,
               trigger_type: input.triggerType,
               content_source: deepConfig.content_source,
             }],
           },
         }));
-      } catch (error) {
+      }, (error) => {
         if (input.inputConfig.deep_analysis.content_source === "require_extracted_text") throw error;
-      }
+      });
     }
     if (input.actions.create_proposals) {
       const proposalMarkdown = input.result.proposal_markdown ?? input.result.digest_markdown;

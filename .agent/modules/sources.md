@@ -594,7 +594,9 @@ owns that job, the rule cursor, and the run audit rows:
   providers, fails the post-processing run before source content leaves Sources.
 - Post-processing agent output is consumed as structured
   `source_post_processing.result.v1`; invalid structure fails the run and does
-  not advance the rule cursor. `item_decisions_json` records
+  not advance the rule cursor. A run's outputs (digest and summary artifacts,
+  Evidence, follow-up jobs, proposals, item decisions) and its cursor advance
+  commit in one transaction, so a run that fails part-way leaves none of them. `item_decisions_json` records
   `relevant`/`maybe`/`not_relevant` decisions. Relevance lives in
   `source_post_processing_item_decisions`; item reading state lives per user in
   `source_item_user_states`. List/get/action on those decisions reuses

@@ -15,7 +15,7 @@ import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositor
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { SourcePostProcessingService } from "../src/modules/sources/postProcessing/service.js";
 import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { seedMainlineRoomsForAllProjects, seedRun } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -583,6 +583,58 @@ describe("source post-processing repository (real Postgres)", () => {
     await repo().advanceRuleCursor({ spaceId: SPACE, ruleId: rule.id, cursor: null });
     const afterEmptyRun = await repo().backlog(SPACE, CONNECTION);
     expect(afterEmptyRun.rules.find((row) => row.rule_id === rule.id)?.pending_item_count).toBe(0);
+  });
+
+  it("writes nothing from a run that fails part-way through its outputs", async () => {
+    if (!db.available) return;
+    const item = await seedItem("Relevant paper", "2026-07-01T00:00:00.000Z");
+    // Deep analysis needs extracted text, which this source's retention policy
+    // refuses, so queueing it fails after the digest has been written.
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: null,
+      name: "Digest with deep analysis",
+      triggerType: "manual",
+      triggerConfig: normalizeTriggerConfig(null, "manual"),
+      inputConfig: normalizeInputConfig({
+        deep_analysis: { enabled: true, content_source: "require_extracted_text", trigger_relevance: ["relevant"], min_confidence: 0 },
+      }),
+      actions: normalizeActions({ batch_digest: true }),
+      createdByUserId: OWNER,
+    });
+    const agentRunId = randomUUID();
+    await seedRun(db.pool, { id: agentRunId, space: SPACE, owner: OWNER, agent: randomUUID(), version: randomUUID() });
+    await db.pool.query(
+      `UPDATE runs SET status = 'succeeded', output_json = $2::jsonb WHERE id = $1`,
+      [agentRunId, JSON.stringify({
+        schema_version: "run_output.v1",
+        result: {
+          output_text: JSON.stringify({
+            schema: "source_post_processing.result.v1",
+            digest_markdown: "# Digest",
+            item_decisions: [{ source_item_id: item, relevance: "relevant", confidence: 0.9, reason: "Match.", matched_context_refs: [] }],
+          }),
+        },
+      })],
+    );
+    const agentRun = (await db.pool.query(`SELECT * FROM runs WHERE id = $1`, [agentRunId])).rows[0];
+    const execute = vi.spyOn(
+      SourcePostProcessingService.prototype as unknown as { createAndExecuteAgentRun: () => Promise<unknown> },
+      "createAndExecuteAgentRun",
+    ).mockImplementation(async () => agentRun);
+    try {
+      const service = new SourcePostProcessingService(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+      const run = await service.runRuleNow({ spaceId: SPACE, userId: OWNER }, CONNECTION, rule.id);
+      expect(run.status).toBe("failed");
+    } finally {
+      execute.mockRestore();
+    }
+
+    const digests = await db.pool.query(`SELECT id FROM artifacts WHERE run_id = $1`, [agentRunId]);
+    expect(digests.rows).toEqual([]);
+    expect((await repo().getRule(SPACE, rule.id))?.cursor_json ?? null).toBeNull();
   });
 
   it("runs a time-window rule once per drain, since its batch does not move", async () => {
