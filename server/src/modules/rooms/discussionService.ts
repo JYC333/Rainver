@@ -406,7 +406,10 @@ export class RoomDiscussionService {
     if (!loaded?.room_id || !loaded.session_id || !loaded.trigger_message_id) return;
     // A group's turn advances once, whichever completion, retry or release
     // reaches it first; a repeat would announce, merge or dispatch again.
-    if (loaded.advanced_at) return;
+    if (loaded.advanced_at) {
+      if (loaded.discussion_id && !loaded.closing) await this.closeStoppedAfterAdvance(client, spaceId, loaded.discussion_id, loaded.wave);
+      return;
+    }
     // A delegation result inside a discussion is stamped with its source's
     // wave: that wave advances once, from the group that dispatched it, over
     // the replies of every group in it.
@@ -762,6 +765,25 @@ export class RoomDiscussionService {
       return;
     }
     await this.dispatchClosing(client, ended, wave);
+  }
+
+  /**
+   * A discussion stopped after its last wave had already advanced — a person's
+   * ordinary message took that wave boundary, so no wave is left to end it —
+   * still gets the closing turn, and the Agents it held are named.
+   */
+  private async closeStoppedAfterAdvance(client: PoolClient, spaceId: string, discussionId: string, wave: number): Promise<void> {
+    const discussions = new PgRoomDiscussionRepository(client);
+    const discussion = await discussions.get(spaceId, discussionId, { forUpdate: true });
+    // Only the newest wave stands for the discussion; an older one was
+    // superseded when the next wave went out.
+    if (discussion?.status !== "stopped" || wave + 1 < discussion.rounds_used) return;
+    if (!await hasClosingTurn(client, spaceId, discussion)) await this.dispatchClosing(client, discussion, wave);
+    if (discussion.shape !== "debate" && discussion.held_mentions.length > 0) {
+      await this.unheard(client, discussion, await this.roster(client, discussion), discussion.held_mentions, wave,
+        "the discussion had already ended");
+      await discussions.update(spaceId, discussion.id, { heldMentions: [] });
+    }
   }
 
   private async dispatchClosing(client: PoolClient, discussion: DiscussionRecord, wave: number): Promise<void> {

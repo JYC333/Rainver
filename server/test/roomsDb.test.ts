@@ -3076,6 +3076,35 @@ describe("Room workflow (real Postgres)", () => {
       expect(await discussionFor(conversation.id)).toMatchObject({ status: "active", round_base: 0, rounds_used: 1 });
     });
 
+    it("closes a discussion stopped after an ordinary interjection took its wave boundary", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation, manager } = await roomWithSpecialist("Stop after interjection");
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      const opened = await discussions.open(owner, created.room.id, conversation.id, {
+        topic: "Plan the migration", participant_agent_ids: ["agent-2"], shape: "open", round_cap: 2,
+      });
+      await service.sendOrQueueMessage(owner, created.room.id, conversation.id, { content: "Unrelated question." });
+      await completeTurn(opened.run_ids[0]!, `@${manager} size the downtime.`);
+      const [ordinaryTurn] = await queuedRunsFor(conversation.id, "agent-1");
+      expect(ordinaryTurn).toMatchObject({ discussion_id: null });
+      await completeTurn(ordinaryTurn!.id, "Answered.");
+      expect((await discussionFor(conversation.id))!.held_mentions_json.map((held) => held.agent_id)).toEqual(["agent-1"]);
+
+      await discussions.stop(owner, created.room.id, conversation.id, opened.discussion.id);
+
+      const [closing] = await queuedRunsFor(conversation.id, "agent-1");
+      expect(closing).toMatchObject({ discussion_id: opened.discussion.id });
+      const stopped = await discussionFor(conversation.id);
+      expect(stopped).toMatchObject({ status: "stopped" });
+      expect(stopped!.held_mentions_json).toEqual([]);
+      const notices = await db.pool.query<{ kind: string; agent_ids: string[] }>(
+        `SELECT metadata_json->'discussion_notice'->>'kind' AS kind, metadata_json->'discussion_notice'->'agent_ids' AS agent_ids
+           FROM messages WHERE discussion_id = $1 AND metadata_json->'discussion_notice'->>'kind' = 'not_admitted'`,
+        [opened.discussion.id],
+      );
+      expect(notices.rows).toEqual([{ kind: "not_admitted", agent_ids: ["agent-1"] }]);
+    });
+
     it("keeps an explicit discussion reply queued while its wave waits for quota", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation, manager } = await roomWithSpecialist("Joined reply past quota hold");

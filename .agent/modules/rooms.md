@@ -1214,7 +1214,10 @@ window's reset time has passed, and otherwise refreshes the marker (and says
 so again) when the window holding it or its reset time changed; and a delegated
 child's FIFO re-evaluating its head, which admits it the same way. Stopping a
 discussion does not cancel a held wave, which runs after admission and then
-closes it; the Agents it held are named in its "already ended" notice.
+closes it; the Agents it held are named in its "already ended" notice. A
+discussion stopped after an ordinary message took its last wave boundary has no
+wave left to end it, so the stop itself dispatches the closing turn and names the
+Agents held behind that message.
 Stopping a discussion held at its cap ends it for good: the rounds on offer
 are given up and a closing turn still waiting for the window is cancelled, so
 no conclusion arrives hours later; a person who wants one asks for it.
