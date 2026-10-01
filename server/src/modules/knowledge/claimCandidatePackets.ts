@@ -86,6 +86,25 @@ export async function createClaimCandidatePacketFromArtifacts(
   if (rows.length !== artifactIds.length) {
     throw new HttpError(404, "source artifact not found or not visible");
   }
+  // An equivalent packet already pending review is the answer, before any
+  // new packet artifact is written: a repeat request must not leave an
+  // orphaned artifact behind, nor answer with an artifact the returned
+  // proposal does not point at.
+  const lineageKey = claimCandidateLineageKey(input.spaceId, rows);
+  const existing = await lookupExistingPendingPacket(
+    db, input.spaceId, CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE, lineageKey,
+    { createdByUserId: ownerUserId, visibility: visibilityForReviewScope(input.request.review_scope) },
+  );
+  if (existing) {
+    const candidates = Array.isArray(existing.payload_json.candidates) ? existing.payload_json.candidates : [];
+    return {
+      artifactId: stringValue(existing.payload_json.packet_artifact_id) ?? "",
+      proposalId: existing.id,
+      candidateCount: candidates.length,
+      sourceArtifactCount: rows.length,
+      generatedChildProposalCount: 0,
+    };
+  }
   const candidates = await buildCandidates(db, input.spaceId, rows, input.request.max_candidates);
   const artifactId = await persistClaimCandidatePacketArtifact(db, {
     spaceId: input.spaceId,
@@ -101,6 +120,7 @@ export async function createClaimCandidatePacketFromArtifacts(
     sourceArtifacts: rows,
     candidates,
     reviewScope: input.request.review_scope,
+    lineageKey,
   });
   return {
     artifactId,
@@ -969,14 +989,10 @@ async function createClaimCandidatePacketProposal(
     sourceArtifacts: readonly SourceArtifactRow[];
     candidates: readonly ClaimCandidateAction[];
     reviewScope: ReviewScope;
+    lineageKey: string;
   },
 ): Promise<string> {
-  const lineageKey = claimCandidateLineageKey(input.spaceId, input.sourceArtifacts);
-  const existing = await lookupExistingPendingPacket(
-    db, input.spaceId, CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE, lineageKey,
-  );
-  if (existing) return existing;
-  const payload = packetProposalPayload(input, lineageKey);
+  const payload = packetProposalPayload(input, input.lineageKey);
   return (await insertProposalRow(db, {
     spaceId: input.spaceId,
     proposalType: CLAIM_CANDIDATE_PACKET_PROPOSAL_TYPE,

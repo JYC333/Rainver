@@ -278,9 +278,9 @@ describe("retrievalMaintenancePersistence", () => {
 
       expect(proposalId).toMatch(/[0-9a-f-]{36}/);
       const artifactParams = db.calls[0]!.params;
-      // db.calls[1] is createRetrievalMaintenanceProposalPacket's internal
-      // lineage-key dedup lookup (a SELECT); the INSERT is [2].
-      const proposalParams = db.calls[2]!.params;
+      // db.calls[1] and [2] are createRetrievalMaintenanceProposalPacket's
+      // internal lineage lock and dedup lookup; the INSERT is [3].
+      const proposalParams = db.calls[3]!.params;
       expect(artifactParams[2]).toBeNull();
       expect(proposalParams[2]).toBeNull();
       expect(JSON.parse(String(artifactParams[13]))).toMatchObject({ automation_run_id: "automation-run-1" });
@@ -298,9 +298,9 @@ describe("retrievalMaintenancePersistence", () => {
       });
 
       expect(proposalId).toMatch(/[0-9a-f-]{36}/);
-      // db.calls[0] is the internal lineage-key dedup lookup (a SELECT).
-      expect(db.calls).toHaveLength(2);
-      const params = db.calls[1]!.params;
+      // db.calls[0] and [1] are the internal lineage lock and dedup lookup.
+      expect(db.calls).toHaveLength(3);
+      const params = db.calls[2]!.params;
       expect(params[1]).toBe("space-1");
       expect(params[3]).toBe(RETRIEVAL_MAINTENANCE_PACKET_PROPOSAL_TYPE);
       expect(params[14]).toBe("user-1");

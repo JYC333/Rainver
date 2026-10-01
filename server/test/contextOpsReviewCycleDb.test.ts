@@ -7,6 +7,12 @@ import { persistRetrievalBriefArtifact } from "../src/modules/retrieval/artifact
 import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
+import { createClaimCandidatePacketFromArtifacts } from "../src/modules/knowledge/claimCandidatePackets.js";
+import {
+  createRetrievalMaintenanceProposalPacket,
+  persistRetrievalMaintenanceReportArtifact,
+} from "../src/modules/retrieval/maintenance/artifacts.js";
+import type { MaintenanceReport } from "../src/modules/retrieval/maintenance/service.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -211,5 +217,62 @@ describe("Context Review Cycle (real Postgres)", () => {
     const relationRows = await db.pool.query<{ n: string }>(`SELECT count(*) AS n FROM object_relations WHERE space_id = $1`, [SPACE]);
     expect(claimRows.rows[0]!.n).toBe("0");
     expect(relationRows.rows[0]!.n).toBe("0");
+  });
+
+  it("answers a repeated Claim Candidate Packet request with the pending packet and its own artifact", async () => {
+    if (!db.available) return;
+    const briefArtifactId = await seedRecentBrief();
+    const create = () => createClaimCandidatePacketFromArtifacts(db.pool, {
+      spaceId: SPACE,
+      ownerUserId: USER,
+      request: {
+        source_artifact_ids: [briefArtifactId], review_scope: "private", max_candidates: 40, promote_private_sources_to_space_ops: false,
+      },
+    });
+
+    const first = await create();
+    const repeat = await create();
+
+    expect(repeat).toEqual(first);
+    const packets = await db.pool.query<{ n: string }>(
+      `SELECT count(*) AS n FROM artifacts WHERE space_id = $1 AND artifact_type = 'claim_candidate_packet'`,
+      [SPACE],
+    );
+    expect(packets.rows[0]!.n).toBe("1");
+  });
+
+  it("gives each person their own pending maintenance packet for the same day and source", async () => {
+    if (!db.available) return;
+    const other = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Admin', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+      [other],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES ('context-review-admin', $1, $2, 'admin', 'active', now(), now())`,
+      [SPACE, other],
+    );
+    const report = {
+      findings: [], counts: {} as MaintenanceReport["counts"], scanned: 0, truncated: false,
+    } satisfies MaintenanceReport;
+    const packetFor = async (ownerUserId: string) => {
+      const input = { spaceId: SPACE, ownerUserId, report, source: "knowledge_retrieval_maintenance" };
+      const artifactId = await persistRetrievalMaintenanceReportArtifact(db.pool, input);
+      return createRetrievalMaintenanceProposalPacket(db.pool, { ...input, artifactId });
+    };
+
+    const mine = await packetFor(USER);
+    const theirs = await packetFor(other);
+    const mineAgain = await packetFor(USER);
+
+    expect(theirs).not.toBe(mine);
+    expect(mineAgain).toBe(mine);
+    const owners = await db.pool.query<{ id: string; created_by_user_id: string }>(
+      `SELECT id, created_by_user_id FROM proposals WHERE id = $1`,
+      [theirs],
+    );
+    expect(owners.rows[0]?.created_by_user_id).toBe(other);
   });
 });
