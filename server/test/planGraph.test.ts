@@ -5,6 +5,8 @@ import {
   evaluatePlanAtomicity,
   materializePlanGraph,
 } from "../src/modules/plans/graph.js";
+import { verifyIntegrationNode } from "../src/modules/plans/integrationVerification.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 
 function definition(overrides: Record<string, unknown> = {}) {
   return {
@@ -109,5 +111,38 @@ describe("agent plan graph", () => {
     }));
     const graph = await materializePlanGraph(definition({ nodes }));
     expect(decidePlanApproval(graph, { budgetCap: 100 }).reasons).toContain("node_count_exceeds_cap");
+  });
+});
+
+describe("integration node verification", () => {
+  function dependencyRows(rows: Array<Record<string, unknown>>): Queryable {
+    return {
+      async query() {
+        return { rows: rows.map((row) => ({
+          run_id: null, outcome_status: null, output_json: null, required_outputs_json: null,
+          verification_passed: false, verification_count: 0, ...row,
+        })), rowCount: rows.length } as never;
+      },
+    };
+  }
+
+  it("accepts a done approval checkpoint or integration dependency, which never has a Run", async () => {
+    // A -> checkpoint -> integration is a valid graph; the root verification
+    // already exempts these kinds, and an integration node failing on them
+    // failed the whole Plan after every piece of work had succeeded.
+    const client = dependencyRows([
+      { node_id: "checkpoint", node_key: "checkpoint", node_kind: "approval_checkpoint", status: "done" },
+      { node_id: "merge", node_key: "merge", node_kind: "integration", status: "done" },
+    ]);
+    await expect(verifyIntegrationNode(client, "space-1", "final", ["checkpoint", "merge"]))
+      .resolves.toMatchObject({ status: "passed" });
+  });
+
+  it("still fails a checkpoint dependency that is not done", async () => {
+    const client = dependencyRows([
+      { node_id: "checkpoint", node_key: "checkpoint", node_kind: "approval_checkpoint", status: "waiting_for_review" },
+    ]);
+    await expect(verifyIntegrationNode(client, "space-1", "final", ["checkpoint"]))
+      .resolves.toMatchObject({ status: "failed" });
   });
 });

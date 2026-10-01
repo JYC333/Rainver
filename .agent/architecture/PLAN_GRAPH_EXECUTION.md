@@ -106,6 +106,10 @@ without changing its version because there is no deployed compatibility boundary
 
 Plan reconciliation schedules newly-ready nodes, verifies integration nodes,
 and completes the coordinator only after dependency and output checks pass.
+An integration node requires each dependency to be done; a Run-backed
+dependency must also have a passed evaluation and valid outputs, while an
+approval checkpoint or integration dependency has no Run and needs only to be
+done.
 Retries are represented by new Run attempts/finalizations while preserving the
 same node-to-Run relation.
 

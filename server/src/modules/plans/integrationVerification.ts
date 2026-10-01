@@ -44,9 +44,13 @@ export async function verifyIntegrationNode(
   }
   const result = await client.query<PlanNodeOutputRow>(nodeQuery("n.id = ANY($2::varchar[])"), [spaceId, dependencyNodeIds]);
   const validations = await validateRows(client, spaceId, result.rows);
+  // A checkpoint or integration dependency has no Run to evaluate: being done
+  // is its whole result, as `child_evaluations_passed` treats it below.
   const failed = result.rows.filter((row) => {
     const validation = validations.get(row.node_id);
-    return row.status !== "done" || row.outcome_status !== "passed" || !validation?.valid;
+    if (row.status !== "done") return true;
+    if (isNonOutputNode(row.node_kind)) return false;
+    return row.outcome_status !== "passed" || !validation?.valid;
   });
   const passed = result.rows.length === dependencyNodeIds.length && failed.length === 0;
   return {
