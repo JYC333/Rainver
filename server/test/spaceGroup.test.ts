@@ -7,7 +7,8 @@ import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { knowledgeRetrievalAdapter } from "../src/modules/knowledge/retrievalAdapter.js";
 import { PgAnnotationRepository, PgCommentRepository, PgReaderRepository } from "../src/modules/reader/repository.js";
 import { seedSpaceDefaults } from "../src/modules/spaces/spaceSeeds.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { seedMainlineRoomsForAllProjects, seedRun, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { PgFrontendSupportService } from "../src/modules/frontendSupport/service.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -311,5 +312,61 @@ describe("spaceObjectContentAccessDb", () => {
       expect((await annotations.listAnnotations(owner, "research_notebook", note.id))[0])
         .toMatchObject({ quote_text: "Margin", label: "MY PRIVATE LABEL" });
     });
+  });
+});
+
+describe("meSummaryDb", () => {
+  const SPACE = "44444444-4444-4444-8444-444444444444";
+  const OWNER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const PROJECT = "55555555-5555-4555-8555-555555555555";
+  const AGENT = "66666666-6666-4666-8666-666666666666";
+  const VERSION = "77777777-7777-4777-8777-777777777777";
+
+  const db = useTestDatabase(`${import.meta.filename}#meSummaryDb`, { max: 2 });
+
+  it("counts each Space's pending proposals, assigned tasks and failed runs independently", async () => {
+    await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
+    for (let index = 0; index < 3; index += 1) {
+      await db.pool.query(
+        `INSERT INTO proposals (id, space_id, proposal_type, status, risk_level, urgency, title, payload_json,
+                                visibility, owner_user_id, created_at, updated_at)
+         VALUES ($1,$2,'memory_create','pending','low','normal','p','{}'::jsonb,'space_shared',$3,now(),now())`,
+        [randomUUID(), SPACE, OWNER],
+      );
+    }
+    for (let index = 0; index < 2; index += 1) {
+      await db.pool.query(
+        `INSERT INTO tasks (id, space_id, project_id, title, status, created_by_user_id, owner_user_id,
+                            assigned_user_id, created_at, updated_at)
+         VALUES ($1,$2,$3,'t','ready',$4,$4,$4,now(),now())`,
+        [randomUUID(), SPACE, PROJECT, OWNER],
+      );
+    }
+    const runIds = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    await seedRun(db.pool, { id: runIds[0]!, space: SPACE, owner: OWNER, agent: AGENT, version: VERSION });
+    for (const runId of runIds.slice(1)) {
+      await db.pool.query(
+        `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+                           runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+                           owner_user_id, visibility, created_at, updated_at, execution_kind)
+         SELECT $1, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+                runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+                owner_user_id, visibility, created_at, updated_at, execution_kind
+           FROM runs WHERE id = $2`,
+        [runId, runIds[0]],
+      );
+    }
+    await db.pool.query(`UPDATE runs SET status = 'failed' WHERE space_id = $1`, [SPACE]);
+
+    const summary = await new PgFrontendSupportService(db.pool).meSummary(OWNER, {});
+
+    expect(summary.spaces).toEqual([
+      expect.objectContaining({
+        space_id: SPACE,
+        pending_proposals_count: 3,
+        assigned_tasks_count: 2,
+        recent_failed_runs_count: 4,
+      }),
+    ]);
   });
 });

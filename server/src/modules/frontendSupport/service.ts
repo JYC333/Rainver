@@ -637,27 +637,35 @@ export class PgFrontendSupportService {
       assigned_tasks_count: string | number;
       recent_failed_runs_count: string | number;
     }>(
+      // One scalar count per Space and table. Joining proposals, tasks and
+      // runs side by side multiplies them into |P|x|T|x|R| rows per Space,
+      // each evaluating the read predicates, before DISTINCT folds them back.
       `SELECT s.id AS space_id,
               s.name,
               s.type,
-              count(DISTINCT p.id) FILTER (WHERE p.status = 'pending' AND ${proposalReadSql("$1")})::text AS pending_proposals_count,
-              count(DISTINCT t.id) FILTER (WHERE t.deleted_at IS NULL AND t.assigned_user_id = $1)::text AS assigned_tasks_count,
-              count(DISTINCT r.id) FILTER (
-                WHERE r.status = 'failed'
+              (SELECT count(*)
+                 FROM proposals p
+                 LEFT JOIN runs run_for_instructed
+                   ON run_for_instructed.id = p.created_by_run_id
+                  AND run_for_instructed.space_id = p.space_id
+                WHERE p.space_id = s.id
+                  AND p.status = 'pending'
+                  AND ${proposalReadSql("$1")})::text AS pending_proposals_count,
+              (SELECT count(*)
+                 FROM tasks t
+                WHERE t.space_id = s.id
+                  AND t.deleted_at IS NULL
+                  AND t.assigned_user_id = $1)::text AS assigned_tasks_count,
+              (SELECT count(*)
+                 FROM runs r
+                WHERE r.space_id = s.id
+                  AND r.status = 'failed'
                   AND r.created_at >= now() - interval '7 days'
-                  AND ${runReadSql("$1")}
-              )::text AS recent_failed_runs_count
+                  AND ${runReadSql("$1")})::text AS recent_failed_runs_count
          FROM space_memberships sm
          JOIN spaces s ON s.id = sm.space_id
-         LEFT JOIN proposals p ON p.space_id = sm.space_id
-         LEFT JOIN runs run_for_instructed
-           ON run_for_instructed.id = p.created_by_run_id
-          AND run_for_instructed.space_id = p.space_id
-         LEFT JOIN tasks t ON t.space_id = sm.space_id
-         LEFT JOIN runs r ON r.space_id = sm.space_id
         WHERE sm.user_id = $1
           AND sm.status = 'active'
-        GROUP BY s.id, s.name, s.type
         ORDER BY s.type ASC, s.name ASC, s.id ASC`,
       [userId],
     );
