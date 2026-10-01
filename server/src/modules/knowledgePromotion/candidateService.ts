@@ -450,7 +450,7 @@ export class KnowledgePromotionCandidateService {
     const now = new Date().toISOString();
     const row = await this.db.query<CandidateRow>(
       `UPDATE knowledge_promotion_candidates
-          SET status='pending', decided_by_user_id=NULL, decided_at=NULL, updated_at=$4
+          SET status='pending', review_packet_id=NULL, decided_by_user_id=NULL, decided_at=NULL, updated_at=$4
         WHERE id=$1 AND space_id=$2 AND project_id=$3 AND status='deferred'
           AND (visibility='space_shared' OR owner_user_id=$5)
       RETURNING *`,

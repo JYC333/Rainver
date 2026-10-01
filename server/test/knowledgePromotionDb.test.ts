@@ -549,4 +549,20 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     expect((await candidates.reopenCandidate(identity, PROJECT, first.id)).status).toBe("pending");
     await candidates.closeReviewPacket(identity, PROJECT, packet.id);
   });
+
+  it("offers a Candidate reopened after its packet closed in the next packet", async () => {
+    if (!db.available) return;
+    const noteId = await seedNote(["Only block."]);
+    const candidates = new KnowledgePromotionCandidateService(db.pool);
+    const candidate = await candidates.createFromNote(identity, PROJECT, {
+      note_id: noteId, block_anchors: [0], candidate_kind: "summary", proposed_title: "t", proposed_content: "c",
+    });
+    const packet = await candidates.openReviewPacket(identity, PROJECT, 10) as { id: string };
+    await candidates.decideCandidate(identity, PROJECT, candidate.id as string, { decision: "defer" });
+    await candidates.closeReviewPacket(identity, PROJECT, packet.id);
+
+    await candidates.reopenCandidate(identity, PROJECT, candidate.id as string);
+    const next = await candidates.openReviewPacket(identity, PROJECT, 10) as { candidates: Array<{ id: string }> };
+    expect(next.candidates.map((entry) => entry.id)).toEqual([candidate.id]);
+  });
 });
