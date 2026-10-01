@@ -227,11 +227,17 @@ export class PgDailyReportSettingsRepository {
     );
   }
 
+  /**
+   * Records a finished report without touching the schedule cursor: only the
+   * scheduler's slot advance and a settings change move `next_run_at`. A
+   * report finishing after either must not write back the schedule it began
+   * with (a manual run would disable a schedule enabled meanwhile, and a
+   * catch-up run would skip the slots still owed).
+   */
   async recordReportCompleted(
     spaceId: string,
     userId: string,
     localDate: string,
-    nextRunAt: string | null,
     completedAt: string = new Date().toISOString(),
   ): Promise<void> {
     const existing = await this.getSchedulerTask(spaceId, userId);
@@ -242,7 +248,7 @@ export class PgDailyReportSettingsRepository {
       scopeId: dailyReportSettingsScopeId(spaceId, userId),
       spaceId,
       userId,
-      nextRunAt,
+      keepNextRunAt: true,
       lastRunAt: completedAt,
       stateJson: {
         ...(existing?.state_json ?? {}),

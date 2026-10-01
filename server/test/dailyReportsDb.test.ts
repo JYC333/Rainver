@@ -48,3 +48,19 @@ describe("daily capture report Run ownership", () => {
     expect(second.run_id).toBeNull();
   });
 });
+
+describe("daily capture report schedule", () => {
+  it("keeps the schedule cursor when a report finishes", async () => {
+    if (!db.available) return;
+    const settings = new PgDailyReportSettingsRepository(db.pool);
+    await settings.getOrCreate(SPACE, OWNER);
+    // Enabled while a report that began with the schedule off was running.
+    const enabled = await settings.update(SPACE, OWNER, { enabled: true, local_time: "09:00", timezone: "UTC" });
+    expect(enabled.next_run_at).not.toBeNull();
+
+    await settings.recordReportCompleted(SPACE, OWNER, "2026-09-10", "2026-09-10T12:00:00.000Z");
+
+    const after = await settings.get(SPACE, OWNER);
+    expect(after).toMatchObject({ next_run_at: enabled.next_run_at, last_report_date: "2026-09-10" });
+  });
+});

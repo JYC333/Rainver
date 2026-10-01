@@ -16,7 +16,6 @@ import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import {
   assertValidLocalDate,
   assertValidTimezone,
-  computeInitialNextRunAt,
   localDayUtcBounds,
   PgDailyReportSettingsRepository,
 } from "./repository.js";
@@ -438,12 +437,10 @@ export class DailyCaptureReportService {
       }),
       completed_at: endedAt,
     });
-    const nextRunAt = computeInitialNextRunAt(input.setting, new Date(endedAt));
     await new PgDailyReportSettingsRepository(db).recordReportCompleted(
       input.spaceId,
       input.userId,
       input.localDate,
-      nextRunAt,
       endedAt,
     );
 
