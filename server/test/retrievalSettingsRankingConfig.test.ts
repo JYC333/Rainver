@@ -56,7 +56,7 @@ function storageRow(settings: Record<string, unknown>) {
 }
 
 class FakeDb {
-  constructor(private readonly artifact: Record<string, unknown> | null) {}
+  constructor(public artifact: Record<string, unknown> | null) {}
   current: Record<string, unknown> = settingsJson();
 
   async query<Row = Record<string, unknown>>(
@@ -65,7 +65,12 @@ class FakeDb {
   ): Promise<{ rows: Row[]; rowCount: number | null }> {
     const norm = sql.replace(/\s+/g, " ").trim();
     if (norm.startsWith("INSERT INTO settings")) {
-      this.current = JSON.parse(String(params[4] ?? "{}")) as Record<string, unknown>;
+      // Only an upsert of the retrieval settings row itself is stored: the
+      // create-if-missing insert does nothing on conflict, and the
+      // egress-generation counter is another settings key.
+      if (params[3] === "retrieval.space.settings" && norm.includes("DO UPDATE")) {
+        this.current = JSON.parse(String(params[4] ?? "{}")) as Record<string, unknown>;
+      }
       return norm.includes("RETURNING")
         ? { rows: [storageRow(this.current)] as Row[], rowCount: 1 }
         : { rows: [] as Row[], rowCount: 0 };
@@ -179,5 +184,46 @@ describe("space retrieval ranking config", () => {
         },
       },
     }, { actorUserId: "user-1" })).rejects.toThrow(/calibration artifact not found/);
+  });
+
+  it("applies an unrelated settings change after a shipped mechanic's calibration artifact stops being visible", async () => {
+    const db = new FakeDb({
+      metadata_json: {
+        decisions: [{
+          mechanic: "visible_edge_backlink",
+          decision: "adopt",
+          evidence_artifact_ids: ["artifact-eval"],
+          eval_delta: { recall_at_10: 0.03 },
+        }],
+      },
+      owner_user_id: "user-1",
+      visibility: "space_shared",
+    });
+    const disabled = { state: "disabled", calibration_artifact_id: null, shipped_at: null, eval_gate: { status: "not_run", metric: null, value: null, threshold: 0, checked_at: null } } as const;
+    await updateSpaceRetrievalSettings(db, "space-1", {
+      ranking_config: {
+        version: 1,
+        eval_gate: { min_primary_metric_delta: 0.01, required_evidence_artifacts: 1 },
+        mechanics: {
+          visible_edge_backlink: {
+            state: "shipped",
+            calibration_artifact_id: "artifact-calibration",
+            shipped_at: null,
+            eval_gate: { status: "not_run", metric: null, value: null, threshold: 0, checked_at: null },
+          },
+          candidate_owned_salience: disabled,
+          richer_dedup: disabled,
+          autocut: disabled,
+          semantic_results_cache: disabled,
+        },
+      },
+    }, { actorUserId: "user-1" });
+    // Its owner makes the artifact private; another admin turns egress off.
+    db.artifact = { ...db.artifact, visibility: "private" };
+
+    const updated = await updateSpaceRetrievalSettings(db, "space-1", { external_egress_enabled: false }, { actorUserId: "user-2" });
+
+    expect(updated.external_egress_enabled).toBe(false);
+    expect(updated.ranking_config.mechanics.visible_edge_backlink.state).toBe("shipped");
   });
 });

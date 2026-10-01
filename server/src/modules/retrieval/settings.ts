@@ -182,12 +182,18 @@ export async function updateSpaceRetrievalSettings(
       contextOpsScanMode: patch.context_ops_scan_mode ?? current.value.contextOpsScanMode,
       embeddingDimensions: patch.embedding_dimensions ?? current.value.embeddingDimensions,
       maxResultsDefault: patch.max_results_default ?? current.value.maxResultsDefault,
-      rankingConfig: await normalizeRankingConfigForUpdate(
-        transaction,
-        spaceId,
-        patch.ranking_config ?? current.value.rankingConfig,
-        options.actorUserId ?? null,
-      ),
+      // The calibration gate judges a ranking change. A patch that does not
+      // touch ranking keeps the stored config as it is, so an unrelated
+      // setting — the egress switch above all — cannot fail because a shipped
+      // mechanic's artifact is not visible to whoever is changing it.
+      rankingConfig: patch.ranking_config === undefined
+        ? current.value.rankingConfig
+        : await normalizeRankingConfigForUpdate(
+          transaction,
+          spaceId,
+          patch.ranking_config,
+          options.actorUserId ?? null,
+        ),
     };
     if (next.externalEgressEnabled !== current.value.externalEgressEnabled) {
       await transaction.query(

@@ -359,7 +359,9 @@ can load a `space_shared` calibration artifact for the same mechanic, with an
 `adopt` decision, enough visible evidence refs for
 `required_evidence_artifacts`, and a primary aggregate `eval_delta` that meets
 `min_primary_metric_delta`. The server writes the per-mechanic eval gate result
-back into the resolved settings response. `semantic_results_cache` is forced
+back into the resolved settings response. The gate runs only for an update that
+carries `ranking_config`; an update of any other field keeps the stored ranking
+config unchanged and does not re-check its artifacts. `semantic_results_cache` is forced
 disabled and failed by policy. Shipped mechanics are applied only after the
 visible candidate set is collected and revalidated: candidate-owned salience can
 boost from the candidate's own evidence/confidence/matched fields/vector
