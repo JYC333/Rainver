@@ -502,6 +502,22 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     expect(failed.rows[0]!.claim_expires_at).toBeTruthy();
   });
 
+  it("keeps the promotion Proposal of a private Note as private as the Note", async () => {
+    if (!db.available) return;
+    const noteId = await seedNote(["A private thought."]);
+    await db.pool.query(`UPDATE space_objects SET visibility='private', owner_user_id=$2 WHERE id=$1`, [noteId, identity.userId]);
+    const candidates = new KnowledgePromotionCandidateService(db.pool);
+    const candidate = await candidates.createFromNote(identity, PROJECT, {
+      note_id: noteId, block_anchors: [0], candidate_kind: "concept",
+      proposed_title: "Private thought", proposed_content: "A private thought.",
+    });
+    expect(candidate).toMatchObject({ visibility: "private" });
+
+    const promoted = await candidates.decideCandidate(identity, PROJECT, candidate.id as string, { decision: "promote" });
+    const proposal = await db.pool.query<{ visibility: string }>(`SELECT visibility FROM proposals WHERE id=$1`, [promoted.created_proposal_id]);
+    expect(proposal.rows[0]?.visibility).toBe("private");
+  });
+
   it("dismisses a Candidate without creating a proposal", async () => {
     if (!db.available) return;
     const noteId = await seedNote(["Only block."]);

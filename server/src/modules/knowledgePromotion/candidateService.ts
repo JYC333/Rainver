@@ -402,7 +402,14 @@ export class KnowledgePromotionCandidateService {
       // Attribute the action to the Agent while retaining the instructing user
       // as owner. The owner is material when a private Run drafts a Proposal.
       const createdByUserId = actor.agentId ? null : identity.userId;
-      const proposalVisibility = actor.visibility ?? "space_shared";
+      // Never wider than its source: a private Note or Thread must not reach
+      // the Space through its promotion Proposal's title and payload. A Room
+      // Run's selected-users audience is the exception by design — its draft
+      // Candidate is private only as an intermediate, and the Proposal goes to
+      // the Room roster the Run already spoke to.
+      const proposalVisibility = actor.visibility === "selected_users"
+        ? "selected_users"
+        : candidate.visibility === "space_shared" ? actor.visibility ?? "space_shared" : "private";
       await db.query(
         `INSERT INTO proposals (
            id, space_id, proposal_type, status, risk_level, urgency, title, summary,
