@@ -431,6 +431,11 @@ async function runRemoteHostCliAdapter(
   const threadEvents = createThreadEventNormalizer();
   const runtimeEvents = createVendorEventNormalizer(spec.runtime_key);
   const timeoutSeconds = resolveTimeoutSeconds(input, spec.limits.default_timeout_seconds, spec.limits.max_timeout_seconds);
+  // Credentials this run carries must outlive it. Its budget starts when the
+  // host launches it, and the launch may first wait up to one budget (see
+  // `RemoteWsCliCommandExecutor`), so the longest it can live is two budgets;
+  // the margin keeps a request in flight at that boundary from being cut off.
+  const credentialLifetimeSeconds = 2 * timeoutSeconds + 300;
 
   // The control plane's choice of model backend for this run, if it made one.
   // Read from the thread message rather than `runs.model_provider_id` — see
@@ -469,9 +474,7 @@ async function runRemoteHostCliAdapter(
             runtimeKey: spec.runtime_key,
             binding: bound,
             scope,
-            // Outlive the run itself, the way the server-host path does, so a
-            // request in flight at the timeout boundary is not cut off.
-            ttlSeconds: timeoutSeconds + 300,
+            ttlSeconds: credentialLifetimeSeconds,
             leaseRegistry: deps.leaseRegistry,
             // Reads this host's kind and proxy override to resolve a proxy URL
             // it can actually reach. `config.databaseUrl` is proven
@@ -528,7 +531,7 @@ async function runRemoteHostCliAdapter(
         config,
         run: input.run,
         hostId,
-        timeoutSeconds,
+        lifetimeSeconds: credentialLifetimeSeconds,
       });
     } catch (error) {
       return remoteFailureWithEvent(

@@ -71,16 +71,17 @@ export async function resolveHostApiBaseUrl(db: Queryable, config: ServerConfig,
 /**
  * Issues the run's identity and assembles what the host must materialize.
  *
- * The token's lifetime covers the run's own timeout plus a margin, matching
- * how the server-host path sizes it: an identity that expires while its run is
- * still working takes the agent's tool surface away mid-task.
+ * The token lives as long as the caller says the run can (`lifetimeSeconds`,
+ * which includes any wait before launch and a margin): an identity that
+ * expires while its run is still working takes the agent's tool surface away
+ * mid-task.
  */
 export async function buildRunWorkSurface(input: {
   db: Queryable;
   config: ServerConfig;
   run: RunRecord;
   hostId: string;
-  timeoutSeconds: number;
+  lifetimeSeconds: number;
 }): Promise<RunWorkSurface | null> {
   const apiBaseUrl = await resolveHostApiBaseUrl(input.db, input.config, input.hostId);
   if (!apiBaseUrl) return null;
@@ -91,7 +92,7 @@ export async function buildRunWorkSurface(input: {
   // Run that crashes still has to be explainable, and the fact being recorded
   // is what it was *given*, which is known now.
   const token = await new PgRunToolIdentityRepository(input.db)
-    .issue(input.run, (input.timeoutSeconds + 300) * 1000, skillContentHash);
+    .issue(input.run, input.lifetimeSeconds * 1000, skillContentHash);
   return {
     frame: {
       env: {
