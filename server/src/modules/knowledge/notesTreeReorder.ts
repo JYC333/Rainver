@@ -262,6 +262,11 @@ async function reorderNoteCollections(
   );
   const collectionById = new Map(rows.rows.map((row) => [row.id, row]));
   const updateById = new Map(updates.map((update) => [update.id, update]));
+  // A folder this reorder moves to the root has a proposed parent of `null`,
+  // which is an answer, not a missing one: only a folder the reorder does not
+  // touch keeps its stored parent.
+  const proposedParentId = (collectionId: string, storedParentId: string | null): string | null =>
+    updateById.has(collectionId) ? updateById.get(collectionId)!.parentId : storedParentId;
 
   const owningProject = (collectionId: string, proposed: boolean): string | null => {
     const visited = new Set<string>();
@@ -272,9 +277,7 @@ async function reorderNoteCollections(
       const current = collectionById.get(currentId);
       if (!current) throw new HttpError(404, "Note collection not found");
       if (current.project_id) return current.project_id;
-      currentId = proposed
-        ? (updateById.get(currentId)?.parentId ?? current.parent_id)
-        : current.parent_id;
+      currentId = proposed ? proposedParentId(currentId, current.parent_id) : current.parent_id;
     }
     return null;
   };
@@ -300,7 +303,7 @@ async function reorderNoteCollections(
       visited.add(parentId);
       const parent = collectionById.get(parentId);
       if (!parent) throw new HttpError(404, "Parent note collection not found");
-      parentId = updateById.get(parentId)?.parentId ?? parent.parent_id;
+      parentId = proposedParentId(parentId, parent.parent_id);
     }
   }
 

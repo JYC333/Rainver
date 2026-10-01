@@ -305,4 +305,36 @@ describe("PgKnowledgeRepository note collections (real Postgres)", () => {
     );
     expect(row.rows[0]?.parent_id).toBeNull();
   });
+
+  it("refuses moving a folder out of a Project workspace to the root", async () => {
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const projectId = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at)
+       VALUES ($1,$2,'Project','active',$3,$4,$4)`,
+      [projectId, SPACE, USER, now],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+    const projectRoot = (await repository.ensureProjectNotesCollection(
+      { spaceId: SPACE, userId: USER }, projectId,
+    ) as { id: string }).id;
+    const inner = (await repository.createNoteCollection(
+      { spaceId: SPACE, userId: USER }, { name: "Inner", parent_id: projectRoot },
+    ) as { id: string }).id;
+
+    await expect(withTransaction(db.pool, (client) =>
+      persistNotesTreeReorder(client, { spaceId: SPACE, userId: USER }, {
+        kind: "collections",
+        updates: [{ id: inner, parentId: null, sortOrder: 0 }],
+      }),
+    )).rejects.toMatchObject({ statusCode: 422 });
+
+    const row = await db.pool.query<{ parent_id: string | null }>(
+      `SELECT parent_id FROM note_collections WHERE id = $1`,
+      [inner],
+    );
+    expect(row.rows[0]?.parent_id).toBe(projectRoot);
+  });
 });
