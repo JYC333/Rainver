@@ -29,7 +29,7 @@ interface PersonalMemorySummaryRow {
   updated_at: unknown;
 }
 
-export interface PersonalGrantAcquisition {
+interface PersonalGrantAcquisition {
   summary: string;
   metadata: {
     grant_id: string;

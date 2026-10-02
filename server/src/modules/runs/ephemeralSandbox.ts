@@ -14,7 +14,7 @@
 import { mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";
 
-export type WorkingDirScope = "none" | "ephemeral" | "read_only" | "worktree";
+type WorkingDirScope = "none" | "ephemeral" | "read_only" | "worktree";
 
 /** Cleanup kind marking a server-owned ephemeral dir. */
 export const EPHEMERAL_CLEANUP_KIND = "ephemeral_ts";

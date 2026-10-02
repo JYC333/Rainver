@@ -92,7 +92,7 @@ export interface ProviderUsageCost {
   total: number;
 }
 
-export type ProviderChatInvocationResult = ProviderChatResponseBody & {
+type ProviderChatInvocationResult = ProviderChatResponseBody & {
   /** The configured ModelProvider row that actually served the request. */
   provider_id: string;
 };
@@ -105,7 +105,7 @@ export type ProviderChatInvocationResult = ProviderChatResponseBody & {
  * headers. The full raw response, when available, is carried separately on
  * ProviderInvocationError for failure logging only.
  */
-export type StructuredOutputDiagnostics = Record<string, unknown>;
+type StructuredOutputDiagnostics = Record<string, unknown>;
 
 export interface ProviderStructuredOutput {
   type: "json_schema";
@@ -1257,7 +1257,7 @@ function structuredOutputCorrectionBody(
   };
 }
 
-export interface ProviderTextCompletionInput {
+interface ProviderTextCompletionInput {
   provider_id: string;
   model?: string | null;
   system: string;
@@ -1271,7 +1271,7 @@ export interface ProviderTextCompletionInput {
   providerTaskRunLifecycle?: ProviderTaskRunLifecycle;
 }
 
-export interface ProviderMessagesCompletionInput {
+interface ProviderMessagesCompletionInput {
   provider_id: string;
   model?: string | null;
   system?: string | null;
@@ -1400,7 +1400,7 @@ export async function completeProviderMessages(
   };
 }
 
-export interface ProviderEmbeddingInput {
+interface ProviderEmbeddingInput {
   /** Caller's own provider; used as the safety net after any task chain. */
   provider_id?: string | null;
   model?: string | null;
@@ -1416,13 +1416,13 @@ export interface ProviderEmbeddingInput {
   spend: CredentialSpendBasis;
 }
 
-export interface ProviderEmbeddingResult {
+interface ProviderEmbeddingResult {
   vectors: number[][];
   model: string;
   usage: Record<string, unknown>;
 }
 
-export interface ProviderRerankInput {
+interface ProviderRerankInput {
   /** Caller's own provider; used as the safety net after any task chain. */
   provider_id?: string | null;
   model?: string | null;

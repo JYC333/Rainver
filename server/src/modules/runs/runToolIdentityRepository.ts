@@ -16,13 +16,13 @@ import type { RunRecord } from "./repository.js";
  * ADR 0008's channel isolation and B67's mutual exclusion — both govern
  * upstream credentials, which this is not.
  */
-export interface RunToolIdentity {
+interface RunToolIdentity {
   run_id: string;
   space_id: string;
   expires_at: string;
 }
 
-export function runToolTokenDigest(token: string): string {
+function runToolTokenDigest(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
@@ -34,7 +34,7 @@ export function runToolTokenDigest(token: string): string {
  * surface is staged should not have to stand up a database to get a token.
  * The SQL behind it has its own real-Postgres coverage.
  */
-export interface RunToolIdentityPort {
+interface RunToolIdentityPort {
   issue(
     run: Pick<RunRecord, "id" | "space_id">,
     ttlMs: number,

@@ -14,7 +14,7 @@ import { defineScopedSetting, ScopedSettingsStore, settingsRecord } from "../set
  * Person-origin turns are never held; they proceed until the CLI itself
  * refuses.
  */
-export interface SubscriptionQuotaPolicyValue {
+interface SubscriptionQuotaPolicyValue {
   warn_pct: number;
   reserve_pct: number;
 }
@@ -23,7 +23,7 @@ function pct(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100 ? value : fallback;
 }
 
-export const SUBSCRIPTION_QUOTA_POLICY = defineScopedSetting<SubscriptionQuotaPolicyValue>({
+const SUBSCRIPTION_QUOTA_POLICY = defineScopedSetting<SubscriptionQuotaPolicyValue>({
   key: "subscription_quota",
   scopeType: "space",
   defaults: { ...protocol.SUBSCRIPTION_QUOTA_POLICY_DEFAULTS },

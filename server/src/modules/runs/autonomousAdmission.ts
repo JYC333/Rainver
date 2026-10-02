@@ -50,7 +50,7 @@ export type AutonomousAdmissionDecision<T> =
   | { allowed: true; reason: "admitted"; trace: AutonomousAdmissionTrace; value: T }
   | { allowed: false; reason: AutonomousAdmissionRefusalReason; trace: AutonomousAdmissionTrace };
 
-export interface AutonomousAdmissionInput<T> {
+interface AutonomousAdmissionInput<T> {
   spaceId: string;
   ownerUserId: string;
   policy: AutonomousAdmissionPolicy;

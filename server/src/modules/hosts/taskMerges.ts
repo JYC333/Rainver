@@ -95,7 +95,7 @@ export interface TaskMergeConflictResolver {
   dispatch(db: Queryable, merge: TaskMergeRow, conflictedFiles: string[]): Promise<string | null>;
 }
 
-export interface TaskMergeDeps {
+interface TaskMergeDeps {
   hosts: HostConnectionRegistry;
   /** The resolution Run and the merge's move to `resolving` commit together. */
   pool?: Pool;
@@ -444,7 +444,7 @@ function locationUsable(loaded: LoadedMerge): loaded is LoadedMerge & { location
   return taskLocationUsable(loaded.location) && loaded.workspace !== null;
 }
 
-export async function advanceTaskMerge(
+async function advanceTaskMerge(
   db: Queryable,
   config: ServerConfig,
   deps: TaskMergeDeps,
@@ -991,7 +991,7 @@ function pickDetail(detail: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-export function noticeText(
+function noticeText(
   title: string,
   outcome: "merged" | "waiting_local_changes" | "conflict" | "verification_failed" | "failed",
   mainBranch: string | null,

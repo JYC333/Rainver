@@ -19,7 +19,7 @@ import type {
   ManagedOAuthFlow,
 } from "./managedOAuth.js";
 
-export type ManagedSubscriptionType = "anthropic" | "openai_codex";
+type ManagedSubscriptionType = "anthropic" | "openai_codex";
 let flowOverride: ((type: ManagedSubscriptionType) => Promise<ManagedOAuthFlow>) | null = null;
 let fetchOverride: typeof globalThis.fetch | null = null;
 

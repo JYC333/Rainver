@@ -25,7 +25,7 @@ const TASK_BRANCH_REPLIES = {
   task_merge_finish: "task_merge_finish_result",
 } as const;
 type TaskBranchRequestType = keyof typeof TASK_BRANCH_REPLIES;
-export type TaskBranchReplyType = (typeof TASK_BRANCH_REPLIES)[TaskBranchRequestType];
+type TaskBranchReplyType = (typeof TASK_BRANCH_REPLIES)[TaskBranchRequestType];
 export type TaskBranchReply<T extends TaskBranchRequestType> =
   Omit<HostDaemonFrameOf<(typeof TASK_BRANCH_REPLIES)[T]>, "type" | "request_id">;
 type ReplyOf<F> = F extends unknown ? Omit<F, "type" | "request_id"> : never;
@@ -139,7 +139,7 @@ interface HostConnection {
 
 /** What the daemon reports back for one `install_tool` / `uninstall_tool` request. */
 /** Terminal report of one ambient-session import; sessions arrive before it, one frame each. */
-export interface AmbientImportResult {
+interface AmbientImportResult {
   ok: boolean;
   error: string | null;
   session_count: number;
@@ -157,7 +157,7 @@ export interface AmbientImportResult {
  * a command that failed and a host that never replied are different facts and
  * a verifier has to be able to say which.
  */
-export interface HostCommandOutcome {
+interface HostCommandOutcome {
   ok: boolean;
   exit_code: number;
   stdout: string;
@@ -168,7 +168,7 @@ export interface HostCommandOutcome {
   entries?: string[];
 }
 
-export interface ToolInstallResult {
+interface ToolInstallResult {
   ok: boolean;
   error: string | null;
   /** The installation id (`managed:<version>`) the action produced or removed. */
@@ -200,13 +200,13 @@ export type FolderWriteSuccess = {
 };
 export type FolderWriteResult = FolderWriteSuccess | { ok: false; error: FolderWriteFailureCode; message?: string };
 
-export interface ManagedWorkspaceResult {
+interface ManagedWorkspaceResult {
   ok: boolean;
   changed: boolean;
   error: string | null;
 }
 
-export interface HostDirectoryListing {
+interface HostDirectoryListing {
   ok: boolean;
   path: string | null;
   parent: string | null;
@@ -215,7 +215,7 @@ export interface HostDirectoryListing {
   error: string | null;
 }
 
-export interface HostWorkspaceRegistration {
+interface HostWorkspaceRegistration {
   ok: boolean;
   workspace_id: string | null;
   display_path: string | null;
@@ -223,7 +223,7 @@ export interface HostWorkspaceRegistration {
 }
 
 /** What a daemon's login terminal sends back, frame by frame. */
-export type LoginSessionEvent =
+type LoginSessionEvent =
   | { type: "output"; data: string }
   | { type: "exit"; exit_code: number; logged_in: boolean | null };
 
@@ -243,9 +243,9 @@ const HOST_COMMAND_GRACE_MS = 30 * 1000;
  * bound normal work.
  */
 const AMBIENT_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
-export const FOLDER_READ_TIMEOUT_MS = 15_000;
-export const FOLDER_WRITE_TIMEOUT_MS = 15_000;
-export const HOST_ACTION_TIMEOUT_MS = 15_000;
+const FOLDER_READ_TIMEOUT_MS = 15_000;
+const FOLDER_WRITE_TIMEOUT_MS = 15_000;
+const HOST_ACTION_TIMEOUT_MS = 15_000;
 const MANAGED_WORKSPACE_TIMEOUT_MS = 15_000;
 /**
  * Long enough for Codex to start its app-server and answer, short enough that

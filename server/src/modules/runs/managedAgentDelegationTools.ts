@@ -26,7 +26,7 @@ export interface AgentDelegationTarget {
   capabilities_json?: Record<string, unknown> | null;
 }
 
-export interface AgentDelegationToolBinding {
+interface AgentDelegationToolBinding {
   targets: AgentDelegationTarget[];
   toolDefinitions: CanonicalToolDefinition[];
   service: Pick<AgentGroupRunService, "spawnChildRun"> & Partial<Pick<AgentGroupRunService, "preflightSpawnChildRunPolicy" | "spawnChildRunAuthorized">>;

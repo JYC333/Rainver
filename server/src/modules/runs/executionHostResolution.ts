@@ -1,7 +1,7 @@
 import type { Queryable } from "../routeUtils/common.js";
 import type { HostKind } from "./orchestrationService.js";
 
-export interface ExecutionHostResolution {
+interface ExecutionHostResolution {
   hostKind: HostKind;
   hostId: string;
   workspaceLocationId: string | null;

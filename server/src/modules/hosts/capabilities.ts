@@ -33,7 +33,7 @@ export function hasSubscriptionQuota(runtimeKey: string): boolean {
  * server ship together, so obsolete capability layouts are rejected instead
  * of maintaining a second interpretation path.
  */
-export type { HostCapabilities, RuntimeAuthMethod, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions, RuntimeSessionConfigOption, RuntimePromptCapabilities } from "@rainver/protocol";
+export type { HostCapabilities, RuntimeInstallation, RuntimeOptions, RuntimeSessionConfigOption, RuntimePromptCapabilities } from "@rainver/protocol";
 export { OWN_INSTALLATION } from "@rainver/protocol";
 
 function record(value: unknown): Record<string, unknown> {

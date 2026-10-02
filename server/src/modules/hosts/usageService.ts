@@ -17,7 +17,7 @@ import { acpRuntimeProbe } from "./runtimeProbes.js";
  * Agent-triggered Room turn waits while its login is past the Space's reserve
  * line (`rooms/quotaGate.ts`).
  */
-export interface HostUsageRow {
+interface HostUsageRow {
   host_id: string;
   runtime_key: string;
   installation: string;
@@ -162,7 +162,7 @@ export async function refreshAllHostUsage(
  * A record, not a gate: the host's own capability report is the authority on
  * what is installed now. This answers "since when", which nothing else can.
  */
-export interface HostRuntimeChange {
+interface HostRuntimeChange {
   id: string;
   host_id: string;
   host_name: string;

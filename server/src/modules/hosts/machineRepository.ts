@@ -7,7 +7,7 @@ import type { Queryable } from "../routeUtils/common.js";
  * deliberately does not carry (paths, runtime state, capabilities — those
  * stay on the `hosts`/ExecutionHost rows it owns).
  */
-export interface MachineRow {
+interface MachineRow {
   id: string;
   owner_user_id: string | null;
   display_name: string;

@@ -13,13 +13,13 @@ export function providerSupportsStructuredOutput(providerType: string): boolean 
  */
 const STRUCTURED_TOOL_CALL_UNRELIABLE_MODELS: RegExp[] = [/(^|\/)minimax/i];
 
-export function modelStructuredToolCallUnreliable(model: string | null | undefined): boolean {
+function modelStructuredToolCallUnreliable(model: string | null | undefined): boolean {
   if (typeof model !== "string" || !model.trim()) return false;
   const trimmed = model.trim();
   return STRUCTURED_TOOL_CALL_UNRELIABLE_MODELS.some((pattern) => pattern.test(trimmed));
 }
 
-export interface StructuredOutputToolStrategy {
+interface StructuredOutputToolStrategy {
   /** Offer the schema as a single forced tool call. False for unreliable models. */
   forceTool: boolean;
   /** Embed the schema in the system prompt instead of forcing a tool call. */

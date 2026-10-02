@@ -29,7 +29,7 @@ export function terminalStatusFromAdapter(result: RunAdapterResultEnvelope): Run
   return "failed";
 }
 
-export function adapterErrorJson(result: RunAdapterResultEnvelope): unknown {
+function adapterErrorJson(result: RunAdapterResultEnvelope): unknown {
   if (result.success) return {};
   const output = recordValue(result.output_json);
   const diagnostics = recordValue(output.structured_output_diagnostics);
@@ -45,7 +45,7 @@ export function adapterErrorJson(result: RunAdapterResultEnvelope): unknown {
   });
 }
 
-export interface SemanticRunFailure {
+interface SemanticRunFailure {
   error_code:
     | "semantic_rejection"
     | "verification_failed"
@@ -274,7 +274,7 @@ export function toRunPreparationError(error: unknown, fallbackCode: string): Run
   return new RunPreparationError(code, errorMessage(error));
 }
 
-export function errorCodeValue(error: unknown): string | null {
+function errorCodeValue(error: unknown): string | null {
   if (error !== null && typeof error === "object") {
     const code = (error as { code?: unknown }).code;
     return typeof code === "string" && code ? code : null;

@@ -83,7 +83,7 @@ import {
  */
 export const REMOTE_HOST_ACP_CWD_PLACEHOLDER = REMOTE_CWD_PLACEHOLDER;
 
-export interface RemoteHostCliAdapterInput {
+interface RemoteHostCliAdapterInput {
   run: AgentRunRecord;
   prompt: string | null;
   invocation_delivery?: InvocationDelivery;
@@ -962,7 +962,7 @@ export function taskMergeIdOf(run: { contract_snapshot_json?: unknown }): string
   return typeof mergeId === "string" && mergeId.length > 0 ? mergeId : null;
 }
 
-export interface TaskWorktreeRun {
+interface TaskWorktreeRun {
   contract_snapshot_json?: unknown;
   run_type?: string | null;
   required_sandbox_level?: string | null;

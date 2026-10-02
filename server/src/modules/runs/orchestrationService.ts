@@ -212,7 +212,7 @@ export interface RunExecutionRepositoryPort {
   }): Promise<RunRecord | null>;
 }
 
-export interface RunExecutionAdapterDeps {
+interface RunExecutionAdapterDeps {
   materializer?: RunMaterializationService;
   runtimeContextGateway?: RuntimeContextInvocationGatewayPort
     & Partial<Pick<RuntimeContextGatewayPort, "ingestRuntimeEvent" | "recordRuntimeEventGap">>;
@@ -271,7 +271,7 @@ export interface RunExecutionAdapterDeps {
   cliContinuity?: RuntimeContextCliContinuityService;
 }
 
-export interface RunRouteResolverPort {
+interface RunRouteResolverPort {
   routeRun(run: AgentRunRecord): Promise<AgentRunRecord>;
 }
 
@@ -286,7 +286,7 @@ export type RunPolicyEnforcer = (
   request: Parameters<typeof enforce>[2],
 ) => Promise<EnforceResult>;
 
-export interface RunCodePatchCollectorPort {
+interface RunCodePatchCollectorPort {
   collect(input: {
     run: RunRecord;
     worktreePath: string | null;

@@ -54,7 +54,7 @@ export function workSkillOptionsForRun(run: RunRecord): WorkSkillOptions {
   };
 }
 
-export const WORK_SURFACE_SKILL_PATH_ENV = "RAINVER_SKILL_PATH";
+const WORK_SURFACE_SKILL_PATH_ENV = "RAINVER_SKILL_PATH";
 
 /**
  * The control-plane address *this host* can reach — `RAINVER_API_URL` for the

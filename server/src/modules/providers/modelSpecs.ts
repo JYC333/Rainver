@@ -23,7 +23,7 @@
  * you touch a row, re-read its source and move the date; `modelSpecs.test.ts`
  * fails on a row that has neither.
  */
-export interface ModelSpec {
+interface ModelSpec {
   contextWindowTokens: number;
   defaultOutputReserveTokens: number;
   providerOverheadTokens: number;

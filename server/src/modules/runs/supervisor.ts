@@ -11,7 +11,7 @@ import { PgRunRepository, type RunRecord } from "./repository.js";
 import type { RunEvaluationRecord, RunAttemptRecord } from "./runRepositoryTypes.js";
 import { isRetryableRunErrorCode } from "./retryPolicy.js";
 
-export const DEFAULT_MAX_RUN_ATTEMPTS = 2;
+const DEFAULT_MAX_RUN_ATTEMPTS = 2;
 
 export interface RunSupervisorPort {
   supervise(input: {

@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import type { InvocationAuditRefs } from "@rainver/protocol";
 import type { CredentialSpendAuthorization } from "../../policy/credentialSpend.js";
 
-export interface ProviderProxyLeaseInput {
+interface ProviderProxyLeaseInput {
   run_id: string;
   space_id: string;
   provider_id: string;
@@ -34,7 +34,7 @@ export interface ProviderProxyLeaseInput {
 
 export type ProviderProxyRoute = "anthropic" | "openai";
 
-export interface ProviderProxyLease {
+interface ProviderProxyLease {
   id: string;
   token: string;
   run_id: string;

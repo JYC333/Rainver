@@ -23,7 +23,7 @@ import { PgHostRepository } from "./repository.js";
  * the only copy — the server stores a hash — so "the file is gone" and
  * "rotate" are necessarily the same case.
  */
-export interface BuiltinHostCredential {
+interface BuiltinHostCredential {
   server_url: string;
   host_id: string;
   token: string;

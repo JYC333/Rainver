@@ -1,4 +1,4 @@
-export interface RunEvaluationProjectionInput {
+interface RunEvaluationProjectionInput {
   id: string;
   run_id: string;
   outcome_status: string;

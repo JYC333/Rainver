@@ -1,11 +1,11 @@
 import type { ContentVisibility } from "../access/contentAccessTypes.js";
 
-export interface ContextTaintInput {
+interface ContextTaintInput {
   ownerUserId: string | null;
   visibility: ContentVisibility;
 }
 
-export interface RunContextTaintSummary {
+interface RunContextTaintSummary {
   schema_version: 1;
   narrowest_visibility: ContentVisibility;
   input_owner_user_ids: string[];
@@ -23,7 +23,7 @@ const VISIBILITY_RANK: Record<ContentVisibility, number> = {
   space_shared: 2,
 };
 
-export function narrowestVisibility(
+function narrowestVisibility(
   values: readonly ContentVisibility[],
 ): ContentVisibility {
   return values.reduce<ContentVisibility>(

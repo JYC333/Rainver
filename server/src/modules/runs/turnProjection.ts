@@ -55,7 +55,7 @@ type UnindexedTurnPart = TurnPart extends infer Part
   ? Part extends { index: number } ? Omit<Part, "index"> : never
   : never;
 
-export interface TurnProjection {
+interface TurnProjection {
   parts: TurnPart[];
   /**
    * How far the turn got *according to this log*.

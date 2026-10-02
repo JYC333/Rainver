@@ -37,7 +37,7 @@ export class BoundedProviderTaskError extends Error {
   }
 }
 
-export interface BoundedProviderTaskCompletion {
+interface BoundedProviderTaskCompletion {
   /** The provider's raw reply text. Empty for most structured contracts. */
   text: string;
   /** The validated structured output; always present for `structured`. */
@@ -57,7 +57,7 @@ export interface BoundedProviderTaskCompletion {
  * Run's terminal status have to commit together. Throwing a
  * `BoundedProviderTaskError` fails the Run once with that code.
  */
-export type BoundedProviderTaskFinalize = (
+type BoundedProviderTaskFinalize = (
   completion: BoundedProviderTaskCompletion,
   runId: string,
 ) => Promise<{ outputText: string; outputJson: Record<string, unknown> } | null>;
@@ -106,7 +106,7 @@ export type BoundedProviderTaskInput = BoundedProviderTaskBase & (
   | { completion: "text" }
 );
 
-export type BoundedProviderTaskResult =
+type BoundedProviderTaskResult =
   | { ok: true; runId: string; output: Record<string, unknown>; text: string }
   | { ok: false; runId: string | null; errorCode: string; error: string };
 

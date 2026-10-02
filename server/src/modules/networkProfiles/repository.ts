@@ -42,7 +42,7 @@ export class NetworkProfileError extends Error {
   }
 }
 
-export class NetworkProfileRepository {
+class NetworkProfileRepository {
   private pool: Pool;
 
   constructor(config: ServerConfig) {
@@ -191,7 +191,7 @@ export function resolveNetworkProfileRepository(config: ServerConfig): NetworkPr
   return repository;
 }
 
-export function mapNetworkProfileRow(row: NetworkProfileRow): Record<string, unknown> {
+function mapNetworkProfileRow(row: NetworkProfileRow): Record<string, unknown> {
   return {
     id: row.id,
     space_id: row.space_id,

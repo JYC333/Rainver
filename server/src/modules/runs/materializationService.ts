@@ -37,7 +37,7 @@ import { runFinalizationReconcilerRegistry } from "./finalizationReconcilerRegis
 import { outputVisibilityForTaint, parseRunContextTaint } from "./contextTaint.js";
 import type { ContentVisibility } from "../access/contentAccessTypes.js";
 
-export interface RunMaterializationResult {
+interface RunMaterializationResult {
   items: RunMaterializationItemSummary[];
   errors: string[];
 }

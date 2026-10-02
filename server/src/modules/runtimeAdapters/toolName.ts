@@ -1,6 +1,6 @@
 import { redactEvidenceText } from "../runs/evidenceRedaction.js";
 
-export const MAX_TOOL_NAME_CHARS = 200;
+const MAX_TOOL_NAME_CHARS = 200;
 
 /**
  * ACP runtimes may use a whole shell command as a tool title. Keep that

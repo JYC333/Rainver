@@ -94,10 +94,8 @@ export {
   type ProviderInfo,
   type ProviderPoolConfigUpdateInput,
   type ProviderPoolCredentialAddInput,
-  type ProviderSpaceGrantInput,
   type ProviderTaskChainEntry,
   type ProviderTaskAttemptRefs,
-  type ProviderTaskAttemptStart,
   type RotationStrategy,
 } from "./types.js";
 export { orderPoolMembers } from "./helpers.js";

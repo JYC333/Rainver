@@ -17,7 +17,7 @@ import type { RunRecord } from "../runs/repository.js";
  * delegation and direct-chat overrides, and `createDispatchRun`), so the job
  * carries nothing and there is nothing to forget.
  */
-export interface HostThreadDispatchInputs {
+interface HostThreadDispatchInputs {
   thread_id: string | null;
   /** The vendor session the thread asked this Run to resume, if any. */
   resume_session_id: string | null;

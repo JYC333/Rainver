@@ -569,7 +569,7 @@ export async function resolveWorkContextScopeProject(
   return (await resolveWorkContextScopeBindings(db, identity, scopeKind, scopeId)).project_id;
 }
 
-export interface WorkContextScopeBindings {
+interface WorkContextScopeBindings {
   project_id: string | null;
   project_folder_id: string | null;
   agent_id: string | null;

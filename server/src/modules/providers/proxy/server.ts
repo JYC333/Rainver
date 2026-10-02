@@ -53,7 +53,7 @@ export interface ProviderProxyServerHandle {
   close(): Promise<void>;
 }
 
-export interface ProviderProxyServerDeps {
+interface ProviderProxyServerDeps {
   leaseRegistry?: ProviderProxyLeaseRegistry;
   commandStore?: Pick<ProviderCommandStore, "resolveProviderApiKey">;
   resolveUsageAttribution?: (observation: UsageObservation) => Promise<UsageAttribution>;

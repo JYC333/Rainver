@@ -13,7 +13,7 @@ import {
 import type { VerificationResultRecord } from "./verification/index.js";
 import type { RunSupervisorPort } from "./supervisor.js";
 
-export const RUN_FINALIZER_VERSION = "post_run_finalization.v1";
+const RUN_FINALIZER_VERSION = "post_run_finalization.v1";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "degraded", "cancelled", "orphaned"]);
 
@@ -88,20 +88,20 @@ const EXACT_ERROR_CODE_MAP: Record<string, { layer: string; reason: string }> = 
   },
 };
 
-export class RunNotFoundError extends Error {}
+class RunNotFoundError extends Error {}
 export class NonTerminalRunError extends Error {}
 
-export interface EvolutionRunEvaluationSolidifier {
+interface EvolutionRunEvaluationSolidifier {
   solidifyFromRunEvaluation(
     evaluation: EvolutionRunEvaluationForSolidifier,
   ): Promise<{ id: string } | null>;
 }
 
-export interface RunEstimatedCostReader {
+interface RunEstimatedCostReader {
   getRunEstimatedCost(spaceId: string, runId: string): Promise<number | null>;
 }
 
-export interface ExecutionGraphReconciler {
+interface ExecutionGraphReconciler {
   reconcileForRun(spaceId: string, runId: string, userId: string): Promise<void>;
 }
 

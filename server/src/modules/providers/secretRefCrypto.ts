@@ -34,7 +34,7 @@ export class SecretRefCompatibilityError extends Error {
   }
 }
 
-export type ParsedModelProviderSecretRefV1 = {
+type ParsedModelProviderSecretRefV1 = {
   encryptedKeyWithTag: Buffer;
   nonce: Buffer;
 };

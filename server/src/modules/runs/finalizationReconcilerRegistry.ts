@@ -1,6 +1,6 @@
 import type { Queryable, RunRecord } from "./runRepositoryTypes.js";
 
-export interface RunFinalizationReconciler {
+interface RunFinalizationReconciler {
   reconcile(db: Queryable, run: RunRecord): Promise<void>;
 }
 

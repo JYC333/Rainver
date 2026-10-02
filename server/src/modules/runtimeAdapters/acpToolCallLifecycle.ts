@@ -13,12 +13,12 @@
  * Synthetic ids are local trace identities. They are never sent back to the
  * runtime and carry no authorization meaning.
  */
-export interface AcpToolCallObservation {
+interface AcpToolCallObservation {
   callId: string;
   missingStart: boolean;
 }
 
-export interface AcpToolCallLifecycle {
+interface AcpToolCallLifecycle {
   started(input: {
     callId: string | null;
     name: string | null;

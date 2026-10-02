@@ -9,20 +9,6 @@ import { renderCommandTemplate } from "../runs/cliCommandRendering.js";
 import { REMOTE_HOST_ACP_CWD_PLACEHOLDER } from "../runs/remoteHostCliAdapter.js";
 import { resolvedRegistryEntry } from "../acpAgents/registry.js";
 
-/**
- * Everything a daemon needs to know about one runtime adapter, sent in
- * `hello_ack` so the adapter spec stays the only place that knows it: how
- * the machine's own copy is launched and asked for its options, how a
- * managed copy is obtained, and how either is logged into. The daemon holds
- * no list of its own; adding a runtime is a spec entry (or enabling a
- * registry agent), and the daemon needs no change.
- *
- * The shape is the wire's, not this module's: `RuntimeProbeSchema` in
- * `@rainver/protocol` declares the fields once and both ends type against it,
- * so a probe is built here and parsed there with nothing restating it.
- */
-export type { RuntimeProbe };
-
 function acpSpecs(): RuntimeAdapterSpec[] {
   return listRuntimeAdapterSpecs().filter((spec) =>
     spec.runtime_kind === "local_cli"

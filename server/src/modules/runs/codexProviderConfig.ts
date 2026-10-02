@@ -1,7 +1,7 @@
 import { chmod, copyFile, lstat, mkdir, readlink, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
-export class CodexProviderConfigError extends Error {
+class CodexProviderConfigError extends Error {
   constructor(
     readonly code: string,
     message: string,
@@ -48,7 +48,7 @@ export async function writeCodexProviderConfig(input: {
   return codexDir;
 }
 
-export async function materializeRunCodexHome(tempHome: string): Promise<string> {
+async function materializeRunCodexHome(tempHome: string): Promise<string> {
   const codexDir = join(tempHome, ".codex");
   let sourcePath: string | null = null;
   try {
