@@ -12,6 +12,7 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
+  escapeLikePattern,
 } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { sourceItemReadableClause, sourceSnapshotReadableForEvidenceClause } from "../sources/sourceItemAccess.js";
@@ -277,7 +278,7 @@ export class ProjectCorpusRepository {
       clauses.push(`pci.role = $${params.length}`);
     }
     if (filters.q) {
-      params.push(`%${escapeLike(filters.q)}%`);
+      params.push(`%${escapeLikePattern(filters.q)}%`);
       clauses.push(`(
         so.title ILIKE $${params.length} ESCAPE '\\'
         OR COALESCE(so.summary, '') ILIKE $${params.length} ESCAPE '\\'
@@ -1642,6 +1643,3 @@ function confidenceValue(value: unknown): number | null {
   return confidence;
 }
 
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
-}

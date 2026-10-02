@@ -373,7 +373,7 @@ export class PgMemoryProposalRepository {
       // one person ADR 0003 §5 names.
       payload.required_owner_user_id = target.owner_user_id;
     }
-    validateUpdatePayload(payload);
+    validateUpdatePayload(payload, target.visibility);
 
     const title =
       typeof changeData.title === "string" && changeData.title.length > 0
@@ -642,10 +642,15 @@ function normalizeMemoryScope(value: string): "user" | "project" | "agent" {
   return scope;
 }
 
-function validateUpdatePayload(payload: Record<string, unknown>): void {
+/**
+ * `targetVisibility` is the visibility the entry has: an update command may
+ * not carry one (permissions go through the content-access API), so without
+ * it no update could ever raise a private memory to `highly_restricted`.
+ */
+function validateUpdatePayload(payload: Record<string, unknown>, targetVisibility: string | null): void {
   const sensitivity = stringValue(payload.sensitivity_level);
   const visibility =
-    stringValue(payload.target_visibility) ?? stringValue(payload.visibility);
+    stringValue(payload.target_visibility) ?? stringValue(payload.visibility) ?? targetVisibility;
   if (sensitivity === "highly_restricted" && visibility !== "private") {
     throw new MemoryProposalValidationError(
       "highly_restricted memories must use private visibility",

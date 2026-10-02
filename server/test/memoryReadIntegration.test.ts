@@ -122,6 +122,17 @@ describe("PgMemoryReadRepository against real Postgres", () => {
     expect(rows.map((m) => m.id).sort()).toEqual(["m-hit"]);
   });
 
+  it("treats LIKE wildcards in a search query as the characters typed", async () => {
+    if (!db.available || !repo) return;
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-literal", owner_user_id: USER, content: "ticket a_b resolved" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-near", owner_user_id: USER, content: "ticket axb resolved" });
+
+    expect((await repo.search(SPACE, USER, { query: "a_b", limit: 10 })).map((m) => m.id)).toEqual(["m-literal"]);
+    // A bare wildcard would otherwise match every readable memory and log a
+    // search hit against each of them.
+    expect(await repo.search(SPACE, USER, { query: "%", limit: 10 })).toEqual([]);
+  });
+
   it("a cross-person get writes one explicit_read trace and bumps the read counters", async () => {
     if (!db.available || !repo || !db.pool) return;
     await insertMemoryEntry(db.pool, SPACE, { id: "m-1", owner_user_id: "other", visibility: "space_shared" });

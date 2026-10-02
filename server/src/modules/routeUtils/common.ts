@@ -308,6 +308,14 @@ export async function withQueryableTransaction<T>(
 }
 
 /**
+ * Escapes `\\`, `%` and `_` so a user's search text matches as the characters
+ * typed inside a `LIKE`/`ILIKE` pattern; pair it with `ESCAPE '\\'` in the SQL.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+/**
  * Wraps an async callback so every call chains strictly after the one
  * before it, instead of racing when called from synchronous, un-awaited
  * call sites (a live output-stream callback firing several times per

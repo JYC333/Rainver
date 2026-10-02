@@ -78,7 +78,13 @@ entry outright and answers 200 with it (ADR 0003 §3 — a proposal there was
 the person filing a request with themselves); someone else's still creates an
 archive proposal and answers 202. `POST /memory/{id}/restore` is the reverse,
 owner-only, and also restores the version a revision replaced once no newer
-version is active.
+version is active. Both lock the entry row and serialize on the version chain
+(a transaction advisory lock on its root), and the write is refused if the
+status moved since it was read: two restores on one chain cannot both pass
+the active-head check, and an owner's archive ordered behind an Agent's
+in-flight revision archives nothing it did not read. An update proposal's
+`highly_restricted` rule reads the target's own visibility, since the command
+may not carry one.
 
 **An Agent, in a person's turn.** `memory.remember` / `memory.revise` go
 through `applyDirect`: a new version, `created_by = agent:<id>`,

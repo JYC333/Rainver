@@ -17,6 +17,7 @@ import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 import { resolveOversightLevel } from "../access/oversightResolver.js";
 import { memoryAgentScopeReadSql, memorySensitivityReadSql } from "./memorySensitivitySql.js";
 import { ContentAccessAuditService } from "../contentAccess/audit.js";
+import { escapeLikePattern } from "../routeUtils/common.js";
 
 export interface QueryResult<Row> {
   rows: Row[];
@@ -270,9 +271,9 @@ export class PgMemoryReadRepository {
       `space_id = $1`,
       `status = 'active'`,
       `deleted_at IS NULL`,
-      `(title ILIKE $2 OR content ILIKE $2)`,
+      `(title ILIKE $2 ESCAPE '\\' OR content ILIKE $2 ESCAPE '\\')`,
     ];
-    const params: unknown[] = [spaceId, `%${filters.query}%`];
+    const params: unknown[] = [spaceId, `%${escapeLikePattern(filters.query)}%`];
     if (filters.scope) {
       params.push(filters.scope);
       where.push(`scope_type = $${params.length}`);

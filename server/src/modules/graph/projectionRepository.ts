@@ -1,6 +1,6 @@
 import { objectStatusScalarSql } from "../../db/objectStatusSql.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
-import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
+import { escapeLikePattern, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 
 export interface GraphObjectRow {
   id: string;
@@ -448,7 +448,7 @@ export class GraphProjectionRepository {
     const params: unknown[] = [
       identity.spaceId,
       identity.userId,
-      `%${escapeLike(search)}%`,
+      `%${escapeLikePattern(search)}%`,
       options.limit,
       matchLimit,
       neighborLimit,
@@ -595,6 +595,3 @@ function numberFromPg(value: unknown): number {
   return 0;
 }
 
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
-}
