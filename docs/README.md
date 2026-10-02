@@ -23,9 +23,10 @@ context and Skills; an operations guide describes procedures, not runtime prompt
 | [../.agent/ARCHITECTURE.md](../.agent/ARCHITECTURE.md) | High-level system architecture (layer map) |
 | [SPACE_MODEL.md](SPACE_MODEL.md) | Spaces, membership, visibility, and private memory conventions |
 | [TARGET_VIEW_MODEL.md](TARGET_VIEW_MODEL.md) | Unified content owner, scope, visibility, and disclosure model |
-| [MEMORY_MODEL.md](MEMORY_MODEL.md) | Memory data model and lifecycle |
+| [MEMORY_MODEL.md](MEMORY_MODEL.md) | Pointer to the current memory model guide; Space isolation note |
 | [CONTENT_PUBLICATIONS.md](CONTENT_PUBLICATIONS.md) | Targeted immutable publication and import model |
 | [TOKEN_USAGE_METERING.md](TOKEN_USAGE_METERING.md) | Token usage attribution, authorization, and dashboard read model |
+| [finance/beancount-core-parity-matrix.md](finance/beancount-core-parity-matrix.md) | Finance ledger parity tracker against Beancount core |
 
 ## Access And Policy
 
@@ -43,7 +44,7 @@ context and Skills; an operations guide describes procedures, not runtime prompt
 |---|---|
 | [../.agent/architecture/EXECUTION_MODEL.md](../.agent/architecture/EXECUTION_MODEL.md) | Run/agent execution model, agent groups, delegation |
 | [CONVERSATION_DEVELOPMENT.md](CONVERSATION_DEVELOPMENT.md) | Using images, `@file`, Folder context, Git controls, diff review, Stop, drafts, and retry in Agent/Room conversations |
-| [CAPABILITY_SYSTEM.md](CAPABILITY_SYSTEM.md) | Capability manifests, registry, enable state, execution |
+| [CAPABILITY_SYSTEM.md](CAPABILITY_SYSTEM.md) | Capability manifests, read-only catalog, execution |
 | [EVOLUTION_CORE.md](EVOLUTION_CORE.md) | Evolution core — source of truth for targets, signals, strategies, runs, experiences |
 | [DAILY_CAPTURE_REPORT.md](DAILY_CAPTURE_REPORT.md) | Daily capture/report behavior |
 
@@ -52,7 +53,8 @@ context and Skills; an operations guide describes procedures, not runtime prompt
 | Document | Description |
 |---|---|
 | [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md) | Backup, restore, DB dump/restore, verification |
-| [TWO_PERSON_DOGFOODING_RC.md](TWO_PERSON_DOGFOODING_RC.md) | Dogfooding release criteria |
+| [TWO_PERSON_DOGFOODING_RC.md](TWO_PERSON_DOGFOODING_RC.md) | Historical dogfooding RC runbook (2026-05-16 snapshot; not current execution guidance) |
+| [ORCHESTRATION_UI_MANUAL_VERIFICATION.md](ORCHESTRATION_UI_MANUAL_VERIFICATION.md) | Manual UI verification checklist for Tasks, Plans, Automations, and Evolution |
 
 ## Plans
 
