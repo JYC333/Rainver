@@ -161,8 +161,13 @@ function openAgentAuthSession(
     send({ type: "login_exit", session_id: frame.session_id, exit_code: code, logged_in: loggedInState });
   };
   const write = (message: Record<string, unknown>) => child.stdin?.write(`${JSON.stringify(message)}\n`);
-  child.stdout?.on("data", (chunk: Buffer) => {
-    buffer += chunk.toString("utf8");
+  // EPIPE from a write as the agent exits arrives on the stream; the close
+  // that follows is the report.
+  child.stdin?.on("error", () => { /* reported by close */ });
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    buffer += chunk;
     let at = buffer.indexOf("\n");
     while (at !== -1) {
       const line = buffer.slice(0, at);
@@ -206,7 +211,7 @@ function openAgentAuthSession(
       }
     }
   });
-  child.stderr?.on("data", (chunk: Buffer) => send({ type: "login_output", session_id: frame.session_id, data: chunk.toString("utf8") }));
+  child.stderr?.on("data", (chunk: string) => send({ type: "login_output", session_id: frame.session_id, data: chunk }));
   child.on("error", (error) => {
     send({ type: "login_output", session_id: frame.session_id, data: `${error.message}\n` });
     finish(1, false);
@@ -325,8 +330,10 @@ export function openLoginSession(
         : frame.auth_method?.type === "terminal" || frame.login_action === "cli" ? code === 0 : loggedIn(resolved.home, resolved.login),
     });
   };
-  child.stdout?.on("data", (chunk: Buffer) => send({ type: "login_output", session_id: frame.session_id, data: chunk.toString("utf8") }));
-  child.stderr?.on("data", (chunk: Buffer) => send({ type: "login_output", session_id: frame.session_id, data: chunk.toString("utf8") }));
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => send({ type: "login_output", session_id: frame.session_id, data: chunk }));
+  child.stderr?.on("data", (chunk: string) => send({ type: "login_output", session_id: frame.session_id, data: chunk }));
   child.on("error", (error) => {
     send({ type: "login_output", session_id: frame.session_id, data: `${error.message}\n` });
     finish(-1);

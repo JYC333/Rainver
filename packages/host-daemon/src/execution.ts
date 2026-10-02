@@ -1518,6 +1518,10 @@ async function launchRun(
   });
   // From here the close handler below releases the leases.
   hold.spawned = true;
+  // A `stdin` frame that lands as the agent exits fails asynchronously (EPIPE)
+  // on the stream's own 'error' event; unheard, it ends the daemon and every
+  // Run it supervises. The exit that follows is the report.
+  child.stdin?.on("error", (error) => log(`run ${frame.run_id}: stdin write failed: ${error.message}`));
   if (strict) {
     // "The namespace could not be built" and "the runtime exited immediately"
     // are the same exit code; this handshake is what tells them apart, and it
@@ -1563,15 +1567,18 @@ async function launchRun(
   }
   if (!frame.keep_stdin_open) child.stdin?.end();
 
-  child.stdout?.on("data", (chunk: Buffer) => {
-    send({ type: "output", run_id: frame.run_id, launch_id: frame.launch_id, chunk: chunk.toString("utf8") });
+  // Decoded by the stream, not per chunk: a pipe splits output at arbitrary
+  // bytes, and a character cut in two decodes to U+FFFD on both sides.
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    send({ type: "output", run_id: frame.run_id, launch_id: frame.launch_id, chunk });
   });
   let stderrTail = "";
   child.on("error", (error) => {
     stderrTail = error.message.slice(-4000);
   });
-  child.stderr?.on("data", (chunk: Buffer) => {
-    const text = chunk.toString("utf8");
+  child.stderr?.on("data", (text: string) => {
     stderrTail = (stderrTail + text).slice(-4000);
     // control-center-phase2-plan.md P1 (C5): the full live stream, not just
     // the failure tail the `complete` frame still carries below — normalized

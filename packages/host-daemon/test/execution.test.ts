@@ -303,6 +303,43 @@ describe("handleLaunch", () => {
     expect(output).toBe("first second");
   });
 
+  it("survives a stdin frame written to an agent that closed its input", async () => {
+    const { send, complete } = collectSend();
+    const lines: string[] = [];
+    await handleLaunch(
+      {
+        run_id: "run-closed-stdin",
+        launch_id: "launch-closed-stdin", workspace_location_id: "folder-1",
+        // Closes its end of the pipe and stays alive, so the write fails with
+        // EPIPE on the stream rather than finding the process gone.
+        argv: ["sh", "-c", "exec 0<&-; sleep 0.3"],
+        keep_stdin_open: true,
+      },
+      send,
+      (line) => lines.push(line),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    handleStdin({ run_id: "run-closed-stdin", value: "x".repeat(256 * 1024) });
+    expect(await complete()).toMatchObject({ run_id: "run-closed-stdin", exit_code: 0 });
+    expect(lines.some((line) => line.includes("stdin write failed"))).toBe(true);
+  });
+
+  it("keeps a character split across output chunks whole", async () => {
+    const { frames, send, complete } = collectSend();
+    await handleLaunch(
+      {
+        run_id: "run-split-utf8",
+        launch_id: "launch-split-utf8", workspace_location_id: "folder-1",
+        argv: [process.execPath, "-e", "process.stdout.write(Buffer.from([0xe4])); setTimeout(() => process.stdout.write(Buffer.from([0xb8, 0xad])), 100);"],
+      },
+      send,
+      () => {},
+    );
+    await complete();
+    const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
+    expect(output).toBe("中");
+  });
+
   it("substitutes the ACP remote-cwd placeholder with the run's real workspace path on both launch and stdin frames", async () => {
     const { frames, send, complete } = collectSend();
     const line = `{"cwd":"${REMOTE_CWD_PLACEHOLDER}"}\n`;
