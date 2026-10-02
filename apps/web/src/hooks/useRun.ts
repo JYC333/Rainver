@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { runsApi } from '../api/client'
-import { errMsg } from '../lib/utils'
+import { errMsg, isNotFoundError } from '../lib/utils'
 import type { Run } from '../types/api'
 
 /** Run statuses after which polling stops; also used to refresh run sub-resources in UI. */
@@ -79,6 +79,10 @@ export function useRun(runId: string | null, reloadKey: number = 0): UseRunResul
           if (RUN_TERMINAL_STATUSES.has(s.status) && intervalId) clearInterval(intervalId)
         } catch (e) {
           if (!active) return
+          // A Run that is gone ends the polling; anything else (a 502 while
+          // the server restarts, a dropped connection) is retried on the next
+          // tick rather than replacing the loaded Run with an error.
+          if (!isNotFoundError(e)) return
           setError(errMsg(e))
           if (intervalId) clearInterval(intervalId)
         }
