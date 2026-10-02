@@ -252,6 +252,68 @@ describe("finance ledger routes", () => {
     expect(response.json().detail).toContain("does not balance");
   });
 
+  it("leaves nothing behind when a posted transaction is refused", async () => {
+    const bookId = await createBookViaApi();
+    const { checkingId, foodId } = await seedLedger(bookId);
+    const before = await db.pool.query("SELECT count(*)::int AS n FROM finance_directives");
+
+    const unbalanced = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+      payload: {
+        date: "2026-07-02",
+        post: true,
+        postings: [
+          { account_id: checkingId, amount: { number: "-12.50", commodity: "USD" } },
+          { account_id: foodId, amount: { number: "11.50", commodity: "USD" } },
+        ],
+      },
+    });
+    expect(unbalanced.statusCode).toBe(422);
+    // Refused on its second posting, after the first was resolved.
+    const notOpenYet = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+      payload: {
+        date: "2025-12-31",
+        postings: [
+          { account_id: foodId, amount: { number: "1.00", commodity: "USD" } },
+          { account_id: checkingId, amount: { number: "-1.00", commodity: "USD" } },
+        ],
+      },
+    });
+    expect(notOpenYet.statusCode).toBe(422);
+
+    const after = await db.pool.query("SELECT count(*)::int AS n FROM finance_directives");
+    expect(after.rows[0].n).toBe(before.rows[0].n);
+    const transactions = await app!.inject({ method: "GET", url: `/api/v1/finance/books/${bookId}/transactions` });
+    expect(transactions.json().transactions).toEqual([]);
+  });
+
+  it("fills in the one posting left without an amount", async () => {
+    const bookId = await createBookViaApi();
+    const { checkingId, foodId } = await seedLedger(bookId);
+
+    const created = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+      payload: {
+        date: "2026-07-02",
+        post: true,
+        postings: [
+          { account_id: foodId, amount: { number: "50.00", commodity: "USD" } },
+          { account_id: checkingId, amount: null },
+        ],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().directive.status).toBe("posted");
+    const balances = await app!.inject({ method: "GET", url: `/api/v1/finance/books/${bookId}/balances` });
+    expect(balances.json().balances).toEqual(expect.arrayContaining([
+      expect.objectContaining({ accountName: "Assets:Bank:Checking", positions: ["-50.00 USD"] }),
+    ]));
+  });
+
   it("composes account names from root_type, group, and leaf", async () => {
     const bookId = await createBookViaApi();
     const response = await app!.inject({

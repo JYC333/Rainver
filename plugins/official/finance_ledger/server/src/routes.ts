@@ -11,6 +11,7 @@ import type {
   FinanceBookRow,
 } from "./domain/directives.js";
 import { AccountNotFoundError, financeLedgerService } from "./domain/service.js";
+import { withTransaction } from "./domain/transaction.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DIRECTIVE_STATUSES: readonly DirectiveStatus[] = ["draft", "proposed", "posted", "voided"];
@@ -369,25 +370,28 @@ export function registerFinanceLedgerRoutes(
       });
 
       try {
-        const directive = await financeLedgerService.createTransactionDraft(
-          db,
-          identity.spaceId,
-          book.id,
-          identity.userId,
-          {
-            date: requireDate(body, "date"),
-            flag: optionalString(body, "flag") ?? "*",
-            payee: optionalString(body, "payee"),
-            narration: optionalString(body, "narration"),
-            tags: Array.isArray(body["tags"]) ? body["tags"].filter((tag): tag is string => typeof tag === "string") : [],
-            links: Array.isArray(body["links"]) ? body["links"].filter((link): link is string => typeof link === "string") : [],
-            postings,
-          },
-        );
-        const posted =
-          body["post"] === true
-            ? await financeLedgerService.postDirective(db, identity.spaceId, book.id, directive.id)
+        // One transaction: a posting refused part way, or a post that does
+        // not balance, used to leave a draft nobody could remove.
+        const posted = await withTransaction(db, async (tx) => {
+          const directive = await financeLedgerService.createTransactionDraft(
+            tx,
+            identity.spaceId,
+            book.id,
+            identity.userId,
+            {
+              date: requireDate(body, "date"),
+              flag: optionalString(body, "flag") ?? "*",
+              payee: optionalString(body, "payee"),
+              narration: optionalString(body, "narration"),
+              tags: Array.isArray(body["tags"]) ? body["tags"].filter((tag): tag is string => typeof tag === "string") : [],
+              links: Array.isArray(body["links"]) ? body["links"].filter((link): link is string => typeof link === "string") : [],
+              postings,
+            },
+          );
+          return body["post"] === true
+            ? financeLedgerService.postDirective(tx, identity.spaceId, book.id, directive.id)
             : directive;
+        });
         reply.code(201).send({ directive: posted });
       } catch (err) {
         if (err instanceof RequestError) throw err;
