@@ -811,7 +811,12 @@ describe('Project Files & Code Area', () => {
 
     renderPage()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'New File' }))
+    // "New File" renders with the selected Folder, one commit before the
+    // Folder's effect resets the centre view and starts its reads; a click in
+    // between is undone by that reset. Wait until the reads have started.
+    const newFile = await screen.findByRole('button', { name: 'New File' })
+    await waitFor(() => expect(projectFoldersApi.tree).toHaveBeenCalled())
+    fireEvent.click(newFile)
     fireEvent.change(screen.getByRole('textbox', { name: 'File path' }), { target: { value: 'notes/today.md' } })
     expect(screen.getByRole('textbox', { name: 'File content' })).toHaveAttribute('contenteditable', 'true')
     expect(screen.queryByRole('button', { name: 'Save directly' })).not.toBeInTheDocument()
