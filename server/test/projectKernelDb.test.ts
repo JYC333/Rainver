@@ -86,6 +86,19 @@ describe("Project Kernel (real Postgres)", () => {
     });
   });
 
+  it("answers a name already used by an active Project in the Space with 409, on create and on re-activation", async () => {
+    if (!db.available) return;
+    const repo = new PgProjectRepository(db.pool);
+    const first = await repo.create(ownerIdentity, { name: "Alpha" });
+    await expect(repo.create(ownerIdentity, { name: "Alpha" })).rejects.toMatchObject({ statusCode: 409 });
+
+    await repo.update(ownerIdentity, first.id as string, { status: "archived" });
+    await repo.create(ownerIdentity, { name: "Alpha" });
+    await expect(repo.update(ownerIdentity, first.id as string, { status: "active" })).rejects.toMatchObject({ statusCode: 409 });
+    const stillArchived = await db.pool.query<{ status: string }>(`SELECT status FROM projects WHERE id = $1`, [first.id]);
+    expect(stillArchived.rows[0]?.status).toBe("archived");
+  });
+
   it("creates a Project with its mainline Room, empty and with no manager Agent", async () => {
     if (!db.available) return;
     const repo = new PgProjectRepository(db.pool);

@@ -7,6 +7,7 @@ import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { projectSourceBindingOut } from "../sources/sourceRepositoryMappers.js";
 import { PROJECT_SOURCE_BINDING_COLUMNS, type ProjectSourceBindingRow } from "../sources/sourceRepositoryRows.js";
 import { recomputeProjectSourceBindingLinks } from "./projectSourceRoutingService.js";
+import { archiveCorpusSourceItemsWithoutActiveLinks } from "./corpusRepository.js";
 import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry.js";
 
 const PROJECT_SOURCE_DELIVERY_SCOPES = new Set(["project_members", "source_subscribers"]);
@@ -388,6 +389,7 @@ export class ProjectSourceBindingRepository {
           )`,
       [spaceId, bindingId, projectId, now],
     );
+    await archiveCorpusSourceItemsWithoutActiveLinks(this.db, { spaceId, projectId });
   }
 
   private async getConnectionRow(identity: SpaceUserIdentity, connectionId: string): Promise<ConnectionRow | null> {

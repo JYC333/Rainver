@@ -18,6 +18,7 @@ import { RetrievalProjectionService } from "../retrieval/index.js";
 import { assertProjectOwnerLevel, assertProjectWriter, canWriteProject, isProjectOwnerLevel } from "./access.js";
 import { assertProjectReadable } from "./access.js";
 import { projectRetrievalRegistry } from "./retrievalAdapter.js";
+import { isUniqueViolation } from "./projectOperationRepository.js";
 import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { assertCanGrantRole } from "../access/roles.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
@@ -157,7 +158,7 @@ export class PgProjectRepository {
           JSON.stringify(optionalObject(body.settings_json) ?? {}),
           now,
         ],
-      );
+      ).catch(rethrowActiveNameConflict);
       const briefId = randomUUID();
       await db.query(
         `INSERT INTO project_brief_versions
@@ -274,7 +275,7 @@ export class PgProjectRepository {
         JSON.stringify(optionalObject(body.settings_json) ?? objectValue(current.settings_json)),
         now,
       ],
-    );
+    ).catch(rethrowActiveNameConflict);
     if (status === "archived") {
       await this.pauseArchivedProjectActivity(identity.spaceId, projectId, now);
     }
@@ -843,6 +844,18 @@ function canApproveProjectContext(ctx: WritableContext, userId: string, row: Pro
   if (ctx.spaceAdmin) return true;
   if (row.owner_user_id && row.owner_user_id === userId) return true;
   return ctx.ownerProjectIds.has(row.id);
+}
+
+/**
+ * `uq_projects_space_name_active` keeps a Project name unique among the
+ * Space's active Projects. A create, rename, or re-activation that collides
+ * is the caller's conflict to see, not an internal error.
+ */
+function rethrowActiveNameConflict(error: unknown): never {
+  if (isUniqueViolation(error, "uq_projects_space_name_active")) {
+    throw new HttpError(409, "An active Project with this name already exists in this Space");
+  }
+  throw error;
 }
 
 function projectToOut(

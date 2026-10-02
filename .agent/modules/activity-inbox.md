@@ -90,6 +90,7 @@ Project source bindings emit the same shape, one row per Project per local day:
 
 ```
 source item matches an active project_source_binding
+  and its Project link is created or reactivated
     → upsert ActivityRecord(activity_type=project_source_collection,
                             aggregate_key=project_source_collection:<project_id>:<local_date>)
     → Inbox row opens /projects/:projectId/sources
@@ -97,7 +98,9 @@ source item matches an active project_source_binding
 
 The individual `source_items` never enter the Inbox. Emission is gated per
 binding by `project_source_bindings.collection_notifications_enabled` (default
-true).
+true). A known item routed again (a connection re-scan, extraction finishing)
+does not re-surface a handled or discarded row to `raw`: only a new or
+reactivated link counts as collected.
 
 Source recommendation rows are also pointers only: they open
 `/sources?view=pending&connection_id=...`. Reviewing or archiving the pointer

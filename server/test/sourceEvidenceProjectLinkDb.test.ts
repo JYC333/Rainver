@@ -22,6 +22,7 @@ import { ProjectResearchArtifactService } from "../src/modules/projectResearch/a
 import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
 import { PgActivityRepository } from "../src/modules/activity/repository.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ProjectSourceBindingRepository } from "../src/modules/projects/projectSourceBindingRepository.js";
 
 // Real-PostgreSQL tests for evidence→project auto-linking on materialization:
 // bound sources produce active `context_candidate` project links, re-runs are
@@ -695,6 +696,46 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     expect(links.rows).toEqual([{ target_id: PROJECT, reason: `project_source_binding:${bindingId}` }]);
   });
 
+
+  it("archives the corpus rows a deleted binding backed, as routing does when a link goes", async () => {
+    if (!db.available) return;
+    const { itemId } = await seedItemWithEvidence();
+    const bindingId = await seedBinding(PROJECT);
+    await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
+    const corpus = () => db.pool.query<{ status: string }>(
+      `SELECT status FROM project_corpus_items WHERE project_id = $1 AND source_item_id = $2 AND object_id IS NULL`,
+      [PROJECT, itemId],
+    );
+    expect((await corpus()).rows).toEqual([{ status: "active" }]);
+
+    await new ProjectSourceBindingRepository(db.pool).deleteProjectSourceBinding({ spaceId: SPACE, userId: OWNER }, bindingId);
+
+    expect((await corpus()).rows).toEqual([{ status: "archived" }]);
+  });
+
+  it("keeps a handled collection notification handled when a known item is routed again", async () => {
+    if (!db.available) return;
+    await seedItemWithEvidence();
+    const bindingId = await seedBinding(PROJECT);
+    await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
+    const notification = () => db.pool.query<{ status: string; processed_at: string | null }>(
+      `SELECT status, processed_at FROM activity_records
+        WHERE space_id = $1 AND project_id = $2 AND activity_type = 'project_source_collection'`,
+      [SPACE, PROJECT],
+    );
+    expect((await notification()).rows).toMatchObject([{ status: "raw" }]);
+    await db.pool.query(
+      `UPDATE activity_records SET status = 'processed', processed_at = now()
+        WHERE space_id = $1 AND project_id = $2 AND activity_type = 'project_source_collection'`,
+      [SPACE, PROJECT],
+    );
+
+    const again = await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
+
+    expect(again.created_links).toBe(0);
+    expect((await notification()).rows).toMatchObject([{ status: "processed" }]);
+    expect((await notification()).rows[0]?.processed_at).not.toBeNull();
+  });
 });
 
 describe("Source extraction inside a Project", () => {

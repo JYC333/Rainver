@@ -324,7 +324,10 @@ async function materializeProjectSourceItemLinksFromPlan(
     const wasReactivated = previous.rows[0]?.status === "archived";
     if (wasCreated) created++;
     else if (wasReactivated) reactivated++;
-    if (binding.collection_notifications_enabled) {
+    // Like the standing comparison below: a known item routed again (a
+    // connection re-scan, extraction finishing) is not news, and must not
+    // pull a handled or discarded "new items" notification back to raw.
+    if (binding.collection_notifications_enabled && (wasCreated || wasReactivated)) {
       await upsertProjectSourceCollectionActivity(db, {
         spaceId: input.spaceId,
         projectId: binding.project_id,
