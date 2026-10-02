@@ -96,7 +96,7 @@ concept as "a first-class long-term Scope" and planning to generalise the
 content governance interface to accommodate it.
 
 `ContextScope`, the alternative that specification proposed, is worse on two
-counts: it collides with `workContextScopeId` (104 references under `server/src`, on the
+counts: it collides with `workContextScopeId` (over a hundred references under `server/src`, on the
 execution path, meaning a run's work context rather than any content scope), and
 the word
 "Scope" asserts precisely the access boundary decision 3 denies.
