@@ -181,12 +181,16 @@ reads `systemActionsForObjectType` directly and keeps only its own wording.
 
 **B12I** — The `ontology` module owns the ontology's own definitions and
 storage: the Object Type / Link Type / entity registries and their interface
-declarations, registry-backed validation, polymorphic status resolution, and
-the `space_objects` / `object_relations` / `space_object_profiles` reads and
-proposal writes. It does **not** own the tables of the domains that register
-into it — those modules register their own entities and supply their own
-implementations, as with `ProposalApplierRegistry`. `ontology` must never take
-ownership of a domain table merely because that domain is registered.
+declarations, registry-backed validation, polymorphic status resolution, the
+`space_objects` / `object_relations` / `space_object_profiles` tables, the
+shared endpoint and governance checks every write to them calls, and the
+creation of ontology-object proposals. Domains keep their own read and write
+sites on those tables and call the shared checks (ADR 0012 decision 3); the
+`object_relation_create` applier, for one, lives in `knowledge`. `ontology`
+does **not** own the tables of the domains that register into it — those
+modules register their own entities and supply their own implementations, as
+with `ProposalApplierRegistry`. `ontology` must never take ownership of a
+domain table merely because that domain is registered.
 
 Where a shared concern genuinely spans both — proposal creation, Claim lookup —
 it is passed in as an explicit seam rather than duplicated or absorbed, so the
@@ -540,7 +544,7 @@ execution-engine data rather than a capability grouping.
 
 ## Runtime Adapter Boundaries
 
-**B38** — The Rainver core is runtime-agnostic. OpenCode, Claude Code, Codex, Cursor, and any other vendor CLI are optional runtime adapters, not the foundation. Core features (memory, knowledge, flashcards, activity capture, proposals, assistant chat) must work without any coding-agent runtime installed.
+**B38** — The Rainver core is runtime-agnostic. OpenCode, Claude Code, Codex, Cursor, and any other vendor CLI are optional runtime adapters, not the foundation. Core features (memory, knowledge, flashcards, activity capture, proposals) must work without any coding-agent runtime installed. Assistant chat is an `agent` Run and, like every autonomous multi-turn turn, executes through the ACP runtime on an execution host (ADR 0022): it needs a logged-in CLI copy on some host the person can reach — the built-in Server Host's managed OpenCode by default — but depends on no vendor in particular, and the server keeps no in-process Agent loop to fall back to.
 
 **B39** — No vendor CLI or external runtime is the source of truth for memory, policy, permissions, or audit records. These always live in the Rainver database regardless of which runtime adapter is active.
 

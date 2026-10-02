@@ -33,7 +33,9 @@ of any vendor's harness.
 Rainver is the governance and context layer over vendor CLIs. Runtime
 adapters are adapters to the core, never its foundation, and no core
 authority (canonical state, policy, memory, proposals, context) may depend on
-any one vendor CLI. Every adapter is independently disableable.
+any one vendor CLI. An adapter is available only where an execution host
+holds an installed, logged-in copy of it; there is no separate per-adapter
+enable switch, and a CLI nobody installs cannot run (`RUNTIME_ADAPTER_STANDARD.md`).
 
 ### 2. Three layers stay separate
 
@@ -44,11 +46,14 @@ any one vendor CLI. Every adapter is independently disableable.
 | Model Provider | LLM API credential the server holds | Anthropic, OpenAI, Google |
 
 `RuntimeAdapterSpec` (code) is the source of truth for how an adapter
-behaves. Per-Space `RuntimeAdapter` rows hold configuration only — enabled
-state, executable override, health. Credential profiles are user-owned and
-resolved per Run from the instructing user's enabled Space grants
-([ADR 0008](0008-credential-channel-isolation.md)); they are not adapter
-configuration. Adding a CLI normally means adding a spec, not a runtime class.
+behaves; there are no runtime-adapter database rows. A Space's runtime choice
+lives on `AgentRuntimeProfile` rows (`runtime_key`, backend mode, options —
+[ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)), and each host
+reports the installation and health of the copies it holds. Credential
+profiles are user-owned and resolved per Run from the instructing user's
+enabled Space grants ([ADR 0008](0008-credential-channel-isolation.md)); they
+are not adapter configuration. Adding a CLI normally means adding a spec, not
+a runtime class.
 
 ### 3. One protocol: the Agent Client Protocol
 
