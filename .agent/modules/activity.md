@@ -8,7 +8,7 @@ Raw input boundary for raw inputs. Nothing bypasses this layer into active memor
 
 ## Owns
 - `ActivityRecord` model
-- `ActivityService`
+- `PgActivityRepository` (`repository.ts`), consolidation (`consolidationRepository.ts`, `consolidationJob.ts`), and notification pointer rows (`notificationPointers.ts`)
 - `/api/v1/activity` routes
 - Activity → proposal pipeline
 
@@ -17,9 +17,9 @@ Raw input boundary for raw inputs. Nothing bypasses this layer into active memor
 ```
 ActivityRecord:
   id, space_id, user_id, project_folder_id, agent_id
-  source_kind/source_type, source_trust
+  activity_type, source_kind, source_trust
   title, content
-  source_run_id, source_task_id, source_session_id, source_url
+  source_run_id, source_task_id, session_id (API: source_session_id), source_url
   visibility, access_level, owner_user_id
   subject_user_id, project_id
   aggregate_key

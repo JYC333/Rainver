@@ -8,7 +8,7 @@ Raw-input layer (L0). Everything entering the system lands as an `ActivityRecord
 
 ## Owns
 - `ActivityRecord` model
-- `ActivityService` (CRUD, status transitions, source trust inference)
+- `PgActivityRepository` (`repository.ts`: CRUD, review/archive status transitions, source trust inference) and `PgActivityConsolidationRepository` (consolidation)
 - Activity API routes
 - Activity inbox UI (`ActivityInboxPage.tsx`)
 
@@ -70,18 +70,19 @@ Daily Sources post-processing also emits pointer rows into Activity:
 
 ```
 source_post_processing_run succeeded
-    → upsert ActivityRecord(activity_type=source, aggregate_key=source:briefing:<source_connection_id>:<local_date>)
-    → Inbox row opens /library/digests/:connectionId/:date
+    → upsert ActivityRecord(activity_type=source, aggregate_key=source:briefing:<source_channel_id>:<local_date>)
+    → Inbox row opens /library/digests/<source_channel_id>/<local_date>
     → review/archive clears the notification without deleting Library content
 ```
 
 These rows are notification pointers only. `payload_json` carries
-`briefing_date`, `source_connection_id`, `post_processing_run_ids`,
-`artifact_ids`, and `decision_counts`; `content` is a short preview, never the
+`briefing_date`, `source_channel_id`, `source_connection_name`,
+`post_processing_run_ids`, `artifact_ids`, `decision_counts`, and `run_count`;
+`content` is a short preview, never the
 full digest body. The per-source toggle is
 `source_connections.config_json.daily_inbox_briefing`; when absent, emission is
-enabled if the connection currently has at least one active post-processing
-rule. Existing reviewed rows are re-surfaced to `raw` when a new run lands for
+enabled if the source channel currently has at least one active
+post-processing rule. Existing reviewed rows are re-surfaced to `raw` when a new run lands for
 the same source local day.
 
 Project source bindings emit the same shape, one row per Project per local day:
@@ -127,7 +128,7 @@ place every time:
 | Surface | Scope |
 |---|---|
 | `/activity` (Activity Inbox) | the whole Space; a Project filter the reader can set and clear |
-| `/projects/:projectId/raw` (Raw material) | pinned to that Project |
+| `/projects/:projectId/sources?tab=raw` (Raw material; the old `/projects/:projectId/raw` redirects here) | pinned to that Project |
 
 One queue, one implementation: both render `ActivityQueue`, which owns the
 filters, the records and the review/archive actions. A second implementation
@@ -169,7 +170,7 @@ mounting drops it, since every row would repeat it.
 - `server/src/modules/memory/`
 - `apps/web/src/modules/activity/ActivityQueue.tsx` (the queue itself)
 - `apps/web/src/modules/activity/ActivityInboxPage.tsx` (Space-wide mounting)
-- `apps/web/src/modules/projects/ProjectRawMaterialPage.tsx` (pinned mounting)
+- `apps/web/src/modules/projects/ProjectRawMaterialPage.tsx` (pinned mounting, rendered as the `raw` tab of `SourcesAreaPage.tsx`)
 
 ## Related Decisions
 - [0003-memory-proposal-flow.md](../decisions/0003-memory-proposal-flow.md)
