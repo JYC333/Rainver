@@ -233,7 +233,11 @@ function proposalOrderSql(): string {
            END DESC,
            p.review_deadline ASC NULLS LAST,
            p.expires_at ASC NULLS LAST,
-           p.created_at DESC`;
+           p.created_at DESC,
+           -- A unique last key: a packet's children share every key above to
+           -- the millisecond, and OFFSET pages over an undefined order repeat
+           -- one row and skip another.
+           p.id DESC`;
 }
 
 export function proposalToOut(row: ProposalRow, now: Date): ProposalOut {

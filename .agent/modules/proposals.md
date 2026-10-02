@@ -47,7 +47,13 @@ CodePatchSnapshot:
 ## Main Flow
 
 1. Product code creates a `Proposal` (pending, not active memory)
-2. User reviews and approves/rejects via `/api/v1/proposals/{id}/accept` or `/reject`
+2. User reviews and approves/rejects via `/api/v1/proposals/{id}/accept` or `/reject`.
+   Both decisions are judged by the same role (`effectiveApproverRole`):
+   `required_approver_role: "owner"` on a Project-scoped proposal means the
+   Project's owner, for declining as much as for accepting. A malformed JSON
+   body answers 422. The list is ordered by urgency, deadlines and
+   `created_at`, with `id` as the unique last key so OFFSET pages over a
+   packet's same-millisecond children neither repeat nor skip a row.
 3. `PgProposalApplyService.accept(...)`:
    - Rejects preview proposals
    - Rejects already-accepted or rejected proposals

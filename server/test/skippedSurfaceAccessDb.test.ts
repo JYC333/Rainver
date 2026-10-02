@@ -310,6 +310,40 @@ describe("skipped-surface access (real Postgres)", () => {
     expect(again).toMatchObject({ source_uri: "https://example.com/shared-slot" });
   });
 
+  it("lets a Project owner who is only a Space member reject what they could accept", async () => {
+    if (!db.available) return;
+    // Accept already reads `required_approver_role: "owner"` on a Project
+    // proposal as the Project's owner; reject compared the Space role alone
+    // and answered the same person 404.
+    const theirProject = randomUUID();
+    await db.pool.query(
+      `INSERT INTO projects (id, space_id, name, status, owner_user_id, created_at, updated_at)
+       VALUES ($1, $2, 'Their project', 'active', $3, now(), now())`,
+      [theirProject, SPACE, OTHER],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+    const proposal = await insertProposalRow(db.pool, {
+      spaceId: SPACE,
+      proposalType: "follow_up_task",
+      title: "Needs the Project owner",
+      payload: {},
+      rationale: "fixture",
+      createdByUserId: OWNER,
+      ownerUserId: OWNER,
+      visibility: "space_shared",
+      riskLevel: "medium",
+      requiredApproverRole: "owner",
+      projectId: theirProject,
+    });
+    const apply = PgProposalApplyService.fromConfig(loadConfig({
+      SERVER_DATABASE_URL: db.connectionUri,
+      SERVER_INTERNAL_TOKEN: "test-internal-token",
+    }));
+
+    const rejected = await apply.reject(proposal.id, other);
+    expect(rejected).toMatchObject({ id: proposal.id, status: "rejected" });
+  });
+
   it("refuses code_patch rollback without the apply gate", async () => {
     if (!db.available) return;
     const proposal = await insertProposalRow(db.pool, {

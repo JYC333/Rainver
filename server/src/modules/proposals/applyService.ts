@@ -734,16 +734,7 @@ export class PgProposalApplyService {
     userId: string,
   ): Promise<void> {
     assertRequiredOwnerMayDecide(proposal, userId);
-    const spaceRole = await getMembershipRole(client, userId, proposal.space_id);
-    // `required_approver_role: "owner"` on a Project-scoped proposal means the
-    // Project's owner, which is what the applier's own authority check
-    // (`assertProjectOwnerLevel`) asks. Comparing the Space role alone let a
-    // Project owner who is a Space member be shown the Accept button and then
-    // refused by it.
-    const role = spaceRole !== "owner" && proposal.project_id
-      && await isProjectOwnerLevel(client, proposal.space_id, proposal.project_id, userId)
-      ? "owner"
-      : spaceRole;
+    const role = await effectiveApproverRole(client, proposal, userId);
     const result = await enforceProposalApply(
       this.config,
       {
@@ -1092,8 +1083,27 @@ async function canRejectProposal(
   proposal: ApplyProposalRow,
   userId: string,
 ): Promise<boolean> {
-  const role = await getMembershipRole(client, userId, proposal.space_id);
-  return canRejectProposalWithRole(proposal, userId, role);
+  return canRejectProposalWithRole(proposal, userId, await effectiveApproverRole(client, proposal, userId));
+}
+
+/**
+ * The role a decision is judged by. `required_approver_role: "owner"` on a
+ * Project-scoped proposal means the Project's owner, which is what the
+ * applier's own authority check (`assertProjectOwnerLevel`) asks. Comparing
+ * the Space role alone let a Project owner who is a Space member be shown the
+ * Accept button and then refused by it — and, read by accept alone, let the
+ * same person accept a proposal they were answered 404 for declining.
+ */
+async function effectiveApproverRole(
+  client: PoolClient,
+  proposal: Pick<ApplyProposalRow, "space_id" | "project_id">,
+  userId: string,
+): Promise<string | null> {
+  const spaceRole = await getMembershipRole(client, userId, proposal.space_id);
+  return spaceRole !== "owner" && proposal.project_id
+    && await isProjectOwnerLevel(client, proposal.space_id, proposal.project_id, userId)
+    ? "owner"
+    : spaceRole;
 }
 
 function normalizeRequiredApproverRole(role: string | null | undefined): "owner" | "admin" | "reviewer" | null {
