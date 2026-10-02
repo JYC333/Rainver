@@ -14,16 +14,9 @@ export function mapProjectionToRenderData(
   options: MapProjectionOptions,
 ): GraphRenderData {
   const zoom = options.zoom ?? 1
-  const hiddenKinds = new Set(options.viewState.hiddenKinds)
-  const activeEdgeKinds = new Set(options.viewState.activeEdgeKinds)
-  const visibleNodeIds = new Set(
-    projection.nodes
-      .filter((node) => !hiddenKinds.has(node.kind))
-      .map((node) => node.id),
-  )
+  const visible = visibleElements(projection, options.viewState)
 
-  const nodes = projection.nodes
-    .filter((node) => visibleNodeIds.has(node.id))
+  const nodes = visible.nodes
     .map((node) => {
       const style = resolveNodeStyle(node, options.theme)
       const pinned = options.viewState.pinnedNodes[node.id]
@@ -60,10 +53,7 @@ export function mapProjectionToRenderData(
       }
     })
 
-  const edges = projection.edges
-    .filter((edge) => !edge.hidden)
-    .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
-    .filter((edge) => activeEdgeKinds.size === 0 || activeEdgeKinds.has(edge.kind))
+  const edges = visible.edges
     .map((edge) => {
       const style = resolveEdgeStyle(edge, options.theme)
       const labelVisible = shouldShowEdgeLabel(edge, zoom, options.viewState)
@@ -108,6 +98,19 @@ function initialEdgeStates(source: string, target: string, state: GraphViewState
   return states
 }
 
+/** The nodes and edges `mapProjectionToRenderData` draws for this view state. */
+function visibleElements(projection: GraphProjection, state: GraphViewState) {
+  const hiddenKinds = new Set(state.hiddenKinds)
+  const activeEdgeKinds = new Set(state.activeEdgeKinds)
+  const nodes = projection.nodes.filter((node) => !hiddenKinds.has(node.kind))
+  const visibleNodeIds = new Set(nodes.map((node) => node.id))
+  const edges = projection.edges
+    .filter((edge) => !edge.hidden)
+    .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
+    .filter((edge) => activeEdgeKinds.size === 0 || activeEdgeKinds.has(edge.kind))
+  return { nodes, edges }
+}
+
 export function buildElementStateMap(
   projection: GraphProjection,
   state: GraphViewState,
@@ -123,12 +126,16 @@ export function buildElementStateMap(
     }
   }
 
-  for (const node of projection.nodes) {
+  // Only what is drawn: G6 refuses a whole state batch that names an element
+  // it does not hold, so a hidden kind or an edge filter would otherwise stop
+  // every hover and selection highlight.
+  const visible = visibleElements(projection, state)
+  for (const node of visible.nodes) {
     const states = initialNodeStates(node.id, state)
     if (activeNode && !neighbors.has(node.id)) states.push('faded')
     map[node.id] = states
   }
-  for (const edge of projection.edges) {
+  for (const edge of visible.edges) {
     const states = initialEdgeStates(edge.source, edge.target, state)
     if (activeNode && edge.source !== activeNode && edge.target !== activeNode) states.push('faded')
     map[edge.id] = states
@@ -141,24 +148,14 @@ export function buildLabelVisibility(
   state: GraphViewState,
   zoom: number,
 ): GraphLabelVisibility {
-  const hiddenKinds = new Set(state.hiddenKinds)
-  const activeEdgeKinds = new Set(state.activeEdgeKinds)
-  const visibleNodeIds = new Set(
-    projection.nodes
-      .filter((node) => !hiddenKinds.has(node.kind))
-      .map((node) => node.id),
-  )
+  const visible = visibleElements(projection, state)
   return {
-    nodes: projection.nodes
-      .filter((node) => visibleNodeIds.has(node.id))
+    nodes: visible.nodes
       .map((node) => ({
         id: node.id,
         labelText: shouldShowNodeLabel(node, zoom, state) ? node.label : '',
       })),
-    edges: projection.edges
-      .filter((edge) => !edge.hidden)
-      .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
-      .filter((edge) => activeEdgeKinds.size === 0 || activeEdgeKinds.has(edge.kind))
+    edges: visible.edges
       .map((edge) => ({
         id: edge.id,
         labelText: shouldShowEdgeLabel(edge, zoom, state) ? edge.label ?? '' : '',
@@ -182,26 +179,16 @@ export function buildInteractionLabelVisibility(
   )
   if (affectedNodeIds.size === 0) return { nodes: [], edges: [] }
 
-  const hiddenKinds = new Set(state.hiddenKinds)
-  const activeEdgeKinds = new Set(state.activeEdgeKinds)
-  const visibleNodeIds = new Set(
-    projection.nodes
-      .filter((node) => !hiddenKinds.has(node.kind))
-      .map((node) => node.id),
-  )
+  const visible = visibleElements(projection, state)
 
   return {
-    nodes: projection.nodes
+    nodes: visible.nodes
       .filter((node) => affectedNodeIds.has(node.id))
-      .filter((node) => visibleNodeIds.has(node.id))
       .map((node) => ({
         id: node.id,
         labelText: shouldShowNodeLabel(node, zoom, state) ? node.label : '',
       })),
-    edges: projection.edges
-      .filter((edge) => !edge.hidden)
-      .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
-      .filter((edge) => activeEdgeKinds.size === 0 || activeEdgeKinds.has(edge.kind))
+    edges: visible.edges
       .filter((edge) => affectedNodeIds.has(edge.source) || affectedNodeIds.has(edge.target))
       .map((edge) => ({
         id: edge.id,
