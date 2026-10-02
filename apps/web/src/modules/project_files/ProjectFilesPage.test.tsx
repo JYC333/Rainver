@@ -650,6 +650,42 @@ describe('Project Files & Code Area', () => {
     expect(screen.queryByText('first')).not.toBeInTheDocument()
   })
 
+  it('keeps the shown file bound to its draft when the next file fails to load', async () => {
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({
+      items: [folder('folder-1', 'Source')], total: 1, limit: 200, offset: 0,
+    })
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({
+      name: 'source', path: '.', type: 'dir', children: [
+        { name: 'first.txt', path: 'first.txt', type: 'file', size: 6 },
+        { name: 'second.txt', path: 'second.txt', type: 'file', size: 7 },
+      ],
+    })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.file)
+      .mockResolvedValueOnce({ path: 'first.txt', content: 'first\n', size: 6, line_count: 2, sha256: 'a'.repeat(64), encoding: 'utf8', writable: true, line_ending_mode: 'lf' })
+      .mockRejectedValueOnce(new Error('host offline'))
+    vi.mocked(projectFoldersApi.draft).mockImplementation(async (_projectId, _folderId, path) => (path === 'first.txt' ? {
+      id: 'draft-1', space_id: 'space-1', project_id: 'project-1', project_folder_id: 'folder-1', workspace_location_id: 'location-1', owner_user_id: 'user-1',
+      target_kind: 'existing', relative_path: 'first.txt', base_exists: true, base_sha256: 'a'.repeat(64), content: 'first, drafted\n', content_sha256: 'c'.repeat(64), byte_size: 15, version: 1,
+      source_encoding: 'utf8', preserve_bom: false, line_ending_mode: 'lf', created_at: '', updated_at: '', expires_at: '',
+    } : null) as never)
+
+    try {
+      renderPage()
+      fireEvent.click(await screen.findByRole('button', { name: /first\.txt/ }))
+      expect(await screen.findByText('first, drafted')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /second\.txt/ }))
+      await waitFor(() => expect(projectFoldersApi.file).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading file' })).not.toBeInTheDocument())
+
+      expect(screen.getByText('first, drafted')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Discard/ })).toBeInTheDocument()
+    } finally {
+      vi.mocked(projectFoldersApi.draft).mockResolvedValue(null)
+    }
+  })
+
   it('reuses cached content when returning to an already opened file', async () => {
     const revalidation = deferred<{ path: string; content: string; size: number; line_count: number }>()
     vi.mocked(projectFoldersApi.list).mockResolvedValue({

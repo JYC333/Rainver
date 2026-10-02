@@ -340,11 +340,17 @@ export default function ProjectFilesPage() {
     const cachedFile = fileCache.current.get(cacheKey)
     setSelectedFilePath(path)
     setFileRevisions([])
-    setFileDraft(null)
-    setDraftLoading(typeof projectFoldersApi.draft === 'function')
-    if (cachedFile) {
-      setCenterView({ mode: 'file', data: cachedFile })
+    // The draft goes with the file it belongs to: cleared only when the next
+    // file is shown. Clearing it up front unbound the draft from the editor
+    // still showing the previous file, for good if the next read failed.
+    const showFile = (data: FileContent) => {
+      setCenterView({ mode: 'file', data })
       setCenterLoading(false)
+      setFileDraft(null)
+      setDraftLoading(typeof projectFoldersApi.draft === 'function')
+    }
+    if (cachedFile) {
+      showFile(cachedFile)
     } else {
       setCenterLoading(true)
     }
@@ -363,8 +369,8 @@ export default function ProjectFilesPage() {
       const fc = await projectFoldersApi.file(projectId, folderId, path)
       if (isCurrentSelection()) {
         fileCache.current.set(cacheKey, fc)
-        setCenterView({ mode: 'file', data: fc })
-        setCenterLoading(false)
+        if (!cachedFile) showFile(fc)
+        else setCenterView({ mode: 'file', data: fc })
       }
       const draft = await draftPromise
       if (isCurrentSelection()) {
