@@ -24,7 +24,6 @@ describe("loadConfig", () => {
     expect(c.rainverHome).toBe("/rainver");
     expect(c.workspaceRoot).toBe("/rainver/workspaces");
     expect(c.artifactStorageRoot).toBe("/rainver/storage/artifacts");
-    expect(c.deployerSocketPath).toBe("/rainver/run/deployer.sock");
     expect(c.internalToken).toBeNull();
     expect(c.betterAuthSecret).toBeNull();
     expect(c.googleClientId).toBe("");
@@ -61,7 +60,6 @@ describe("loadConfig", () => {
       RAINVER_HOME: "/tmp/rainver",
       WORKSPACE_ROOT: "/tmp/rainver/workspaces-root",
       ARTIFACT_STORAGE_ROOT: "/tmp/rainver/artifacts-root",
-      DEPLOYER_SOCKET_PATH: "/tmp/rainver/run/deployer.sock",
     });
     expect(c.host).toBe("0.0.0.0");
     expect(c.port).toBe(8010);
@@ -88,7 +86,6 @@ describe("loadConfig", () => {
     expect(c.rainverHome).toBe("/tmp/rainver");
     expect(c.workspaceRoot).toBe("/tmp/rainver/workspaces-root");
     expect(c.artifactStorageRoot).toBe("/tmp/rainver/artifacts-root");
-    expect(c.deployerSocketPath).toBe("/tmp/rainver/run/deployer.sock");
   });
 
   it("accepts legacy DEBUG only when SERVER_DEBUG is unset", () => {

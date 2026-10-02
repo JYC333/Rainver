@@ -26,7 +26,6 @@ function sourcesConfig(): ServerConfig {
     sandboxRunnerServerHost: "server",
     builtinHostMaxConcurrentRuns: 3,
     sandboxRoot: "/tmp/rainver/sandboxes",
-    deployerSocketPath: "/tmp/rainver/run/deployer.sock",
     artifactStorageRoot: "/tmp/rainver/storage/artifacts",
     internalToken: null,
     betterAuthSecret: null,
