@@ -49,6 +49,7 @@ instance-scoped settings store and take effect without a server restart.
 |---|---|
 | `db/rainver.dump` — PostgreSQL snapshot (`pg_dump` custom format) | Always |
 | `storage/` — artifact files | Always |
+| `artifacts/` — top-level artifacts directory | When present |
 | `secrets/` — master key and CLI login state | **Never**; separate credential archive only |
 | `config/` — runtime config | Always |
 | `workspaces/` — Project Folder files | Always |
