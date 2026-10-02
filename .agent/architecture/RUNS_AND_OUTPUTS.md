@@ -356,8 +356,9 @@ proposal-envelope fields.
 - Native capability execution is not active. System bookkeeping runs may
   carry `capability_id` / `capabilities_json` provenance, but they do not execute
   `runtime_key="capability"`; that runtime definition is disabled.
-- External capabilities default **disabled**; enable state persists in `$RAINVER_HOME/config/settings.yaml` (`capabilities.enabled_external_capabilities`) and survives registry reload.
-- Disabled external capabilities fail at adapter resolution with `capability_disabled` before execution.
+- There is no external-capability execution path: no enable switch or
+  `capability_disabled` resolution error exists, and the `capability` runtime
+  definition is `planned` and disabled by default.
 - `one_shot_docker` is the critical local-CLI executor mode. It provides a
   separate container with deny-by-default networking, read-only root, dropped
   capabilities, no-new-privileges, and fixed resource limits. Docker/image/path
