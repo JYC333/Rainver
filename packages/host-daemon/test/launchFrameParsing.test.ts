@@ -1,6 +1,6 @@
-import { HostServerFrameSchema, type HostLaunchFrame } from "@rainver/protocol";
+import { HostDaemonFrameSchema, HostServerFrameSchema, type HostLaunchFrame } from "@rainver/protocol";
 import { describe, expect, it } from "vitest";
-import { parseServerFrame, toLaunchFrame } from "../src/commands/run.js";
+import { parseServerFrame, requestFailureFrame, toLaunchFrame } from "../src/commands/run.js";
 import type { LaunchFrame } from "../src/execution.js";
 
 // The daemon used to rebuild the launch frame field by field from untyped
@@ -93,5 +93,23 @@ describe("the launch frame across the wire", () => {
 
   it("is the same contract the server dispatches against", () => {
     expect(HostServerFrameSchema.safeParse(overWire(wire)).success).toBe(true);
+  });
+});
+
+describe("a request whose handler throws before answering", () => {
+  // The handlers are fire-and-forget; a throw in one (a half-written config
+  // read under the Location lookup) used to be an unhandled rejection that
+  // ended the daemon and left the server waiting out its timeout.
+  it.each([
+    ["command_run", "command_result"],
+    ["task_run_settle", "task_run_settle_result"],
+    ["task_branch_delete", "task_branch_delete_result"],
+    ["task_merge_prepare", "task_merge_step_result"],
+    ["task_merge_continue", "task_merge_step_result"],
+    ["task_merge_abort", "task_merge_abort_result"],
+    ["task_merge_finish", "task_merge_finish_result"],
+  ] as const)("answers %s with a %s the server accepts", (type, resultType) => {
+    const frame = HostDaemonFrameSchema.parse(requestFailureFrame({ type, request_id: "request-1" }, "Malformed daemon config"));
+    expect(frame).toMatchObject({ type: resultType, request_id: "request-1", error: "Malformed daemon config" });
   });
 });

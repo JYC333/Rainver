@@ -76,7 +76,13 @@ function askRuntimeOptions(probes: RuntimeProbe[], log?: (line: string) => void)
       reportedProbeFailures.set(key, reason);
       log?.(`${key}: could not read its login methods and options — ${reason}`);
     };
-    const cwd = await mkdtemp(join(tmpdir(), "rainver-acp-probe-"));
+    let cwd: string;
+    try {
+      cwd = await mkdtemp(join(tmpdir(), "rainver-acp-probe-"));
+    } catch (error) {
+      failed(`could not create a probe directory: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
     try {
       const [rawCommand, ...args] = probe.argv.map((arg) => substituteCwd(arg, cwd));
       const launch = resolveAcpLaunch(rawCommand!, args, installation, probe.runtime_key);

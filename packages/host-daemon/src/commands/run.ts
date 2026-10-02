@@ -336,13 +336,26 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       workspace.workspace_relative_path,
       workspacesRoot(),
     );
+    /**
+     * A fire-and-forget request whose handler threw before it could answer —
+     * most often the config read under `currentWorkspaces`. The server gets
+     * the request's failure frame instead of waiting out its timeout, and the
+     * daemon is not ended by an unhandled rejection.
+     */
+    const failRequest = (frame: FailableRequestFrame, error: unknown) => {
+      log(`${frame.type} ${frame.request_id} failed: ${errorMessage(error)}`);
+      sink.send(requestFailureFrame(frame, errorMessage(error)));
+    };
     // Carried across reconnects so a reconnecting daemon's first hello
     // already names its runtimes rather than only git for one heartbeat.
     let runtimeProbes: RuntimeProbe[] | undefined = lastRuntimeProbes;
     const sendHeartbeat = () => {
+      // A config read that throws (a half-written file) or a probe that cannot
+      // start costs this one heartbeat; unheard, it would end the daemon.
       void currentWorkspaces()
         .then((ws) => helloInfo(ws, runtimeProbes, log))
-        .then((info) => sendOnThisConnection({ type: "heartbeat", ...info }));
+        .then((info) => sendOnThisConnection({ type: "heartbeat", ...info }))
+        .catch((error) => log(`heartbeat failed: ${errorMessage(error)}`));
       // Fire-and-forget, and deliberately after the heartbeat is already on
       // its way: counting starts an agent process per runtime, so it must
       // never be something a heartbeat waits for. Whatever it measures is
@@ -367,6 +380,11 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         }).catch((error) => log(`legacy profile tree archive failed: ${error instanceof Error ? error.message : String(error)}`));
         void sweepManagedWorkspaceArchives().catch((error) => log(`managed workspace sweep failed: ${error instanceof Error ? error.message : String(error)}`));
         sendOnThisConnection({ type: "hello", token, ...info });
+      }).catch((error) => {
+        // Without a hello this connection can never be acknowledged; closing
+        // it hands the retry to the reconnect loop.
+        log(`hello failed: ${errorMessage(error)}`);
+        socket.close(1011, "hello failed");
       });
     });
 
@@ -540,7 +558,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
               log,
             );
             sink.send({ type: "command_result", request_id: frame.request_id, ...result });
-          })();
+          })().catch((error) => failRequest(frame, error));
           return;
         }
         case "task_run_settle": {
@@ -559,7 +577,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             }));
             if (!result.ok) log(`task_run_settle for run ${frame.run_id} failed: ${result.error}`);
             sink.send({ type: "task_run_settle_result", request_id: frame.request_id, ...result });
-          })();
+          })().catch((error) => failRequest(frame, error));
           return;
         }
         case "task_branch_delete": {
@@ -573,7 +591,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             }));
             if (!result.ok) log(`task_branch_delete for task ${frame.workspace.worktree.task_id} failed: ${result.error}`);
             sink.send({ type: "task_branch_delete_result", request_id: frame.request_id, ...result });
-          })();
+          })().catch((error) => failRequest(frame, error));
           return;
         }
         case "task_merge_prepare":
@@ -591,7 +609,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
               : await continueTaskMerge(target);
             if (!result.ok) log(`${frame.type} for task ${target.taskId} failed: ${result.error}`);
             sink.send({ type: "task_merge_step_result", request_id: frame.request_id, ...result });
-          })();
+          })().catch((error) => failRequest(frame, error));
           return;
         }
         case "task_merge_abort": {
@@ -604,7 +622,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             });
             if (!result.ok) log(`task_merge_abort for task ${frame.workspace.worktree.task_id} failed: ${result.error}`);
             sink.send({ type: "task_merge_abort_result", request_id: frame.request_id, ...result });
-          })();
+          })().catch((error) => failRequest(frame, error));
           return;
         }
         case "task_merge_finish": {
@@ -621,7 +639,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
             });
             if (!result.ok) log(`task_merge_finish for task ${frame.workspace.worktree.task_id} failed: ${result.error}`);
             sink.send({ type: "task_merge_finish_result", request_id: frame.request_id, ...result });
-          })();
+          })().catch((error) => failRequest(frame, error));
           return;
         }
         case "usage_probe": {
@@ -870,4 +888,39 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
       // connection-failure path; let that handler settle the promise.
     });
   });
+}
+
+type FailableRequestFrame = HostServerFrameOf<
+  "command_run" | "task_run_settle" | "task_branch_delete"
+  | "task_merge_prepare" | "task_merge_continue" | "task_merge_abort" | "task_merge_finish"
+>;
+
+/** The failure answer to a request whose handler threw before answering. */
+export function requestFailureFrame(
+  frame: Pick<FailableRequestFrame, "type" | "request_id">,
+  error: string,
+): HostDaemonFrame {
+  const request_id = frame.request_id;
+  switch (frame.type) {
+    case "command_run":
+      return { type: "command_result", request_id, exit_code: 1, stdout: "", stderr: "", timed_out: false, error };
+    case "task_run_settle":
+      return { type: "task_run_settle_result", request_id, ok: false, branch: null, commit: null, error };
+    case "task_branch_delete":
+      return { type: "task_branch_delete_result", request_id, ok: false, deleted: false, error };
+    case "task_merge_prepare":
+    case "task_merge_continue":
+      return {
+        type: "task_merge_step_result", request_id, ok: false, outcome: null, main_branch: null,
+        onto_commit: null, task_commit: null, conflicted_files: [], error,
+      };
+    case "task_merge_abort":
+      return { type: "task_merge_abort_result", request_id, ok: false, error };
+    case "task_merge_finish":
+      return { type: "task_merge_finish_result", request_id, ok: false, outcome: null, merged_commit: null, overlapping_files: [], error };
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
