@@ -130,11 +130,16 @@ describe("run evidence redaction", () => {
   });
 
   it("truncates only after the expanded evidence limit", () => {
-    const value = "x".repeat(MAX_EVIDENCE_TEXT_CHARS + 1);
+    expect(redactEvidenceText("x".repeat(MAX_EVIDENCE_TEXT_CHARS))).toBe("x".repeat(MAX_EVIDENCE_TEXT_CHARS));
 
-    expect(redactEvidenceText(value)).toBe(
-      `${"x".repeat(MAX_EVIDENCE_TEXT_CHARS)}...[truncated]`,
-    );
+    const redacted = redactEvidenceText("x".repeat(MAX_EVIDENCE_TEXT_CHARS + 1))!;
+    expect(redacted.endsWith("...[truncated]")).toBe(true);
+    // The cap backs off through an unbroken token-like run, by at most the
+    // overscan, the way the window's far edge does.
+    const kept = redacted.length - "...[truncated]".length;
+    expect(kept).toBeGreaterThanOrEqual(MAX_EVIDENCE_TEXT_CHARS - 256);
+    expect(kept).toBeLessThanOrEqual(MAX_EVIDENCE_TEXT_CHARS);
+    expect(redacted.slice(0, kept)).toBe("x".repeat(kept));
   });
 
   it("redacts a secret that straddles the truncation point", () => {
@@ -163,6 +168,17 @@ describe("run evidence redaction", () => {
       const value = `${shrinking}${'z'.repeat(Math.max(0, padding))} ${jwt} trailing${'y'.repeat(4000)}`;
       expect(redactEvidenceText(value)!, `nudge ${nudge}`).not.toMatch(/eyJ[A-Za-z0-9_-]{6,}/);
     }
+  });
+
+  it("leaves no decodable JWT head when a bare token straddles the cap itself", () => {
+    // The cap is a boundary of the same kind as the window's far edge. A JWT
+    // is matched only whole, so one whose second dot lies past the overscan
+    // was never redacted, and cutting at the cap kept its header and payload.
+    const jwt = `eyJhbGciOiJIUzI1NiJ9.eyJ${"A".repeat(600)}.SIGNATURE_TAIL_abcdef`;
+    const value = `${"x".repeat(MAX_EVIDENCE_TEXT_CHARS - 120)} ${jwt} trailing${"y".repeat(4000)}`;
+    const redacted = redactEvidenceText(value)!;
+    expect(redacted).not.toMatch(/eyJ[A-Za-z0-9_-]{6,}/);
+    expect(redacted.endsWith("...[truncated]")).toBe(true);
   });
 
   it("leaves usage counts alone", () => {

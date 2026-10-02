@@ -8,6 +8,7 @@ import {
   type RunPolicyEnforcer,
 } from "../src/modules/runs/orchestrationService.js";
 import type { RunMaterializationService } from "../src/modules/runs/materializationService.js";
+import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import type {
   RunEventInput,
   RunRecord,
@@ -631,6 +632,29 @@ class FakeDelegationProjector implements RunDelegationLifecycleProjectorPort {
 }
 
 describe("RunOrchestrationService", () => {
+  it("asks the database for the built-in host again after a transient failure", async () => {
+    // The resolved id is cached for the worker's lifetime. Caching the
+    // rejection too would fail every later unbound CLI Run in this process
+    // until a restart, long after the database came back.
+    const ensure = vi.spyOn(PgHostRepository.prototype, "ensureServerHostId")
+      .mockRejectedValueOnce(new Error("connection terminated unexpectedly"))
+      .mockResolvedValueOnce("host-builtin");
+    try {
+      const { builtinHostResolver: _unused, ...adapters } = daemonCli({
+        async runCommand() {
+          return { returncode: 0, stdout: "", stderr: "", timed_out: false };
+        },
+      });
+      const service = new RunOrchestrationService(config(true), new FakeRepo(), adapters);
+      const resolve = () => (service as unknown as { builtinHostId(): Promise<string> }).builtinHostId();
+      await expect(resolve()).rejects.toThrow("connection terminated unexpectedly");
+      await expect(resolve()).resolves.toBe("host-builtin");
+      expect(ensure).toHaveBeenCalledTimes(2);
+    } finally {
+      ensure.mockRestore();
+    }
+  });
+
   it("admits delegated children and reconciles dependency waits after releasing the active execution lock", async () => {
     const repo = new FakeRepo();
     repo.run = run({ run_group_id: "group-1" });

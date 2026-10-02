@@ -38,6 +38,19 @@ function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
   };
 }
 
+function emptyPlan() {
+  return {
+    recipe_id: null,
+    commands: null,
+    required_checks: null,
+    artifact_expectations: null,
+    timeout_seconds: null,
+    profile_test_commands: null,
+    profile_build_commands: null,
+    forbidden_paths: null,
+  };
+}
+
 class VerificationDb implements Queryable {
   readonly inserts: unknown[][] = [];
 
@@ -94,6 +107,55 @@ describe("verification engine", () => {
       "proposal_created",
     ]);
     expect(hasDeclaredVerificationChecks(current)).toBe(true);
+  });
+
+  it("declares a check only where it would build one", () => {
+    // Natural-language criteria build no declaration, so a successful Run
+    // must not be recorded as missing a verification nobody could run; a
+    // check written with `kind` builds one and counts.
+    const prose = run({
+      contract_snapshot_json: {
+        acceptance_criteria_json: { checks: ["all unit tests pass", "README updated"] },
+      },
+    });
+    expect(buildVerificationDeclarations(prose, emptyPlan(), [])).toEqual([]);
+    expect(hasDeclaredVerificationChecks(prose)).toBe(false);
+
+    const byKind = run({
+      contract_snapshot_json: {
+        acceptance_criteria_json: { checks: [{ kind: "file_exists", path: "README.md" }] },
+      },
+    });
+    expect(buildVerificationDeclarations(byKind, emptyPlan(), [])).toHaveLength(1);
+    expect(hasDeclaredVerificationChecks(byKind)).toBe(true);
+  });
+
+  it("keeps diff_scope to the declared paths rather than any file with the same name", async () => {
+    const engine = new PgVerificationEngine(new VerificationDb(), undefined, {
+      async run(input) {
+        const stdout = input.command[1] === "diff" ? "packages/protocol/package.json\0server/package.json\0" : "";
+        return { returncode: 0, stdout, stderr: "", timed_out: false };
+      },
+    });
+    const results = await engine.verify({
+      run: run({
+        contract_snapshot_json: {
+          acceptance_criteria_json: {
+            checks: [
+              { type: "diff_scope", allowed_paths: ["package.json"] },
+              { type: "no_forbidden_change", forbidden_paths: ["package.json"] },
+            ],
+          },
+        },
+      }),
+      execution_target: { host_id: "host-1", workspace_location_id: "loc-1" },
+      base_commit_sha: "HEAD",
+      output_json: {},
+      materialization_items: [] as RunMaterializationItemSummary[],
+    });
+    expect(results.find((result) => result.verifier_type === "diff_scope")).toMatchObject({ status: "failed" });
+    // The forbidden direction stays conservative: a same-named file anywhere still counts.
+    expect(results.find((result) => result.verifier_type === "no_forbidden_change")).toMatchObject({ status: "failed" });
   });
 
   it("treats plan verification recipe references as executable checks", () => {

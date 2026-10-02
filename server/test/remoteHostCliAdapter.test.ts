@@ -512,6 +512,36 @@ describe("executeRemoteHostCliAdapter", () => {
     });
   });
 
+  it("fails closed when the host's trust mode cannot be read, instead of running as if on a trusted machine", async () => {
+    const registry = new HostConnectionRegistry();
+    const sink = new FakeSink();
+    registry.registerConnection("host-1", sink);
+    const db: Queryable = {
+      async query<Row = Record<string, unknown>>(sql: string) {
+        if (sql.startsWith("SELECT kind FROM hosts")) throw new Error("connection terminated unexpectedly");
+        return { rows: [] as Row[], rowCount: 0 };
+      },
+    };
+    const result = await executeRemoteHostCliAdapter(
+      { run: run({ runtime_key: "opencode" }), prompt: "hi", model: null, resume_session_id: null },
+      "host-1",
+      "folder-1",
+      {
+        connectionRegistry: registry,
+        bindings: NO_PROVIDER_BINDINGS,
+        config: loadConfig({
+          SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
+          SERVER_INTERNAL_TOKEN: "internal-token",
+        }),
+        db,
+      },
+    );
+    // A built-in host whose kind went unread would have launched with a paired
+    // machine's settings: no strict session config and direct egress (B62).
+    expect(result).toMatchObject({ success: false, error_code: "host_trust_unavailable" });
+    expect(sink.sent.some((f) => f.type === "launch")).toBe(false);
+  });
+
   it("reports the host offline without hanging when no connection is registered", async () => {
     const registry = new HostConnectionRegistry();
     const result = await executeRemoteHostCliAdapter(
@@ -1329,6 +1359,41 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       const gaveUp = await queuedForever;
       expect(gaveUp.success).toBe(false);
       expect(sink.sent).toContainEqual(expect.objectContaining({ type: "terminate", run_id: "run-2", launch_id: launchIdOf(sink, "run-2") }));
+    }, 30_000);
+
+    it("says a run the host never started was never started, not that it ran out of time", async () => {
+      vi.useFakeTimers();
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const diagnostics: string[] = [];
+      const execution = executeRemoteHostCliAdapter(
+        {
+          run: run({ runtime_key: "opencode" }),
+          prompt: "hi",
+          model: null,
+          resume_session_id: null,
+          timeout_seconds: 15,
+          adapter_config: { stall_timeout_seconds: 5 },
+          thread_event_sink: async (events: ThreadEventDraft[]) => {
+            for (const event of events) if (event.event_type === "diagnostic" && event.text) diagnostics.push(event.text);
+          },
+        },
+        "host-1",
+        "folder-1",
+        { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
+      );
+      await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
+      registry.receiveWaitingForWorkspace("host-1", "run-1", launchIdOf(sink, "run-1"));
+      await vi.advanceTimersByTimeAsync(15_000);
+      const gaveUp = await execution;
+
+      expect(gaveUp).toMatchObject({ success: false, error_code: "runtime_timeout" });
+      // The executor wrote down why; the person reading the thread gets that
+      // reason, not an idle count measured against a process that never ran.
+      expect(gaveUp.error_message).toMatch(/did not start this run within its time budget/);
+      expect(gaveUp.error_message).not.toMatch(/last output/);
+      expect(diagnostics.join("\n")).toMatch(/did not start this run within its time budget/);
     }, 30_000);
 
     it("lets a slow but talking run keep going past the stall budget", async () => {

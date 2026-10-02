@@ -630,7 +630,21 @@ async function runRemoteHostCliAdapter(
   // Named here because the result envelope reports it too, and both must be
   // the same answer.
   const installation = dispatchInstallation(input.run);
-  const strictHost = await hostIsStrict(deps.config?.databaseUrl, hostId, deps.db);
+  let strictHost: boolean;
+  try {
+    strictHost = await hostIsStrict(deps.config?.databaseUrl, hostId, deps.db);
+  } catch (error) {
+    // Not knowing is not "trusted". A built-in host taken for a paired machine
+    // would launch without its strict session config and with direct egress
+    // in place of the instance's managed route (B62); the Run fails instead.
+    return remoteFailureWithEvent(
+      input,
+      spec.runtime_key,
+      "host_trust_unavailable",
+      `Could not read the execution host's trust mode: ${error instanceof Error ? error.message : String(error)}`,
+      startedAt,
+    );
+  }
   const egressTransport = !deps.executor && strictHost && deps.config
     ? managedHostEgressTransport(await readInstanceOperationsPolicy(deps.config))
     : { mode: "direct" } satisfies HostEgressTransport;
@@ -780,15 +794,21 @@ async function runRemoteHostCliAdapter(
     : { external_session_id: null, usage: null, model_usage: [], subscription_quota: null };
   if (result.timed_out) {
     const stalled = result.failure_code === "stall_timeout";
+    const neverLaunched = result.failure_code === "launch_wait_timeout";
     const idle = typeof result.idle_seconds === "number" ? result.idle_seconds : null;
     // Say which kind of stuck this was. "Remote Run timed out" is true of a
-    // runtime that worked for the whole budget and of one that said nothing
-    // after the first second, and only the second is worth retrying quickly.
-    const detail = stalled
-      ? `Remote Run produced no output for ${idle ?? "?"}s and was stopped.`
-      : idle !== null && idle > 0
-        ? `Remote Run timed out after ${timeoutSeconds}s (last output ${idle}s earlier).`
-        : `Remote Run timed out after ${timeoutSeconds}s.`;
+    // runtime that worked for the whole budget, of one that said nothing
+    // after the first second, and of one the host never started; only the
+    // second is worth retrying quickly, and the third was not the runtime's
+    // doing at all. The executor's stderr carries that third reason, and the
+    // idle count measured while no process existed says nothing.
+    const detail = neverLaunched
+      ? result.stderr || `The host did not start this run within its ${timeoutSeconds}s budget.`
+      : stalled
+        ? `Remote Run produced no output for ${idle ?? "?"}s and was stopped.`
+        : idle !== null && idle > 0
+          ? `Remote Run timed out after ${timeoutSeconds}s (last output ${idle}s earlier).`
+          : `Remote Run timed out after ${timeoutSeconds}s.`;
     await input.thread_event_sink?.([
       { event_type: "diagnostic", text: detail },
       { event_type: "status", status: "run_timeout" },
@@ -986,9 +1006,8 @@ export function executionTaskId(run: TaskWorktreeRun): string | null {
 async function hostIsStrict(databaseUrl: string | null | undefined, hostId: string, db?: Queryable): Promise<boolean> {
   if (!databaseUrl) return false;
   const result = await (db ?? getDbPool(databaseUrl))
-    .query<{ kind: string }>(`SELECT kind FROM hosts WHERE id = $1 LIMIT 1`, [hostId])
-    .catch(() => null);
-  return result?.rows[0]?.kind === "server";
+    .query<{ kind: string }>(`SELECT kind FROM hosts WHERE id = $1 LIMIT 1`, [hostId]);
+  return result.rows[0]?.kind === "server";
 }
 
 async function remoteFailureWithEvent(
@@ -1236,7 +1255,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
           ? "The host did not start this run within its time budget: another Run was writing its workspace, or the host had no free slot."
           : "",
         timed_out: true,
-        failure_code: expiry ?? "timeout",
+        failure_code: expiredBeforeLaunch ? "launch_wait_timeout" : expiry ?? "timeout",
         idle_seconds: Math.round((Date.now() - lastOutputAt) / 1000),
       };
     }

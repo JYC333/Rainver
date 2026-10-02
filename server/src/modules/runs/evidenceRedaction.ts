@@ -116,22 +116,26 @@ export function redactEvidenceText(value: string | null | undefined): string | n
   // error string used to be matched in full before this line ran.
   if (value.length <= MAX_EVIDENCE_TEXT_CHARS) return redactSecretPatterns(value);
   const scanned = redactSecretPatterns(value.slice(0, MAX_EVIDENCE_TEXT_CHARS + REDACTION_OVERSCAN_CHARS));
-  // Cutting *inside* the scanned window is safe: everything there was matched,
-  // so a token split at this point has already had whatever redaction it was
-  // going to get.
+  // Cutting inside the scanned window is mostly safe — a secret that fit in it
+  // was matched — but a shape that is matched only whole (a JWT needs all
+  // three segments) and runs out past the window was not, so the cap is a
+  // boundary of the same kind as the window's far edge and backs off the same
+  // way.
   if (scanned.length > MAX_EVIDENCE_TEXT_CHARS) {
-    return `${scanned.slice(0, MAX_EVIDENCE_TEXT_CHARS)}...[truncated]`;
+    return `${scanned.slice(0, safeCutPoint(scanned, MAX_EVIDENCE_TEXT_CHARS))}...[truncated]`;
   }
   // Redaction shrank the text below the cap, so the whole window is kept and
   // its *far edge* becomes the boundary — the one place a secret can straddle
   // into text nothing scanned.
   const keepsWindowEdge = value.length > MAX_EVIDENCE_TEXT_CHARS + REDACTION_OVERSCAN_CHARS;
-  const cut = keepsWindowEdge ? safeCutPoint(scanned) : scanned.length;
+  const cut = keepsWindowEdge ? safeCutPoint(scanned, scanned.length) : scanned.length;
   return `${scanned.slice(0, cut)}...[truncated]`;
 }
 
 /**
- * Where the kept text may end when it ends at the scan window's far edge.
+ * Where the kept text may end when it ends at a boundary beyond which nothing
+ * was scanned, or where a shape matched only whole may have run out of the
+ * window.
  *
  * Two boundaries can fall inside a secret, and each one hid the next. Cutting
  * at the cap before scanning left the head of a secret straddling the cap,
@@ -139,7 +143,8 @@ export function redactEvidenceText(value: string | null | undefined): string | n
  * But redaction *shrinks* the text, so a window that comes back under the cap
  * is kept whole, and its far edge is a second boundary of exactly the same
  * kind. Measured at the time: a JWT cut four characters into its signature kept
- * a payload that decodes to the subject's identity.
+ * a payload that decodes to the subject's identity. And a JWT whose second dot
+ * lies past the overscan is matched nowhere, so the cap itself is a third.
  *
  * So this cut backs off through whatever a credential is made of, leaving text
  * that ends at a character no secret contains — the cheap way to say "this is
@@ -147,8 +152,8 @@ export function redactEvidenceText(value: string | null | undefined): string | n
  * not a straddling credential, and dropping the whole tail of a legitimate blob
  * would be its own kind of wrong.
  */
-function safeCutPoint(scanned: string): number {
-  let cut = scanned.length;
+function safeCutPoint(scanned: string, at: number): number {
+  let cut = at;
   const floor = Math.max(0, cut - REDACTION_OVERSCAN_CHARS);
   while (cut > floor && /[A-Za-z0-9_\-.+/=~]/.test(scanned[cut - 1]!)) cut -= 1;
   return cut;

@@ -8,12 +8,12 @@ import { introspectIdentity } from "../auth/identity.js";
 import { PgActivityRepository } from "../activity/repository.js";
 import { PgArtifactRepository } from "../artifacts/repository.js";
 import { PgProposalRepository } from "../proposals/repository.js";
-import { dbPool, page, sendRouteError } from "../routeUtils/common.js";
+import { dbPool, page, sendRouteError, withDbTransaction } from "../routeUtils/common.js";
 import { PgRunRepository, type AgentRunRecord, type RunRecord, type VisibleRunRecord } from "./repository.js";
 import { bodyWithheld } from "../access/contentAccessTypes.js";
 import { authorizeRunCommand, authorizeRunResume } from "./runCommandAuthority.js";
 import type { RunOrchestrationService } from "./orchestrationService.js";
-import { enqueueAgentRunJob } from "./agentRunHandler.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
 import { RunMaterializationService } from "./materializationService.js";
 import { buildRunOrchestration } from "./orchestrationFactory.js";
 import { InvocationSnapshotService } from "../runtimeContext/index.js";
@@ -656,29 +656,38 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const { run } = authorized;
     const grantedAt = new Date().toISOString();
     const supervisorReview = authorized.kind === "supervisor_review";
-    const updated = supervisorReview
-      ? await repository.resumeRunAfterSupervisorReview({
-          run_id: runId,
-          space_id: identity.spaceId,
-          resumed_by_user_id: identity.userId,
-          resumed_at: grantedAt,
-        })
-      : await repository.grantRunApprovalAndRequeue({
-          run_id: runId,
-          space_id: identity.spaceId,
-          granted_by_user_id: identity.userId,
-          granted_at: grantedAt,
-        });
+    // One transaction for the requeue and its job, as the authorization
+    // reconciliation path does: a Run set to `queued` whose job was never
+    // written has nothing left to run it and no resume left to try.
+    const updated = await withDbTransaction(dbPool(context.config), async (client) => {
+      const runs = new PgRunRepository(client);
+      const requeued = supervisorReview
+        ? await runs.resumeRunAfterSupervisorReview({
+            run_id: runId,
+            space_id: identity.spaceId,
+            resumed_by_user_id: identity.userId,
+            resumed_at: grantedAt,
+          })
+        : await runs.grantRunApprovalAndRequeue({
+            run_id: runId,
+            space_id: identity.spaceId,
+            granted_by_user_id: identity.userId,
+            granted_at: grantedAt,
+          });
+      if (!requeued) return null;
+      await new PgJobQueueRepository(client).ensureAgentRunJob({
+        job_type: "agent_run",
+        space_id: identity.spaceId,
+        user_id: identity.userId,
+        agent_id: run.agent_id,
+        project_folder_id: run.project_folder_id,
+        payload: { run_id: runId },
+      });
+      return requeued;
+    });
     if (!updated) {
       return reply.code(409).send({ detail: "Run could not be resumed (status may have changed)" });
     }
-    await enqueueAgentRunJob(context.config, {
-      run_id: runId,
-      space_id: identity.spaceId,
-      user_id: identity.userId,
-      agent_id: run.agent_id,
-      project_folder_id: run.project_folder_id,
-    });
     return reply.code(202).send({
       id: updated.id,
       status: updated.status,

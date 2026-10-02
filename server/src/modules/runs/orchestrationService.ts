@@ -2083,7 +2083,14 @@ export class RunOrchestrationService {
         "Dispatching a CLI runtime requires the built-in execution host, which needs a database.",
       );
     }
-    this.builtinHostIdPromise ??= new PgHostRepository(getDbPool(this.config.databaseUrl)).ensureServerHostId();
+    // Cache the answer, not the attempt: a rejected promise left here would
+    // fail every later unbound CLI Run in this worker until a restart.
+    this.builtinHostIdPromise ??= new PgHostRepository(getDbPool(this.config.databaseUrl))
+      .ensureServerHostId()
+      .catch((error: unknown) => {
+        this.builtinHostIdPromise = null;
+        throw error;
+      });
     return this.builtinHostIdPromise;
   }
 

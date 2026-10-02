@@ -342,7 +342,7 @@ RunEvent statuses: `pending`, `running`, `succeeded`, `failed`, `skipped`, `warn
 
 **RunEvent vs RunStep:** RunStep is the coarse lifecycle replay spine. RunEvent is the structured evidence spine used for classification. RunEvent references RunStep, Artifact, Proposal — it does not replace them.
 
-**Append-only:** RunEvent rows are never updated or deleted. `event_index` uses MAX()+1 scoped to `(space_id, run_id)` — same documented distributed-writer risk as RunStep.
+**Append-only:** RunEvent rows are never updated or deleted. `event_index` is MAX()+1 scoped to `(space_id, run_id)`, allocated under a per-Run PostgreSQL transaction advisory lock (`PgRunRepository.appendRunEvent`), because two writers append to one Run at once — the orchestrator's runtime event sink and a tool call's own HTTP request through `SystemActionDispatcher` — and unserialized MAX()+1 collided on `uq_run_events_space_run_event_index`, silently dropping an event. RunStep keeps the documented MAX()+1 distributed-writer risk.
 
 **Best-effort writes:** `RunOrchestrationService.appendRunEventBestEffort()` wraps instrumentation points in a try/catch that swallows the failure. A RunEvent write failure must not poison Run terminal-state commits, artifact persistence, proposal creation, or evaluation creation.
 
@@ -703,7 +703,13 @@ finalization dependencies.
 - **`GET /api/v1/runs/{run_id}/finalizations`** — all `RunFinalization` records, newest first.
 - **`POST /api/v1/runs/{run_id}/resume`** — human-approved requeue for a
   `waiting_for_review` Run; policy pauses resume the same attempt, while a
-  Supervisor terminal hold starts a new explicitly authorized attempt.
+  Supervisor terminal hold starts a new explicitly authorized attempt and
+  returns the held attempt to the terminal outcome it had before the hold.
+  The requeue and its `agent_run` job are written in one transaction, and a
+  policy-pause approval answers 409 while the Run's execution lock is still
+  held (the pause is written before the executor releases it), because a job
+  queued under the lock ends as a duplicate and leaves the Run `queued` with
+  nothing to run it.
 - **`POST /api/v1/runs/{run_id}/abandon`** — human-reviewed abandon path that
   records a cancelled terminal outcome.
 
@@ -743,7 +749,7 @@ summary in `RunEvaluation.evidence_json`; failed/error results map to the
 
 ### Idempotency
 
-Repeated calls to `POST /finalize` for the same `(run_id, attempt_number, finalizer_version)` return the existing completed `RunFinalization` without creating additional `RunEvaluation`, `TaskEvaluation`, or `run_finalized` event rows. A later physical attempt has a different attempt number and is finalized independently.
+Repeated calls to `POST /finalize` for the same `(run_id, attempt_number, finalizer_version)` return the existing completed `RunFinalization` without creating additional `RunEvaluation`, `TaskEvaluation`, or `run_finalized` event rows. A pass that wrote its `RunEvaluation` and then failed before the `RunFinalization` row is retried by reusing that attempt's evaluation (`getRunEvaluationForAttempt`) rather than appending a second one. Under the lock, the repeated path re-reads the Run before asking whether a failure is left to supervise, and the Supervisor itself re-reads and locks the Run's status in its transaction and rolls back a decision whose hold did not take effect — a stale terminal snapshot must not write a decision against the next attempt. A later physical attempt has a different attempt number and is finalized independently.
 
 ### Non-terminal rejection
 
@@ -934,7 +940,7 @@ create `TaskArtifact` rows as a side effect.
   decided after the output is read.
 
 **Unsupported apply types (remain pending-only):**
-- `project_folder_execution_config_update`, `validation_recipe_update`, `capability_update`, `policy_update` — accepted proposals raise `UnsupportedProposalTypeError`.
+- `project_folder_execution_config_update`, `validation_recipe_update`, `policy_update` — no applier is registered, so acceptance fails closed with `UnknownProposalApplierError` (422) and the proposal stays `pending`. `capability_update` is applied by the capabilities module's registered applier (`capabilities/proposalApplier.ts`).
 
 Automation manual and schedule-triggered fire queue runs through the existing
 runtime gates. The `/automations` UI supports agent-run, maintenance, and
@@ -953,7 +959,7 @@ implemented. No proposal type auto-applies without user acceptance.
   [../modules/rooms.md](../modules/rooms.md). The Run Detail Resume action is a
   different thing: it resumes a `waiting_for_review` Run through the existing
   server endpoint and is not a runtime-session checkpoint.
-- Apply handlers for `project_folder_execution_config_update`, `validation_recipe_update`, `capability_update`, `policy_update`.
+- Apply handlers for `project_folder_execution_config_update`, `validation_recipe_update`, `policy_update`.
 
 ## What Is Intentionally Not Modeled Yet
 

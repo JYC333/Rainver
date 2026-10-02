@@ -238,11 +238,17 @@ export function hasDeclaredVerificationChecks(
   const contract = recordValue(run.contract_snapshot_json);
   const acceptance = recordValue(contract.acceptance_criteria_json);
   const routeHints = recordValue(contract.route_hints_json);
-  return hasCheckList(contract.acceptance_criteria_json)
-    || hasCheckList(acceptance.checks ?? acceptance.verifiers ?? acceptance.validation)
-    || hasCheckList(routeHints.verification ?? routeHints.verifications)
+  // The same parse `buildVerificationDeclarations` runs on the contract, so
+  // "declared" means "would build a check": a list of prose criteria builds
+  // none, and a successful Run must not be recorded as missing a verification
+  // nothing could have run.
+  const declarations: VerificationDeclaration[] = [];
+  addCheckList(declarations, contract.acceptance_criteria_json);
+  addCheckList(declarations, acceptance.checks ?? acceptance.verifiers ?? acceptance.validation);
+  addCheckList(declarations, routeHints.verification ?? routeHints.verifications);
+  addCheckList(declarations, runRequiredOutputs(contract.required_outputs_json));
+  return declarations.length > 0
     || stringArray(routeHints.verification_recipe_refs).length > 0
-    || hasCheckList(runRequiredOutputs(contract.required_outputs_json))
     || hasCollectedPatchInOutput(run.output_json);
 }
 
@@ -480,13 +486,6 @@ function inferredCommandType(command: unknown): string {
   return "command";
 }
 
-function hasCheckList(value: unknown): boolean {
-  if (Array.isArray(value)) return value.length > 0;
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return Array.isArray(record.checks) ? record.checks.length > 0 : Boolean(record.type || record.verifier_type);
-}
-
 function hasCollectedPatchInOutput(value: unknown): boolean {
   const output = recordValue(value);
   return arrayValue(output.materialization).some((item) => {
@@ -687,7 +686,10 @@ function evaluateDiffScope(
   if (changed.error) return unavailable(changed.error);
   const allowed = stringArray(config.allowed_paths ?? config.paths);
   if (allowed.length === 0) return unavailable("diff_scope requires allowed_paths.");
-  const outside = changed.paths.filter((path) => !allowed.some((pattern) => matchesPath(path, pattern)));
+  // Exact: an allowed `package.json` means the root one, not every file of
+  // that name. The same-name fallback stays in the forbidden direction, where
+  // matching more is the conservative error.
+  const outside = changed.paths.filter((path) => !allowed.some((pattern) => matchesPath(path, pattern, { sameName: false })));
   return {
     status: outside.length === 0 ? "passed" : "failed",
     summary: outside.length === 0 ? "All changes are within the declared diff scope." : "Changes escaped the declared diff scope.",
@@ -939,7 +941,8 @@ function safeRelativePath(value: string): boolean {
   return value.length > 0 && !value.includes("\0") && !isAbsolute(value) && !value.split(/[\\/]+/).includes("..");
 }
 
-function matchesPath(path: string, pattern: string): boolean {
+/** `sameName`: whether a bare file name also matches that name in any directory. */
+function matchesPath(path: string, pattern: string, options: { sameName: boolean } = { sameName: true }): boolean {
   const normalizedPath = normalizeGitPath(path);
   const normalizedPattern = normalizeGitPath(pattern);
   if (normalizedPattern === "*") return true;
@@ -948,7 +951,9 @@ function matchesPath(path: string, pattern: string): boolean {
     .replaceAll("\\*\\*", ".*")
     .replaceAll("\\*", "[^/]*")
     .replaceAll("\\?", "[^/]")}$`);
-  return regex.test(normalizedPath) || normalizedPath === normalizedPattern || basename(normalizedPath) === normalizedPattern;
+  return regex.test(normalizedPath)
+    || normalizedPath === normalizedPattern
+    || (options.sameName && basename(normalizedPath) === normalizedPattern);
 }
 
 /** Escapes every regex metacharacter, `*` and `?` included, so the glob replacements above find them. */

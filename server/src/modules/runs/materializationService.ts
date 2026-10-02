@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
-import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import type {
   RunAdapterResultEnvelope,
@@ -314,16 +314,24 @@ export class RunMaterializationService {
         output_name: stringValue(entryRecord.output_name),
         declared: booleanValue(entryRecord.declared),
       };
-      const artifactId = await this.insertArtifact({
-        run: input.run,
-        artifactType: stringValue(entryRecord.artifact_type) ?? "adapter_file",
-        title: stringValue(entryRecord.title) ?? basename(sourcePath),
-        content: null,
-        storagePath: relativePath,
-        mimeType: stringValue(entryRecord.mime_type) ?? "application/octet-stream",
-        preview: booleanValue(entryRecord.preview) ?? false,
-        metadata,
-      });
+      let artifactId: string;
+      try {
+        artifactId = await this.insertArtifact({
+          run: input.run,
+          artifactType: stringValue(entryRecord.artifact_type) ?? "adapter_file",
+          title: stringValue(entryRecord.title) ?? basename(sourcePath),
+          content: null,
+          storagePath: relativePath,
+          mimeType: stringValue(entryRecord.mime_type) ?? "application/octet-stream",
+          preview: booleanValue(entryRecord.preview) ?? false,
+          metadata,
+        });
+      } catch (error) {
+        // The copy preceded the policy check and the row. Refused or failed,
+        // the file would otherwise stay under a random name nothing points at.
+        await rm(absoluteTarget, { force: true }).catch(() => undefined);
+        throw error;
+      }
       return {
         kind: "artifact",
         status: "succeeded",

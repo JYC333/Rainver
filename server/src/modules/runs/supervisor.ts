@@ -55,6 +55,16 @@ export class PgRunSupervisor implements RunSupervisorPort {
 
     return withQueryableTransaction(this.db, async (db) => {
       const repository = new PgRunRepository(db);
+      // The snapshot was read before any lock. Another finalizer may have
+      // supervised this failure already and requeued the Run, in which case
+      // the latest attempt is the next one and has not failed at all: a
+      // decision written against it now would swallow its real supervision.
+      const current = await db.query<{ status: string }>(
+        `SELECT status FROM runs WHERE space_id = $1 AND id = $2 FOR UPDATE`,
+        [input.run.space_id, input.run.id],
+      );
+      const currentStatus = current.rows[0]?.status;
+      if (!currentStatus || !isSupervisableStatus(currentStatus)) return null;
       const attempt = await ensureAttempt(db, input.run);
       const existing = await db.query<{ id: string }>(
         `SELECT id
@@ -177,13 +187,16 @@ export class PgRunSupervisor implements RunSupervisorPort {
         const reason = decision.decision === "budget_exceeded"
           ? "Run cost cap was reached before another physical attempt could start."
           : `Supervisor requires human review after attempt ${attemptNumber}: ${decision.reason_code}.`;
-        await repository.holdRunForSupervisorReview({
+        const held = await repository.holdRunForSupervisorReview({
           run_id: input.run.id,
           space_id: input.run.space_id,
           updated_at: new Date().toISOString(),
           reason_code: decision.reason_code,
           message: reason,
         });
+        // Same rule as the requeue branch: a decision whose transition did
+        // not happen is not committed as if it had.
+        if (!held) throw new Error("Supervisor could not hold the run for review");
       }
       const transactionSignalEmitter = this.signalEmitter?.forDatabase(db);
       if (transactionSignalEmitter) {
