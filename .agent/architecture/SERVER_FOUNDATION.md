@@ -23,9 +23,9 @@ server/src/
   index.ts
   server.ts
   config.ts
+  db/
   gateway/
   modules/
-  ports/
 ```
 
 Modules use the convention documented in
