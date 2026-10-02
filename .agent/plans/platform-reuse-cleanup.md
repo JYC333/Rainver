@@ -16,8 +16,8 @@ checked against the code; verify before scheduling.
 
 | Item | Current | Target | Priority | Trigger | Status |
 | --- | --- | --- | --- | --- | --- |
-| Credential / CLI multi-account | Self-built login engine + usage probes (`server/src/modules/providers/cli/loginEngine.ts`, `usageProbe.ts`) | Official CLI login owns OAuth; Rainver owns a `CredentialBackend` abstraction, Profile, Run→Account binding, routing, audit. MIT references: CC Switch, clauth, codex-auth | P0 | None — next up after gateway consolidation | Not started |
-| Multipart upload parsing | Hand-written `parseMultipartUpload` (`activity/routes.ts`, single site) | `@fastify/multipart` | P1 | None — low-risk commodity cleanup | Not started |
+| Credential / CLI multi-account | Self-built login + usage probes (`packages/host-daemon/src/login.ts`, `usageProbe.ts`; server side `providers/managedOAuth.ts`, `subscriptionOAuth.ts`, `subscriptionQuota.ts`) | Official CLI login owns OAuth; Rainver owns a `CredentialBackend` abstraction, Profile, Run→Account binding, routing, audit. MIT references: CC Switch, clauth, codex-auth | P0 | None — next up after gateway consolidation | Not started |
+| Multipart upload parsing | Hand-written `parseMultipartUpload` (`activity/routes.ts`, single site); `@fastify/multipart` is already registered in `gateway/appShell.ts` and used by `sessions/routes.ts` | Move the activity route onto the registered `@fastify/multipart` and its shared limits | P1 | None — low-risk commodity cleanup | Not started |
 | HTML → article extraction | Self-built `stripHtml` / `htmlToReaderPmDoc` (`sources/contentParsing.ts`) | `@mozilla/readability` + DOM parser + sanitizer; Rainver keeps reading objects, highlights, Source, AI analysis | P1 | None | Not started |
 | Custom Source pseudo-sandbox | Child-process monkey-patch runner (`sources/customSources/customSourceRunner.ts`; its own header admits it is not OS-sandboxed) | Adapt the built-in Host's Bubblewrap namespace mechanism (`packages/host-daemon/src/strictNamespace.ts`) for Custom Source handler isolation where its process and mount contract fits | P1 | None | Not started |
 | Backup mechanics | Self-built tar.gz + pg_dump + retention (`backups/service.ts`) | restic owns archive/snapshot/storage/retention; Rainver keeps backup policy, manifest, restore flow, audit | P1/P2 | None | Not started |
@@ -36,7 +36,7 @@ checked against the code; verify before scheduling.
 | Durable workflow engine | Run/Job/Workflow via `automations/workflowExecutionService.ts` graph scheduler | Restate | Conditional | Only if timer/signal/human-pause/saga complexity outgrows the current spine | Not started |
 | External agent interop | None | A2A / official MCP SDK | Deferred | External interop demand exists | Not started |
 | Frontend event wire | Persisted Run events | AG-UI (POC only; never replaces persisted events) | Deferred | — | Not started |
-| Live plugin composition | ADR 0009 PluginHost | Cordis-style runtime composition | Deferred | No trigger observed | Not started |
+| Live plugin composition | ADR 0006 PluginHost | Cordis-style runtime composition | Deferred | No trigger observed | Not started |
 | LLM protocol translation | None needed — every target provider exposes an Anthropic/OpenAI-compatible endpoint; the provider proxy is pass-through by design | Portkey Gateway sidecar (TS, MIT, stateless data plane — caller supplies keys per request, fitting the server-holds-keys model; note the pending Palo Alto acquisition) downstream of the provider proxy, or embedded `@musistudio/llms`; verify streaming/tool-call fidelity on the Anthropic-ingress→non-Anthropic path before adopting | Conditional | A required provider lacks an Anthropic/OpenAI-compatible endpoint | Not started |
 
 ## Reference implementations (not dependencies)
