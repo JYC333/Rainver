@@ -1,10 +1,13 @@
 # Rainver
 
 A space-based, multi-user, agent-first system for personal, family, and small team use.
-The runtime target is **Linux / WSL / server + a browser UI**. By default agent runs are
-isolated with **git worktrees** (plus `PathPolicy`) so file access is confined to the run's
-workspace. Stronger one-shot Docker isolation is not wired into the current product path;
-high/critical-risk execution that requires it fails closed instead of silently downgrading.
+The runtime target is **Linux / WSL / server + a browser UI**. Agent runs execute on a
+host daemon: on a **strict** host each Run gets its own rootless bubblewrap namespace with an
+explicit allowlist of binds, on a **trusted** (paired) host it runs natively. Risk level does not
+change containment for daemon Runs, and the `worktree` sandbox level is honoured by no daemon
+Run; git worktrees are used for Task branches only. One-shot Docker isolation is not wired into
+the current product path; a critical-risk CLI Run that requires it is refused instead of
+silently downgraded.
 PostgreSQL is the only supported server database.
 
 ## Concept
@@ -173,8 +176,11 @@ of the backend.
 
 LLM agents can execute arbitrary shell commands. To protect the host:
 
-- **Default — filesystem isolation**: git worktrees + `PathPolicy` confine file access to the
-  run's workspace. This is the default execution isolation.
+- **Default — strict-host namespace**: on a strict host the daemon wraps every Run in a rootless
+  bubblewrap mount/PID namespace (`packages/host-daemon/src/strictNamespace.ts`) that exposes only
+  an explicit bind allowlist; a trusted paired host spawns natively. Risk level does not narrow
+  this, and the `worktree` sandbox level is recorded but honoured by no daemon Run (git worktrees
+  exist only for Task branches).
 - **High-risk — one-shot Docker**: runs that require `one_shot_docker` isolation are refused
   until that product path is implemented. The sandbox image assets exist, but the app must not
   present Docker isolation as active protection for high/critical-risk runs.
@@ -209,7 +215,7 @@ Persisted API keys are feature-gated and not enabled in the current build.
 | Workspace | A project, repo, or knowledge area within a space |
 | Memory | Scoped long-term information; written only via proposal → approval workflow |
 | Capability | Code-defined skill registered via `capability.yaml` manifest |
-| Sandbox | Per-run isolation; git worktree by default; one-shot Docker-required paths fail closed until implemented |
+| Sandbox | Per-run isolation by the host daemon (strict-host namespace; trusted hosts run natively); `worktree` is not honoured for daemon Runs; one-shot Docker-required runs are refused |
 | Agent runtime | Agent Runtime Profile selects an implemented ACP runtime: OpenCode, Claude Code, or Codex CLI. Bounded server-side model calls use the ProviderTask path, not an Agent runtime. |
 
 ## Built-in Templates
