@@ -169,7 +169,7 @@ excluded. See `docs/TOKEN_USAGE_METERING.md`.
 ## Agent Runtime Profile model binding
 
 `AgentVersion` contains no provider/model deployment binding. An
-`AgentRuntimeProfile` may select a same-Space ModelProvider and explicit model
+`AgentRuntimeProfile` may select a ModelProvider granted to the Space and explicit model
 when the runtime supports that protocol (`backend_mode = model_provider`) and
 the Profile names an execution Host and installation — the built-in Server
 Runtime or a paired Host. Native mode instead uses the runtime's login on the

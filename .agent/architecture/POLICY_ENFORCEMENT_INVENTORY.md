@@ -429,7 +429,7 @@ mutate Run, Automation, MemoryEntry, Proposal, Policy, Credential, or Artifact
 rows.
 The selected `AgentRuntimeProfile` is the only source of a Run's ModelProvider,
 so there is nothing for a runtime-requirements registry to decide. A
-`model_provider` Profile names an enabled same-Space Provider **and** an
+`model_provider` Profile names an enabled Provider granted to the Space **and** an
 explicit model — `runtimeProfileAdmission.ts` answers either half alone with
 422 — while a `runtime_native` Profile stores no binding at all and relies on
 the login its runtime copy holds on its execution Host. No runtime adapter,

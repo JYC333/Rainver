@@ -122,7 +122,7 @@ same question (B58). **Today that is OpenCode alone.** Claude Code and
 Codex CLI declare `cli_profile`, so their definitions report
 `supports_model_provider: false` and `assertBackendModeBinding` answers a
 `model_provider` Profile for them with 422 — they run on the Host's own vendor
-login. A `model_provider` Profile must name an enabled same-Space Provider, an
+login. A `model_provider` Profile must name an enabled Provider granted to the Space, an
 explicit model, and an execution Host with an installation; either Host kind
 qualifies, because the daemon receives a proxy lease address rather than a key
 (`assertProviderExecutionTarget`, `hostProviderProxyBaseUrl`). The Server

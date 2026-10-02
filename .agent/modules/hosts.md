@@ -279,7 +279,7 @@ that same `orchestration.cancelRun`, not separate machinery.
 Hosts have no ModelProvider defaults, host×runtime binding table, or
 `runtime-provider-bindings` API. `AgentRuntimeProfile` is the only Agent
 backend authority: it pins `runtime_key`, `backend_mode`, and, when the
-selected runtime supports it, a same-Space ModelProvider and explicit model.
+selected runtime supports it, a ModelProvider granted to the Space and explicit model.
 Routing validates that Profile against the Agent Run's Space and the provider
 grant before the immutable Run snapshot is dispatched. A Host cannot choose a
 different provider or fall back to a Host-wide default.
