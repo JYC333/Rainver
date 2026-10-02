@@ -518,6 +518,10 @@ export function stopAllRunsForRevocation(log: (line: string) => void = () => {})
   registrationRevoked = true;
   // A launch still queued for its Location has no process yet; it ends here.
   cancelAllLeaseWaits();
+  // One already past its lease but still preparing (capturing a large
+  // workspace) is not in `activeLaunches` yet; marking it stopped is what the
+  // last check before spawn reads, so it never starts.
+  for (const launchId of launchingRuns.keys()) stoppedLaunches.add(launchId);
   for (const { runId, active } of activeLaunches.values()) {
     log(`run ${runId}: terminating because this host was revoked`);
     // Like every other deliberate stop: without it, a strict run killed here
