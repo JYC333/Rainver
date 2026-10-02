@@ -50,4 +50,14 @@ describe('ProposalDetailPage', () => {
     expect(await screen.findByRole('button', { name: 'Accept' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument()
   })
+
+  it('lets a required content owner approve an egress review', async () => {
+    mocked.get.mockResolvedValue(proposal({
+      proposal_type: 'egress_review',
+      requires_approval_type: 'egress_content_owner',
+      required_approver_user_ids: ['user-other', 'user-owner'],
+    }))
+    renderPage()
+    expect(await screen.findByRole('button', { name: 'Approve egress review' })).toBeInTheDocument()
+  })
 })

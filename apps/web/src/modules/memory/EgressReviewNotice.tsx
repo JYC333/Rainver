@@ -34,7 +34,10 @@ export function EgressReviewNotice({
 }: EgressReviewNoticeProps) {
   if (!isGrantDerivedProposal(proposal)) return null
 
+  // A content-owner review names its approvers as a list; the single field
+  // is the granting user of a grant-derived one.
   const isGrantingUser = proposal.required_approver_user_id === currentUserId
+    || (proposal.required_approver_user_ids ?? []).includes(currentUserId)
   const approved = hasGrantingUserApproval(proposal)
 
   return (
