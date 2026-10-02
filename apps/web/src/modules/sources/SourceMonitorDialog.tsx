@@ -46,6 +46,8 @@ interface SourceMonitorDialogProps {
   categoryGroups: readonly SourceProviderCategoryGroup[]
   sourceName?: string
   providerKey?: string
+  /** The Source a new monitor is added to; without it the server picks one by provider. */
+  sourceConnectionId?: string
   monitor?: SourceChannel | null
   onOpenChange: (open: boolean) => void
   onCreated?: (channel: SourceChannel) => Promise<void> | void
@@ -63,6 +65,7 @@ export function SourceMonitorDialogContent({
   categoryGroups,
   sourceName: initialSourceName,
   providerKey: initialProviderKey,
+  sourceConnectionId,
   monitor,
   onOpenChange,
   onCreated,
@@ -209,6 +212,7 @@ export function SourceMonitorDialogContent({
           fetch_frequency: frequency,
           ...(scheduleRule ? { schedule_rule: scheduleRule } : {}),
           ...(mode === 'source' ? { capture_policy: capturePolicy } : {}),
+          ...(mode === 'monitor' && sourceConnectionId ? { source_connection_id: sourceConnectionId } : {}),
         })
         await onCreated?.(created)
       }

@@ -2553,6 +2553,7 @@ export const sourcesApi = {
     fetch_frequency?: 'manual' | 'hourly' | 'daily' | 'weekly'
     schedule_rule?: Record<string, unknown>
     capture_policy?: SourceCapturePolicy
+    source_connection_id?: string
   }) => post<SourceChannel>('/sources/channels', body),
   previewQuery: (body: { provider_key: string; query: Record<string, unknown>; source_channel_id?: string }) =>
     post<SourceQueryPreview>('/sources/query-preview', body),

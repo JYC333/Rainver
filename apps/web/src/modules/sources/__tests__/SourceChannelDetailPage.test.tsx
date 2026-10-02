@@ -117,4 +117,19 @@ describe('Source detail', () => {
     expect(body).not.toHaveProperty('query')
     expect(body).not.toHaveProperty('endpoint_url')
   })
+
+  it('adds a monitor to the Source being viewed, by its id', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(sourcesApi.createChannel).mockResolvedValue(monitor('monitor-3', 'Tool use', {}) as never)
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: /add monitor/i }))
+    await user.type(screen.getByPlaceholderText('e.g. all:"agent memory"'), 'all:tools')
+    await user.click(screen.getByRole('button', { name: 'Create monitor' }))
+
+    expect(sourcesApi.createChannel).toHaveBeenCalledWith(expect.objectContaining({
+      provider_key: 'arxiv',
+      source_connection_id: 'connection-1',
+    }))
+  })
 })

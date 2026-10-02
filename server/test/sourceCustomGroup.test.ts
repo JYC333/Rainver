@@ -2,7 +2,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { customSourcePolicyEnvelope, runnerSettings } from "./support/customSourceFixtures.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService.js";
+import { seedCustomSourceWorld } from "./support/customSourceWorld.js";
+import { resetTables } from "./support/resetTables.js";
+import { useTestDatabase } from "./support/testDatabase.js";
 import { validateCustomSourceHandlerOutput } from "../src/modules/sources/customSources/customSourceContractValidator.js";
 import { fetchCustomSourceEndpointHtml } from "../src/modules/sources/customSources/customSourceEndpointFetch.js";
 import { publicAddressGuard } from "./support/outboundGuard.js";
@@ -166,5 +171,42 @@ describe("sourceCustomSourceHandlerTemplate", () => {
       expect(output.items).toHaveLength(0);
       expect(output.diagnostics.warnings.length).toBeGreaterThan(0);
     });
+  });
+});
+
+describe("sourceChannelTargetConnection", () => {
+  const db = useTestDatabase(`${import.meta.filename}#sourceChannelTargetConnection`);
+  const identity = { spaceId: "space-channel-target", userId: "user-channel-target" };
+
+  beforeEach(async () => {
+    if (!db.available) return;
+    await resetTables(db.pool, ["users", "spaces", "source_connectors", "source_providers"], { cascade: true });
+    await seedCustomSourceWorld(db.pool, identity);
+  });
+
+  function feed(service: SourceChannelService, sourceName: string, url: string, extra: Record<string, unknown> = {}) {
+    return service.create(identity, {
+      provider_key: "custom_source", source_name: sourceName, name: `${sourceName} feed`,
+      query: {}, endpoint_url: url, fetch_frequency: "manual", ...extra,
+    }) as Promise<{ id: string; source_connection_id: string }>;
+  }
+
+  it("adds a monitor to the Source it names, not to the provider's most recently updated one", async () => {
+    if (!db.available) return;
+    const service = new SourceChannelService(db.pool, loadConfig({}));
+    const first = await feed(service, "Source A", "https://a.example/feed.xml", { _force_create: true });
+    const second = await feed(service, "Source B", "https://b.example/feed.xml", { _force_create: true });
+    await db.pool.query(`UPDATE source_connections SET updated_at = now() + interval '1 hour' WHERE id = $1`, [first.source_connection_id]);
+
+    const added = await feed(service, "Source B", "https://b.example/other.xml", { source_connection_id: second.source_connection_id });
+
+    expect(added.source_connection_id).toBe(second.source_connection_id);
+  });
+
+  it("refuses a Source that is not the caller's", async () => {
+    if (!db.available) return;
+    const service = new SourceChannelService(db.pool, loadConfig({}));
+    await expect(feed(service, "Nowhere", "https://c.example/feed.xml", { source_connection_id: "connection-of-someone-else" }))
+      .rejects.toMatchObject({ statusCode: 404 });
   });
 });

@@ -184,14 +184,21 @@ export class SourceChannelService {
     const status = body.status === "paused" ? "paused" : "active";
     const schedule = resolveChannelSchedule(body, frequency, status);
     const projectId = optionalString(body.project_id);
+    // A monitor added from a Source's own page names that Source; without it
+    // the connection was guessed from the provider, and the monitor could
+    // land on another Source of the same provider.
+    const targetConnectionId = optionalString(body.source_connection_id);
+    const targetConnection = targetConnectionId
+      ? await this.requireOwnConnection(identity, targetConnectionId, provider.mapping_id)
+      : null;
     const existing = body._force_create === true
       ? { rows: [] as SourceChannelRow[] }
       : await this.db.query<SourceChannelRow>(
       `${this.selectSql()} WHERE ch.space_id = $1 AND ch.created_by_user_id = $2
          AND CASE WHEN ch.channel_type='search' THEN ss.query_fingerprint ELSE ch.query_fingerprint END = $3
-         AND sc.project_id IS NOT DISTINCT FROM $4
+         AND ${targetConnection ? "ch.source_connection_id = $4" : "sc.project_id IS NOT DISTINCT FROM $4"}
          AND ch.status <> 'archived' LIMIT 1`,
-      [identity.spaceId, identity.userId, fingerprint, projectId],
+      [identity.spaceId, identity.userId, fingerprint, targetConnection ? targetConnection.id : projectId],
     );
     if (existing.rows[0]) return this.channelOut(existing.rows[0]);
 
@@ -203,7 +210,7 @@ export class SourceChannelService {
       consent: body.consent ?? {},
       capture_policy: body.capture_policy ?? "reference_only",
     });
-    const connection = await this.ensureConnection(identity, provider, sourceName, governance, body);
+    const connection = targetConnection ?? await this.ensureConnection(identity, provider, sourceName, governance, body);
     const channelResult = await this.db.query<SourceChannelRow>(
       `INSERT INTO source_channels (
          id, space_id, source_connection_id, created_by_user_id, name, channel_type,
@@ -432,6 +439,21 @@ export class SourceChannelService {
       [randomUUID(), identity.spaceId, channel.source_connection_id, JSON.stringify({ source_channel_id: channelId, created_by: "manual_scan" }), new Date().toISOString()],
     );
     return result.rows[0];
+  }
+
+  private async requireOwnConnection(identity: SpaceUserIdentity, connectionId: string, providerMappingId: string) {
+    const result = await this.db.query<{ id: string; status: string; provider_connector_id: string }>(
+      `SELECT id, status, provider_connector_id FROM source_connections
+        WHERE id=$1 AND space_id=$2 AND owner_user_id=$3
+          AND deleted_at IS NULL AND status <> 'archived'`,
+      [connectionId, identity.spaceId, identity.userId],
+    );
+    const connection = result.rows[0];
+    if (!connection) throw new HttpError(404, "Source not found");
+    if (connection.provider_connector_id !== providerMappingId) {
+      throw new HttpError(422, "The Source does not use this provider");
+    }
+    return { id: connection.id, status: connection.status };
   }
 
   private async ensureConnection(identity: SpaceUserIdentity, provider: ResolvedSourceProviderConnector, name: string, governance: ReturnType<typeof normalizeSourceConnectionCreateGovernance>, body: Record<string, unknown>) {
