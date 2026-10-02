@@ -76,9 +76,8 @@ Therefore:
 
 - `claude_code` and every other local CLI remain `local_cli` specs. They carry
   no credential reference: the control plane refuses a `credential_profile_id`
-  on an Agent runtime profile outright (`agents/routes.ts`,
-  `agents/repository.ts`), because a CLI Agent names an execution host and an
-  installation on it instead.
+  on an Agent runtime profile outright (`agents/routes.ts`), because a CLI
+  Agent names an execution host and an installation on it instead.
 - There is no ambient `ANTHROPIC_API_KEY` fallback for CLI execution, and no
   canonical adapter reads provider keys from ambient env or settings. The
   enforcement point is now the daemon's environment filter, guarded by
@@ -116,7 +115,9 @@ rather than papered over here.
 When a CLI runs against a configured ModelProvider it receives a
 provider-proxy URL and a short-lived lease token; the upstream key is resolved
 inside the server proxy boundary and substituted there. Locality of the proxy
-is not the property doing the work: the proxy binds `0.0.0.0`, the URL is
+is not the property doing the work: the proxy binds
+`PROVIDER_PROXY_LISTEN_HOST` (`127.0.0.1` by default, `0.0.0.0` under
+Compose), the URL is
 built from `SANDBOX_RUNNER_SERVER_HOST` (the Compose service name) and
 `PROVIDER_PROXY_PORT`, and a paired execution host
 ([ADR 0016](0016-control-plane-execution-hosts.md)) reaches it across the
@@ -129,8 +130,9 @@ reviewed against. A lease pins the upstream **base URL**, the route family
 (`anthropic` / `openai`), and attribution metadata. It does **not** pin the
 model (`lease.model` is attribution only; the proxy forwards the body
 verbatim), the path under the base URL, or request count or spend. Its TTL is
-the Run timeout plus 300 s, and every CLI spec's `max_timeout_seconds` is
-3600, so a worst-case lease lives about 65 minutes. A holder of a live token
+twice the Run timeout plus 300 s (the launch may first wait up to one timeout
+budget), and every CLI spec's `max_timeout_seconds` is 3600, so a worst-case
+lease lives about 125 minutes. A holder of a live token
 can spend the Space's provider credential against any model and endpoint at
 that upstream until the Run ends or the lease is revoked.
 
