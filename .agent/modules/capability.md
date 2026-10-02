@@ -7,17 +7,24 @@ surfaces use the capability framework read model exposed through
 
 ## Owns
 - Built-in capability definitions from `server/src/modules/capabilities/registry.ts`.
-- Framework capability-definition read APIs.
-- Enable/disable state: manifest `enabled` for builtins; persisted instance config for external capabilities.
+- Framework capability-definition read APIs and capability packs (`/api/v1/capability-packs`).
+- Enable/disable state in `capability_enablements`, changed only through
+  `capability_enable` / `capability_disable` proposals that the
+  `/api/v1/capability-definitions/:id/enable-proposal` and `/disable-proposal`
+  routes create, and their applier.
+- Skill packages: skill-source import preview/import from GitHub
+  (`/api/v1/skill-sources/*`), `/api/v1/skill-packages` reads, review proposals,
+  conversion to a capability, and the local skill overlay
+  (`/api/v1/capabilities/skills/*`).
 
 ## Does Not Own
 - Automation, schedules, or cron triggers.
 - Capability marketplace installation.
-- GitHub or remote repository scanning.
 - Repository clone/install flows.
 - Legacy catalog product routes (`/api/v1/capabilities*`).
 - Agent-produced capability updates.
-- Proposal approval for code or capability changes.
+- Proposal approval decisions for code or capability changes (the proposals
+  module decides; this module creates the proposals and applies accepted ones).
 
 ## Manifest Shape
 
@@ -67,16 +74,12 @@ Folder metadata. Package identity comes from the explicit package source and
 reviewed import record; no current code path scans Project Folders for
 capability manifests.
 
-Builtin capabilities follow their manifest `enabled` value. External capabilities default to disabled when discovered. Enable/disable for external capabilities is persisted outside manifests in `$RAINVER_HOME/config/settings.yaml`:
-
-```yaml
-capabilities:
-  enabled_external_capabilities:
-    - research_intake
-    - rss_watch
-```
-
-Manifests are source definitions only — they are not the local trust/enable store. Persisted enabled IDs that no longer resolve to a discovered capability are ignored safely on reload. Newly discovered external capabilities are never auto-enabled. This is still not a marketplace or remote install system.
+Built-in definitions come from `RESEARCH_CAPABILITIES` (`registry.ts`); there is
+no external capability discovery. Enabling or disabling a capability creates a
+`capability_enable` / `capability_disable` proposal and takes effect only when
+that proposal is accepted (ADR 0009); the enabled state lives in
+`capability_enablements`, not in manifests. This is still not a marketplace or
+remote install system.
 
 ## Execution Model
 
@@ -86,7 +89,7 @@ Capability execution is not active. `runtime_key="capability"` is a declared,
 returns nothing for it.
 Capability manifests are catalog/UI metadata only.
 
-Returned artifacts are materialized as `Artifact` rows linked to the Run and project. Returned activities are materialized as `ActivityRecord` rows with `source_kind="run_event"` unless the capability supplies a valid source kind.
+Returned artifacts are materialized by `materializationService` as `Artifact` rows linked to the Run and project. Returned activities are not materialized: each one records an `output_activity_materialization_error` (activity materialization is deliberately deferred).
 
 ## Boundaries
 
@@ -109,7 +112,8 @@ workflow template layer by the capability-shrink plan.
 
 ## Related Files
 
-- `server/src/modules/catalog/`
+- `server/src/modules/capabilities/` (`routes.ts`, `service.ts`, `registry.ts`, `repository.ts`, `packRegistry.ts`, `skillImporter.ts`)
+- `server/src/modules/catalog/` (read-only `/api/v1/server/catalog*` listing of `catalog/`)
 - `server/src/modules/runtimeAdapters/`
 - `server/src/modules/runs/materializationService.ts`
 - `catalog/capabilities/memory_reflect/`

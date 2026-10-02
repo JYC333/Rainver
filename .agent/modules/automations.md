@@ -42,9 +42,12 @@ in the Space — the same reachability rule manual Run creation already applies
 (Space membership plus `agent_id` existing in-Space; no extra per-Agent
 ownership check). It is a per-`(space_id, owner_user_id)` singleton: enabling
 twice reconfigures the same row rather than creating a second one. The
-`ruleAutomation` policy rule's `autonomous_tick`-and-`actor_is_owner` branch is
-the only place a non-admin/owner role is allowed to create, update, or fire an
-Automation, and it cannot reach another member's tick.
+`ruleAutomation` policy rule allows a non-admin/owner role in three branches
+only: a Project writer on an `agent_run` target in that Project, the
+`autonomous_tick`-and-`actor_is_owner` branch (`role >= member`), and the
+`information_digest`-and-`actor_is_owner` branch (`role >= member`; the
+Project form also needs Project writer). The tick branch cannot reach another
+member's tick.
 
 The generic reads (`GET .../automations`, `GET .../automations/:automationId`,
 `GET .../automations/:automationId/workflow-executions`) apply a read rule: a

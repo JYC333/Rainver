@@ -20,20 +20,24 @@ ActivityRecord first — not active memory.
 
 ## Capture Types
 
+These are usage examples, not stored types. A capture is distinguished only by
+its destination; its Activity `source_type` is `web_capture` when the text is a
+URL and `user_capture` otherwise.
+
 | Type | Example |
 |---|---|
 | Thought | "I want to learn Rust" |
 | Life log | "Had lunch with the team" |
 | Idea | "What if we added X feature" |
 | Reflection | "Today I noticed I work better in the morning" |
-| Chat import | Paste/import from external chat |
+| Chat import | Paste from an external chat (whole-session import belongs to imported sessions) |
 | URL clip | Save a web article for later processing |
 
 ## Destinations
 
 One floating composer serves every page and posts to `POST /api/v1/captures`.
 Outside a Project the only destination is the personal inbox; inside one there
-are four. Ownership and pipeline are separate axes (ADR 0013 amendment 3b):
+are three, plus `object_marginalia` when the composer has a target object. Ownership and pipeline are separate axes (ADR 0013 amendment 3b):
 
 | Destination | Scope | Visibility | Pipeline |
 |---|---|---|---|

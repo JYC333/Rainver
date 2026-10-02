@@ -91,7 +91,7 @@ with a route-specific maximum.
 
 **Filtering:** query params matching model field names (e.g., `?scope=user&type=preference`).
 
-**Ordering:** `?order_by=created_at&desc=true`
+**Ordering:** fixed per route; there is no generic `order_by` / `desc` query parameter.
 
 ## Run read model (`runs/runReadModel.ts`, `runToOut`)
 
