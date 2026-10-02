@@ -40,7 +40,7 @@ SpaceMembership: id, space_id, user_id, role, status
 - `server/src/db/schema/spaces.ts` — Space and SpaceMembership schema authority
 - `server/src/db/schema/projectFolders.ts` — Project Folder schema authority; Folder access is inherited entirely from the owning Project's ACL, not a separate membership table
 - `packages/protocol/src/` — shared Project Folder/space DTOs when exported
-- `server/src/config.ts` — bootstrap/default config
+- `server/src/modules/auth/registration.ts` / `server/src/modules/auth/identity.ts` — personal Space creation at registration and default Space selection
 - `server/src/modules/spaces/` — default space and membership routes
 - `server/src/modules/runtimeContext/` — typed acquisition, Delivery authorization, and continuity with Space boundary enforcement
 
