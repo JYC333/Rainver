@@ -8,22 +8,6 @@ export const CAPTURE_POLICIES: Array<{ value: SourceCapturePolicy; label: string
   { value: 'archive_original', label: 'Archive original' },
 ]
 
-const CAPTURE_POLICY_VALUES = new Set(CAPTURE_POLICIES.map(policy => policy.value))
-
-export function sourceCapturePolicyValue(value: string, fallback: SourceCapturePolicy = 'reference_only'): SourceCapturePolicy {
-  return CAPTURE_POLICY_VALUES.has(value as SourceCapturePolicy) ? value as SourceCapturePolicy : fallback
-}
-
-const CAPTURE_POLICY_DESCRIPTIONS: Record<string, string> = {
-  reference_only: 'Save title, URL, source metadata, scan timestamps, and any feed/API excerpt without fetching the original page.',
-  extract_text: 'Fetch the source and store a reader document/plain text for reading, search, and evidence extraction.',
-  archive_original: 'Store the original HTML/PDF snapshot, then derive the reader document/plain text from that archived copy.',
-}
-
-export function capturePolicyDescription(capturePolicy: string) {
-  return CAPTURE_POLICY_DESCRIPTIONS[capturePolicy] ?? CAPTURE_POLICY_DESCRIPTIONS.reference_only
-}
-
 export const FREQUENCIES = [
   { value: 'manual', label: 'Manual' },
   { value: 'hourly', label: 'Hourly' },
@@ -45,10 +29,6 @@ export interface ScheduleFormValue {
   minute: string
   hour: string
   weekday: string
-}
-
-export function emptyScheduleFormValue(): ScheduleFormValue {
-  return { minute: '', hour: '', weekday: '' }
 }
 
 export function isScheduledFrequency(fetchFrequency: string) {
@@ -126,22 +106,6 @@ function isoUtcWeekday(date: Date) {
   return day === 0 ? 7 : day
 }
 
-export function minimumRetentionForCapturePolicy(capturePolicy: string) {
-  if (capturePolicy === 'archive_original') return 'full_snapshot'
-  if (capturePolicy === 'extract_text') return 'full_text'
-  return 'metadata_only'
-}
-
-const RETENTION_RANK = ['metadata_only', 'summary_only', 'full_text', 'full_snapshot', 'archived']
-
-export function retentionAtLeast(current: string, minimum: string) {
-  const currentRank = RETENTION_RANK.indexOf(current)
-  const minimumRank = RETENTION_RANK.indexOf(minimum)
-  if (currentRank < 0) return minimum
-  if (minimumRank < 0) return current
-  return currentRank < minimumRank ? minimum : current
-}
-
 const TEXT_EXTRACTION_READY_STATES = new Set(['metadata_only', 'excerpt_saved', 'content_saved', 'extraction_failed'])
 
 export function textExtractionDisabledReason(item: Pick<SourceItem, 'content_state' | 'source_uri'>) {
@@ -151,10 +115,6 @@ export function textExtractionDisabledReason(item: Pick<SourceItem, 'content_sta
   if (item.content_state === 'snapshot_queued') return 'Snapshot capture is already queued.'
   if (item.content_state === 'snapshot_saved') return 'A source snapshot is already saved.'
   return `Text extraction is not available for ${item.content_state}.`
-}
-
-export function canQueueTextExtraction(item: Pick<SourceItem, 'content_state' | 'source_uri'>) {
-  return textExtractionDisabledReason(item) === null
 }
 
 export function textExtractionActionLabel(item: Pick<SourceItem, 'content_state'>) {

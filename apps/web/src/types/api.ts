@@ -186,9 +186,6 @@ import type {
   SourceRecipePrimitiveName,
   SourceRecipeStepTrace,
   SourceRecipeVersionStatus,
-  SourceRunImplementation,
-  SourceRunKind,
-  SourceRunStatus,
   SpaceObjectProfileCreateProposalRequest,
   SpaceObjectProfileCreateProposalRequestInput,
   SpaceObjectProfileOut,
@@ -554,7 +551,6 @@ export interface ContentDemotionDisclosure {
 }
 export type MemoryVisibility = ContentVisibility
 export type ObjectVisibility = ContentVisibility
-export type ProposalStatus   = 'pending' | 'accepted' | 'rejected'
 export type KnowledgeItemKind =
   | 'concept'
   | 'lesson'
@@ -588,31 +584,6 @@ export type KnowledgeRelationStatus = 'candidate' | 'active' | 'rejected' | 'arc
  */
 export const SPACE_OBJECT_PROFILE_KEYS_BY_BASE_OBJECT_TYPE: Record<RetrievalObjectType, readonly string[]> =
   OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE
-type RetrievalEvidenceKind =
-  | 'alias_hit'
-  | 'exact_title_match'
-  | 'slug_match'
-  | 'source_url_match'
-  | 'lexical_match'
-  | 'vector_match'
-  | 'graph_neighbor'
-  | 'weak_match'
-export interface RetrievalEvidence {
-  kind: RetrievalEvidenceKind
-  field?: string
-  matched_text?: string
-  source?: string
-  confidence?: number
-  [key: string]: unknown
-}
-
-export interface AskSpaceClaimTrajectorySignal {
-  kind: string
-  from_claim_id: string
-  to_claim_id: string
-  summary: string
-  confidence_tier: 'high' | 'medium' | 'low'
-}
 
 export interface CrossSpaceResolveResponse {
   items: CrossSpaceResolvedItem[]
@@ -662,18 +633,6 @@ export interface RetrievalDiagnosticsReportResponse {
   proposal_id?: string
 }
 export type RetrievalCalibrationDecisionValue = 'adopt' | 'defer' | 'reject'
-export interface RetrievalRuntimeMechanicConfig {
-  state: RetrievalRankingMechanicState
-  calibration_artifact_id?: string | null
-  shipped_at?: string | null
-  eval_gate: {
-    status: 'not_run' | 'passed' | 'failed'
-    metric?: string | null
-    value?: number | null
-    threshold: number
-    checked_at?: string | null
-  }
-}
 export interface RetrievalMaintenanceScanResponse {
   counts: Record<string, number>
   scanned: number
@@ -695,16 +654,6 @@ export type ActivitySourceType =
   | 'external_source'
   | 'source'
 export type SessionStatus    = 'active' | 'closed'
-/** Canonical run lifecycle (Run API). */
-export type RunLifecycleStatus =
-  | 'queued'
-  | 'running'
-  | 'succeeded'
-  | 'failed'
-  | 'cancelled'
-  | 'degraded'
-  | 'waiting_for_review'
-  | 'waiting_for_dependency'
 
 export interface AuthorizationRequest {
   id: string
@@ -727,8 +676,6 @@ export interface AuthorizationRequest {
 }
 
 export type MessageRole      = 'user' | 'assistant' | 'system' | 'tool'
-
-export type ModelSelectionMode = 'cli_default' | 'cli_model_override' | 'rainver_provider'
 
 export type NetworkProfileMode = 'direct' | 'http_proxy'
 
@@ -1119,23 +1066,6 @@ export interface SourceRecipeActivationResult {
   deltas: string[]
   proposal_id: string | null
   recipe_version: SourceRecipeVersion
-}
-
-export interface SourceRunSummary {
-  id: string
-  space_id: string
-  source_connection_id: string
-  run_kind: SourceRunKind
-  implementation: SourceRunImplementation
-  status: SourceRunStatus
-  items_created?: number | null
-  error?: string | null
-  extraction_job_id?: string | null
-  handler_run_id?: string | null
-  recipe_version_id?: string | null
-  created_at: string
-  started_at?: string | null
-  completed_at?: string | null
 }
 
 export interface ExtractedEvidence {
@@ -1984,23 +1914,6 @@ export interface Task {
   policy_json?: Record<string, unknown> | null
   tags?: string[] | null
   metadata_json?: Record<string, unknown> | null
-}
-
-export interface BoardColumn {
-  id: string
-  space_id: string
-  board_id: string
-  name: string
-  description: string | null
-  status_key: string
-  position: number
-  wip_limit: number | null
-  is_done_column: boolean
-  is_default_column: boolean
-  metadata_json: Record<string, unknown> | null
-  created_at: string
-  updated_at: string
-  deleted_at: string | null
 }
 
 export interface Board {
@@ -3151,7 +3064,6 @@ export interface WorkspaceLocation {
  */
 export type {
   AmbientImportPolicy,
-  AmbientImportPolicyEntry,
   AmbientSessionCount,
   AmbientSyncReport,
   ExtractionOutcome,
@@ -3216,21 +3128,14 @@ export type {
   ConversationAttachmentAccessMode,
   ConversationAttachmentMutation,
   ConversationAttachmentMutationResponse,
-  ConversationAttachmentStatus,
-  ConversationAttachmentSummary,
   ConversationExecutionHostSummary,
   ConversationExecutionInitializeRequest,
   ConversationExecutionPreflightRequest,
   ConversationExecutionPreflightResponse,
   ConversationExecutionRuntimeProfile,
   ConversationExecutionSelection,
-  ConversationExecutionState,
   ConversationExecutionSummary,
-  ConversationPrimarySelection,
-  ConversationPrimarySummary,
   ConversationRuntimeChoice,
-  ConversationRuntimeSelection,
-  ConversationWorkspaceMode,
   HostCapabilities,
   HostExecutionTarget,
   HostExecutionTargetRuntime,
@@ -3499,26 +3404,6 @@ export interface ExperimentInterpretation {
   repro_lock: Record<string, unknown>
   status: 'draft' | 'reviewed' | 'converted'
   resulting_signal_id: string | null
-  created_at: string
-  updated_at: string
-}
-
-export interface ProjectResearchProfile {
-  id: string
-  project_id: string
-  preset_key: string
-  research_question: string | null
-  working_title: string | null
-  domain: string | null
-  output_type: string | null
-  paper_type: string | null
-  citation_style: string | null
-  target_venue: string | null
-  language: string
-  experiment_intake_declaration: string
-  status: string
-  approved_by_user_id: string | null
-  approved_at: string | null
   created_at: string
   updated_at: string
 }
@@ -4776,13 +4661,6 @@ export interface AutomationFireResult {
   warnings?: Array<{ stage: string; error_code: string; message: string }>
 }
 
-export interface RelocationBlock {
-  block_id: string
-  text: string
-  /** The capture's own block. Preselected; the rest are offered unchecked. */
-  anchored: boolean
-}
-
 /** A user-created durable focus area. Classifies content; decides no access (ADR 0015). */
 export interface FocusArea {
   id: string
@@ -4809,10 +4687,8 @@ export interface FocusAreaContents {
 export type {
   WorkLoopStageKey,
   ResponsibleActor,
-  TaskCompletion,
   ProjectBoardCard,
   ProjectBoardColumn,
-  TaskWorkEvent,
   ProjectWorkUpdate,
   ProjectWorkUpdatesResponse,
   ProjectMainlineRoomResponse,
@@ -4822,7 +4698,6 @@ export type {
   ProjectReadersResponse,
   ThreadReferencePick,
   ThreadReferenceProvenance,
-  ThreadReferenceDisclosureRequired,
   ProjectConversationsResponse,
   InstanceOperationsSettings,
   InstanceOperationsSettingsUpdate,

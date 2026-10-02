@@ -28,10 +28,6 @@ import { ResearchResultCard } from './ResearchResultCard'
 import { researchResultState, savedSetupDiffersFromOperation, type ResearchResultAction } from './researchResultState'
 import { ResearchScanTimeline } from './ResearchScanTimeline'
 
-export function activeResearchWorkflowFrom(workflows: ProjectResearchWorkflow[]): ProjectResearchWorkflow | null {
-  return workflows.find(workflow => workflow.status === 'active') ?? null
-}
-
 function historyCoverageRanges(workflow: ProjectResearchWorkflow | null): Array<{ from: string; to: string; operation_id: string; status: string }> {
   const value = workflow?.state_json.coverage_ranges
   if (!Array.isArray(value)) return []

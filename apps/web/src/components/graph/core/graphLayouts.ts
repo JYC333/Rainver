@@ -121,10 +121,6 @@ export function resolveGraphLayout(
   }
 }
 
-export function layoutWarningForNodeCount(nodeCount: number): string | null {
-  return layoutWarningForCounts(nodeCount, 0)
-}
-
 function layoutWarningForCounts(nodeCount: number, edgeCount: number): string | null {
   if (nodeCount > CLIENT_GRAPH_NODE_BUDGET && edgeCount > CLIENT_GRAPH_EDGE_BUDGET) {
     return 'Projection exceeds the client node and edge budgets; using a degraded layout and requiring producer-side capping or aggregation.'

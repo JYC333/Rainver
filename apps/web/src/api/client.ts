@@ -10,7 +10,6 @@ import type {
   ExtractionOutcome,
   ImportedSession,
   ImportedSessionRecord,
-  AcademicPaper,
   ProjectBoard,
   ProjectMainlineRoomResponse,
   ProjectReadersResponse,
@@ -18,19 +17,12 @@ import type {
   ProjectWorkUpdatesResponse,
   TaskWorkView,
   WorkLoopStageKey,
-  AcademicPaperAuthor,
-  AcademicPaperCitation,
-  AcademicPaperCreate,
-  AcademicPaperUpdate,
   ActivityInboxRecord,
   ActivityRecord,
   ActivitySourceType,
   AgentConfigUpdateBody,
   AgentCreateBody,
   AgentOut,
-  AgentRunGroup,
-  AgentRunGroupTimeline,
-  AgentRunGroupTrace,
   AgentRuntimeProfileCreateBody,
   AgentRuntimeProfileOut,
   AgentRuntimeProfileUpdateBody,
@@ -91,8 +83,6 @@ import type {
   ConversationRetryResponse,
   ConversationExecutionSummary,
   CreateAgentFromTemplateBody,
-  CreateAgentRunGroupRequest,
-  CreateAgentRunGroupResponse,
   CreateRoomRequest,
   CreateRoomResponse,
   RoomAgentAddRequest,
@@ -150,7 +140,6 @@ import type {
   ExperimentVersion,
   ExtractedEvidence,
   ExtractionJob,
-  Feature,
   InstanceOperationsSettings,
   InstanceOperationsSettingsUpdate,
   FileContent,
@@ -247,8 +236,6 @@ import type {
   ProjectExtractionProfile,
   ProjectFolder,
   ProjectFolderCreateBody,
-  ProjectFolderExecutionConfig,
-  ProjectFolderExecutionConfigUpdate,
   ProjectFolderScanCandidate,
   ProjectFolderUpdateBody,
   ProjectInstructionVersion,
@@ -363,8 +350,6 @@ import type {
   RunStatusOut,
   RunSupervisorDecision,
   RunVerificationResult,
-  SendAgentRunGroupMessageRequest,
-  SendAgentRunGroupMessageResponse,
   SendRoomMessageRequest,
   SerendipityFeedbackResult,
   Session,
@@ -434,8 +419,6 @@ import type {
   TaskProposal,
   TaskRunCreateBody,
   TaskRunListItem,
-  UpdateAgentRunGroupRequest,
-  UpdateAgentRunGroupResponse,
   WorkflowExecutionSummary,
 } from '../types/api'
 import type {
@@ -1421,34 +1404,6 @@ export const plansApi = {
   reconcile: (id: string) => post<PlanExecutionResult>(`/plans/${encodeURIComponent(id)}/reconcile`, {}),
 }
 
-// ── Collaboration task groups (advanced audit/control) ────────────────────
-export const agentGroupsApi = {
-  list: (params: { status?: string; limit?: number; offset?: number } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.status !== undefined) q.status = params.status
-    if (params.limit !== undefined) q.limit = String(params.limit)
-    if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<Page<AgentRunGroup>>('/agent-groups?' + new URLSearchParams(q))
-  },
-  create: (body: CreateAgentRunGroupRequest) =>
-    post<CreateAgentRunGroupResponse>('/agent-groups', body),
-  update: (groupId: string, body: UpdateAgentRunGroupRequest) =>
-    patch<UpdateAgentRunGroupResponse>(`/agent-groups/${groupId}`, body),
-  timeline: (groupId: string, params: { limit?: number; offset?: number } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.limit !== undefined) q.limit = String(params.limit)
-    if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<AgentRunGroupTimeline>(`/agent-groups/${groupId}/timeline?` + new URLSearchParams(q))
-  },
-  trace: (groupId: string) =>
-    get<AgentRunGroupTrace>(`/agent-groups/${groupId}/trace`),
-  sendMessage: (groupId: string, body: SendAgentRunGroupMessageRequest) =>
-    post<SendAgentRunGroupMessageResponse>(`/agent-groups/${groupId}/messages`, body),
-  pause: (groupId: string) => post<AgentRunGroup>(`/agent-groups/${groupId}/pause`, {}),
-  resume: (groupId: string) => post<AgentRunGroup>(`/agent-groups/${groupId}/resume`, {}),
-  cancel: (groupId: string) => post<AgentRunGroup>(`/agent-groups/${groupId}/cancel`, {}),
-}
-
 export const roomsApi = {
   list: (params: { project_id?: string; limit?: number; offset?: number } = {}) => {
     const q: Record<string, string> = {}
@@ -2234,15 +2189,6 @@ export const hostsApi = {
       `/hosts/${encodeURIComponent(hostId)}/provider-proxy-url`,
       { base_url: baseUrl },
     ),
-}
-
-export const projectFolderExecutionConfigsApi = {
-  get:    (projectId: string, folderId: string) =>
-    get<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`),
-  create: (projectId: string, folderId: string, data: ProjectFolderExecutionConfigUpdate) =>
-    post<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`, data),
-  update: (projectId: string, folderId: string, data: ProjectFolderExecutionConfigUpdate) =>
-    patch<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`, data),
 }
 
 export const capabilitiesFrameworkApi = {
@@ -3471,37 +3417,6 @@ export const researchDiscoveryApi = {
     post<MaterializedResearchStrategy>(`/research/query-strategies/${encodeURIComponent(strategyId)}/materialize`, body),
   retryProvider: (strategyId: string, providerKey: ResearchProviderKey, body: { project_id: string; execution?: { model_provider_id?: string; model_name?: string }; credentials?: Record<string, string> }) =>
     post<{ strategy: ResearchQueryStrategy }>(`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/retry`, body),
-}
-
-export const academicApi = {
-  listPapers: (params: { q?: string; limit?: number; offset?: number } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.q !== undefined) q.q = params.q
-    if (params.limit !== undefined) q.limit = String(params.limit)
-    if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<Page<AcademicPaper>>('/academic/papers?' + new URLSearchParams(q))
-  },
-  createPaper: (body: AcademicPaperCreate) =>
-    post<AcademicPaper>('/academic/papers', body),
-  getPaper: (objectId: string) =>
-    get<AcademicPaper>(`/academic/papers/${encodeURIComponent(objectId)}`),
-  updatePaper: (objectId: string, body: AcademicPaperUpdate) =>
-    patch<AcademicPaper>(`/academic/papers/${encodeURIComponent(objectId)}`, body),
-  linkAuthor: (objectId: string, body: { person_object_id: string; author_position?: number | null; is_corresponding?: boolean }) =>
-    post<{ object_relation_id: string }>(`/academic/papers/${encodeURIComponent(objectId)}/authors`, body),
-  listAuthors: (objectId: string) =>
-    get<AcademicPaperAuthor[]>(`/academic/papers/${encodeURIComponent(objectId)}/authors`),
-  linkCitation: (objectId: string, body: { cited_paper_object_id: string }) =>
-    post<{ object_relation_id: string }>(`/academic/papers/${encodeURIComponent(objectId)}/citations`, body),
-  listCitations: (objectId: string) =>
-    get<AcademicPaperCitation[]>(`/academic/papers/${encodeURIComponent(objectId)}/citations`),
-  listCitedBy: (objectId: string) =>
-    get<AcademicPaperCitation[]>(`/academic/papers/${encodeURIComponent(objectId)}/cited-by`),
-}
-
-// ── Features ──────────────────────────────────────────────────────────────
-export const featuresApi = {
-  list: () => get<Feature[]>('/features'),
 }
 
 export const instanceOperationsApi = {

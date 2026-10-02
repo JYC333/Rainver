@@ -114,19 +114,6 @@ export function quotaWindowText(window: SubscriptionQuotaWindow): string {
   return `${Math.round(window.utilization)}% of its ${window.kind === 'week' ? 'weekly' : '5-hour'} window${reset ? ` (resets ${reset})` : ''}`
 }
 
-/**
- * What the discussion cost, one line per funding source:
- * money on priced Runs; per subscription its tokens here and the account's
- * window, which is account-wide and cannot be charged to the discussion.
- */
-export function discussionCostLines(
-  usage: RoomDiscussionDetail['usage'],
-  discussion?: Pick<RoomDiscussion, 'spend_cap_usd'>,
-): string[] {
-  const priced = pricedCostLine(usage, discussion)
-  return [...(priced ? [priced] : []), ...usage.subscription.map(subscriptionCostLine)]
-}
-
 function pricedCostLine(usage: RoomDiscussionDetail['usage'], discussion?: Pick<RoomDiscussion, 'spend_cap_usd'>): string | null {
   if (usage.priced_usd <= 0 && !discussion?.spend_cap_usd) return null
   const cap = discussion?.spend_cap_usd ? ` of $${discussion.spend_cap_usd.toFixed(2)}` : ''
