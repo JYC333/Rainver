@@ -53,19 +53,10 @@ export default function ProposalDetailPage() {
     return () => { cancelled = true }
   }, [proposalId, activeSpaceId])
 
-  const canDecide =
-    p &&
-    p.status === 'pending' &&
-    (
-      p.proposal_type.startsWith('memory_') ||
-      p.proposal_type.startsWith('knowledge_') ||
-      p.proposal_type.startsWith('claim_') ||
-      p.proposal_type.startsWith('object_relation_') ||
-      p.proposal_type === 'code_patch' ||
-      p.proposal_type === 'egress_review' ||
-      p.proposal_type === 'retrieval_maintenance_packet' ||
-      p.proposal_type === 'claim_candidate_packet'
-    )
+  // Every pending proposal, as on the list: plan reviews, capability installs
+  // and the rest are sent here to be decided, and a type the server cannot
+  // apply yet is reported by `decide`.
+  const canDecide = p?.status === 'pending'
 
   async function decide(action: 'accept' | 'reject') {
     if (!p) return
