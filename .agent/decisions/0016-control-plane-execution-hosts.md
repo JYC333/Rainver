@@ -19,10 +19,11 @@ Both trust modes are built: CLI execution runs on the host daemon protocol on
 every host, the sandbox line is deleted, and B63 states the two safety models.
 §7's server-side credential profiles and runtime-tool catalog are retired,
 §9's drain-then-replace upgrades and host-side usage probes are in, and §2's
-per-Run egress policy is enforced by a host-side proxy. One piece of §2 was
-not built: the vendor CLI's own sandbox is still never relaxed in strict mode.
-What that costs was measured on 2026-09-08 and is recorded in §2 and the
-deferred register; the symptom is not the one this ADR originally assumed. Read this record for what was decided and
+per-Run egress policy is enforced by a host-side proxy. The vendor CLI's own
+sandbox is relaxed in strict mode: the daemon writes the Codex copy's
+`sandbox_mode` before spawn (`packages/host-daemon/src/codexStrictSandbox.ts`);
+what the nested sandbox cost before that was measured on 2026-09-08 and is
+recorded in §2. Read this record for what was decided and
 `modules/hosts.md` for what exists.
 
 ## Context
@@ -98,8 +99,8 @@ property of the host, never of a Run.
   and the workspace bound per the Run's `sandbox_mode`. The namespace is built
   on the host, from paths only the host knows; what the control plane supplies
   is policy — how the workspace is bound and whether the namespace gets a
-  network at all. The vendor CLI's own sandbox is *meant* to be relaxed in
-  strict mode   so there is exactly one boundary and it is ours. The daemon writes
+  network at all. The vendor CLI's own sandbox is relaxed in strict mode so
+  there is exactly one boundary and it is ours. The daemon writes
   `sandbox_mode = "workspace-write"` into the Codex copy's `config.toml` before
   spawn; `RAINVER_STRICT_SANDBOX=1` is exported for anything that reads it.
 
