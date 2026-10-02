@@ -238,8 +238,9 @@ export async function rollbackTool(runtimeKey: string): Promise<ToolManifest | n
 
 /**
  * Installs into a staging directory and renames it into place, so a
- * half-finished install never reads as an installed tool. Re-installing an
- * existing version replaces it.
+ * half-finished install never reads as an installed tool (a uv tool, which
+ * cannot be moved, is installed in place instead). Re-installing an existing
+ * version replaces it.
  */
 export async function installTool(
   frame: InstallToolFrame,
@@ -248,7 +249,21 @@ export async function installTool(
 ): Promise<ToolManifest> {
   const finalDir = toolDir(frame.runtime_key, frame.version);
   const home = managedToolHome(frame.runtime_key);
-  const stagingDir = `${finalDir}.installing`;
+  // uv writes absolute paths into what it installs (the entry-point symlink,
+  // each script's interpreter line), so a uv tool stops working once its
+  // directory is renamed. It is installed where it will run instead; a copy
+  // of the same version already there is moved aside and put back on failure.
+  // Readers still never see it half-done: a version without its manifest is
+  // not installed, and the manifest is written last.
+  const inPlace = frame.distribution.kind === "uvx";
+  const stagingDir = inPlace ? finalDir : `${finalDir}.installing`;
+  const asideDir = inPlace ? `${finalDir}.replaced` : null;
+  if (asideDir) {
+    await rm(asideDir, { recursive: true, force: true });
+    await rename(finalDir, asideDir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
+  }
   await rm(stagingDir, { recursive: true, force: true });
   await mkdir(stagingDir, { recursive: true, mode: 0o700 });
   try {
@@ -283,8 +298,11 @@ export async function installTool(
       installed_at: new Date().toISOString(),
     };
     await writeFile(join(stagingDir, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
-    await rm(finalDir, { recursive: true, force: true });
-    await rename(stagingDir, finalDir);
+    if (!inPlace) {
+      await rm(finalDir, { recursive: true, force: true });
+      await rename(stagingDir, finalDir);
+    }
+    if (asideDir) await rm(asideDir, { recursive: true, force: true });
   // One current copy per runtime key, plus exactly one kept behind it so the
     // upgrade has something to be undone to (ADR 0016 §9). User state is outside
     // this tree.
@@ -308,6 +326,11 @@ export async function installTool(
     return manifest;
   } catch (error) {
     await rm(stagingDir, { recursive: true, force: true });
+    if (asideDir) {
+      await rename(asideDir, finalDir).catch((restoreError: NodeJS.ErrnoException) => {
+        if (restoreError.code !== "ENOENT") throw restoreError;
+      });
+    }
     throw error;
   }
 }

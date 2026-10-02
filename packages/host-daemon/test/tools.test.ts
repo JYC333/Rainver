@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -150,6 +151,39 @@ describe("managed installations", () => {
     );
     expect(capabilities.installations.acp_goose?.map((installation) => installation.id)).toEqual(["managed:1.2.3"]);
     expect(capabilities.runtimes).not.toContain(process.execPath);
+  });
+
+  it.skipIf(process.platform === "win32")("leaves a uv tool runnable at its final path", async () => {
+    // A stand-in for `uv tool install`: like the real one it writes the venv
+    // under UV_TOOL_DIR and links the entry point into UV_TOOL_BIN_DIR by
+    // absolute path, so a directory renamed after the install strands it.
+    const fakeBin = join(configDir, "fake-bin");
+    await mkdir(fakeBin, { recursive: true });
+    await writeFile(join(fakeBin, "uv"), [
+      "#!/bin/sh",
+      "set -e",
+      'mkdir -p "$UV_TOOL_DIR/fake-agent/bin" "$UV_TOOL_BIN_DIR"',
+      'printf \'#!/bin/sh\\necho fake-agent ok\\n\' > "$UV_TOOL_DIR/fake-agent/bin/fake-agent"',
+      'chmod +x "$UV_TOOL_DIR/fake-agent/bin/fake-agent"',
+      'ln -sf "$UV_TOOL_DIR/fake-agent/bin/fake-agent" "$UV_TOOL_BIN_DIR/fake-agent"',
+      "",
+    ].join("\n"), { mode: 0o755 });
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:${savedPath ?? ""}`;
+    try {
+      for (const attempt of ["install", "reinstall"]) {
+        const manifest = await installTool({
+          request_id: attempt, runtime_key: "acp_fake", version: "1.0.0",
+          distribution: { kind: "uvx", package: "fake-agent@1.0.0", args: [], env: {} },
+          login: null,
+        }, () => {});
+        expect(manifest.command).toBe(join(toolsDir(), "acp_fake", "1.0.0", "bin", "fake-agent"));
+        expect(execFileSync(manifest.command, { encoding: "utf8" }).trim()).toBe("fake-agent ok");
+      }
+      expect(await readdir(join(toolsDir(), "acp_fake"))).toEqual(["1.0.0"]);
+    } finally {
+      process.env.PATH = savedPath;
+    }
   });
 
   it("refuses a runtime key or version that could escape the tools directory, and removes what it installed", async () => {
