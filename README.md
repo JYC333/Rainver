@@ -174,7 +174,7 @@ of the backend.
 LLM agents can execute arbitrary shell commands. To protect the host:
 
 - **Default — filesystem isolation**: git worktrees + `PathPolicy` confine file access to the
-  run's workspace. This is the default execution isolation (`default_sandbox_level=worktree`).
+  run's workspace. This is the default execution isolation.
 - **High-risk — one-shot Docker**: runs that require `one_shot_docker` isolation are refused
   until that product path is implemented. The sandbox image assets exist, but the app must not
   present Docker isolation as active protection for high/critical-risk runs.
