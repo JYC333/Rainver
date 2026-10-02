@@ -118,9 +118,9 @@ capture / trigger
 
 ### External tools are adapters, not product foundations
 
-- Claude Code, Codex, Cursor, LangGraph, OpenAI Agents SDK are runtime adapters.
+- Claude Code, Codex CLI, OpenCode, Gemini CLI, and ACP-registry agents (`acp_<id>`) are runtime adapters.
 - Memory, context, policy, proposals, audit, and Project Folder governance live in Rainver's database, not in vendor CLIs.
-- OpenCode is a third optional CLI runtime alongside Claude Code and Codex CLI, not a
+- OpenCode is an optional CLI runtime alongside Claude Code, Codex CLI, and Gemini CLI, not a
   universal or preferred execution layer. User-initiated/supervised heavy work may use CLI
   subscription allowance; managed API work keeps its existing direct adapters. Claude
   Pro/Max stays on native Claude Code while OpenCode's provider documentation records that
