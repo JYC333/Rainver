@@ -212,7 +212,11 @@ allows recording `egress_granting_user` approval when `currentUserId == required
 
 ## Security Invariants
 
-These invariants are enforced at code level and covered by tests. They must never be weakened.
+These invariants are enforced at code level. They must never be weakened. There is no dedicated
+grant test suite; test coverage is partial: cross-space read with and without a grant
+(`server/test/policyDecisionCore.test.ts`), fail-closed apply of grant-derived proposals
+(`server/test/memoryApplyIntegration.test.ts`), and the `egress_granting_user` approval
+(`server/test/proposalsRoutes.test.ts`). The grant lifecycle and scoping invariants have no focused test.
 
 1. **No grant, no cross-space private memory.** A shared-space run without a valid grant cannot read personal-space private memory.
 2. **User grants only their own memory.** `granting_user_id` is server-assigned from the authenticated user; a user cannot grant another user's memory.
