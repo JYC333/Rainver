@@ -5,7 +5,7 @@ them fast. Commands are in [`../COMMANDS.md`](../COMMANDS.md).
 
 ## Scope
 
-Five Vitest suites, one per package, each run from its package root:
+Seven Vitest suites, one per package, each run from its package root:
 
 | Package | Tests | Notes |
 |---|---|---|
@@ -13,6 +13,8 @@ Five Vitest suites, one per package, each run from its package root:
 | `packages/protocol/` | `test/**/*.test.ts` | Schema parsing and frozen registry fixtures |
 | `packages/host-daemon/` | `test/**/*.test.ts` | Pure node |
 | `packages/agent-cli/` | `test/**/*.test.ts` | Spawns the command as a real child process against a stub control plane |
+| `packages/folder-read/` | `test/**/*.test.ts` | Path policy, reads, and git |
+| `packages/outbound-guard/` | `test/**/*.test.ts` | Outbound block list and fetch guard |
 | `apps/web/` | `src/**/*.test.{ts,tsx}` | jsdom by default; pure-logic files opt out |
 
 Tests are unit-style (deterministic rules, parsers, state transitions, no
