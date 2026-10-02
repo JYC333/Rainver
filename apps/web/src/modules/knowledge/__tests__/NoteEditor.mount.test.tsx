@@ -213,3 +213,34 @@ describe('NoteEditor picks up an external write', () => {
     await waitFor(() => expect(notesApi.get).toHaveBeenCalledTimes(1))
   })
 })
+
+describe('NoteEditor keeps one save and one note in flight', () => {
+  function renderEditor(noteId: string) {
+    return (
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <NoteEditor noteId={noteId} onNoteResolved={vi.fn()} />
+      </MemoryRouter>
+    )
+  }
+
+  it('sends a save made while another is in flight after it, on the version it produced', async () => {
+    vi.mocked(notesApi.get).mockResolvedValue(makeNote())
+    let finishFirst: (note: Note) => void = () => {}
+    vi.mocked(notesApi.update)
+      .mockImplementationOnce(() => new Promise<Note>(resolve => { finishFirst = resolve }))
+      .mockImplementationOnce(async () => makeNote({ title: 'Second', version: 3 }))
+    render(renderEditor('note-1'))
+    const title = await screen.findByDisplayValue('Portable note')
+
+    fireEvent.change(title, { target: { value: 'First' } })
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true })
+    fireEvent.change(title, { target: { value: 'Second' } })
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true })
+    await waitFor(() => expect(notesApi.update).toHaveBeenCalledTimes(1))
+    expect(notesApi.update).toHaveBeenLastCalledWith('note-1', expect.objectContaining({ title: 'First', expect_version: 1 }))
+
+    finishFirst(makeNote({ title: 'First', version: 2 }))
+    await waitFor(() => expect(notesApi.update).toHaveBeenCalledTimes(2))
+    expect(notesApi.update).toHaveBeenLastCalledWith('note-1', expect.objectContaining({ title: 'Second', expect_version: 2 }))
+  })
+})

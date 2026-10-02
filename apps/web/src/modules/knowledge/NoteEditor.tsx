@@ -226,33 +226,47 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   // loaded) the save is refused rather than silently overwriting it; the
   // user's in-progress edit stays on screen and the History panel shows
   // what changed underneath them.
-  const performSaveImpl = useCallback(async () => {
+  //
+  // Saves run one after another, each on the version the one before it
+  // produced: two in flight sent the same `expect_version`, and the server
+  // refused the second as a change from elsewhere. What a save sends is read
+  // when it is asked for, so a flush on switching notes still sends the note
+  // being left.
+  const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
+  const savedVersionRef = useRef(new Map<string, number>())
+  const performSaveImpl = useCallback(() => {
     const current = noteRef.current
-    if (!current) return
+    if (!current) return Promise.resolve()
     const snapshot = editorRef.current?.getSnapshot() ?? richTextSnapshotFromDocument(editorDocumentRef.current)
     const trimmedTitle = titleRef.current.trim()
-    try {
-      const updated = await notesApi.update(current.id, {
-        ...(trimmedTitle ? { title: trimmedTitle } : {}),
-        ...snapshot,
-        expect_version: current.version,
-      })
-      onNoteResolved(updated)
-      noteCacheRef.current.set(updated.id, updated)
-      // Don't clobber the view if we've since navigated to a different note.
-      if (noteRef.current?.id === current.id) {
-        noteRef.current = updated
-        setNote(updated)
+    const run = saveChainRef.current.then(async () => {
+      const expectVersion = Math.max(current.version, savedVersionRef.current.get(current.id) ?? 0)
+      try {
+        const updated = await notesApi.update(current.id, {
+          ...(trimmedTitle ? { title: trimmedTitle } : {}),
+          ...snapshot,
+          expect_version: expectVersion,
+        })
+        savedVersionRef.current.set(updated.id, updated.version)
+        onNoteResolved(updated)
+        noteCacheRef.current.set(updated.id, updated)
+        // Don't clobber the view if we've since navigated to a different note.
+        if (noteRef.current?.id === current.id) {
+          noteRef.current = updated
+          setNote(updated)
+        }
+        setRevisions(null)
+      } catch (e) {
+        if (e instanceof ApiRequestError && e.status === 409) {
+          toast.error('This note changed elsewhere while you were editing. Your edit was not saved — check History, then retry.')
+        } else {
+          toast.error(errMsg(e))
+        }
+        throw e
       }
-      setRevisions(null)
-    } catch (e) {
-      if (e instanceof ApiRequestError && e.status === 409) {
-        toast.error('This note changed elsewhere while you were editing. Your edit was not saved — check History, then retry.')
-      } else {
-        toast.error(errMsg(e))
-      }
-      throw e
-    }
+    })
+    saveChainRef.current = run.catch(() => undefined)
+    return run
   }, [onNoteResolved])
 
   // `flushKey: noteId` flushes a pending save when switching to a different

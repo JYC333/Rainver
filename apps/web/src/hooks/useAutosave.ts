@@ -28,16 +28,22 @@ export function useAutosave(
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
 
+  // Saves can overlap (a debounce, Cmd/Ctrl+S, a flush); "saved" waits for
+  // the last of them rather than the first to finish.
+  const inFlightRef = useRef(0)
   const performSave = useCallback(async () => {
     if (timerRef.current) {
       clearTimeout(timerRef.current)
       timerRef.current = null
     }
+    inFlightRef.current += 1
     setState('saving')
     try {
       await onSaveRef.current()
-      setState(prev => (prev === 'saving' ? 'saved' : prev))
+      inFlightRef.current -= 1
+      if (inFlightRef.current === 0) setState(prev => (prev === 'saving' ? 'saved' : prev))
     } catch {
+      inFlightRef.current -= 1
       setState('error')
     }
   }, [])
