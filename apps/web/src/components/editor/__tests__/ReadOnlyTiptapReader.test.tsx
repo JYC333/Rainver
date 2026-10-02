@@ -36,6 +36,36 @@ describe('ReadOnlyTiptapReader', () => {
     expect(window.getSelection()?.toString()).toBe('')
   })
 
+  it('draws an annotation in its stored color but never lets the color add CSS', async () => {
+    const annotation = (id: string, color: string, from: number, to: number) => ({
+      id, space_id: 'space-1', project_id: null, document_type: 'source_item' as const, document_id: 'doc-1',
+      annotation_type: 'highlight' as const, quote_text: '', color, label: null,
+      visibility: 'space_shared' as const, status: 'active' as const, anchor_state: 'verified' as const,
+      created_by_user_id: 'user-2', created_at: '', updated_at: '',
+      anchor_json: {
+        schema_version: 1 as const, normalizer: 'v1', quote_text: '', before_context: '', after_context: '',
+        text_range: { start: 0, end: 0, unit: 'utf16' as const }, tiptap_range: { from, to },
+      },
+    })
+    const { container } = render(
+      <ReadOnlyTiptapReader
+        contentJson={{ type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Alpha beta' }] }] }}
+        normalizedText="Alpha beta"
+        annotations={[
+          annotation('ann-safe', '#a1b2c3', 1, 6),
+          annotation('ann-hostile', 'red;background:url(//t.example/a)', 7, 11),
+        ]}
+      />,
+    )
+
+    await waitFor(() => expect(container.querySelector('[data-annotation-id="ann-hostile"]')).not.toBeNull())
+    const safe = container.querySelector('[data-annotation-id="ann-safe"]') as HTMLElement
+    const hostile = container.querySelector('[data-annotation-id="ann-hostile"]') as HTMLElement
+    expect(safe.getAttribute('style')).toContain('--reader-annotation-color: #a1b2c3')
+    expect(hostile.getAttribute('style') ?? '').not.toContain('url(')
+    expect(hostile.style.background).toBe('')
+  })
+
   it('renders reader table nodes', async () => {
     render(
       <ReadOnlyTiptapReader
