@@ -373,9 +373,16 @@ function isIgnorable(line: string): boolean {
   return trimmed === "" || trimmed.startsWith(";");
 }
 
+/** Cuts a trailing `;` comment; a `;` inside a quoted string is text. */
 function stripComment(line: string): string {
-  const index = line.indexOf(";");
-  return index === -1 ? line : line.slice(0, index);
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (quoted && char === "\\") index += 1;
+    else if (char === '"') quoted = !quoted;
+    else if (char === ";" && !quoted) return line.slice(0, index);
+  }
+  return line;
 }
 
 function splitFirst(input: string): readonly [string, string] {
@@ -386,12 +393,15 @@ function splitFirst(input: string): readonly [string, string] {
 }
 
 function quotedValues(input: string): string[] {
-  return [...input.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) =>
-    match[1]!.replace(/\\"/g, '"'),
-  );
+  return [...input.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) => unescapeString(match[1]!));
 }
 
 function unquote(input: string): string {
-  if (input.startsWith('"') && input.endsWith('"')) return input.slice(1, -1).replace(/\\"/g, '"');
+  if (input.startsWith('"') && input.endsWith('"')) return unescapeString(input.slice(1, -1));
   return input;
+}
+
+/** The inverse of the exporter's `escapeString`: `\\` and `\"`, in one pass. */
+function unescapeString(input: string): string {
+  return input.replace(/\\(["\\])/g, "$1");
 }

@@ -172,6 +172,36 @@ poptag #trip
     expect(exported).toContain('{30.00 USD, 2026-01-02, "lot-1"}');
   });
 
+  it("keeps semicolons and backslashes inside strings across export and import", () => {
+    const text = [
+      "2026-01-01 open Assets:Cash USD",
+      "2026-01-01 open Expenses:Food USD",
+      '2026-10-01 * "Cafe" "Lunch; tip included" ; a real comment',
+      '  memo: "a; b"',
+      "  Assets:Cash  -12.00 USD",
+      "  Expenses:Food  12.00 USD",
+      '2026-10-02 note Assets:Cash "a; b"',
+      '2026-10-03 document Assets:Cash "C:\\docs\\r.pdf"',
+      "",
+    ].join("\n");
+
+    const loaded = financeLedgerEngine.loadFromText(text, "fixture.beancount");
+    expect(loaded.errors).toEqual([]);
+    const twice = financeLedgerEngine.loadFromText(
+      financeLedgerEngine.exportEntries(
+        financeLedgerEngine.loadFromText(financeLedgerEngine.exportEntries(loaded.entries), "once.beancount").entries,
+      ),
+      "twice.beancount",
+    );
+
+    for (const entries of [loaded.entries, twice.entries]) {
+      const byType = (type: string) => entries.find((entry) => entry.type === type) as unknown as Record<string, unknown>;
+      expect(byType("transaction")).toMatchObject({ payee: "Cafe", narration: "Lunch; tip included", meta: { memo: "a; b" } });
+      expect(byType("note")).toMatchObject({ comment: "a; b" });
+      expect(byType("document")).toMatchObject({ filename: "C:\\docs\\r.pdf" });
+    }
+  });
+
   it("sorts entries with Beancount-compatible same-day directive ordering", () => {
     const loaded = financeLedgerEngine.loadFromText(`
 2026-01-01 close Assets:Bank:Checking
