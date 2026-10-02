@@ -119,7 +119,14 @@ export class WorkContextService {
   async create(identity: SpaceUserIdentity, raw: unknown): Promise<Record<string, unknown>> {
     const parsed = protocol.WorkContextSetupWriteRequestSchema.safeParse(raw);
     if (!parsed.success) throw new HttpError(422, "Invalid Work Context Setup: only typed object references and preferences are accepted");
-    const requested = parsed.data;
+    // One entry per reference: the planner hashes an explicit item from its
+    // reference and refuses a duplicate id, so a Setup that pinned the same
+    // object twice failed every execution in its scope until it was replaced.
+    const requested = {
+      ...parsed.data,
+      pinned_refs: uniqueRefs(parsed.data.pinned_refs),
+      excluded_refs: uniqueRefs(parsed.data.excluded_refs),
+    };
     const scopeBindings = await resolveWorkContextScopeBindings(this.db, identity, requested.scope_kind, requested.work_context_scope_id);
     const input = bindSetupToScope(requested, scopeBindings);
     await assertSetupReferences(this.db, identity, input);
@@ -635,6 +642,16 @@ export async function resolveWorkContextScopeBindings(
   }
   if (!result.rows[0]) throw new HttpError(404, "Work Context scope not found");
   return result.rows[0];
+}
+
+function uniqueRefs<Ref extends { type: string; id: string }>(refs: Ref[]): Ref[] {
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    const key = `${ref.type}:${ref.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function bindSetupToScope(

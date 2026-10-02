@@ -451,15 +451,28 @@ describe("Project Kernel (real Postgres)", () => {
       published_by_user_id: OWNER,
       created_by_user_id: OWNER,
     });
+    // The same object pinned twice is one pin: the planner hashes an explicit
+    // item from its reference, and a duplicate id fails every execution.
+    const pinnedTwice = await work.create(ownerIdentity, {
+      base_version: 2, reason: "pinned twice",
+      work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: project.id,
+      project_folder_id: null, agent_id: privateAgentId, runtime_ref: null,
+      pinned_refs: [
+        { type: "project_brief_version", id: initialBrief!.id as string },
+        { type: "project_brief_version", id: initialBrief!.id as string },
+      ],
+      excluded_refs: [], retrieval_preferences: {}, continuity_preferences: {},
+    });
+    expect(pinnedTwice.pinned_refs).toEqual([{ type: "project_brief_version", id: initialBrief!.id }]);
     const exclusionSetup = await work.create(ownerIdentity, {
-      base_version: 2, reason: "exclude superseded brief",
+      base_version: 3, reason: "exclude superseded brief",
       work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: project.id,
       project_folder_id: null, agent_id: privateAgentId, runtime_ref: null, pinned_refs: [],
       excluded_refs: [{ type: "project_brief_version", id: replacementBrief.id as string }],
       retrieval_preferences: {}, continuity_preferences: {},
     });
     await expect(work.create(ownerIdentity, {
-      base_version: 3, reason: "invalid instruction exclusion",
+      base_version: 4, reason: "invalid instruction exclusion",
       work_context_scope_id: sessionId, scope_kind: "direct_session", project_id: project.id as string,
       project_folder_id: null, agent_id: privateAgentId, runtime_ref: null, pinned_refs: [],
       excluded_refs: [{ type: "project_instruction_version", id: replacementInstruction.id as string }],
@@ -540,7 +553,7 @@ describe("Project Kernel (real Postgres)", () => {
       [restrictivePolicyId, OWNER, new Date().toISOString(), SPACE],
     );
     const restrictedBase = {
-      base_version: 3, reason: "apply restrictive policy",
+      base_version: 4, reason: "apply restrictive policy",
       work_context_scope_id: sessionId, scope_kind: "direct_session" as const,
       project_id: project.id as string, project_folder_id: null, agent_id: privateAgentId,
       runtime_ref: null, pinned_refs: [], excluded_refs: [], retrieval_preferences: {},
@@ -560,17 +573,17 @@ describe("Project Kernel (real Postgres)", () => {
     expect(policyOmittedContext).toMatchObject({ brief: null, instruction: null });
     await expect(work.create(ownerIdentity, {
       ...restrictedBase,
-      base_version: 4,
+      base_version: 5,
       pinned_refs: [{ type: "project_brief_version", id: initialBrief!.id as string }],
     })).rejects.toMatchObject({ statusCode: 422 });
     await expect(work.create(ownerIdentity, {
       ...restrictedBase,
-      base_version: 4,
+      base_version: 5,
       retrieval_preferences: { enabled: true },
     })).rejects.toMatchObject({ statusCode: 422 });
     await expect(work.create(ownerIdentity, {
       ...restrictedBase,
-      base_version: 4,
+      base_version: 5,
       continuity_preferences: { strategy: "stateful_cli", continue_vendor_session: true },
     })).rejects.toMatchObject({ statusCode: 422 });
   });

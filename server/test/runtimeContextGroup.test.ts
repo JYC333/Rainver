@@ -182,6 +182,58 @@ describe("runtimeContextCliContinuityDb", () => {
       )).resolves.toMatchObject({ rows: [{ status: "rotated" }] });
     });
 
+    it("leaves a checkpoint the viewer may not read out of an overflow reconstruction, as a first full delivery does", async () => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const continuity = new RuntimeContextContinuityService(db.pool);
+      const binding = await cli.prepareBinding(bindingInput(control()));
+      await cli.recordVendorSession({
+        bindingId: binding.id,
+        runtimeStateKey: binding.runtime_state_key,
+        vendorSessionId: "thread-overflow-unauthorized",
+      });
+      let currentMessage = "";
+      for (let index = 0; index < 8; index += 1) {
+        currentMessage = await message(`overflow-${index}`, "x".repeat(4_000), "user");
+        await continuity.ingest({
+          invocation_id: RUN,
+          event_type: "user_message_received",
+          canonical_ref: { type: "message", id: currentMessage },
+          semantic_role: "user_input",
+          token_estimate: 1_200,
+        });
+      }
+      const scope = await db.pool.query<{ event_head_cursor: number }>(
+        `SELECT event_head_cursor FROM context_event_scopes WHERE space_id=$1 AND work_context_scope_id=$2`,
+        [SPACE, RUN],
+      );
+      // A checkpoint drawn from a source this turn's envelope did not accept
+      // and that is not one of the always-authorized kinds.
+      await db.pool.query(
+        `INSERT INTO context_semantic_checkpoints (
+           id,space_id,work_context_scope_id,version,covered_cursor,status,
+           checkpoint_json,extractor_ref_json,created_at
+         ) VALUES ($1,$2,$3,1,$4,'active',$5::jsonb,$6::jsonb,now())`,
+        [randomUUID(), SPACE, RUN, Number(scope.rows[0]?.event_head_cursor ?? 0),
+          JSON.stringify({ decisions: [{ text: "Unauthorized checkpoint" }], source_refs: [{ type: "artifact", id: randomUUID() }] }),
+          JSON.stringify({ type: "provider_task", id: randomUUID(), version: "test.v1" })],
+      );
+      const delivery = await cli.prepareDelivery({
+        bindingId: binding.id,
+        spaceId: SPACE,
+        workContextScopeId: RUN,
+        invocationId: RUN,
+        currentMessageRef: { type: "message", id: currentMessage },
+        ownerUserId: USER,
+        authorizedSourceRefs: [{ type: "message", id: currentMessage }],
+      });
+      expect(delivery.mode).toBe("full");
+      expect(delivery.rotation_reason).toBe("overflow_reconstruction");
+      // Rendered without it, rather than persisted with it and refused at authorization.
+      expect(delivery.delta_item?.payload.text).not.toContain("Unauthorized checkpoint");
+      expect(delivery.delta_item?.payload.checkpoint_ref ?? null).toBeNull();
+    });
+
     it("advances only accepted deltas and rotates hard authority or missing vendor state", async () => {
       if (!db.available) return;
       const cli = new RuntimeContextCliContinuityService(db.pool);

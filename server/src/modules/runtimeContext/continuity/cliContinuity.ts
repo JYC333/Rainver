@@ -363,6 +363,18 @@ export class RuntimeContextCliContinuityService {
         effectiveBinding = replacement.rows[0];
         mode = "full";
         checkpoint = await loadActiveCheckpointForCli(db, input.spaceId, input.workContextScopeId, targetCursor);
+        // The same source gate as a first full delivery: `authorizeCliDeltaItem`
+        // refuses a checkpoint this viewer may not read, and the rotation
+        // above has already committed by then, so the reconstruction must
+        // leave it out here rather than fail the Run on it.
+        if (checkpoint && !(await checkpointSourcesAuthorized(db, checkpoint.checkpoint_json, {
+          spaceId: input.spaceId,
+          workContextScopeId: input.workContextScopeId,
+          viewerUserId: input.ownerUserId,
+          authorizedRefs: input.authorizedSourceRefs,
+        }))) {
+          checkpoint = null;
+        }
         events = await loadCliReconstructionEvents(db, {
           spaceId: input.spaceId,
           workContextScopeId: input.workContextScopeId,
