@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { projectsApi } from '../../api/client'
 import type { ProjectBriefVersion } from '../../types/api'
@@ -40,9 +40,14 @@ export default function EditProjectBriefGoalDialog({
   const [draft, setDraft] = useState<ProjectBriefVersion | null>(null)
   const [correctionSource, setCorrectionSource] = useState<ProjectBriefVersion | null>(null)
 
+  // Start from the server's state when the dialog opens, not on every read:
+  // Pulse re-reads the overview every few seconds, and each read is a new
+  // `brief` object, which would wipe the goal being typed or corrected.
+  const briefRef = useRef(brief)
+  briefRef.current = brief
   useEffect(() => {
     if (!open) return
-    setGoal(brief?.goal ?? '')
+    setGoal(briefRef.current?.goal ?? '')
     setDraft(null)
     setCorrectionSource(null)
     void projectsApi.listBriefVersions(projectId)
@@ -52,7 +57,7 @@ export default function EditProjectBriefGoalDialog({
         if (pending) setGoal(pending.goal ?? '')
       })
       .catch(error => toast.error(errMsg(error)))
-  }, [brief, open, projectId])
+  }, [open, projectId])
 
   async function save() {
     setSaving(true)
