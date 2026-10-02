@@ -28,12 +28,6 @@ export interface RetrievalAlias {
   confidence: number;
 }
 
-export interface RetrievalChunk {
-  chunkIndex: number;
-  plainText: string;
-  contentHash: string;
-}
-
 export interface RetrievalEdge {
   from: RetrievalObjectRef;
   to: RetrievalObjectRef;

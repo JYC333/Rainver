@@ -2,7 +2,6 @@ import {
   JobHandlerRegistry,
   JobDeferredError,
   type JobEnvelopeForHandler,
-  type JobHandlerResult,
 } from "./handlerRegistry.js";
 import type { JobQueuePort } from "./queuePort.js";
 import type { JobRecord } from "./repository.js";
@@ -186,7 +185,3 @@ function errorMessage(error: unknown): string {
   if (typeof error === "string") return error;
   return "unknown job failure";
 }
-
-export type AgentRunJobHandler = (
-  job: JobEnvelopeForHandler,
-) => Promise<JobHandlerResult>;

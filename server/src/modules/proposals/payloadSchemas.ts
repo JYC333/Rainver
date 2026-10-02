@@ -449,8 +449,6 @@ const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   researchHistoryExtend,
 ]);
 
-export type ProposalPayload = z.infer<typeof ProposalPayloadSchema>;
-
 export class ProposalPayloadValidationError extends Error {
   readonly statusCode = 422;
   constructor(

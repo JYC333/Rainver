@@ -22,20 +22,6 @@ type SourcePostProcessingPreparation =
       message: string;
     };
 
-export function sourcePostProcessingFailureMessage(
-  run: SourcePostProcessingRunOut | null,
-): string | null {
-  if (!run) return null;
-  const error = run.error_json && typeof run.error_json === "object" && !Array.isArray(run.error_json)
-    ? run.error_json as Record<string, unknown>
-    : {};
-  return optionalString(error.error_message)
-    ?? optionalString(error.agent_run_error_code)
-    ?? optionalString(error.error_code)
-    ?? optionalString(run.summary)
-    ?? null;
-}
-
 const RETRYABLE_SOURCE_POST_PROCESSING_FAILURES = new Set([
   "provider_network_error",
   "provider_rate_limit",

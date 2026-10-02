@@ -79,11 +79,6 @@ export function relevanceProfileFromResearchContext(
   };
 }
 
-export function researchScopeIsEmpty(scope: ResearchScopeContext): boolean {
-  return scope.sub_questions.length === 0 && scope.in.length === 0 && scope.out.length === 0
-    && scope.must_have.length === 0 && scope.nice_to_have.length === 0;
-}
-
 function boundedUniqueStrings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return unique(value.flatMap((item) => {

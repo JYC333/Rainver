@@ -27,9 +27,6 @@ import {
 import { PgProjectRepository } from "./repository.js";
 
 const PROJECT_PUBLIC_SUMMARY_TASK = "project_public_summary";
-export {
-  PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION,
-} from "./publicSummaryPrompt.js";
 import type { ContentAccessLevel } from "../access/contentAccessTypes.js";
 
 interface ProjectContextRow {

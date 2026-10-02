@@ -352,6 +352,5 @@ export const CLAIM_RESOLUTION_STATES = new Set(["unreviewed", "confirmed", "cont
 export const CLAIM_EVIDENCE_ROLES = new Set(["supports", "contradicts", "mentions", "derived_from", "cites", "summarizes"]);
 export const CLAIM_SOURCE_REF_TYPES = new Set(["activity", "artifact", "run_event", "extracted_evidence", "source_snapshot", "external_pointer", "source_item"]);
 export const CLAIM_SOURCE_TRUST_LEVELS = new Set(["trusted", "normal", "untrusted", "unknown"]);
-export const OBJECT_RELATION_STATUSES = new Set(["candidate", "active", "rejected", "archived"]);
 export const SOURCE_TYPES = new Set(["activity_record", "chat_capture", "webpage", "article", "paper", "pdf", "file", "email", "manual_reference", "external_note"]);
 export const SOURCE_STATUSES = new Set(["raw", "processing", "processed", "archived", "error"]);

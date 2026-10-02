@@ -1,5 +1,4 @@
 import { randomUUID, createHash } from "node:crypto";
-import type { PoolClient } from "../../../db/pool.js";
 import { insertProposalRow } from "../../proposals/reviewPackets.js";
 import { HttpError, page, countFromRow, type Queryable, withQueryableTransaction } from "../../routeUtils/common.js";
 import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../../scheduler/taskStore.js";
@@ -2817,5 +2816,3 @@ function zonedParts(date: Date, timezone: string): { year: number; month: number
   const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === type)?.value ?? 0);
   return { year: part("year"), month: part("month"), day: part("day"), hour: part("hour"), minute: part("minute") };
 }
-
-export type SourcePostProcessingPoolClient = PoolClient;

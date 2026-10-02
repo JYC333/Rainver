@@ -560,15 +560,6 @@ function projectBriefReference(row: Record<string, unknown>): Record<string, unk
   };
 }
 
-export async function resolveWorkContextScopeProject(
-  db: Queryable,
-  identity: SpaceUserIdentity,
-  scopeKind: WorkContextSetupWriteRequest["scope_kind"],
-  scopeId: string,
-): Promise<string | null> {
-  return (await resolveWorkContextScopeBindings(db, identity, scopeKind, scopeId)).project_id;
-}
-
 interface WorkContextScopeBindings {
   project_id: string | null;
   project_folder_id: string | null;

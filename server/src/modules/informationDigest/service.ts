@@ -7,9 +7,7 @@ import { PgInformationDigestRepository, type DigestCandidate, type PersistedDige
 import { PgSerendipityRepository } from "./serendipityRepository.js";
 import { selectSerendipity } from "./serendipitySelection.js";
 
-export const DEFAULT_INTEREST_SLOTS = 6;
 const DEFAULT_PROJECT_SLOTS = 8;
-export const DEFAULT_SERENDIPITY_SLOTS = 2;
 
 interface RankedCandidate {
   candidate: DigestCandidate;

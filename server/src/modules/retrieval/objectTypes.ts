@@ -12,9 +12,3 @@ export const RETRIEVAL_OBJECT_TYPE_VALUES = [
   "source_item",
   "extracted_evidence",
 ] as const satisfies readonly RetrievalObjectType[];
-
-const RETRIEVAL_OBJECT_TYPE_SET = new Set<string>(RETRIEVAL_OBJECT_TYPE_VALUES);
-
-export function isRetrievalObjectType(value: string | null | undefined): value is RetrievalObjectType {
-  return typeof value === "string" && RETRIEVAL_OBJECT_TYPE_SET.has(value);
-}

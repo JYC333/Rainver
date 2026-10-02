@@ -58,12 +58,6 @@ export function makeDecision(
 export function isAllowed(d: PolicyDecision): boolean {
   return d.decision === "allow";
 }
-export function isDenied(d: PolicyDecision): boolean {
-  return d.decision === "deny";
-}
-export function requiresApproval(d: PolicyDecision): boolean {
-  return d.decision === "require_approval";
-}
 
 export const RISK_RANK: Record<RiskLevel, number> = {
   low: 0,

@@ -16,7 +16,6 @@ import { isProvenanceSourceType } from "../ontology/entities.js";
 import type { ProvenanceEntry } from "./sourceMonitoring.js";
 
 export const TARGET_MEMORY = "memory";
-export const TARGET_POLICY = "policy";
 
 export interface QueryResult<Row> {
   rows: Row[];

@@ -82,10 +82,6 @@ export type ProviderTaskRunRecord = RunRecordBase & {
 
 export type RunRecord = AgentRunRecord | ProviderTaskRunRecord;
 
-export function isAgentRunRecord(run: RunRecord): run is AgentRunRecord {
-  return run.execution_kind === "agent";
-}
-
 /**
  * A Run as one viewer may read it. Only visible reads produce one, and the
  * read model takes nothing else, so a path that forgot to compute the level

@@ -251,9 +251,3 @@ export const ARXIV_CATEGORY_GROUPS: readonly ArxivCategoryGroup[] = [
     ],
   },
 ];
-
-const ARXIV_CATEGORY_IDS: readonly string[] = ARXIV_CATEGORY_GROUPS.flatMap((group) =>
-  group.options.map((option) => option.value),
-);
-
-export const ARXIV_CATEGORY_ID_SET: ReadonlySet<string> = new Set(ARXIV_CATEGORY_IDS);

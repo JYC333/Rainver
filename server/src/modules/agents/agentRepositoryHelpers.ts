@@ -51,10 +51,6 @@ export function recordValue(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export function stringValue(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 export function stringOrNull(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }

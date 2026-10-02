@@ -6,9 +6,6 @@ import { SourceQueryPreviewService } from "../sources/sourceQueryPreviewService.
 import { materializeExternalDiscovery, type ExternalDiscoverySample } from "../sources/externalDiscoveryMaterializer.js";
 import { PgSerendipityRepository } from "./serendipityRepository.js";
 import { InterestProfileService } from "../interestProfile/service.js";
-import { DEFAULT_INTEREST_PROFILE_SETTINGS } from "../interestProfile/settings.js";
-
-export const SERENDIPITY_PROBE_DOMAIN_BUDGET = DEFAULT_INTEREST_PROFILE_SETTINGS.probe_domain_budget;
 
 export interface SerendipityProbeProvider {
   available(identity: SpaceUserIdentity): Promise<boolean>;

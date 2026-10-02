@@ -1,7 +1,6 @@
 import {
   HttpError,
   optionalString,
-  stringArray,
 } from "../routeUtils/common.js";
 import type { EvolutionTargetRow } from "./types.js";
 
@@ -9,10 +8,6 @@ export function requiredBodyString(value: unknown, field: string): string {
   const text = optionalString(value);
   if (!text) throw new HttpError(422, `${field} is required`);
   return text;
-}
-
-export function optionalStringArray(value: unknown): string[] {
-  return stringArray(value).filter((item) => item.length > 0);
 }
 
 export function assertTargetRunnable(target: EvolutionTargetRow): void {

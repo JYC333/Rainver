@@ -213,16 +213,6 @@ export function optionalArrayBody(
   throw new HttpError(422, `${key} must be an array or null`);
 }
 
-export function optionalBooleanBody(
-  body: Record<string, unknown>,
-  key: string,
-): boolean | undefined {
-  if (!Object.hasOwn(body, key)) return undefined;
-  const value = body[key];
-  if (typeof value === "boolean") return value;
-  throw new HttpError(422, `${key} must be a boolean`);
-}
-
 export function recordValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)

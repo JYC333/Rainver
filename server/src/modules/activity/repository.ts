@@ -1,13 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
-  countFromRow,
   dateIso,
-  numberValue,
   objectValue,
   optionalObject,
   optionalString,
-  page,
   requiredString,
   stringArray,
   toDbDate,
@@ -721,24 +718,4 @@ export function summaryInputFromBody(body: Record<string, unknown>): SummaryRunI
     createMemoryProposal: Boolean(body.create_memory_proposal),
     createKnowledgeProposal: Boolean(body.create_knowledge_proposal),
   };
-}
-
-export function listPageOut(
-  rows: Record<string, unknown>[],
-  total: number,
-  limit: number,
-  offset: number,
-): Record<string, unknown> {
-  return page(rows, total, limit, offset);
-}
-
-export function totalFromCount(rows: Array<{ total?: unknown }>): number {
-  return countFromRow(rows[0]);
-}
-
-export function confidenceOrNull(value: unknown): number | null {
-  const parsed = numberValue(value);
-  if (parsed === null) return null;
-  if (parsed < 0 || parsed > 1) throw new HttpError(422, "confidence must be between 0 and 1");
-  return parsed;
 }
