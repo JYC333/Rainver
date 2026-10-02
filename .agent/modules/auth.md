@@ -19,7 +19,11 @@ OAuth/session writer. Rainver-owned cookies add
 `Secure` whenever `FRONTEND_URL` is HTTPS and remain usable on loopback HTTP.
 The auth facade forwards Better Auth's `Set-Cookie` headers from every Google
 OAuth start response, including login, registration, reauthentication and account
-linking. Its OAuth errors return to `/login?error=...` rather than an unmounted
+linking. Sign-in and password-change responses carry the session only in the
+cookie: the facade answers `{ ok, user }` and drops Better Auth's `token` body
+field. Better Auth is the sole judge of its own cookie — one whose signature it
+rejects is not a session — and the request it receives names the client only by
+the `request.ip` Fastify resolved. Its OAuth errors return to `/login?error=...` rather than an unmounted
 Better Auth error endpoint.
 
 ## Admission and registration
@@ -101,8 +105,10 @@ auth:recovery` is the sole-admin local CLI path.
 
 ## Administration and future delivery
 
-Instance admins can list users, disable/enable accounts (which invalidates
-sessions), issue a one-time reset link and inspect pending intents. No
+Instance admins can list users, disable/enable admitted accounts (disable
+invalidates sessions; a `pending` identity belongs to `RegistrationService`
+and both routes answer 400 for it), issue a one-time reset link and inspect
+pending intents. No
 impersonation, arbitrary email editing, Space-admin recovery or open signup is
 implemented. The recovery and registration lifecycles expose stable link
 boundaries so a future mail adapter can deliver the same links without adding a

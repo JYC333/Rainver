@@ -60,7 +60,10 @@ async function sendAuthResult(reply: FastifyReply, result: { status: number; bod
   const setCookie = authSetCookies(result.headers);
   if (setCookie.length) reply.header("set-cookie", setCookie);
   if (result.status === 204) { reply.code(204).send(); return; }
-  reply.code(result.status).send(result.body);
+  // Better Auth answers sign-in and change-password with the raw session
+  // token in the body as well as in the HttpOnly cookie. The browser needs
+  // only the cookie; handing the token to page script defeats HttpOnly.
+  reply.code(result.status).send({ ok: true, ...(result.body.user !== undefined ? { user: result.body.user } : {}) });
 }
 
 function body(request: FastifyRequest): Record<string, unknown> {
@@ -117,11 +120,24 @@ async function passwordAllowed(runtime: NonNullable<ModuleContext["authRuntime"]
   return true;
 }
 
+/**
+ * Better Auth reads the client address from `x-forwarded-for` for its
+ * per-IP rate limit and the session's recorded `ip_address`. The inbound
+ * header is client-controlled (nginx appends to it rather than replacing
+ * it), so the internal request carries only the address Fastify resolved
+ * through the trusted-proxy policy.
+ */
+function setClientAddress(headers: Headers, request: FastifyRequest): void {
+  headers.delete("x-real-ip");
+  headers.set("x-forwarded-for", request.ip);
+}
+
 async function forwardBetterAuth(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, reply: FastifyReply, path: string, method = request.method, overrideBody?: Record<string, unknown>): Promise<void> {
   const headers = new Headers();
   for (const [key, value] of Object.entries(request.headers)) {
     if (value !== undefined && key.toLowerCase() !== "content-length") headers.set(key, Array.isArray(value) ? value[0]! : value);
   }
+  setClientAddress(headers, request);
   const payload = overrideBody ?? (request.body as Record<string, unknown> | undefined);
   const init: RequestInit = { method, headers, redirect: "manual" };
   if (payload !== undefined && method !== "GET" && method !== "HEAD") { headers.set("content-type", "application/json"); init.body = JSON.stringify(payload) }
@@ -138,6 +154,7 @@ async function forwardBetterAuth(runtime: NonNullable<ModuleContext["authRuntime
 async function authResponse(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, path: string, bodyValue?: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown>; headers: Headers }> {
   const headers = new Headers();
   for (const [key, value] of Object.entries(request.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value[0]! : value);
+  setClientAddress(headers, request);
   headers.set("content-type", "application/json");
   const response = await runtime.auth.handler(new Request(`${runtime.auth.options.baseURL}${runtime.auth.options.basePath}${path}`, { method: "POST", headers, body: JSON.stringify(bodyValue ?? body(request)) }));
   let parsed: Record<string, unknown> = {};
@@ -214,7 +231,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const input = body(request); const intentId = typeof input.intent_id === "string" ? input.intent_id : ""; const claimSecret = typeof input.claim_secret === "string" ? input.claim_secret : "";
     const check = await runtime.pool.query("SELECT 1 FROM registration_intents WHERE id = $1 AND claim_secret_hash = $2 AND state IN ('issued', 'claimed', 'provisioning') AND expires_at > now()", [intentId, hashOpaqueToken(claimSecret)]);
     if (!check.rowCount) return reply.code(400).send({ code: "registration_invalid", message: "Registration authority is invalid" });
-    const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", requestSignUp: true, callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/login?registration=${encodeURIComponent(intentId)}`, additionalData: { registration_intent_id: intentId, claim_secret: claimSecret } });
+    const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", requestSignUp: true, callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/login?registration=${encodeURIComponent(intentId)}` });
     if (result.status >= 400 || typeof result.body.url !== "string") return reply.code(502).send({ code: "google_unavailable", message: "Google OAuth is unavailable" });
     reply.header("set-cookie", [
       ...authSetCookies(result.headers),
@@ -426,7 +443,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!runtime) return runtimeOrError(context, reply);
     const actor = await currentUser(context, request); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
     const userId = typeof routeParams(request).userId === "string" ? routeParams(request).userId : ""; if (userId === actor.id) return genericAuthFailure(reply, 400);
-    await runtime.pool.query("UPDATE users SET status = 'disabled', updated_at = now() WHERE id = $1", [userId]); await runtime.pool.query("DELETE FROM user_sessions WHERE user_id = $1", [userId]);
+    // Only an admitted account can be disabled: a pending identity belongs to
+    // RegistrationService until it completes or the reconciler reclaims it,
+    // and reclaiming only looks for 'pending'.
+    const disabled = await runtime.pool.query("UPDATE users SET status = 'disabled', updated_at = now() WHERE id = $1 AND status IN ('active', 'disabled')", [userId]);
+    if (!disabled.rowCount) return genericAuthFailure(reply, 400);
+    await runtime.pool.query("DELETE FROM user_sessions WHERE user_id = $1", [userId]);
     return reply.send({ ok: true });
   });
 
@@ -434,7 +456,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!runtime) return runtimeOrError(context, reply);
     const actor = await currentUser(context, request); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
     const userId = typeof routeParams(request).userId === "string" ? routeParams(request).userId : "";
-    await runtime.pool.query("UPDATE users SET status = 'active', updated_at = now() WHERE id = $1", [userId]); return reply.send({ ok: true });
+    // Enable reverses disable and nothing else. A pending identity becomes
+    // active only through RegistrationService.complete, which creates its
+    // Personal Space and consumes its intent in the same transaction.
+    const enabled = await runtime.pool.query("UPDATE users SET status = 'active', updated_at = now() WHERE id = $1 AND status IN ('active', 'disabled')", [userId]);
+    if (!enabled.rowCount) return genericAuthFailure(reply, 400);
+    return reply.send({ ok: true });
   });
 
   app.post("/api/v1/auth/admin/users/:userId/reset-link", async (request, reply) => {

@@ -29,6 +29,12 @@ function authConfig(instanceAdminEmail = "owner@example.test", google = false): 
   });
 }
 
+// Better Auth keeps one in-memory per-IP rate-limit store for the whole
+// process, and the server forwards it only the address Fastify resolved.
+// A direct `auth.handler` call therefore names its address in
+// `x-forwarded-for`, while a request through the facade names it in
+// `inject({ remoteAddress })` — a client-sent forwarded header never reaches
+// Better Auth.
 let signUpSourceCounter = 10;
 async function signUp(config: ServerConfig, email: string, name: string, sourceIp?: string) {
   const auth = createBetterAuth(config, db.pool);
@@ -107,7 +113,8 @@ describe("registration and Better Auth facade primitives", () => {
 
       const withoutGrant = await app.inject({
         method: "POST", url: "/api/v1/auth/google/link",
-        headers: { cookie: sessionCookie, origin: "http://localhost:5173", "x-forwarded-for": sourceIp },
+        remoteAddress: sourceIp,
+        headers: { cookie: sessionCookie, origin: "http://localhost:5173" },
         payload: {},
       });
       expect(withoutGrant.statusCode).toBe(403);
@@ -115,7 +122,8 @@ describe("registration and Better Auth facade primitives", () => {
 
       const reauth = await app.inject({
         method: "POST", url: "/api/v1/auth/reauth",
-        headers: { cookie: sessionCookie, origin: "http://localhost:5173", "content-type": "application/json", "x-forwarded-for": sourceIp },
+        remoteAddress: sourceIp,
+        headers: { cookie: sessionCookie, origin: "http://localhost:5173", "content-type": "application/json" },
         payload: JSON.stringify({ password: "a password with at least fifteen characters" }),
       });
       expect(reauth.statusCode).toBe(200);
@@ -131,7 +139,8 @@ describe("registration and Better Auth facade primitives", () => {
 
       const link = await app.inject({
         method: "POST", url: "/api/v1/auth/google/link",
-        headers: { cookie: `${sessionCookie}; ${grantCookie}`, origin: "http://localhost:5173", "x-forwarded-for": sourceIp },
+        remoteAddress: sourceIp,
+        headers: { cookie: `${sessionCookie}; ${grantCookie}`, origin: "http://localhost:5173" },
         payload: {},
       });
       expect(link.statusCode).toBe(200);
@@ -165,7 +174,8 @@ describe("registration and Better Auth facade primitives", () => {
     try {
       const signIn = await app.inject({
         method: "POST", url: "/api/v1/auth/sign-in/email",
-        headers: { origin: config.frontendUrl, "content-type": "application/json", "x-forwarded-for": "192.0.2.201" },
+        remoteAddress: "192.0.2.201",
+        headers: { origin: config.frontendUrl, "content-type": "application/json" },
         payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
       });
       expect(signIn.statusCode).toBe(200);
@@ -204,7 +214,8 @@ describe("registration and Better Auth facade primitives", () => {
       expect(setPassword.statusCode).toBe(200);
       const signIn = await app.inject({
         method: "POST", url: "/api/v1/auth/sign-in/email",
-        headers: { origin: "http://localhost:5173", "content-type": "application/json", "x-forwarded-for": "192.0.2.202" },
+        remoteAddress: "192.0.2.202",
+        headers: { origin: "http://localhost:5173", "content-type": "application/json" },
         payload: JSON.stringify({ email: "owner@example.test", password: "a new password with at least fifteen characters" }),
       });
       expect(signIn.statusCode).toBe(200);
@@ -251,21 +262,114 @@ describe("registration and Better Auth facade primitives", () => {
     try {
       const routeLogin = await app.inject({
         method: "POST", url: "/api/v1/auth/sign-in/email",
-        headers: { origin: "http://localhost:5173", "content-type": "application/json", "x-forwarded-for": "192.0.2.204" },
+        remoteAddress: "192.0.2.204",
+        headers: { origin: "http://localhost:5173", "content-type": "application/json" },
         payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters", rememberMe: true }),
       });
       expect(routeLogin.statusCode).toBe(200);
+      // The session credential travels only in the HttpOnly cookie.
+      expect(routeLogin.json()).not.toHaveProperty("token");
       const cookie = String(routeLogin.headers["set-cookie"]).split(";", 1)[0];
       expect(cookie).toMatch(/^better-auth\.session_token=/);
       const me = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie } });
       expect(me.statusCode).toBe(200);
       expect(me.json()).toMatchObject({ id: userId, email: "owner@example.test" });
+
+      // A cookie Better Auth cannot verify is not a session, even when the
+      // raw token in front of the signature names a live row.
+      const rawToken = decodeURIComponent(cookie.slice(cookie.indexOf("=") + 1)).split(".", 1)[0]!;
+      for (const forged of [rawToken, `${rawToken}.x`]) {
+        const rejected = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie: `better-auth.session_token=${encodeURIComponent(forged)}` } });
+        expect(rejected.statusCode).toBe(401);
+      }
     } finally {
       await app.close();
     }
 
     const duplicate = await registrations.issueIntent({ email: "owner@example.test" }).catch((error: Error) => error.message);
     expect(duplicate).toBe("registration_invitation_required");
+  });
+
+  it("records the client address Fastify resolved, not the forwarded header the client sent", async () => {
+    if (!db.available) return;
+    const config = authConfig();
+    const intent = await new RegistrationService(db.pool, config).issueIntent({ email: "owner@example.test" });
+    const { userId } = await signUp(config, "owner@example.test", "Owner");
+    await new RegistrationService(db.pool, config).complete({ intentId: intent.intentId, claimSecret: intent.claimSecret, userId });
+    const app = buildModuleServer(config, [authModule]);
+    try {
+      const signIn = await app.inject({
+        method: "POST", url: "/api/v1/auth/sign-in/email",
+        remoteAddress: "192.0.2.77",
+        headers: { origin: config.frontendUrl, "content-type": "application/json", "x-forwarded-for": "203.0.113.9" },
+        payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
+      });
+      expect(signIn.statusCode).toBe(200);
+      const session = await db.pool.query<{ ip_address: string | null }>(
+        "SELECT ip_address FROM user_sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+        [userId],
+      );
+      expect(session.rows[0]).toEqual({ ip_address: "192.0.2.77" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps the registration claim secret out of Better Auth's stored OAuth state", async () => {
+    if (!db.available) return;
+    const config = authConfig("owner@example.test", true);
+    const intent = await new RegistrationService(db.pool, config).issueIntent({ email: "owner@example.test" });
+    const app = buildModuleServer(config, [authModule]);
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/api/v1/auth/register/google",
+        remoteAddress: "192.0.2.150",
+        headers: { origin: "http://localhost:5173", "content-type": "application/json" },
+        payload: JSON.stringify({ intent_id: intent.intentId, claim_secret: intent.claimSecret }),
+      });
+      expect(response.statusCode).toBe(200);
+      const stored = await db.pool.query<{ value: string }>("SELECT value FROM auth_verifications");
+      expect(stored.rows.length).toBeGreaterThan(0);
+      for (const row of stored.rows) expect(row.value).not.toContain(intent.claimSecret);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("lets an administrator disable and enable admitted accounts only, never a pending identity", async () => {
+    if (!db.available) return;
+    const config = authConfig();
+    const registrations = new RegistrationService(db.pool, config);
+    const intent = await registrations.issueIntent({ email: "owner@example.test" });
+    const admin = await signUp(config, "owner@example.test", "Owner");
+    await registrations.complete({ intentId: intent.intentId, claimSecret: intent.claimSecret, userId: admin.userId });
+    // Signed up but never completed: the reconciler reclaims it only while it stays 'pending'.
+    const pending = await signUp(config, "pending@example.test", "Pending");
+    await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
+      .resolves.toMatchObject({ rows: [{ status: "pending" }] });
+    const app = buildModuleServer(config, [authModule]);
+    const headers = { cookie: `better-auth.session_token=${encodeURIComponent(admin.raw)}`, origin: "http://localhost:5173" };
+    try {
+      for (const action of ["enable", "disable"]) {
+        const response = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/${action}`, headers, payload: {} });
+        expect(response.statusCode).toBe(400);
+        await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
+          .resolves.toMatchObject({ rows: [{ status: "pending" }] });
+      }
+      // Once admitted (what RegistrationService.complete leaves behind), the
+      // account is the administrator's to disable and re-enable.
+      await db.pool.query("UPDATE users SET status = 'active' WHERE id = $1", [pending.userId]);
+      const disable = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/disable`, headers, payload: {} });
+      expect(disable.statusCode).toBe(200);
+      await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
+        .resolves.toMatchObject({ rows: [{ status: "disabled" }] });
+      const enable = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/enable`, headers, payload: {} });
+      expect(enable.statusCode).toBe(200);
+      await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
+        .resolves.toMatchObject({ rows: [{ status: "active" }] });
+    } finally {
+      await app.close();
+    }
   });
 
   it("rotates the claim and resumes an immediately retried bootstrap registration", async () => {

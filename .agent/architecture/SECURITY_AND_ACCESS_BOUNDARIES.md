@@ -22,10 +22,13 @@ All durable-data API routes require authentication via `resolveIdentity()`
 | `GET /api/v1/auth/config` | OAuth, bootstrap-registration availability, and password policy (public booleans and numeric bounds only) |
 | `GET /api/v1/auth/google` | OAuth redirect initiation; Better Auth validates state/origin |
 | `GET /api/v1/auth/callback/google` | Explicit Better Auth callback adapter |
-| `POST /api/v1/auth/sign-in/email` | Generic email/password login with bounded IP/email throttling |
+| `POST /api/v1/auth/sign-in/email` | Generic email/password login with bounded IP/email throttling; the body never carries the session token, only the cookie does |
 | `POST /api/v1/auth/registration-intents` | Bootstrap or invitation admission; no open signup |
+| `POST /api/v1/auth/register`, `POST /api/v1/auth/register/google` | Registration completion for an issued intent; authorized by the intent's claim secret (stored hashed), not by a session |
 | `POST /api/v1/auth/recovery/request` | Generic reset request; never returns a raw link |
+| `POST /api/v1/auth/recovery/complete` | Password reset; authorized by the single-use Better Auth reset token |
 | `POST /api/v1/auth/logout` | Better Auth session termination |
+| `POST /api/v1/hosts/register` | Host pairing; authorized by the short-lived pairing code ([`modules/hosts.md`](../modules/hosts.md)) |
 
 All other routes, including system-metadata endpoints, are auth-gated:
 
@@ -1068,10 +1071,18 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   termination is a deployment concern. Mutating cookie-authenticated requests refuse
   any explicit `Origin` other than the configured frontend (`FRONTEND_URL`); there
   is no request-derived same-host fallback. Session cookies are always
-  `HttpOnly`, `SameSite=Lax`, and `Secure`. The server believes `X-Forwarded-*`
+  `HttpOnly` and `SameSite=Lax`, and carry `Secure` whenever `FRONTEND_URL` is
+  HTTPS; a loopback HTTP instance (the development default) issues them
+  without `Secure`, since production refuses any non-loopback HTTP
+  `FRONTEND_URL` ([`modules/auth.md`](../modules/auth.md)). The server believes `X-Forwarded-*`
   only from the frontend proxy (`SERVER_TRUSTED_PROXY_HOST`, resolved by name,
   one hop), so `request.ip` is the client that proxy saw; a direct peer such as
-  a Run on the built-in host cannot choose it. Pairing-code registration is
+  a Run on the built-in host cannot choose it. The request Rainver builds for
+  Better Auth carries that `request.ip` as its only `X-Forwarded-For`, so Better
+  Auth's per-IP rate limit and the recorded session address cannot be steered
+  by a client-sent header. Better Auth is the sole judge of a session cookie it
+  issued: a cookie whose signature it rejects is not a session, whatever raw
+  token precedes the signature. Pairing-code registration is
   rate-limited per client IP (10 attempts / 10 minutes, persisted under the
   instance cache) — IPv6 by /64, because a /64 is the smallest block an ISP
   hands out and counting whole addresses let one caller take the quota once per

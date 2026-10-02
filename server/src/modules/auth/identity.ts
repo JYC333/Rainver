@@ -111,18 +111,24 @@ export class PgAuthRepository implements AuthRepository {
       (SELECT count(*) FROM space_memberships active WHERE active.space_id = s.id AND active.status = 'active') AS member_count
       FROM spaces s JOIN space_memberships m ON m.space_id = s.id WHERE s.id = $1 AND m.user_id = $2 AND m.status = 'active' LIMIT 1`, [spaceId, userId]);
     if (result.rows[0]) return { ...spaceFromRow(result.rows[0]), created_by_user_id: result.rows[0].created_by_user_id };
-    const exists = await this.pool.query("SELECT 1 FROM spaces WHERE id = $1 LIMIT 1", [spaceId]);
-    return exists.rowCount ? { statusCode: 403, detail: "Not authorized for this space" } : null;
+    // A Space this person is not an active member of reads as absent: a 403
+    // here would tell any signed-in user which Space ids exist.
+    return null;
   }
   async logout(sessionToken?: string): Promise<void> { if (sessionToken) await this.pool.query("DELETE FROM user_sessions WHERE token_hash = $1", [hashOpaqueToken(logicalSessionToken(sessionToken))]) }
 
   private async validateSession(token?: string): Promise<SessionRow | null> {
     if (!token) return null;
     if (this.auth) {
+      // Better Auth is the only judge of a cookie it issued: it checks the
+      // signature, which the raw-token read below cannot. A cookie it rejects
+      // is not a session, however the raw token in front of the signature
+      // was obtained.
       try {
         const session = await this.auth.api.getSession({ headers: new Headers({ cookie: `${getCookies(this.auth.options).sessionToken.name}=${encodeURIComponent(token)}` }) });
         if (session?.session?.userId) return { id: session.session.id, user_id: session.session.userId, expires_at: session.session.expiresAt };
-      } catch { /* fall through to the same generic SQL read */ }
+      } catch { /* an unreadable cookie is no session */ }
+      return null;
     }
     const result = await this.pool.query<SessionRow>("SELECT id, user_id, expires_at FROM user_sessions WHERE token_hash = $1 LIMIT 1", [hashOpaqueToken(logicalSessionToken(token))]);
     const row = result.rows[0]; if (!row || new Date(row.expires_at).getTime() <= Date.now()) return null;
