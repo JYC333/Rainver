@@ -36,9 +36,8 @@ separate:
   backend or credential (B67); an unbound Run there keeps the owner's own
   environment and spends the copy's own login, which is the point of pairing
   it.
-- **In-process API channel.** Provider tasks, `/api/v1/providers/chat`, and
-  the `model_api` / `ts_agent_host` adapters resolve the key from the
-  encrypted ModelProvider credential (`resolveProviderApiKey`) and pass it as a
+- **In-process API channel.** Provider tasks and `/api/v1/providers/chat`
+  resolve the key from the encrypted ModelProvider credential (`resolveProviderApiKey`) and pass it as a
   parameter to the managed chat adapter (`@earendil-works/pi-ai` behind a
   single adapter). The channel never writes the environment, so it is
   unreachable from any subprocess. Which library sits behind the adapter is
@@ -149,5 +148,5 @@ executing machine.
 - The in-process API channel is the system's LLM primitive layer (embedding,
   rerank, query rewrite, synthesis, checkpoint extraction, intent planning)
   and also supplies CLI provider mode through the proxy. A CLI runtime cannot
-  replace it; `model_api` is its projection into the Run domain, not a
-  competitor to the CLI runtimes.
+  replace it, and it is not an Agent runtime: there is no `model_api` or
+  `ts_agent_host` runtime identity (ADR 0022).
