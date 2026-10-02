@@ -33,6 +33,17 @@ export type {
   MeTimelineEntry,
 } from "./frontendSupportTypes.js";
 
+interface OperationInProgressRow {
+  id: string;
+  project_id: string;
+  project_name: string;
+  kind: string;
+  title: string;
+  status: string;
+  progress_json: Record<string, unknown> | null;
+  updated_at: unknown;
+}
+
 export class PgFrontendSupportService {
   constructor(private readonly db: Queryable) {}
 
@@ -100,7 +111,7 @@ export class PgFrontendSupportService {
     };
   }
 
-  private async operationsInProgress(identity:SpaceUserIdentity){const result=await this.db.query<any>(`SELECT po.id,po.project_id,p.name AS project_name,po.kind,po.title,po.status,po.progress_json,po.updated_at FROM project_operations po JOIN projects p ON p.id=po.project_id AND p.space_id=po.space_id AND p.deleted_at IS NULL WHERE po.space_id=$1 AND po.status IN ('draft','active','waiting_review') AND (p.owner_user_id=$2 OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=$1 AND s.type='personal') OR EXISTS(SELECT 1 FROM project_members pm WHERE pm.space_id=$1 AND pm.project_id=p.id AND pm.user_id=$2 AND pm.status='active')) ORDER BY po.updated_at DESC LIMIT 10`,[identity.spaceId,identity.userId]);return result.rows.map(row=>({...row,progress_json:row.progress_json&&typeof row.progress_json==='object'?row.progress_json:{},updated_at:iso(row.updated_at)}));}
+  private async operationsInProgress(identity:SpaceUserIdentity){const result=await this.db.query<OperationInProgressRow>(`SELECT po.id,po.project_id,p.name AS project_name,po.kind,po.title,po.status,po.progress_json,po.updated_at FROM project_operations po JOIN projects p ON p.id=po.project_id AND p.space_id=po.space_id AND p.deleted_at IS NULL WHERE po.space_id=$1 AND po.status IN ('draft','active','waiting_review') AND (p.owner_user_id=$2 OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=$1 AND s.type='personal') OR EXISTS(SELECT 1 FROM project_members pm WHERE pm.space_id=$1 AND pm.project_id=p.id AND pm.user_id=$2 AND pm.status='active')) ORDER BY po.updated_at DESC LIMIT 10`,[identity.spaceId,identity.userId]);return result.rows.map(row=>({...row,progress_json:row.progress_json&&typeof row.progress_json==='object'?row.progress_json:{},updated_at:iso(row.updated_at)}));}
 
   async meSummary(userId: string, query: QueryParams): Promise<MeSummaryOut> {
     const recentRunsLimit = boundedQueryInt(query.recent_runs_limit, 10, 1, 50);

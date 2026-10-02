@@ -83,7 +83,7 @@ function scrubRows(model: string, rows: Record<string, unknown>[], candidate?: s
 
 function customAdapter(client: Queryable, details: AdapterDetails, sessionTokens: SessionTokenState): CustomAdapter {
   return {
-    create: async <T extends Record<string, any>>({ model, data }: { model: string; data: T }) => {
+    create: async <T extends Record<string, unknown>>({ model, data }: { model: string; data: T }) => {
       const table = tableName(model);
       const entries = Object.entries(data).filter(([, value]) => value !== undefined);
       const values = entries.map(([, value]) => value);
@@ -142,7 +142,7 @@ function customAdapter(client: Queryable, details: AdapterDetails, sessionTokens
       if (model === "user_sessions" && row && candidate) sessionTokens.set(String(row.id), candidate);
       return row as T | null;
     },
-    updateMany: async ({ model, where, update }: { model: string; where: WhereClause[]; update: Record<string, any> }) => {
+    updateMany: async ({ model, where, update }: { model: string; where: WhereClause[]; update: Record<string, unknown> }) => {
       const entries = Object.entries(update).filter(([, value]) => value !== undefined);
       if (!entries.length) return 0;
       const params: unknown[] = [];

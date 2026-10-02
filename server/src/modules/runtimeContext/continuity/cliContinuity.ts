@@ -185,7 +185,7 @@ export class RuntimeContextCliContinuityService {
 
   async rotateMissingVendorState(bindingId: string): Promise<PreparedCliBinding> {
     return withQueryableTransaction(this.db, async (db) => {
-      const current = await db.query<any>(
+      const current = await db.query<{ id: string }>(
         `SELECT * FROM runtime_context_cli_bindings WHERE id=$1 AND status='active' FOR UPDATE`,
         [bindingId],
       );

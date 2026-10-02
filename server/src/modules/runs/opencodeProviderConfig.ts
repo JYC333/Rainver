@@ -151,8 +151,8 @@ async function parseJsonObject(text: string): Promise<Record<string, unknown>> {
   }
 }
 
-function recordValue(value: unknown): Record<string, any> {
+function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, any>
+    ? value as Record<string, unknown>
     : {};
 }
