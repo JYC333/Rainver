@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Send, Paperclip, Mic, Square, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -19,6 +19,19 @@ export default function CapturePage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const chunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
+
+  // Leaving the page mid-recording releases the microphone. What was
+  // recorded is dropped: it is saved only by "Stop & save".
+  useEffect(() => () => {
+    const recorder = recorderRef.current
+    if (recorder) {
+      recorder.onstop = null
+      recorder.ondataavailable = null
+      if (recorder.state !== 'inactive') recorder.stop()
+    }
+    streamRef.current?.getTracks().forEach(t => t.stop())
+  }, [])
 
   async function handleCapture(e: React.FormEvent) {
     e.preventDefault()
@@ -71,13 +84,17 @@ export default function CapturePage() {
       toast.error('Voice recording is not supported in this browser')
       return
     }
+    let stream: MediaStream | null = null
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
       const mr = new MediaRecorder(stream)
       chunksRef.current = []
       mr.ondataavailable = (ev) => { if (ev.data.size) chunksRef.current.push(ev.data) }
+      const recorded = stream
       mr.onstop = () => {
-        stream.getTracks().forEach(t => t.stop())
+        recorded.getTracks().forEach(t => t.stop())
+        streamRef.current = null
         const type = mr.mimeType || 'audio/webm'
         const ext = type.includes('ogg') ? 'ogg' : type.includes('mp4') ? 'mp4' : 'webm'
         const blob = new Blob(chunksRef.current, { type })
@@ -90,6 +107,8 @@ export default function CapturePage() {
       mr.start()
       setRecording(true)
     } catch (err) {
+      stream?.getTracks().forEach(t => t.stop())
+      streamRef.current = null
       toast.error(errMsg(err))
     }
   }
