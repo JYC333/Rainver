@@ -51,53 +51,14 @@ runtime. A future server-native capability executor must be added through
 adapter; shell commands, remote code loading, broad filesystem access, and
 subprocess execution remain unsupported.
 
-## Capability Registry
+## Catalog
 
-The `CapabilityRegistry` loads capabilities from two sources:
-
-1. **Builtin** — manifests under `catalog/capabilities/` (bundled with the server image).
-2. **External workspace** — manifests under local roots registered on a `capability_library` workspace.
-
-Reload happens through the server catalog routes, including
-`POST /api/v1/capabilities/reload`.
-
-### External workspace discovery
-
-Register a workspace with:
-
-- `workspace_type = "capability_library"` — real `Workspace.workspace_type` column
-- `metadata_json.capability_roots` — list of relative local paths, e.g. `["capabilities"]`
-
-Example workspace create payload fields:
-
-```json
-{
-  "workspace_type": "capability_library",
-  "metadata_json": {
-    "capability_roots": ["capabilities"]
-  }
-}
-```
-
-External capability roots are **local only**. The registry does not scan GitHub URLs, remote URLs, absolute paths, or paths that escape the workspace root. Ordinary (`project`) workspaces are not scanned.
-
-### Enable / disable state
-
-| Source | Default | Persisted? |
-|--------|---------|------------|
-| Builtin | manifest `enabled` (default `true`) | No — manifest is source of truth on reload |
-| External workspace | disabled | Yes — `$RAINVER_HOME/config/settings.yaml` |
-
-Persisted shape:
-
-```yaml
-capabilities:
-  enabled_external_capabilities:
-    - research_intake
-    - rss_watch
-```
-
-Manifests define capability code and metadata; they are **not** the local trust/enable store for external capabilities. Persisted IDs for capabilities that are no longer discovered are ignored safely. Newly discovered external capabilities are never auto-enabled.
+The `catalog` server module reads the bundled manifests under
+`catalog/capabilities/` (and agent template specs under
+`catalog/agent-templates/`) read-only. Its routes are
+`GET /api/v1/server/catalog`, `GET /api/v1/server/catalog/capabilities`, and
+`GET /api/v1/server/catalog/agent-templates`. There is no reload route and no
+external or workspace capability source.
 
 This is not a marketplace or remote install system.
 
@@ -129,6 +90,7 @@ Rainver capability candidates.
 | ID | Purpose |
 |---|---|
 | `memory.reflect` | Analyze sessions, generate memory proposals |
+| `capture-memory-extraction` | Extract memory candidates from raw capture and produce proposal-first memory updates |
 
 ## Execution
 
