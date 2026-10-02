@@ -209,7 +209,9 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
   authenticating. Also closes the host's live WebSocket connection
   immediately if it has one (`HostConnectionRegistry.closeConnection`) — so
   revoke cuts off an already-connected daemon right away, not just its next
-  reconnect attempt.
+  reconnect attempt. A hello that authenticated just before the revoke and
+  reaches `registerConnection` after it is refused and closed the same way
+  (`forgetRevokedHost`), so the host never shows online again.
 
 Unauthenticated (the pairing code itself is the one-time credential):
 
@@ -222,8 +224,10 @@ user session — the daemon has no session to present):
   token. This is the server half of `rainver-host unregister`; the token has
   no authority over another Host.
 - `POST /api/v1/hosts/me/workspaces` — `{ project_id, name, display_path? }`,
-  requires the host owner to hold Project write access
-  (`PgProjectFolderRepository.createRemoteWorkspace`); creates a logical
+  requires the host owner to be an active member of the Project's Space and
+  to hold Project write access there
+  (`PgProjectFolderRepository.createRemoteWorkspace`; the token names no
+  request Space, so the membership check stands in for it); creates a logical
   Folder plus a remote Location whose server `root_path` is NULL.
 - `GET /api/v1/hosts/me/workspaces` — every Location registered under this
   Host.

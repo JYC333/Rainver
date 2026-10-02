@@ -1030,7 +1030,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               helloCompleted = true;
               probeHostKind = host.kind === "server" ? "server" : "remote";
               await hosts.recordHeartbeat(host.id, daemonHelloInfo(frame));
-              sharedHostConnectionRegistry.registerConnection(host.id, frameSink);
+              // Revoked while this hello was in flight: the registry has
+              // closed the socket; no acknowledgement, no connection.
+              if (!sharedHostConnectionRegistry.registerConnection(host.id, frameSink)) return;
               frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes(probeHostKind) });
               void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), host.id)
                 .catch(() => undefined);

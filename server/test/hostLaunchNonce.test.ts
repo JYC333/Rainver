@@ -188,3 +188,28 @@ describe("launch nonce routing", () => {
   });
 
 });
+
+// Revoke cuts a connected daemon off (`closeConnection`) and remembers the
+// host (`forgetRevokedHost`). A hello that had already authenticated when the
+// revoke landed registers afterwards, and nothing would close that socket.
+describe("a host revoked during its hello", () => {
+  function sink(): HostFrameSink & { closed: Array<{ code?: number; reason?: string }> } {
+    const closed: Array<{ code?: number; reason?: string }> = [];
+    return { closed, send: () => undefined, close: (code, reason) => { closed.push({ code, reason }); } };
+  }
+
+  it("is refused by registerConnection and stays offline", () => {
+    const registry = new HostConnectionRegistry();
+    registry.closeConnection("host-1", 1008, "host_revoked");
+    registry.forgetRevokedHost("host-1");
+
+    const late = sink();
+    expect(registry.registerConnection("host-1", late)).toBe(false);
+    expect(registry.isOnline("host-1")).toBe(false);
+    expect(late.closed).toEqual([{ code: 1008, reason: "host_revoked" }]);
+
+    const other = sink();
+    expect(registry.registerConnection("host-2", other)).toBe(true);
+    expect(registry.isOnline("host-2")).toBe(true);
+  });
+});

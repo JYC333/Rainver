@@ -589,6 +589,14 @@ export class PgProjectFolderRepository {
     );
     const spaceId = project.rows[0]?.space_id;
     if (!spaceId) throw new HttpError(404, "Project not found");
+    // No request Space here — the host token names only its owner — so the
+    // Space the Project belongs to must still be one the owner is an active
+    // member of; Project ownership alone does not outlive Space membership.
+    const membership = await this.db.query(
+      `SELECT 1 FROM space_memberships WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [spaceId, userId],
+    );
+    if (!membership.rows[0]) throw new HttpError(404, "Project not found");
     await assertProjectWriter(this.db, spaceId, projectId, userId);
     const name = requiredText(input.name, "name");
     const duplicate = await this.db.query<{ id: string }>(

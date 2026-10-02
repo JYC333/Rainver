@@ -336,6 +336,12 @@ describe("hosts routes", () => {
       [OWNER],
     );
     await seedMainlineRoomsForAllProjects(db.pool);
+    // Project owner, but no longer an active member of the Project's Space.
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES ('workspace-membership', 'workspace-space', $1, 'member', 'suspended', now(), now())`,
+      [OWNER],
+    );
 
     const issue = await app.inject({
       method: "POST",
@@ -357,6 +363,17 @@ describe("hosts routes", () => {
       payload: { project_id: "workspace-project", name: "mapping" },
     });
     expect(noAuth.statusCode).toBe(401);
+
+    // The host token carries no request Space: the Project's Space must still
+    // count the owner as an active member, Project ownership notwithstanding.
+    const lapsedMember = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/me/workspaces",
+      headers: { authorization: `Bearer ${hostToken}` },
+      payload: { project_id: "workspace-project", name: "mapping" },
+    });
+    expect(lapsedMember.statusCode).toBe(404);
+    await db.pool.query(`UPDATE space_memberships SET status = 'active' WHERE id = 'workspace-membership'`);
 
     const notWriter = await app.inject({
       method: "POST",
@@ -418,6 +435,11 @@ describe("hosts routes", () => {
     await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES ('cross-host-space', 'Space', 'household', $1, now(), now())`,
+      [OWNER],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES (gen_random_uuid()::varchar, 'cross-host-space', $1, 'owner', 'active', now(), now())`,
       [OWNER],
     );
     await db.pool.query(
@@ -511,6 +533,11 @@ describe("hosts routes", () => {
     await db.pool.query(
       `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
        VALUES ('upload-space', 'Space', 'household', $1, now(), now())`,
+      [OWNER],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES (gen_random_uuid()::varchar, 'upload-space', $1, 'owner', 'active', now(), now())`,
       [OWNER],
     );
     await db.pool.query(

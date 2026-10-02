@@ -410,7 +410,15 @@ export class HostConnectionRegistry {
     this.undeliveredStops.set(hostId, stops);
   }
 
-  registerConnection(hostId: string, sink: HostFrameSink): void {
+  registerConnection(hostId: string, sink: HostFrameSink): boolean {
+    // Revoked after its hello authenticated but before it got here: the
+    // revoke's `closeConnection` found nothing to close, and the token is
+    // already gone, so this socket must not become the host's live
+    // connection — `isOnline` would otherwise dispatch Runs to a revoked host.
+    if (this.revokedHosts.has(hostId)) {
+      sink.close(1008, "host_revoked");
+      return false;
+    }
     // A second connection from the same host (e.g. daemon restart racing its
     // own reconnect) replaces the stale one rather than stacking silently.
     this.connections.get(hostId)?.sink?.close(1000, "superseded_by_new_connection");
@@ -437,6 +445,7 @@ export class HostConnectionRegistry {
     for (const [launchId, stop] of stops ?? []) {
       sink.send({ type: "terminate", run_id: stop.runId, launch_id: launchId, force: stop.force });
     }
+    return true;
   }
 
   unregisterConnection(hostId: string, sink: HostFrameSink): void {
