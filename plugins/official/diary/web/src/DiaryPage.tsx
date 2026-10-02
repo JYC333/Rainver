@@ -33,6 +33,7 @@ function EntryEditor({
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const latestRef = useRef(initial)
 
   const save = useCallback(async (text: string) => {
     setSaving(true)
@@ -51,12 +52,19 @@ function EntryEditor({
 
   const handleChange = (text: string) => {
     setContent(text)
+    latestRef.current = text
     setSaved(false)
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => void save(text), 1500)
   }
 
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+  // Leaving the day (another date, or back to today) unmounts the editor; a
+  // pending autosave is sent rather than dropped with its timer.
+  useEffect(() => () => {
+    if (!timerRef.current) return
+    clearTimeout(timerRef.current)
+    void api.saveEntry(date, latestRef.current).catch(() => {/* the editor is gone */})
+  }, [api, date])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
