@@ -8,7 +8,9 @@ import { Input } from '../../components/ui/input'
 import { ConfirmDialog } from '../../components/ui/dialog'
 import { CodeMirrorEditor, CodeMirrorMerge } from './CodeMirrorEditor'
 import { languageForPath } from './codeMirrorLanguages'
-import { ProjectFileDraftController, sha256Utf8, type DraftControllerSnapshot, type DraftMutationInput } from './draftController'
+import { toast } from 'sonner'
+import { errMsg } from '../../lib/utils'
+import { ProjectFileDraftController, conflictingDraft, sha256Utf8, type DraftControllerSnapshot, type DraftMutationInput } from './draftController'
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
 
 export interface ProjectFileEditorProps {
@@ -252,10 +254,21 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
       // rejects.
       buildMutation: (content, currentDraft) => buildMutationRef.current(content, currentDraft),
       save: async input => {
-        const next = await onDraftUpsert(input)
-        activeDraftRef.current = next
-        setActiveDraft(next)
-        return next
+        try {
+          const next = await onDraftUpsert(input)
+          activeDraftRef.current = next
+          setActiveDraft(next)
+          return next
+        } catch (error) {
+          // Rebase and discard act on this draft, so it follows the version
+          // the refusal reports rather than the one this tab last saw.
+          const current = conflictingDraft(error)
+          if (current !== undefined) {
+            activeDraftRef.current = current
+            setActiveDraft(current)
+          }
+          throw error
+        }
       },
       onChange: next => setSnapshot(next),
     })
@@ -323,10 +336,17 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
   async function discardDraft(): Promise<void> {
     const current = activeDraftRef.current
     if (!current) return
-    await onDraftDiscard(current)
+    try {
+      await onDraftDiscard(current)
+    } catch (error) {
+      toast.error(errMsg(error))
+      return
+    }
     activeDraftRef.current = null
     setActiveDraft(null)
-    controller.hydrate(null)
+    // Adopted outright: the person chose the Folder file over the unsaved
+    // edits, which `hydrate` would keep and later save as a new draft.
+    controller.adopt(null)
   }
 
   async function rebaseDraft(): Promise<void> {
@@ -334,21 +354,27 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
     if (!current) return
     const mutation = await buildMutation(snapshot.content, current)
     if (!mutation) return
-    const next = await onDraftRebase({
-      ...mutation,
-      expected_version: current.version,
-      target_kind: current.target_kind,
-      base_exists: Boolean(baseFile),
-      base_sha256: baseFile?.sha256 ?? null,
-      source_encoding: 'utf8',
-      preserve_bom: Boolean(baseFile?.has_bom),
-      content: snapshot.content,
-      content_sha256: await sha256Utf8(snapshot.content),
-      byte_size: new TextEncoder().encode(snapshot.content).byteLength,
-    })
+    let next: ProjectFileDraft
+    try {
+      next = await onDraftRebase({
+        ...mutation,
+        expected_version: current.version,
+        target_kind: current.target_kind,
+        base_exists: Boolean(baseFile),
+        base_sha256: baseFile?.sha256 ?? null,
+        source_encoding: 'utf8',
+        preserve_bom: Boolean(baseFile?.has_bom),
+        content: snapshot.content,
+        content_sha256: await sha256Utf8(snapshot.content),
+        byte_size: new TextEncoder().encode(snapshot.content).byteLength,
+      })
+    } catch {
+      // The page reports a refused rebase.
+      return
+    }
     activeDraftRef.current = next
     setActiveDraft(next)
-    controller.hydrate(next)
+    controller.adopt(next)
   }
 
   async function convertFile(): Promise<void> {
