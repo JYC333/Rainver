@@ -174,7 +174,7 @@ function hasNul(bytes: Uint8Array): boolean {
 export async function folderGitStatus(root: string): Promise<GitStatus> {
   if (!await isGitRepo(root)) return { is_repo: false, branch: null, files: [] };
   const branch = (await runLocationGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000)).stdout.trim() || null;
-  const raw = await runLocationGit(["status", "--porcelain"], root, 10_000);
+  const raw = await runLocationGit(["status", "--porcelain=v1", "-z"], root, 10_000);
   return { is_repo: true, branch, files: parsePorcelain(raw.stdout) };
 }
 

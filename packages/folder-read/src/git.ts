@@ -242,12 +242,23 @@ export async function ensureGitRepository(path: string): Promise<boolean> {
   return result.code === 0;
 }
 
+/**
+ * Parses `git status --porcelain=v1 -z`: NUL-separated `XY path` entries, with
+ * a rename or copy followed by one more field holding its original path. The
+ * NUL form is what keeps names raw — the line form quotes and octal-escapes
+ * any non-ASCII name and writes a rename as `old -> new`.
+ */
 export function parsePorcelain(output: string): GitChangedFile[] {
   const result: GitChangedFile[] = [];
-  for (const line of output.split(/\r?\n/)) {
-    if (line.length < 3) continue;
-    const xy = line.slice(0, 2);
-    const path = line.slice(3).trim();
+  const fields = output.split("\0");
+  for (let index = 0; index < fields.length; index += 1) {
+    const entry = fields[index]!;
+    if (entry.length < 4) continue;
+    const xy = entry.slice(0, 2);
+    const path = entry.slice(3);
+    // The original path of a rename or copy is its own field; it names no
+    // second changed file.
+    if (xy.includes("R") || xy.includes("C")) index += 1;
     let status = "modified";
     if (xy.includes("?")) status = "untracked";
     else if (xy.includes("R")) status = "renamed";

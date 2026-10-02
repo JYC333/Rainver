@@ -23,11 +23,34 @@ describe("folder-read git operations", () => {
   });
 
   it("parses porcelain statuses", () => {
-    expect(parsePorcelain(" M changed.ts\n?? new.ts\nD  old.ts\n")).toEqual([
+    expect(parsePorcelain(" M changed.ts\0?? new.ts\0D  old.ts\0R  moved.ts\0was.ts\0")).toEqual([
       { path: "changed.ts", status: "modified" },
       { path: "new.ts", status: "untracked" },
       { path: "old.ts", status: "deleted" },
+      { path: "moved.ts", status: "renamed" },
     ]);
+  });
+
+  it("reports a non-ASCII name and a rename by their real paths", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-folder-read-status-names-"));
+    roots.push(root);
+    expect((await runGit(["init", "-q"], root)).code).toBe(0);
+    await runGit(["config", "user.email", "test@example.invalid"], root);
+    await runGit(["config", "user.name", "Test"], root);
+    await mkdir(join(root, "文档"));
+    await writeFile(join(root, "文档", "说明.md"), "before\n", "utf8");
+    await writeFile(join(root, "old name.txt"), "same\n", "utf8");
+    await runGit(["add", "."], root);
+    await runGit(["commit", "-q", "-m", "initial"], root);
+    await writeFile(join(root, "文档", "说明.md"), "after\n", "utf8");
+    await runGit(["mv", "old name.txt", "new name.txt"], root);
+
+    const status = await folderGitStatus(root);
+    expect(status.files).toEqual(expect.arrayContaining([
+      { path: "文档/说明.md", status: "modified" },
+      { path: "new name.txt", status: "renamed" },
+    ]));
+    expect(status.files).toHaveLength(2);
   });
 
   it("uses a real git repository for status detection", async () => {
