@@ -251,8 +251,10 @@ applicable one in place of the AgentVersion's for every conversation Run (via
 `conversationToolGrantInput`) and every Task-dispatched Run
 (`tasks/repository.ts`); the session-handoff turn carries
 `HANDOFF_TOOL_ALLOWANCE` (`agentGroups/sessionHandoff.ts`). A
-delegated child spawned inside a group is not one of those: it carries no
-declared capabilities and so no system-action grants at all.
+delegated child spawned inside a group carries the same conversation allowance
+as its Room's turns — `createDelegatedChildRun` expands
+`conversationToolGrantInput` for the group's Room and Project — behind the
+root origin gate above; it declares no capabilities of its own.
 
 This is a change of scope, not of strength: the intersection is unchanged, an
 action outside the list is still denied, and the Run must still declare it.

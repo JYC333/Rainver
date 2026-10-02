@@ -13,11 +13,17 @@ Load this file for any task that changes structure, models, APIs, or agent behav
 **B3** — One deployment instance can host many spaces. Do not create one instance per user or one instance per space.
 
 **B4** — Space is the product-level isolation boundary. Data in space A must
-never be accessible to code running in the context of space B. The sole
-content-bearing exception is ADR 0013's enumerated, user-centred `/me/retrieval*`
-path: it has no request-Space authority, applies each source Space's read gate
-independently, persists retrieved content only as re-authorized pointers, and
-grants no write authority to another Space.
+never be accessible to code running in the context of space B. Two enumerated,
+user-centred exceptions carry content across it, both recorded in
+[SECURITY_AND_ACCESS_BOUNDARIES §8](architecture/SECURITY_AND_ACCESS_BOUNDARIES.md):
+ADR 0013's `/me/retrieval*` path, which has no request-Space authority, applies
+each source Space's read gate independently, persists retrieved content only as
+re-authorized pointers, and grants no write authority to another Space; and ADR
+0013 decision 9's capture relocation (`/captures/:activityId/relocation`),
+which reads a capture the caller can already read as an active member of its
+Space, without oversight, and writes it only where the caller holds Project
+write access, under the source Space's copy-out setting for another member's
+content.
 
 **B5** — `space_id` is required on every core data entity. Runtime Context acquisition and Delivery persistence require an explicit Space and reject cross-Space authority drift.
 
@@ -215,8 +221,10 @@ then mutate what it cannot see.
 **B13** — Every file-capable runtime-adapter invocation crosses the typed host
 daemon boundary. Callers may send runtime/adapter/workspace identifiers, an
 argv the control plane rendered from an adapter spec, and an isolation policy —
-never a host path, an image, or an ambient environment map, and the daemon
-resolves the executable from the copy it installed rather than from the frame.
+never a host path, an image, or an ambient environment map. The daemon resolves
+the executable itself, never from a path in the frame: a managed installation
+from the manifest of the copy it installed, an `own` installation by the
+server-rendered command name through the child's own `PATH` (ADR 0016 §7).
 Deterministic Verification Engine checks use the
 separate `command_run` frame: it carries a server-defined command and one
 workspace identity, with no shell, no ambient environment, no provider channel

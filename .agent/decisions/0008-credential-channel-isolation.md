@@ -36,7 +36,7 @@ separate:
   backend or credential (B67); an unbound Run there keeps the owner's own
   environment and spends the copy's own login, which is the point of pairing
   it.
-- **In-process API channel.** Provider tasks and `/api/v1/providers/chat`
+- **In-process API channel.** Provider tasks (`providers/invocation/`)
   resolve the key from the encrypted ModelProvider credential (`resolveProviderApiKey`) and pass it as a
   parameter to the managed chat adapter (`@earendil-works/pi-ai` behind a
   single adapter). The channel never writes the environment, so it is

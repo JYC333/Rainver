@@ -357,7 +357,8 @@ group does not leak PDR ids or delegation text from a private child Run. The dai
 reads (`dailyReports/`) carry no Room term either; in practice they are
 restricted to the viewer's own non-Room artifacts, but they have not been
 audited against this rule. Cross-space reads always fail regardless of oversight;
-targeted publications remain the only cross-space transfer path.
+targeted publications (8c) and capture relocation (8f) are the only cross-space transfer
+paths.
 
 ### Usage events
 
@@ -673,29 +674,32 @@ authority mechanism in place of space-scoped auth.
 
 ### 8a. Personal Memory Egress Approval
 
-**Route:** `POST /proposals/{proposal_id}/approvals/egress-granting-user`
+**Route:** `POST /api/v1/proposals/{proposal_id}/approvals/egress-granting-user`
 
-The proposal lives in the **target space** (the space where the run executed). The granting
-user authenticates from their **personal space**. These are structurally different spaces.
-Requiring `proposal.space_id == request_space_id` would make granting-user approval
-impossible in the standard case.
+The proposal lives in the **target space** (the space where the run executed), and the
+granting user approves it from that Space's context: the route resolves the request Space
+like every other proposal decision, and `authorizeProposalDecision`
+(`proposals/applyService.ts`) answers 404 when `proposal.space_id` is not the request
+Space. What makes this route an exception is **who** may approve — the person who made the
+grant, who need not be the proposal's owner or a reviewer in that Space — not which Space
+the request is made from.
 
-**Do not add `proposal.space_id == request_space_id` to this route.**
-
-Authority comes from the guard chain inside `record_egress_granting_user_approval()`:
+Authority comes from the guard chain in `validateGrantApproval`:
 
 | Guard | Invariant |
 |---|---|
+| `proposal.space_id == request space_id` | Same-Space fail-closed 404, as for every proposal decision |
 | `grant.granting_user_id == approver_user_id` | Only the exact user who created the grant may approve |
-| `proposal.space_id == grant.target_space_id` | Proposal must belong to the specific target space |
+| `grant.status` not revoked/expired/failed; payload `grant_id` / `personal_memory_grant_ids` name this grant | Proposal and grant refer to each other and the grant is live |
+| `proposal.space_id == grant.target_space_id` (and payload `target_space_id`, when present) | Proposal must belong to the specific target space |
 | `source_run_id == grant.target_run_id` | Proposal must trace back to the specific run the grant covered |
-| `run.space_id == grant.target_space_id` | Source run must be in the same target space as the grant |
-| `run.instructed_by_user_id == grant.granting_user_id` | Run must have been instructed by the granting user |
-| Deadline check (`egress_review_expires_at`, `proposal.expires_at`) | Approval window enforced |
-| Payload safety markers | `raw_private_memory_included`, `personal_summary_persisted`, public `target_visibility` all blocked |
+| Deadline check (`egress_review_expires_at`) | Approval window enforced |
+| Payload safety markers | `raw_private_memory_included` blocked; `personal_summary_persisted` recorded false |
 
-Request `space_id` is intentionally discarded (`_, user_id = ids`). Security authority is
-user-centered, not request-space-centered.
+The Run-level facts (`run.space_id`, `run.instructed_by_user_id`) are checked once, when
+the grant is created; this route trusts the grant row rather than re-reading the Run. A
+context-taint owner approval (payload `required_taint_owner_user_ids`) takes the same
+route with no grant and is authorized by membership in that list.
 
 ### 8b. PersonalView (`/me`) Cross-Space Aggregation
 
@@ -778,6 +782,24 @@ explicit store action; a setting change invalidates that disclosure and requires
 redisclosure. Enabled source Spaces broadcast the resulting pointer-only egress
 notification. `/me/notifications` returns only notifications for Spaces where
 the recipient remains an active member.
+
+### 8f. Capture relocation
+
+`GET`/`POST /api/v1/captures/{activityId}/relocation`
+([ADR 0013](../decisions/0013-personal-team-content-boundary.md) decision 9,
+`capture/relocationService.ts`). The capture is looked up by id across every Space the
+caller is an active member of, not only the request Space: `loadCapture` joins the
+caller's active `space_memberships` and applies `contentReadSql("activity")` **without
+oversight**, so the preview shows only blocks the caller could already read as a member,
+and never through an admin's audit reach. The request Space enters only on the write side:
+`resolveDestinationSpace` resolves the destination Project (or the caller's personal inbox)
+through `resolveContentCreationContext`, which requires Project write access there.
+Leaving the source Space (`destination space != capture.space_id`) is unrestricted for the
+caller's own content and gated by the source Space's `member_copy_out_enabled` for another
+member's; `move` additionally requires owning the capture or administering its Project.
+Only the blocks the preview offered may be carried. The relocated text is written as a new
+row in the destination Space; nothing in the source Space is read by the destination's
+authority afterwards.
 
 ---
 

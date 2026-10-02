@@ -123,18 +123,25 @@ stated reason rather than receiving a URL it cannot resolve. The built-in host
 always uses the in-network listener. A remote run's
 lease carries the Host it was issued for, so revoking that Host revokes the
 lease rather than leaving it live until its TTL;
-[ADR 0008](../decisions/0008-credential-channel-isolation.md)'s 2026-08-24
-amendment records why that is a transport change rather than a
-channel-isolation change.
+[ADR 0008](../decisions/0008-credential-channel-isolation.md) §4 states the
+lease's real scope and why transport protection of the token is a deployment
+property rather than a channel-isolation one.
 
 Codex OpenAI-compatible CLI provider bindings follow the same invariant. For a
-selected Codex provider, the server writes only a run-scoped temporary
-`CODEX_HOME/config.toml`; its `experimental_bearer_token` is a short-lived
-provider-proxy lease token, not the ModelProvider API key. `CODEX_HOME` points
-at the run's temporary Codex profile directory. Login-backed Codex runs copy
-only `auth.json`; they do not link the user's shared Codex sessions or config.
-The proxy resolves the real key inside the server process and forwards the
-request to the configured `openai_compatible_base_url`.
+selected Codex provider the server renders (`runs/remoteProviderBinding.ts`),
+and the daemon writes into the Agent × container profile directory it owns
+(`packages/host-daemon/src/providerBinding.ts`), a `.codex/config.toml` whose
+`experimental_bearer_token` is the short-lived provider-proxy lease token —
+never the ModelProvider API key — plus the model catalog that config names;
+`CODEX_HOME` points at that profile. The directory is reused across Runs and
+never deleted, because it holds the runtime's conversation state; only the
+named files are rewritten per Run, so the previous Run's dead lease token
+remains on disk in a 0700 directory on the user's own machine. A bound Run
+gets no login link (`login_link: null`): the lease is its backend. An unbound,
+host-login Run gets a symlink (hard link on Windows) from its profile to the
+copy's own `auth.json` instead of a copy, so the daemon never reads the
+credential bytes. The proxy resolves the real key inside the server process
+and forwards the request to the configured `openai_compatible_base_url`.
 
 ## Invariants
 

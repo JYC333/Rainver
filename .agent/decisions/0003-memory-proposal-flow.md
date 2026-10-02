@@ -75,7 +75,9 @@ origin, §5) — applies directly, subject to:
   scope; ordinary revision does not increase the count, and archiving reduces it;
 - **an Agent's memory policy may still opt into `requires_proposal`**, which
   requires proposal approval for that Agent even when the other conditions
-  permit direct application. The canonical applier enforces it.
+  permit direct application. The direct-write executors
+  (`memory/memoryDirectWriteExecutors.ts`) read the policy and turn such a
+  write into a proposal before the applier is reached.
 
 An `agent`-scope write (section 4) is bounded by the same shape plus its own
 scope bounds: the entry's `agent_id` is the Agent executing the Run, its
@@ -286,10 +288,15 @@ did this Agent learn" is section 4, and it is the only one.
 - Room and chat memory-write actions land in the canonical applier under
   sections 1, 2, 4 and 5; adapters, jobs, and routes do not insert memory
   directly.
-- The proposal applier remains the only writer of `memory_entries`; §2
-  writes go through it with the acting Agent as author and no approver, and
-  the applier enforces §1, §2, §4 and §5's conditions — no adapter, job or
-  route inserts directly.
+- The proposal applier remains the only writer of `memory_entries` content;
+  §2 writes go through it (`applyDirect`) with the acting Agent as author and
+  no approver. The conditions are enforced in three places along that one
+  path: the direct-write executors in front of the applier enforce
+  `requires_proposal` and the acting-person requirement, the applier enforces
+  §1's reach bounds and §4/§5's scope bounds, and policy
+  (`ruleUnattendedProjectWrite`) enforces the trigger origin — no adapter, job
+  or route inserts directly. Access bookkeeping (`access_count`,
+  `last_accessed_at`, `contentAccess/audit.ts`) is not a content write.
 - The audience rule in §4 is a **read** gate as well as a write bound, and it
   has one door. Agent-scope entries are excluded from the person-facing
   retrieval index entirely — memory search runs *as* the instructing person

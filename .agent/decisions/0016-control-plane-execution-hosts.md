@@ -212,11 +212,15 @@ derived from this trust level.
 
 ### 4. Paths are host-owned
 
-The control plane never resolves, mounts, or opens a filesystem path on any
-host — including the built-in one, whose paths are inside a container the
-server does not reach into. `root_path` is populated only for a server-host
-Location; a remote Location has only a daemon-reported `display_path` for
-labelling, and the daemon is authoritative for the real directory.
+The control plane never resolves, mounts, or opens a filesystem path on a
+remote host (B64): a remote Location has only a daemon-reported `display_path`
+for labelling, and the daemon is authoritative for the real directory.
+`root_path` is populated only for a server-host Location, whose directory lies
+under the instance workspace root that the server and `sandbox-runner` share;
+the server reads and writes it directly — Files & Code, git status and diff,
+Save to Folder — through `PgProjectFolderRepository` and the shared path
+policy (B17), which is the built-in host's arrangement rather than an
+exception to it.
 `folder_read` frames carry only a Workspace Location id and relative path; the
 daemon resolves the root from its local registration and applies the shared
 read policy. Managed launch frames carry only `{ agent, container }`; the
