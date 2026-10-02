@@ -49,7 +49,7 @@ Capabilities are NOT product plugins. They do not have a per-space enable/disabl
 | | Capability | Official Optional Module |
 |---|---|---|
 | Unit | Agent skill / behavior | Product feature package |
-| Discovery | `GET /api/v1/catalog` | `GET /api/v1/plugins` |
+| Discovery | `GET /api/v1/server/catalog` (`/capabilities` for the capability list) | `GET /api/v1/plugins` |
 | Toggle | None (metadata only) | DB-backed per space or user |
 | Frontend | `/capabilities` browse page | Controls module visibility |
 
@@ -87,7 +87,8 @@ This is a **Level 2** boundary: plugin source lives in the monorepo under `plugi
 There is no remote download, manifest verification, or compatibility check for
 official plugin packages. The startup-load contract and installer are
 implemented for in-repo artifacts. Third-party plugins are out of scope.
-See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §18.
+Related deferred plugin work (marketplace, third-party sandbox/SDK) is recorded in
+[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §20 and §24.
 
 ---
 
@@ -111,16 +112,21 @@ Each descriptor declares `default_enabled: boolean`. If no enablement row exists
 - **Data**: disabling a module does not delete its data. Disable is not uninstall.
 
 ### Plugin guard
-`requireOfficialPluginEnabled(context, { pluginId, spaceId, userId? })` (exported from `server/src/modules/plugins/guards.ts`) and `ctx.http.pluginGuard()` (for PluginHost routes) are reusable helpers for backend routes to fail-closed when a plugin is disabled.
+`requireOfficialPluginEnabled(config, request, reply, { pluginId, spaceId?, userId? })` (exported from `server/src/modules/plugins/guards.ts`; returns `false` after sending the error response) and `ctx.http.pluginGuard()` (for PluginHost routes) are reusable helpers for backend routes to fail-closed when a plugin is disabled.
 
-Response for disabled plugin:
+Response for disabled plugin (403):
 ```json
 { "detail": "Plugin is not enabled", "error_code": "plugin_disabled", "plugin_id": "diary" }
 ```
 
-Response for unknown plugin:
+Response for unknown plugin (404):
 ```json
 { "detail": "Plugin not found", "error_code": "plugin_not_found", "plugin_id": "..." }
+```
+
+Response for a plugin that is not installed (403):
+```json
+{ "detail": "Plugin is not installed", "error_code": "plugin_not_installed", "plugin_id": "..." }
 ```
 
 ---
