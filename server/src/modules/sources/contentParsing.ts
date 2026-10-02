@@ -728,16 +728,20 @@ function resolveRemoteUrl(value: string | null, sourceUri: string | null): strin
 function decodeEntities(value: string): string {
   return value.replace(/&(#x?[0-9a-f]+|[a-z][a-z0-9]+);/gi, (_whole, entity: string) => {
     const key = String(entity).toLowerCase();
-    if (key.startsWith("#x")) {
-      const cp = Number.parseInt(key.slice(2), 16);
-      return Number.isFinite(cp) ? String.fromCodePoint(cp) : "";
-    }
-    if (key.startsWith("#")) {
-      const cp = Number.parseInt(key.slice(1), 10);
-      return Number.isFinite(cp) ? String.fromCodePoint(cp) : "";
-    }
+    if (key.startsWith("#x")) return codePointText(Number.parseInt(key.slice(2), 16));
+    if (key.startsWith("#")) return codePointText(Number.parseInt(key.slice(1), 10));
     return ENTITY_MAP[key] ?? `&${entity};`;
   });
+}
+
+/**
+ * A numeric entity outside Unicode (`&#x110000;`, a page's typo or a crawler
+ * artefact) is the browser's replacement character, not a thrown
+ * `RangeError` that would fail the whole page's extraction.
+ */
+function codePointText(codePoint: number): string {
+  if (!Number.isFinite(codePoint)) return "";
+  return codePoint >= 0 && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : "\uFFFD";
 }
 
 function countImageNodes(doc: ReaderPmDoc): number {

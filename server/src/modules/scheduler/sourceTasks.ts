@@ -104,7 +104,7 @@ export function buildSourceSchedulerTasks(
       intervalSeconds,
       runOnStart: true,
       run: async () => {
-        const enqueued = await enqueueDueSourcePostProcessingRules(config, queue);
+        const enqueued = await enqueueDueSourcePostProcessingRules(config);
         if (enqueued > 0) {
           log?.info(`[scheduler] source enqueued ${enqueued} post-processing job(s)`);
         }

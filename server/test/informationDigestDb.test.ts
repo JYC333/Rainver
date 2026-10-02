@@ -12,6 +12,7 @@ import { INTERESTING_COOLDOWN_DAYS, NEUTRAL_COOLDOWN_DAYS, SerendipityFeedbackSe
 import { InterestProfileService } from "../src/modules/interestProfile/service.js";
 import { InterestStarterPackService } from "../src/modules/informationDigest/starterPacks.js";
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository.js";
+import { materializeExternalDiscovery } from "../src/modules/sources/externalDiscoveryMaterializer.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
@@ -181,6 +182,36 @@ async function seedItem(input: {
   }
   return id;
 }
+
+describe("external discovery materialization", () => {
+  it("reuses an item whose source_uri the sample names, instead of colliding with it", async () => {
+    if (!db.available) return;
+    // A Custom Source item whose URL drifted: `source_uri` moved on, its
+    // `canonical_uri` did not. The active-row unique index is on `source_uri`.
+    const id = randomUUID();
+    await db.pool.query(
+      `INSERT INTO source_items
+         (id,space_id,owner_user_id,visibility,connection_id,item_type,title,source_uri,canonical_uri,occurred_at,
+          first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+       VALUES ($1,$2,$3,'space_shared',$4,'feed_entry','Moved','https://example.test/new-path','https://example.test/old-path',now(),now(),now(),'excerpt_saved','summary_only',now(),now())`,
+      [id, SPACE, OWNER, CONNECTION],
+    );
+    const ids = await materializeExternalDiscovery(db.pool, {
+      spaceId: SPACE,
+      projectId: null,
+      userId: OWNER,
+      discoveryKey: "probe:1",
+      samples: [
+        { source_uri: "https://example.test/new-path", title: "Moved", excerpt: null, author: null, occurred_at: null },
+        { source_uri: "https://example.test/brand-new", title: "New", excerpt: null, author: null, occurred_at: null },
+      ],
+    });
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(id);
+    const rows = await db.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM source_items WHERE space_id = $1`, [SPACE]);
+    expect(rows.rows[0]!.n).toBe("2");
+  });
+});
 
 describe("information digest persistence", () => {
   it("uses the deterministic cold branch and persists complete slot attribution", async () => {

@@ -2294,7 +2294,7 @@ export function normalizeInputConfig(value: unknown): SourcePostProcessingInputC
     ),
     include_excerpts: booleanValue(record.include_excerpts, true),
     include_evidence: booleanValue(record.include_evidence, false),
-    timezone: stringValue(record.timezone) ?? "UTC",
+    timezone: timeZoneValue(record.timezone, "input_config_json.timezone"),
     retrieval_context: normalizeRetrievalContext(record.retrieval_context),
     candidate_prefilter: normalizeCandidatePrefilter(record.candidate_prefilter),
     deep_analysis: normalizeDeepAnalysis(record.deep_analysis),
@@ -2621,6 +2621,22 @@ function stringValue(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+/**
+ * An IANA time zone the rule's local day and its briefing stream are read in.
+ * Validated on write: the value goes straight into `AT TIME ZONE`, where an
+ * unknown zone fails every Brief list and detail that scans the rule's runs.
+ */
+function timeZoneValue(value: unknown, field: string): string {
+  const raw = stringValue(value);
+  if (!raw) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: raw });
+  } catch {
+    throw new HttpError(422, `${field} must be a valid IANA time zone`);
+  }
+  return raw;
+}
+
 function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -2767,8 +2783,12 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function localDayRange(timezone: string): { start: string; end: string } {
-  const now = new Date();
+/**
+ * The local calendar day `now` falls in, as a UTC range. Its end is the next
+ * local midnight, not a fixed 24 hours on: a day that changes clocks is 23 or
+ * 25 hours long, and a fixed offset would drop the last hour of a 25-hour day.
+ */
+export function localDayRange(timezone: string, now = new Date()): { start: string; end: string } {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
     year: "numeric",
@@ -2779,7 +2799,11 @@ function localDayRange(timezone: string): { start: string; end: string } {
   const month = Number(parts.find((part) => part.type === "month")?.value ?? now.getUTCMonth() + 1);
   const day = Number(parts.find((part) => part.type === "day")?.value ?? now.getUTCDate());
   const start = zonedLocalToUtc({ year, month, day, hour: 0, minute: 0 }, timezone);
-  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const nextDay = new Date(Date.UTC(year, month - 1, day + 1));
+  const end = zonedLocalToUtc(
+    { year: nextDay.getUTCFullYear(), month: nextDay.getUTCMonth() + 1, day: nextDay.getUTCDate(), hour: 0, minute: 0 },
+    timezone,
+  );
   return { start: start.toISOString(), end: end.toISOString() };
 }
 

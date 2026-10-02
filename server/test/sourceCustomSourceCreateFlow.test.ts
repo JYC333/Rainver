@@ -17,6 +17,7 @@ import { SourceRecipeDryRunService } from "../src/modules/sources/sourceRecipes/
 import { SourceRecipePipelineBridgeService } from "../src/modules/sources/sourceRecipes/pipelineBridgeService.js";
 import { listSourceRuns } from "../src/modules/sources/sourceRunReadModel.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
+import { activateCustomSourceHandlerVersion } from "../src/modules/sources/customSources/customSourceCreateFlowService.js";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 
@@ -190,6 +191,34 @@ describe("CustomSourceCreateFlowService (real Postgres + real sandboxed runner)"
         extraction_job_id: null,
       }),
     ]);
+  });
+
+  it("activates one handler version when another was activated while this one was being checked", async () => {
+    if (!db.available) return;
+    const connection = await createDraftConnection();
+    const first = await service!.generateHandler(IDENTITY, connection.id, {});
+    const second = await service!.generateHandler(IDENTITY, connection.id, {});
+    for (const version of [first, second]) {
+      await service!.testHandler(IDENTITY, connection.id, { handler_version_id: version.id, fixture_html: FIXTURE_HTML });
+    }
+    await service!.activateHandler(IDENTITY, connection.id, { handler_version_id: first.id });
+
+    // The second activation checked the connection while nothing was active;
+    // under the lock the pointer has moved, so it must not supersede a stale
+    // pointer and leave both versions active.
+    await expect(activateCustomSourceHandlerVersion(db.pool, IDENTITY, connection.id, second.id, null, "draft"))
+      .rejects.toMatchObject({ statusCode: 409 });
+    const active = await db.pool.query<{ id: string }>(
+      `SELECT id FROM source_handler_versions WHERE source_connection_id = $1 AND status = 'active'`,
+      [connection.id],
+    );
+    expect(active.rows).toEqual([{ id: first.id }]);
+    // A version that left draft meanwhile is not activated either.
+    await db.pool.query(`UPDATE source_handler_versions SET status = 'pending_approval' WHERE id = $1`, [second.id]);
+    await expect(activateCustomSourceHandlerVersion(db.pool, IDENTITY, connection.id, second.id, first.id, "draft"))
+      .rejects.toMatchObject({ statusCode: 409 });
+    expect((await db.pool.query<{ status: string }>(`SELECT status FROM source_handler_versions WHERE id = $1`, [second.id])).rows[0])
+      .toEqual({ status: "pending_approval" });
   });
 
   it("testHandler fails closed when the instance runner setting is disabled", async () => {

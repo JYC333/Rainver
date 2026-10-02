@@ -14,6 +14,7 @@ import { withQueryableTransaction } from "../src/modules/routeUtils/common.js";
 import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows.js";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { SourcePostProcessingService } from "../src/modules/sources/postProcessing/service.js";
+import { enqueueDueSourcePostProcessingRules } from "../src/modules/sources/postProcessing/scheduler.js";
 import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator.js";
 import { seedMainlineRoomsForAllProjects, seedRun } from "./support/domainSeeds.js";
 
@@ -1254,6 +1255,45 @@ describe("source post-processing repository (real Postgres)", () => {
     await repo().updateRule(SPACE, rule.id, { status: "paused" });
     const pausedDue = await repo().listDueRules("2026-07-01T09:00:02.000Z", 10);
     expect(pausedDue).toHaveLength(0);
+  });
+
+  it("enqueues a scheduled fire and advances its schedule together, so a failed advance is not fired twice", async () => {
+    if (!db.available) return;
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: null,
+      name: "Scheduled digest",
+      triggerType: "schedule",
+      triggerConfig: normalizeTriggerConfig({ cron: "0 9 * * *", timezone: "UTC" }, "schedule"),
+      inputConfig: normalizeInputConfig(null),
+      actions: normalizeActions(null),
+      createdByUserId: OWNER,
+    });
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET next_run_at = now() - interval '1 minute' WHERE task_type = $1 AND task_key = $2`,
+      [SOURCE_POST_PROCESSING_TASK_TYPE, rule.id],
+    );
+    const jobs = async () => (await db.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM jobs WHERE job_type = 'source_post_processing_event' AND payload_json->>'rule_id' = $1`,
+      [rule.id],
+    )).rows[0]!.n;
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test" });
+
+    // The advance fails once (a transient database error): nothing was fired.
+    const failing = vi.spyOn(PgSourcePostProcessingRepository.prototype, "recordRuleFire").mockRejectedValueOnce(new Error("connection reset"));
+    try {
+      expect(await enqueueDueSourcePostProcessingRules(config)).toBe(0);
+    } finally {
+      failing.mockRestore();
+    }
+    expect(await jobs()).toBe("0");
+    // The next tick fires it exactly once.
+    expect(await enqueueDueSourcePostProcessingRules(config)).toBe(1);
+    expect(await jobs()).toBe("1");
+    expect(await enqueueDueSourcePostProcessingRules(config)).toBe(0);
+    expect(await jobs()).toBe("1");
   });
 
   it("settles a due task whose rule was paused behind the scheduler's back", async () => {

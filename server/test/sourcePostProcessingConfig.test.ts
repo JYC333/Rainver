@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeActions, normalizeInputConfig } from "../src/modules/sources/postProcessing/repository.js";
+import { localDayRange, normalizeActions, normalizeInputConfig } from "../src/modules/sources/postProcessing/repository.js";
 
 describe("source post-processing config", () => {
   it("defaults retrieval context to disabled project context", () => {
@@ -133,6 +133,23 @@ describe("source post-processing config", () => {
   it("rejects invalid processing strategy and auto batch cap", () => {
     expect(() => normalizeInputConfig({ processing_strategy: "magic" })).toThrow(/processing_strategy/);
     expect(() => normalizeInputConfig({ max_batches_per_event: 0 })).toThrow(/max_batches_per_event/);
+  });
+
+  it("rejects a time zone PostgreSQL would not recognise, since Brief reads run it through AT TIME ZONE", () => {
+    expect(normalizeInputConfig({ timezone: "Asia/Shanghai" }).timezone).toBe("Asia/Shanghai");
+    expect(normalizeInputConfig({ timezone: " " }).timezone).toBe("UTC");
+    expect(() => normalizeInputConfig({ timezone: "Mars/Base" })).toThrow(/input_config_json.timezone/);
+  });
+
+  it("ends a local day at the next local midnight, so a 25-hour clock-change day keeps its last hour", () => {
+    // America/New_York leaves daylight time on 2026-11-01: the local day is 25 hours.
+    const fallBack = localDayRange("America/New_York", new Date("2026-11-01T18:00:00.000Z"));
+    expect(fallBack).toEqual({ start: "2026-11-01T04:00:00.000Z", end: "2026-11-02T05:00:00.000Z" });
+    // And enters it on 2026-03-08: 23 hours.
+    const springForward = localDayRange("America/New_York", new Date("2026-03-08T18:00:00.000Z"));
+    expect(springForward).toEqual({ start: "2026-03-08T05:00:00.000Z", end: "2026-03-09T04:00:00.000Z" });
+    // An ordinary day is still 24 hours.
+    expect(localDayRange("UTC", new Date("2026-06-15T12:00:00.000Z"))).toEqual({ start: "2026-06-15T00:00:00.000Z", end: "2026-06-16T00:00:00.000Z" });
   });
 
   it("omits relevance_profile when absent", () => {

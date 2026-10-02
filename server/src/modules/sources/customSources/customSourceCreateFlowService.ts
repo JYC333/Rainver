@@ -415,6 +415,22 @@ export class CustomSourceCreateFlowService {
       const proposalType = customSourceProposalTypeForEnvelope(envelopeOf(version), {
         credentialedSourcesAllowed: settings.space.credentialed_sources_allowed,
       });
+      // Resolved now, applied on acceptance: a malformed schedule is refused
+      // here, and the proposal carries the normalized rule rather than an
+      // absolute time that is in the past by the time it is approved.
+      const channelId = (await this.pool.query<{ id: string }>(
+        `SELECT id FROM source_channels WHERE source_connection_id = $1 AND space_id = $2 AND status <> 'archived' ORDER BY updated_at DESC LIMIT 1`,
+        [connectionId, identity.spaceId],
+      )).rows[0]?.id;
+      const schedule = resolveRequestedSourceSchedule({
+        body: { next_check_at: body.next_check_at, schedule_rule: body.schedule_rule },
+        status: "active",
+        fetchFrequency: activePointer.rows[0]?.fetch_frequency ?? "manual",
+        existingNextCheckAt: channelId ? (await getSourceChannelScanTask(this.pool, channelId))?.next_run_at : undefined,
+        existingScheduleRule: channelId
+          ? (await this.pool.query<{ schedule_rule_json: unknown }>(`SELECT schedule_rule_json FROM source_channels WHERE id = $1`, [channelId])).rows[0]?.schedule_rule_json
+          : undefined,
+      });
       const payload = customSourceProposalPayload({
         proposalType,
         connectionId,
@@ -424,8 +440,7 @@ export class CustomSourceCreateFlowService {
         proposedEnvelope: envelopeOf(version),
         deltas: evaluation.deltas,
         requestedByUserId: identity.userId,
-        nextCheckAt: body.next_check_at,
-        scheduleRule: body.schedule_rule,
+        ...(schedule.scheduleRule ? { scheduleRule: schedule.scheduleRule } : {}),
       });
       const reviewText = customSourceProposalReviewText({
         proposalType,
@@ -478,6 +493,7 @@ export class CustomSourceCreateFlowService {
       connectionId,
       versionId,
       activeVersionId,
+      "draft",
       body.next_check_at,
       body.schedule_rule,
     );
@@ -752,6 +768,8 @@ export async function activateCustomSourceHandlerVersion(
   connectionId: string,
   versionId: string,
   previousActiveVersionId: string | null,
+  /** `draft` for an activation or repair, `superseded` for a rollback. */
+  expectedStatus: "draft" | "superseded",
   nextCheckAt?: unknown,
   scheduleRule?: unknown,
 ): Promise<string> {
@@ -772,16 +790,22 @@ export async function activateCustomSourceHandlerVersion(
       id: string;
       space_id: string;
       owner_user_id: string;
-      fetch_frequency: string;
-      schedule_rule_json: unknown;
+      active_handler_version_id: string | null;
     }>(
-      `SELECT id, space_id, owner_user_id
+      `SELECT id, space_id, owner_user_id, active_handler_version_id
          FROM source_connections
         WHERE id = $1 AND space_id = $2
         FOR UPDATE`,
       [connectionId, identity.spaceId],
     );
     const current = currentConnection.rows[0];
+    // The caller's checks ran outside this transaction. Under the lock, the
+    // active version must still be the one it checked against; superseding
+    // a stale pointer would leave the version activated meanwhile `active`
+    // beside this one.
+    if (current && (current.active_handler_version_id ?? null) !== previousActiveVersionId) {
+      throw new HttpError(409, "Another handler version was activated meanwhile; check the connection again");
+    }
     const schedule = current
       ? resolveRequestedSourceSchedule({
           body: { next_check_at: nextCheckAt, schedule_rule: scheduleRule },
@@ -797,10 +821,14 @@ export async function activateCustomSourceHandlerVersion(
         [previousActiveVersionId, identity.spaceId, now],
       );
     }
-    await client.query(
-      `UPDATE source_handler_versions SET status = 'active', activated_at = $3 WHERE id = $1 AND space_id = $2`,
-      [versionId, identity.spaceId, now],
+    const activated = await client.query(
+      `UPDATE source_handler_versions SET status = 'active', activated_at = $3
+        WHERE id = $1 AND space_id = $2 AND status = $4`,
+      [versionId, identity.spaceId, now, expectedStatus],
     );
+    if ((activated.rowCount ?? 0) === 0) {
+      throw new HttpError(409, "Handler version is no longer eligible for activation");
+    }
     const updatedConnection = await client.query<{
       id: string;
       space_id: string;

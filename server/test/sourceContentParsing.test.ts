@@ -54,6 +54,19 @@ describe("extractStructuredReaderContent", () => {
     });
   });
 
+  it("reads a numeric entity outside Unicode as the replacement character instead of failing the page", () => {
+    const result = extractStructuredReaderContent(
+      `<html><body><article>
+        <h1>Heading &#x110000; here</h1>
+        <p>Body &#99999999; text &#x41;&#66; and &amp; more.</p>
+      </article></body></html>`,
+      "https://example.test/posts/entities",
+    );
+    expect(result.kind).toBe("reader_document");
+    expect(result.plain_text).toContain("Heading \uFFFD here");
+    expect(result.plain_text).toContain("Body \uFFFD text AB and & more.");
+  });
+
   it("round-trips structured reader JSON", () => {
     const result = extractStructuredReaderContent(
       "<article><p>Readable text.</p></article>",

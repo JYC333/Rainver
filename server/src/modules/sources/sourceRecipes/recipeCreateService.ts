@@ -28,6 +28,8 @@ import {
 import { evaluateCustomSourceActivation } from "../customSources/customSourceCreateFlowService.js";
 import { fetchAllowedOriginResponse, guardedResponseText } from "../customSources/customSourceEndpointFetch.js";
 import { cleanupSandbox } from "../customSources/customSourceRunner.js";
+import { getSourceChannelScanTask } from "../sourceConnectionScheduler.js";
+import { resolveRequestedSourceSchedule } from "../sourceScheduleInput.js";
 import { analyzeSourceRecipe } from "./primitiveRegistry.js";
 import { buildRecipeForSourceType, detectPlannedSourceType, type PlannedSourceType } from "./recipePlanner.js";
 import { runSourceRecipe } from "./recipeInterpreter.js";
@@ -258,6 +260,18 @@ export class SourceRecipeCreateService {
     });
 
     if (!evaluation.withinEnvelope) {
+      // The schedule is applied when the proposal is accepted, but it is
+      // resolved now: a malformed request is the requester's to fix, not a
+      // proposal the owner approves only to see it fail to apply, and the
+      // proposal carries the normalized rule rather than an absolute time
+      // that would be in the past by the time it is approved.
+      const schedule = resolveRequestedSourceSchedule({
+        body: { next_check_at: body.next_check_at, schedule_rule: body.schedule_rule },
+        status: "active",
+        fetchFrequency: connection.fetch_frequency,
+        existingNextCheckAt: (await getSourceChannelScanTask(this.pool, connection.channel_id))?.next_run_at,
+        existingScheduleRule: connection.schedule_rule_json,
+      });
       const created = await withDbTransaction(this.pool, async (client) => {
         const payload: Record<string, unknown> = {
           proposal_type: "source_recipe_activation",
@@ -270,8 +284,7 @@ export class SourceRecipeCreateService {
           requested_by_user_id: identity.userId,
           proposed_content: recipeProposalReviewText(connectionId, versionId, evaluation.deltas, envelope),
         };
-        if (body.next_check_at !== undefined) payload.next_check_at = body.next_check_at;
-        if (body.schedule_rule !== undefined) payload.schedule_rule = body.schedule_rule;
+        if (schedule.scheduleRule) payload.schedule_rule = schedule.scheduleRule;
         const proposal = await insertProposalRow(client, {
           spaceId: identity.spaceId,
           proposalType: "source_recipe_activation",
@@ -388,8 +401,12 @@ export class SourceRecipeCreateService {
       endpoint_url: string | null;
       active_recipe_version_id: string | null;
       handler_kind: string;
+      channel_id: string;
+      fetch_frequency: string;
+      schedule_rule_json: unknown;
     }>(
-      `SELECT sc.id, ch.endpoint_url, sc.active_recipe_version_id, sc.handler_kind
+      `SELECT sc.id, ch.endpoint_url, sc.active_recipe_version_id, sc.handler_kind,
+              ch.id AS channel_id, ch.fetch_frequency, ch.schedule_rule_json
          FROM source_connections sc
          JOIN source_channels ch ON ch.source_connection_id = sc.id AND ch.status <> 'archived'
         WHERE sc.space_id = $1 AND sc.id = $2 AND sc.deleted_at IS NULL

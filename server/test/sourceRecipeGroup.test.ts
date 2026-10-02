@@ -361,6 +361,43 @@ describe("sourceRecipeCreateFlow", () => {
       expect(job.rows[0]?.status).toBe("failed");
     });
 
+    it("carries an out-of-envelope activation's schedule as a rule the owner can approve any time, and refuses a bad one now", async () => {
+      if (!db.available) return;
+      const endpointUrl = await startFixtureServer(RSS_FIXTURE);
+      const plan = await createService!.planSource(IDENTITY, {
+        name: "Timed Recipe Feed", endpoint_url: endpointUrl, fetch_frequency: "hourly", capture_policy: "extract_text", fixture_content: RSS_FIXTURE,
+      });
+      const created = await createService!.createSource(IDENTITY, {
+        name: "Timed Recipe Feed", endpoint_url: endpointUrl, fetch_frequency: "hourly", capture_policy: "extract_text", recipe: plan.recipe,
+      });
+      const dryRun = await dryRunService!.dryRunRecipeVersion(IDENTITY, created.connection.id, {
+        recipe_version_id: created.recipe_version.id, fixture_content: RSS_FIXTURE,
+      });
+      await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { allowed_domains: ["other.example"] });
+
+      // A rule for another frequency is the requester's mistake, answered now
+      // rather than when the owner approves.
+      await expect(createService!.activateRecipe(IDENTITY, created.connection.id, {
+        recipe_version_id: dryRun.recipe_version.id, schedule_rule: { frequency: "daily", hour: 9, minute: 0 },
+      })).rejects.toMatchObject({ statusCode: 422 });
+      expect((await db.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM proposals WHERE space_id = $1`, [SPACE_A])).rows[0]!.n).toBe("0");
+
+      // An absolute first check is kept as the rule it implies: approved two
+      // days later, the applier computes the next run from the rule instead
+      // of refusing a time that has passed.
+      const nextCheckAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      nextCheckAt.setUTCMinutes(45, 0, 0);
+      const activation = await createService!.activateRecipe(IDENTITY, created.connection.id, {
+        recipe_version_id: dryRun.recipe_version.id, next_check_at: nextCheckAt.toISOString(),
+      });
+      expect(activation.status).toBe("pending_approval");
+      const payload = (await db.pool.query<{ payload_json: Record<string, unknown> }>(
+        `SELECT payload_json FROM proposals WHERE id = $1`, [activation.proposal_id],
+      )).rows[0]!.payload_json;
+      expect(payload.schedule_rule).toEqual({ frequency: "hourly", minute: 45 });
+      expect(payload).not.toHaveProperty("next_check_at");
+    });
+
     it("routes policy-envelope deltas through a source_recipe_activation proposal applier", async () => {
       if (!db.available) return;
       const endpointUrl = await startFixtureServer(RSS_FIXTURE);

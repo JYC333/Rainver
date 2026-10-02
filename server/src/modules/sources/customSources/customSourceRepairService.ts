@@ -174,7 +174,7 @@ export class CustomSourceRepairService {
     });
 
     if (evaluation.withinEnvelope && settings.space.same_envelope_repair_auto_apply) {
-      await activateCustomSourceHandlerVersion(this.pool, identity, connectionId, newVersion.id, activeVersion.id);
+      await activateCustomSourceHandlerVersion(this.pool, identity, connectionId, newVersion.id, activeVersion.id, "draft");
       const activated = await new PgCustomSourceHandlerRepository(this.pool, this.config).getHandlerVersion(
         identity,
         connectionId,
@@ -295,6 +295,7 @@ export class CustomSourceRepairService {
       connectionId,
       target.id,
       connection.active_handler_version_id,
+      "superseded",
     );
     const activated = await new PgCustomSourceHandlerRepository(this.pool, this.config).getHandlerVersion(
       identity,
