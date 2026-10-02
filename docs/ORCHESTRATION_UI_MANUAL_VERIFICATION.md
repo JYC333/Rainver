@@ -18,16 +18,16 @@ operational space selected in the shell and never requires direct database edits
 
 ## Plan creation and execution
 
-1. Open `/plans` and choose **New plan**.
-2. Select an approved Workflow template, optionally select a version, enter a
-   budget cap, and create the Plan.
-3. If the Plan requires review, follow **Open proposals** or **Evolution Inbox**,
+1. Open a source Task under `/tasks` and choose **Ask Agent to plan**; the
+   Agent's planning Run proposes the Plan.
+2. Open `/plans` (browse and **Refresh** only) and open the Plan Detail.
+3. If the Plan requires review, follow **Review proposal** or **Evolution Inbox**,
    approve the `plan_review`, then return to the Plan Detail.
 4. Choose **Execute**, select an Agent, and confirm the root Run link appears.
 5. Use **Reconcile** while the Plan is active and confirm the node statuses and
    root Run read model refresh.
-6. Choose **Revise**, provide a new validated definition JSON, and confirm a new
-   Plan version is created without mutating the previous version.
+6. From the source Task, choose **Ask Agent to revise** and confirm a new Plan
+   version is created without mutating the previous version.
 
 ## Workflow Automation
 
