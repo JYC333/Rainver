@@ -1367,6 +1367,34 @@ describe("Room workflow (real Postgres)", () => {
       .resolves.toBeNull();
   });
 
+  it("drops a removed member's own Room task from their reads, list, and cancel: manager provenance is not membership", async (ctx) => {
+    if (!db.available || !service || !groupService) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const member = { spaceId: "space-1", userId: "user-2" };
+    await db.pool.query(`UPDATE project_members SET role = 'member' WHERE project_id = 'project-1' AND user_id = 'user-2'`);
+    await service.createRoom(owner, { project_id: "project-1", title: "Mainline" });
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Limited Room" });
+    await addRoomMember(created.room.id, "user-2");
+    const conversation = await seedConversation(owner, created.room.id, "Member speaks");
+    const dispatched = await service.sendMessage(member, created.room.id, conversation.id, { content: "Member task." });
+    const groupId = dispatched.task_group_ids[0]!;
+    await expect(groupService.getGroup(member, groupId)).resolves.toMatchObject({ group: { id: groupId, manager_user_id: "user-2" } });
+    expect((await groupService.listGroups(member, { limit: 50, offset: 0 })).items.map((group) => group.id)).toContain(groupId);
+
+    await service.removeUser(owner, created.room.id, "user-2");
+
+    await expect(groupService.getGroup(member, groupId)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(groupService.getTimeline(member, groupId, { limit: 20, offset: 0 })).rejects.toMatchObject({ statusCode: 404 });
+    const listed = await groupService.listGroups(member, { limit: 50, offset: 0 });
+    expect(listed.items.map((group) => group.id)).not.toContain(groupId);
+    expect(listed.total).toBe(0);
+    await expect(groupService.changeStatus(member, groupId, "cancelled")).rejects.toMatchObject({ statusCode: 404 });
+    await expect(db.pool.query<{ status: string }>(`SELECT status FROM agent_run_groups WHERE id = $1`, [groupId]))
+      .resolves.toMatchObject({ rows: [{ status: "active" }] });
+    // The Room's remaining roster still reads the task it saw dispatched.
+    await expect(groupService.getGroup(owner, groupId)).resolves.toMatchObject({ group: { id: groupId } });
+  });
+
   it("opens one auditable task per message while retaining one Conversation × Agent runtime pin", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
@@ -3845,6 +3873,22 @@ describe("Room workflow (real Postgres)", () => {
       }
     });
 
+    it("answers 404 when a discussion is opened on a conversation of another Room, even one holding an active discussion", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created: limited, conversation: limitedConversation } = await roomWithSpecialist("Limited discussion");
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      await discussions.open(owner, limited.room.id, limitedConversation.id, { topic: "Pick a database", participant_agent_ids: ["agent-2"], shape: "open" });
+      await expect(discussionFor(limitedConversation.id)).resolves.toMatchObject({ status: "active" });
+
+      const writer = { spaceId: "space-1", userId: "user-2" };
+      await db.pool.query(`UPDATE project_members SET role = 'member' WHERE project_id = 'project-1' AND user_id = 'user-2'`);
+      const shared = await service.createRoom(owner, { project_id: "project-1", title: "Shared Room" });
+      await addRoomMember(shared.room.id, "user-2");
+      await expect(discussions.open(writer, shared.room.id, limitedConversation.id, { topic: "Which one?", participant_agent_ids: "all", shape: "open" }))
+        .rejects.toMatchObject({ statusCode: 404, message: "Room conversation not found" });
+      await expect(discussionFor(limitedConversation.id)).resolves.toMatchObject({ status: "active" });
+    });
+
     it("lets any member read a conversation's quota, a Project writer continue anyway, and only a Space admin move the lines", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { created, conversation } = await roomWithSpecialist("Quota routes");
@@ -4621,6 +4665,34 @@ describe("Room workflow (real Postgres)", () => {
         LIMIT 1`,
       [created.room.id, agent.id],
     )).resolves.toMatchObject({ rows: [{ status: "closed" }] });
+  });
+
+  it("gives a Project reader outside a limited Room no existence signal from its invitation list or an owner claim", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const outsider = { spaceId: "space-1", userId: "user-3" };
+    await db.pool.query(
+      `INSERT INTO project_members (
+         id, space_id, project_id, user_id, role, status, created_at, updated_at
+       ) VALUES ('project-member-3', 'space-1', 'project-1', 'user-3', 'viewer', 'active', now(), now())`,
+    );
+    await service.createRoom(owner, { project_id: "project-1", title: "Mainline" });
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Limited Room" });
+    const absent = { statusCode: 404, message: "Room not found in this space" };
+
+    // The same answer as for a Room that does not exist.
+    await expect(service.listInvitations(outsider, created.room.id, { limit: 20, offset: 0 })).rejects.toMatchObject(absent);
+    await expect(service.listInvitations(outsider, randomUUID(), { limit: 20, offset: 0 })).rejects.toMatchObject(absent);
+    await expect(service.claimOwner(outsider, created.room.id)).rejects.toMatchObject(absent);
+    await expect(service.claimOwner(outsider, randomUUID())).rejects.toMatchObject(absent);
+
+    // An invitee reads their own invitation before joining; a member who can
+    // see the Room is told why they may not claim it.
+    const invitation = await service.inviteUser(owner, created.room.id, { user_id: "user-3" });
+    const invited = await service.listInvitations(outsider, created.room.id, { limit: 20, offset: 0 });
+    expect(invited.items.map((item) => item.id)).toEqual([invitation.id]);
+    await addRoomMember(created.room.id, "user-3");
+    await expect(service.claimOwner(outsider, created.room.id)).rejects.toMatchObject({ statusCode: 403 });
   });
 
   it("requires each private-Agent owner to approve a Room invitation and supports suspended-owner recovery", async (ctx) => {

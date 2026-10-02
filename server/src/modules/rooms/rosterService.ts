@@ -6,6 +6,7 @@ import { HttpError, withDbTransaction } from "../routeUtils/common.js";
 import {
   assertProjectReadable,
   assertProjectWriter,
+  canReadProject,
   canWriteProject,
 } from "../projects/access.js";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
@@ -506,11 +507,16 @@ export class RoomRosterService {
   }
 
   async listInvitations(identity: RoomIdentity, roomId: string, input: { limit: number; offset: number }) {
+    const notFound = () => new HttpError(404, "Room not found in this space");
     const room = await new PgRoomRepository(this.pool).getRoomById(identity.spaceId, roomId);
-    if (!room || room.status !== "active") throw new HttpError(404, "Room not found in this space");
+    if (!room || room.status !== "active") throw notFound();
     return withDbTransaction(this.pool, async (client) => {
       await assertActiveSpaceUser(client, identity.spaceId, identity.userId);
-      await assertProjectReadable(client, identity.spaceId, room.project_id, identity.userId);
+      // Not getVisibleRoom: an invitee or a private Agent's approval owner reads
+      // their own invitation before they are on the roster. Everyone else who
+      // is not a member gets the same 404 as for a Room that does not exist
+      // (ADR 0018 decision 3) — an empty page would say the Room is there.
+      if (!(await canReadProject(client, identity.spaceId, room.project_id, identity.userId))) throw notFound();
       const repository = new PgRoomRosterRepository(client);
       const page = await repository.listInvitations({
         space_id: identity.spaceId,
@@ -519,6 +525,12 @@ export class RoomRosterService {
         limit: input.limit,
         offset: input.offset,
       });
+      if (
+        page.total === 0
+        && !(await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId, false))
+      ) {
+        throw notFound();
+      }
       const items = [];
       for (const invitation of page.items) {
         items.push(await this.invitationResponse(client, identity, invitation));
@@ -750,6 +762,12 @@ export class RoomRosterService {
         && (authority.owner_user_id === identity.userId || isSpaceOwnerOrAdmin(authority.role)),
       );
       if (!authority || !canClaim) {
+        // A caller who cannot see the Room learns nothing from a 403 that a
+        // 404 would not say about a Room that does not exist (ADR 0018
+        // decision 3); only a member who can already see it is told why.
+        if (!(await rooms.getVisibleRoom(identity.spaceId, identity.userId, roomId, false))) {
+          throw new HttpError(404, "Room not found in this space");
+        }
         throw new HttpError(403, "Only the Project owner or Space owner/admin may claim a suspended Room");
       }
       const currentOwnerId = await this.currentOwner(client, room.id);

@@ -963,14 +963,16 @@ export class AgentGroupRunService {
     ) {
       throw new HttpError(404, "Agent group not found in this space");
     }
+    // A Room task is read by the Room's active roster and nobody else:
+    // `manager_user_id` is lifecycle provenance, not authority (B8A), so a
+    // member who was removed from the Room loses the tasks they started with
+    // it. Outside a Room the manager is the only reader.
     const readable = Boolean(
       group
       && (
-        group.manager_user_id === identity.userId
-        || (
-          group.room_id
-          && await repo.isActiveRoomUser(identity.spaceId, group.room_id, identity.userId)
-        )
+        group.room_id
+          ? await repo.isActiveRoomUser(identity.spaceId, group.room_id, identity.userId)
+          : group.manager_user_id === identity.userId
       )
     );
     if (!group || !readable) {
@@ -985,6 +987,7 @@ export class AgentGroupRunService {
     group: AgentRunGroupRecord,
   ): Promise<boolean> {
     if (group.manager_user_id !== identity.userId) return false;
+    if (group.room_id && !(await repo.isActiveRoomUser(identity.spaceId, group.room_id, identity.userId))) return false;
     if (!group.project_id) return true;
     return repo.canReadProject(
       identity.spaceId,

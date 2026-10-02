@@ -136,7 +136,10 @@ user grant cannot preserve a removed member's historical output. Artifacts and
 proposals materialized from those Runs remain `selected_users` and inherit the
 Run grants; adapter output cannot widen them to `space_shared`. Room members may
 read task evidence, but only the speaking task's `manager_user_id` may mutate,
-pause, cancel, or append directly to that task.
+pause, cancel, or append directly to that task — and only while they remain an
+active Room member: `manager_user_id` is provenance, not authority (B8A), so
+removal from the Room ends the manager's reads of and controls over the Room
+tasks they started, in the list as well as the detail.
 
 `GET /api/v1/agent-groups/{group_id}/trace` is the grouped-run companion read
 model. It returns the group, members, task messages, delegations, root run id,

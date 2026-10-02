@@ -176,6 +176,27 @@ const DELEGATION_RUN_JOINS = `
   LEFT JOIN runs child_run ON child_run.id = d.child_run_id AND child_run.space_id = d.space_id
 `;
 
+/**
+ * A Room-backed group is listed only to an active member of its Room: the
+ * manager's own provenance does not outlive their membership (B8A). Mirrors
+ * `isActiveRoomUser` for the list and count queries, where `$2` is the viewer.
+ */
+const ACTIVE_ROOM_MEMBER_OR_NO_ROOM_SQL = `(
+  agent_run_groups.room_id IS NULL
+  OR EXISTS (
+    SELECT 1
+      FROM room_user_members room_member
+      JOIN rooms room
+        ON room.id = room_member.room_id
+       AND room.space_id = room_member.space_id
+     WHERE room_member.space_id = agent_run_groups.space_id
+       AND room_member.room_id = agent_run_groups.room_id
+       AND room_member.user_id = $2
+       AND room_member.status = 'active'
+       AND room.status = 'active'
+  )
+)`;
+
 export class PgAgentGroupRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -401,6 +422,7 @@ export class PgAgentGroupRepository {
         "agent_run_groups.project_id",
         "$2",
       )})`,
+      ACTIVE_ROOM_MEMBER_OR_NO_ROOM_SQL,
     ];
     if (input.status) {
       params.push(input.status);
@@ -432,6 +454,7 @@ export class PgAgentGroupRepository {
         "agent_run_groups.project_id",
         "$2",
       )})`,
+      ACTIVE_ROOM_MEMBER_OR_NO_ROOM_SQL,
     ];
     if (input.status) {
       params.push(input.status);

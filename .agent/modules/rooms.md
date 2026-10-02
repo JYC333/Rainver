@@ -1302,7 +1302,10 @@ is slow to answer is decided on the cached reading.
 - `POST /api/v1/rooms/:roomId/agents/:agentId/reset-context` — reset a
   host-bound specialist's vendor session (Host owner and Project writer)
 - `GET/POST /api/v1/rooms/:roomId/invitations` — list or create human
-  invitations; pending invitations carry owner approvals
+  invitations; pending invitations carry owner approvals. The list answers the
+  Room-not-found 404 to a Project reader who is neither an active member nor
+  party to any of the Room's invitations (ADR 0018 decision 3); an invitee or
+  approval owner reads their own before joining
 - `POST /api/v1/rooms/:roomId/invitations/:invitationId/decision` — approve or
   reject one owned private-Agent share
 - `GET /api/v1/rooms/pending-approvals` — owner-scoped pending private-Agent
@@ -1311,7 +1314,8 @@ is slow to answer is decided on the cached reading.
 - `POST /api/v1/rooms/:roomId/owner-transfer` — transfer to an active Project
   writer Room member
 - `POST /api/v1/rooms/:roomId/owner-claim` — recover a suspended Room for a
-  Project owner or Space owner/admin
+  Project owner or Space owner/admin; a caller without that authority gets the
+  Room-not-found 404 unless they can already see the Room, in which case 403
 - `GET /api/v1/rooms/:roomId/conversations` — list conversations
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/messages` — paged history
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/summary` — active summary,

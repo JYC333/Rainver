@@ -65,6 +65,13 @@ export class RoomDiscussionService {
   async open(identity: RoomIdentity, roomId: string, sessionId: string, request: OpenRoomDiscussionRequest) {
     return withDbTransaction(this.pool, async (client) => {
       const room = await this.requireWriter(client, identity, roomId);
+      // The conversation must belong to this Room before anything is read by
+      // its session id: the active-discussion check below would otherwise
+      // answer 409 with another Room's discussion id for a session the caller
+      // cannot see, and 404 for one that has none.
+      if (!(await new PgRoomRepository(client).getConversation(identity.spaceId, roomId, sessionId))) {
+        throw new HttpError(404, "Room conversation not found");
+      }
       const discussions = new PgRoomDiscussionRepository(client);
       await lockSession(client, identity.spaceId, sessionId);
       const current = await discussions.getOpenForSession(identity.spaceId, sessionId, { forUpdate: true });
