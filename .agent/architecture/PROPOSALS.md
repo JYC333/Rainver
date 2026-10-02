@@ -145,9 +145,10 @@ Proposals are the product review and application boundary for durable mutations.
   controlled same-asset Bundle/Bundle and Bundle/ordinary-promotion cases; it
   must run against the shared Testcontainers database when that runtime is
   available.
-- Public post-create execution config changes for Agents must use
-  `POST /api/v1/agents/{agent_id}/config-proposals`; direct
-  `POST /agents/{agent_id}/versions` does not advance the current version.
+- Post-create execution config changes for Agents are owner-only and go
+  through `POST /api/v1/agents/{agent_id}/config`, which appends a new
+  immutable `AgentVersion`. No route creates `agent_config_update` proposals,
+  and there is no direct `POST /agents/{agent_id}/versions`.
 - Rejected, accepted, expired, or superseded proposals cannot be applied again.
 - Cross-space or unauthorized access must not reveal proposal details.
 
