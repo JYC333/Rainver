@@ -184,7 +184,6 @@ Neither mechanism creates, adopts, or reschedules the other's nodes.
 
 There is no Workflow Canvas in this scope. Automatic candidate-run launch is
 still open; it selects existing candidate Runs rather than starting one
-automatically, and is tracked as an `evaluation_candidate` candidate kind in
-the Always-on section of the orchestration plan. Runtime session
+automatically. Runtime session
 checkpoint/resume is delivered — see the "Runtime session" section of ADR 0007
 and [../modules/rooms.md](../modules/rooms.md).
