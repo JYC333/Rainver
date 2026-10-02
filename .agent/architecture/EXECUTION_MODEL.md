@@ -279,14 +279,23 @@ RunStep records the coarse execution spine of a run:
 
 | Step kind | Meaning |
 |---|---|
+| `run_created` | Run row created |
 | `queued` | Run created, not yet started |
+| `runtime_selected` | Runtime adapter resolved |
 | `adapter_started` | Runtime adapter began execution |
 | `adapter_completed` | Adapter returned a result |
 | `artifact_created` | Artifact persisted from run output |
 | `proposal_created` | Proposal created from run output |
+| `validation_started` | Worktree validation commands started |
+| `validation_completed` | Worktree validation commands completed |
+| `completed` | Run completed |
 | `failed` | Run failed; sanitized error captured in step |
+| `cancelled` | Run cancelled |
 
-RunSteps are **best-effort evidence**. They are savepoint-isolated from critical writes (run terminal state, memory, policy rows). A RunStep write failure must not poison the run's terminal state commit.
+The step kinds are the `ck_run_steps_step_type` CHECK in
+`server/src/db/schema/runs.ts`.
+
+RunSteps are **best-effort evidence**. Their writes are caught and swallowed apart from critical writes (run terminal state, memory, policy rows). A RunStep write failure must not poison the run's terminal state commit.
 
 ## RunEvent Taxonomy
 
@@ -294,10 +303,11 @@ RunEvent records the structured phase-level evidence spine of a run:
 
 | event_type | Meaning |
 |---|---|
-| `context_compiled` | Legacy evidence name retained by the closed event taxonomy; current Agent Runs record accepted Runtime Context Delivery and Invocation Snapshot evidence instead |
+| `context_compiled` | Legacy evidence name retained by the event taxonomy; current Agent Runs record accepted Runtime Context Delivery and Invocation Snapshot evidence instead |
 | `runtime_selected` | Runtime adapter resolved; sandbox level decided |
 | `credential_granted` | Credentials resolved for adapter |
 | `sandbox_created` | Worktree sandbox created |
+| `policy_checked` | Runtime-reported policy check for a tool call |
 | `adapter_invoked` | Adapter.execute() called (status=running) |
 | `adapter_completed` | Adapter returned; status succeeded/failed/cancelled |
 | `artifact_ingested` | Produced artifact paths ingested |
@@ -307,13 +317,26 @@ RunEvent records the structured phase-level evidence spine of a run:
 | `proposal_created` | Proposal created from run output |
 | `evaluation_created` | RunEvaluation appended |
 | `run_finalized` | RunFinalization completed or failed |
+| `chat_completed` | Conversation turn reply completed |
 | `delegation_requested` | Agent group child-run delegation requested |
 | `delegation_policy_denied` | `run.spawn_child` blocked a child-run delegation |
 | `delegation_queued` | Child run created and queued for dispatch |
 | `delegation_started` | Delegated child run started and the group delegation moved to running |
 | `delegation_completed` | Delegated child run reached a terminal state and the group delegation result was projected |
-| `action_invoked` | AgentToolGateway began a registry action call after exposure checks |
+| `action_invoked` | `SystemActionDispatcher` began a registry action call after exposure checks |
 | `action_completed` | Registry action call returned a success or model-visible failed tool result |
+| `assistant_message_completed` | Runtime reported a completed assistant message |
+| `tool_call_started` / `tool_call_completed` / `tool_call_failed` | Runtime reported a tool call's lifecycle |
+| `approval_requested` / `approval_resolved` | Runtime reported an approval request and its resolution |
+| `artifact_produced` | Runtime reported a produced artifact |
+| `output_validation_completed` | Run output validation completed |
+| `provider_compacted` | Provider compacted its session context |
+| `warning` / `error` | Runtime or orchestration warning / error |
+| `state_transition` | Runtime-reported state transition |
+| `egress_refused` | The Run's egress proxy refused one or more network requests |
+
+The event types are the `ck_run_events_event_type` CHECK in
+`server/src/db/schema/runs.ts`.
 
 RunEvent statuses: `pending`, `running`, `succeeded`, `failed`, `skipped`, `warning`, `cancelled`.
 
@@ -321,15 +344,15 @@ RunEvent statuses: `pending`, `running`, `succeeded`, `failed`, `skipped`, `warn
 
 **Append-only:** RunEvent rows are never updated or deleted. `event_index` uses MAX()+1 scoped to `(space_id, run_id)` — same documented distributed-writer risk as RunStep.
 
-**Best-effort writes:** `safe_append_run_event()` wraps all instrumentation points in a savepoint. A RunEvent write failure must not poison Run terminal-state commits, artifact persistence, proposal creation, or evaluation creation.
+**Best-effort writes:** `RunOrchestrationService.appendRunEventBestEffort()` wraps instrumentation points in a try/catch that swallows the failure. A RunEvent write failure must not poison Run terminal-state commits, artifact persistence, proposal creation, or evaluation creation.
 
 **Never stored in RunEvent metadata:** raw credentials, stdout/stderr content, full rendered context text, full patch body, raw private memory text, complete file contents.
 
 ### Registry actions and Room tasks
 
-Managed model tools dispatch through `AgentToolGateway` and
+Agent tool calls dispatch through `SystemActionDispatcher` and
 `SystemActionGateway`; see [SYSTEM_ACTIONS.md](SYSTEM_ACTIONS.md). Registry
-visibility, run/profile capability exposure, and call-time PolicyGateway
+visibility, run/profile capability exposure, and call-time policy
 enforcement are separate gates. Side-effecting calls use the canonical tool
 call id as their idempotency key. Best-effort `action_invoked` /
 `action_completed` RunEvents carry safe summaries and PolicyDecisionRecord ids;
@@ -338,7 +361,7 @@ PolicyDecisionRecord persistence remains the fail-closed audit boundary.
 
 Autonomous Agent conversation state and multi-turn execution belong to the
 external ACP runtime session on the selected Host. Runtime requests for
-Rainver-owned actions return through `AgentToolGateway` and
+Rainver-owned actions return through `SystemActionDispatcher` and
 `SystemActionGateway`, which remain the validation and authorization
 authorities. Bounded single-purpose model work stays in ProviderTask and does
 not create an Agent tool loop.
@@ -523,16 +546,18 @@ The runtime execution lifecycle uses this external-call pattern:
 
 ## Runtime Policy Gates
 
-`PolicyGateway` is the only enforcement entry point for all policy gates.
-`PolicyEngine` is internal to the policy package; business services must not
-call it directly to authorize or perform a sensitive action. The Automation
+The policy service `enforce()` (`server/src/modules/policy/service.ts`) is the
+only enforcement entry point for all policy gates. The decision function
+`computeDecision` (`policy/gateway.ts`) is internal to the policy package;
+business services must not call it directly to authorize or perform a
+sensitive action. The Automation
 execution preflight (`AutomationsService.runPreflight` in
 `server/src/modules/automations/service.ts`) may call it only for non-mutating
-dry-run simulation, which does not persist a `PolicyDecisionRecord`. Actual runtime execution still uses `PolicyGateway`.
+dry-run simulation, which does not persist a `PolicyDecisionRecord`. Actual runtime execution still uses `enforce()`.
 
 Policy gates run in this order inside server run orchestration:
 
-1. **`runtime.execute`** — `PolicyGateway.enforce()` is called **before** credential resolution, Runtime Context Delivery preparation, and ACP dispatch. Rule-relevant fields (`agent_status`, `agent_tool_permissions`, `tool_name`, `runtime_key`, `trigger_origin`, etc.) are passed in `PolicyCheckRequest.context`; safe audit copies remain in `metadata_json`. Blocking decisions raise `PolicyGateBlocked`, are written once through `write_blocked_gate_audit()`, and fail the run.
+1. **`runtime.execute`** — the policy service `enforce()` is called **before** credential resolution, Runtime Context Delivery preparation, and ACP dispatch. Rule-relevant fields (`agent_status`, `agent_tool_permissions`, `tool_name`, `runtime_key`, `trigger_origin`, etc.) are passed in `PolicyCheckRequest.context`; safe audit copies remain in `metadata_json`. Blocking decisions are audited once by `enforce()` and raise `RunPreparationError` (or `RunApprovalRequiredError` for an approval pause), failing the run.
 
 2. **`runtime.use_credential`** — decided by `authorizeCredentialSpend`
    **before** a server-owned ModelProvider key is fetched. The Run executor
@@ -567,7 +592,7 @@ data-flow boundary, independent of adapter behavior or prompt compliance.
 
 None of these gates may be bypassed. No secret material is resolved before `runtime.use_credential` passes. No context is injected before `context.inject_memory` passes. The gate in front of the adapter is `runtime.execute`, enforced by `runs/orchestrationService.ts`'s `enforceRuntimePolicy` before dispatch; a non-allowed decision raises `RunPreparationError` and the Run ends terminal-failed.
 
-**artifact.persist** — `RunMaterializationService` calls `PolicyGateway.enforce()` before the egress guard, filesystem write, or Artifact row creation. DENY and REQUIRE_APPROVAL call `write_blocked_gate_audit()` once and then raise `PersonalMemoryEgressError`. `PolicyAuditPersistError` and blocked-decision audit write failures block artifact persistence.
+**artifact.persist** — `RunMaterializationService` calls the policy service `enforce()` before the egress guard, filesystem write, or Artifact row creation. DENY and REQUIRE_APPROVAL are audited once by `enforce()` and then raise an error. `PolicyAuditPersistError` and blocked-decision audit write failures block artifact persistence.
 
 ## Runtime Credential Resolver
 
@@ -591,9 +616,8 @@ Agent profiles; the old CLI broker remains only pending its API retirement.
 
 ## RunStep Replay and Failure Diagnosis
 
-`GET /api/v1/runs/{id}/steps` returns ordered RunStep records.
-
-`GET /api/v1/runs/{id}/trace` is the preferred reconstruction endpoint. It
+`GET /api/v1/runs/{id}/trace` is the reconstruction endpoint and the read
+path for ordered RunStep records; there is no separate steps endpoint. It
 aggregates the safe replay spine for a run in one response: Run,
 AgentVersion, RuntimeAdapter, ModelProvider, safe Invocation Snapshot metadata,
 RunSteps, RunEvents, Artifacts, Proposals, parent, and children. It does not
@@ -634,7 +658,7 @@ the lifecycle projector requeues the same run after every declared dependency
 run reaches a hard terminal state. A Room recipient parked behind the earlier
 recipients of the same message enters it *before* its first dispatch (scope
 `conversation_serialization`, never routed, no runtime snapshot yet), which
-`ck_runs_execution_shape` admits alongside `queued` since migration `0001`;
+`ck_runs_execution_shape` (`server/src/db/schema/runs.ts`, baseline migration `0000`) admits alongside `queued`;
 such a run is admitted with the prompt it was dispatched with rather than a
 continue instruction (`modules/rooms.md`).
 
@@ -735,7 +759,7 @@ Calling `POST /finalize` on a non-terminal run (queued, running, waiting_for_rev
 - **Classifier-version auditable.** `evaluator_version` (e.g. `harness_eval.v1`) is stored per row, so classification history is preserved across version upgrades.
 - **Harness-boundary evidence only.** Uses Run.status/error_json/output_json/exit_code, ordered RunSteps, RunEvents, safe Invocation Snapshot metadata, Artifacts, Proposals, ValidationRecipe, and linked Task/TaskRun. No LLM-as-judge. No parsing of vendor CLI internal tool calls.
 - **RunEvent as primary classification source.** RunEvent structured `error_code` fields are the canonical classification input for patch, artifact, adapter, and materialization event evidence. `output_json.materialization_errors` is never parsed as classifier evidence — it is a debug/summary field only.
-- **Materialization outcomes are RunEvent-covered.** `RunMaterializationService` returns materialization items and failures. `RunOrchestrationService` emits `artifact_ingested` / `proposal_created` RunEvents for each output JSON artifact and proposal success and failure. Runtime output text persistence emits `artifact_ingested` on success and failure. All materialization error codes map to the `tool` failure_layer via `_EXACT_ERROR_CODE_MAP`. Activity materialization failures are represented as artifact_ingested warning events with metadata_json.kind="activity" to avoid expanding the RunEvent enum.
+- **Materialization outcomes are RunEvent-covered.** `RunMaterializationService` returns materialization items and failures. `RunOrchestrationService` emits `artifact_ingested` / `proposal_created` RunEvents for each output JSON artifact and proposal success and failure. Runtime output text persistence emits `artifact_ingested` on success and failure. All materialization error codes map to the `tool` failure_layer via `EXACT_ERROR_CODE_MAP`. Activity materialization failures are represented as artifact_ingested warning events with metadata_json.kind="activity" to avoid expanding the RunEvent enum.
 - **Evidence-only for CLI runtimes.** Local CLI runtimes are black-box at the harness. No internal tool-call trajectory is reconstructed from stdout/stderr.
 - **Verification results are authoritative for declared checks.** The engine
   persists bounded result summaries before sandbox cleanup. RunEvaluation
@@ -745,7 +769,7 @@ Calling `POST /finalize` on a non-terminal run (queued, running, waiting_for_rev
 
 ### RunStep adapter_started semantics
 
-`RunOrchestrationService` creates an `adapter_started` step and later marks it succeeded/failed via `complete_step`/`fail_step`. There is no required separate `adapter_completed` step.
+`RunOrchestrationService` creates an `adapter_started` step and later marks it succeeded/failed via `updateRunStepStatus`. There is no required separate `adapter_completed` step.
 
 **Evaluation treats `adapter_started` with status in {`succeeded`, `failed`, `cancelled`} as adapter completion from the harness perspective.**
 
@@ -867,8 +891,8 @@ recording cannot forge a passed engine evaluation.
 
 | Creation path | Evidence source | TaskArtifact required |
 |---|---|---|
-| Bridge (`create_from_run_evaluation`) | Artifacts linked to the evaluated Run via `Artifact.run_id` | No |
-| Manual (`create_manual_task_evaluation`) | Caller-supplied `evidence_artifact_ids` | Yes — all IDs must be linked through `TaskArtifact` |
+| Bridge (`PgRunRepository.bridgeTaskEvaluationForRunEvaluation`) | Artifacts linked to the evaluated Run via `Artifact.run_id` | No |
+| Manual (`PgTaskRepository.createTaskEvaluation`) | Caller-supplied `evidence_artifact_ids` | Yes — all IDs must be linked through `TaskArtifact` |
 
 When a manual task evaluation also supplies `run_id`, that run must be linked to
 the task through `TaskRun`, and each evidence artifact must be linked through a
