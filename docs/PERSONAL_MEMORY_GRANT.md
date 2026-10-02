@@ -30,50 +30,50 @@ No grant → no cross-space personal memory read.
 | `target_agent_id` | UUID FK agents | Always NULL; there are no agent-level grants |
 | `grant_scope` | TEXT | `run` only in current MVP |
 | `access_mode` | TEXT | `summary_only` only in current MVP |
-| `memory_filter_json` | JSON | Optional filter specifying namespaces, layers, kinds, max_items |
+| `memory_filter_json` | JSON | Optional filter: `memory_layers`, `memory_types`, `namespaces`, `max_items` (1–50) |
 | `status` | TEXT | `active \| consuming \| used \| revoked \| expired \| failed` |
 | `read_expires_at` | TIMESTAMP | Required; grant is invalid after this time |
 | `egress_review_expires_at` | TIMESTAMP | Optional deadline for egress review/apply |
-| `consume_started_at` | TIMESTAMP | Set when resolver claims the grant atomically |
+| `consume_started_at` | TIMESTAMP | Set when Delivery authorization claims the grant |
 | `used_at` | TIMESTAMP | Set when grant transitions to `used` |
 | `revoked_at` | TIMESTAMP | Set on explicit user revoke |
-| `failed_at` | TIMESTAMP | Set on resolver failure after memory was accessed |
-| `failure_stage` | TEXT | Diagnostic stage label for failed grants |
+| `failed_at` | TIMESTAMP | Reserved; no code path writes it today |
+| `failure_stage` | TEXT | Reserved; no code path writes it today |
 | `created_at` | TIMESTAMP | Creation time |
+| `updated_at` | TIMESTAMP | Last status change |
 
 **Uniqueness:** at most one `active` or `consuming` grant per `(target_run_id, granting_user_id)`.
 
 ### `personal_memory_grant_events`
 
 Audit log for all grant lifecycle transitions. Contains `grant_id`, `event_type`,
-`event_data_json` (safe metadata only, no personal memory content), `created_at`.
+`actor_user_id`, `run_id`, `proposal_id`, `source_space_id`, `target_space_id`,
+`metadata_json` (safe metadata only, no personal memory content), `created_at`.
 
 ### `proposal_approvals`
 
 First-class approval rows required before any egress-review proposal may be applied.
-Stores `proposal_id`, `approval_type` (`egress_granting_user`), `approver_user_id`,
-`grant_id`, `status` (`approved \| revoked`), approval metadata. No raw memory
-content, summaries, or memory IDs.
+Stores `proposal_id`, `approval_type` (`egress_granting_user` or `action_grant`),
+`approver_user_id`, `grant_id`, `action_grant_id`, `target_space_id`, `status`
+(`approved \| revoked`), `revoked_at`, approval metadata. No raw memory content,
+summaries, or memory IDs.
 
 ---
 
 ## Grant Lifecycle
 
 ```
-active → (atomic claim) → consuming → used      [normal path]
-active → (explicit user revoke)  → revoked       [user cancels]
-active → (expiry)                → expired        [time-based]
-consuming → (failure after read) → failed         [terminal]
+active → (Delivery authorization) → consuming → used   [normal path]
+active → (explicit user revoke)    → revoked             [user cancels]
 ```
 
-Status transitions are enforced at the service layer. The resolver uses an atomic
-conditional UPDATE to claim the grant (`active → consuming`), preventing concurrent
-double-consumption. If the claim returns no rows, the grant was already consumed,
-revoked, or expired — context build aborts.
-
-After the resolver reads personal memory and produces a summary, the grant transitions
-`consuming → used`. If the resolver fails after accessing raw personal memory, the
-grant transitions `consuming → failed` (never back to `active`).
+The claim happens inside the Invocation Delivery authorization transaction
+(`runtimeContext/gateway.ts`): the grant row is locked with `SELECT … FOR UPDATE`,
+checked against the Run, viewer, and planned summary, and moved
+`active → consuming → used` in the same transaction. If no usable row is found,
+Delivery is refused. Expiry is not a written transition: a grant past
+`read_expires_at` simply stops matching. The `expired` and `failed` status values
+are allowed by the schema but no code path writes them today.
 
 ---
 
@@ -98,7 +98,8 @@ server-side from the authenticated session. They are not client-writable
 - Authenticated user must be a member of `target_space_id`.
 - `target_run_id` must be in `target_space_id`.
 - `granting_user_id` must equal `run.instructed_by_user_id`.
-- Rate limits and max active/consuming limits enforced (combined cap of 10 per user).
+- At most one `active` or `consuming` grant per `(target_run_id, granting_user_id)`
+  (partial unique index); `read_expires_in_seconds` is clamped to 60–86400.
 
 ---
 
@@ -139,16 +140,23 @@ Current implementation:
 - `Run.has_context_taint` and `Run.context_taint_json` store safe grant and source-owner
   attribution for audit, policy context, and output narrowing.
 - `proposal_approvals` supports explicit `egress_granting_user` approval rows.
-- Only the granting user may record that approval.
+- A grant-derived egress approval may be recorded only by the grant's
+  `granting_user_id`; a context-taint publication approval only by a required
+  taint owner.
 - Approval rejects payloads marked `raw_private_memory_included = true`.
 - Tainted Artifact publication revalidates the target taint at apply time and requires
   every contributing owner named by that summary.
 
+- A request to publish tainted content (`contentAccess/service.ts`) creates a pending
+  `egress_review` proposal naming the required taint owners.
+- The registered `egress_review` applier (`proposals/egressReviewApplier.ts`)
+  publishes the existing tainted resource as `space_shared` and rewrites its
+  content access grants once every taint owner has approved; it creates no new
+  artifact or memory.
+
 Not implemented yet:
 
 - automatic grant-derived output blocking in `RunMaterializationService`
-- automatic `egress_review` proposal creation from artifacts, memory proposals, or code patches
-- a registered `egress_review` applier that creates shared artifacts/memory
 - semantic leakage detection for paraphrased personal-memory content
 
 ---
@@ -157,19 +165,22 @@ Not implemented yet:
 
 An explicit egress approval row has:
 - `approval_type = egress_granting_user`
-- `approver_user_id = PersonalMemoryGrant.granting_user_id`
 - `status = approved`
+- for grant-derived egress: `grant_id` set and
+  `approver_user_id = PersonalMemoryGrant.granting_user_id`
+- for a context-taint publication: `grant_id` NULL and `approver_user_id` one of
+  the taint owners; the applier requires a row from every taint owner
 
-**Only the granting user may provide this approval.** Space admins and owners cannot
-approve on behalf of the granting user. Payload metadata flags
+**Only the owners of the private inputs may provide this approval.** Space admins
+and owners cannot approve on their behalf. Payload metadata flags
 (`approved_by_granting_user`, `granting_user_approved`, etc.) are never treated as
 proof of approval.
 
 Revoked, failed, or expired grants block approval. `used` grants remain valid for egress
 approval only for the same source run while the egress review deadline is still valid.
 
-Approval rows are metadata-only in the current MVP. Approval records permission to proceed
-to a later shared-content review step; no shared artifact or memory is automatically
+Approval rows are metadata-only. Applying an approved context-taint publication
+changes the existing resource's visibility; no new shared artifact or memory is
 created.
 
 ---
@@ -210,7 +221,7 @@ These invariants are enforced at code level and covered by tests. They must neve
 5. **Grant is run-scoped.** A grant for Run A cannot be reused by Run B.
 6. **One-time lifecycle.** `expired`, `revoked`, and `used` grants cannot be reused.
 7. **No raw personal memory in shared targets.** Personal memory summaries used as runtime context are not written into team memory, shared artifacts, or publication snapshots without explicit approved content creation.
-8. **Space admin cannot substitute for granting user.** Only `granting_user_id` may record `egress_granting_user` approval.
+8. **Space admin cannot substitute for granting user.** Only `granting_user_id` may record a grant-derived `egress_granting_user` approval, and only a required taint owner may record a context-taint one.
 9. **Payload flags are not proof of approval.** Approval metadata in proposal payloads is never treated as a valid approval gate.
 10. **Egress guard fails closed.** Unknown target spaces are treated as non-personal and trigger BLOCK.
 
@@ -222,8 +233,8 @@ These invariants are enforced at code level and covered by tests. They must neve
 - **One-time lifecycle.** There are no long-lived grants.
 - **`summary_only` only.** There is no `retrieval_context` access mode.
 - **Server-derived granting fields.** `granting_user_id` and `personal_space_id` are not client-writable.
-- **`schema_version = 1`** required for non-empty `memory_filter_json`.
-- **Egress review is metadata-only.** Approved egress review does not create a shared artifact or memory.
+- **Agent-scope memory excluded.** Grant summaries read only the user's own `private` memory with `sensitivity_level` `normal` or `sensitive`, never `scope_type = agent`.
+- **Egress review creates no new content.** Approved egress review publishes the existing resource; it does not create a shared artifact or memory.
 - **No semantic leakage detection.** Materialization does not detect paraphrased or inferred personal-memory meaning.
 - **No public publishing or federation.** `visibility=public` and cross-instance federation are not supported.
 - **No multi-user grants.** Only one granting user per grant.
@@ -241,6 +252,4 @@ Unimplemented expansions: [`.agent/plans/unimplemented-from-guides.md`](../.agen
 - [`.agent/plans/unimplemented-from-guides.md`](../.agent/plans/unimplemented-from-guides.md) §13 — unimplemented grant expansions
 - `server/src/modules/personalMemoryGrants/` — API implementation
 - `server/src/modules/proposals/` — approval/apply gate
-- `server/src/modules/context/` — grant-aware context assembly
-- `server/test/agentsChatRoutes.test.ts`
-- `server/test/contextPrepareService.test.ts`
+- `server/src/modules/runtimeContext/` — grant-aware context assembly and Delivery claim
