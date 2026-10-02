@@ -1441,7 +1441,10 @@ async function requireKnowledgeItem(
   itemId: string,
   proposal: ProposalApplyContext["proposal"],
 ): Promise<KnowledgeItemRow> {
-  const row = await getKnowledgeItemById(db, spaceId, itemId);
+  // Locked: two accepted updates of one item must not both read it active and
+  // each write a version n+1 beside the other; the second waits, reads the
+  // first's supersession, and is refused here.
+  const row = await getKnowledgeItemById(db, spaceId, itemId, { lock: true });
   if (row.status !== "active" && row.status !== "draft") {
     throw new KnowledgeApplyValidationError("target Knowledge item is not active");
   }
@@ -1458,11 +1461,16 @@ async function requireKnowledgeItem(
   return row;
 }
 
-async function getKnowledgeItemById(db: Queryable, spaceId: string, itemId: string): Promise<KnowledgeItemRow> {
+async function getKnowledgeItemById(
+  db: Queryable,
+  spaceId: string,
+  itemId: string,
+  options: { lock?: boolean } = {},
+): Promise<KnowledgeItemRow> {
   const result = await db.query<KnowledgeItemRow>(
     `SELECT ${KNOWLEDGE_ITEM_COLUMNS}
        FROM ${KNOWLEDGE_ITEM_FROM}
-      WHERE ki.object_id = $1 AND ki.space_id = $2`,
+      WHERE ki.object_id = $1 AND ki.space_id = $2${options.lock ? " FOR UPDATE OF ki" : ""}`,
     [itemId, spaceId],
   );
   const row = result.rows[0];

@@ -6,7 +6,8 @@ import type {
   ClaimTrajectoryResponse,
   ClaimTrajectorySignal,
 } from "@rainver/protocol";
-import { CLAIM_COLUMNS, CLAIM_FROM, type ClaimRow } from "./knowledgeRepositoryRows.js";
+import { CLAIM_FROM, claimColumnsWithAccess, type ClaimRow } from "./knowledgeRepositoryRows.js";
+import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import {
@@ -34,6 +35,18 @@ function readableClaimClause(userParam: string): string {
   return contentReadSql("space_object", "so", userParam);
 }
 
+/**
+ * A claim the viewer may see, with how much of it. "Readable" admits a
+ * summary-level reader, to whom the detail route answers `subject_text` and
+ * `claim_text` as null; nothing here may hand those back by another door, so
+ * text is exposed or compared only where the level is `full`.
+ */
+type VisibleClaimRow = WithAccessLevel<ClaimRow>;
+
+function fullAccess(row: VisibleClaimRow): boolean {
+  return row.effective_access_level === "full";
+}
+
 function readableSpaceObjectClause(alias: string, userParam: string): string {
   return contentReadSql("space_object", alias, userParam);
 }
@@ -52,24 +65,30 @@ export async function buildClaimTrajectory(
 ): Promise<ClaimTrajectoryResponse> {
   const now = new Date().toISOString();
   let subjectObjectId = input.subjectObjectId ?? null;
+  // What the seed claim is about, used to find its siblings; and what the
+  // response may say it is about, which a summary-level seed does not give.
+  let subjectQueryText: string | null = null;
   let subjectText: string | null = null;
 
   if (!subjectObjectId && input.claimId) {
     const seed = await loadVisibleClaim(db, input.spaceId, input.userId, input.claimId);
     if (seed) {
       subjectObjectId = seed.subject_object_id;
-      subjectText = seed.subject_text;
+      subjectQueryText = seed.subject_text;
+      if (fullAccess(seed)) subjectText = seed.subject_text;
     }
   }
 
   const rows = subjectObjectId
     ? await loadVisibleClaimsBySubjectObject(db, input.spaceId, input.userId, subjectObjectId, input.limit)
     : input.claimId
-      ? await loadVisibleClaimsBySubjectText(db, input.spaceId, input.userId, subjectText, input.limit)
+      ? await loadVisibleClaimsBySubjectText(db, input.spaceId, input.userId, subjectQueryText, input.limit)
       : [];
   const sourceAllowedRows = await filterClaimsBySourcePolicy(db, input.spaceId, input.userId, rows);
 
-  if (!subjectText) subjectText = sourceAllowedRows.find((row) => row.subject_text)?.subject_text ?? null;
+  if (!subjectText) {
+    subjectText = sourceAllowedRows.find((row) => fullAccess(row) && row.subject_text)?.subject_text ?? null;
+  }
 
   const holderLabels = await loadVisibleHolderLabels(
     db,
@@ -141,13 +160,16 @@ export async function scanClaimContradictions(
   db: Queryable,
   input: ClaimContradictionScanInput,
 ): Promise<ClaimContradictionReport> {
-  const rows = await loadVisibleActiveClaims(
+  // Only claims whose text this viewer may read are compared: a finding's
+  // reason quotes the terms and numbers two claims differ by, the judge sees
+  // the full text, and a space_ops report is persisted for the whole Space.
+  const rows = (await loadVisibleActiveClaims(
     db,
     input.spaceId,
     input.userId,
     input.subjectObjectId ?? null,
     input.limit,
-  );
+  )).filter(fullAccess);
   const policyFiltered = await filterClaimsBySourcePolicyWithSourceIds(db, input.spaceId, input.userId, rows);
   const sourceAllowedRows = policyFiltered.rows;
   const groups = groupBySubject(sourceAllowedRows);
@@ -195,9 +217,9 @@ async function loadVisibleClaim(
   spaceId: string,
   userId: string,
   claimId: string,
-): Promise<ClaimRow | null> {
-  const result = await db.query<ClaimRow>(
-    `SELECT ${CLAIM_COLUMNS}
+): Promise<VisibleClaimRow | null> {
+  const result = await db.query<VisibleClaimRow>(
+    `SELECT ${claimColumnsWithAccess("$2")}
        FROM ${CLAIM_FROM}
       WHERE c.space_id = $1
         AND c.object_id = $3
@@ -215,9 +237,9 @@ async function loadVisibleClaimsBySubjectObject(
   userId: string,
   subjectObjectId: string,
   limit: number,
-): Promise<ClaimRow[]> {
-  const result = await db.query<ClaimRow>(
-    `SELECT ${CLAIM_COLUMNS}
+): Promise<VisibleClaimRow[]> {
+  const result = await db.query<VisibleClaimRow>(
+    `SELECT ${claimColumnsWithAccess("$2")}
        FROM ${CLAIM_FROM}
       WHERE c.space_id = $1
         AND c.subject_object_id = $3
@@ -237,10 +259,10 @@ async function loadVisibleClaimsBySubjectText(
   userId: string,
   subjectText: string | null,
   limit: number,
-): Promise<ClaimRow[]> {
+): Promise<VisibleClaimRow[]> {
   if (!subjectText) return [];
-  const result = await db.query<ClaimRow>(
-    `SELECT ${CLAIM_COLUMNS}
+  const result = await db.query<VisibleClaimRow>(
+    `SELECT ${claimColumnsWithAccess("$2")}
        FROM ${CLAIM_FROM}
       WHERE c.space_id = $1
         AND c.subject_object_id IS NULL
@@ -261,9 +283,9 @@ async function loadVisibleActiveClaims(
   userId: string,
   subjectObjectId: string | null,
   limit: number,
-): Promise<ClaimRow[]> {
-  const result = await db.query<ClaimRow>(
-    `SELECT ${CLAIM_COLUMNS}
+): Promise<VisibleClaimRow[]> {
+  const result = await db.query<VisibleClaimRow>(
+    `SELECT ${claimColumnsWithAccess("$2")}
        FROM ${CLAIM_FROM}
       WHERE c.space_id = $1
         AND c.status = 'active'
@@ -306,13 +328,13 @@ async function filterClaimsBySourcePolicy(
   db: Queryable,
   spaceId: string,
   userId: string,
-  rows: readonly ClaimRow[],
-): Promise<ClaimRow[]> {
+  rows: readonly VisibleClaimRow[],
+): Promise<VisibleClaimRow[]> {
   return (await filterClaimsBySourcePolicyWithSourceIds(db, spaceId, userId, rows)).rows;
 }
 
 interface SourcePolicyFilteredClaims {
-  rows: ClaimRow[];
+  rows: VisibleClaimRow[];
   sourceIdsByClaim: Map<string, string[]>;
   sourcePolicySnapshots: Record<string, unknown>;
 }
@@ -321,7 +343,7 @@ async function filterClaimsBySourcePolicyWithSourceIds(
   db: Queryable,
   spaceId: string,
   userId: string,
-  rows: readonly ClaimRow[],
+  rows: readonly VisibleClaimRow[],
 ): Promise<SourcePolicyFilteredClaims> {
   const sourceIdsByClaim = await loadClaimSourceConnectionIds(
     db,
@@ -392,10 +414,10 @@ async function loadClaimSourceConnectionIds(
 
 // --- trajectory --------------------------------------------------------------
 
-function trajectoryPoint(row: ClaimRow, holderObjectLabel: string | null | undefined): ClaimTrajectoryPoint {
+function trajectoryPoint(row: VisibleClaimRow, holderObjectLabel: string | null | undefined): ClaimTrajectoryPoint {
   return {
     claim_id: row.id,
-    title: row.title ?? row.claim_text.slice(0, 80),
+    title: row.title ?? (fullAccess(row) ? row.claim_text.slice(0, 80) : ""),
     claim_kind: row.claim_kind,
     status: row.status,
     resolution_state: row.resolution_state,

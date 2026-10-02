@@ -83,7 +83,9 @@ export function claimSummaryOut(row: WithAccessLevel<ClaimRow>): Record<string, 
     subject_text: summaryOnly ? null : row.subject_text,
     claim_kind: row.claim_kind,
     claim_text: summaryOnly ? null : row.claim_text,
-    normalized_claim_hash: row.normalized_claim_hash,
+    // An unsalted hash of the normalized text confirms a guessed body, so it
+    // is withheld with the body, as a note's `content_hash` is.
+    normalized_claim_hash: summaryOnly ? null : row.normalized_claim_hash,
     confidence: row.confidence,
     confidence_method: row.confidence_method,
     resolution_state: row.resolution_state,

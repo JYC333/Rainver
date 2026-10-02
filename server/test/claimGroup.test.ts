@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { buildClaimTrajectory, scanClaimContradictions } from "../src/modules/knowledge/claimReviewLoop.js";
 import { registerKnowledgeProposalAppliers } from "../src/modules/knowledge/proposalApplier.js";
+import { claimSummaryOut } from "../src/modules/knowledge/knowledgeRepositoryMappers.js";
+import type { ClaimRow } from "../src/modules/knowledge/knowledgeRepositoryRows.js";
+import type { WithAccessLevel } from "../src/modules/access/contentAccessTypes.js";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
 import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { handleSourceRetrievalTestSql } from "./support/sourceRetrievalTestSql.js";
@@ -334,6 +337,17 @@ describe("claimProposalApplier", () => {
     };
   }
 
+  it("withholds the normalized claim hash together with the body it would confirm", () => {
+    // An unsalted hash of the normalized text lets a summary reader test
+    // guesses at the withheld claim; notes already withhold `content_hash`
+    // for the same reason.
+    const summary = claimSummaryOut(claimRow({ effective_access_level: "summary" }) as unknown as WithAccessLevel<ClaimRow>);
+    expect(summary.claim_text).toBeNull();
+    expect(summary.normalized_claim_hash).toBeNull();
+    const full = claimSummaryOut(claimRow({ effective_access_level: "full" }) as unknown as WithAccessLevel<ClaimRow>);
+    expect(full.normalized_claim_hash).toBe("hash-1");
+  });
+
   function spaceObject(overrides: Record<string, unknown> = {}) {
     return {
       id: "object-1",
@@ -522,6 +536,25 @@ describe("claimReviewLoopDb", () => {
 
       expect(result.points.map((point) => point.claim_id)).toEqual(["c1"]);
       expect(result.canonical_write_performed).toBe(false);
+    });
+
+    it("withholds a summary-only claim's text from the trajectory and keeps it out of the contradiction scan", async () => {
+      if (!db.available) return;
+      // Another member's claims this reader may see only in summary: the
+      // detail route already answers `subject_text` and `claim_text` as null.
+      await insertClaim({ id: "churn", claimText: "Churn fell to 4% in March.", subjectObjectId: null, subjectText: "Churn", ownerUserId: OTHER });
+      await insertClaim({ id: "revenue-full", claimText: "Revenue reached 1.3m in March.", subjectText: "Revenue" });
+      await insertClaim({ id: "revenue-summary", claimText: "Revenue reached 1.2m in March.", subjectText: "Revenue", ownerUserId: OTHER });
+      await db.pool.query(`UPDATE space_objects SET access_level = 'summary' WHERE id IN ('churn', 'revenue-summary')`);
+
+      const trajectory = await buildClaimTrajectory(db.pool, { spaceId: SPACE, userId: VIEWER, claimId: "churn", limit: 100 });
+      expect(trajectory.points.map((point) => point.claim_id)).toEqual(["churn"]);
+      expect(trajectory.subject_text).toBeNull();
+
+      // Its body is not compared either: a finding's reason quotes the numbers
+      // it differs by, and the scan's report persists for the whole Space.
+      const report = await scanClaimContradictions(db.pool, { spaceId: SPACE, userId: VIEWER, limit: 200, maxFindings: 40 });
+      expect(report.findings).toEqual([]);
     });
 
     it("scan flags a negation contradiction and excludes claims the viewer cannot read", async () => {

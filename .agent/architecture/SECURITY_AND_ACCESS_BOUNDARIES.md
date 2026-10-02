@@ -147,8 +147,14 @@ A summary viewer is withheld, on these surfaces:
 - **Knowledge / Notes:** detail bodies, list previews, retrieval text, note
   `content_hash`, and note revision history (a summary reader gets 404 there).
 - **Knowledge sources:** `raw_text`, `content_ref` and metadata.
-- **Claims:** `claim_text`, `subject_text` and metadata, and the claim
-  evidence's quote and locator.
+- **Claims:** `claim_text`, `subject_text`, `normalized_claim_hash` (an
+  unsalted hash of the normalized text confirms a guess at it) and metadata,
+  and the claim evidence's quote and locator. The claim trajectory and the
+  contradiction scan (`knowledge/claimReviewLoop.ts`) read the same level: a
+  summary-level seed claim's subject text is not returned, and a
+  summary-level claim's body is neither compared nor sent to the LLM judge,
+  since a finding's reason quotes what two claims differ by and a
+  `space_ops` report is persisted for the whole Space.
 - **Item↔source links and item `source_refs`:** the link quote and note, and
   the evidence excerpt.
 - **Activity:** `content` and `metadata_json`.

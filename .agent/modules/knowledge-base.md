@@ -176,6 +176,13 @@ collapsed it. Both are now placement-addressed:
 - `DELETE /knowledge/notes/{id}/placements/{collectionId}` removes one and
   **refuses the last** (422): losing a note is a different decision from taking
   it out of a folder, and has its own action.
+- Adding and dragging answer alike when the folder already holds the note:
+  409 `This note is already in that folder`. The reorder checks before its
+  `UPDATE`, because the unique `(collection_id, note_id)` row it would land on
+  is otherwise a 500; a batch that swaps two placements is not a collision.
+- A folder cannot be moved under itself or under any of its descendants
+  (422). Nothing in the database stops a cycle, and a folder in one has no
+  path to the root, so every note below it disappears from the tree.
 
 #### Cross-Project placement
 
@@ -216,7 +223,9 @@ The access semantics — scope only, never a grant — are in
 - **Without one** — `project_id` is required and the text appends to that
   Project's `inbox` note, created on first use in the Project's notes folder.
   The inbox is resolved by `project_role = 'inbox'`, never by title, so renaming
-  it does not silently start a second one.
+  it does not silently start a second one; a transaction-level advisory lock
+  on the Project serializes concurrent first captures, which otherwise each
+  create an inbox and displace the other's role.
 
 Neither always-append nor always-create is right on its own: one inbox would
 bury ten papers' annotations together, and a note per thought turns the tree
@@ -408,7 +417,10 @@ block the MVP persistence/API slice.
 ## Proposal Types
 
 - `knowledge_create` creates an active KnowledgeItem.
-- `knowledge_update` creates a new version, not an in-place overwrite.
+- `knowledge_update` creates a new version, not an in-place overwrite. The
+  applier locks the target item row (`FOR UPDATE`), so two accepted updates of
+  one item cannot both read it active and leave two active heads; the second
+  reads the first's supersession and is refused (422).
 - `knowledge_archive` archives an item.
 - `object_relation_create` creates a relation only within the same space.
 - `object_relation_delete` removes or archives a relation.
@@ -743,7 +755,11 @@ One read and one write check, and both are the module's own.
   only at `full` (`bodyMatchSql`). A search that matched a withheld body handed
   it back a character at a time.
 - **Purge:** `purgeDeletedNotes` deletes only notes its caller could have
-  deleted themselves. It used to be Space-wide. In the same transaction it
+  deleted themselves. It used to be Space-wide. The candidate query, oldest
+  deletion first, prefilters on the same rule — owner or `space_shared`, and
+  Project write authority for a Project-bound note — because a batch of 500
+  refusals is not "the next call takes the rest": the refused notes fill the
+  next batch too and the caller's own never come up. In the same transaction it
   deletes `object_relations` with a purged note as an endpoint and clears
   `source_object_id` on edges that only cite one, since those foreign keys have
   no `ON DELETE` and one surviving edge would fail every later purge.

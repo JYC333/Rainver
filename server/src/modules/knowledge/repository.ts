@@ -1172,6 +1172,28 @@ export class PgKnowledgeRepository {
     return noteCollectionOut(result.rows[0]!);
   }
 
+  /**
+   * Whether `candidateId` sits at or below `ancestorId`, walking up from the
+   * candidate. Bounded, because a tree already in a cycle has no root to reach.
+   */
+  private async isDescendantNoteCollection(spaceId: string, candidateId: string, ancestorId: string): Promise<boolean> {
+    const result = await this.db.query<{ found: boolean }>(
+      `WITH RECURSIVE ancestry AS (
+         SELECT id, parent_id, 1 AS depth
+           FROM note_collections
+          WHERE id = $2 AND space_id = $1
+         UNION ALL
+         SELECT parent.id, parent.parent_id, ancestry.depth + 1
+           FROM note_collections parent
+           JOIN ancestry ON parent.id = ancestry.parent_id
+          WHERE parent.space_id = $1 AND ancestry.depth < 64
+       )
+       SELECT EXISTS (SELECT 1 FROM ancestry WHERE id = $3) AS found`,
+      [spaceId, candidateId, ancestorId],
+    );
+    return result.rows[0]?.found === true;
+  }
+
   async updateNoteCollection(
     identity: SpaceUserIdentity,
     collectionId: string,
@@ -1198,6 +1220,11 @@ export class PgKnowledgeRepository {
       : current.parent_id;
     if (parentId === collectionId) throw new HttpError(422, "parent_id cannot reference the same collection");
     if (parentId) await this.requireNoteCollection(identity, parentId);
+    // Nothing in the database stops a cycle, and a folder in one has no path
+    // to the root: every note below it disappears from the tree.
+    if (parentId && await this.isDescendantNoteCollection(identity.spaceId, parentId, collectionId)) {
+      throw new HttpError(422, "parent_id cannot reference a descendant of the collection");
+    }
     if (parentId !== current.parent_id) {
       const nextProjectId = current.project_id
         ?? (parentId ? await projectOwningCollection(this.db, identity.spaceId, parentId) : null);
@@ -1478,6 +1505,13 @@ export class PgKnowledgeRepository {
     const projectId = requiredString(body.project_id, "project_id");
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const noteId = await withNoteWrites(this.db, async (scope) => {
+      // Two first captures for one Project both find no inbox and both create
+      // one; assigning the role then displaces the other's. Serialize on the
+      // Project, as the object-targeted jot does on its target.
+      await scope.db.query(
+        `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+        [`note-jot-inbox:${identity.spaceId}:${projectId}`],
+      );
       const existing = await scope.db.query<{ object_id: string }>(
         `SELECT n.object_id
            FROM notes n
@@ -1761,6 +1795,35 @@ export class PgKnowledgeRepository {
           -- wastebasket does not make this route cost one round trip per note
           -- another member deleted, until it can no longer finish at all.
           AND (visibility = 'space_shared' OR owner_user_id = $3)
+          -- The Project half of the same rule. A batch of refusals is not
+          -- "the next call takes the rest": the refused notes stay, fill the
+          -- next batch too, and the caller's own notes never come up.
+          AND (primary_project_id IS NULL OR EXISTS (
+            SELECT 1
+              FROM projects project
+             WHERE project.id = space_objects.primary_project_id
+               AND project.space_id = space_objects.space_id
+               AND project.deleted_at IS NULL
+               AND (
+                 project.owner_user_id = $3
+                 OR EXISTS (
+                   SELECT 1 FROM space_memberships membership
+                    WHERE membership.space_id = space_objects.space_id
+                      AND membership.user_id = $3
+                      AND membership.status = 'active'
+                      AND membership.role IN ('owner', 'admin')
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM project_members project_member
+                    WHERE project_member.space_id = space_objects.space_id
+                      AND project_member.project_id = project.id
+                      AND project_member.user_id = $3
+                      AND project_member.status = 'active'
+                      AND project_member.role IN ('owner', 'member')
+                 )
+               )
+          ))
+        ORDER BY deleted_at ASC
         LIMIT ${NOTE_PURGE_BATCH}`,
       [identity.spaceId, String(NOTE_PURGE_RETENTION_DAYS), identity.userId],
     );

@@ -109,6 +109,31 @@ describe("PgKnowledgeRepository note collections (real Postgres)", () => {
       .resolves.toMatchObject({ id: childId, parent_id: parentId });
   });
 
+  it("refuses moving a folder under its own descendant", async () => {
+    if (!db.available) return;
+    const identity = { spaceId: SPACE, userId: USER };
+    const repository = new PgKnowledgeRepository(db.pool);
+    const now = new Date().toISOString();
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    const grandchildId = randomUUID();
+    for (const [id, parent, name] of [[parentId, null, "Parent"], [childId, parentId, "Child"], [grandchildId, childId, "Grandchild"]] as const) {
+      await db.pool.query(
+        `INSERT INTO note_collections (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'normal',0,false,false,$5,$5)`,
+        [id, SPACE, parent, name, now],
+      );
+    }
+
+    // Nothing in the database stops a cycle, and a folder in one has no path
+    // to the root: every note below it disappears from the tree.
+    await expect(repository.updateNoteCollection(identity, parentId, { parent_id: grandchildId }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    expect((await db.pool.query<{ parent_id: string | null }>(
+      `SELECT parent_id FROM note_collections WHERE id = $1`, [parentId],
+    )).rows[0]?.parent_id).toBeNull();
+  });
+
   it("atomically reorders ordinary folders while retaining protected folder parents", async () => {
     if (!db.available) return;
     const identity = { spaceId: SPACE, userId: USER };

@@ -224,11 +224,11 @@ export async function runRelationDiscoveryScan(
   let capReached = false;
   const seenRelationPairs = new Set<string>();
 
-  for (const source of sources) {
+  for (const [sourceIndex, source] of sources.entries()) {
     if (capReached) break;
     sourcesScanned += 1;
     const links = extractRelationLinks(source.text);
-    for (const link of links) {
+    for (const [linkIndex, link] of links.entries()) {
       // Count only the links actually examined, so links_extracted stays
       // consistent when the candidate cap stops the scan mid-source.
       linksExtracted += 1;
@@ -254,9 +254,11 @@ export async function runRelationDiscoveryScan(
         if (name) candidates.push(itemCandidate(source, name, link.target));
       }
       // Truncation means the cap stopped the scan before all links were
-      // examined — not merely that the candidate count equals the cap.
+      // examined — not merely that the candidate count equals the cap. So it
+      // is asked: is there a link, here or in a later source, left unread?
       if (candidates.length >= input.request.max_candidates) {
-        capReached = true;
+        capReached = linkIndex < links.length - 1
+          || sources.slice(sourceIndex + 1).some((rest) => extractRelationLinks(rest.text).length > 0);
         break;
       }
     }

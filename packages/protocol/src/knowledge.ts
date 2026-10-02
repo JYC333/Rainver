@@ -174,7 +174,8 @@ export const ClaimSummaryOutSchema = z
     claim_kind: z.string(),
     /** Null when the reader holds summary access only: the body is withheld. */
     claim_text: z.string().nullable(),
-    normalized_claim_hash: z.string(),
+    /** Withheld with `claim_text`: an unsalted hash would confirm a guess at it. */
+    normalized_claim_hash: z.string().nullable(),
     confidence: ConfidenceSchema,
     confidence_method: z.string(),
     resolution_state: z.string(),
