@@ -352,16 +352,25 @@ export function createManagedSubscriptionLoginSession(
       if (prompt.type !== "manual_code" && prompt.type !== "text") {
         throw new Error(`Unsupported managed OAuth prompt '${prompt.type}'`);
       }
+      // An abort that fired before this prompt existed fires no event for it:
+      // the browser closes the login stream while the library is still minting
+      // PKCE and opening its callback port. Waiting here would hold the login
+      // session key and that port until a restart.
+      if (controller.signal.aborted || prompt.signal?.aborted) {
+        throw new Error("Login cancelled");
+      }
       emit({ type: "prompt", promptType: prompt.type, message: prompt.message, placeholder: prompt.placeholder });
+      const abort = () => pendingReject?.(new Error("Login cancelled"));
       return new Promise<string>((resolve, reject) => {
         pending = resolve;
         pendingReject = reject;
-        const abort = () => reject(new Error("Login cancelled"));
         controller.signal.addEventListener("abort", abort, { once: true });
         prompt.signal?.addEventListener("abort", abort, { once: true });
       }).finally(() => {
         pending = null;
         pendingReject = null;
+        controller.signal.removeEventListener("abort", abort);
+        prompt.signal?.removeEventListener("abort", abort);
       });
     },
   };

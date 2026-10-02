@@ -1745,7 +1745,17 @@ async function embedOnce(
         embeddings?: { float?: number[][] } | number[][];
         meta?: Record<string, unknown>;
       };
-      vectors.push(...cohereFloatEmbeddings(data.embeddings));
+      const batchVectors = cohereFloatEmbeddings(data.embeddings);
+      // Results are matched to inputs by position across every batch. A batch
+      // short by one — a vector omitted or non-finite — would shift every later
+      // vector onto the neighbouring chunk with the right dimensions.
+      if (batchVectors.length !== batch.length) {
+        throw new ProviderInvocationError(
+          502,
+          `provider_type 'cohere' returned ${batchVectors.length} embeddings for ${batch.length} inputs`,
+        );
+      }
+      vectors.push(...batchVectors);
       usage = mergeUsage(usage, data.meta);
     }
     return { vectors, model: resolvedModel, usage };

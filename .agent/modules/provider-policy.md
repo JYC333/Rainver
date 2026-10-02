@@ -21,7 +21,10 @@ tasks `retrieval_embedding`, `retrieval_rerank`, and
 users edit these policies, while invocation still resolves credentials through
 the provider command store and pool/fallback path. Retrieval embedding dimension
 is a normalized space setting; provider adapters map it to request parameters
-where supported and validate the returned vector length.
+where supported and validate the returned vector length. Vectors are matched
+to inputs by position, so a batched adapter (Cohere) also refuses a batch that
+returns fewer vectors than it was sent rather than shifting every later vector
+onto the neighbouring chunk.
 
 Retrieval task policies are capability-filtered. `retrieval_embedding` accepts
 embedding-capable providers (OpenAI, OpenRouter, OpenAI-compatible endpoints,

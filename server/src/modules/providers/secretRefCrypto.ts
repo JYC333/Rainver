@@ -121,7 +121,16 @@ export async function loadOrCreateModelProviderApiKeyMasterKey(
 
   const key = randomBytes(MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES);
   await mkdir(join(rainverHome, "secrets"), { recursive: true });
-  await writeFile(keyPath, key, { mode: 0o600 });
+  try {
+    // Exclusive: two first writers (two credentials saved at once on a fresh
+    // instance) must end with one key. A plain write let the second overwrite
+    // the first's key after the first had already encrypted with it, leaving
+    // that ciphertext undecryptable for good. The loser reads the winner's.
+    await writeFile(keyPath, key, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if ((error as { code?: string }).code !== "EEXIST") throw error;
+    return loadOrCreateModelProviderApiKeyMasterKey(rainverHome);
+  }
   await chmod(keyPath, 0o600);
   return key;
 }

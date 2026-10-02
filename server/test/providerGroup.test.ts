@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ServerConfig } from "../src/config.js";
+import { createProviderFromPreset } from "../src/modules/providers/commands/fromPreset.js";
 import { providerSupportsTask, resolveProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import { effectiveProviderDefault, isProviderEligibleForUser, providerCredentialEligibilitySql } from "../src/modules/providers/eligibility.js";
 import { piCatalogForVendor, piCatalogVendorIds, piStructuredToolChoice } from "../src/modules/providers/invocation/piAiChat.js";
@@ -193,6 +194,23 @@ describe("providerCommandStoreDb", () => {
     );
     return rows.rows.map((row) => row.provider_id);
   }
+
+  it("rejects an invalid embedding dimension before creating the provider", async () => {
+    if (!db.available) return;
+    // Validation after the first write used to leave a disabled provider and
+    // its credential behind, with the Space default cleared and nothing in
+    // its place.
+    const config = { databaseUrl: db.connectionUri, rainverHome } as ServerConfig;
+    await expect(createProviderFromPreset(config, store(), SPACE, USER, {
+      preset_id: "cohere_embedding",
+      api_key: "sk-test",
+      embedding_dimensions: 999,
+      is_default: true,
+    } as never)).rejects.toThrow(/embedding_dimensions/);
+
+    const rows = await db.pool.query(`SELECT 1 FROM model_providers WHERE space_id = $1 AND provider_type = 'cohere'`, [SPACE]);
+    expect(rows.rowCount).toBe(0);
+  });
 
   it("keeps the Space default provider when creating a new default fails", async () => {
     if (!db.available) return;

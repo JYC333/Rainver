@@ -32,6 +32,17 @@ describe("managed subscription OAuth interaction", () => {
     expect(session.submit("late-code")).toBe(false);
   });
 
+  it("rejects a prompt issued after the session was cancelled instead of hanging", async () => {
+    // The browser closes the login stream while the library is still minting
+    // PKCE and opening its callback port; the abort fired before anyone was
+    // listening, so a prompt that waits for it never settles, and the login
+    // session key and callback port stay taken until a restart.
+    const session = createManagedSubscriptionLoginSession("anthropic", () => {});
+    session.cancel();
+    await expect(session.interaction.prompt({ type: "manual_code", message: "Paste redirect URL" }))
+      .rejects.toThrow("Login cancelled");
+  });
+
   it("rejects unsupported subscription provider types", () => {
     expect(() => parseManagedSubscriptionType("github_copilot")).toThrow(/anthropic.*openai_codex/i);
   });

@@ -1,5 +1,8 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { decryptModelProviderApiKeySecretRefV1, decryptModelProviderOAuthSecretRefV1, encryptModelProviderOAuthSecretRefV1, MODEL_PROVIDER_API_KEY_AUTH_TAG_BYTES, MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES, MODEL_PROVIDER_API_KEY_NONCE_BYTES, MODEL_PROVIDER_API_KEY_SECRET_REF_V1_PREFIX, MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX, parseModelProviderApiKeySecretRefV1, SecretRefCompatibilityError } from "../src/modules/providers/secretRefCrypto.js";
+import { decryptModelProviderApiKeySecretRefV1, decryptModelProviderOAuthSecretRefV1, encryptModelProviderOAuthSecretRefV1, loadOrCreateModelProviderApiKeyMasterKey, MODEL_PROVIDER_API_KEY_AUTH_TAG_BYTES, MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES, MODEL_PROVIDER_API_KEY_NONCE_BYTES, MODEL_PROVIDER_API_KEY_SECRET_REF_V1_PREFIX, MODEL_PROVIDER_OAUTH_SECRET_REF_V1_PREFIX, parseModelProviderApiKeySecretRefV1, SecretRefCompatibilityError } from "../src/modules/providers/secretRefCrypto.js";
 
 const FIXTURE_MASTER_KEY = Buffer.from(
   "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
@@ -35,6 +38,26 @@ describe("model-provider secret_ref crypto compatibility", () => {
     const tampered = FIXTURE_SECRET_REF.replace("oVGL", "oVGM");
     expect(() => decryptModelProviderApiKeySecretRefV1(tampered, FIXTURE_MASTER_KEY))
       .toThrow(SecretRefCompatibilityError);
+  });
+
+  it("creates one master key however many first writers race to create it", async () => {
+    // On a fresh instance two credentials saved at once both find no key file.
+    // A second writer overwriting the first's key would leave the first's
+    // ciphertext undecryptable for good.
+    const home = await mkdtemp(join(tmpdir(), "rainver-master-key-"));
+    try {
+      const [a, b, c] = await Promise.all([
+        loadOrCreateModelProviderApiKeyMasterKey(home),
+        loadOrCreateModelProviderApiKeyMasterKey(home),
+        loadOrCreateModelProviderApiKeyMasterKey(home),
+      ]);
+      expect(a.length).toBe(MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES);
+      expect(b.equals(a)).toBe(true);
+      expect(c.equals(a)).toBe(true);
+      expect((await loadOrCreateModelProviderApiKeyMasterKey(home)).equals(a)).toBe(true);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it("round-trips a managed OAuth credential in a distinct encrypted envelope", () => {

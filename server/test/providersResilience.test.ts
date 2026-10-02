@@ -190,6 +190,24 @@ const CHAT = {
 };
 
 describe("provider invocation resilience", () => {
+  it("refuses a Cohere embedding batch that returns fewer vectors than it was sent", async () => {
+    // Results are matched to inputs by position. A batch short by one would
+    // shift every later vector onto the neighbouring chunk, with the right
+    // dimensions and no error anywhere.
+    const store = makeStore({
+      p1: target("p1", [{ member: "m1", key: "k1" }], { provider_type: "cohere", base_url: "https://api.cohere.test" }),
+    }, []);
+    scriptedHttp([{ status: 200, body: { embeddings: { float: [[0.1, 0.2]] }, meta: {} } }]);
+
+    await expect(completeProviderEmbedding(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      provider_id: "p1",
+      model: "embed-v4.0",
+      inputs: ["alpha", "beta"],
+      metering: { subject_user_id: "user-1" },
+    })).rejects.toThrow(/1 embeddings? for 2 inputs/);
+  });
+
   it("binds formal ProviderTask Runs to each physical attempt and usage observation", async () => {
     const usage: UsageObservation[] = [];
     const lifecycleEvents: string[] = [];

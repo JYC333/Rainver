@@ -32,6 +32,10 @@ interpreted handler code, and it is never pooled/rotated the way ModelProvider k
 - **Cipher:** AES-256-GCM (`server/src/modules/providers/secretRefCrypto.ts`). Plaintext → `(ciphertext, nonce)`, both base64.
 - **Master key:** a 32-byte random key in a file on disk at
   `RAINVER_HOME/secrets/provider_keys.key` (auto-generated on first use, `chmod 0600`).
+  Creation is exclusive (`wx`): two first writers — two credentials saved at
+  once on a fresh instance — end with one key, the loser re-reading the
+  winner's, because a second write overwriting the first key would leave
+  what the first had already encrypted undecryptable for good.
   **The master key is NOT in the database.** A database-only compromise does not reveal keys —
   the on-disk key file is also required.
 
