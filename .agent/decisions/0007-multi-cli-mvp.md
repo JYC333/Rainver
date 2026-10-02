@@ -40,7 +40,7 @@ any one vendor CLI. Every adapter is independently disableable.
 | Layer | What it is | Examples |
 |---|---|---|
 | Agent (product) | Configured actor with policy, memory, delegation rules | a Project's coding agent |
-| Runtime Adapter | Execution backend selected for a Run | `claude_code`, `codex_cli`, `opencode`, `model_api`, `ts_agent_host` |
+| Runtime Adapter | Execution backend selected for a Run | `claude_code`, `codex_cli`, `opencode`, `gemini_cli` |
 | Model Provider | LLM API credential the server holds | Anthropic, OpenAI, Google |
 
 `RuntimeAdapterSpec` (code) is the source of truth for how an adapter
@@ -66,18 +66,19 @@ remote execution hosts ([ADR 0016](0016-control-plane-execution-hosts.md)).
 
 ### 4. Model selection is explicit per Run
 
-`runs.model_selection_mode`:
+The Run's `AgentRuntimeProfile` sets its `backend_mode`
+([ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)):
 
 | Mode | Meaning |
 |---|---|
-| `cli_default` (default) | the CLI uses its own configured model and account |
-| `cli_model_override` | Rainver forwards a model choice, only where the spec supports it |
-| `rainver_provider` | the Run resolves a configured ModelProvider |
+| `runtime_native` | the CLI uses its own configured model and account |
+| `model_provider` | the Run resolves a Space-selectable ModelProvider and model |
 
-`rainver_provider` works in both directions: managed adapters call the
-provider in process, and a local CLI receives a run-scoped provider binding
+Under `model_provider` the local CLI receives a run-scoped provider binding
 carrying only the provider-proxy URL and a short-lived lease token. The
-upstream key never leaves the server proxy boundary (ADR 0008).
+upstream key never leaves the server proxy boundary (ADR 0008). The legacy
+`runs.model_selection_mode` column keeps its `cli_default` default and is not
+read by dispatch.
 
 ### 5. Usage is accounted exactly where it can be, and labelled where it cannot
 
