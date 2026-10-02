@@ -20,7 +20,7 @@ operate on the `.agent` context tree.
 
 **Domain decisions:** domain-specific matching is handled in the server policy services using the bounded policy row shape.
 
-**PolicyEngine** evaluates stateless built-in rules in priority order. When no rule matches, it uses the action registry's `default_decision` — not a permissive ALLOW. Unknown actions always fail closed with DENY (`audit_code="unknown_policy_action"`). Domain-specific persisted-policy enforcement lives in `server/src/modules/policy/`.
+**PolicyEngine** (`engineCheck` in `server/src/modules/policy/decisionCore.ts`) evaluates stateless built-in rules in priority order. When no rule matches, it uses the action registry's `default_decision` — not a permissive ALLOW. Unknown actions always fail closed with DENY (`audit_code="unknown_policy_action"`). Domain-specific persisted-policy enforcement lives in `server/src/modules/policy/`.
 
 **PolicyEffectCatalog** (documented with `packages/protocol/src/policy.ts`) is the creation contract for active
 persisted `Policy` rows from `policy_change` proposals. It is not a full DSL:
@@ -33,7 +33,7 @@ vocabulary only and fail closed until wired.
 - **`enforce(req)`** — direct-action path. Returns blocked on DENY/REQUIRE_APPROVAL and writes durable audit on ALLOW when required. Used by runtime, context, Project Folder read/patch, artifact, proposal creation, agent config proposal creation, and automation sensitive gates.
 - **`enforceProposalApply(...)`** — proposal application path. Used by `PgProposalApplyService`.
 
-Direct use of `PolicyEngine` or hard-invariant helpers outside documented non-mutating simulations is a boundary violation detected by `server/test/boundaries.test.ts`.
+Direct use of `PolicyEngine` (`engineCheck`) or the hard-invariant helper (`checkHardInvariants`) outside documented non-mutating simulations is a boundary violation. No automated test detects it; it is held by review.
 
 ### System actions and agent tools
 
@@ -64,7 +64,7 @@ not agent-visible.
 
 **Non-mutating simulation exceptions (no PolicyDecisionRecord):** preflight simulation may call pure decision helpers only — it must not persist `PolicyDecisionRecord` and must not perform the action. Current simulation call sites live in runs and automations services.
 
-**Hard invariant guard** (`server/src/modules/policy/decisionCore.ts`) runs before PolicyEngine and enforces non-overridable security/privacy invariants.
+**Hard invariant guard** (`checkHardInvariants` in `server/src/modules/policy/decisionCore.ts`) runs before PolicyEngine and enforces non-overridable security/privacy invariants.
 
 **PolicyDecisionRecord** is an append-only durable audit table for sensitive policy decisions. Created for: audit_required actions, DENY, REQUIRE_APPROVAL, and forced records.
 
@@ -210,8 +210,8 @@ active `Policy` row. Unsupported and reserved domains do not create active rows.
 `PolicyGateway` is the **only enforcement** entry point for sensitive policy decisions.
 `PolicyEngine` is internal to the policy package — calling it directly is not
 enforcement and must not be used to authorize sensitive actions outside the policy
-package. Business services must not call `PolicyEngine` or `HardInvariantGuard`
-directly. The documented direct-call exceptions are non-mutating preflight
+package. Business services must not call `PolicyEngine` (`engineCheck`) or the
+hard invariant guard (`checkHardInvariants`) directly. The documented direct-call exceptions are non-mutating preflight
 simulations: they perform no action, mutate no state, and create no
 `PolicyDecisionRecord`.
 
@@ -219,47 +219,67 @@ simulations: they perform no action, mutate no state, and create no
 permission manifest that routes risk and enables unknown-action fail-closed behaviour.
 
 **Registry structure**: The registry has three lifecycle states, distinguished by `lifecycle_status`:
-- **WIRED_DIRECT** (29): `lifecycle_status=WIRED_DIRECT` — have a preferred `PolicyGateway.enforce()` or `enforceProposalApply()` call site.
-  Actions: `runtime.execute`, `runtime.use_credential`, `context.inject_memory`, `context.render_for_runtime`,
-  `project_folder.write_patch`, `project_folder.apply_patch`, `artifact.persist`, `proposal.create`, `proposal.apply`,
-  `agent.config_update`, `project_folder.read`, `runtime_skill.render`,
-  `automation.create`, `automation.update`, `automation.fire`,
-  `source.connection.manage`, `source.item_create`, `source.item_update`,
-  `evidence.create`, `evidence.update`, `evidence.link`,
-  `project.source.bind`, `context.select_evidence`,
-  `retrieval.search`, `retrieval.brief`, `memory.retrieval.search`,
-  `memory.retrieval.brief`, `project.summary.search`,
-  `project.summary.brief`.
-- **WIRED_VIA_PROPOSAL** (25): `lifecycle_status=WIRED_VIA_PROPOSAL` — enforced exclusively via the `proposal.apply`
+- **wired_direct** (74): `lifecycle_status=wired_direct` — have a preferred `PolicyGateway.enforce()` or `enforceProposalApply()` call site.
+  Actions: `authorization.request.create`, `runtime.execute`, `run.spawn_child`,
+  `runtime.use_credential`, `runtime_context_policy.change`, `work_context_setup.change`,
+  `context.inject_memory`, `context.render_for_runtime`, `project_folder.write_patch`,
+  `artifact.persist`, `proposal.create`, `proposal.apply`, `agent.config_update`,
+  `project_folder.read`, `input_resource.read`, `input_resource.search`,
+  `project_folder.apply_patch`, `runtime_skill.render`, `automation.create`, `automation.fire`,
+  `automation.update`, `source.connection.manage`, `source.item_create`, `source.item_update`,
+  `evidence.create`, `evidence.update`, `evidence.link`, `source.custom.create`,
+  `source.custom.generate`, `source.custom.test`, `source.custom.activate`, `source.custom.repair`,
+  `source.custom.rollback`, `source.custom.credential_create`, `source.recipe.create`,
+  `source.recipe.activate`, `source.recipe.dry_run`, `source.custom.settings_update`,
+  `project.source.bind`, `inquiry.thread.create`, `project.operation.manage`,
+  `research.acquisition.start`, `research.acquisition.cancel`, `retrieval.search`,
+  `retrieval.brief`, `memory.retrieval.search`, `memory.retrieval.brief`, `project.summary.search`,
+  `project.summary.brief`, `source.retrieval.search`, `source.retrieval.brief`,
+  `policy.action_grant.create`, `policy.action_grant.revoke`, `source.backfill.plan`,
+  `source.backfill.manage`, `task.plan.propose`, `project.brief.propose`, `task.list`,
+  `proposal.list`, `research.operation.list`, `memory.write`, `inquiry.advice.adopt`,
+  `inquiry.thread.list`, `inquiry.iteration.record`, `inquiry.knowledge.promote`, `task.create`,
+  `proposal.decide`, `task.report`, `task.handoff`, `task.stage.advance`, `artifact.declare`,
+  `task.complete`, `handoff.write`, `task.request_review`.
+- **wired_via_proposal** (29): `lifecycle_status=wired_via_proposal` — enforced exclusively via the `proposal.apply`
   gate (`PolicyGateway.enforceProposalApply()`).
-  Actions: `memory.create`, `memory.update`, `memory.archive`, `policy.change`,
-  `knowledge.create`, `knowledge.update`, `knowledge.archive`,
-  `knowledge.relation_create`, `knowledge.relation_delete`,
-  `claim.create`, `claim.update`, `claim.archive`, `claim.relation_create`,
-  `claim.relation_delete`, `object_relation.create`, `object_relation.delete`,
-  `memory_maintenance_packet`, `retrieval_maintenance_packet`,
-  `retrieval_diagnostics_packet`, `skill.import`, `skill.convert`,
-  `capability.enable`, `capability.disable`, `capability.update`,
-  `runtime_skill.binding_update`.
-- **RESERVED** (10): `lifecycle_status=RESERVED` — registered for vocabulary completeness and fail-closed
+  Actions: `memory.create`, `memory.update`, `memory.archive`, `policy.change`, `knowledge.create`,
+  `knowledge.update`, `knowledge.archive`, `claim.create`, `claim.update`, `claim.archive`,
+  `object_relation.create`, `object_relation.delete`, `object_profile.create`,
+  `object_profile.update`, `object_profile.deprecate`, `object_profile.archive`,
+  `claim_candidate_packet`, `retrieval_maintenance_packet`, `memory_maintenance_packet`,
+  `retrieval_diagnostics_packet`, `relation_discovery_packet`, `skill.import`, `skill.convert`,
+  `capability.enable`, `capability.disable`, `capability.update`, `runtime_skill.binding_update`,
+  `source.connection.activate`, `source.backfill.start`.
+- **reserved** (11): `lifecycle_status=reserved` — registered for vocabulary completeness and fail-closed
   defence-in-depth, but not wired to business code yet. `PolicyGateway` always denies reserved actions.
   `current_enforcement_point="not_implemented"` is a human-readable marker.
-  Actions: `context.use_personal_grant`, `artifact.export`,
-  `proposal.approve`, `memory.read_private`, `memory.promote_shared`, `runtime_skill.execute`,
-  `tool_binding.enable`, `evidence.export`, `deployment.propose`, `deployment.execute`.
+  Actions: `context.use_personal_grant`, `artifact.export`, `proposal.approve`,
+  `memory.read_private`, `memory.promote_shared`, `runtime_skill.execute`, `tool_binding.enable`,
+  `evidence.export`, `note.link.create`, `deployment.propose`, `deployment.execute`.
 
-**record_failure_mode** (`RecordFailureMode` in `packages/protocol/src/policy.ts`): Each action definition carries a typed `record_failure_mode` field:
-- `BEST_EFFORT` (default) — if `PolicyDecisionRecord` persistence fails, log a warning and continue.
-- `FAIL_CLOSED` — preferred enforcement raises `PolicyAuditPersistError` if durable persistence fails; the sensitive action must not proceed.
-  Actions with `FAIL_CLOSED`: `runtime.use_credential`, `project_folder.write_patch`, `project_folder.apply_patch`, `artifact.persist`, `proposal.apply`,
-  `policy.change`, `skill.import`, `skill.convert`, `capability.enable`, `capability.disable`,
-  `capability.update`, `runtime_skill.binding_update`, `automation.create`, `automation.fire`,
-  `automation.update`, `retrieval.search`, `retrieval.brief`, `memory.retrieval.search`, `memory.retrieval.brief`,
-  `project.summary.search`, `project.summary.brief`.
-  Dynamic escalation to `FAIL_CLOSED` also occurs for:
-  - `trigger_origin="automation"` + `audit_required=True` on the action — **regardless of ALLOW/DENY/REQUIRE_APPROVAL**.
+**record_failure_mode** (`PolicyRecordFailureModeEnum` in `packages/protocol/src/policy.ts`): Each action definition carries a typed `record_failure_mode` field:
+- `best_effort` (default) — if `PolicyDecisionRecord` persistence fails, log a warning and continue.
+- `fail_closed` — preferred enforcement raises `PolicyAuditPersistError` if durable persistence fails; the sensitive action must not proceed.
+  Actions with `fail_closed`: `authorization.request.create`, `run.spawn_child`, `runtime.use_credential`,
+  `runtime_context_policy.change`, `work_context_setup.change`, `project_folder.write_patch`,
+  `artifact.persist`, `proposal.apply`, `policy.change`, `skill.import`, `skill.convert`,
+  `capability.enable`, `capability.disable`, `capability.update`, `runtime_skill.binding_update`,
+  `input_resource.read`, `input_resource.search`, `project_folder.apply_patch`, `automation.create`,
+  `automation.fire`, `automation.update`, `inquiry.thread.create`, `research.acquisition.start`,
+  `research.acquisition.cancel`, `retrieval.search`, `retrieval.brief`, `memory.retrieval.search`,
+  `memory.retrieval.brief`, `project.summary.search`, `project.summary.brief`,
+  `source.retrieval.search`, `source.retrieval.brief`, `policy.action_grant.create`,
+  `source.connection.activate`, `policy.action_grant.revoke`, `source.backfill.plan`,
+  `source.backfill.start`, `source.backfill.manage`, `task.plan.propose`, `project.brief.propose`,
+  `memory.write`, `inquiry.advice.adopt`, `inquiry.iteration.record`, `inquiry.knowledge.promote`,
+  `task.create`, `proposal.decide`, `task.report`, `task.handoff`, `task.stage.advance`,
+  `artifact.declare`, `task.complete`, `handoff.write`, `task.request_review`.
+  Dynamic escalation to `fail_closed` also occurs for:
+  - `force_record=True` on the request.
+  - `trigger_origin` `automation` or `autonomous` + `audit_required=True` on the action — **regardless of ALLOW/DENY/REQUIRE_APPROVAL**.
   - CRITICAL risk level + `audit_required=True` on the action — **regardless of ALLOW/DENY/REQUIRE_APPROVAL**.
-  - `trigger_origin="automation"` + non-ALLOW on non-audit-required actions.
+  - `trigger_origin` `automation` or `autonomous` + non-ALLOW on non-audit-required actions.
   - CRITICAL risk level + non-ALLOW on non-audit-required actions.
 
 Actions completely absent from the registry (`agent.delegate`)
@@ -296,6 +316,7 @@ fail closed via `unknown_policy_action` DENY if ever passed to `PolicyEngine` or
 | `retrieval.search` / `retrieval.brief` | `server/src/modules/retrieval/tool/service.ts` | Uses `enforce()` before managed-run Knowledge search/brief execution. Domain must be enabled, an instructed-user viewer must exist, and audit is pointer-only. **fail_closed**. |
 | `memory.retrieval.search` / `memory.retrieval.brief` | `server/src/modules/retrieval/tool/service.ts`, `server/src/modules/runs/managedRetrievalTools.ts` | Uses `enforce()` before explicitly opted-in managed-run Memory retrieval. Disabled-domain calls are denied/audited before returning a model-visible domain-not-enabled tool result. **fail_closed**. |
 | `project.summary.search` / `project.summary.brief` | `server/src/modules/retrieval/tool/service.ts`, `server/src/modules/runs/managedRetrievalTools.ts` | Uses `enforce()` before explicitly opted-in Project public-summary retrieval. Disabled-domain calls are denied/audited before returning a model-visible domain-not-enabled tool result. **fail_closed**. |
+| `memory.write` | `server/src/modules/systemActions/systemActionDispatcher.ts` | An Agent's own bounded write (ADR 0003 §2). In `ORIGIN_GATED_PROJECT_WRITES`: allowed from a person's turn, `require_approval` from an unattended origin — **except** a persona write on an `agent`-scope entry, the single exception ADR 0003 §5 and ADR 0017 §1–§2 name, whose origin test runs the other way round. The exemption is scoped to that one write, never to the action: `memoryPolicyContext` resolves it server-side from the input for a create and from the target row for a revision, and `ruleUnattendedProjectWrite` reads only that flag. What the exemption grants is passage past the *origin* boundary; `decidePersonaWrite` then applies ADR 0003 §5's table, so an unattended Run whose responsible person is not the Agent's owner leaves a proposal for the owner rather than applying. Reach changes become proposals in `memoryDirectWriteExecutors.ts`. **fail_closed**. |
 
 ### Non-PolicyGateway revalidation guards
 
@@ -335,7 +356,6 @@ is the actual fail_closed audit and approval boundary for all of these actions.
 
 | Action | Protected via | Notes |
 |--------|--------------|-------|
-| `memory.write` | `systemActionDispatcher` | An Agent's own bounded write (ADR 0003 §2). In `ORIGIN_GATED_PROJECT_WRITES`: allowed from a person's turn, `require_approval` from an unattended origin — **except** a persona write on an `agent`-scope entry, the single exception ADR 0003 §5 and ADR 0017 §1–§2 name, whose origin test runs the other way round. The exemption is scoped to that one write, never to the action: `memoryPolicyContext` resolves it server-side from the input for a create and from the target row for a revision, and `ruleUnattendedProjectWrite` reads only that flag. What the exemption grants is passage past the *origin* boundary; `decidePersonaWrite` then applies ADR 0003 §5's table, so an unattended Run whose responsible person is not the Agent's owner leaves a proposal for the owner rather than applying. Reach changes become proposals in `memoryDirectWriteExecutors.ts`. |
 | `memory.create` | `proposal.apply` gate | The proposal route. No direct PolicyGateway call site. |
 | `memory.update` | `proposal.apply` gate | Memory updates require proposal approval. No direct PolicyGateway call site. |
 | `memory.archive` | `proposal.apply` gate | Memory archive requires proposal approval. No direct PolicyGateway call site. |
