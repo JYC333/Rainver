@@ -80,7 +80,7 @@ function EmptyResultsFileHarness() {
   />
 }
 
-function RoutingHarness() {
+function RoutingHarness({ restore = null }: { restore?: { token: number; text: string } | null }) {
   const [value, setValue] = useState(emptyRoomMessageComposerValue())
   return <>
     <RoomMessageComposer
@@ -90,6 +90,7 @@ function RoutingHarness() {
       members={[{ agent_id: 'agent-1', status: 'active' }, { agent_id: 'agent-2', status: 'active' }]}
       disabled={false}
       resetToken={0}
+      restore={restore}
       onSubmit={() => undefined}
     />
     <output data-testid="room-routing">{JSON.stringify(value)}</output>
@@ -216,5 +217,17 @@ describe('RoomMessageComposer keyboard behavior', () => {
         { recipient_agent_ids: ['agent-2'], content: 'review it' },
       ],
     }))
+  })
+
+  it('puts a saved draft back with its Agent mentions still addressed', async () => {
+    render(<RoutingHarness restore={{ token: 1, text: 'Context first @Builder fix the build\nthen @Critic review it' }} />)
+
+    await waitFor(() => expect(JSON.parse(screen.getByTestId('room-routing').textContent ?? '{}')).toMatchObject({
+      text: 'Context first @Builder fix the build\nthen @Critic review it',
+      mentionIds: ['agent-1', 'agent-2'],
+    }))
+    const editor = document.querySelector('.ProseMirror') as HTMLElement
+    expect(editor).toHaveTextContent('Context first @Builder fix the build')
+    expect(editor.querySelectorAll('[data-agent-id]')).toHaveLength(2)
   })
 })

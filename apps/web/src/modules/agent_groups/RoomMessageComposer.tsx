@@ -10,6 +10,7 @@ import {
   CONVERSATION_MAX_FILE_SNAPSHOT_BYTES,
   agentMentionSegments,
   normalizeMentionText,
+  parseAgentMentions,
   renderMentionTokens,
   type AgentMentionToken,
 } from '@rainver/protocol'
@@ -151,6 +152,7 @@ export function RoomMessageComposer({
   members,
   disabled,
   resetToken,
+  restore,
   onSubmit,
   embedded = false,
   projectId,
@@ -166,6 +168,8 @@ export function RoomMessageComposer({
   members: Array<{ agent_id: string; status: string }>
   disabled: boolean
   resetToken: number
+  /** A saved draft to put back in the editor; a new `token` applies it. */
+  restore?: { token: number; text: string } | null
   onSubmit: () => void
   /** The shared conversation frame owns the border and focus treatment. */
   embedded?: boolean
@@ -366,6 +370,20 @@ export function RoomMessageComposer({
     // resetToken intentionally drives clearing the editor after a successful send.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, resetToken])
+
+  // A restored draft is text; `@Name` of a roster Agent comes back as a
+  // mention, so the message still reaches the Agent it was addressed to. Set
+  // without an update event, which would drop the draft's file references
+  // before the effect below draws them.
+  useEffect(() => {
+    if (!editor || !restore) return
+    const roster = mentionableAgents.map(agent => ({ agent_id: agent.id, label: agent.name }))
+    editor.commands.setContent(docFromText(restore.text, roster), { emitUpdate: false })
+    setHasEditorContent(!editor.isEmpty)
+    onChange(serializeComposerValue(editor.getJSON()))
+    // Applied once per restore; a roster change must not overwrite later typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, restore?.token])
 
   useEffect(() => {
     if (!editor) return
@@ -623,6 +641,17 @@ function flattenFileTree(root: FileNode | null, source: ConversationInputFileSou
 async function digestHex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer)
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function docFromText(text: string, roster: Array<{ agent_id: string; label: string }>): JSONContent {
+  const paragraphs = text.split('\n').map(line => {
+    const content = parseAgentMentions(line, roster).tokens.flatMap((token): JSONContent[] => {
+      if (token.type === 'mention') return [{ type: 'agentMention', attrs: { id: token.id, label: token.label } }]
+      return token.text ? [{ type: 'text', text: token.text }] : []
+    })
+    return content.length ? { type: 'paragraph', content } : { type: 'paragraph' }
+  })
+  return { type: 'doc', content: paragraphs }
 }
 
 function emptyDoc(): JSONContent {

@@ -91,21 +91,38 @@ vi.mock('../../../api/client', async () => {
 
 // The editor itself is covered by `RoomMessageComposer.test.tsx`; jsdom cannot
 // type into TipTap, and without this nothing here could exercise a send.
-vi.mock('../RoomMessageComposer', () => ({
-  emptyRoomMessageComposerValue: () => ({ text: '', mentionIds: [], routingSegments: [] }),
-  // Reflects `value` as well as reporting changes: a seeded draft arrives
-  // through that prop, so a write-only stand-in could not see one.
-  RoomMessageComposer: ({ value, onChange }: {
-    value: { text: string }
-    onChange: (value: { text: string; mentionIds: string[]; routingSegments: unknown[] }) => void
-  }) => (
-    <textarea
-      aria-label="Room message"
-      value={value.text}
-      onChange={event => onChange({ text: event.target.value, mentionIds: [], routingSegments: [] })}
-    />
-  ),
-}))
+vi.mock('../RoomMessageComposer', async () => {
+  const { useEffect, useRef } = await import('react')
+  return {
+    emptyRoomMessageComposerValue: () => ({ text: '', mentionIds: [], routingSegments: [] }),
+    // Reflects `value` as well as reporting changes: a seeded draft arrives
+    // through that prop, so a write-only stand-in could not see one. Clears on
+    // a new `resetToken` and fills from `restore`, as the editor does.
+    RoomMessageComposer: ({ value, onChange, resetToken, restore }: {
+      value: { text: string }
+      onChange: (value: { text: string; mentionIds: string[]; routingSegments: unknown[] }) => void
+      resetToken: number
+      restore?: { token: number; text: string } | null
+    }) => {
+      const firstReset = useRef(resetToken)
+      useEffect(() => {
+        if (resetToken !== firstReset.current) onChange({ text: '', mentionIds: [], routingSegments: [] })
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [resetToken])
+      useEffect(() => {
+        if (restore) onChange({ text: restore.text, mentionIds: [], routingSegments: [] })
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [restore?.token])
+      return (
+        <textarea
+          aria-label="Room message"
+          value={value.text}
+          onChange={event => onChange({ text: event.target.value, mentionIds: [], routingSegments: [] })}
+        />
+      )
+    },
+  }
+})
 vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: mockedSpaceContext.activeSpaceId, userId: mockedSpaceContext.userId }),
 }))
@@ -563,6 +580,19 @@ describe('Rooms page', () => {
     expect(screen.getByRole('heading', { level: 3, name: 'New conversation' })).toBeInTheDocument()
     // Nothing to read, so nothing was asked for.
     expect(roomsApi.messages).not.toHaveBeenCalled()
+  })
+
+  it('puts an unsent message back when the conversation is opened again', async () => {
+    const destination = 'room:room-1:session-1'
+    sessionStorage.setItem(`rainver:conversation-draft:v1:${encodeURIComponent(destination)}`, JSON.stringify({
+      version: 1, destination, text: 'Unsent words', input_parts: [], saved_at: new Date().toISOString(),
+    }))
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    const composer = await screen.findByLabelText('Room message')
+
+    await waitFor(() => expect(composer).toHaveValue('Unsent words'))
+    for (let i = 0; i < 3; i += 1) await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+    expect(composer).toHaveValue('Unsent words')
   })
 
   it('starts a separate thread by deselecting, and does not snap back to the newest', async () => {

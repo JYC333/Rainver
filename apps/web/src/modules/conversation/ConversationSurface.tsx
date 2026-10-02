@@ -220,6 +220,7 @@ export function ConversationSurface({
   const [inputParts, setInputParts] = useState<ConversationInputPart[]>([])
   const previousConversationId = useRef<string | null | undefined>(undefined)
   const [resetToken, setResetToken] = useState(0)
+  const [restoredDraft, setRestoredDraft] = useState<{ token: number; text: string } | null>(null)
   const [sending, setSending] = useState(false)
   const [loadedBackendCatalogs, setLoadedBackendCatalogs] = useState<Record<string, ConversationBackendCatalog>>({})
   const [sessionConfig, setSessionConfig] = useState<Record<string, SessionConfigSelection[]>>({})
@@ -304,7 +305,10 @@ export function ConversationSurface({
       if (cancelled) return
       setComposer(current => ({ ...current, text: draft.text }))
       setInputParts(validated.filter((part): part is ConversationInputPart => part !== null))
-      setResetToken(value => value + 1)
+      // Put back into the editor, not reset: the reset token is the
+      // after-send clear, and it emptied the restored text and attachments,
+      // which the next write then deleted from storage.
+      setRestoredDraft(current => ({ token: (current?.token ?? 0) + 1, text: draft.text }))
       draftReadyRef.current = draftDestination
     })()
     return () => { cancelled = true }
@@ -1217,6 +1221,7 @@ export function ConversationSurface({
             // must still let the user write and retain the message.
             disabled={sending}
             resetToken={resetToken}
+            restore={restoredDraft}
             onSubmit={() => void sendMessage()}
             projectId={detail?.room.project_id}
             projectFolderId={detail?.room.project_folder_id}
