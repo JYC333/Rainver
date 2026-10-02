@@ -724,23 +724,7 @@ export class PgProjectFolderRepository {
         mutation,
       });
     } catch (error) {
-      if (error instanceof DraftVersionConflictError) {
-        throw new HttpError(409, error.message, {
-          detail: error.message,
-          code: "draft_version_conflict",
-          current: error.current,
-        });
-      }
-      if (error instanceof DraftQuotaError) {
-        throw new HttpError(413, error.message, {
-          detail: error.message,
-          code: "draft_quota_exceeded",
-          used_bytes: error.usedBytes,
-          requested_bytes: error.requestedBytes,
-          limit_bytes: PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES,
-        });
-      }
-      throw error;
+      throw draftWriteError(error);
     }
   }
 
@@ -906,7 +890,11 @@ export class PgProjectFolderRepository {
     const location = await resolveLocationWithHost(this.db, folder.space_id, folder.id, revision.workspace_location_id);
     const current = await this.readCurrentFileForDraft(folder, identity.userId, location, revision.path);
     const content = revision.before_exists ? revision.before_content ?? "" : "";
-    return new PgProjectFileDraftRepository(this.db).upsert({
+    if (Buffer.byteLength(content, "utf8") > PROJECT_FILE_DRAFT_MAX_BYTES) {
+      throw new HttpError(422, "The revision is larger than a draft may be");
+    }
+    try {
+      return await new PgProjectFileDraftRepository(this.db).upsert({
       spaceId: folder.space_id,
       projectId,
       projectFolderId: folder.id,
@@ -914,6 +902,11 @@ export class PgProjectFolderRepository {
       ownerUserId: identity.userId,
       mutation: {
         targetKind: current.exists ? "existing" : "new",
+        // A person has one new-file draft per Location, whatever its path:
+        // restoring a deleted file into that slot must not overwrite the
+        // unsaved file they were writing there. Absent is the precondition,
+        // as `upsertDraft` requires of an unversioned request.
+        ...(current.exists ? {} : { expectedVersion: null }),
         relativePath: revision.path,
         baseExists: current.exists,
         baseSha256: current.file?.sha256 ?? null,
@@ -924,7 +917,10 @@ export class PgProjectFolderRepository {
         preserveBom: content.startsWith("\uFEFF"),
         lineEndingMode: lineEndingMode(content),
       },
-    });
+      });
+    } catch (error) {
+      throw draftWriteError(error);
+    }
   }
 
   async previewRevision(
@@ -1452,6 +1448,27 @@ function mapRemoteFolderWriteError(
       return new HttpError(502, message, { detail: message, code: "write_failed", host_name: hostName });
   }
   return new HttpError(502, message, { detail: message, code: "write_failed", host_name: hostName });
+}
+
+/** The draft store's refusals as the route answers them; anything else passes through. */
+function draftWriteError(error: unknown): unknown {
+  if (error instanceof DraftVersionConflictError) {
+    return new HttpError(409, error.message, {
+      detail: error.message,
+      code: "draft_version_conflict",
+      current: error.current,
+    });
+  }
+  if (error instanceof DraftQuotaError) {
+    return new HttpError(413, error.message, {
+      detail: error.message,
+      code: "draft_quota_exceeded",
+      used_bytes: error.usedBytes,
+      requested_bytes: error.requestedBytes,
+      limit_bytes: PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES,
+    });
+  }
+  return error;
 }
 
 function parseDraftMutation(body: Record<string, unknown>): ProjectFileDraftMutation {

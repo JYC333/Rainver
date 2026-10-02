@@ -615,6 +615,41 @@ describe("Project Folder database invariants", () => {
   /** A file that does not exist yet is how every new file starts. The local
    *  host reports that as `FolderReadError("not_found")`, which the save path
    *  turned into a 404 instead of "this draft creates the file". */
+  it("does not restore a deleted file over the unsaved new file the person is writing elsewhere", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = "17171717-1717-4717-8717-171717171717";
+    const { repo, cleanup } = await draftFolder(db.pool, folderId);
+    try {
+      const identity = { spaceId: SPACE, userId: USER };
+      const location = (await db.pool.query<{ id: string }>(
+        `SELECT id FROM workspace_locations WHERE project_folder_id = $1`, [folderId],
+      )).rows[0]!.id;
+      // The unsaved new file: the person's one new-file draft in this Location.
+      const todo = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({ content: "- buy milk\n", relativePath: "notes/todo.md" }));
+      // A revision of another file that has since been deleted from disk.
+      const revision = await new PgProjectFileRevisionStore(db.pool).create({
+        spaceId: SPACE, projectId: PROJECT, projectFolderId: folderId, workspaceLocationId: location,
+        path: "a.txt", beforeExists: true, beforeContent: "old a\n", afterExists: true, afterSha256: null, userId: USER,
+      });
+
+      await expect(repo.restoreRevisionAsDraft(identity, PROJECT, folderId, { revision_id: revision.id }))
+        .rejects.toMatchObject({ statusCode: 409, responseBody: expect.objectContaining({ code: "draft_version_conflict" }) });
+      await expect(db.pool.query<{ relative_path: string; content: string }>(
+        `SELECT relative_path, content FROM project_file_drafts WHERE id = $1`, [todo.id],
+      )).resolves.toMatchObject({ rows: [{ relative_path: "notes/todo.md", content: "- buy milk\n" }] });
+
+      // Larger than a draft may be: refused, not stored past the limit.
+      const oversized = await new PgProjectFileRevisionStore(db.pool).create({
+        spaceId: SPACE, projectId: PROJECT, projectFolderId: folderId, workspaceLocationId: location,
+        path: "big.txt", beforeExists: true, beforeContent: "x".repeat(1_048_577), afterExists: true, afterSha256: null, userId: USER,
+      });
+      await expect(repo.restoreRevisionAsDraft(identity, PROJECT, folderId, { revision_id: oversized.id }))
+        .rejects.toMatchObject({ statusCode: 422 });
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("creates a file that is not on the local host yet", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const { folderRoot, repo, cleanup } = await draftFolder(db.pool, "16161616-1616-4616-8616-161616161616");

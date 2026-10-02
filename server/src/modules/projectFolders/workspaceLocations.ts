@@ -350,9 +350,15 @@ export class PgWorkspaceLocationRepository {
       );
       return unchanged;
     }
-    const branch = (await runLocationGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000)).stdout.trim() || null;
-    const head = (await runLocationGit(["rev-parse", "HEAD"], root, 10_000)).stdout.trim() || null;
+    // Only a successful command's output is a fact, as the host daemon reads
+    // it: an unborn repository (`git init`, no commit yet) prints the literal
+    // "HEAD" before failing, and a timed-out status is not a clean one.
+    const branchResult = await runLocationGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000);
+    const branch = branchResult.code === 0 ? branchResult.stdout.trim() || null : null;
+    const headResult = await runLocationGit(["rev-parse", "HEAD"], root, 10_000);
+    const head = headResult.code === 0 ? headResult.stdout.trim() || null : null;
     const status = await runLocationGit(["status", "--porcelain"], root, 10_000);
+    const dirty = status.code === 0 ? status.stdout.trim().length > 0 : null;
     const updated = await this.db.query<{ changed: boolean; head_moved: boolean }>(
       `WITH previous AS (SELECT git_head, dirty FROM workspace_locations WHERE id = $1)
        UPDATE workspace_locations SET branch = $2, git_head = $3, dirty = $4, execution_ready = true,
@@ -360,7 +366,7 @@ export class PgWorkspaceLocationRepository {
        RETURNING ((SELECT git_head FROM previous) IS DISTINCT FROM $3::varchar
                   OR (SELECT dirty FROM previous) IS DISTINCT FROM $4::boolean) AS changed,
                  ((SELECT git_head FROM previous) IS DISTINCT FROM $3::varchar) AS head_moved`,
-      [location.id, storableBranch(branch), head, status.stdout.trim().length > 0, new Date().toISOString()],
+      [location.id, storableBranch(branch), head, dirty, new Date().toISOString()],
     );
     const row = updated.rows[0];
     return { changed: Boolean(row?.changed), headMoved: Boolean(row?.head_moved) };

@@ -87,8 +87,11 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   stores the preimage in `project_file_revisions` and then removes only the exact
   saved draft version. There is no direct browser-content write or user-facing
   rollback route. History offers Restore as draft, which never mutates the
-  Project Folder; revision rows and historical status values remain readable for
-  compatibility.
+  Project Folder; it answers the draft store's refusals as Save does (409
+  `draft_version_conflict`, 413 `draft_quota_exceeded`), will not take the
+  person's one new-file draft slot while an unsaved new file holds it, and
+  refuses a revision larger than a draft may be; revision rows and historical
+  status values remain readable for compatibility.
 - Save to Folder requires the exact draft version and Host existence/hash observed
   by the editor, is atomic, rejects traversal/symlink escapes and secret-like
   paths, and is capped at 1 MiB, matching the File-page read limit.
