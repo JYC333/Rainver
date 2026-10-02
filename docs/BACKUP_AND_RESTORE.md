@@ -19,7 +19,7 @@ There is one full-system backup concept and one full-system restore concept.
 
 A full-system backup archive contains a logical PostgreSQL snapshot **and** the file data, together with a manifest. Restore is a single command that rebuilds the database and the files.
 
-**Two-person dogfooding must set `BACKUP_ENABLED=true`** (or `backup_enabled: true` in `.env`). The service defaults to `False` for test safety.
+**Two-person dogfooding must set `BACKUP_ENABLED=true`** in `.env`. The service defaults to `false` for test safety.
 
 The local compose stack uses the bundled `postgres` service by default. Setting
 `DATABASE_URL` in the mode `.env` points database scripts at another PostgreSQL
@@ -305,13 +305,13 @@ ops/scripts/system/verify-restore.sh --mode prod
 For targeted API checks after the verifier passes:
 
 ```bash
-curl -s "http://localhost:3000/api/v1/spaces?space_id=personal"
+curl -s "http://localhost:3000/api/v1/spaces/<space_id>"
 curl -s "http://localhost:3000/api/v1/memory?space_id=personal&status=active"
 curl -s "http://localhost:3000/api/v1/artifacts?space_id=personal"
 curl -s "http://localhost:3000/api/v1/proposals?space_id=personal"
 curl -s "http://localhost:3000/api/v1/runs?space_id=personal"
 curl -s "http://localhost:3000/api/v1/activity?space_id=personal"
-curl -s "http://localhost:3000/api/v1/runs/<run_id>/steps?space_id=personal"   # RunStep replay survives
+curl -s "http://localhost:3000/api/v1/runs/<run_id>/trace?space_id=personal"   # `steps`: RunStep replay survives
 ```
 
 ---
