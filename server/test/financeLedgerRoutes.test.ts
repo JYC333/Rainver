@@ -314,6 +314,39 @@ describe("finance ledger routes", () => {
     ]));
   });
 
+  it("refuses a close date before the account opened or before its postings", async () => {
+    const bookId = await createBookViaApi();
+    const { checkingId, foodId } = await seedLedger(bookId);
+    await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+      payload: {
+        date: "2026-05-10",
+        post: true,
+        postings: [
+          { account_id: checkingId, amount: { number: "-5.00", commodity: "USD" } },
+          { account_id: foodId, amount: { number: "5.00", commodity: "USD" } },
+        ],
+      },
+    });
+    const close = (date: string) => app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/accounts/${checkingId}/close`,
+      payload: { date },
+    });
+
+    expect((await close("2025-12-01")).statusCode).toBe(422);
+    expect((await close("2026-04-01")).statusCode).toBe(422);
+    const closed = await close("2026-06-01");
+    expect(closed.statusCode).toBe(200);
+    expect((await close("2026-07-01")).statusCode).toBe(422);
+
+    const accounts = await app!.inject({ method: "GET", url: `/api/v1/finance/books/${bookId}/accounts` });
+    expect(accounts.json().accounts.find((account: { id: string }) => account.id === checkingId).closed_at).toBe("2026-06-01");
+    const validate = await app!.inject({ method: "POST", url: `/api/v1/finance/books/${bookId}/validate` });
+    expect(validate.json().errors).toEqual([]);
+  });
+
   it("composes account names from root_type, group, and leaf", async () => {
     const bookId = await createBookViaApi();
     const response = await app!.inject({

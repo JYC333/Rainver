@@ -10,7 +10,7 @@ import type {
   DirectiveType,
   FinanceBookRow,
 } from "./domain/directives.js";
-import { AccountNotFoundError, financeLedgerService } from "./domain/service.js";
+import { AccountNotFoundError, FinanceRuleError, financeLedgerService } from "./domain/service.js";
 import { withTransaction } from "./domain/transaction.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -278,6 +278,7 @@ export function registerFinanceLedgerRoutes(
         // a missing account, and matching on the message meant rewording it
         // silently turned a deliberate 404 into a 500.
         if (err instanceof AccountNotFoundError) throw new RequestError(404, "Account not found");
+        if (err instanceof FinanceRuleError) throw new RequestError(422, err.message);
         throw err;
       });
       reply.send({ account });

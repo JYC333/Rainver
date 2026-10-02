@@ -1,5 +1,5 @@
 import type { Queryable } from "@rainver/protocol";
-import { AccountNotFoundError } from "./errors.js";
+import { AccountNotFoundError, FinanceRuleError } from "./errors.js";
 import type { LedgerLoadResult } from "../beancount/entries.js";
 import { financeLedgerEngine, postingEntryFromRow } from "../beancount/engine.js";
 import { transactionBalanceErrors } from "../beancount/validation.js";
@@ -238,6 +238,21 @@ export class FinanceLedgerService {
     date: string,
     viewerUserId: string,
   ): Promise<FinanceAccountRow> {
+    // Refused where the ledger's own validator would call the result invalid:
+    // closed before it opened, closed twice, or closed under later entries.
+    const account = await this.repository.findAccountForViewer(
+      db, spaceId, bookId, accountId, viewerUserId, { writable: true },
+    );
+    if (!account) throw new AccountNotFoundError();
+    if (account.closed_at) {
+      throw new FinanceRuleError(`Account is already closed: ${account.name}`);
+    }
+    if (date < account.opened_at) {
+      throw new FinanceRuleError(`Close date ${date} is before ${account.name} opened`);
+    }
+    if (await this.repository.hasPostedEntriesAfter(db, spaceId, bookId, accountId, date)) {
+      throw new FinanceRuleError(`${account.name} has posted entries after ${date}`);
+    }
     return this.repository.closeAccount(db, spaceId, bookId, accountId, date, viewerUserId);
   }
 
@@ -702,4 +717,4 @@ function isSequenceConflict(err: unknown): boolean {
 
 export { rootTypeForAccountName };
 
-export { AccountNotFoundError } from "./errors.js";
+export { AccountNotFoundError, FinanceRuleError } from "./errors.js";

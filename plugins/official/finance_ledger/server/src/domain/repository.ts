@@ -422,6 +422,32 @@ export const financeLedgerRepository = {
     return result.rows[0];
   },
 
+  /** Whether a posted entry uses the account after `date`. */
+  async hasPostedEntriesAfter(
+    db: Queryable,
+    spaceId: string,
+    bookId: string,
+    accountId: string,
+    date: string,
+  ): Promise<boolean> {
+    const result = await db.query<{ found: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM finance_directives d
+          WHERE d.space_id = $1 AND d.book_id = $2 AND d.status = 'posted' AND d.date > $4::date
+            AND (
+              EXISTS (SELECT 1 FROM finance_postings p WHERE p.transaction_directive_id = d.id AND p.account_id = $3)
+              OR EXISTS (SELECT 1 FROM finance_balance_assertions b WHERE b.directive_id = d.id AND b.account_id = $3)
+              OR EXISTS (SELECT 1 FROM finance_pad_directives pd WHERE pd.directive_id = d.id AND $3 IN (pd.account_id, pd.source_account_id))
+              OR EXISTS (SELECT 1 FROM finance_notes n WHERE n.directive_id = d.id AND n.account_id = $3)
+              OR EXISTS (SELECT 1 FROM finance_documents doc WHERE doc.directive_id = d.id AND doc.account_id = $3)
+            )
+       ) AS found`,
+      [spaceId, bookId, accountId, date],
+    );
+    return result.rows[0]?.found === true;
+  },
+
   async nextSequence(
     db: Queryable,
     spaceId: string,
