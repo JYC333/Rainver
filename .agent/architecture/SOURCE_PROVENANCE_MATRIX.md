@@ -10,10 +10,10 @@ to read or write, pick by role, not by proximity.
 | Role | Definition |
 |---|---|
 | **Canonical** | Source of truth. Other tables derive from this. |
-| **Sources candidate** | Unvalidated ingested content awaiting review. Deleted or promoted, never kept long-term. |
+| **Sources candidate** | Ingested content and derived evidence. Durable (soft-deleted or retention-limited, not removed after review), but not canonical knowledge. |
 | **Review artifact** | Proposals or packets that an LLM or human must evaluate before anything is written to canonical tables. |
 | **Derived index** | Computed for retrieval/embedding. Never authoritative. Re-derivable from canonical. |
-| **Audit lineage** | Immutable record of provenance relationships. Written once, never updated. |
+| **Audit lineage** | Record of provenance relationships. |
 
 ---
 
@@ -29,30 +29,36 @@ soft-delete gate; hard delete is prohibited once any source_items reference it.
 ### `source_snapshots`
 **Role: Sources candidate**
 A versioned content snapshot fetched from `source_connections` during ingestion.
-Contains raw content before extraction. Expires after `extracted_evidence` rows
-are promoted or rejected. Do not treat as canonical—`source_connections` is the
+Contains raw content before extraction. Persists after review and is referenced
+by `provenance_links` for source-policy read gating. Do not treat as canonical—`source_connections` is the
 authority on what a source *is*; `source_snapshots` is what it *said* at a
 point in time.
 
 ### `source_items`
 **Role: Sources candidate**
 Raw ingested units (one per document, chunk, or API record) before semantic
-extraction. Created by `source_extraction` jobs. Deleted once downstream
-proposals are accepted or the item is superseded by a newer snapshot. Not
-queryable for knowledge retrieval.
+extraction. Created by `source_extraction` jobs. A durable ingest record: it is
+soft-deleted through `deleted_at`, kept per its `retention_policy` /
+`content_state`, and is a join target when `provenance_links` resolve a
+connection id. Projected into retrieval as `source_item` through the Sources
+retrieval adapter, behind the source read gate.
 
 ### `extracted_evidence`
 **Role: Sources candidate → transitions to Review artifact**
 LLM-generated extraction from an `source_item` (claims, entities, relations).
-Created as a review artifact for human inspection; becomes stale once the
-downstream `claim_create`/`knowledge_create` proposals are accepted or rejected.
-Not a durable record—do not index or expose to agents.
+Created as a review artifact for human inspection and kept after the
+downstream `claim_create`/`knowledge_create` proposals are decided (soft-deleted
+through `deleted_at`). Projected into retrieval as `extracted_evidence` through
+the Sources retrieval adapter, behind the source read gate.
 
 ### `evidence_links`
 **Role: Review artifact**
-Join table between `extracted_evidence` and pending proposal rows
-(`claim_candidate_packet`, `relation_discovery_packet`). Deleted with its parent
-`extracted_evidence` row after the review cycle completes.
+Links an `extracted_evidence` row to a target object of an allowed
+`target_type` (space, project folder, project, user, agent, run, proposal,
+artifact, knowledge, memory, task), with a `link_type` (`supports`,
+`contradicts`, `derived_from`, `mentions`, `context_candidate`,
+`used_in_context`) and a `candidate`/`active`/`rejected`/`archived` status.
+Rows are not deleted with their parent evidence.
 
 ### `sources` (in `space_objects`)
 **Role: Canonical**
@@ -63,15 +69,18 @@ is the infrastructure record the system sees.
 
 ### `knowledge_item_sources`
 **Role: Audit lineage**
-Records which `source_connections` contributed to a specific `knowledge_item`.
-Written during `knowledge_create` / `knowledge_update` apply. Immutable after
-write. Used by source-policy read gating (`loadSourceConnectionIdsForTargets`)
-to decide whether a viewer may see a knowledge item.
+Citation lineage from a `knowledge_item` to a `sources` object (the
+`space_objects` source row), with `relation_type`, locator, and quote. It does
+not carry a connection id. Created and deleted directly by the Knowledge
+item-source routes; read by the Knowledge retrieval adapter (retrieval edges)
+and item-source listings, not by source-policy read gating.
 
 ### `claim_sources`
 **Role: Audit lineage**
-Same pattern as `knowledge_item_sources` but for `claims`. Written during
-`claim_create` / `claim_update` apply. Read by source-policy gating.
+Sources of a `claim`, each with its own `source_connection_id`. Written during
+`claim_create` apply and replaced wholesale (delete then re-insert) when a
+`claim_update` payload carries sources. Claim evidence rendering drops rows
+whose `source_connection_id` denies the viewer.
 
 ### `provenance_links`
 **Role: Audit lineage**
@@ -109,8 +118,9 @@ items, claims, policies) are authoritative post-accept.
 
 Source-policy gating (`sourcePolicyAllowsRead`) consults `source_connections`
 for consent and policy fields. It resolves connection IDs via
-`loadSourceConnectionIdsForTargets`, which reads both `provenance_links` and the
-dedicated `*_sources` join tables. **Never gate reads on `retrieval_objects`
+`loadSourceConnectionIdsForTargets`, which reads only `provenance_links` and
+resolves each connection id through `source_items`, `source_snapshots`, or
+`extracted_evidence`. **Never gate reads on `retrieval_objects`
 status alone.**
 
 ---
@@ -119,9 +129,9 @@ status alone.**
 
 | Operation | Correct writer |
 |---|---|
-| New source connection | `source_connections` INSERT via source routes |
+| New source connection | `source_connections` INSERT when a Source Channel is created |
 | New source content | `source_items` INSERT via extraction job |
 | Promote claim/knowledge | `claim_create` / `knowledge_create` proposal apply |
 | Update canonical object | `claim_update` / `knowledge_update` proposal apply |
 | Index for retrieval | `retrieval_objects` UPSERT via retrieval engine (derived) |
-| Record lineage | `provenance_links` / `*_sources` INSERT at proposal apply |
+| Record lineage | `provenance_links` / `claim_sources` INSERT at proposal apply; `knowledge_item_sources` via the Knowledge item-source routes |
