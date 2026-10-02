@@ -331,7 +331,7 @@ Do not register a gallery entry as interactive unless its backend surface exists
 
 ### Authentication
 
-- 401 dispatches the `auth:required` event → `RequireAuth` redirects to `/login`.
+- 401 dispatches the `auth:required` event → `RequireAuth` redirects to `/login`, except a 401 whose `code` is `operation_unavailable`: an authentication step that failed (a wrong password at re-authentication) while the session stays valid.
 - Per-page auth errors should show "Session expired — sign in again" before redirect.
 
 ### 404 / Not Accessible

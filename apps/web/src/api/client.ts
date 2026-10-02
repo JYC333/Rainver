@@ -534,10 +534,6 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
 
   const r = await fetch(url, opts)
 
-  if (r.status === 401) {
-    window.dispatchEvent(new CustomEvent('auth:required'))
-  }
-
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`
     let code: string | undefined
@@ -550,6 +546,12 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
     } catch {
       const text = await r.text().catch(() => '')
       if (text) msg = text
+    }
+    // A missing session signs the browser out. `operation_unavailable` is an
+    // authentication step that failed (a mistyped password at
+    // re-authentication) while the session stays valid.
+    if (r.status === 401 && code !== 'operation_unavailable') {
+      window.dispatchEvent(new CustomEvent('auth:required'))
     }
     throw new ApiRequestError(msg, r.status, code, payload)
   }
