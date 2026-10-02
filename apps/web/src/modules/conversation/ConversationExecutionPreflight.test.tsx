@@ -303,6 +303,20 @@ describe('ConversationExecutionPreflight', () => {
     expect(screen.queryByText('Primary cwd')).not.toBeInTheDocument()
   })
 
+  it('lets sending resume once a refresh succeeds after one that failed', async () => {
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue(initializedResponse() as never)
+    const onReadyChange = vi.fn()
+    renderPanel('session-1', onReadyChange)
+    await waitFor(() => expect(onReadyChange).toHaveBeenLastCalledWith(true))
+
+    vi.mocked(sessionsApi.executionContext).mockRejectedValueOnce(new Error('offline'))
+    fireEvent(window, new Event('focus'))
+    await waitFor(() => expect(onReadyChange).toHaveBeenLastCalledWith(false))
+
+    fireEvent(window, new Event('focus'))
+    await waitFor(() => expect(onReadyChange).toHaveBeenLastCalledWith(true))
+  })
+
   it('uses the participant name when the pinned profile is temporarily absent from the selectable catalog', async () => {
     const response = initializedResponse() as ConversationExecutionPreflightResponse
     response.available_runtime_profiles = []

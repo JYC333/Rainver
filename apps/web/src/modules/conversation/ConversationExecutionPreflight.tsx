@@ -115,6 +115,10 @@ export function ConversationExecutionPreflight({
       setPreflight(next)
       setProfiles(next.available_runtime_profiles ?? [])
       onSummaryChange?.(next.summary)
+      // Said again here, not only when `ready` changes: a failed refresh
+      // reported false while `ready` (from the kept preflight) stayed true, so
+      // the next good refresh changed nothing and sending stayed disabled.
+      onReadyChange?.(Boolean(next.summary.state === 'initialized' && next.summary.can_send))
     } catch (cause) {
       if (sequence !== requestSequence.current) return
       const message = errMsg(cause)
