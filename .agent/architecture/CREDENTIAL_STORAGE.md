@@ -49,7 +49,8 @@ The plaintext API key is **never** stored. The encrypted material lives in:
 
 `secret_ref` scheme is defined in
 `server/src/modules/providers/secretRefCrypto.ts`
-(`encodeModelProviderApiKeySecretRef` / `resolveApiKeyFromSecretRef`).
+(`encryptModelProviderApiKeySecretRefV1` / `decryptModelProviderApiKeySecretRefV1`;
+subscription OAuth uses the matching `...OAuthSecretRefV1` pair).
 
 Rotation strategy (`fill_first` | `round_robin` | `least_used` | `random`) and the
 provider fallback chain (`fallback_provider_ids`) remain provider-level
@@ -74,7 +75,7 @@ rotation. It never reads or mutates Claude Code or Codex CLI profile files.
 ## Save flow
 
 Providers page → `POST /api/v1/providers` with `api_key` →
-`server/src/modules/providers/providerCommandStore.ts`: encrypt API key
+`server/src/modules/providers/commands/store.ts`: encrypt API key
 → encode `secret_ref` → create/replace a `Credential` row → set
 `ModelProvider.credential_id` → create an enabled grant to the active space.
 Only the provider owner can edit provider metadata or API-key material.
@@ -87,9 +88,9 @@ DTOs expose only connection state and quota percentages/reset timestamps.
 
 ## Runtime resolution
 
-`server/src/modules/providers/providerCommandStore.ts` is the canonical
-resolver. It first resolves an enabled `model_provider_space_grants` row for
-the active run space, then loads the `Credential` → `resolveApiKeyFromSecretRef`
+`server/src/modules/providers/commands/store.ts` (`resolveProviderApiKey` /
+`resolveCredentialApiKey`) is the canonical resolver. It first resolves an enabled `model_provider_space_grants` row for
+the active run space, then loads the `Credential` → `decryptModelProviderApiKeySecretRefV1`
 → AES-GCM decrypt with the on-disk master key → returns plaintext. The
 decrypted key is passed to provider invocation **as a parameter** and is never
 written to `process.env` — per [ADR 0008](../decisions/0008-credential-channel-isolation.md)
