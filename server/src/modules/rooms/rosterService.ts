@@ -912,11 +912,22 @@ export class RoomRosterService {
     try {
       await withDbTransaction(this.pool, async (client) => {
         const roster = new PgRoomRosterRepository(client);
+        // The same order as every other invitation mutation — Room, then
+        // invitation, then its approvals — so a concurrent decision or
+        // re-invitation holding the Room and invitation locks never waits on
+        // an approval row this transaction holds while it waits on them.
+        const located = await roster.getInvitation({ space_id: identity.spaceId, invitation_id: invitationId });
+        if (!located) return;
+        await new PgRoomRepository(client).getRoomById(identity.spaceId, located.room_id, true);
+        const invitation = await roster.getInvitation({ space_id: identity.spaceId, invitation_id: invitationId, lock: true });
+        // Decided or expired meanwhile: that outcome stands.
+        if (invitation?.status !== "pending") return;
         await roster.invalidateApprovals(identity.spaceId, invitationId);
         await roster.updateInvitationStatus({
           space_id: identity.spaceId,
           invitation_id: invitationId,
           status: "invalidated",
+          only_from: "pending",
         });
       });
     } catch {

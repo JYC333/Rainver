@@ -159,8 +159,37 @@ export async function requestRoomConversationSummary(
     // before the threshold; the provider path rechecks the exact batch. The
     // threshold is the raw tail a summary always leaves uncovered.
     const sourceTokens = Number(threshold.rows[0]?.source_token_estimate ?? 0);
-    if (sourceTokens < ROOM_RECENT_TOKEN_BUDGET) return;
     const now = new Date().toISOString();
+    if (sourceTokens < ROOM_RECENT_TOKEN_BUDGET) {
+      // Nothing to summarize yet, but the watermark is still recorded: the
+      // freshness sweep selects by it, and a short conversation that never
+      // moved it was re-selected on every tick forever, holding one of the
+      // sweep's places from the backlog behind it. The state stays as it is
+      // (`idle` when new), and no job is enqueued.
+      await client.query(
+        `INSERT INTO room_conversation_summary_states (
+           id, space_id, room_id, session_id, status,
+           requested_through_message_id, requested_through_created_at,
+           retry_count, updated_at
+         ) VALUES ($1,$2,$3,$4,'idle',$5,$6,0,$7)
+         ON CONFLICT (session_id) DO UPDATE SET
+           requested_through_message_id = CASE
+             WHEN room_conversation_summary_states.requested_through_message_id IS NULL
+               OR ${summaryWatermarkAdvancedSql}
+             THEN EXCLUDED.requested_through_message_id
+             ELSE room_conversation_summary_states.requested_through_message_id
+           END,
+           requested_through_created_at = CASE
+             WHEN room_conversation_summary_states.requested_through_message_id IS NULL
+               OR ${summaryWatermarkAdvancedSql}
+             THEN EXCLUDED.requested_through_created_at
+             ELSE room_conversation_summary_states.requested_through_created_at
+           END,
+           updated_at = EXCLUDED.updated_at`,
+        [randomUUID(), input.spaceId, input.roomId, input.sessionId, input.throughMessageId, input.throughCreatedAt, now],
+      );
+      return;
+    }
     const state = await client.query<{ status: string; retry_count: number }>(
       `INSERT INTO room_conversation_summary_states (
          id, space_id, room_id, session_id, status,

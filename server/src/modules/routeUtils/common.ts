@@ -281,6 +281,33 @@ export async function withDbTransaction<T>(
 }
 
 /**
+ * Runs a step whose failure the caller handles in `onFailure` (by logging, or
+ * by rethrowing). On a transaction client a database error would otherwise
+ * leave the whole transaction aborted even when it is caught, so there the
+ * step runs behind a savepoint and a failure rolls back only the step.
+ */
+export async function bestEffortStep(
+  db: Queryable,
+  savepoint: string,
+  step: () => Promise<unknown>,
+  onFailure: (error: unknown) => void,
+): Promise<void> {
+  const handle = db as Queryable & { release?: () => void; connect?: () => Promise<unknown> };
+  const onPool = typeof handle.connect === "function" && typeof handle.release !== "function";
+  const contained = !onPool && await db.query(`SAVEPOINT ${savepoint}`).then(() => true, () => false);
+  try {
+    await step();
+    if (contained) await db.query(`RELEASE SAVEPOINT ${savepoint}`);
+  } catch (error) {
+    if (contained) {
+      await db.query(`ROLLBACK TO SAVEPOINT ${savepoint}`).catch(() => undefined);
+      await db.query(`RELEASE SAVEPOINT ${savepoint}`).catch(() => undefined);
+    }
+    onFailure(error);
+  }
+}
+
+/**
  * Same transaction semantics as `withDbTransaction`, but for application
  * services that are constructed with a `Queryable` that may already be a
  * transaction client (nested inside a caller's transaction). Opens a real

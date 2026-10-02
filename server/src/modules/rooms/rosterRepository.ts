@@ -463,6 +463,8 @@ export class PgRoomRosterRepository {
     space_id: string;
     invitation_id: string;
     status: RoomInvitationRecord["status"];
+    /** Only from this status: a decided invitation keeps its decision. */
+    only_from?: RoomInvitationRecord["status"];
   }): Promise<RoomInvitationRecord | null> {
     const result = await this.db.query<RoomInvitationRecord>(
       `UPDATE room_user_invitations
@@ -470,8 +472,9 @@ export class PgRoomRosterRepository {
               resolved_at = CASE WHEN $3::varchar IN ('pending') THEN NULL ELSE now() END,
               updated_at = now()
         WHERE space_id = $1 AND id = $2
+          AND ($4::varchar IS NULL OR status = $4::varchar)
         RETURNING ${INVITATION_COLUMNS}`,
-      [input.space_id, input.invitation_id, input.status],
+      [input.space_id, input.invitation_id, input.status, input.only_from ?? null],
     );
     return result.rows[0] ?? null;
   }

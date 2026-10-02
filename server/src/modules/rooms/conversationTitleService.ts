@@ -17,7 +17,17 @@ import {
 export const ROOM_CONVERSATION_TITLE_JOB = "room_conversation_title";
 const ROOM_CONVERSATION_TITLE_TASK = "room_conversation_title";
 
-const PLACEHOLDER_TITLE_SQL = `lower(btrim(COALESCE(session_row.title, ''))) IN ('', 'conversation', 'new conversation')`;
+/**
+ * Titles that mean "not titled yet". The sweep selects conversations by this
+ * set, so neither the provisional title nor a generated one may land in it:
+ * a title that did was re-requested — and billed — every minute.
+ */
+const PLACEHOLDER_TITLES = ["", "conversation", "new conversation"] as const;
+const PLACEHOLDER_TITLE_SQL = `lower(btrim(COALESCE(session_row.title, ''))) IN (${PLACEHOLDER_TITLES.map((title) => `'${title}'`).join(", ")})`;
+
+function isPlaceholderTitle(value: string): boolean {
+  return (PLACEHOLDER_TITLES as readonly string[]).includes(value.trim().toLowerCase());
+}
 
 interface RoomConversationTitleDependencies {
   resolveProviderStore?: (config: ServerConfig) => ProviderCommandStore;
@@ -282,7 +292,8 @@ export function titleFromMessage(content: string): string {
     .replace(/^(?:please\s+)?(?:help\s+me\s+)?(?:i\s+(?:want|need)\s+to\s+)?/iu, "")
     .trim();
   const firstClause = compact.split(/[。！？!?\n]/u, 1)[0]?.trim() || compact;
-  return truncateTitle(firstClause || "New topic");
+  const title = truncateTitle(firstClause || "New topic");
+  return isPlaceholderTitle(title) ? "New topic" : title;
 }
 
 export function cleanGeneratedTitle(value: string): string | null {
@@ -292,7 +303,7 @@ export function cleanGeneratedTitle(value: string): string | null {
     .replace(/^(?:title|标题)\s*[:：]\s*/iu, "")
     .replace(/^["'“‘`*#\s]+|["'”’`*#\s]+$/gu, "")
     .trim();
-  if (!first || first.startsWith("{") || first.startsWith("[")) return null;
+  if (!first || first.startsWith("{") || first.startsWith("[") || isPlaceholderTitle(first)) return null;
   return truncateTitle(first);
 }
 

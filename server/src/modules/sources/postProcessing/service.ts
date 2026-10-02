@@ -24,6 +24,7 @@ import {
   type Queryable,
   type SpaceUserIdentity,
   withQueryableTransaction,
+  bestEffortStep,
 } from "../../routeUtils/common.js";
 import { normalizeThreadScope, checkPinnedThreadDrift } from "../../projectResearch/threadScope.js";
 import {
@@ -75,7 +76,6 @@ import {
   type SourcePostProcessingRunOut,
   type SourcePostProcessingTriggerConfig,
   type SourcePostProcessingTriggerType,
-  bestEffortStep,
 } from "./repository.js";
 import { ProjectResearchAreaService } from "../../projectResearch/areaService.js";
 import { resolveProjectResearchEvidenceCardPrompt } from "../../projectResearch/promptRegistry.js";

@@ -24,6 +24,8 @@ import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { ProjectPublicSummaryGenerator } from "../src/modules/projects/publicSummaryGenerator.js";
 import { seedProjectMainlineRoom, seedRoomManager } from "./support/domainSeeds.js";
 import { PgRoomRepository, type RoomAgentMemberRecord } from "../src/modules/rooms/repository.js";
+import { PgRoomRosterRepository } from "../src/modules/rooms/rosterRepository.js";
+import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { AgentGroupRunService } from "../src/modules/agentGroups/service.js";
 import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups/lifecycleProjector.js";
@@ -4695,6 +4697,27 @@ describe("Room workflow (real Postgres)", () => {
     await expect(service.claimOwner(outsider, created.room.id)).rejects.toMatchObject({ statusCode: 403 });
   });
 
+  it("keeps a decided invitation's decision when a stale snapshot is invalidated after it", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Decided invitation" });
+    await db.pool.query(
+      `INSERT INTO project_members (
+         id, space_id, project_id, user_id, role, status, created_at, updated_at
+       ) VALUES ('project-member-3b', 'space-1', 'project-1', 'user-3', 'viewer', 'active', now(), now())`,
+    );
+    const invitation = await service.inviteUser(owner, created.room.id, { user_id: "user-3" });
+    const roster = new PgRoomRosterRepository(db.pool);
+    await roster.updateInvitationStatus({ space_id: "space-1", invitation_id: invitation.id, status: "rejected" });
+    // The invalidation a stale snapshot persists is written only from pending.
+    expect(await roster.updateInvitationStatus({
+      space_id: "space-1", invitation_id: invitation.id, status: "invalidated", only_from: "pending",
+    })).toBeNull();
+    await expect(db.pool.query<{ status: string }>(
+      `SELECT status FROM room_user_invitations WHERE id = $1`, [invitation.id],
+    )).resolves.toMatchObject({ rows: [{ status: "rejected" }] });
+  });
+
   it("requires each private-Agent owner to approve a Room invitation and supports suspended-owner recovery", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     await db.pool.query(
@@ -5719,6 +5742,67 @@ describe("Room workflow (real Postgres)", () => {
     // nothing short-circuits the filter for it: it is in the window only if
     // the window bounds on the path rather than on the clock.
     expect(replay.messages.map((message) => message.id)).toContain("replay-after");
+  });
+
+  it("stops sweeping a short conversation it has nothing to summarize for", async (ctx) => {
+    if (!db.available || !service || !db.pool) return ctx.skip();
+    const testPool = db.pool;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Short Sweep Room" });
+    const conversation = await seedConversation(owner, created.room.id, "Short thread");
+    await seedConversationMessages(db.pool, {
+      space: "space-1", session: conversation.id,
+      messages: [{ id: "short-only", role: "user", userId: "user-1", content: "Just a short note." }],
+    });
+    const summaries = new RoomConversationSummaryService(
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! }),
+      testPool,
+    );
+    // Below the threshold there is nothing to summarize, so no job — but the
+    // watermark is recorded, or the sweep selects this conversation on every
+    // tick forever and the backlog behind it never gets its turn.
+    expect(await summaries.reconcileMissingStates()).toBe(1);
+    await expect(testPool.query<{ status: string; requested_through_message_id: string }>(
+      "SELECT status, requested_through_message_id FROM room_conversation_summary_states WHERE session_id = $1",
+      [conversation.id],
+    )).resolves.toMatchObject({ rows: [{ status: "idle", requested_through_message_id: "short-only" }] });
+    await expect(testPool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM jobs WHERE job_type = 'room_conversation_summary' AND payload_json->>'session_id' = $1`,
+      [conversation.id],
+    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
+    expect(await summaries.reconcileMissingStates()).toBe(0);
+  });
+
+  it("sends the message when a Project state read fails inside the database, and says what failed", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Context failure" });
+    const conversation = await seedConversation(owner, created.room.id, "Main");
+    // An attention adapter whose SQL errors. The context is read on the
+    // sending transaction's client, so an error that is only caught in
+    // JavaScript would abort the whole send.
+    projectAttentionRegistry.replace({
+      areaKind: "rogue_sql",
+      async listAttentionItems(db) {
+        await db.query("SELECT 1 / 0");
+        return [];
+      },
+    });
+    try {
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
+        content: "Still delivered.",
+        backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
+      });
+      expect(sent.run_ids).toHaveLength(1);
+      // The failure is written onto the dispatched turn's instruction, not a log.
+      const instruction = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
+        `SELECT metadata_json FROM agent_run_messages WHERE group_id = $1 ORDER BY created_at ASC LIMIT 1`,
+        [sent.task_group_ids[0]],
+      );
+      expect(instruction.rows[0]?.metadata_json.project_context_failures).toEqual([expect.stringMatching(/^overview: .*division by zero/)]);
+    } finally {
+      projectAttentionRegistry.replace({ areaKind: "rogue_sql", async listAttentionItems() { return []; } });
+    }
   });
 
   it("stops sweeping a conversation once its watermark reaches the head", async (ctx) => {

@@ -249,5 +249,13 @@ describe("roomConversationTitle", () => {
         .toBe("个人 Agent 分层记忆");
       expect(cleanGeneratedTitle('{"title":"个人 Agent 分层记忆"}')).toBeNull();
     });
+
+    it("never settles on a placeholder title, which the sweep would request — and bill — again every minute", () => {
+      expect(cleanGeneratedTitle("New Conversation")).toBeNull();
+      expect(cleanGeneratedTitle("\"conversation\"")).toBeNull();
+      expect(titleFromMessage("new conversation")).toBe("New topic");
+      expect(titleFromMessage("Conversation")).toBe("New topic");
+      expect(titleFromMessage("Conversation about memory")).toBe("Conversation about memory");
+    });
   });
 });
