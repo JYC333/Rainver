@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -536,6 +537,22 @@ describe('ProjectSourcesPage', () => {
     await waitFor(() => expect(projectResearchApi.upsertScreeningCriteria).toHaveBeenCalledWith(
       'project-1',
       expect.objectContaining({ domain_criteria: { methods: ['randomized', 'observational'] } }),
+    ))
+  })
+
+  it('lets a screening list be typed key by key, with spaces and commas', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPage()
+    const include = await screen.findByLabelText('Include keywords or concepts')
+    await waitFor(() => expect(include).toBeEnabled())
+
+    await user.type(include, 'agent memory, retrieval')
+    expect(include).toHaveValue('agent memory, retrieval')
+    fireEvent.click(screen.getByRole('button', { name: /save criteria/i }))
+
+    await waitFor(() => expect(projectResearchApi.upsertScreeningCriteria).toHaveBeenCalledWith(
+      'project-1',
+      expect.objectContaining({ include_keywords: ['agent memory', 'retrieval'] }),
     ))
   })
 
