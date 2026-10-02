@@ -103,11 +103,12 @@ so repeated finalization or worker delivery does not flood the stream without
 requiring a new migration or a second uniqueness table.
 
 Signal writes are advisory telemetry. Finalization and proposal decisions
-remain authoritative if signal persistence fails; a signal failure is
-swallowed inside a savepoint. Supervisor decisions and their
+remain authoritative if signal persistence fails: finalization, proposal
+decisions (emitted post-commit) and autonomy recovery catch and swallow a
+signal failure outside any decision transaction. Supervisor decisions and their
 `supervisor_outcome` signal are attempted on the same transaction-bound
-`PoolClient`, so a signal cannot commit independently before a decision that
-later rolls back.
+`PoolClient`, where a signal failure is swallowed inside a savepoint, so a
+signal cannot commit independently before a decision that later rolls back.
 
 ## Current boundaries
 
