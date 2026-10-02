@@ -10,7 +10,7 @@ export interface EvolvableAssetAccessRow {
   metadata_json?: unknown;
 }
 
-export interface NormalizedOwnerScope {
+interface NormalizedOwnerScope {
   ownerScopeType: string;
   ownerScopeId: string | null;
 }
@@ -230,7 +230,7 @@ export async function assertCanPinScope(db: Queryable, identity: SpaceUserIdenti
   }
 }
 
-export async function assertCanManageAgentScope(
+async function assertCanManageAgentScope(
   db: Queryable,
   identity: SpaceUserIdentity,
   agentId: string,
@@ -241,7 +241,7 @@ export async function assertCanManageAgentScope(
   }
 }
 
-export async function canManageAgentScope(
+async function canManageAgentScope(
   db: Queryable,
   identity: SpaceUserIdentity,
   agentId: string,
@@ -263,7 +263,7 @@ export async function canManageAgentScope(
   return isSpaceOwnerOrAdmin(await activeSpaceRole(db, identity));
 }
 
-export async function assertSpaceOwnerOrAdmin(db: Queryable, identity: SpaceUserIdentity, message: string): Promise<void> {
+async function assertSpaceOwnerOrAdmin(db: Queryable, identity: SpaceUserIdentity, message: string): Promise<void> {
   if (!isSpaceOwnerOrAdmin(await activeSpaceRole(db, identity))) {
     throw new HttpError(403, message);
   }

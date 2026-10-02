@@ -15,7 +15,7 @@ import type { RunRecord } from "../runs/repository.js";
  * ADR 0003 §5's persona rule (someone else's turn looking like the owner's
  * unattended work).
  */
-export interface EffectiveRunTrigger {
+interface EffectiveRunTrigger {
   /** The root's `trigger_origin` for a delegated Run, this Run's otherwise. */
   origin: string;
   /**

@@ -1,6 +1,6 @@
 import type { ServerConfig } from "../../config.js";
 
-export interface AuthCookieOptions {
+interface AuthCookieOptions {
   name: string;
   value: string;
   maxAgeSeconds: number;

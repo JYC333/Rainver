@@ -132,7 +132,7 @@ function appliedCodePatchFiles(payload: Record<string, unknown> | null): Array<{
   return parsed;
 }
 
-export interface ProposalAcceptOptions {
+interface ProposalAcceptOptions {
   confirmIncompletePatch?: boolean;
   /** Only the bundle coordinator may apply a proposal while it owns the member row. */
   allowBundleMemberDecision?: boolean;
@@ -1047,7 +1047,7 @@ function recordValue(value: unknown): Record<string, unknown> {
  * no role elevation substitutes, and the Project-owner promotion below does
  * not apply either.
  */
-export function requiredOwnerUserId(proposal: { payload_json: Record<string, unknown> | null }): string | null {
+function requiredOwnerUserId(proposal: { payload_json: Record<string, unknown> | null }): string | null {
   const value = (proposal.payload_json ?? {}).required_owner_user_id;
   return typeof value === "string" && value.length > 0 ? value : null;
 }

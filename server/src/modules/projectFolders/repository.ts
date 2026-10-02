@@ -101,7 +101,7 @@ export interface ProjectFolderOut {
  * (`packages/host-daemon/src/api.ts`'s `WorkspaceOut`), predating the
  * Folder/Location split. `id` is the Location's id, not the Folder's — see
  * `createRemoteWorkspace`'s doc comment for why. */
-export interface RemoteWorkspaceOut {
+interface RemoteWorkspaceOut {
   id: string;
   project_id: string;
   name: string;
@@ -112,19 +112,19 @@ export interface RemoteWorkspaceOut {
   created_at: string;
 }
 
-export interface ProjectFolderPage {
+interface ProjectFolderPage {
   items: ProjectFolderOut[];
   total: number;
   limit: number;
   offset: number;
 }
 
-export interface ScanCandidate {
+interface ScanCandidate {
   name: string;
   path: string;
 }
 
-export interface ProjectFileDraftSaveOut {
+interface ProjectFileDraftSaveOut {
   file: FileContent;
   revision: ProjectFileRevisionOut;
   draft_deleted: boolean;
@@ -1312,7 +1312,7 @@ export class PgProjectFolderRepository {
   }
 }
 
-export function folderToOut(row: ProjectFolderRow): ProjectFolderOut {
+function folderToOut(row: ProjectFolderRow): ProjectFolderOut {
   return {
     id: row.id,
     space_id: row.space_id,

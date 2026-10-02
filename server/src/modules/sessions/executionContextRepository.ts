@@ -47,7 +47,7 @@ export interface ExecutionContextRow {
   updated_at: string;
 }
 
-export interface ExecutionAttachmentRow {
+interface ExecutionAttachmentRow {
   id: string;
   space_id: string;
   session_id: string;
@@ -106,7 +106,7 @@ export interface RuntimeProfileRow {
   is_default: boolean;
 }
 
-export interface ConversationRuntimeThreadRow {
+interface ConversationRuntimeThreadRow {
   agent_id: string;
   execution_host_id: string;
   workspace_mode: "managed" | "location";
@@ -667,7 +667,7 @@ export function hostSummary(host: ExecutionHostRow, sessionId: string): Conversa
   };
 }
 
-export function hasConversationWorkspace(value: unknown, sessionId: string): boolean {
+function hasConversationWorkspace(value: unknown, sessionId: string): boolean {
   if (!Array.isArray(value)) return false;
   return value.some((item) => item && typeof item === "object"
     && (item as Record<string, unknown>).container_kind === "conversation"

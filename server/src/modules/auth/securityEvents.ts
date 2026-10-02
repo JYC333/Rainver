@@ -5,7 +5,7 @@ import type { Pool } from "../../db/pool.js";
  * The event table is deliberately JSONB, but callers must not turn it into a
  * free-form logging sink. Only these small, non-secret facts are accepted.
  */
-export const AUTH_EVENT_DETAIL_KEYS = [
+const AUTH_EVENT_DETAIL_KEYS = [
   "action",
   "degraded_dependency",
   "email_domain",

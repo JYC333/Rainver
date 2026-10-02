@@ -24,7 +24,7 @@ import {
   type DiscoveredAutonomyCandidate,
 } from "./registry.js";
 
-export interface ObserveAutonomyTickInput {
+interface ObserveAutonomyTickInput {
   spaceId: string;
   automationId: string;
   ownerUserId: string;
@@ -32,7 +32,7 @@ export interface ObserveAutonomyTickInput {
   now?: Date;
 }
 
-export interface AutonomyTickResult {
+interface AutonomyTickResult {
   tick_id: string;
   mode: "observe_only";
   status: "succeeded";
@@ -43,7 +43,7 @@ export interface AutonomyTickResult {
   candidate_ids: string[];
 }
 
-export interface LaunchAutonomyCandidatesInput {
+interface LaunchAutonomyCandidatesInput {
   automation: AutomationRow;
   triggerType: string;
   preflightSnapshot: Record<string, unknown>;
@@ -53,7 +53,7 @@ export interface LaunchAutonomyCandidatesInput {
   now?: Date;
 }
 
-export interface AutonomyLaunchTickResult {
+interface AutonomyLaunchTickResult {
   tick_id: string;
   coordinator_run_id: string;
   automation_run_id: string;

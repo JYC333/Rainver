@@ -47,7 +47,7 @@ export class BackupInProgressError extends BackupError {
   }
 }
 
-export interface BackupEntry {
+interface BackupEntry {
   name: string;
   kind: "auto" | "manual" | "unknown";
   created_at: string;

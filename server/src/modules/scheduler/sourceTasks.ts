@@ -33,7 +33,7 @@ import {
 } from "../sources/sourceRecipes/recipeScanWorker.js";
 import { SourceBackfillExecutionService } from "../sources/sourceBackfillExecutionService.js";
 
-export interface SourceTaskLogger {
+interface SourceTaskLogger {
   info(message: string): void;
   warn(message: string): void;
 }

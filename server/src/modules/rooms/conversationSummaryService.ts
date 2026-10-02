@@ -33,7 +33,7 @@ const RETRY_BASE_MS = 60_000;
 const RETRY_MAX_MS = 6 * 60 * 60_000;
 const RETRY_JITTER_RATIO = 0.2;
 
-export interface RoomConversationSummaryState {
+interface RoomConversationSummaryState {
   room_id: string;
   session_id: string;
   status: "idle" | "queued" | "running" | "waiting_provider" | "retry_wait" | "failed";
@@ -774,7 +774,7 @@ export class RoomConversationSummaryService {
   }
 }
 
-export function summaryOut(row: SummaryVersionRow, owner: boolean): Record<string, unknown> {
+function summaryOut(row: SummaryVersionRow, owner: boolean): Record<string, unknown> {
   return {
     id: row.id,
     version: row.version,
@@ -842,8 +842,8 @@ function isoDate(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
-export const ROOM_SUMMARY_SYSTEM_PROMPT_VERSION = "room-summary-prompt.v1";
-export const ROOM_SUMMARY_SCHEMA_VERSION = "room-summary-schema.v1";
+const ROOM_SUMMARY_SYSTEM_PROMPT_VERSION = "room-summary-prompt.v1";
+const ROOM_SUMMARY_SCHEMA_VERSION = "room-summary-schema.v1";
 const SUMMARY_SYSTEM = `You maintain a durable rolling summary for a shared Room conversation.
 Return only JSON: {"summary":"..."}. Preserve decisions, constraints, unresolved questions,
 tasks, important facts, and references needed to continue the conversation. Do not invent

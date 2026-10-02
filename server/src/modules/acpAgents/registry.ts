@@ -8,10 +8,10 @@
 
 import type { RuntimeBinaryTarget, RuntimeDistribution } from "../runtimeAdapters/specs.js";
 
-export const ACP_REGISTRY_URL = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
+const ACP_REGISTRY_URL = "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 
 /** One way of obtaining an agent, as the registry describes it. */
-export type AcpBinaryTarget = RuntimeBinaryTarget;
+type AcpBinaryTarget = RuntimeBinaryTarget;
 /** Keyed by the registry's platform names: `linux-x86_64`, `darwin-aarch64`, `windows-x86_64`, ... */
 export type AcpDistribution = RuntimeDistribution;
 

@@ -24,7 +24,7 @@ import { missingRequiredVariables, renderPromptMessages, renderPromptTemplate } 
 // marker (set by the built-in prompt sync or prompt version creation).
 const PROMPT_ASSET_TYPE = "prompt_template";
 
-export interface PromptAssetLookupRow extends Record<string, unknown> {
+interface PromptAssetLookupRow extends Record<string, unknown> {
   id: string;
   asset_key: string;
   space_id: string | null;

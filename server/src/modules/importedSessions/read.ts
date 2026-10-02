@@ -11,7 +11,7 @@ import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { PgImportedSessionRepository, type ImportedSessionRecordRow, type ImportedSessionRow } from "./repository.js";
 
-export interface ImportedSessionRead {
+interface ImportedSessionRead {
   session: ImportedSessionRow;
   records: ImportedSessionRecordRow[];
   truncated: boolean;

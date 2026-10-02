@@ -1,4 +1,4 @@
-export interface RoomAgentPresetDefinition {
+interface RoomAgentPresetDefinition {
   preset_id: string;
   name: string;
   description: string;
@@ -11,7 +11,7 @@ export interface RoomAgentPresetDefinition {
  * this immutable seed into a normal private Agent owned by the caller; the
  * Room never stores a reference to a global preset row.
  */
-export const ROOM_AGENT_PRESETS: readonly RoomAgentPresetDefinition[] = [
+const ROOM_AGENT_PRESETS: readonly RoomAgentPresetDefinition[] = [
   {
     preset_id: "research-analyst",
     name: "Research Analyst",

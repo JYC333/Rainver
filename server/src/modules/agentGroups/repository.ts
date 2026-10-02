@@ -33,7 +33,7 @@ export interface AgentRunGroupRecord {
   ended_at: string | null;
 }
 
-export interface AgentRunGroupMemberRecord {
+interface AgentRunGroupMemberRecord {
   id: string;
   space_id: string;
   group_id: string;
@@ -46,7 +46,7 @@ export interface AgentRunGroupMemberRecord {
   updated_at: string;
 }
 
-export interface AgentRunGroupMemberWithAgentStatus extends AgentRunGroupMemberRecord {
+interface AgentRunGroupMemberWithAgentStatus extends AgentRunGroupMemberRecord {
   agent_status: string | null;
   agent_kind: string | null;
   /** The Agent's current version — what a Run created for it now is attributed to. */
@@ -92,12 +92,12 @@ export interface RunDelegationRecord {
   completed_at: string | null;
 }
 
-export interface RunDelegationLifecycleUpdateResult {
+interface RunDelegationLifecycleUpdateResult {
   delegation: RunDelegationRecord | null;
   changed: boolean;
 }
 
-export interface AgentStatusRecord {
+interface AgentStatusRecord {
   id: string;
   status: string;
   agent_kind: string;

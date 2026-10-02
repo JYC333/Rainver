@@ -30,7 +30,7 @@ const RECORD_COLUMNS = `id, imported_session_id, record_key, content_hash, confl
   truncated, parser_version, extracted_in, created_at`;
 
 /** What one session's reconciliation changed, for the caller's report. */
-export interface ReconcileOutcome {
+interface ReconcileOutcome {
   session: ImportedSessionRow;
   inserted: number;
   unchanged: number;

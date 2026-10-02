@@ -53,7 +53,7 @@ const ALLOWED_TASK_FIELDS = new Set([
   "metadata_json",
 ]);
 
-export interface FollowUpTaskFields {
+interface FollowUpTaskFields {
   title: string;
   description: string | null;
   taskType: string;
@@ -170,7 +170,7 @@ export function parseFollowUpTaskPayload(value: unknown): FollowUpTaskFields {
   };
 }
 
-export interface FollowUpTaskOrigin {
+interface FollowUpTaskOrigin {
   /** The Run whose output asked for it. */
   runId: string | null;
   /** Set only when the write went through the proposal route. */

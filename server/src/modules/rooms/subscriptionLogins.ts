@@ -29,7 +29,7 @@ export interface QuotaReading {
 }
 
 /** A reading younger than this is used as it is; an older one is probed first. */
-export const QUOTA_READING_MAX_AGE_MS = 60_000;
+const QUOTA_READING_MAX_AGE_MS = 60_000;
 /**
  * How long an admission waits for a probe. A probe can take the host's full
  * timeout (45 s), and an admission runs inside the transaction that commits

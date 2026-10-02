@@ -19,7 +19,7 @@ interface OfficialPluginPackageManifest {
   };
 }
 
-export interface LoadOfficialPluginPackagesOptions {
+interface LoadOfficialPluginPackagesOptions {
   allowedPluginIds?: readonly string[];
 }
 

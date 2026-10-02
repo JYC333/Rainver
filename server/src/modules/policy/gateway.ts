@@ -10,7 +10,6 @@
  */
 
 import {
-  isAllowed,
   makeDecision,
   pyRepr,
   RISK_RANK,
@@ -89,7 +88,7 @@ export function isDurableAuditRequired(
   return false;
 }
 
-export type FailureMode = "best_effort" | "fail_closed";
+type FailureMode = "best_effort" | "fail_closed";
 
 export function resolveFailureMode(
   defn: PolicyActionDefinition | undefined,
@@ -154,7 +153,7 @@ export function buildAuditEnvelope(
 // Decision computation (gateway.py PolicyGateway._compute_decision)
 // ---------------------------------------------------------------------------
 
-export interface ComputedDecision {
+interface ComputedDecision {
   defn: PolicyActionDefinition | undefined;
   decision: PolicyDecision;
 }
@@ -516,6 +515,4 @@ function roleRank(role: string): number {
   if (role === "reviewer") return 1;
   return 0;
 }
-
-export { isAllowed };
 export type { Decision };

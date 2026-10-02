@@ -20,7 +20,7 @@ import {
   loadChatActionPreviewsByRunIds,
 } from "../agents/projectChatActionPreviews.js";
 
-export interface CreateSessionInput {
+interface CreateSessionInput {
   projectFolderId?: string | null;
   projectId?:string|null;
   title?: string | null;

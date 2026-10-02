@@ -39,7 +39,7 @@ import type {
   ThreadReferenceDisclosureRequired,
 } from "@rainver/protocol";
 
-export interface ResolvedThreadReference {
+interface ResolvedThreadReference {
   content: string;
   provenance: ThreadReferenceProvenance;
   /** Who can read the source, asked of the same gate the read itself uses. */

@@ -1021,7 +1021,7 @@ function isPgPool(db: Queryable): db is Pool {
   return typeof (db as { connect?: unknown }).connect === "function";
 }
 
-export function targetToOut(row: EvolutionTargetRow): Record<string, unknown> {
+function targetToOut(row: EvolutionTargetRow): Record<string, unknown> {
   const metadata = objectValue(row.metadata_json);
   return {
     id: row.id,
@@ -1047,7 +1047,7 @@ export function targetToOut(row: EvolutionTargetRow): Record<string, unknown> {
   };
 }
 
-export function signalToOut(row: EvolutionSignalRow): Record<string, unknown> {
+function signalToOut(row: EvolutionSignalRow): Record<string, unknown> {
   return {
     id: row.id,
     space_id: row.space_id,

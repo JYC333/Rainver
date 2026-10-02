@@ -26,7 +26,7 @@ import { PgRunRepository } from "../runs/repository.js";
 import { PgRoomRepository } from "../rooms/repository.js";
 import { canonicalRunOutput } from "../runs/orchestrationResults.js";
 
-export interface ProjectRow {
+interface ProjectRow {
   id: string;
   space_id: string;
   owner_user_id: string | null;
@@ -42,7 +42,7 @@ export interface ProjectRow {
   archived_at: unknown;
 }
 
-export interface ProjectMemberRow {
+interface ProjectMemberRow {
   id: string;
   space_id: string;
   project_id: string;
@@ -53,7 +53,7 @@ export interface ProjectMemberRow {
   updated_at: unknown;
 }
 
-export interface ProjectPublicSummaryRow {
+interface ProjectPublicSummaryRow {
   id: string;
   space_id: string;
   project_id: string;

@@ -9,7 +9,7 @@ import type {
   MessageOut,
 } from "@rainver/protocol";
 
-export interface ChatConversationWindowMessage {
+interface ChatConversationWindowMessage {
   message_id: string | null;
   role: string;
   content: string;
@@ -18,7 +18,7 @@ export interface ChatConversationWindowMessage {
   current: boolean;
 }
 
-export interface ChatConversationWindow {
+interface ChatConversationWindow {
   version: "conversation_window.v1";
   messages: ChatConversationWindowMessage[];
   token_count: number;
@@ -27,7 +27,7 @@ export interface ChatConversationWindow {
   trace: Record<string, unknown>;
 }
 
-export interface BuildChatConversationWindowInput {
+interface BuildChatConversationWindowInput {
   messages: readonly MessageOut[];
   currentMessage: MessageOut;
   maxTokens?: number;

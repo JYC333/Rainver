@@ -67,7 +67,7 @@ export interface ActiveLocationWithHost extends WorkspaceLocationRow {
  * keep the old field names and join the Folder identity fields here rather
  * than leaking the internal Location vocabulary onto the daemon wire.
  */
-export interface HostWorkspaceOut {
+interface HostWorkspaceOut {
   id: string;
   project_id: string;
   name: string;

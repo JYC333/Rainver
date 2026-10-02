@@ -14,7 +14,7 @@ interface ActivityRow {
   space_type: string;
 }
 
-export interface CaptureFilingResult {
+interface CaptureFilingResult {
   activity_id: string;
   object_id: string;
   target_space_id: string;

@@ -30,9 +30,9 @@ import {
  * so, and points at `list` rather than naming a fixed set, so a Run that was
  * granted less does not read instructions for actions it cannot invoke.
  */
-export const WORK_SKILL_ID = "rainver-work";
+const WORK_SKILL_ID = "rainver-work";
 
-export const WORK_SKILL_FILE_NAME = "SKILL.md";
+const WORK_SKILL_FILE_NAME = "SKILL.md";
 
 /** Where the Skill is written, relative to the run directory the host makes. */
 export const WORK_SKILL_RELATIVE_PATH = `rainver/${WORK_SKILL_FILE_NAME}`;

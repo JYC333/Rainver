@@ -19,7 +19,7 @@ import type { WorkflowNodeInputBinding } from "@rainver/protocol";
 import { contentReadSql, runReadSql } from "../access/contentAccessSql.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 
-export interface AgentPlanProposalInput {
+interface AgentPlanProposalInput {
   sourceTaskId: string;
   planId?: string | null;
   planningRunId: string;

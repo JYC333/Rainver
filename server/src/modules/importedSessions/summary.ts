@@ -105,7 +105,7 @@ function sameInstant(left: unknown, right: unknown): boolean {
   return new Date(left as string | Date).getTime() === new Date(right as string | Date).getTime();
 }
 
-export interface ImportedHistorySummaryRow {
+interface ImportedHistorySummaryRow {
   summary_text: string;
   /** A `Date` at runtime whatever the column says; compare with `sameInstant`. */
   covered_through_record_at: string | Date | null;

@@ -7,7 +7,7 @@ import type { PromptMessage } from "@rainver/protocol";
 // dropped.
 const VARIABLE_PATTERN = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
 
-export interface RenderedTemplate {
+interface RenderedTemplate {
   rendered: string;
   missingVariables: string[];
 }
@@ -24,7 +24,7 @@ export function renderPromptTemplate(input: string, variables: Record<string, un
   return { rendered, missingVariables: [...missing] };
 }
 
-export interface RenderedMessages {
+interface RenderedMessages {
   messages: PromptMessage[];
   missingVariables: string[];
 }

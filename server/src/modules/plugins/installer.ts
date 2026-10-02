@@ -5,7 +5,7 @@ import { HttpError } from "../routeUtils/common.js";
 import { getOfficialPlugin } from "./registry.js";
 import { pluginRepository, type PluginInstallRow } from "./repository.js";
 
-export interface InstallPluginOptions {
+interface InstallPluginOptions {
   actorUserId: string | null;
   source?: PluginInstallRow["source"];
 }

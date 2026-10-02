@@ -15,16 +15,16 @@ import {
 } from "../providers/eligibility.js";
 
 export const ROOM_CONVERSATION_TITLE_JOB = "room_conversation_title";
-export const ROOM_CONVERSATION_TITLE_TASK = "room_conversation_title";
+const ROOM_CONVERSATION_TITLE_TASK = "room_conversation_title";
 
 const PLACEHOLDER_TITLE_SQL = `lower(btrim(COALESCE(session_row.title, ''))) IN ('', 'conversation', 'new conversation')`;
 
-export interface RoomConversationTitleDependencies {
+interface RoomConversationTitleDependencies {
   resolveProviderStore?: (config: ServerConfig) => ProviderCommandStore;
   completeProviderMessages?: typeof completeProviderMessages;
 }
 
-export interface RoomConversationTitleResult {
+interface RoomConversationTitleResult {
   id: string;
   space_id: string;
   user_id: null;

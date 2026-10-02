@@ -100,7 +100,7 @@ export interface AgentRecord {
   runtime_key?: string | null;
 }
 
-export interface AgentVersionRecord {
+interface AgentVersionRecord {
   id: string;
   agent_id: string;
   space_id: string;
@@ -152,7 +152,7 @@ export interface AgentOut {
   updated_at: unknown;
 }
 
-export interface AssistantSettingsRecord {
+interface AssistantSettingsRecord {
   id: string;
   space_id: string;
   assistant_agent_id: string | null;
@@ -166,7 +166,7 @@ export interface AssistantSettingsRecord {
   updated_at: unknown;
 }
 
-export interface SpaceAgentRuntimeDefaultRecord {
+interface SpaceAgentRuntimeDefaultRecord {
   space_id: string;
   runtime_key: string;
   backend_mode: "runtime_native" | "model_provider";
@@ -366,7 +366,7 @@ function assistantSettingsRecordFromRead(
   };
 }
 
-export interface AgentChatRecord {
+interface AgentChatRecord {
   id: string;
   space_id: string;
   name: string | null;

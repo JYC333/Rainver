@@ -653,7 +653,7 @@ export class PgCapabilitiesRepository {
   }
 }
 
-export interface SkillConversionApplyResult {
+interface SkillConversionApplyResult {
   skill_package: SkillPackage;
   capability_definition: CapabilityDefinition;
   capability_version_id: string;

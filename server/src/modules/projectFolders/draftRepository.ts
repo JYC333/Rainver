@@ -5,7 +5,7 @@ import type { Queryable } from "../routeUtils/common.js";
 
 export const PROJECT_FILE_DRAFT_MAX_BYTES = 1_048_576;
 export const PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES = 50 * 1_048_576;
-export const PROJECT_FILE_DRAFT_TTL_DAYS = 90;
+const PROJECT_FILE_DRAFT_TTL_DAYS = 90;
 
 export interface ProjectFileDraftRow {
   id: string;

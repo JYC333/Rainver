@@ -30,7 +30,7 @@ type SourceItemFilterRow = {
   source_domain: string | null;
 };
 
-export type ProjectSourceBackfillResult = {
+type ProjectSourceBackfillResult = {
   created_links: number;
   reactivated_links: number;
   archived_links: number;
@@ -73,7 +73,7 @@ function filterText(item: SourceItemFilterRow): string {
   ].filter(Boolean).join(" ").toLowerCase();
 }
 
-export function sourceItemMatchesProjectFilters(item: SourceItemFilterRow, filters: unknown): boolean {
+function sourceItemMatchesProjectFilters(item: SourceItemFilterRow, filters: unknown): boolean {
   if (!filters || typeof filters !== "object" || Array.isArray(filters)) return true;
   const values = filters as Record<string, unknown>;
   const text = filterText(item);

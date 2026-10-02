@@ -6,7 +6,7 @@ import { getDbPool, type Pool } from "../../db/pool.js";
 import { createBetterAuth } from "./betterAuth.js";
 import { hashOpaqueToken } from "./securityPolicy.js";
 
-export const API_KEYS_NOT_IMPLEMENTED = "API key storage is not in the canonical schema (ApiKey is deferred).";
+const API_KEYS_NOT_IMPLEMENTED = "API key storage is not in the canonical schema (ApiKey is deferred).";
 
 export type IntrospectionResult =
   | { ok: true; spaceId: string; userId: string }
@@ -69,7 +69,7 @@ export function sessionTokenFromRequest(request: FastifyRequest): string | undef
   const cookie = headerValue(request.headers.cookie);
   return cookie ? getSessionCookie(new Headers({ cookie })) ?? undefined : undefined;
 }
-export function authFailureBody(detail: string): string { return JSON.stringify({ detail }) }
+function authFailureBody(detail: string): string { return JSON.stringify({ detail }) }
 function headerValue(value: string | string[] | undefined): string | undefined { return Array.isArray(value) ? value[0] : value }
 function logicalSessionToken(token: string): string { return token.split(".", 1)[0]! }
 function asIso(value: Date | string | null): string | null { if (value === null) return null; return value instanceof Date ? value.toISOString() : new Date(value).toISOString() }

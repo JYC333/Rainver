@@ -16,13 +16,13 @@ import { actionNodeHandlerRegistry, ActionNodeHandlerError } from "./actionNodeR
 import { workflowExecutionOutcomeHandlerRegistry } from "./workflowExecutionOutcomeRegistry.js";
 import type { WorkflowNodeInputBinding } from "@rainver/protocol";
 
-export interface ResolvedWorkflowExecutionTarget {
+interface ResolvedWorkflowExecutionTarget {
   versionId: string;
   contentJson: unknown;
   resolutionTrace: string[];
 }
 
-export interface WorkflowExecutionStartInput {
+interface WorkflowExecutionStartInput {
   db: Queryable;
   identity: SpaceUserIdentity;
   automation: AutomationRow;

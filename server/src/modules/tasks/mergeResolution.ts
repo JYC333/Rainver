@@ -90,7 +90,7 @@ export class TaskMergeResolutionDispatcher implements TaskMergeConflictResolver 
  * the one thing it must not do — commit or move branches itself, which is the
  * merge's to do once it has checked the result.
  */
-export function resolutionPrompt(input: {
+function resolutionPrompt(input: {
   title: string;
   description: string | null;
   definitionOfDone: string | null;

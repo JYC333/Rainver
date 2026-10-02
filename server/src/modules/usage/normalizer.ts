@@ -11,7 +11,7 @@ import type {
   UsageObservation,
 } from "./types.js";
 
-export const USAGE_NORMALIZATION_VERSION = 1;
+const USAGE_NORMALIZATION_VERSION = 1;
 
 const TRACE_UNSAFE_KEY_RE =
   /(api[_-]?key|authorization|bearer|token|secret|password|credential|prompt|completion|message|messages|content|stdout|stderr|transcript|body|request|response|system|user|assistant|file[_-]?content|raw|context|rendered)/i;
@@ -509,7 +509,7 @@ export function accuracyMixZero(): Record<UsageAccuracy, number> {
   };
 }
 
-export function normalizeDedupeConfidence(value: unknown): UsageDedupeConfidence {
+function normalizeDedupeConfidence(value: unknown): UsageDedupeConfidence {
   return value === "high" || value === "medium" || value === "low" ? value : "high";
 }
 

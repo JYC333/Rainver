@@ -21,7 +21,7 @@ import type { AgentActionContext } from "./taskActions.js";
  */
 export type RunArtifactRole = "output" | "evidence" | "draft";
 
-export interface RunArtifactDeclaration {
+interface RunArtifactDeclaration {
   id: string;
   task_id: string;
   path: string;
@@ -114,7 +114,7 @@ export async function declareRunArtifact(
 }
 
 /** Every declaration this Run made, for materialization to apply. */
-export async function listRunArtifactDeclarations(
+async function listRunArtifactDeclarations(
   db: Queryable,
   spaceId: string,
   runId: string,

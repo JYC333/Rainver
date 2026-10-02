@@ -43,8 +43,6 @@ export interface SystemActionDispatcherDeps extends RetrievalToolDeps {
   actionEventSink?: (eventType: "action_invoked" | "action_completed", call: CanonicalToolCall, metadata?: Record<string, unknown>) => Promise<void>;
 }
 
-export type { SystemActionDispatchResult } from "./toolResult.js";
-
 const NOT_GRANTED_MESSAGE = "This system action is not granted to the Run.";
 
 /**

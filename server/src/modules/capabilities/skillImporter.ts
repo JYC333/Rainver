@@ -18,7 +18,7 @@ export interface SkillCommitResolver {
   (repo: string, ref: string): Promise<string | null>;
 }
 
-export interface SkillPackageListSource {
+interface SkillPackageListSource {
   repo: string;
   ref: string;
   commitSha: string | null;
@@ -72,7 +72,7 @@ function assertAllowedFetchHost(candidate: string): void {
   }
 }
 
-export const defaultSkillFetcher: SkillFetcher = async (url) => {
+const defaultSkillFetcher: SkillFetcher = async (url) => {
   assertAllowedFetchHost(url);
   const response = await fetch(url, { method: "GET", redirect: "follow" });
   if (!response.ok) {
@@ -88,7 +88,7 @@ export const defaultSkillFetcher: SkillFetcher = async (url) => {
   return { body: await response.text(), finalUrl: response.url, contentType };
 };
 
-export const defaultGitHubCommitResolver: SkillCommitResolver = async (repo, ref) => {
+const defaultGitHubCommitResolver: SkillCommitResolver = async (repo, ref) => {
   if (commitSha(ref)) return ref;
   const response = await fetch(
     `https://api.github.com/repos/${repo}/commits/${encodeURIComponent(ref)}`,
@@ -108,7 +108,7 @@ export const defaultGitHubCommitResolver: SkillCommitResolver = async (repo, ref
   return typeof sha === "string" && commitSha(sha) ? sha : null;
 };
 
-export const defaultGitHubPackageLister: SkillPackageLister = async (source) => {
+const defaultGitHubPackageLister: SkillPackageLister = async (source) => {
   const treeish =
     source.commitSha ? await resolveGitHubTreeSha(source.repo, source.commitSha) : source.ref;
   const response = await fetch(

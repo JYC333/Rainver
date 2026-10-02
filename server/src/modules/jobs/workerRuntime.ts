@@ -60,7 +60,7 @@ const RECLAIM_INTERVAL_MS = 120_000;
 // latency requirement must not shorten the global orphan-reclaim boundary.
 const STUCK_AFTER_SECONDS = 600;
 
-export interface JobsWorkerLogger {
+interface JobsWorkerLogger {
   info(message: string): void;
   warn(message: string): void;
   error(message: string): void;

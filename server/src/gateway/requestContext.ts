@@ -53,7 +53,7 @@ export function readHeader(request: FastifyRequest, name: string): string | unde
  * attach authenticated identity after validating a session cookie; raw credentials
  * never belong in this object.
  */
-export interface RequestContext {
+interface RequestContext {
   /** Preserved or generated correlation id for this request. */
   requestId: string;
   method: string;

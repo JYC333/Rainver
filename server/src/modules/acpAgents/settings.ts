@@ -13,7 +13,7 @@ export interface EnabledAcpAgent extends AcpRegistryEntry {
   enabled_by_user_id: string | null;
 }
 
-export interface AcpAgentsSettingsValue {
+interface AcpAgentsSettingsValue {
   agents: EnabledAcpAgent[];
 }
 
@@ -43,7 +43,7 @@ export const ACP_AGENTS_SETTINGS = defineScopedSetting<AcpAgentsSettingsValue>({
 export const ACP_AGENTS_SCOPE_ID = "instance";
 
 /** The registry entries builtin adapters are installed from, as last fetched. */
-export interface AcpRegistryCacheValue {
+interface AcpRegistryCacheValue {
   entries: AcpRegistryEntry[];
   fetched_at: string | null;
 }

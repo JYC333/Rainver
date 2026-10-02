@@ -20,7 +20,7 @@ import {
   type RelocationMode,
 } from "./relocation.js";
 
-export interface RelocationPreview {
+interface RelocationPreview {
   activity_id: string;
   note_id: string;
   blocks: RelocationBlock[];
@@ -28,7 +28,7 @@ export interface RelocationPreview {
   can_copy_out: boolean;
 }
 
-export interface RelocationResult {
+interface RelocationResult {
   activity_id: string;
   destination: CaptureDestination;
   mode: RelocationMode;

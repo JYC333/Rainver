@@ -18,11 +18,11 @@ import { sourceItemReadableClause, sourceSnapshotReadableForEvidenceClause } fro
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "./access.js";
 import { materializePassingProjectCorpusItems } from "./corpusMaterialization.js";
 
-export type ProjectCorpusRole = "candidate" | "reference" | "primary" | "related" | "background";
-export type ProjectCorpusStatus = "active" | "archived";
-export type ProjectCorpusTriageStatus = "new" | "relevant" | "maybe" | "excluded" | "included";
-export type ProjectCorpusReadStatus = "unread" | "skimmed" | "read" | "discussed";
-export type ProjectCorpusRelevance = "relevant" | "maybe" | "not_relevant";
+type ProjectCorpusRole = "candidate" | "reference" | "primary" | "related" | "background";
+type ProjectCorpusStatus = "active" | "archived";
+type ProjectCorpusTriageStatus = "new" | "relevant" | "maybe" | "excluded" | "included";
+type ProjectCorpusReadStatus = "unread" | "skimmed" | "read" | "discussed";
+type ProjectCorpusRelevance = "relevant" | "maybe" | "not_relevant";
 
 interface ProjectCorpusItemRow {
   id: string;
@@ -146,7 +146,7 @@ function readableCorpusItemFrom(viewerParam: string): string {
           )`;
 }
 
-export interface ProjectCorpusBackfillResult {
+interface ProjectCorpusBackfillResult {
   project_id: string;
   source_items: number;
   source_objects: number;

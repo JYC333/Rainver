@@ -12,7 +12,7 @@ import { declaredRequiredOutputs, missingRequiredOutputs } from "./settlement.js
  * write path then denies.
  */
 
-export interface TaskCompletionState {
+interface TaskCompletionState {
   ok: boolean;
   missing: string[];
 }

@@ -26,12 +26,6 @@ import type {
   MeTimelineEntry,
   QueryParams,
 } from "./frontendSupportTypes.js";
-export type {
-  HomeSummaryOut,
-  MePendingProposalItem,
-  MeSummaryOut,
-  MeTimelineEntry,
-} from "./frontendSupportTypes.js";
 
 interface OperationInProgressRow {
   id: string;

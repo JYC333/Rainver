@@ -8,7 +8,7 @@ import {
   type AgentExecutionConstraintsPatch,
 } from "@rainver/protocol";
 
-export interface AgentConfigPatch {
+interface AgentConfigPatch {
   userId: string;
   name?: string | null;
   description?: string | null;
@@ -109,7 +109,7 @@ export function parseExecutionConstraints(value: unknown): AgentExecutionConstra
   return parsed.data;
 }
 
-export function parseExecutionConstraintsPatch(value: unknown): AgentExecutionConstraintsPatch {
+function parseExecutionConstraintsPatch(value: unknown): AgentExecutionConstraintsPatch {
   const parsed = AgentExecutionConstraintsPatchSchema.safeParse(value);
   if (!parsed.success) {
     throw new HttpError(422, `Invalid execution_constraints: ${parsed.error.issues[0]?.message ?? "invalid value"}`);
@@ -190,7 +190,7 @@ export function optionalRecordBody(
   return nullableRecordBody(body, key);
 }
 
-export function nullableRecordBody(
+function nullableRecordBody(
   body: Record<string, unknown>,
   key: string,
 ): Record<string, unknown> | null {

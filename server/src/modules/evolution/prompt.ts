@@ -14,7 +14,7 @@ import type {
 
 export const EVOLUTION_PLAN_PROMPT_VERSION = "evolution_plan.prompt.v1";
 export const EVOLUTION_PLAN_REVIEW_SCHEMA = "rainver.evolution_plan_review.v1";
-export const EVOLUTION_AVAILABLE_PROPOSAL_TYPES = [
+const EVOLUTION_AVAILABLE_PROPOSAL_TYPES = [
   "memory_create",
   "memory_update",
   "memory_archive",
@@ -45,14 +45,14 @@ export const EVOLUTION_AVAILABLE_PROPOSAL_TYPES = [
   "follow_up_task",
   "code_patch",
 ] as const;
-export const EVOLUTION_REVIEW_ARTIFACT_ONLY_TYPES = [
+const EVOLUTION_REVIEW_ARTIFACT_ONLY_TYPES = [
   "prompt_update",
   "agent_config_update",
 ] as const;
 
 const CONTEXT_MAX_CHARS = 18_000;
 
-export interface EvolutionPlanPromptContext {
+interface EvolutionPlanPromptContext {
   target: EvolutionTargetRow;
   selectedStrategy: EvolutionStrategyAssetRow;
   recentSignals: EvolutionSignalRow[];
@@ -62,7 +62,7 @@ export interface EvolutionPlanPromptContext {
   requestSignalId?: string | null;
 }
 
-export interface EvolutionPlanPrompt {
+interface EvolutionPlanPrompt {
   prompt_version: typeof EVOLUTION_PLAN_PROMPT_VERSION;
   system: string;
   user: string;

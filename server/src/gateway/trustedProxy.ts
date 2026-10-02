@@ -1,6 +1,6 @@
 import { lookup } from "node:dns/promises";
 
-export type ResolveAllAddresses = (hostname: string) => Promise<string[]>;
+type ResolveAllAddresses = (hostname: string) => Promise<string[]>;
 
 const defaultResolveAll: ResolveAllAddresses = async (hostname) =>
   (await lookup(hostname, { all: true })).map((entry) => entry.address);

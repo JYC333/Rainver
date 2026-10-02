@@ -23,7 +23,7 @@
 
 type Waiter = (outcome: JobWakeOutcome) => void;
 
-export type JobWakeOutcome = "signalled" | "timeout";
+type JobWakeOutcome = "signalled" | "timeout";
 
 const waiters = new Set<Waiter>();
 

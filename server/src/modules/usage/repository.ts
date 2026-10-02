@@ -59,7 +59,7 @@ export interface UsageEventRecord {
   created_at: string;
 }
 
-export interface UsageTotals {
+interface UsageTotals {
   event_count: number;
   request_count: number;
   input_tokens: number;
@@ -83,7 +83,7 @@ export interface UsageRunSummaryRecord {
   model_names: string[] | null;
 }
 
-export interface UsageBreakdownRow {
+interface UsageBreakdownRow {
   group_key: string;
   group_label: string;
   totals: UsageTotals;
@@ -91,7 +91,7 @@ export interface UsageBreakdownRow {
   last_seen_at: string | null;
 }
 
-export interface UsageTimeseriesRow extends UsageBreakdownRow {
+interface UsageTimeseriesRow extends UsageBreakdownRow {
   bucket_start: string;
 }
 
@@ -119,7 +119,7 @@ export interface UsageQueryFilters {
   offset?: number;
 }
 
-export interface UsageImportBatchRecord {
+interface UsageImportBatchRecord {
   id: string;
   instance_id: string;
   target_space_id: string;
@@ -137,7 +137,7 @@ export interface UsageImportBatchRecord {
   updated_at: string;
 }
 
-export interface UsageImportBatchCreateInput {
+interface UsageImportBatchCreateInput {
   instanceId: string;
   targetSpaceId: string;
   ownerUserId: string;

@@ -39,7 +39,7 @@ interface QueuedRow {
 }
 
 /** The send request a queued message is posted with, exactly as it was made. */
-export interface QueuedSendRequest {
+interface QueuedSendRequest {
   routing_mode: "direct" | "agent_coordination";
   recipient_segments: AgentGroupMessageRecipientSegment[] | null;
   focus_refs: Array<{ type: "task"; id: string }> | null;

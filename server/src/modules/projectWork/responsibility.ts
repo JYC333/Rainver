@@ -73,7 +73,7 @@ export function responsibleAgentSql(taskAlias: string): string {
   END`;
 }
 
-export interface ResponsibleActorRow {
+interface ResponsibleActorRow {
   responsible_user_id: string | null;
   responsible_agent_id: string | null;
   responsible_user_name?: string | null;

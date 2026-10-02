@@ -17,7 +17,7 @@ import { getDbPool } from "../../db/pool.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { RunMaterializationService } from "../runs/materializationService.js";
 
-export interface JobOut {
+interface JobOut {
   id: string;
   space_id: string;
   user_id: string | null;
@@ -41,7 +41,7 @@ export interface JobOut {
   updated_at: string;
 }
 
-export interface JobEventOut {
+interface JobEventOut {
   id: string;
   job_id: string;
   event_type: string;

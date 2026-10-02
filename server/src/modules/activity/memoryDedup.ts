@@ -2,7 +2,7 @@ import { RetrievalSearchService } from "../retrieval/index.js";
 import { memoryRetrievalRegistry } from "../memory/retrievalAdapter.js";
 import type { Queryable } from "../routeUtils/common.js";
 
-export interface ActivityMemoryDedupResult {
+interface ActivityMemoryDedupResult {
   duplicate: boolean;
   createSafety: "exists" | "probable_duplicate" | "unknown";
   matchIds: string[];

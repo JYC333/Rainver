@@ -26,9 +26,8 @@ import {
 } from "./publicSummaryPrompt.js";
 import { PgProjectRepository } from "./repository.js";
 
-export const PROJECT_PUBLIC_SUMMARY_TASK = "project_public_summary";
+const PROJECT_PUBLIC_SUMMARY_TASK = "project_public_summary";
 export {
-  PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION,
   PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION,
 } from "./publicSummaryPrompt.js";
 import type { ContentAccessLevel } from "../access/contentAccessTypes.js";
@@ -98,7 +97,7 @@ interface GeneratorContext extends PublicSummaryPromptContext {
   allowedSourceRefs: Map<string, PublicSummarySourceRef>;
 }
 
-export interface GeneratePublicSummaryInput {
+interface GeneratePublicSummaryInput {
   providerId?: string | null;
   model?: string | null;
   maxTokens?: number | null;

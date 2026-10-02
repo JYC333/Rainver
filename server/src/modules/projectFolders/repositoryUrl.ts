@@ -5,7 +5,7 @@ import { HttpError } from "../routeUtils/common.js";
  * path or `file://`, which would copy a repository from the server's own disk
  * into the Space, so only network transports are allowed.
  */
-export const CLONE_PROTOCOLS = ["https", "http", "ssh", "git"] as const;
+const CLONE_PROTOCOLS = ["https", "http", "ssh", "git"] as const;
 
 /** git's own allow-list for the clone, so a redirect or nested fetch cannot switch transport. */
 export const CLONE_GIT_ALLOW_PROTOCOL = CLONE_PROTOCOLS.join(":");

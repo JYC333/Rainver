@@ -3,7 +3,7 @@ import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import type { RetrievalObjectType } from "@rainver/protocol";
 
-export interface ContentAccessLogEntry {
+interface ContentAccessLogEntry {
   id: string;
   space_id: string;
   resource_type: string;

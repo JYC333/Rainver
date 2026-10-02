@@ -20,7 +20,7 @@ interface WorkflowSource {
   contract_snapshot_json: unknown;
 }
 
-export interface RunWorkflowPreview {
+interface RunWorkflowPreview {
   run_id: string;
   source_kind: "run" | "plan";
   risk_level: string;

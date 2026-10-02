@@ -90,7 +90,7 @@ interface SummarySourceRef {
   evidence_json?: Record<string, unknown>;
 }
 
-export interface ActivityListFilters {
+interface ActivityListFilters {
   userId?: string | null;
   projectFolderId?: string | null;
   sourceType?: string | null;
@@ -101,7 +101,7 @@ export interface ActivityListFilters {
   offset: number;
 }
 
-export interface SummaryRunInput {
+interface SummaryRunInput {
   activityIds: string[];
   evidenceIds: string[];
   sourceItemIds: string[];
@@ -649,7 +649,7 @@ function buildActivityWhere(
   return { where: `WHERE ${clauses.join(" AND ")}`, params };
 }
 
-export function activityToOut(row: WithAccessLevel<ActivityRow>): Record<string, unknown> {
+function activityToOut(row: WithAccessLevel<ActivityRow>): Record<string, unknown> {
   const summaryOnly = isSummaryOnly(row);
   return {
     id: row.id,

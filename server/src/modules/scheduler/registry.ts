@@ -63,10 +63,10 @@ export interface SchedulerHandle {
   stop(): Promise<void>;
 }
 
-export type SchedulerTaskErrorHandler = (taskName: string, error: unknown) => Promise<void>;
+type SchedulerTaskErrorHandler = (taskName: string, error: unknown) => Promise<void>;
 
 /** Raised when a pass exceeds its reporting deadline. */
-export class ScheduledTaskTimeoutError extends Error {
+class ScheduledTaskTimeoutError extends Error {
   constructor(taskName: string, timeoutSeconds: number) {
     super(`Scheduled task ${taskName} did not complete within ${timeoutSeconds}s`);
     this.name = "ScheduledTaskTimeoutError";
@@ -345,7 +345,7 @@ export function startSchedulerRegistry(
   return registry;
 }
 
-export function taskTimeoutSeconds(task: ScheduledTask): number {
+function taskTimeoutSeconds(task: ScheduledTask): number {
   return task.timeoutSeconds ?? DEFAULT_TASK_TIMEOUT_SECONDS;
 }
 

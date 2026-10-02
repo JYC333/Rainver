@@ -5,9 +5,9 @@ import { withTransaction } from "../../db/tx.js";
 import { seedSpaceDefaults } from "../spaces/spaceSeeds.js";
 import { hashOpaqueToken, normalizeAuthEmail } from "./securityPolicy.js";
 
-export type RegistrationAuthority = "bootstrap" | "space_invitation";
-export interface RegistrationIntentResult { intentId: string; claimSecret: string; authority: RegistrationAuthority; email: string; invitationId: string | null }
-export interface RegistrationCompletion { userId: string; intentId: string; authority: RegistrationAuthority }
+type RegistrationAuthority = "bootstrap" | "space_invitation";
+interface RegistrationIntentResult { intentId: string; claimSecret: string; authority: RegistrationAuthority; email: string; invitationId: string | null }
+interface RegistrationCompletion { userId: string; intentId: string; authority: RegistrationAuthority }
 
 type RegistrationClient = {
   query<T = unknown>(text: string, values?: readonly unknown[]): Promise<{ rows: T[]; rowCount: number | null }>;

@@ -20,7 +20,7 @@ import {
 import { EvolvableAssetEvaluationRepository } from "./assetEvaluationRepository.js";
 
 export const EVOLVABLE_ASSET_EVALUATION_JOB = "evolvable_asset_evaluation";
-export const EVALUATION_CASE_EVALUATOR_VERSION = VERIFICATION_ENGINE_VERSION;
+const EVALUATION_CASE_EVALUATOR_VERSION = VERIFICATION_ENGINE_VERSION;
 const MAX_FIXTURE_BYTES = 128_000;
 
 interface AssetRow extends EvolvableAssetAccessRow {
@@ -84,7 +84,7 @@ const EVALUATION_COLUMNS = `
   created_at, updated_at
 `;
 
-export interface CreateEvaluationCaseInput {
+interface CreateEvaluationCaseInput {
   name?: string | null;
   description?: string | null;
   input_json?: Record<string, unknown> | null;
@@ -95,7 +95,7 @@ export interface CreateEvaluationCaseInput {
   source_run_id?: string | null;
 }
 
-export interface StartEvaluationInput {
+interface StartEvaluationInput {
   candidate_run_id?: string | null;
 }
 

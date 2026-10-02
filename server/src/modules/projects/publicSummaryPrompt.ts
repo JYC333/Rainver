@@ -64,7 +64,7 @@ export interface PublicSummaryPromptContext {
   allowedSourceRefs: Map<string, PublicSummarySourceRef>;
 }
 
-export interface GeneratedPublicSummary {
+interface GeneratedPublicSummary {
   summary_text: string;
   topics: string[];
   highlights: string[];

@@ -29,7 +29,7 @@ export interface PluginInstallRow {
   manifest_json: Record<string, unknown>;
 }
 
-export interface PluginMigrationRow {
+interface PluginMigrationRow {
   id: string;
   plugin_id: string;
   plugin_version: string;
@@ -40,7 +40,7 @@ export interface PluginMigrationRow {
   error_message: string | null;
 }
 
-export interface UpsertEnablementInput {
+interface UpsertEnablementInput {
   spaceId: string | null;  // null = user-scope
   userId: string | null;   // null = space-scope
   pluginId: string;
@@ -50,7 +50,7 @@ export interface UpsertEnablementInput {
   actorUserId: string;
 }
 
-export interface PatchSettingsInput {
+interface PatchSettingsInput {
   spaceId: string | null;
   userId: string | null;
   pluginId: string;
@@ -58,7 +58,7 @@ export interface PatchSettingsInput {
   actorUserId: string;
 }
 
-export interface UpsertInstallInput {
+interface UpsertInstallInput {
   pluginId: string;
   installedVersion: string;
   source: PluginInstallRow["source"];

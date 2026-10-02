@@ -8,7 +8,7 @@ import { contentResourceTypeForRetrievalObject } from "./audit.js";
 
 const DISCLOSURE_TTL_MS = 15 * 60 * 1000;
 
-export interface DemotionExposure {
+interface DemotionExposure {
   readers: Array<{
     user_id: string;
     display_name: string;
@@ -31,7 +31,7 @@ export interface DemotionExposure {
   }>;
 }
 
-export interface DemotionDisclosure {
+interface DemotionDisclosure {
   confirmation_id: string;
   expires_at: string;
   resource_type: string;

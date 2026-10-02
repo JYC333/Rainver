@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 
-export const SNAPSHOT_DEFAULT_RETENTION_DAYS = 7;
-export const SNAPSHOT_DEFAULT_MAX_COUNT = 20;
+const SNAPSHOT_DEFAULT_RETENTION_DAYS = 7;
+const SNAPSHOT_DEFAULT_MAX_COUNT = 20;
 
 export interface SnapshotFile {
   path: string;
@@ -23,7 +23,7 @@ interface SnapshotRow {
   rolled_back_at: unknown;
 }
 
-export interface CodePatchSnapshotOut {
+interface CodePatchSnapshotOut {
   id: string;
   proposal_id: string;
   space_id: string;

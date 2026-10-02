@@ -164,7 +164,7 @@ export interface SpawnChildRunInput {
   tool_call_id?: string | null;
 }
 
-export interface AgentGroupTimeline {
+interface AgentGroupTimeline {
   group: AgentRunGroupRecord;
   members: Awaited<ReturnType<PgAgentGroupRepository["listMembers"]>>;
   messages: AgentRunMessageRecord[];
@@ -3082,7 +3082,7 @@ function optionalTrimmed(value: string | null | undefined): string {
   return value?.trim() ?? "";
 }
 
-export function optionalTrimmedOrNull(value: string | null | undefined): string | null {
+function optionalTrimmedOrNull(value: string | null | undefined): string | null {
   const normalized = optionalTrimmed(value);
   return normalized || null;
 }

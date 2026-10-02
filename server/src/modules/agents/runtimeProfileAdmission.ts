@@ -107,7 +107,7 @@ export interface HostRuntimeProfileTarget {
   runtimeInstallation: string;
 }
 
-export interface RuntimeProfileAdmissionInput {
+interface RuntimeProfileAdmissionInput {
   agentId?: string;
   name: string;
   runtimeKey: string;
@@ -133,7 +133,7 @@ export interface RuntimeProfileAdmissionInput {
   agentContext?: { projectId: string | null; actorUserId: string | null };
 }
 
-export interface NormalizedRuntimeProfile {
+interface NormalizedRuntimeProfile {
   name: string;
   runtimeKey: string;
   backendMode: AgentRuntimeBackendMode;
@@ -163,7 +163,7 @@ export function runtimeConfigRecord(value: unknown): Record<string, unknown> {
   return parseOptionBag(RuntimeProfileConfigJsonSchema, value, "runtime_config_json");
 }
 
-export function runtimePolicyRecord(value: unknown): Record<string, unknown> {
+function runtimePolicyRecord(value: unknown): Record<string, unknown> {
   return parseOptionBag(RuntimeProfilePolicyJsonSchema, value, "runtime_policy_json");
 }
 
@@ -518,7 +518,7 @@ export function assertProviderExecutionTarget(
   }
 }
 
-export async function validateHostExecutionBinding(
+async function validateHostExecutionBinding(
   db: Queryable,
   input: {
     spaceId: string;

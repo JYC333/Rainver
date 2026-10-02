@@ -11,7 +11,7 @@ import { runtimeProviderEgressDestination } from "../retrieval/egress/egressPoli
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 
-export interface ExecutionControlSnapshotInputs {
+interface ExecutionControlSnapshotInputs {
   runtimeInstallation?: string | null;
   policyDecisionRecordIds?: readonly string[];
   /** A Host-daemon run resolves its backend when the execution Host dispatches it. */

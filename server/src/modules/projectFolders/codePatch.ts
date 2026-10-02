@@ -60,7 +60,7 @@ interface CodePatchPayload {
   };
 }
 
-export interface CodePatchCollectionResult {
+interface CodePatchCollectionResult {
   item: RunMaterializationItemSummary;
   errors: string[];
 }
@@ -99,7 +99,7 @@ export function registerProjectFolderProposalAppliers(registry: ProposalApplierR
   registry.register("code_patch", applyCodePatchProposal);
 }
 
-export async function collectAndCreateCodePatchProposal(input: {
+async function collectAndCreateCodePatchProposal(input: {
   config: ServerConfig;
   db: Queryable;
   run: RunRecord;

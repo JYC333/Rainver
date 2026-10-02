@@ -11,7 +11,7 @@ import {
   type OperationalAlertPort,
 } from "../notifications/operationalAlerts.js";
 
-export type JobProcessResult =
+type JobProcessResult =
   | { status: "idle" }
   | { status: "completed"; job_id: string }
   | { status: "deferred"; job_id: string }

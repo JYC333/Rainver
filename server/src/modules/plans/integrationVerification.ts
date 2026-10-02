@@ -1,7 +1,7 @@
 import type { Queryable } from "../routeUtils/common.js";
 import { runOutputResult } from "../runs/orchestrationResults.js";
 
-export interface PlanIntegrationVerification {
+interface PlanIntegrationVerification {
   status: "passed" | "failed";
   summary: string;
   checks: Array<{ name: string; status: "passed" | "failed"; details: Record<string, unknown> }>;

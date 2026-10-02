@@ -7,7 +7,7 @@ import {
   type ContentVisibility,
 } from "./contentAccessTypes.js";
 
-export interface ContentAccessSqlOptions {
+interface ContentAccessSqlOptions {
   /**
    * Whether Space oversight can widen this predicate. Defaults to true for
    * ordinary viewer-facing reads. Pass `false` for queries whose output
@@ -184,7 +184,7 @@ function contentOversightEligibleSql(spaceExpr: string, userExpr: string): strin
 }
 
 /** True when the viewer's oversight mode for this Space is `content` or `full` (full-level read). */
-export function contentOversightLevelAtLeastFullSql(spaceExpr: string, userExpr: string): string {
+function contentOversightLevelAtLeastFullSql(spaceExpr: string, userExpr: string): string {
   return `(
     EXISTS (
       SELECT 1 FROM spaces content_oversight_level_space

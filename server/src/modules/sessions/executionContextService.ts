@@ -39,9 +39,9 @@ import {
   type RuntimeProfileRow,
 } from "./executionContextRepository.js";
 
-export interface ConversationExecutionContextIdentity extends SpaceUserIdentity {}
+interface ConversationExecutionContextIdentity extends SpaceUserIdentity {}
 
-export class ConversationExecutionContextError extends HttpError {
+class ConversationExecutionContextError extends HttpError {
   constructor(statusCode: number, message: string) {
     super(statusCode, message);
     this.name = "ConversationExecutionContextError";

@@ -3,7 +3,7 @@ import type { Queryable } from "../routeUtils/common.js";
 /** An Operation in one of these has stopped; everything else is still work. */
 const FINISHED_STATUSES = ["completed", "failed", "cancelled"];
 
-export interface RunningProjectOperation {
+interface RunningProjectOperation {
   id: string;
   project_id: string;
   kind: string;

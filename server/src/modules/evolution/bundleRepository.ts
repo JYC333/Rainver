@@ -18,7 +18,7 @@ export interface EvolutionBundleDecision {
   note?: string | null;
 }
 
-export interface ProposalDecisionPort {
+interface ProposalDecisionPort {
   acceptInTransaction(
     client: PoolClient,
     proposalId: string,

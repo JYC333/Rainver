@@ -141,7 +141,7 @@ export interface ServerConfig {
   backupDatabaseUrl: string | null;
 }
 
-export interface RawEnv {
+interface RawEnv {
   [key: string]: string | undefined;
 }
 
@@ -909,9 +909,9 @@ export function loadConfigSnapshot(env: RawEnv = process.env): ConfigSnapshot {
 // Startup diagnostics
 // ---------------------------------------------------------------------------
 
-export type ConfigDiagnosticSeverity = "info" | "warning" | "error" | "fatal";
+type ConfigDiagnosticSeverity = "info" | "warning" | "error" | "fatal";
 
-export interface ConfigDiagnostic {
+interface ConfigDiagnostic {
   severity: ConfigDiagnosticSeverity;
   /** Machine-readable code (e.g. `unknown_config_key`). */
   code: string;

@@ -1534,7 +1534,7 @@ function cryptoRandomId(): string {
 }
 
 /** What a person's send carries. */
-export interface RoomSendInput {
+interface RoomSendInput {
   content: string;
   discussion_id?: string | null;
   input_parts?: ConversationInputPart[];

@@ -14,8 +14,8 @@ export const PLAN_GRAPH_LIMITS = {
   maxDepth: 3,
 } as const;
 
-export type PlanNodeKind = "leaf" | "integration" | "approval_checkpoint" | "exploratory" | "action";
-export type PlanApprovalMode = "auto_approved" | "proposal_required";
+type PlanNodeKind = "leaf" | "integration" | "approval_checkpoint" | "exploratory" | "action";
+type PlanApprovalMode = "auto_approved" | "proposal_required";
 
 export interface PlanNodeRecord {
   key: string;
@@ -48,13 +48,13 @@ export interface MaterializedPlanGraph {
   leaves: string[];
 }
 
-export interface PlanApprovalDecision {
+interface PlanApprovalDecision {
   mode: PlanApprovalMode;
   reasons: string[];
   aggregateMaxCost: number | null;
 }
 
-export interface PlanAtomicityEvaluation {
+interface PlanAtomicityEvaluation {
   valid: boolean;
   reasons: string[];
 }

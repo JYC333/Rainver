@@ -87,7 +87,7 @@ export async function requireProjectTask(
 /** Kept identical to `ck_task_entity_links_role`. */
 const TASK_LINK_ROLES = new Set(["executes", "investigates", "prepares", "references"]);
 
-export interface TaskLinkInput {
+interface TaskLinkInput {
   entity_type: string;
   entity_id: string;
   role: string;

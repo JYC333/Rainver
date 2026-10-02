@@ -4,7 +4,7 @@ import { fetchGuarded, type OutboundGuard } from "../sources/outboundUrlSafety.j
 const HIBP_ORIGIN = "https://api.pwnedpasswords.com";
 const HIBP_RANGE_MAX_BYTES = 1_048_576;
 
-export interface HibpRangeTransport {
+interface HibpRangeTransport {
   fetchRange(prefix: string): Promise<string>;
 }
 function sha1Hex(value: string): string {

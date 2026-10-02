@@ -19,7 +19,7 @@ export interface EvolutionRunEvaluationForSolidifier {
   evaluated_at?: string | null;
 }
 
-export interface EvolutionExperienceRepositoryPort {
+interface EvolutionExperienceRepositoryPort {
   // Returns null when a concurrent insert raced to the same (space_id, experience_key).
   // Callers must handle null by fetching the existing row via getExperienceByKey.
   createExperience(input: EvolutionExperienceCreateInput): Promise<EvolutionExperienceRow | null>;

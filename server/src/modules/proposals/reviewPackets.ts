@@ -29,7 +29,7 @@ export function visibilityForReviewScope(value: ReviewScope | undefined): "priva
   return value === "space_ops" ? "space_shared" : "private";
 }
 
-export interface InsertProposalRowInput {
+interface InsertProposalRowInput {
   id?: string;
   spaceId: string;
   proposalType: string;
@@ -158,7 +158,7 @@ export interface ChildProposalDraft {
 }
 
 /** Insert one child proposal generated from an accepted packet. */
-export async function insertChildProposalRow(
+async function insertChildProposalRow(
   context: ProposalApplyContext,
   draft: ChildProposalDraft,
 ): Promise<string> {
@@ -179,7 +179,7 @@ export async function insertChildProposalRow(
   return row.id;
 }
 
-export interface AcceptReviewPacketBuild {
+interface AcceptReviewPacketBuild {
   children: ChildProposalDraft[];
   /** Optional per-candidate skip records (claim/relation packets track these). */
   skipped?: Record<string, unknown>[];
@@ -189,7 +189,7 @@ export interface AcceptReviewPacketBuild {
   resultExtra?: Record<string, unknown>;
 }
 
-export interface AcceptReviewPacketOptions {
+interface AcceptReviewPacketOptions {
   expectedOperation: string;
   resultType: ProposalAcceptResultType;
   privateMessage: string;

@@ -9,7 +9,7 @@ export const SIGNAL_DEDUP_WINDOWS_SECONDS = {
   supervisor: 15 * 60,
 } as const;
 
-export interface RunFinalizationSignalInput {
+interface RunFinalizationSignalInput {
   run: RunRecord;
   estimated_cost_usd?: number | null;
   evaluation: {
@@ -33,7 +33,7 @@ export interface RunFinalizationSignalInput {
   repeated?: boolean;
 }
 
-export interface ProposalDecisionSignalInput {
+interface ProposalDecisionSignalInput {
   spaceId: string;
   proposalId: string;
   status: string;
@@ -41,7 +41,7 @@ export interface ProposalDecisionSignalInput {
   createdByRunId?: string | null;
 }
 
-export interface VerificationFailureSignalInput {
+interface VerificationFailureSignalInput {
   spaceId: string;
   targetId: string;
   sourceId: string;
@@ -50,7 +50,7 @@ export interface VerificationFailureSignalInput {
   severity?: SignalSeverity;
 }
 
-export interface SupervisorOutcomeSignalInput {
+interface SupervisorOutcomeSignalInput {
   spaceId: string;
   targetId: string;
   sourceId: string;
@@ -60,7 +60,7 @@ export interface SupervisorOutcomeSignalInput {
   severity?: SignalSeverity;
 }
 
-export type SignalSeverity = "info" | "warning" | "error" | "critical";
+type SignalSeverity = "info" | "warning" | "error" | "critical";
 
 interface SignalRule {
   spaceId: string;
@@ -74,7 +74,7 @@ interface SignalRule {
   dedupWindowSeconds: number;
 }
 
-export interface SignalEmissionResult {
+interface SignalEmissionResult {
   emitted: number;
   skipped: number;
   target_found: boolean;
