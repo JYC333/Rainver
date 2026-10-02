@@ -22,9 +22,10 @@ multiple spaces.
 
 **Agent**
 An AI runtime actor, separate from User. Identity and visibility live on
-`agents`. Versioned configuration (model provider FK, JSON policy/config
-blobs) lives on `agent_versions`. `agents.current_version_id` points at
-the active version.
+`agents`. Versioned JSON policy/config blobs live on `agent_versions`; the
+model provider binding (`model_provider_id`) lives on
+`agent_runtime_profiles`. `agents.current_version_id` points at the active
+version.
 
 **Run**
 The central execution object. A single agent invocation scoped to a
