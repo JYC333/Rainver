@@ -26,6 +26,12 @@ keep in step.
 | `claude_code` | implemented | managed `claude-agent-acp` distribution | Host-native login |
 | `codex_cli` | implemented | managed `codex-acp` distribution | Host-native login |
 
+Beside these builtins, each ACP registry agent an instance admin enables in
+`modules/acpAgents` is published as a dynamic adapter `acp_<id>`
+(`runtimeAdapters/dynamicSpecs.ts`): implemented, ACP, `remote_host_only`, and
+`credential_mode: cli_profile`, so it is a selectable runtime with Host-native
+login only.
+
 Gemini CLI, generic `custom`, and `capability` entries are not selectable ACP
 Agent runtimes. In particular, `model_api` and `ts_agent_host` are not runtime
 definitions.
