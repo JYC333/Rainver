@@ -1233,6 +1233,97 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     });
   });
 
+  it("leaves an Action node done after its retry succeeds without delegating, however often the execution reconciles", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    let attempts = 0;
+    // First attempt delegates a Run that fails; the retry does the work itself.
+    actionNodeHandlerRegistry.register("test.delegate_then_finish", async (context) => {
+      attempts += 1;
+      if (attempts > 1) return { output: { finished: true } };
+      const delegated = await new PgRunRepository(context.db).createQueuedRunWithBudgetAdmission({
+        execution_kind: "agent",
+        agent_id: AGENT,
+        space_id: SPACE,
+        user_id: USER,
+        mode: "live",
+        run_type: "agent",
+        trigger_origin: "system",
+        prompt: "Delegated model work",
+        instruction: "Return a deterministic test value.",
+      });
+      return { output: { queued: true }, delegatedRunId: delegated.id };
+    }, "plan_graph_test");
+    await db.pool.query(
+      `INSERT INTO automations (
+         id, space_id, owner_user_id, agent_id, name, trigger_type, status,
+         config_json, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'Superseded delegation automation','manual','active',
+                 '{"target_type":"workflow"}'::jsonb,$5,$5)`,
+      [AUTOMATION, SPACE, USER, AGENT, now],
+    );
+    const automation = {
+      id: AUTOMATION, space_id: SPACE, owner_user_id: USER, agent_id: AGENT,
+      project_folder_id: null, project_id: null, name: "Superseded delegation automation", description: null,
+      trigger_type: "manual", status: "active", preflight_snapshot_json: null,
+      config_json: { target_type: "workflow" }, next_run_at: null, last_fired_at: null,
+      created_at: now, updated_at: now,
+    };
+    const service = new WorkflowExecutionService(CONFIG);
+    const execution = await service.start({
+      db: db.pool,
+      identity,
+      automation,
+      target: {
+        versionId: BINDING_WORKFLOW_VERSION,
+        resolutionTrace: [],
+        contentJson: {
+          schema_version: "workflow_definition.v1",
+          workflow_id: "superseded-delegation-workflow",
+          name: "Superseded Delegation Workflow",
+          description: "A delegated attempt fails; the retry finishes on its own.",
+          input_schema_json: {}, output_artifact_types: [], metadata_json: {},
+          nodes: [{
+            id: "work", title: "Work", depends_on: [],
+            contract_json: { max_attempts: 2 },
+            metadata_json: { node_kind: "action", action_key: "test.delegate_then_finish" },
+          }],
+        },
+      },
+      triggerType: "manual",
+      triggerOrigin: "automation",
+      inputJson: {},
+      preflightSnapshot: { executable: true },
+      budgetSources: [],
+    });
+    const delegatedRun = (await db.pool.query<{ run_id: string }>(
+      `SELECT link.run_id FROM workflow_execution_node_runs link
+         JOIN workflow_execution_nodes node ON node.id=link.node_id AND node.space_id=link.space_id
+        WHERE node.execution_id=$1 AND node.node_key='work' AND link.role='delegated'`,
+      [execution.workflowExecutionId],
+    )).rows[0]!.run_id;
+    const runs = new PgRunRepository(db.pool);
+    await dispatchAgentRun(delegatedRun, now);
+    await runs.markRunTerminal({ run_id: delegatedRun, space_id: SPACE, status: "failed", error_json: { error_code: "test_failure" }, completed_at: now });
+    await runs.insertRunEvaluation({ space_id: SPACE, run_id: delegatedRun, outcome_status: "failed", trajectory_status: "incomplete", evaluated_at: now });
+    await service.reconcileForRun(db.pool, SPACE, delegatedRun, USER);
+    const nodeStatus = async () => (await db.pool.query<{ status: string }>(
+      `SELECT status FROM workflow_execution_nodes WHERE execution_id=$1 AND node_key='work'`, [execution.workflowExecutionId],
+    )).rows[0]?.status;
+    expect(attempts).toBe(2);
+    expect(await nodeStatus()).toBe("done");
+
+    // The failed delegation is superseded and kept for audit only. A later
+    // reconcile must not select it as the node's latest result and fail a
+    // node — and with it the execution — that has already succeeded.
+    await service.reconcileForRun(db.pool, SPACE, delegatedRun, USER);
+    expect(await nodeStatus()).toBe("done");
+    expect(attempts).toBe(2);
+    await expect(db.pool.query<{ status: string }>(
+      `SELECT status FROM workflow_executions WHERE id=$1`, [execution.workflowExecutionId],
+    )).resolves.toMatchObject({ rows: [{ status: "completed" }] });
+  });
+
   it("retries a failed node up to contract_json.max_attempts before failing it, and never retries beyond the cap", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();

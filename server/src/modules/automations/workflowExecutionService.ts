@@ -594,6 +594,9 @@ async function projectLatestWorkflowNodeRuns(client: Queryable, spaceId: string,
        JOIN LATERAL (
          SELECT wr.node_id, wr.run_id, wr.role FROM workflow_execution_node_runs wr
           WHERE wr.node_id = n.id AND wr.space_id = n.space_id
+            -- A superseded delegation is kept for audit only; selecting it
+            -- here would re-judge a node that has since succeeded by it.
+            AND wr.role IN ('primary', 'delegated')
           ORDER BY (wr.role='delegated') DESC, wr.created_at DESC, wr.id DESC LIMIT 1
        ) link ON true
        JOIN runs r ON r.id = link.run_id AND r.space_id = n.space_id
