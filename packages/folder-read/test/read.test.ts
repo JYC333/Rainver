@@ -209,6 +209,27 @@ describe("folder-read filesystem operations", () => {
     }
   });
 
+  it("does not let a single-path diff widen into files a direct read would refuse", async () => {
+    const root = await tempRoot();
+    await runGit(["init"], root);
+    await runGit(["config", "user.email", "test@example.invalid"], root);
+    await runGit(["config", "user.name", "Test"], root);
+    await mkdir(join(root, "instance", "secrets"), { recursive: true });
+    await writeFile(join(root, "instance", "secrets", "app.yaml"), "old\n", "utf8");
+    await writeFile(join(root, "instance", "notes.md"), "before\n", "utf8");
+    await runGit(["add", "."], root);
+    await runGit(["commit", "-m", "initial"], root);
+    await writeFile(join(root, "instance", "secrets", "app.yaml"), "private_key_id: 123\n", "utf8");
+    await writeFile(join(root, "instance", "notes.md"), "after\n", "utf8");
+
+    // A glob is a name, not a pattern: no file is called `*`.
+    const globbed = await folderGitDiff(root, "*").then((result) => result.diff, (error: unknown) => String(error));
+    expect(globbed).not.toContain("private_key_id");
+    // A directory covers its subtree, so every file in it is checked.
+    await expect(folderGitDiff(root, "instance")).rejects.toThrow(/blocked path/);
+    await expect(folderGitDiff(root, "instance/notes.md")).resolves.toMatchObject({ diff: expect.stringContaining("+after") });
+  });
+
   it("exposes typed folder read errors", () => {
     expect(new FolderReadError("too_large", "too big")).toBeInstanceOf(Error);
   });

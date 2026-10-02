@@ -189,14 +189,17 @@ export async function folderGitDiff(
     await assertContainedPath(root, resolved.absolute, opts);
     safePath = resolved.relative;
   }
-  const pathspec = safePath !== null ? ["--", safePath] : ["--"];
+  // Literal, not git's default glob: `*` is a file name here, not every file.
+  // A literal directory still covers its subtree, so the per-file check below
+  // runs for a path as well as for the whole Folder.
+  const pathspec = safePath ? ["--", `:(literal)${safePath}`] : safePath === "" ? ["--", ""] : ["--"];
   let base = ["HEAD", ...pathspec];
   let diff = (await runLocationGit(["diff", "--no-ext-diff", "--no-textconv", ...base], root, 15_000)).stdout;
   if (!diff) {
     base = pathspec;
     diff = (await runLocationGit(["diff", "--no-ext-diff", "--no-textconv", ...base], root, 15_000)).stdout;
   }
-  if (safePath === null && diff) await assertDiffPathsReadable(root, base, opts);
+  if (diff) await assertDiffPathsReadable(root, base, opts);
   if (diffTouchesSecretLikePath(diff)) {
     throw new PathPolicyError("Diff includes blocked path");
   }
@@ -209,8 +212,9 @@ export async function folderGitDiff(
 }
 
 /**
- * A whole-Folder diff shows the content of every changed file, so each of those
- * files must pass the policy a single-file read of it would. Paths come from
+ * A diff shows the content of every changed file it covers (the whole Folder,
+ * or a directory's subtree), so each of those files must pass the policy a
+ * single-file read of it would. Paths come from
  * git as NUL-separated raw names, without the quoting a diff header applies to
  * unusual names, and without rename pairing, so a file renamed away from a
  * forbidden path is still checked under its old name.
