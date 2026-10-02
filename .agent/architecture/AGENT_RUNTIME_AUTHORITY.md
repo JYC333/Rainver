@@ -16,7 +16,7 @@ or runtime configuration/policy fallback.
 
 `agent_runtime_profiles` is the mutable, Agent-scoped deployment authority. A
 Profile identifies the ACP `runtime_key`, execution Host, installed copy,
-workspace mode/location, backend mode, optional same-Space ModelProvider/model,
+workspace mode/location, backend mode, optional ModelProvider/model granted to the Space,
 and narrowly scoped runtime options. Each Agent is provisioned with one
 enabled default Profile. With no Space provisioning template, the product
 default is the Server Runtime's managed OpenCode copy using
