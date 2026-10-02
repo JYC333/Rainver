@@ -170,9 +170,10 @@ excluded. See `docs/TOKEN_USAGE_METERING.md`.
 
 `AgentVersion` contains no provider/model deployment binding. An
 `AgentRuntimeProfile` may select a same-Space ModelProvider and explicit model
-when the runtime supports that protocol and the Profile executes on the built-in
-Server Runtime. Native mode instead uses the runtime's login on the selected
-Host. The Profile snapshot is frozen into each Run, so changing a live Profile
+when the runtime supports that protocol (`backend_mode = model_provider`) and
+the Profile names an execution Host and installation — the built-in Server
+Runtime or a paired Host. Native mode instead uses the runtime's login on the
+selected Host. The Profile snapshot is frozen into each Run, so changing a live Profile
 does not rebind an existing Run or conversation.
 
 The optional Space provisioning template is a separate choice for future
