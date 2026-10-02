@@ -72,9 +72,7 @@ describe("managed workspaces", () => {
     await archiveManagedWorkspace(AGENT_ID, container, true);
     const archive = (await import("node:fs/promises")).readdir(join(stateDir, "agents", AGENT_ID, "direct"));
     const archivePath = join(stateDir, "agents", AGENT_ID, "direct", (await archive)[0]!);
-    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
-    await utimes(archivePath, old, old);
-    expect(await sweepManagedWorkspaceArchives()).toBe(1);
+    expect(await sweepManagedWorkspaceArchives(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000))).toBe(1);
     expect(existsSync(archivePath)).toBe(false);
   });
 
@@ -126,10 +124,26 @@ describe("managed workspaces", () => {
     await archiveAgentProfiles(AGENT_ID);
     const base = join(stateDir, "agents", AGENT_ID, "profiles", "location");
     const archived = join(base, (await readdir(base))[0]!);
-    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
-    await utimes(archived, old, old);
 
-    expect(await sweepManagedWorkspaceArchives()).toBe(1);
+    expect(await sweepManagedWorkspaceArchives(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000))).toBe(1);
+    expect(existsSync(archived)).toBe(false);
+  });
+
+  it("keeps a just-archived profile whose directory was last changed long ago", async () => {
+    // A profile used for months keeps the mtime of its first dispatch; a
+    // rename does not touch it. The archive's age is when it was archived.
+    const profile = runtimeProfileContainerPath(AGENT_ID, "conversation", CONVERSATION_ID);
+    await mkdir(profile, { recursive: true });
+    const old = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+    await utimes(profile, old, old);
+    await archiveAgentProfiles(AGENT_ID);
+    const base = join(stateDir, "agents", AGENT_ID, "profiles", "conversation");
+    const archived = join(base, (await readdir(base))[0]!);
+
+    expect(await sweepManagedWorkspaceArchives()).toBe(0);
+    expect(existsSync(archived)).toBe(true);
+    // And it does go once the window has passed.
+    expect(await sweepManagedWorkspaceArchives(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000))).toBe(1);
     expect(existsSync(archived)).toBe(false);
   });
 
@@ -154,9 +168,7 @@ describe("managed workspaces", () => {
     // Nothing to move the second time.
     expect(await archiveLegacyProfileTree()).toBe(false);
 
-    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
-    await utimes(join(stateDir, archived[0]!), old, old);
-    expect(await sweepManagedWorkspaceArchives()).toBe(1);
+    expect(await sweepManagedWorkspaceArchives(new Date(Date.now() + 31 * 24 * 60 * 60 * 1000))).toBe(1);
     expect(existsSync(join(stateDir, archived[0]!))).toBe(false);
   });
 

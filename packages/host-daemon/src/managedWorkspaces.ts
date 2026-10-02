@@ -180,14 +180,29 @@ export async function archiveAgentProfiles(agentId: string): Promise<boolean> {
   return moved;
 }
 
+/**
+ * When a directory was archived, read from the timestamp `archiveDirectory`
+ * put in its name. Not its mtime: a rename leaves that alone, so a profile
+ * untouched since its first use would count as archived that long ago and be
+ * swept the moment it was archived.
+ */
+function archivedAtFromName(name: string): number | null {
+  const stamp = name.slice(name.lastIndexOf(ARCHIVE_MARKER) + ARCHIVE_MARKER.length);
+  const iso = stamp.replace(/T(\d{2})-(\d{2})-(\d{2})/u, "T$1:$2:$3");
+  const at = Date.parse(iso);
+  return Number.isNaN(at) ? null : at;
+}
+
 /** Removes every archive under one directory that is past the retention window. */
 async function sweepArchivesIn(base: string, now: Date): Promise<number> {
   let removed = 0;
   for (const entry of await readdir(base, { withFileTypes: true }).catch(() => [])) {
     if (!entry.isDirectory() || !entry.name.includes(ARCHIVE_MARKER)) continue;
     const path = join(base, entry.name);
-    const info = await stat(path).catch(() => null);
-    if (info && now.getTime() - info.mtimeMs > MANAGED_WORKSPACE_RETENTION_MS) {
+    const archivedAt = archivedAtFromName(entry.name)
+      ?? (await stat(path).catch(() => null))?.mtimeMs
+      ?? null;
+    if (archivedAt !== null && now.getTime() - archivedAt > MANAGED_WORKSPACE_RETENTION_MS) {
       await rm(path, { recursive: true, force: true });
       removed += 1;
     }
