@@ -318,8 +318,9 @@ boundary of). A Location thread's vendor session therefore lives in the
 profile of the Agent whose Run last used it, while the thread itself carries
 no Agent (`ck_host_threads_owner`). Task admission reads the latest Run's
 Agent beside its status: when the Agent dispatched now is a different one, the
-session is retired at admission (`retireLocationSessionForAgentChange`,
-recorded in `retired_vendor_session_ids`) and the Run starts a fresh session
+session is retired at admission (inline in `tasks/repository.ts`, which calls the
+thread repository's `resetLocationSession`; recorded in
+`retired_vendor_session_ids`) and the Run starts a fresh session
 in its own profile, rather than resuming into another Agent's profile and
 resetting mid-turn with "no such conversation". Switching a Task's Agent is
 thus a fresh session, by design.
@@ -467,7 +468,7 @@ logins by Agents × Rooms. So the login stays where it was:
   closed with `runtime_profile_isolation_unsupported` until its registry entry
   can name the credential file and state-root variable; the host adapter
   catalog therefore exposes such a copy for installation/management but marks
-  it `remote_eligible: false`, and the default-adapter endpoint refuses it;
+  it `remote_eligible: false`;
 - a link, never a copy and never a token in the environment. Passing the
   credential through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean
   Rainver read a credential and injected it into a subprocess, the shape
@@ -813,8 +814,8 @@ or a version behind would make routing guess at someone else's machine. The
 cost of that asymmetry is explicit — a Profile naming a `managed:x` copy the
 paired Host does not have passes admission and fails at launch, where the host
 itself answers.
-`GET /api/v1/hosts/runtime-adapters` also exposes each adapter's current
-registry version. The Host card compares it with the installed package and
+`GET /api/v1/hosts/runtime-definitions` also exposes each adapter's current
+registry version (`latest_managed_version`). The Host card compares it with the installed package and
 shows its compact CLI upgrade control only while they differ; neither internal
 package version is exposed in that UI.
 
@@ -861,7 +862,7 @@ against the host's `installations`, and stamps it into the Run's
 managed copy from its manifest with `HOME` set to that copy's home.
 
 **Login** follows the runtime's declared mechanism: `GET
-/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream`
+/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/login/stream`
 (host owner, SSE) opens `login_open` on the daemon. Built-ins with an explicit
 login spec continue to run that command. Otherwise every method returned by
 ACP `initialize.authMethods` is exposed without a vendor allowlist: missing
@@ -1028,18 +1029,6 @@ The allowlist is the same shape the deleted server-host path used.
 A run on the machine's own login is governed by the other rule instead: it
 keeps the machine's environment apart from `clearStateRootEnv`'s two sets, and
 carries a runtime profile of its own — see "The runtime profile" above.
-
-- `GET /api/v1/hosts/runtime-adapters` (P3, C6) — catalog of remote-eligible
-  adapters (`implemented` + ACP protocol): the builtin specs plus dynamic
-  adapters for instance-enabled ACP registry entries, sourced from
-  `listRuntimeAdapterSpecs()`. Session-authenticated
-  only (`getCurrentUser`, no space scoping — the catalog carries no per-user
-  or per-space data). The single source of truth the frontend reads instead
-  of re-deriving the dispatch route's own ACP-only eligibility rule a third
-  time. Each entry's `capability_probe` is what a trusted host's capability
-  probe actually reports for that adapter when it differs from `command` (an
-  ACP adapter's own bundled executable, e.g. `codex-acp`, vs. the vendor CLI
-  binary a host reports, e.g. `codex`).
 
 ## WebSocket (`GET /internal/hosts/ws`, `@fastify/websocket`)
 
