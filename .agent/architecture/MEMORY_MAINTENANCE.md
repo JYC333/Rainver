@@ -11,7 +11,9 @@ surface is therefore a private review path initiated by a space owner/admin.
 `retrieval.space.settings` `context_ops_scan_mode = members` additionally permits
 active members/reviewers to initiate their own scans. A caller may explicitly
 ask for a shared `space_ops` report/packet only when the Space Context Ops review
-setting allows that reviewer; this does not scan other users' private Memory.
+setting allows that reviewer; this does not scan other users' private Memory,
+and a `space_ops` scan also drops `private` and `selected_users` rows, the
+caller's own included (`excludePersonalVisibility`).
 
 ## Source Of Truth
 
@@ -35,8 +37,8 @@ Primary code paths:
   `server/src/modules/proposals/applierRegistry.ts`
 - Web API client and UI:
   `apps/web/src/api/client.ts`, `apps/web/src/modules/memory/MemoriesPage.tsx`
-- Artifact rendering:
-  `apps/web/src/modules/artifacts/ArtifactRendererRegistry.tsx`
+- Report artifacts are opened through the generic Artifacts pages
+  (`apps/web/src/modules/artifacts/`)
 
 ## HTTP Surface
 
@@ -100,14 +102,13 @@ Memory has no domain-wide access-log inspector. Owners inspect cross-person
 reads on an individual Memory through the common Content Access control, backed
 by `GET /api/v1/content-access/memory/:resourceId/access-logs`.
 
-The route joins each log to `memory_entries`, applies `canReadMemory` with the
-optional Project Folder context, applies the project gate via `accessibleProjectIds`,
-then slices the currently visible list by `offset`/`limit`. The response returns
+The route (`server/src/modules/contentAccess/routes.ts`, `listForOwner` in
+`contentAccess/audit.ts`) answers only the Memory's owner, then pages that
+resource's `content_access_logs` rows by `offset`/`limit`. The response returns
 `items`, `limit`, `offset`, `returned`, and `has_more`. It returns only audit
-metadata: log id, memory id/title/scope/visibility/project id, user/agent/run
-pointers, access type, reason, and timestamp. It does not select or return
-Memory content or snippets. Rows hidden by current Memory policy are omitted
-instead of surfaced as blocked entries.
+metadata: log id, resource ids, owner and viewer ids plus the viewer's display
+name, agent/run pointers, access type, reason, and timestamp. It does not
+select or return Memory content or snippets.
 
 ## Web Surface
 
@@ -120,20 +121,17 @@ The Memory page exposes:
   mode, continuing from `next_cursor`, opening the resulting artifact/proposal,
   generating a Claim Candidate Packet from the persisted report artifact, and
   previewing the first 8 findings before opening the full report artifact
-- an Access Log Inspector for recent currently readable Memory access logs,
-  filterable by `access_type`, Project Folder context, and the active page-level
-  `project_id`, with offset-based previous/next controls
 
 The web API client also exposes durable job create/get/run helpers. There is no
 first-class job console on the Memory page yet; the page's visible product
-surface remains manual scan/cursor continuation plus the access-log inspector.
+surface remains manual scan/cursor continuation.
 
 The Memory page reads Space retrieval settings and keeps `space_ops` review
 scope unavailable when `context_ops_review_mode = private_only`, so the UI fails
 early instead of relying only on the route's 403. Context Ops summary reports
-`memory_provenance.inspector_available = true` and links to the Memory page
-inspector, but the inspector itself lives on the Memory page so it can use
-Memory-specific readability and project-gate expectations.
+`memory_provenance.inspector_available = true` and links to the Memory page;
+per-Memory access logs are read through the Content Access control
+(`apps/web/src/components/ContentAccessControl.tsx`).
 
 ## Route Flow
 
@@ -189,6 +187,8 @@ to continue the scan across pages.
 
 - current `space_id`
 - `deleted_at IS NULL`
+- `scope_type <> 'agent'` (Agent Memory is excluded in the query, so it does
+  not consume the scan window)
 - `status IN ('active', 'superseded', 'archived')`
 - optional exact `project_id`
 - optional cursor boundary over `(updated_at DESC, id DESC)`
@@ -235,6 +235,9 @@ Implemented gates:
 - `accessibleProjectIds` for rows with `project_id`
 - explicit maintenance exclusion of:
   - `sensitivity_level = highly_restricted`
+  - `scope_type = agent`
+- for `review_scope = space_ops`, exclusion of `private` and `selected_users`
+  visibility
 
 For `summary_only` rows:
 
