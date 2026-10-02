@@ -44,6 +44,8 @@ filesystem directly.
 GET/POST   /api/v1/projects/{projectId}/folders
 GET/PATCH  /api/v1/projects/{projectId}/folders/{folderId}
 DELETE     /api/v1/projects/{projectId}/folders/{folderId}
+GET        /api/v1/projects/{projectId}/folders/{folderId}/locations
+POST       /api/v1/projects/{projectId}/folders/{folderId}/locations/{locationId}/activate
 POST       /api/v1/projects/{projectId}/folders/{folderId}/unregister
 POST       /api/v1/projects/{projectId}/folders/scan
 GET        /api/v1/projects/{projectId}/folders/{folderId}/tree?path=...
