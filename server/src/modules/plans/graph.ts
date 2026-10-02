@@ -7,8 +7,6 @@ export const PLAN_GRAPH_VERSION = "plan_graph.v1" as const;
 export const PLAN_GRAPH_LIMITS = {
   maxNodes: 30,
   maxAutoApproveNodes: 8,
-  /** @deprecated Use maxAutoApproveNodes; the cap applies to total nodes. */
-  maxInitialNodes: 8,
   // Keep decomposition bounded to three execution layers. A deeper graph is
   // difficult to review and makes budget/verification ownership ambiguous.
   maxDepth: 3,

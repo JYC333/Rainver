@@ -699,7 +699,7 @@ describe("hosts routes", () => {
     await closed;
   });
 
-  it("authenticates a real WebSocket hello and records a heartbeat (phase 1 wire contract)", async (ctx) => {
+  it("authenticates a real WebSocket hello and records a heartbeat", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
     const issue = await app.inject({

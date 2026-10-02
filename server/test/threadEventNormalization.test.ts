@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createThreadEventNormalizer } from "../src/modules/hosts/threadEventNormalization.js";
 
-describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; ACP runtime replatform P1-P5)", () => {
+describe("createThreadEventNormalizer", () => {
   it("streams stderr lines as diagnostic events, one per line", () => {
     const normalizer = createThreadEventNormalizer();
     const drafts = normalizer.pushStderr("permission denied\nretrying\n");

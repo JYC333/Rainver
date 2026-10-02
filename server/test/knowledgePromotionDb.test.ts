@@ -326,7 +326,7 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
     expect(stored.rows[0]!.pinned_source_ref_json).toMatchObject({ kind: "inquiry_thread_revision", thread_id: hypothesis.id });
   });
 
-  it("proposeFromThreadForAgent combines create+promote into one reviewable Proposal (inquiry.promote_knowledge, Phase A)", async () => {
+  it("proposeFromThreadForAgent combines create+promote into one reviewable Proposal (inquiry.promote_knowledge)", async () => {
     if (!db.available) return;
     const threadSvc = new InquiryThreadService(db.pool);
     const iterationSvc = new InquiryIterationService(db.pool);

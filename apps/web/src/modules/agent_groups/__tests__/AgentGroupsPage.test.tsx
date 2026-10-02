@@ -2736,7 +2736,7 @@ describe('Rooms page', () => {
     await waitFor(() => expect(screen.queryByText('Second Room')).not.toBeInTheDocument())
   })
 
-  it('renders the Project state panel beside the conversation, deep-linking into the owning Area (Phase B)', async () => {
+  it('renders the Project state panel beside the conversation, deep-linking into the owning Area', async () => {
     vi.mocked(projectsApi.getOverview).mockResolvedValue({
       project: { id: 'project-1', name: 'Project One', status: 'active' },
       brief: null,

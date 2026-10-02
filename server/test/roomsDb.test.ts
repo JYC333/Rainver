@@ -1550,7 +1550,7 @@ describe("Room workflow (real Postgres)", () => {
     ]);
   });
 
-  it("prefixes a Room-dispatched run's prompt with Project state context (plan Phase A, decision 3)", async (ctx) => {
+  it("prefixes a Room-dispatched run's prompt with Project state context", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
     await db.pool.query(
@@ -4950,7 +4950,7 @@ describe("Room workflow (real Postgres)", () => {
     })).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("notifies the Room when a delegated child run completes with nobody waiting on it (room-advancement-reliability-plan Phase 3)", async (ctx) => {
+  it("notifies the Room when a delegated child run completes with nobody waiting on it", async (ctx) => {
     if (!db.available || !service || !groupService || !testRoot) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
     const now = new Date().toISOString();
@@ -5217,7 +5217,7 @@ describe("Room workflow (real Postgres)", () => {
     expect(denied.rows.map((row) => row.metadata_json.reason_code)).toEqual(["run_spawn_child_capacity_limit"]);
   });
 
-  it("does not duplicate the resume path when a Manager is already waiting on the completed delegation (room-advancement-reliability-plan Phase 3)", async (ctx) => {
+  it("does not duplicate the resume path when a Manager is already waiting on the completed delegation", async (ctx) => {
     if (!db.available || !service || !groupService || !testRoot) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
     const now = new Date().toISOString();

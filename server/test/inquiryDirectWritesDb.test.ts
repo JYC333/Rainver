@@ -335,7 +335,7 @@ describe("project.propose_definition Proposal (real Postgres)", () => {
       });
   });
 
-  it("coalesces a retry that does not reuse an idempotency key (room-advancement-reliability-plan Phase 1)", async () => {
+  it("coalesces a retry that does not reuse an idempotency key", async () => {
     if (!db.available) return;
     const service = new ProjectDefinitionProposalService(db.pool);
     const first = await service.proposeDefinition(ownerIdentity(), PROJECT, {
