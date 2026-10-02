@@ -1259,8 +1259,8 @@ export const promptsApi = {
 
 // ── Boards (task surfaces) ────────────────────────────────────────────────
 export const boardsApi = {
-  list:   (params: Record<string, string> = {}) =>
-    get<Page<Board>>('/boards?' + new URLSearchParams(params)),
+  list:   (params: Record<string, string> = {}, options: { spaceId?: string } = {}) =>
+    get<Page<Board>>('/boards?' + new URLSearchParams(params), { spaceId: options.spaceId }),
   create: (body: Partial<Board> & { name: string }) =>
     post<Board>('/boards', body),
   get:    (id: string) => get<Board>(`/boards/${id}`),
@@ -1903,8 +1903,8 @@ export const evolutionApi = {
 
 // ── Agents ────────────────────────────────────────────────────────────────
 export const agentsApi = {
-  list: (params: Record<string, string> = {}) =>
-    get<AgentOut[]>('/agents?' + new URLSearchParams(params)),
+  list: (params: Record<string, string> = {}, options: { spaceId?: string } = {}) =>
+    get<AgentOut[]>('/agents?' + new URLSearchParams(params), { spaceId: options.spaceId }),
   get: (agentId: string) => get<AgentOut>(`/agents/${agentId}`),
   /** The managed Assistant instance for a scope: the Space's own, or a Project's (null before its first Room message). */
   getSystemAssistant: (projectId?: string | null) =>
