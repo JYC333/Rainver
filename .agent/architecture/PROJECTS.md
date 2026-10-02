@@ -58,7 +58,7 @@ Each step adds trust validation and human review opportunity.
 | `id` | UUID string | Immutable primary key |
 | `space_id` | FK → spaces | Hard access boundary; always included in queries |
 | `owner_user_id` | FK → users (nullable) | Who controls the project for ACL |
-| `name` | string | Unique among active projects within the space (service-layer check) |
+| `name` | string | Unique among active projects within the space (partial unique index `uq_projects_space_name_active`) |
 | `description` | text (nullable) | Optional long-form description |
 | `status` | string | `active` \| `archived` \| `deleted` |
 | `current_focus` | text (nullable) | Generic foreground/display focus for non-Inquiry work; Auto Research does not read or write it as a Question authority |
@@ -144,7 +144,7 @@ Projects, and V1 has no Folder transfer between Projects.
 | `project_id` | FK -> projects | Project whose concrete memory can be read |
 | `user_id` | FK -> users | Space member receiving project-level access |
 | `role` | string | `owner` \| `member` \| `viewer` |
-| `status` | string | `active` \| `revoked` |
+| `status` | string | `active` \| `invited` \| `revoked` |
 | `created_at` / `updated_at` | datetime | |
 
 `project_members` is the ACL used by memory read/retrieval surfaces for
@@ -192,7 +192,7 @@ Each Brief version freezes the Project status, current focus, confirmed
 decisions, workspace identity/boundary, source references, and
 authorship alongside goal/scope/success/constraints/assumptions. Goal-only UI
 edits carry forward the user-owned aggregate fields; the server snapshots the
-current Project-owned status/focus/mode in the same transaction.
+current Project-owned status/focus in the same transaction.
 
 A Project's **mainline Room** is a second structural singleton on the same
 footing ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision
@@ -338,7 +338,7 @@ and supplied explicitly to synthesis and critique, so discovery, screening, and
 reporting use one scope without copying a potentially long question into a
 200-character criterion field. Discovery creates a project-owned
 `research_query_strategy` from that immutable context version. Provider plans
-are evaluated independently for at most three attempts; every attempt stores
+are evaluated independently for at most four attempts; every attempt stores
 its semantic query, exact compiled provider query, preview observation,
 decision, and fingerprint. Selected attempts are materialized atomically into
 `source_search_specs`, Source Channels, and Project Source bindings. Initial
@@ -365,8 +365,9 @@ provenance.
 
 ### Research Area
 
-`/projects/:projectId/research` is the project-owned, three-tab Area for the
-Reading List, Checklist, and immutable Report snapshots. Project Notes are a
+`/projects/:projectId/research` is the project-owned, six-tab Area: Standing
+overview (default), Focus workbench, Reading List, Checklist, immutable Report
+snapshots, and Runs. Project Notes are a
 separate surface at `/projects/:projectId/notes`; the reserved research roles
 described below supply baselines to research services without creating a
 duplicate Notebook tab:
@@ -377,8 +378,9 @@ duplicate Notebook tab:
   project may have any number of them, or none. They store canonical Tiptap
   JSON, server-derived normalized text and hash, and an optimistic version.
 
-  Four of them carry a **system-reserved role** in `notes.project_role`
-  (`understanding`, `questions`, `ideas`, `experiments`), scoped to
+  Five of them may carry a **system-reserved role** in `notes.project_role`
+  (`understanding`, `questions`, `ideas`, `experiments`, and the quick-capture
+  `inbox`, which is not part of the research baseline), scoped to
   `notes.role_project_id`, with a partial unique index enforcing one note per
   role per project. The role is what identifies the research baseline —
   **never the note's title**, which is a creation-time default the user is free
@@ -495,7 +497,7 @@ Question into `projects.current_focus`.
 Source discovery is owned by the `research` module. `POST
 /api/v1/research/query-strategies/evaluate` plans and evaluates provider-specific
 queries from a persisted context version. The planner stores a bounded semantic
-intent, builds at most three provider-specific attempts, and uses observed hit
+intent, builds at most four provider-specific attempts, and uses observed hit
 count, sampled relevance, diversity, and duplicate rate to accept, broaden, or
 narrow the next attempt. Provider compilation is centralized in
 `ResearchProviderCompiler`; source connectors execute compiled queries and do
@@ -769,16 +771,16 @@ command locks the card and creates or returns the idempotent Inquiry Thread in
 the same transaction, then marks the card actioned. Repeated clicks cannot
 create duplicate Threads. Dismiss is a separate terminal user choice.
 
-Every Project overview is the presentation entry point for both research modes;
-Nothing about a Project's creation gates either mode. Its controlled **Standing
-overview** is selected first and
+The Research Area is the presentation entry point for both research modes;
+nothing about a Project's creation gates either mode. Its controlled **Standing
+overview** tab is selected first and
 shows the daily budget, open advice, and recent Project inflow without requiring
 a Workflow or Thread. Advice and inflow rows are filtered through the same
 SourceItem read policy as Project Sources, so Project membership alone never
 reveals a private source owner's title, excerpt, or derived advice. The sibling
-**Focus workbench** contains the existing
-Thread-scoped stage progression and controls. The Research Area remains a
-separate three-tab document surface: Reading List, Checklist, and Reports.
+**Focus workbench** tab contains the existing
+Thread-scoped stage progression and controls. The same tab bar carries the
+Reading List, Checklist, Reports, and Runs tabs.
 
 Every completed live scan has an append-only `research_scan_summaries` outcome:
 focused scans are scoped to a participating research Workflow, while standing
@@ -801,7 +803,7 @@ after either activation or proposal creation. Stable zero/low-volume,
 high-relevance scans may propose broadening; only overloaded scans with weak
 conservative acceptance or sustained queue pressure may propose narrowing.
 
-A feedback decision evaluates a fresh, maximum-three-attempt strategy from the
+A feedback decision evaluates a fresh, maximum-four-attempt strategy from the
 active strategy's stored semantic intent. Each provider steps in the decided
 direction from its selected query exactly as stored, not from a re-truncated
 baseline; when no provider's query can move that way, no replacement is
@@ -949,9 +951,9 @@ with `project_id = NULL` are unaffected.
 consumption configuration/read-model records, authored in
 `server/src/db/schema/projectSources.ts` and served by the Projects module.
 `source_connections` stay space-scoped under Sources. The binding is the
-project boundary: the same source connection can be bound to multiple projects
+project boundary: the same source channel can be bound to multiple projects
 because the uniqueness constraint includes `(space_id, project_id,
-source_connection_id, binding_key)`.
+source_channel_id, binding_key)`.
 
 `project_corpus_items` is Project-owned. It reconciles Sources output into the
 project's working corpus:
@@ -999,7 +1001,7 @@ state is not stored on source items and does not mutate Library state.
 ## API routes
 
 All routes are under `/api/v1/projects` and require authentication.
-Space scoping is enforced via the `space_id` query parameter resolved by `get_identity`.
+Space scoping is enforced via the requested Space (`X-Rainver-Space-Id` header or `space_id` query parameter) resolved by `resolveIdentity`.
 
 | Method | Path | Description |
 |---|---|---|
@@ -1184,9 +1186,9 @@ validated value. Proposal apply carries `proposals.project_id` into
 `memory_entries.project_id` only after revalidating the project in the proposal
 space.
 
-**Output schemas:** Each corresponding output schema (`ActivityOut`, `ArtifactOut`, `ProposalOut`, `RunOut`, `MemoryOut`, `ActivityRecordOut`) now includes `project_id: Optional[str] = None`. Rows without a project are not affected.
+**Output schemas:** The corresponding output DTOs in `packages/protocol/src/` carry a nullable `project_id`. Rows without a project are not affected.
 
-**Frontend:** All five `*Api.list()` functions in `api/client.ts` accept `project_id`. `ProjectDetailPage` uses these to render per-section scoped previews (up to 5 items each) with "View all →" links to the global list.
+**Frontend:** The project-scoped `*Api.list()` functions in `api/client.ts` accept `project_id`.
 
 ## Access control
 
@@ -1208,7 +1210,7 @@ space.
   pause/remove, health, and the materialized project item collection. Global
   Sources remains the source-level management surface.
 - Project conversation enters the project-bound Room surface at
-  `/rooms?project={id}`. A Room may own multiple durable Conversations; each
+  `/projects/{id}/rooms?room={roomId}`, listed from `/projects/{id}/conversations`. A Room may own multiple durable Conversations; each
   explicit draft pins one Host, CLI installation, and Primary Workspace in its
   Conversation execution context, then each message opens one auditable
   collaboration task whose Runs retain the validated `project_id`, pinned
@@ -1264,7 +1266,7 @@ space.
 ## Project Kernel and Inquiry
 
 The Project Shell reads `/projects/{id}/overview`, which composes the active
-Brief Version, `definition_status`, the four available Modes, per-user
+Brief Version, `definition_status`, `has_project_folder`, per-user
 Attention through registered domain adapters, and `in_progress` — the
 Project's unfinished Operations. A per-Mode projection and per-entity summary
 rows used to ride along, and were removed when the front page stopped
