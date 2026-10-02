@@ -58,7 +58,7 @@ interface SourceMonitorDialogProps {
  * Query and scheduling belong to a Monitor. The source mode only adds the
  * origin metadata needed to create the first monitor atomically.
  */
-export function SourceMonitorDialogContent({
+function SourceMonitorDialogContent({
   open,
   mode,
   providers,
