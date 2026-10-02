@@ -117,9 +117,10 @@ Proposals are the product review and application boundary for durable mutations.
   can only be rejected, and a follow-up naming a Project other than the Run's
   own is never applied automatically — it waits for a person, being the same
   input `task.create` refuses outright.
-- `policy_change`, `agent_config_update`, and other non-memory target
-  mutations are not currently registered server appliers. They fail closed
-  until their owning domain registers a server applier.
+- `policy_change` applies through a registered server applier that inserts a
+  new active `policies` row and marks a named `supersedes_policy_id` as
+  `superseded`. `agent_config_update` and other unregistered non-memory target
+  mutations fail closed until their owning domain registers a server applier.
 - Custom Source proposal apply validates the handler version/proposal binding,
   rejects stale active-pointer or envelope changes, and then activates the
   named handler version while superseding the previous active version.
