@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -62,6 +64,36 @@ describe("dbMigrationOps", () => {
       // has no client tools — so its absence must fall through to the
       // container rather than count as a failed verification.
       expect(migrate).toContain("command -v pg_restore");
+    });
+
+    it.skipIf(process.platform === "win32")("refuses to migrate when pg_dump fails after writing a readable archive head", () => {
+      // pg_dump writes the custom-format header and table of contents before
+      // any table data, so a dump that dies mid-data is non-empty and passes
+      // `pg_restore -l`. Only pg_dump's own exit status says it failed.
+      const dir = mkdtempSync(join(tmpdir(), "rainver-migrate-backup-"));
+      try {
+        const bin = join(dir, "bin");
+        mkdirSync(bin);
+        writeFileSync(join(bin, "pg_dump"), "#!/bin/sh\nprintf 'PGDMP partial archive'\nexit 1\n", { mode: 0o755 });
+        writeFileSync(join(bin, "pg_restore"), "#!/bin/sh\ncat >/dev/null 2>&1 || true\nexit 0\n", { mode: 0o755 });
+        const script = join(repoRoot, "ops/scripts/db/migrate.sh");
+        const harness = [
+          "set -euo pipefail",
+          `eval "$(sed -n '/^pre_migration_backup_host() {/,/^}/p; /^ensure_pre_migration_backup() {/,/^}/p' '${script}')"`,
+          "resolve_host_database_url() { MIGRATION_DATABASE_URL=postgresql://unused; }",
+          "ensure_pre_migration_backup",
+          "echo MIGRATING",
+        ].join("\n");
+        const result = spawnSync("bash", ["-c", harness], {
+          env: { PATH: `${bin}:${process.env.PATH ?? ""}`, MODE_ROOT: dir, RUN_MODE: "host", MODE: "prod" },
+          encoding: "utf8",
+        });
+        expect(result.status).not.toBe(0);
+        expect(result.stdout).not.toContain("MIGRATING");
+        expect(result.stdout).not.toContain("pre-migration backup written");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it("keeps the private dev setup outside the repo and imports it after migration", () => {
