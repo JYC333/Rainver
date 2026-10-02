@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -177,6 +177,80 @@ describe("host release installer", () => {
       expect(result.stdout).not.toContain("Downloading shared Node.js runtime");
       expect(result.stdout).toContain(`Downloading Rainver Host stable for linux-${releaseArch}...`);
       expect(await readFile(join(installRoot, "current", "BUILD_ID"), "utf8")).toBe(buildIdFile);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "linux")("keeps the release a daemon still waiting to restart runs from", async () => {
+    // Build A is running a long Run; update B was installed and the restart
+    // into it is still waiting for the daemon to go idle. Update C then lands:
+    // "keep current and previous" would be B and C, and delete A under the
+    // daemon still executing from it.
+    const root = await mkdtemp(join(tmpdir(), "rainver-host-retention-test-"));
+    const installRoot = join(root, "install");
+    const binDir = join(root, "bin");
+    const systemdDir = join(root, "systemd");
+    const configDir = join(root, "config");
+    const releaseDir = join(root, "release");
+    const packageDir = join(root, "package");
+    const fakeBin = join(root, "fake-bin");
+    const running = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const pending = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const incoming = "cccccccccccccccccccccccccccccccccccccccc";
+    const releaseArch = process.arch === "arm64" ? "arm64" : "x64";
+
+    try {
+      const hostPayload = join(packageDir, "rainver-host");
+      const adapterPayload = join(packageDir, "rainver-host-adapters");
+      await Promise.all([
+        mkdir(join(hostPayload, "app", "dist"), { recursive: true }),
+        mkdir(adapterPayload, { recursive: true }),
+        mkdir(releaseDir, { recursive: true }),
+        mkdir(fakeBin, { recursive: true }),
+        mkdir(configDir, { recursive: true }),
+        mkdir(join(installRoot, "releases", running, "app"), { recursive: true }),
+        mkdir(join(installRoot, "releases", pending, "app"), { recursive: true }),
+      ]);
+      await writeFile(join(installRoot, "releases", running, "BUILD_ID"), `${running}\n`);
+      await writeFile(join(installRoot, "releases", pending, "BUILD_ID"), `${pending}\n`);
+      await symlink(`releases/${pending}`, join(installRoot, "current"));
+      await writeFile(join(configDir, "update-restart-requested"), "");
+      // The service is active: every systemctl query succeeds.
+      await writeFile(join(fakeBin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      await symlink(process.execPath, join(fakeBin, "node"));
+
+      const installer = await readFile(installerPath);
+      const buildIdFile = `${incoming}\n`;
+      await writeFile(join(releaseDir, "install-host.sh"), installer, { mode: 0o755 });
+      await writeFile(join(releaseDir, "BUILD_ID"), buildIdFile);
+      await writeFile(join(hostPayload, "BUILD_ID"), buildIdFile);
+      await writeFile(join(hostPayload, "app", "package.json"), '{"type":"module"}\n');
+      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'console.log("0.1.0")\n');
+      await writeFile(join(hostPayload, "app", "dist", "daemon.js"), "\n");
+      await writeFile(join(adapterPayload, "BUILD_ID"), buildIdFile);
+      await writeFile(join(adapterPayload, "package.json"), '{"private":true}\n');
+      await runCommand("tar", ["-czf", join(releaseDir, `rainver-host-linux-${releaseArch}.tar.gz`), "-C", packageDir, "rainver-host"], process.env);
+      await runCommand("tar", ["-czf", join(releaseDir, `rainver-host-adapters-linux-${releaseArch}.tar.gz`), "-C", packageDir, "rainver-host-adapters"], process.env);
+      const assets = ["BUILD_ID", "install-host.sh", `rainver-host-linux-${releaseArch}.tar.gz`, `rainver-host-adapters-linux-${releaseArch}.tar.gz`];
+      const sums = await Promise.all(assets.map(async asset => (
+        `${createHash("sha256").update(await readFile(join(releaseDir, asset))).digest("hex")}  ${asset}`
+      )));
+      await writeFile(join(releaseDir, "SHA256SUMS"), `${sums.join("\n")}\n`);
+
+      await runCommand("/bin/bash", [installerPath, "--update"], {
+        ...process.env,
+        PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+        XDG_CONFIG_HOME: join(root, "xdg-config"),
+        RAINVER_HOST_INSTALL_ROOT: installRoot,
+        RAINVER_HOST_BIN_DIR: binDir,
+        RAINVER_HOST_SYSTEMD_DIR: systemdDir,
+        RAINVER_HOST_CONFIG_DIR: configDir,
+        RAINVER_HOST_RELEASE_BASE_URL: `file://${releaseDir}`,
+      });
+
+      expect(await readFile(join(installRoot, "current", "BUILD_ID"), "utf8")).toBe(buildIdFile);
+      expect((await readdir(join(installRoot, "releases"))).sort()).toEqual([running, pending, incoming]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

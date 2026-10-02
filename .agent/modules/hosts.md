@@ -2321,7 +2321,9 @@ process start; this also makes the fresh WebSocket `hello_ack` deliver the
 complete runtime-probe catalog before capability detection. `--auto-update`
 optionally installs a six-hour systemd timer;
 updates request a daemon restart only when no Run is launching, executing, or
-uploading. Each channel also publishes its checksummed `BUILD_ID` as a small
+uploading. An install keeps the new build and the one it replaced, and while
+an earlier restart request is still pending (the running daemon may be on an
+older build than either) it removes no release at all. Each channel also publishes its checksummed `BUILD_ID` as a small
 standalone asset. An update compares it with the active build before fetching
 Node, daemon, or adapter archives and returns immediately on a match; changing
 the timer setting still takes effect on that no-op path. The archive's own

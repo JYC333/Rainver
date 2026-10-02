@@ -347,12 +347,22 @@ fi
 # Retain the active daemon build and one rollback build rather than
 # accumulating every rolling build. Node and adapters are stored separately.
 # The previous directory may still serve this daemon until its idle restart.
-while IFS= read -r -d '' candidate; do
-  candidate_id="$(basename "$candidate")"
-  if [[ "$candidate_id" != "$build_id" && "$candidate_id" != "$previous_build_id" ]]; then
-    rm -rf -- "$candidate"
-  fi
-done < <(find "$INSTALL_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -print0)
+# A restart request still pending from an earlier update means the running
+# daemon may be on a build older than "previous" (it stays up while Runs are
+# active), and nothing here can tell which: keep every release until it has
+# restarted, and the first install after that prunes them.
+restart_pending=false
+if [[ -f "$CONFIG_DIR/update-restart-requested" ]] && systemctl --user is-active --quiet rainver-host.service; then
+  restart_pending=true
+fi
+if [[ "$restart_pending" == false ]]; then
+  while IFS= read -r -d '' candidate; do
+    candidate_id="$(basename "$candidate")"
+    if [[ "$candidate_id" != "$build_id" && "$candidate_id" != "$previous_build_id" ]]; then
+      rm -rf -- "$candidate"
+    fi
+  done < <(find "$INSTALL_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -print0)
+fi
 
 if command -v codex >/dev/null 2>&1 || command -v claude >/dev/null 2>&1; then
   install_adapter_pack
