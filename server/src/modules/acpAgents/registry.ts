@@ -96,13 +96,18 @@ function parseRegistry(body: unknown): AcpRegistryEntry[] {
   });
 }
 
+/** `RuntimeKeySchema` allows 64 characters and `acpAgentRuntimeKey` prefixes four. */
+export const MAX_REGISTRY_ID_LENGTH = 60;
+
 export function parseEntry(raw: unknown): AcpRegistryEntry | null {
   const entry = record(raw);
   const id = str(entry.id);
   const name = str(entry.name);
   const version = str(entry.version);
   const distribution = parseDistribution(entry.distribution);
-  if (!id || !name || !version || !distribution || !/^[a-z0-9][a-z0-9._-]*$/i.test(id)) return null;
+  // `acp_` + id must fit `RuntimeKeySchema`'s 64 characters: one over-long key
+  // in `runtime_probes` makes every daemon refuse the whole hello_ack.
+  if (!id || !name || !version || !distribution || !/^[a-z0-9][a-z0-9._-]*$/i.test(id) || id.length > MAX_REGISTRY_ID_LENGTH) return null;
   return {
     id,
     name,

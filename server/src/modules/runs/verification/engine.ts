@@ -584,7 +584,7 @@ async function evaluateCommand(
   if (!target) return unavailable("An execution host workspace is required for command verification.");
   if (!executor) return unavailable("Host command verification is unavailable.");
   const command = commandArgv(declaration.config.command);
-  if (!command || command.length === 0) return unavailable("Validation command is missing.");
+  if (!command || command.length === 0) return unavailable("Validation command is missing or has an empty argument.");
   if (command.some((part) => /[;&|<>]/.test(part))) {
     return unavailable("Validation command contains unsupported shell syntax.");
   }
@@ -929,6 +929,9 @@ function commandArgv(value: unknown): string[] | null {
   const parts: string[] = [];
   const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'|(\S+)/g;
   for (const match of value.matchAll(pattern)) parts.push(match[1] ?? match[2] ?? match[3] ?? "");
+  // `""` quotes an empty argument. The host wire refuses one, and a refused
+  // command_run frame gets no reply, so the Run would wait out the timeout.
+  if (parts.some((part) => part.length === 0)) return null;
   return parts.length > 0 ? parts : null;
 }
 

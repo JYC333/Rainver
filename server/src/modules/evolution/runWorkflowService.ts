@@ -10,6 +10,9 @@ import { normalizeAssetOwnerScopeForCreate } from "./assetAccess.js";
 import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
 import { materializePlanGraph, PlanGraphError } from "../plans/graph.js";
 
+/** `WorkflowDefinitionSchema.nodes` max; every source becomes one node. */
+const MAX_WORKFLOW_NODES = 30;
+
 const RISK_ORDER = ["low", "medium", "high", "critical"] as const;
 const MAX_TEXT_LENGTH = 512;
 
@@ -137,6 +140,12 @@ export class RunWorkflowService {
             contract_snapshot_json: run.contract_snapshot_json,
           }))
         : [sourceFromRun(run)];
+    if (sources.length > MAX_WORKFLOW_NODES) {
+      throw new HttpError(
+        422,
+        `This Run cannot be saved as a workflow: it would need ${sources.length} nodes and a workflow holds at most ${MAX_WORKFLOW_NODES}`,
+      );
+    }
     const maxRisk = sources.reduce<string>((current, source) => {
       const risk = normalizedRisk(contractRecord(source.contract_snapshot_json).risk_level);
       return riskRank(risk) > riskRank(current) ? risk : current;

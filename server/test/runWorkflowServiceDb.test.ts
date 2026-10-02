@@ -243,6 +243,25 @@ describe("save run as workflow (real Postgres)", () => {
     expect(saved.rows).toEqual([]);
   });
 
+  it("refuses a Run with more child Runs than a workflow holds, as 422 rather than a server error", async () => {
+    if (!db.available) return;
+    const runId = await seedRun("low");
+    // Every child becomes a node, and `workflow_definition.v1` holds thirty.
+    for (let index = 0; index < 31; index += 1) {
+      await db.pool.query(
+        `INSERT INTO runs
+         SELECT (jsonb_populate_record(NULL::runs, to_jsonb(r) || jsonb_build_object('id', $2::text, 'parent_run_id', $1::text, 'root_run_id', $1::text))).*
+           FROM runs r WHERE r.id = $1`,
+        [runId, randomUUID()],
+      );
+    }
+    const service = new RunWorkflowService(db.pool);
+    const input = { run_id: runId, asset_key: "workflow.saved.wide", display_name: "Wide workflow" };
+
+    await expect(service.preview(IDENTITY, input)).rejects.toMatchObject({ statusCode: 422 });
+    await expect(service.save(IDENTITY, input)).rejects.toMatchObject({ statusCode: 422 });
+  });
+
   it("requires a proposal for high-risk extraction and applies it as a draft", async () => {
     if (!db.available) return;
     const runId = await seedRun("high");

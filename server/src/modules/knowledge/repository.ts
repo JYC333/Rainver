@@ -1,6 +1,18 @@
 import { PgOntologyRepository } from "../ontology/repository.js";
 import { assertEvidenceableObjectType } from "../ontology/validation.js";
 import { hasDeclaration } from "../ontology/linkTypes.js";
+
+/**
+ * The link types `note_links` stores: its `ck_note_links_link_type` check
+ * (`db/schema/knowledge.ts`). The registry declares more — `cites`,
+ * `authored_by`, `proposes` — which belong to other relation tables, so a
+ * declared type outside this set is a 422 here rather than a constraint error.
+ */
+const NOTE_LINK_TYPES = new Set([
+  "related_to", "references", "depends_on", "part_of", "source_for", "derived_from",
+  "about", "supports", "contradicts", "supersedes", "refines", "same_as", "explains",
+  "prerequisite_of", "example_of", "applies_to", "summarizes", "updates",
+]);
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import {
   appendMarginalia,
@@ -1903,7 +1915,7 @@ export class PgKnowledgeRepository {
       throw new HttpError(404, "Note link endpoint not found");
     }
     const linkType = optionalString(body.link_type) ?? "related_to";
-    if (!hasDeclaration(linkType)) {
+    if (!hasDeclaration(linkType) || !NOTE_LINK_TYPES.has(linkType)) {
       throw new HttpError(422, "invalid link_type");
     }
     const now = new Date().toISOString();

@@ -18,7 +18,8 @@ Canonical `source_kind` / `activity_type` values: `user_capture`,
 `chat_message`, `external_chat`, `file_import`, `web_capture`, `run_event`,
 `project_folder_event`, `system_event`, `external_source`, and `source`. Legacy input
 aliases such as `user_input`, `manual`, `agent_run`, `task_log`,
-`imported_chat`, `file_capture`, and `voice_capture` are normalized at ingest.
+`workspace_event`, `imported_chat`, `file_capture`, and `voice_capture` are
+normalized at ingest (`task_log` and `workspace_event` to `project_folder_event`).
 
 Default `source_trust` by kind:
 - `user_capture`, `chat_message`, `external_chat`, `file_import` → `user_confirmed`

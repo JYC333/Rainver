@@ -268,6 +268,20 @@ describe("skipped-surface access (real Postgres)", () => {
     expect(row.rows[0]?.status).not.toBe("archived");
   });
 
+  it("records a Project Folder event under the source type the table stores", async () => {
+    const activity = new PgActivityRepository(db.pool);
+    const created: string[] = [];
+    // The older spellings still arrive from callers and land on the same value;
+    // the table's check constraint knows only `project_folder_event`.
+    for (const sourceType of ["project_folder_event", "task_log", "workspace_event"]) {
+      const row = await activity.create(owner, { source_type: sourceType, content: "Folder changed" });
+      expect(row, sourceType).toMatchObject({ source_type: "project_folder_event" });
+      created.push(String(row.id));
+    }
+    const listed = await activity.list(owner, { sourceType: "project_folder_event", limit: 10, offset: 0 });
+    expect(listed.map((row) => row.id)).toEqual(expect.arrayContaining(created));
+  });
+
   it("returns an Activity's body to its author on create", async () => {
     const created = await new PgActivityRepository(db.pool).create(owner, {
       source_type: "user_capture",

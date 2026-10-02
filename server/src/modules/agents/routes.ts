@@ -32,6 +32,7 @@ import { PgJobQueueRepository } from "../jobs/repository.js";
 import {
   HttpError,
   dbPool,
+  parseBody,
   parsePage,
   query as routeQuery,
   sendRouteError,
@@ -344,7 +345,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireSpaceOwnerOrAdmin(context.config, identity, reply, "Only space owners or admins may change defaults for future Agent Profiles"))) return reply;
     try {
-      const body = protocol.SpaceAgentRuntimeDefaultWriteSchema.parse(jsonBody(request));
+      const body = parseBody(protocol.SpaceAgentRuntimeDefaultWriteSchema, jsonBody(request));
       const value = await agentRepository().setSpaceAgentRuntimeDefault(identity.spaceId, {
         runtimeKey: body.runtime_key,
         backendMode: body.backend_mode,

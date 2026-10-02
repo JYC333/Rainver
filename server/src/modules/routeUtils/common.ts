@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import type { z } from "zod";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
@@ -70,6 +71,19 @@ export async function resolveIdentity(
     ),
   );
   return null;
+}
+
+/**
+ * Parse a request body with a protocol schema, answering a validation failure
+ * as 422 with the first issue. `schema.parse` alone throws a ZodError, which
+ * `sendRouteError` does not recognise and the global handler turns into 500.
+ */
+export function parseBody<T>(schema: { safeParse(value: unknown): z.SafeParseReturnType<unknown, T> }, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const path = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+  throw new HttpError(422, `${path}${issue?.message ?? "Invalid request body"}`);
 }
 
 export function sendRouteError(reply: FastifyReply, error: unknown): FastifyReply {

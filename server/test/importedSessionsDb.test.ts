@@ -175,6 +175,31 @@ describe("imported session reconciliation", () => {
     expect(outcome.session.source_state).toBe("present");
   });
 
+  it("refuses a policy entry the stored policy could not read back, keeping the consent already given", async () => {
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    const service = new ImportedSessionService(db.pool, CONFIG);
+    await service.setPolicy({ spaceId: SPACE, userId: OWNER }, LOCATION, { runtime_key: "claude_code", sync: true });
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [importedSessionsModule]);
+    try {
+      for (const payload of [
+        { runtime_key: "Codex", sync: true },
+        { runtime_key: "codex", installation: "", sync: true },
+      ]) {
+        const response = await app.inject({
+          method: "PUT",
+          url: `/api/v1/workspace-locations/${LOCATION}/ambient-sessions/policy`,
+          payload,
+        });
+        expect(response.statusCode, JSON.stringify(payload)).toBe(422);
+      }
+    } finally {
+      await app.close();
+    }
+    // The strict read would have emptied the whole policy had the entry been stored.
+    const policy = await service.policy({ spaceId: SPACE, userId: OWNER }, LOCATION);
+    expect(policy.entries.map((entry) => entry.runtime_key)).toEqual(["claude_code"]);
+  });
+
   it("serves all four imported-history read shapes through their protocol contracts", async () => {
     __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
     const app = buildModuleServer(

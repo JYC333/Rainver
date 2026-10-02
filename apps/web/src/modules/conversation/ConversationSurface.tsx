@@ -41,7 +41,7 @@ import { ConversationComposer } from './ConversationComposer'
 import type { ConversationInputPart } from '@rainver/protocol'
 import { ConversationInputPartsView, type ConversationInputFileSource } from './ConversationInputComposer'
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
-import { clearConversationDraft, readConversationDraft, writeConversationDraft } from './conversationDraft'
+import { clearConversationDraft, draftFileSearchQuery, readConversationDraft, writeConversationDraft } from './conversationDraft'
 import { ConversationRunControls } from './ConversationRunControls'
 import { notifyProjectFolderContentChanged } from '../../core/projectFolderEvents'
 import {
@@ -286,7 +286,10 @@ export function ConversationSurface({
             return part
           }
           if (conversationId && part.kind === 'file_reference') {
-            const result = await conversationInputApi.searchFiles(conversationId, part.relative_path)
+            // The search accepts at most 200 characters while a path may run
+            // to 4096; the file name finds the candidates and the full path
+            // picks the reference back out of them.
+            const result = await conversationInputApi.searchFiles(conversationId, draftFileSearchQuery(part.relative_path))
             return result.items.some(item => item.project_folder_id === part.project_folder_id
               && item.workspace_location_id === part.workspace_location_id
               && item.relative_path === part.relative_path)

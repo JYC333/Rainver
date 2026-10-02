@@ -89,3 +89,14 @@ function safeSessionStorage(): Storage | null {
     return null
   }
 }
+
+/**
+ * What to search for when re-validating a restored file reference: the file
+ * name, since `GET /sessions/:id/input-files` takes a `q` of at most 200
+ * characters while a `relative_path` may run to 4096. The caller then matches
+ * the full path against the candidates.
+ */
+export function draftFileSearchQuery(relativePath: string): string {
+  const name = relativePath.split('/').filter(Boolean).pop() ?? relativePath
+  return name.slice(0, 200)
+}

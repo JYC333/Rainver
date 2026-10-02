@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { AmbientSyncReportSchema, ExtractionOutcomeSchema } from "@rainver/protocol";
+import { AmbientImportPolicyEntrySchema, AmbientSyncReportSchema, ExtractionOutcomeSchema } from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   HttpError,
@@ -68,6 +68,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const runtimeKey = body.runtime_key;
       if (typeof runtimeKey !== "string" || !runtimeKey) throw new HttpError(422, "runtime_key is required");
       if (typeof body.sync !== "boolean") throw new HttpError(422, "sync must be a boolean");
+      // The stored policy is read back through the strict entry schema, and
+      // one entry it refuses empties the whole Location's consent. Admit only
+      // what that read will accept.
+      if (!AmbientImportPolicyEntrySchema.shape.runtime_key.safeParse(runtimeKey).success) {
+        throw new HttpError(422, "runtime_key is not a valid runtime key");
+      }
+      if (body.installation !== undefined
+        && !AmbientImportPolicyEntrySchema.shape.installation.safeParse(body.installation).success) {
+        throw new HttpError(422, "installation must be 1 to 64 characters");
+      }
       return reply.send(await service().setPolicy(identity, locationId(request), {
         runtime_key: runtimeKey,
         installation: typeof body.installation === "string" ? body.installation : undefined,

@@ -211,6 +211,40 @@ describe("verification engine", () => {
     expect(calls.map((call) => call.command)).toEqual([["pnpm", "test"]]);
   });
 
+  it("refuses a validation command with an empty quoted argument instead of sending it to the host", async () => {
+    const db = new VerificationDb();
+    const calls: string[][] = [];
+    const engine = new PgVerificationEngine(db, undefined, {
+      async run(input) {
+        calls.push(input.command);
+        return { returncode: 0, stdout: "", stderr: "", timed_out: false };
+      },
+    });
+    const results = await engine.verify({
+      run: run({
+        contract_snapshot_json: {
+          acceptance_criteria_json: {
+            // The host wire refuses an empty argument and answers nothing, so
+            // sending this would wait out the command timeout.
+            checks: [{ type: "command", command: 'pnpm test -- -t ""' }],
+          },
+        },
+      }),
+      execution_target: {
+        host_id: "host-1",
+        workspace_location_id: "loc-1",
+        runtime_tree_key: "codex_cli",
+        installation: "managed:1.11.0",
+      },
+      base_commit_sha: null,
+      output_json: {},
+      materialization_items: [] as RunMaterializationItemSummary[],
+    });
+
+    expect(results[0]).toMatchObject({ verifier_type: "command", status: "error" });
+    expect(calls).toEqual([]);
+  });
+
   it("asks the host for changed files when a git-backed verifier declares it", async () => {
     const db = new VerificationDb();
     const calls: string[][] = [];
