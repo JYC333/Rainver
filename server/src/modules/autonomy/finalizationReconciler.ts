@@ -117,13 +117,19 @@ async function reconcileAutonomyRunInTransaction(db: Queryable, run: RunRecord):
 }
 
 export async function settleAutonomyCoordinator(db: Queryable, spaceId: string, tickId: string, now: string): Promise<void> {
-  const tick = await db.query<{ coordinator_run_id: string | null }>(
-    `SELECT coordinator_run_id FROM autonomy_ticks
+  const tick = await db.query<{ coordinator_run_id: string | null; status: string }>(
+    `SELECT coordinator_run_id, status FROM autonomy_ticks
       WHERE space_id = $1 AND id = $2 FOR UPDATE`,
     [spaceId, tickId],
   );
   const coordinatorRunId = tick.rows[0]?.coordinator_run_id;
   if (!coordinatorRunId) return;
+  // Admission is still under way (`running`): a child that ended before its
+  // sibling was admitted must not settle the coordinator ahead of that
+  // sibling, whose outcome could then never reach it. The launch pass settles
+  // once it has recorded the tick's end.
+  if (tick.rows[0]?.status === "running") return;
+  const tickFailed = tick.rows[0]?.status === "failed";
   const pending = await db.query<{ total: number; failed: number }>(
     `SELECT
        count(*) FILTER (WHERE status IN ('admitted', 'launched'))::int AS total,
@@ -135,6 +141,7 @@ export async function settleAutonomyCoordinator(db: Queryable, spaceId: string, 
   );
   if ((pending.rows[0]?.total ?? 0) > 0) return;
   const failed = (pending.rows[0]?.failed ?? 0) > 0;
+  const status = tickFailed ? "failed" : failed ? "degraded" : "succeeded";
   await db.query(
     `UPDATE runs
         SET status = $3, output_json = $4::jsonb, ended_at = $5, updated_at = $5
@@ -143,13 +150,15 @@ export async function settleAutonomyCoordinator(db: Queryable, spaceId: string, 
     [
       spaceId,
       coordinatorRunId,
-      failed ? "degraded" : "succeeded",
+      status,
       JSON.stringify({
         schema_version: "run_output.v1",
-        status: failed ? "failed" : "succeeded",
-        summary: failed
-          ? "Autonomous tick completed with one or more failed candidates."
-          : "Autonomous tick completed.",
+        status: status === "succeeded" ? "succeeded" : "failed",
+        summary: tickFailed
+          ? "Autonomous tick failed before every candidate was admitted."
+          : failed
+            ? "Autonomous tick completed with one or more failed candidates."
+            : "Autonomous tick completed.",
         result: { autonomy_tick_id: tickId },
         output_manifest: [],
       }),

@@ -36,7 +36,8 @@ work. Existing admitted/launched/terminal candidate state is not overwritten
 by a later observation. `last_seen_tick_id` remains observational history;
 `launch_tick_id` is fixed when a Run is admitted and is the sole coordinator
 settlement/provenance key, so observing an in-flight candidate cannot orphan
-its original coordinator.
+its original coordinator; a `failed` candidate keeps its Run and launch tick
+until that coordinator has settled, so its failure is still counted there.
 
 The observe tick and all candidate/link writes share one transaction. A process
 failure therefore rolls back the entire tick instead of exposing a recoverable
@@ -67,7 +68,10 @@ candidate → Run → Artifact provenance. Evolution links are marked consumed
 and `autonomy_review_cursors` advances only in the same successful
 finalization transaction; signal triage state is unchanged. Candidate
 reconciliation is idempotent and settles the coordinator when all launched
-children are terminal. A child the Supervisor requeued or held for review is
+children are terminal and the tick's admission pass has ended (the tick is no
+longer `running`; the pass settles once more itself when it records the end).
+An admission that throws for any reason other than a budget records the tick
+`failed` and settles the coordinator `failed`, instead of leaving both open. A child the Supervisor requeued or held for review is
 not terminal: its candidate stays `launched` until the Run finishes or the
 review timeout cancels it.
 
@@ -96,7 +100,8 @@ alert plus evolution signal are emitted.
 - A failed launched candidate (e.g. `evolution_review`) is retried on its next
   materialization if its durable fact set — and therefore its candidate key —
   is unchanged: `'failed'` is a revertible pre-launch state, not a terminal
-  one. Only `'completed'` is final for that fact set.
+  one, reverted once the coordinator of the tick that launched it has
+  settled. Only `'completed'` is final for that fact set.
 
 ## Related files
 

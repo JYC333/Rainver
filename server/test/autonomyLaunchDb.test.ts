@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, inject, it, vi } from "vitest";
-import { reconcileAutonomyRun } from "../src/modules/autonomy/finalizationReconciler.js";
+import { reconcileAutonomyRun, settleAutonomyCoordinator } from "../src/modules/autonomy/finalizationReconciler.js";
 import { AutonomyRecoveryService } from "../src/modules/autonomy/recoveryService.js";
 import { autonomyDiscovererRegistry } from "../src/modules/autonomy/registry.js";
 import { AutonomyService } from "../src/modules/autonomy/service.js";
@@ -433,6 +433,93 @@ describeWithPostgres("bounded periodic digest launch", () => {
       [launched.coordinator_run_id],
     );
     expect(coordinator.rows[0]?.status).toBe("waiting_for_dependency");
+  });
+
+  it("ends the tick and its coordinator when an admission fails for a reason other than a budget", async () => {
+    await seedProject(PROJECT_A, "Failing Project", beforeNow(6 * DAY_MS));
+    // The Agent was archived, or the database failed, between the tick's
+    // initialization and the first admission: neither a budget refusal nor a
+    // launch, and the initialization transaction has already committed.
+    const create = vi.spyOn(PgRunRepository.prototype, "createQueuedRun").mockRejectedValueOnce(new Error("connection reset"));
+    try {
+      await expect(launch()).rejects.toThrow("connection reset");
+    } finally {
+      create.mockRestore();
+    }
+    const tick = await db.pool.query<{ status: string; coordinator_status: string }>(
+      `SELECT tick.status, coordinator.status AS coordinator_status
+         FROM autonomy_ticks tick JOIN runs coordinator ON coordinator.id = tick.coordinator_run_id
+        WHERE tick.space_id = $1 AND tick.mode = 'launch'`,
+      [SPACE],
+    );
+    expect(tick.rows).toEqual([{ status: "failed", coordinator_status: "failed" }]);
+  });
+
+  it("settles the coordinator only once admission has finished, so a fast child cannot settle it ahead of a sibling", async () => {
+    await seedProject(PROJECT_A, "Fast Project", beforeNow(6 * DAY_MS));
+    await seedProject(PROJECT_B, "Slow Project", beforeNow(5 * DAY_MS));
+    const launched = await launch(5);
+    expect(launched.launched_run_ids).toHaveLength(2);
+    const [fast, slow] = launched.launched_run_ids as [string, string];
+    // As the tick looked while the second candidate was still being admitted:
+    // the tick running, the sibling not yet launched.
+    await db.pool.query(`UPDATE autonomy_ticks SET status = 'running' WHERE id = $1`, [launched.tick_id]);
+    await db.pool.query(`UPDATE autonomy_candidates SET status = 'observed', run_id = NULL, launch_tick_id = NULL WHERE run_id = $1`, [slow]);
+    await dispatchAutonomyRun(fast);
+    const terminal = await new PgRunRepository(db.pool).markRunTerminal({
+      run_id: fast, space_id: SPACE, status: "failed", output_json: {},
+      error_json: { error_code: "tool_error", error_message: "Crashed at once." }, exit_code: 1, completed_at: NOW.toISOString(),
+    });
+    await reconcileAutonomyRun(db.pool, terminal!);
+    const coordinator = async () => (await db.pool.query<{ status: string }>(
+      `SELECT status FROM runs WHERE id = $1`, [launched.coordinator_run_id],
+    )).rows[0]?.status;
+    expect(await coordinator()).toBe("waiting_for_dependency");
+    // Admission ends: the launch pass records the tick and settles.
+    await db.pool.query(`UPDATE autonomy_ticks SET status = 'succeeded' WHERE id = $1`, [launched.tick_id]);
+    await settleAutonomyCoordinator(db.pool, SPACE, launched.tick_id, NOW.toISOString());
+    expect(await coordinator()).toBe("degraded");
+  });
+
+  it("keeps a failed child's failure for its coordinator when a later tick observes the candidate again", async () => {
+    await seedProject(PROJECT_A, "Failed Project", beforeNow(6 * DAY_MS));
+    await seedProject(PROJECT_B, "Running Project", beforeNow(5 * DAY_MS));
+    const launched = await launch(5);
+    expect(launched.launched_run_ids).toHaveLength(2);
+    const [failing, running] = launched.launched_run_ids as [string, string];
+    const runs = new PgRunRepository(db.pool);
+    await dispatchAutonomyRun(failing);
+    const failed = await runs.markRunTerminal({
+      run_id: failing, space_id: SPACE, status: "failed", output_json: {},
+      error_json: { error_code: "tool_error", error_message: "The runtime crashed." }, exit_code: 1, completed_at: NOW.toISOString(),
+    });
+    await reconcileAutonomyRun(db.pool, failed!);
+    // The next tick, the same day, sees the same candidates again while the
+    // first tick's coordinator still waits on the other child.
+    await new AutonomyService(db.pool).observeTick({
+      spaceId: SPACE, automationId: AUTOMATION, ownerUserId: USER, config: {}, now: NOW,
+    });
+    const kept = await db.pool.query<{ status: string; run_id: string | null; launch_tick_id: string | null }>(
+      `SELECT status, run_id, launch_tick_id FROM autonomy_candidates WHERE project_id = $1`, [PROJECT_A],
+    );
+    expect(kept.rows[0]).toEqual({ status: "failed", run_id: failing, launch_tick_id: launched.tick_id });
+
+    await dispatchAutonomyRun(running);
+    const succeeded = await runs.markRunTerminal({
+      run_id: running, space_id: SPACE, status: "succeeded",
+      output_json: { schema_version: "run_output.v1", status: "succeeded", summary: "# Progress\n\nMoved.", result: {}, output_manifest: [] },
+      error_json: {}, exit_code: 0, completed_at: NOW.toISOString(),
+    });
+    await reconcileAutonomyRun(db.pool, succeeded!);
+    expect((await db.pool.query<{ status: string }>(`SELECT status FROM runs WHERE id = $1`, [launched.coordinator_run_id])).rows[0]?.status)
+      .toBe("degraded");
+    // Settled, the failure is a retry's to pick up again.
+    await new AutonomyService(db.pool).observeTick({
+      spaceId: SPACE, automationId: AUTOMATION, ownerUserId: USER, config: {}, now: NOW,
+    });
+    expect((await db.pool.query<{ status: string; run_id: string | null }>(
+      `SELECT status, run_id FROM autonomy_candidates WHERE project_id = $1`, [PROJECT_A],
+    )).rows[0]).toEqual({ status: "observed", run_id: null });
   });
 
   it("records a domain-budget refusal without aborting partial fan-out", async () => {
