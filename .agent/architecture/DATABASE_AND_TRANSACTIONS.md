@@ -382,7 +382,7 @@ successful commit and never participate in the critical write outcome.
   is NOT NULL with a server default, and DB CHECK constraints enforce the allowed `status` set,
   `attempts >= 0`, and `max_attempts > 0`.
 - `RunStep` has DB-level `UniqueConstraint(run_id, step_index)`.
-- `BackupService` uses a local advisory lock file (`backups/.backup.lock`, fcntl-based) and fails closed when `pg_dump` fails.
+- `BackupService` uses a local pid lock file (`backups/.backup.lock`, exclusively created with `wx`; a stale lock left by a crash is reclaimed by `removeStaleLock`) and fails closed when `pg_dump` fails.
 - Backup/restore uses `pg_dump -Fc --no-owner --no-acl` (custom format) and `pg_restore`. Backups are disabled by default; prod fails fast at startup unless `BACKUP_ENABLED=true` or `BACKUP_ACCEPT_NO_BACKUP=true`.
 
 ## Deployment Topology Assumption
@@ -466,8 +466,9 @@ and keep product settings in scoped settings or domain tables. The durable
 `jobs` table remains the execution queue; `scheduler_tasks` is only scheduler
 cursor/state metadata used to decide when to enqueue or fire work.
 Current recurring scheduler cursors include daily capture reports
-(`daily_capture_report`), automation schedules (`automation`), and source
-source connection scans (`source_connection_scan`).
+(`daily_capture_report`), automation schedules (`automation`), source
+channel scans (`source_channel_scan`), and source post-processing rules
+(`source_post_processing_rule`).
 Do not move execution-queue timestamps such as `jobs.scheduled_at` or
 domain work-item due timestamps such as `memory_maintenance_jobs.run_after`
 into `scheduler_tasks`; those rows are the work being processed, not the
@@ -552,7 +553,7 @@ and domain keys only; no member id leaves the repository.
 | Invocation Delivery lifecycle | `InvocationSnapshotService` — transaction-bound live reauthorization plus atomic plan/attempt, then short acknowledgement and finalization transactions; gateway reconciles Usage after acknowledgement | Provider call occurs between attempt creation and acknowledgement |
 | Runtime Context continuity | `RuntimeContextContinuityService` — per-scope advisory lock, dense append-only event sequence, gaps, terminal Micro Checkpoint, active Semantic Checkpoint pointer, immutable corrections | Semantic extraction runs outside the transaction; result persistence revalidates the selected head and canonical refs |
 | Bounded provider-task lifecycle | `PgProviderCommandStore.beginProviderTaskAttempt` — immutable task control, unique physical-attempt Delivery, and draft safe Snapshot in one short transaction; completion updates only the draft Snapshot and Usage carries the same refs | Domain-owned provider call occurs after attempt commit and before completion |
-| Activity capture | `ActivityService` | None |
+| Activity capture | `PgActivityRepository` | None |
 | Sources daily briefing Activity pointer | Source post-processing repository short upsert after successful run; auxiliary failure logged | None |
 | Information Digest daily snapshot | Transaction-scoped advisory lock by scope/day; root upsert plus complete item replacement commit together | Existing snapshot remains intact on failure |
 | Activity consolidation | One short commit per activity outcome | Low (consolidation model call possible) |
@@ -612,8 +613,7 @@ changes.
 
 **Narrow custom-SQL boundary:**
 Some PostgreSQL primitives are not expressible in the Drizzle DSL here:
-data backfills, changes to the `retrieval_object_type` DOMAIN's `CHECK`
-values, and Postgres extensions (`CREATE EXTENSION`). Those go into a
+data backfills and Postgres extensions (`CREATE EXTENSION`). Those go into a
 `--custom` migration, or into the generated file of the change they belong
 to, and must not change table structure that `src/db/schema/` describes
 unless the schema files are updated in the same change. `schema:check` is
@@ -623,20 +623,21 @@ created by some migration. It does not inspect a live database or re-read
 custom SQL for structural drift.
 
 **Schema representation notes:**
-- Content column defaults are storage backstops, not creation policy. Seven
+- Content column defaults are storage backstops, not creation policy. Eight
   legacy defaults remain `space_shared` (`activity_records`, `artifacts`,
-  `space_objects`, `knowledge_promotion_candidates`, `proposals`, `runs`,
-  `tasks`) and six remain/are explicitly written `private`
+  `imported_sessions`, `space_objects`, `knowledge_promotion_candidates`,
+  `proposals`, `runs`, `tasks`) and five remain `private`
   (`extracted_evidence`, `reader_annotations`, `source_connections`,
-  `source_items`, `source_snapshots`, `memory_entries`). User-initiated routes
+  `source_items`, `source_snapshots`); `memory_entries.visibility` has no
+  default and is always written explicitly. User-initiated routes
   always supply the access-owned creation context, so these contradictory
   defaults are unreachable on that path; derived writers inherit their source.
-  We intentionally do not migrate sixteen defaults into a second policy
+  We intentionally do not migrate these thirteen defaults into a second policy
   authority.
-- The `retrieval_object_type` Postgres DOMAIN (a closed enum used by ~10
-  retrieval/knowledge columns) is represented with `customType` in
-  `src/db/schema/_types.ts`; the DOMAIN definition itself lives in SQL
-  migrations.
+- The `retrieval_object_type` Postgres ENUM type (a closed enum used by ~10
+  retrieval/knowledge columns) is declared with `pgEnum` in
+  `src/db/schema/_types.ts`; adding a member edits the `pgEnum` and generates a
+  migration. `customType` is used only for `tsvector` and pgvector.
 - `retrieval_chunks.embedding` is a deliberately *unconstrained* pgvector
   column (no fixed dimension — enforced per-row by a CHECK tying
   `embedding_dimensions` to `vector_dims(embedding)`); drizzle-orm's
