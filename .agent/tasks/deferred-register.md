@@ -202,11 +202,8 @@ With one candidate the scoring function is inert, so re-deriving weights today
 would be calibration against no observation. Two candidates that differ is the
 first moment any weight is falsifiable.
 
-Re-derive all nine terms together, including the two name-based ones
-(`preference` at 20, and `profile_preference` at 25, which is *lower* than the
-+30 shape bonus it can lose to). Deleting `executionShapeScore()` may be done
-earlier as cleanup, but it is not a behaviour change and must not be recorded
-as one. `request.runtime_keys` and `request.runtime_profile_is_explicit` are
+Re-derive all eight terms together, including the two name-based ones
+(`preference` at 20, and `profile_preference` at 25). `request.runtime_keys` and `request.runtime_profile_is_explicit` are
 hard constraints and stay exactly as strict as they are.
 
 ### Add the funding dimension to the candidate model
@@ -425,7 +422,7 @@ during those plans' approvals, not oversights.
 | **`host-state/reset` has no web surface.** The endpoint shipped with the agent-identity plan's P1 (retired; current state in [modules/hosts.md](../modules/hosts.md)) and is reachable only by API. Whether "clear this Agent's CLI memory on this host" belongs on the Agent page, the Room roster, or the Command Center is a product placement question that phase did not decide. | The first time clearing an Agent's CLI state is wanted from the product rather than by curl |
 | **Bound remote runs cannot see `~/.gitconfig` / `~/.ssh`.** A stated limitation of the retired provider-binding plan, not a defect: a bound run's environment is an allowlist and its `HOME` is a control-plane profile. `SSH_AUTH_SOCK` is admitted because it selects no backend, but an agent that commits or pushes inside the workspace can succeed unbound and fail bound. Widening this means naming exactly which machine state a bound run may see — a B67 decision rather than a convenience. | A bound remote run needs to commit or push |
 | **Provider-proxy WS tunnel** — carrying remote CLI model traffic back to the server's provider proxy through the existing host WS connection instead of a directly exposed port. Rejected in that plan's D2: streaming/backpressure over the WS frame protocol is real work with no benefit while a fixed port is exposable. | A deployment where the provider proxy's fixed port cannot be exposed to a host that needs API-provider-bound runs |
-| **Prod ingress for remote hosts** — `apps/web/nginx.conf` forwards `/api/` only: there is no `/internal` WS-upgrade block, so a daemon cannot reach the prod compose stack at all (remote pairing has only ever worked through the dev Vite proxy's `/internal` forwarding). TLS is additionally required once a host connects from outside the LAN (see the standing TLS/rate-limiting/CSRF row), and the provider proxy's lease routes should join the same TLS entry then. | First remote host paired against the prod compose stack |
+| **Prod ingress for remote hosts** — `apps/web/nginx.conf` forwards `/api/` and an exact-match `/internal/hosts/ws` WS-upgrade block for the paired-host daemon; every other `/internal/*` route stays unreachable through it. TLS is still required once a host connects from outside the LAN (see the standing TLS/rate-limiting/CSRF row), and the provider proxy's lease routes should join the same TLS entry then. | First remote host connecting to the prod compose stack from outside the LAN |
 
 ## Project kernel — P2 (deferred by decision)
 
