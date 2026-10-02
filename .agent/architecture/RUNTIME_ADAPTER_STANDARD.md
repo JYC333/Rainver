@@ -40,7 +40,7 @@ runtime is sent. Nothing in that path is keyed on `runtime_key` — an adapter
 newly registered from the ACP registry gets the surface with no code added,
 which the three per-vendor MCP configuration writers this replaced each
 needed. The surface is only a transport over
-`AgentToolGateway`/`SystemActionGateway`: registry schemas, capability and
+`SystemActionGateway` (`server/src/modules/systemActions/gateway.ts`): registry schemas, capability and
 immutable AgentVersion allowlists, policy, approval/proposal behavior,
 idempotency, domain executors, and audit remain server-owned.
 
