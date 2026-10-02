@@ -134,6 +134,26 @@ describe('probeAcpOptions failure reporting', () => {
   })
 })
 
+describe('probeAcpOptions with an agent that stops reading', () => {
+  it('reports the closed input instead of ending the daemon', async () => {
+    const { probeAcpOptions } = await import('../src/acpProbe.js')
+    const reasons: string[] = []
+    // Reads the initialize request, closes its input, then answers: the
+    // probe's next request is written into a pipe nobody reads (EPIPE).
+    const script = `
+      setInterval(() => {}, 1000);
+      process.stdin.once("data", () => {
+        process.stdin.destroy();
+        require("node:fs").closeSync(0);
+        process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [] } }) + "\\n");
+      });
+    `
+    const result = await probeAcpOptions(process.execPath, ['-e', script], {}, process.cwd(), 5_000, r => reasons.push(r))
+    expect(result).toBeNull()
+    expect(reasons[0]).toMatch(/stdin closed/)
+  })
+})
+
 describe('probeAcpOptions anonymous model discovery', () => {
   it('reads model choices through session/new without an authenticate call', async () => {
     const { probeAcpOptions } = await import('../src/acpProbe.js')

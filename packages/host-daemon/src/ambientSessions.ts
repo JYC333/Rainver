@@ -110,6 +110,9 @@ class AcpProcess {
     });
     this.child.stdout?.on("data", (chunk: Buffer) => this.consume(chunk.toString("utf8")));
     this.child.on("error", (error) => this.fail(error instanceof Error ? error : new Error(String(error))));
+    // EPIPE from writing to a runtime that already exited arrives here, not
+    // at the write; an unheard stream error ends the daemon.
+    this.child.stdin?.on("error", (error) => this.fail(error));
     this.child.on("close", () => this.fail(new Error("the runtime exited before the request completed")));
   }
 

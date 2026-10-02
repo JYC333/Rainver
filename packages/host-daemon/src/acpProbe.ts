@@ -292,6 +292,11 @@ export function probeAcpOptions(
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString("utf8")).slice(-4000);
     });
+    // A write to an agent that already exited fails asynchronously with EPIPE
+    // on the stream, not in `send`'s try; unheard, it ends the daemon.
+    child.stdin?.on("error", (error) => {
+      finish(null, `stdin closed: ${error.message}${stderrTail()}`);
+    });
 
     const send = (frame: Record<string, unknown>) => {
       try { child.stdin?.write(`${JSON.stringify(frame)}\n`); } catch (error) {
