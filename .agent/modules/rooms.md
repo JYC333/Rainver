@@ -194,7 +194,9 @@ Room conversation summaries:
 - Room prompts enforce write/report consistency: listing a decomposition in a
   reply does not count as creating Project objects. If an Agent says it split
   work into N Project research questions, it must invoke
-  `inquiry.create_thread` once per question — at most five in a turn — and
+  `inquiry.create_thread` once per question — the prompt allows at most three
+  in a turn (one when no decomposition was asked for), and the server refuses
+  a sixth (`THREAD_FAN_OUT_PER_TURN = 5`) — and
   report the actual created count or any failure in plain language. The
   questions exist immediately; the Agent is told not to ask for confirmation
   per question, because the person sees each one in the Project's updates and
@@ -585,10 +587,10 @@ An Agent gets the Room's conversational actions because it was spoken to in a
 Room, not because of how that Agent was configured:
 `AgentGroupRunService.dispatchMessageInTransaction` passes
 `ROOM_CONVERSATION_TOOL_ALLOWANCE` as the Run's `scenario_tool_allowance`
-whenever the group has a `room_id`, independent of whether the Run executes on
+whenever the conversation has a `room_id` or a `project_id`, independent of whether the Run executes on
 the server Host or a remote trusted Host. Host kind changes how the same
 Run-scoped tool surface is delivered, not which Room-owned actions the Run may
-use. Non-Room groups receive `CONVERSATION_TOOL_ALLOWANCE`. See
+use. Conversations with neither receive `CONVERSATION_TOOL_ALLOWANCE`. See
 `architecture/SYSTEM_ACTIONS.md` for why the scope moved and what stayed
 fail-closed.
 
@@ -612,10 +614,7 @@ dates, blockers) and `inquiry.list_threads` (each Thread's recorded
 `next_step`) (`PLAN_ACTION_POLICY`). The Project-state block lists pending
 decisions (attention class `gate`) before anything else and carries each
 item’s summary, so an Inquiry next step arrives with its rationale and a
-pending proposal is never crowded out by a busy board. A conversation turn
-gets eight model turns in the managed loop (`CONVERSATION_MAX_MODEL_TURNS`),
-twice a dispatched Task's default, because the policies chain reads and
-writes before the reply.
+pending proposal is never crowded out by a busy board.
 
 The same policy tells the Agent that `task.create.required_outputs` is only for
 file Artifact types collected as deliverables. A reply, inspection, or edit to
@@ -759,10 +758,17 @@ marker. There is no product surface for `tool_permissions_json`, so Room
 scenario permissions remain a Room execution concern rather than silently
 depending on a specialist's private Agent configuration.
 
-The allowance holds four proposal-gated actions — propose a Project
-definition, create an Inquiry Thread, record a conclusion, and promote
-Knowledge — plus two directly-executed, idempotency-guarded actions:
-`agent.delegate` and `research.start_acquisition` (plan Phase 4). Delegation
+The allowance (`ROOM_PROJECT_TOOL_ALLOWANCE` plus the memory actions, in
+`systemActions/scenarioToolAllowance.ts`) holds the proposal-gated
+`project.propose_definition`, `inquiry.promote_knowledge`,
+`task.plan.propose`, `project.source.propose_bind`, and
+`source.backfill.propose_start`; the direct Project writes
+`inquiry.create_thread`, `inquiry.record_conclusion`,
+`inquiry.adopt_next_step`, and the `task.*` actions; the reads
+`inquiry.list_threads`, `task.list`, `research.list_operations`, and
+`proposal.list_pending`; `proposal.decide`; and the directly-executed,
+idempotency-guarded `agent.delegate` / `agent.wait_for_results` and
+`research.start_acquisition` / `research.cancel_acquisition`. Delegation
 is bounded to one level and two specialists per turn (`max_depth: 1`,
 `max_fanout: 2`, prospective counts — the third request is refused and
 recorded as refused, and a refused request does not consume the budget).
