@@ -17,7 +17,7 @@ configured local time. A manual run can always be triggered via
 user_capture ActivityRecords (local day)
     │
     ▼
-DailyCaptureReportService.generate_for_date()
+DailyCaptureReportService.generateForDate()
     │
     ├─ Creates Run (run_type=reflection, trigger_origin=automation|manual)
     │
@@ -25,7 +25,8 @@ DailyCaptureReportService.generate_for_date()
     │
     ├─ Creates Artifact (artifact_type=daily_capture_report) ← ALWAYS FIRST
     │
-    ├─ Optional: pending knowledge_create proposals (experience, item_type=experience)
+    ├─ Optional: pending knowledge_create proposals (experience; knowledge_kind=summary,
+    │           tag daily-capture-report)
     │           ← requires create_experience_proposals=true + confidence threshold
     │
     └─ Optional: pending memory_create proposals
@@ -73,8 +74,9 @@ DailyCaptureReportService.generate_for_date()
 ## API
 
 - `GET /api/v1/daily-capture-report/settings` — get or create settings for current user/space
-- `PUT /api/v1/daily-capture-report/settings` — update settings
-- `POST /api/v1/daily-capture-report/run` — trigger manual run
+- `PUT|PATCH /api/v1/daily-capture-report/settings` — update settings
+- `POST /api/v1/daily-capture-report/run` — trigger manual run; optional body fields
+  `local_date`, `force`, `create_experience_proposals`, `create_memory_proposals`
 - `GET /api/v1/daily-capture-report/reports` — list recent report artifacts
 
 ## Artifact structure
@@ -88,7 +90,7 @@ DailyCaptureReportService.generate_for_date()
 - `source_activity_ids`: list of ActivityRecord IDs used
 - `capture_count`
 - `structured_report`: full validated LLM JSON
-- `provider_type`, `model`, `service_version`, `setting_id`
+- `service_version`, `setting_id`
 
 ## Job handler
 
@@ -113,8 +115,8 @@ The background scheduler is controlled by two config settings (env vars):
 
 | Setting | Default | Notes |
 |---|---|---|
-| `DAILY_REPORT_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the scheduler entirely (e.g., when an external cron drives reports). |
-| `DAILY_REPORT_SCHEDULER_INTERVAL_SECONDS` | `60` | Seconds between scans. Minimum 30; values below 30 are rejected at startup. |
+| `SERVER_DAILY_REPORT_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the scheduler entirely (e.g., when an external cron drives reports). |
+| `SERVER_DAILY_REPORT_SCHEDULER_INTERVAL_SECONDS` | `60` | Seconds between scans, 30 to 86400; values outside that range are rejected at startup. |
 
 The scheduler scans immediately on startup, then sleeps between subsequent scans.
 
@@ -124,10 +126,11 @@ The scheduler scans immediately on startup, then sleeps between subsequent scans
   user's `timezone` each day.
 - `next_run_at` is stored in UTC, derived from the prior scheduled local slot plus one
   calendar day (same hour/minute in local time).
-- On DST spring-forward nights, a nonexistent local time is adjusted forward by Python's
-  `zoneinfo` — the report may run ~1 hour earlier (UTC) on that night.
-- On DST fall-back nights, `zoneinfo` uses `fold=0` (the first occurrence of the
-  ambiguous hour) — the report may run ~1 hour later (UTC) on that night.
+- The local slot is converted to UTC with `Intl.DateTimeFormat` and a bounded offset
+  correction (`zonedLocalToUtc` in `dailyReports/repository.ts`). On DST transition
+  nights a nonexistent or ambiguous local time resolves to one of the two adjacent
+  offsets, depending on the zone, so the report may run about an hour off its usual
+  UTC time on that night.
 - Jobs are never skipped on DST transition days.
 
 ## Module location
