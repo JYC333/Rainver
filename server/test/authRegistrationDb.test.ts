@@ -1,11 +1,13 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { migrate } from "../src/db/migrator.js";
 import { createBetterAuth } from "../src/modules/auth/betterAuth.js";
 import { PgAuthRepository } from "../src/modules/auth/identity.js";
 import { authModule } from "../src/modules/auth/index.js";
 import { RegistrationService } from "../src/modules/auth/registration.js";
+import { __setHibpTransportForTests } from "../src/modules/auth/routes.js";
 import { hashOpaqueToken } from "../src/modules/auth/securityPolicy.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { resetTables } from "./support/resetTables.js";
@@ -14,6 +16,9 @@ import { useTestDatabase } from "./support/testDatabase.js";
 const db = useTestDatabase(import.meta.filename, { empty: true });
 
 beforeAll(async () => { if (db.available) await migrate(db.pool, join(process.cwd(), "migrations")); });
+// Files share a worker: a HIBP fake left in the module seam would decide
+// passwords for whichever file runs next.
+afterAll(() => { __setHibpTransportForTests(null); });
 beforeEach(async () => {
   if (!db.available) return;
   await resetTables(db.pool, ["registration_intents", "space_invitations", "auth_accounts", "user_sessions", "spaces", "users"], { cascade: true });
@@ -332,6 +337,45 @@ describe("registration and Better Auth facade primitives", () => {
       expect(stored.rows.length).toBeGreaterThan(0);
       for (const row of stored.rows) expect(row.value).not.toContain(intent.claimSecret);
     } finally {
+      await app.close();
+    }
+  });
+
+  it("refuses a compromised password or an over-long name before any identity is created", async () => {
+    if (!db.available) return;
+    const config = authConfig("owner@example.test");
+    const registrations = new RegistrationService(db.pool, config);
+    const app = buildModuleServer(config, [authModule]);
+    const password = "a password with at least fifteen characters";
+    const register = (name: string, intent: { intentId: string; claimSecret: string }, sourceIp: string) => app.inject({
+      method: "POST", url: "/api/v1/auth/register",
+      remoteAddress: sourceIp,
+      headers: { origin: "http://localhost:5173", "content-type": "application/json" },
+      payload: JSON.stringify({ intent_id: intent.intentId, claim_secret: intent.claimSecret, email: "owner@example.test", password, name }),
+    });
+    const userCount = async () => (await db.pool.query<{ count: number }>("SELECT count(*)::int AS count FROM users")).rows[0]!.count;
+    try {
+      const intent = await registrations.issueIntent({ email: "owner@example.test" });
+
+      // HIBP knows this password. Setting or changing a password refuses it;
+      // registering with it must not be the one way in.
+      const suffix = createHash("sha1").update(password).digest("hex").toUpperCase().slice(5);
+      __setHibpTransportForTests({ async fetchRange() { return `${suffix}:1234\r\n0000000000000000000000000000000000A:1\r\n`; } });
+      const compromised = await register("Owner", intent, "192.0.2.240");
+      expect(compromised.statusCode).toBe(400);
+      expect(compromised.json()).toMatchObject({ code: "invalid_registration" });
+      expect(await userCount()).toBe(0);
+
+      // A name that fits `users.display_name` but not `<name>'s Personal
+      // Space` used to pass the route, create the pending identity, and then
+      // fail provisioning on every retry until the intent expired.
+      __setHibpTransportForTests({ async fetchRange() { return ""; } });
+      const tooLong = await register("n".repeat(245), intent, "192.0.2.241");
+      expect(tooLong.statusCode).toBe(400);
+      expect(tooLong.json()).toMatchObject({ code: "invalid_registration" });
+      expect(await userCount()).toBe(0);
+    } finally {
+      __setHibpTransportForTests(null);
       await app.close();
     }
   });

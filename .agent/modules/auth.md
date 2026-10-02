@@ -33,7 +33,10 @@ The first intent is admitted only when its normalized email matches
 requires an unexpired `available` invitation to a non-Personal Space; Space
 owners/admins may create one for a specific email, and it expires after seven
 days. Email normalization is trim plus lowercase only, without provider-specific
-alias rules. Display name is optional and defaults to the part before `@`.
+alias rules. Display name is optional and defaults to the part before `@`;
+it is bounded (`REGISTRATION_DISPLAY_NAME_MAX`) so that both
+`users.display_name` and the derived `<name>'s Personal Space` fit their
+columns, and a longer name is refused at the route before any identity exists.
 An invitation admits
 registration but does not verify ownership of that email address. Intent claim
 secrets and invitation tokens are stored only as SHA-256 digests. A pending
@@ -76,9 +79,10 @@ Email/password uses an 8–128 Unicode-code-point policy in explicit
 `dev`/`test` instances and a 15–128 policy everywhere else. The public auth
 configuration endpoint exposes the active bounds. Spaces are allowed, with no
 character-class composition or periodic-rotation rule. Passwords are hashed
-with Argon2id. Candidate passwords use the guarded HIBP range check, which sends
-only a SHA-1 prefix; an unavailable check allows the operation and records a
-degraded security event. Login errors are generic and combine Better Auth
+with Argon2id. Candidate passwords — on registration sign-up as on set, change
+and recovery — use the guarded HIBP range check, which sends only a SHA-1
+prefix; an unavailable check allows the operation and records a degraded
+security event. Login errors are generic and combine Better Auth
 path/IP limits with a bounded normalized-email/IP progressive limiter. Safe
 success/failure/throttled and degraded HIBP events use the allowlisted
 `auth_security_events` details.
@@ -87,7 +91,9 @@ linking Google requires an explicit authenticated action, and unlinking cannot
 remove the last remaining login account. Later Google sign-ins do not overwrite
 the Rainver profile. Every Better Auth session creation records `last_login_at`.
 A Google reauthentication nonce is one-time and bound to the user who initiated
-it before a recent-auth grant can be issued.
+it before a recent-auth grant can be issued; it is issued only once Better Auth
+has started the flow, and the pending table is bounded (oldest dropped past
+2048) like the login limiter's.
 
 `/settings/security` wraps recent password or Google reauthentication, password setup/change,
 Google link/unlink and safe session list/revoke operations. Session responses

@@ -7,4 +7,12 @@ describe("Google reauthentication nonce", () => {
     expect(consumeGoogleReauth(nonce)).toMatchObject({ userId: "user-1" });
     expect(consumeGoogleReauth(nonce)).toBeNull();
   });
+
+  it("bounds the pending nonces, dropping the oldest, so a flood cannot grow the table for ten minutes", () => {
+    const oldest = issueGoogleReauth("user-flood");
+    for (let index = 0; index < 2048; index += 1) issueGoogleReauth(`user-${index}`);
+    expect(consumeGoogleReauth(oldest)).toBeNull();
+    const latest = issueGoogleReauth("user-last");
+    expect(consumeGoogleReauth(latest)).toMatchObject({ userId: "user-last" });
+  });
 });

@@ -5,11 +5,11 @@ import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContex
 import { PASSWORD_MAX_LENGTH, assertPasswordPolicy, hashOpaqueToken, normalizeAuthEmail, passwordMinimumLength } from "./securityPolicy.js";
 import { googleAuthConfigured } from "./betterAuth.js";
 import { authRepositoryFromConfig, createAuthRuntime, introspectIdentity, sessionCookieName, sessionTokenFromRequest, setAuthRuntimeForComposition, type AuthFailure } from "./identity.js";
-import { RegistrationService } from "./registration.js";
+import { REGISTRATION_DISPLAY_NAME_MAX, RegistrationService } from "./registration.js";
 import { recordAuthSecurityEvent } from "./securityEvents.js";
 import { consumeManualResetLink } from "./recovery.js";
 import { clearReauthGrant, hasRecentReauth, recentReauthExpiresAt, setReauthGrant } from "./reauth.js";
-import { guardedHibpRangeTransport, isPasswordCompromised } from "./hibp.js";
+import { guardedHibpRangeTransport, isPasswordCompromised, type HibpRangeTransport } from "./hibp.js";
 import { consumeGoogleReauth, issueGoogleReauth } from "./googleReauth.js";
 import { authCookieHeader } from "./authCookie.js";
 
@@ -107,10 +107,16 @@ function genericAuthFailure(reply: FastifyReply, status = 400): FastifyReply {
   return reply.code(status).send({ code: "operation_unavailable", message: "The authentication operation could not be completed" });
 }
 
+let hibpTransportOverride: HibpRangeTransport | null = null;
+/** Test seam: the range check answers from this transport instead of the network. */
+export function __setHibpTransportForTests(transport: HibpRangeTransport | null): void {
+  hibpTransportOverride = transport;
+}
+
 async function passwordAllowed(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, password: string): Promise<boolean> {
   if (process.env.RAINVER_HIBP_DISABLED === "1") return true;
   try {
-    if (await isPasswordCompromised(password, guardedHibpRangeTransport())) {
+    if (await isPasswordCompromised(password, hibpTransportOverride ?? guardedHibpRangeTransport())) {
       await recordAuthSecurityEvent(runtime.pool, { eventType: "password_compromised", outcome: "failure", requestId: resolveRequestId(request), sourceIp: clientIp(request), details: { route: request.url, reason_code: "hibp_match" } }).catch(() => {});
       return false;
     }
@@ -300,9 +306,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!runtime || !googleAuthConfigured(context.config)) return reply.code(501).send({ code: "google_unavailable", message: "Google OAuth is not configured" });
     const user = await currentUser(context, request);
     if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
-    const nonce = issueGoogleReauth(user.id);
     const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/settings/security?google_reauth=1` });
     if (result.status >= 400 || typeof result.body.url !== "string") return genericAuthFailure(reply, 400);
+    // Issued only for a flow that started: a request Better Auth refused
+    // (its own rate limit, say) must not leave a nonce behind.
+    const nonce = issueGoogleReauth(user.id);
     reply.header("set-cookie", [
       ...authSetCookies(result.headers),
       authCookieHeader(context.config, { name: "rainver.google_reauth", value: nonce, maxAgeSeconds: 600 }),
@@ -493,9 +501,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try { normalizedEmail = normalizeAuthEmail(email); assertPasswordPolicy(password, minimumPasswordLength) } catch { return reply.code(400).send({ code: "invalid_registration", message: "Registration details are invalid" }) }
     const requestedName = typeof input.name === "string" ? input.name.trim() : "";
     const name = requestedName || normalizedEmail.split("@", 1)[0] || "User";
-    if ([...name].length > 256) return reply.code(400).send({ code: "invalid_registration", message: "Registration details are invalid" });
+    if ([...name].length > REGISTRATION_DISPLAY_NAME_MAX) return reply.code(400).send({ code: "invalid_registration", message: "Registration details are invalid" });
     const intent = await runtime.pool.query<{ email: string; pending_user_id: string | null }>("SELECT email, pending_user_id FROM registration_intents WHERE id = $1 AND claim_secret_hash = $2 LIMIT 1", [intentId, hashOpaqueToken(claimSecret)]);
     if (!intent.rows[0] || normalizeAuthEmail(intent.rows[0].email) !== normalizedEmail) return reply.code(400).send({ code: "invalid_registration", message: "Registration details are invalid" });
+    // A candidate password is checked against HIBP wherever one is set; sign-up
+    // is where the first one is set. A pending identity resuming sign-in uses
+    // the password it already has.
+    if (!intent.rows[0].pending_user_id && !await passwordAllowed(runtime, request, password)) return reply.code(400).send({ code: "invalid_registration", message: "Registration details are invalid" });
     const result = await authResponse(runtime, request, intent.rows[0].pending_user_id ? "/sign-in/email" : "/sign-up/email", { email: normalizedEmail, password, name, rememberMe: input.remember_me !== false });
     if (result.status >= 400 && result.status !== 409) return reply.code(401).send({ code: "invalid_registration", message: "Registration could not be completed" });
     const sessionCookie = result.headers.get("set-cookie")?.match(/better-auth\.session_token=([^;]+)/)?.[1];
@@ -511,6 +523,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!runtime || !registration) return runtimeOrError(context, reply);
     const input = body(request); const intentId = typeof input.intent_id === "string" ? input.intent_id : ""; const claimCookie = requestCookie(request, "rainver.registration_claim"); const cookieParts = claimCookie?.split(".") ?? []; const claimSecret = typeof input.claim_secret === "string" && input.claim_secret ? input.claim_secret : cookieParts.length >= 2 && cookieParts[0] === intentId ? cookieParts.slice(1).join(".") : ""; const userId = await registration.sessionUserId(sessionTokenFromRequest(request));
     if (!userId) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
+    if (typeof input.name === "string" && [...input.name.trim()].length > REGISTRATION_DISPLAY_NAME_MAX) return reply.code(400).send({ code: "registration_invalid", message: "Registration cannot be completed" });
     try { const result = await registration.complete({ intentId, claimSecret, userId, displayName: typeof input.name === "string" ? input.name : undefined }); reply.header("set-cookie", authCookieHeader(context.config, { name: "rainver.registration_claim", value: "", maxAgeSeconds: 0 })); return reply.send({ ok: true, ...result }); } catch { return reply.code(400).send({ code: "registration_invalid", message: "Registration cannot be completed" }) }
   });
 

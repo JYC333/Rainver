@@ -29,6 +29,14 @@ type ResumableIntent = {
 };
 
 const ACTIVE_INTENT_STATES = "('issued', 'claimed', 'provisioning')";
+export const PERSONAL_SPACE_NAME_SUFFIX = "'s Personal Space";
+/**
+ * The longest display name registration accepts: it must fit `users.display_name`
+ * and, with the suffix, `spaces.name` (both varchar(256)). A longer name used to
+ * pass the route, create the pending identity, and fail provisioning on every
+ * retry until the intent expired.
+ */
+export const REGISTRATION_DISPLAY_NAME_MAX = 256 - PERSONAL_SPACE_NAME_SUFFIX.length;
 
 export class RegistrationService {
   constructor(private readonly pool: Pool, private readonly config: ServerConfig) {}
@@ -191,7 +199,7 @@ export class RegistrationService {
       if (!personal.rows[0]) {
         const spaceId = randomUUID();
         const name = input.displayName?.trim() || intent.email.split("@", 1)[0]!;
-        await client.query("INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ($1, $2, 'personal', $3, now(), now())", [spaceId, `${name}'s Personal Space`, input.userId]);
+        await client.query("INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ($1, $2, 'personal', $3, now(), now())", [spaceId, `${name}${PERSONAL_SPACE_NAME_SUFFIX}`, input.userId]);
         await client.query("INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'owner', 'active', now(), now())", [randomUUID(), spaceId, input.userId]);
         await seedSpaceDefaults(client, spaceId, input.userId);
       }
