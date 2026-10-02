@@ -48,7 +48,9 @@ plan):
   or transports.
 - **`SystemActionDispatcher`** (`systemActions/systemActionDispatcher.ts`) is
   the Run-scoped layer Agent-facing entry points call. Given a `RunRecord` and
-  a request, it computes the Run's tool grants, builds the gateway's executor
+  a request, it reads the Run's persisted tool grants
+(`permission_snapshot_json.tool_grants`, via `assembleRunInputEnvelope`),
+builds the gateway's executor
   map (via `registerModuleSystemActionExecutors` / `executorRegistry.ts`, one
   registration function per owning module) and policy enforcer, and
   normalizes gateway results/errors into one structured tool-call shape.
@@ -82,8 +84,9 @@ in-process because the caller outlives the process — a remote Run's CLI keeps
 working across a server restart. The route reloads the Run and rejects unless
 it is `running`; the transport (`assertActive()`) repeats that check before
 every `list`/`call`, then only builds a dispatcher and forwards to it —
-neither computes tool permissions itself, that intersection is
-`SystemActionDispatcher`'s grant computation. The CLI never receives database
+neither computes tool permissions itself; that intersection is computed by
+`buildRunToolGrants` (`systemActions/runToolGrants.ts`) when the Run is
+created, and the dispatcher only reads the persisted result. The CLI never receives database
 credentials or an internal service token.
 
 Run creation computes that intersection from the Run's declared
@@ -235,12 +238,19 @@ Run grants, no admin oversight); the read is audited as that person's.
 and fails closed when the allowance is missing or malformed. That allowance
 normally comes from the AgentVersion, which models a tool as a property of the
 Agent. Some capabilities are properties of a *place* instead:
-`modules/systemActions/scenarioToolAllowance.ts` declares two:
+`modules/systemActions/scenarioToolAllowance.ts` declares them:
 `CONVERSATION_TOOL_ALLOWANCE`, what an Agent may do because a person is
-talking to it at all, and `ROOM_CONVERSATION_TOOL_ALLOWANCE`, that plus the
-Project write surface an Agent may use because it was spoken to in a Room.
-`RunCreateInput.scenario_tool_allowance` supplies the applicable one in place
-of the AgentVersion's for every Run dispatched from a group message. A
+talking to it at all; `ROOM_CONVERSATION_TOOL_ALLOWANCE`, that plus the
+Project write surface an Agent may use because it was spoken to in a Room;
+`INPUT_RESOURCE_TOOL_ALLOWANCE`, added only for a turn whose persisted message
+owns text resources; and `dispatchToolAllowance()`, what a Run Rainver
+dispatched to work on a Task may call (the Task write surface plus read-only
+`retrieval.brief`/`retrieval.search`, and `artifact.submit` only on a
+`trusted_host`). `RunCreateInput.scenario_tool_allowance` supplies the
+applicable one in place of the AgentVersion's for every conversation Run (via
+`conversationToolGrantInput`) and every Task-dispatched Run
+(`tasks/repository.ts`); the session-handoff turn carries
+`HANDOFF_TOOL_ALLOWANCE` (`agentGroups/sessionHandoff.ts`). A
 delegated child spawned inside a group is not one of those: it carries no
 declared capabilities and so no system-action grants at all.
 
@@ -333,9 +343,9 @@ Every other Project-internal write is governed by two things instead. **The
 trigger origin**: a write from a person's own turn (`manual`) executes, and a
 write from any other origin — scheduled, automated, or a delegated child whose
 root was unattended — is `require_approval` (`ruleUnattendedProjectWrite`,
-covering `task.create`, `task.stage.advance`, `proposal.decide`,
-`inquiry.thread.create`, `inquiry.iteration.record`, `inquiry.advice.adopt`
-and `research.acquisition.start`). And **bounds set before the work runs**: at
+covering `task.create`, `task.stage.advance`, `task.complete`,
+`proposal.decide`, `inquiry.thread.create`, `inquiry.iteration.record`,
+`inquiry.advice.adopt`, `research.acquisition.start` and `memory.write`). And **bounds set before the work runs**: at
 most five Threads opened per turn (`THREAD_FAN_OUT_PER_TURN`, counted from the
 Project's own event stream so a resumed Run cannot spend the budget twice), at
 most five Tasks created per turn by `task.create` (`TASK_FAN_OUT_PER_TURN`,
@@ -566,14 +576,17 @@ knowledge review gate), while the other two are `durable` direct writes —
 Thread structure stays direct and a `note_link` is navigational with no graph
 authority (B12A).
 
-Two of the policy actions they name — `inquiry.thread.create` and
-`note.link.create` — are **`reserved`**, meaning declared and not evaluated by
-any code path. They were introduced alongside the actions and first marked
-`wired_direct` on the grounds that they made the operation auditable. They do
-not: enforcement is the route's own Project ACL and note read gate, and who
-performed the write is already on the canonical row
-(`space_objects.created_by_user_id`, `note_links.created_by_user_id`), so a
-policy audit record would restate it. Wiring them is a decision still to be
+Of the policy actions they name, `note.link.create` is **`reserved`**, meaning
+declared and not evaluated by any code path. It was introduced alongside the
+actions and first marked `wired_direct` on the grounds that it made the
+operation auditable. It does not: enforcement is the route's own Project ACL
+and note read gate, and who performed the write is already on the canonical
+row (`note_links.created_by_user_id`), so a policy audit record would restate
+it. `inquiry.thread.create`, the other one, is `wired_direct`:
+`SystemActionDispatcher` evaluates it when an Agent calls
+`inquiry.create_thread`, origin-gated by `ruleUnattendedProjectWrite` and
+recorded `fail_closed`; the user-facing Note path still relies on the route's
+Project ACL. Wiring them is a decision still to be
 made; `reserved` is what the registry's own vocabulary calls that state.
 Reserved declarations default to `deny`; descriptive registration never grants
 authority before an enforcement point is deliberately wired.
