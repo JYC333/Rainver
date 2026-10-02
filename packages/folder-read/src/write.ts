@@ -197,15 +197,22 @@ async function resolveWriteTarget(
   }
   const canonicalRoot = await realpath(absoluteRoot).catch(() => null);
   if (!canonicalRoot) throw new FolderWriteError("not_found", "Project Folder directory not found on disk");
-  const canonicalParent = await realpath(dirname(absolute)).catch(() => null);
-  const canonicalTarget = await realpath(absolute).catch(() => null);
-  const containmentTarget = canonicalTarget ?? canonicalParent;
-  if (!containmentTarget || !isInside(containmentTarget, canonicalRoot)) {
+  // The target, or else the nearest part of its path that exists: a new file
+  // may sit under directories the write is about to create. That part decides
+  // containment, and the canonical path is it plus the part still to be made.
+  let existing = absolute;
+  let canonicalExisting = await realpath(existing).catch(() => null);
+  while (!canonicalExisting && dirname(existing) !== existing) {
+    existing = dirname(existing);
+    canonicalExisting = await realpath(existing).catch(() => null);
+  }
+  if (!canonicalExisting || !isInside(canonicalExisting, canonicalRoot)) {
     throw new FolderWriteError("path_forbidden", "File path escapes the registered Folder root");
   }
+  const canonicalPath = join(canonicalExisting, relative(existing, absolute));
   try {
     validatePath({
-      path: canonicalTarget ?? absolute,
+      path: canonicalPath,
       allowedRoot: canonicalRoot,
       mode: "write",
       protectedFolder: options.protectedFolder,

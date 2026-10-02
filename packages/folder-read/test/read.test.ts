@@ -267,6 +267,21 @@ describe("folder-read filesystem operations", () => {
     })).rejects.toMatchObject({ code: "path_forbidden" });
   });
 
+  it("creates a new file in directories that do not exist yet, and nowhere outside the root", async () => {
+    const root = await tempRoot();
+    await expect(writeFolderFile(root, "docs/notes/todo.md", "first", { expectedExists: false, expectedSha256: null }))
+      .resolves.toMatchObject({ path: "docs/notes/todo.md", content: "first" });
+    await expect(readFile(join(root, "docs", "notes", "todo.md"), "utf8")).resolves.toBe("first");
+
+    // A link out of the root still refuses, however deep the new part goes.
+    const outside = await tempRoot();
+    await symlink(outside, join(root, "linked"));
+    await expect(writeFolderFile(root, "linked/new/file.md", "x", { expectedExists: false, expectedSha256: null }))
+      .rejects.toMatchObject({ code: "path_forbidden" });
+    await expect(writeFolderFile(root, "new/.env", "x", { expectedExists: false, expectedSha256: null }))
+      .rejects.toMatchObject({ code: "path_forbidden" });
+  });
+
   it("serializes concurrent writes that share the same preimage", async () => {
     const root = await tempRoot();
     await writeFile(join(root, "README.md"), "before", "utf8");
