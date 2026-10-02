@@ -115,7 +115,9 @@ describe("Decision Domain (real Postgres)", () => {
   it("rejects a source Thread that does not belong to the Project, and a decided Option from a different Case", async () => {
     if (!db.available) return;
     const cases = new DecisionCaseService(db.pool);
-    await expect(cases.createCase(identity, PROJECT, { title: "x", source_thread_ids: [randomUUID()] })).rejects.toMatchObject({ statusCode: 422 });
+    // "Not found", as the Thread gate answers: an unknown Thread and one the
+    // writer may not read look the same.
+    await expect(cases.createCase(identity, PROJECT, { title: "x", source_thread_ids: [randomUUID()] })).rejects.toMatchObject({ statusCode: 404 });
 
     const caseOne = await cases.createCase(identity, PROJECT, { title: "Case One" });
     const caseTwo = await cases.createCase(identity, PROJECT, { title: "Case Two" });
@@ -142,6 +144,35 @@ describe("Decision Domain (real Postgres)", () => {
     await expect(cases.decide(asWriter, PROJECT, privateCase.id as string, { option_id: option.id }))
       .rejects.toMatchObject({ statusCode: 404 });
     expect((await cases.getCase(identity, PROJECT, privateCase.id as string)).status).toBe("open");
+  });
+
+  it("keeps a Thread the writer cannot read out of a Decision Case, on write and on read", async () => {
+    if (!db.available) return;
+    const writer = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    await seedSpaceMember(db.pool, { space: SPACE, user: writer });
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'member','active',now(),now())`,
+      [randomUUID(), SPACE, PROJECT, writer],
+    );
+    const threadSvc = new InquiryThreadService(db.pool);
+    const shared = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Shared question" });
+    const ownersOwn = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Owner's own" });
+    await db.pool.query(`UPDATE space_objects SET visibility='private' WHERE id=$1`, [ownersOwn.id]);
+    const asWriter = { spaceId: SPACE, userId: writer };
+    const cases = new DecisionCaseService(db.pool);
+
+    // Project membership is not enough to reference a private Thread, and the
+    // refusal is the same "not found" an unknown id gets.
+    await expect(cases.createCase(asWriter, PROJECT, { title: "x", source_thread_ids: [ownersOwn.id] }))
+      .rejects.toMatchObject({ statusCode: 404 });
+
+    const decisionCase = await cases.createCase(asWriter, PROJECT, { title: "Case", source_thread_ids: [shared.id] });
+    // The source later becomes its owner's alone: readers of the Case who
+    // cannot reach it no longer see even its id, while its owner still does.
+    await db.pool.query(`UPDATE space_objects SET visibility='private' WHERE id=$1`, [shared.id]);
+    expect((await cases.getCase(asWriter, PROJECT, decisionCase.id as string)).source_thread_ids).toEqual([]);
+    expect((await cases.getCase(identity, PROJECT, decisionCase.id as string)).source_thread_ids).toEqual([shared.id]);
   });
 
   it("rejects a non-integer or missing Trade-off score instead of silently storing it", async () => {

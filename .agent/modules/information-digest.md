@@ -28,8 +28,10 @@ interest-profile fact model remain separate support packages.
 
 The daily transaction takes a scope/day advisory lock, rechecks the snapshot,
 and runs the deterministic interest-profile fact layer before selecting. The
-fact layer consumes successful shared annotations joined to this reader's
-private state. Read material contributes recency-weighted domain coverage and
+fact layer consumes successful shared annotations of the items this reader
+may read (the Source item content gate; another member's private item never
+counts toward this reader's candidates) joined to this reader's private state.
+Read material contributes recency-weighted domain coverage and
 recurring topic phrases; items explicitly marked `ignored` contribute neither
 coverage nor topic candidates. An observation ledger makes repeated passes
 idempotent.

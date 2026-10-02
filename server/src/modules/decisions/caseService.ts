@@ -13,6 +13,7 @@ import {
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "../projects/access.js";
+import { assertThreadReadable, threadReadableSql } from "../inquiry/threadAccess.js";
 import { PgTaskRepository } from "../tasks/repository.js";
 
 const CASE_STATUSES = new Set(["open", "decided", "archived"]);
@@ -128,11 +129,9 @@ export class DecisionCaseService {
         [id, identity.spaceId, projectId, framing],
       );
       for (const threadId of new Set(threadIds)) {
-        const thread = await db.query(
-          `SELECT object_id AS id FROM inquiry_threads WHERE object_id=$1 AND project_id=$2 AND space_id=$3`,
-          [threadId, projectId, identity.spaceId],
-        );
-        if (!thread.rows[0]) throw new HttpError(422, `source Thread ${threadId} not found in this Project`);
+        // The Thread's own gate, not the Project's: a private Thread is its
+        // owner's, and refusing as "not found" does not confirm it exists.
+        await assertThreadReadable(db, identity, projectId, threadId, "change");
         // Cross-aggregate reference between two ontology objects; the domain
         // join table it replaces had no attributes of its own.
         assertLinkTypeAllowed({
@@ -181,7 +180,19 @@ export class DecisionCaseService {
     await assertProjectReadable(this.pool, identity.spaceId, projectId, identity.userId);
     const row = await this.requireCase(this.pool, identity.spaceId, projectId, caseId, identity.userId);
     const [sources, options, criteria, scores, commitments] = await Promise.all([
-      this.pool.query<{ thread_id: string }>(`SELECT to_object_id AS thread_id FROM object_relations WHERE from_object_id=$1 AND space_id=$2 AND link_type='derived_from' AND status='active'`, [caseId, identity.spaceId]),
+      // Only the source Threads this reader can reach: a Thread made private
+      // or deleted after the Case referenced it stays out of the Case's view.
+      this.pool.query<{ thread_id: string }>(
+        `SELECT r.to_object_id AS thread_id
+           FROM object_relations r
+           JOIN inquiry_threads t ON t.object_id = r.to_object_id AND t.space_id = r.space_id
+           JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
+          WHERE r.from_object_id=$1 AND r.space_id=$2 AND r.link_type='derived_from' AND r.status='active'
+            AND t.project_id=$3 AND so.deleted_at IS NULL
+            AND ${threadReadableSql("so", "$4", "read")}
+          ORDER BY r.created_at ASC`,
+        [caseId, identity.spaceId, projectId, identity.userId],
+      ),
       this.pool.query<OptionRow>(`SELECT * FROM decision_options WHERE decision_case_id=$1 AND space_id=$2 ORDER BY created_at ASC`, [caseId, identity.spaceId]),
       this.pool.query<CriterionRow>(`SELECT * FROM decision_criteria WHERE decision_case_id=$1 AND space_id=$2 ORDER BY created_at ASC`, [caseId, identity.spaceId]),
       this.pool.query<ScoreRow>(`SELECT * FROM decision_option_scores WHERE decision_case_id=$1 AND space_id=$2`, [caseId, identity.spaceId]),
