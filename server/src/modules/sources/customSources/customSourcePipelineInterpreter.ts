@@ -89,7 +89,7 @@ interface PipelineContext {
   guard?: OutboundGuard;
 }
 
-export interface CustomSourcePipelineRunInput {
+interface CustomSourcePipelineRunInput {
   policyEnvelope: CustomSourcePolicyEnvelope;
   handlerInput: CustomSourceHandlerInput;
   pipeline: CustomSourcePipelineDefinition;

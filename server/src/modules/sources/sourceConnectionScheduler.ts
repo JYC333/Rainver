@@ -6,9 +6,9 @@ import {
 import type { Queryable } from "../routeUtils/common.js";
 import { computeNextCheckAt } from "./sourceScanCadence.js";
 
-export const SOURCE_CHANNEL_SCAN_TASK_TYPE = "source_channel_scan";
+const SOURCE_CHANNEL_SCAN_TASK_TYPE = "source_channel_scan";
 
-export interface SourceChannelScheduleTarget {
+interface SourceChannelScheduleTarget {
   id: string;
   space_id: string;
   owner_user_id: string;
@@ -16,7 +16,7 @@ export interface SourceChannelScheduleTarget {
   fetch_frequency: string;
 }
 
-export function sourceChannelSchedulerTaskKey(channelId: string): string {
+function sourceChannelSchedulerTaskKey(channelId: string): string {
   return channelId;
 }
 

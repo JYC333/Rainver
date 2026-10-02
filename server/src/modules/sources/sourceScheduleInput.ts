@@ -7,12 +7,12 @@ export type SourceScheduleRule =
   | { frequency: "daily"; hour: number; minute: number }
   | { frequency: "weekly"; weekday: number; hour: number; minute: number };
 
-export interface ResolvedSourceSchedule {
+interface ResolvedSourceSchedule {
   nextRunAt: string | null;
   scheduleRule: SourceScheduleRule | null;
 }
 
-export function isScheduledFetchFrequency(fetchFrequency: string): boolean {
+function isScheduledFetchFrequency(fetchFrequency: string): boolean {
   return SCHEDULED_FETCH_FREQUENCIES.has(fetchFrequency);
 }
 
@@ -80,7 +80,7 @@ export function resolveRequestedSourceSchedule(input: {
   throw new HttpError(422, "schedule_rule is required for scheduled source connections");
 }
 
-export function parseRequestedScheduleRule(body: Record<string, unknown>): SourceScheduleRule | null | undefined {
+function parseRequestedScheduleRule(body: Record<string, unknown>): SourceScheduleRule | null | undefined {
   if (!Object.hasOwn(body, "schedule_rule")) return undefined;
   if (body.schedule_rule === undefined) return undefined;
   if (body.schedule_rule === null) return null;
@@ -120,7 +120,7 @@ export function computeNextRunAtFromScheduleRule(rule: SourceScheduleRule, from:
   return candidate.toISOString();
 }
 
-export function scheduleRuleFromDate(fetchFrequency: string, dateInput: Date | string): SourceScheduleRule {
+function scheduleRuleFromDate(fetchFrequency: string, dateInput: Date | string): SourceScheduleRule {
   const date = dateValue(dateInput);
   if (!date) throw new HttpError(422, "next_check_at must be a valid datetime");
   const minute = date.getUTCMinutes();
@@ -131,7 +131,7 @@ export function scheduleRuleFromDate(fetchFrequency: string, dateInput: Date | s
   throw new HttpError(422, "schedule_rule is only supported for hourly, daily, or weekly source connections");
 }
 
-export function parseRequestedNextCheckAt(body: Record<string, unknown>): string | null | undefined {
+function parseRequestedNextCheckAt(body: Record<string, unknown>): string | null | undefined {
   if (!Object.hasOwn(body, "next_check_at")) return undefined;
   if (body.next_check_at === undefined) return undefined;
   if (body.next_check_at === null) return null;

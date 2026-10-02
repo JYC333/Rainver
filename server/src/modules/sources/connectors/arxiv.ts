@@ -7,10 +7,10 @@ import { HttpError } from "../../routeUtils/common.js";
  * feed parser on purpose.
  */
 
-export const ARXIV_API_BASE_URL = "https://export.arxiv.org/api/query";
+const ARXIV_API_BASE_URL = "https://export.arxiv.org/api/query";
 
-export const ARXIV_SORT_BY_VALUES = ["relevance", "lastUpdatedDate", "submittedDate"] as const;
-export const ARXIV_SORT_ORDER_VALUES = ["ascending", "descending"] as const;
+const ARXIV_SORT_BY_VALUES = ["relevance", "lastUpdatedDate", "submittedDate"] as const;
+const ARXIV_SORT_ORDER_VALUES = ["ascending", "descending"] as const;
 
 export type ArxivSortBy = (typeof ARXIV_SORT_BY_VALUES)[number];
 export type ArxivSortOrder = (typeof ARXIV_SORT_ORDER_VALUES)[number];
@@ -22,7 +22,7 @@ export interface ArxivQueryConfig {
   sort_order: ArxivSortOrder;
 }
 
-export interface ArxivReference {
+interface ArxivReference {
   baseId: string;
   version: string | null;
 }
@@ -56,7 +56,7 @@ export function buildArxivQueryUrl(config: ArxivQueryConfig): string {
   return `${ARXIV_API_BASE_URL}?${params.toString()}`;
 }
 
-export function arxivAbsUrl(baseId: string): string {
+function arxivAbsUrl(baseId: string): string {
   return `https://arxiv.org/abs/${baseId}`;
 }
 

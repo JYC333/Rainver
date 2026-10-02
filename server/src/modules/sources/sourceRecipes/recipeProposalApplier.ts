@@ -18,7 +18,7 @@ import {
  * the same shared activation writes the inside-envelope path uses.
  */
 
-export class SourceRecipeProposalApplyError extends Error {
+class SourceRecipeProposalApplyError extends Error {
   constructor(
     readonly statusCode: number,
     message: string,

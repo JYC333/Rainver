@@ -18,7 +18,7 @@ import {
   type BackfillStrategy,
 } from "./sourceBackfillStrategy.js";
 
-export interface BackfillPreview {
+interface BackfillPreview {
   strategy: BackfillStrategy;
   segments: BackfillSegmentWindow[];
   quota_policy: BackfillQuotaPolicy;

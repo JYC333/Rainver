@@ -4,7 +4,7 @@ const WINDOW_UNITS = ["date_window", "page_cursor", "id_cursor"] as const;
 const QUOTA_WINDOWS = ["minute", "hour", "day"] as const;
 export const ARXIV_HISTORY_FLOOR = "1991-01-01T00:00:00.000Z";
 
-export const BACKFILL_HISTORY_MODES = ["bounded_range", "all_available"] as const;
+const BACKFILL_HISTORY_MODES = ["bounded_range", "all_available"] as const;
 export type BackfillHistoryMode = (typeof BACKFILL_HISTORY_MODES)[number];
 
 export interface BackfillStrategy {

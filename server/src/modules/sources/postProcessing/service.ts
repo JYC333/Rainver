@@ -1985,7 +1985,7 @@ export function sourcePostProcessingExecutionRequest(postProcessingRunId: string
   };
 }
 
-export function sourcePostProcessingRuntimePrompt(instruction: string): string {
+function sourcePostProcessingRuntimePrompt(instruction: string): string {
   return instruction;
 }
 

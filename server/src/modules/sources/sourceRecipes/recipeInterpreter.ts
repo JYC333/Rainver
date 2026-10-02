@@ -101,7 +101,7 @@ export interface SourceRecipeRunInput {
   guard?: OutboundGuard;
 }
 
-export interface SourceRecipeRunResult {
+interface SourceRecipeRunResult {
   status: "succeeded" | "failed";
   timed_out: boolean;
   error: string | null;

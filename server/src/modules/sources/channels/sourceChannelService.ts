@@ -18,7 +18,7 @@ interface SourceChannelProposalActor {
   projectId?: string | null;
 }
 
-export interface SourceChannelRow {
+interface SourceChannelRow {
   id: string;
   space_id: string;
   source_connection_id: string;
@@ -54,7 +54,7 @@ export interface SourceChannelRow {
   connection_visibility?: string;
 }
 
-export interface SelectedResearchAttemptChannelInput {
+interface SelectedResearchAttemptChannelInput {
   attemptId: string;
   providerKey: ResearchProviderKey;
   compiledQuery: ResearchCompiledQuery;

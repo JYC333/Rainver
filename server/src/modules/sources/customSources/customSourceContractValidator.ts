@@ -16,7 +16,7 @@ import type {
  * materialization after `ok: true`.
  */
 
-export interface CustomSourceContractValidationInput {
+interface CustomSourceContractValidationInput {
   /** Parsed/raw JSON read from the sandbox `output.json`, not yet schema-checked. */
   raw: unknown;
   limits: CustomSourcePolicyLimits;

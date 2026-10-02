@@ -59,7 +59,7 @@ export async function assertSourcePromptEgressAllowed(
   }
 }
 
-export async function resolveAgentPromptEgressDestination(
+async function resolveAgentPromptEgressDestination(
   db: Queryable,
   spaceId: string,
   agentId: string,

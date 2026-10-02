@@ -1,7 +1,7 @@
 import type { ExtractionProfileRegistry } from "../extractionProfiles/registry.js";
 import { materializeDocumentFromSourceItem } from "./documentMaterializer.js";
 
-export const GENERIC_DOCUMENT_EXTRACTION_PROFILE_KEY = "generic_document_v1";
+const GENERIC_DOCUMENT_EXTRACTION_PROFILE_KEY = "generic_document_v1";
 
 export function registerDocumentExtractionProfiles(
   registry: ExtractionProfileRegistry,

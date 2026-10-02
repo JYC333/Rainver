@@ -39,7 +39,7 @@ export async function reindexExtractedEvidenceAndParentForRetrieval(
  * nobody to authorize the spend, so nothing is queued for it; the next
  * backfill a person's action queues embeds it with the rest of the Space.
  */
-export async function enqueueSourceRetrievalEmbeddings(
+async function enqueueSourceRetrievalEmbeddings(
   db: Queryable,
   spaceId: string,
   userId: string | null,

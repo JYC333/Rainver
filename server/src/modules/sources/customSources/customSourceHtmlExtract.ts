@@ -56,7 +56,7 @@ export function extractTagText(html: string, tag: string): string | null {
   return match ? stripTags(match[1]!).trim() : null;
 }
 
-export function extractHref(html: string): string | null {
+function extractHref(html: string): string | null {
   const match = html.match(/href\s*=\s*["']([^"']+)["']/i);
   return match ? match[1]! : null;
 }

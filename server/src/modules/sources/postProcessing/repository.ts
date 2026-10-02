@@ -38,9 +38,9 @@ export type SourcePostProcessingContentSource =
   | "prefer_extracted_text_for_candidates"
   | "require_extracted_text_for_candidates";
 export type SourcePostProcessingRetrievalDomain = "knowledge" | "project" | "memory" | "source";
-export type SourcePostProcessingRetrievalMode = "exact" | "lexical" | "hybrid" | "hybrid_rerank";
-export type SourcePostProcessingDeepAnalysisContentSource = "prefer_extracted_text" | "require_extracted_text";
-export type SourcePostProcessingDeepAnalysisOutput = "deep_report" | "per_item_deep_summary";
+type SourcePostProcessingRetrievalMode = "exact" | "lexical" | "hybrid" | "hybrid_rerank";
+type SourcePostProcessingDeepAnalysisContentSource = "prefer_extracted_text" | "require_extracted_text";
+type SourcePostProcessingDeepAnalysisOutput = "deep_report" | "per_item_deep_summary";
 export type SourcePostProcessingDecisionReviewStatus =
   | "pending"
   | "accepted"
@@ -171,7 +171,7 @@ export interface SourcePostProcessingRuleRow {
   next_run_at?: unknown;
 }
 
-export interface SourcePostProcessingRunRow {
+interface SourcePostProcessingRunRow {
   id: string;
   space_id: string;
   rule_id: string | null;
@@ -198,7 +198,7 @@ export interface SourcePostProcessingRunRow {
   created_at: unknown;
 }
 
-export interface SourcePostProcessingItemDecisionRow {
+interface SourcePostProcessingItemDecisionRow {
   id: string;
   space_id: string;
   source_channel_id: string;
@@ -2147,7 +2147,7 @@ export class PgSourcePostProcessingRepository {
   }
 }
 
-export function ruleOut(row: SourcePostProcessingRuleRow): SourcePostProcessingRuleOut {
+function ruleOut(row: SourcePostProcessingRuleRow): SourcePostProcessingRuleOut {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -2198,7 +2198,7 @@ export function runOut(row: SourcePostProcessingRunRow): SourcePostProcessingRun
   };
 }
 
-export function decisionOut(row: WithAccessLevel<SourcePostProcessingItemDecisionRow>): SourcePostProcessingItemDecisionOut {
+function decisionOut(row: WithAccessLevel<SourcePostProcessingItemDecisionRow>): SourcePostProcessingItemDecisionOut {
   const summaryOnly = bodyWithheld(row.effective_access_level);
   return {
     id: row.id,

@@ -8,12 +8,12 @@ import {
   type SourceConnectorHandler,
 } from "../catalog/sourceConnectorRegistry.js";
 
-export type SearchExecutionHandler = Pick<
+type SearchExecutionHandler = Pick<
   SourceConnectorHandler,
   "buildScanRequest" | "buildBackfillRequest" | "parseResponse" | "parseCursor" | "prepareRequest"
 >;
 
-export interface ResearchSearchExecutionInput {
+interface ResearchSearchExecutionInput {
   compiledQuery: ResearchCompiledQuery;
   cursor?: Record<string, unknown>;
   window?: Record<string, unknown>;
@@ -50,7 +50,7 @@ export class SearchExecutionAdapter {
   }
 }
 
-export function connectorKey(providerKey: ResearchProviderKey): string {
+function connectorKey(providerKey: ResearchProviderKey): string {
   if (providerKey === "arxiv") return "arxiv_api";
   if (providerKey === "openalex") return "openalex_api";
   if (providerKey === "semantic_scholar") return "semantic_scholar_api";

@@ -19,7 +19,7 @@
  * `require(entrypointPath)` with no compile step.
  */
 
-export interface CustomSourceHandlerTemplateConfig {
+interface CustomSourceHandlerTemplateConfig {
   /** CSS class name (e.g. "article" or ".article") identifying repeated list items. Single-page mode is used when omitted. */
   listSelector?: string | null;
 }

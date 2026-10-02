@@ -27,7 +27,7 @@ export interface CustomSourceFetchCredential {
   header_value: string;
 }
 
-export interface CustomSourceFetchOptions {
+interface CustomSourceFetchOptions {
   signal?: AbortSignal;
   credential?: CustomSourceFetchCredential | null;
   /** Hard ceiling on the body; the rest is cancelled rather than buffered. */
@@ -99,7 +99,7 @@ export function guardedResponseText(response: GuardedResponse): string {
   return decodeTruncatedUtf8(response.bytes);
 }
 
-export function assertAllowedOrigin(url: string, allowedNetworkOrigins: string[]): void {
+function assertAllowedOrigin(url: string, allowedNetworkOrigins: string[]): void {
   let origin: string;
   try {
     const parsed = new URL(url);

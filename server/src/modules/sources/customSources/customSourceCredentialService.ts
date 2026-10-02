@@ -19,7 +19,7 @@ import {
  * `customSourcePipelineInterpreter.ts`), never by handler code — ever
  * decrypts it.
  */
-export const CUSTOM_SOURCE_FETCH_CREDENTIAL_TYPE = "custom_source_fetch_credential";
+const CUSTOM_SOURCE_FETCH_CREDENTIAL_TYPE = "custom_source_fetch_credential";
 
 interface CredentialRow {
   id: string;
@@ -31,7 +31,7 @@ interface CredentialRow {
   updated_at: unknown;
 }
 
-export interface CustomSourceCredentialDTO {
+interface CustomSourceCredentialDTO {
   id: string;
   space_id: string;
   owner_user_id: string | null;

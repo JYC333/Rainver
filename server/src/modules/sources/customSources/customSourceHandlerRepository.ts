@@ -281,7 +281,7 @@ function spacePolicyOut(spaceId: string, read: ScopedSettingsRead<CustomSourceSp
   };
 }
 
-export function instanceRunnerSettingsOut(
+function instanceRunnerSettingsOut(
   config: ServerConfig,
   read: ScopedSettingsRead<CustomSourceInstanceRunnerSettings> | null = null,
 ) {

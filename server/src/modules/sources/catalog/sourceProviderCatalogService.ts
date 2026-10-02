@@ -1,7 +1,7 @@
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
 import { sourceProviderSetupSchema } from "./sourceProviderSetup.js";
 
-export interface SourceProviderCatalogRow {
+interface SourceProviderCatalogRow {
   id: string;
   provider_key: string;
   display_name: string;

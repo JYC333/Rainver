@@ -36,7 +36,7 @@ interface SourceConnectionRow {
   deleted_at: unknown;
 }
 
-export class CustomSourceProposalApplyError extends Error {
+class CustomSourceProposalApplyError extends Error {
   constructor(
     readonly statusCode: number,
     message: string,

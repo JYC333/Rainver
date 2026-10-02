@@ -56,7 +56,7 @@ export interface NormalizedSourceItem {
   metadata: Record<string, unknown>;
 }
 
-export class SourceConnectorRegistry {
+class SourceConnectorRegistry {
   private readonly handlers = new Map<string, SourceConnectorHandler>();
 
   register(handler: SourceConnectorHandler): void {

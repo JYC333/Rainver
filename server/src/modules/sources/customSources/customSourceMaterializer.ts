@@ -33,14 +33,14 @@ import { upsertCanonicalEvidence } from "../evidenceIdentity.js";
  * INSERT. A valid output writes only Source objects and artifacts.
  */
 
-export interface CustomSourceHandlerRunContext {
+interface CustomSourceHandlerRunContext {
   runId: string;
   spaceId: string;
   sourceConnectionId: string;
   handlerVersionId: string;
 }
 
-export interface CustomSourceMaterializationResult {
+interface CustomSourceMaterializationResult {
   status: "succeeded" | "failed" | "validation_failed";
   itemsCreated: number;
   itemsUpdated: number;

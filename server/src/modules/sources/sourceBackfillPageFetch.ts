@@ -39,7 +39,7 @@ export interface BackfillPageRequest {
   credentialHeaders?: Record<string, string>;
 }
 
-export interface BackfillPageResult {
+interface BackfillPageResult {
   response: SourceFetchResult;
   request: BackfillPageRequest;
   /** The width that actually worked, which the caller carries into the next page. */

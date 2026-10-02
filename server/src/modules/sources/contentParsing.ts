@@ -79,7 +79,7 @@ export function stripHtml(input: string): string {
     .trim();
 }
 
-export function htmlTitle(input: string): string | null {
+function htmlTitle(input: string): string | null {
   const match = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(input);
   const title = match ? stripHtml(match[1] ?? "").trim() : "";
   return title || null;

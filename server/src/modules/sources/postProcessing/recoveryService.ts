@@ -9,7 +9,7 @@ import { SOURCE_POST_PROCESSING_LIMITS } from "./config.js";
 
 const RECOVERY_SETTLE_WINDOW_MS = 30_000;
 
-export type SourcePostProcessingPreparation =
+type SourcePostProcessingPreparation =
   | {
       status: "ready";
     }
