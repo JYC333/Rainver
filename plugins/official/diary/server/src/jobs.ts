@@ -33,7 +33,7 @@ export function buildDiaryReflectionHandler(db: Queryable, pluginId: string): Pl
       ),
     ];
 
-    await diaryRepository.insertReflection(
+    await diaryRepository.saveReflection(
       db,
       entry_id,
       new Date().toISOString().slice(0, 10),

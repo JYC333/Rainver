@@ -682,4 +682,23 @@ describe("diary reflection job settings", () => {
     expect(reflections.rows[0]?.content).toContain("Past entry");
     expect(reflections.rows[0]?.ai_model).toBe("stub");
   });
+
+  it("keeps one reflection per entry and day however often the entry is saved", async () => {
+    await installDiary();
+    await pluginService.enablePlugin(db, DIARY_PLUGIN_ID, SPACE_A, USER_1, {
+      settings: { ai_reflection_enabled: true },
+    });
+    const currentEntryId = await insertDiaryEntry(USER_1, "2026-06-19", "Today");
+    await insertDiaryEntry(USER_1, "2025-06-19", "Past entry");
+    const handler = await buildDiaryJobHandler("diary_reflection");
+    const payload = { user_id: USER_1, entry_id: currentEntryId, entry_date: "2026-06-19" };
+
+    // Every autosave enqueues one of these.
+    for (const jobId of ["job-a", "job-b", "job-c"]) {
+      await handler({ job_id: jobId, job_type: "diary_reflection", payload, attempt_number: 1 });
+    }
+
+    const reflections = await testDb.pool.query("SELECT id FROM diary_reflections WHERE entry_id = $1", [currentEntryId]);
+    expect(reflections.rowCount).toBe(1);
+  });
 });

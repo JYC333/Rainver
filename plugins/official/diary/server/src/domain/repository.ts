@@ -108,7 +108,12 @@ export const diaryRepository = {
     return result.rows;
   },
 
-  async insertReflection(
+  /**
+   * One reflection per entry and day: every save of the entry enqueues a
+   * reflection job, so a second run that day replaces the first instead of
+   * adding a copy.
+   */
+  async saveReflection(
     db: Queryable,
     entryId: string,
     reflectionDate: string,
@@ -116,9 +121,18 @@ export const diaryRepository = {
     aiModel?: string,
   ): Promise<DiaryReflectionRow> {
     const result = await db.query<DiaryReflectionRow>(
-      `INSERT INTO diary_reflections (entry_id, reflection_date, content, ai_model)
-       VALUES ($1, $2::date, $3, $4)
-       RETURNING id, entry_id, reflection_date::text, content, ai_model, created_at::text`,
+      `WITH updated AS (
+         UPDATE diary_reflections
+            SET content = $3, ai_model = $4
+          WHERE entry_id = $1 AND reflection_date = $2::date
+        RETURNING id, entry_id, reflection_date::text, content, ai_model, created_at::text
+       ), inserted AS (
+         INSERT INTO diary_reflections (entry_id, reflection_date, content, ai_model)
+         SELECT $1, $2::date, $3, $4
+          WHERE NOT EXISTS (SELECT 1 FROM updated)
+        RETURNING id, entry_id, reflection_date::text, content, ai_model, created_at::text
+       )
+       SELECT * FROM updated UNION ALL SELECT * FROM inserted LIMIT 1`,
       [entryId, reflectionDate, content, aiModel ?? null],
     );
     return result.rows[0]!;
