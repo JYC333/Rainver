@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { pluginsApi } from '../../api/client'
 import { MODULE_REGISTRY, modulesWithEffectivePlugins, type Module } from '../registry'
 
-export interface EffectivePluginState {
+interface EffectivePluginState {
   plugin_id: string
   installed: boolean
   install_status?: string | null
@@ -18,9 +18,9 @@ export interface EffectivePluginState {
   updated_at?: string | null
 }
 
-export type EffectivePluginMap = Record<string, EffectivePluginState>
+type EffectivePluginMap = Record<string, EffectivePluginState>
 
-export interface UseEffectivePluginsResult {
+interface UseEffectivePluginsResult {
   plugins: EffectivePluginMap
   loading: boolean
   error: string | null
@@ -76,7 +76,7 @@ export function useEffectivePlugins(): UseEffectivePluginsResult {
   return { plugins, loading, error, refresh: fetch, isEnabled, isVisible }
 }
 
-export interface UseEffectiveModulesResult {
+interface UseEffectiveModulesResult {
   modules: Module[]
   refresh: () => void
 }

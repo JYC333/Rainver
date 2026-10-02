@@ -71,7 +71,7 @@ export function ConversationSessionConfig({
   })
 }
 
-export type AgentSessionConfiguration = {
+type AgentSessionConfiguration = {
   id: string
   name: string
   options: RuntimeSessionConfigOption[]
@@ -146,7 +146,7 @@ export function ConversationAgentSessionConfigs({
   )
 }
 
-export function defaultSessionConfig(options: RuntimeSessionConfigOption[]): SessionConfigSelection[] {
+function defaultSessionConfig(options: RuntimeSessionConfigOption[]): SessionConfigSelection[] {
   return configurableOptions(options).map(option => ({
     id: option.id,
     type: option.type,

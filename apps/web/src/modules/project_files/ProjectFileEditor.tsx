@@ -13,7 +13,7 @@ import { errMsg } from '../../lib/utils'
 import { ProjectFileDraftController, conflictingDraft, sha256Utf8, type DraftControllerSnapshot, type DraftMutationInput } from './draftController'
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
 
-export interface ProjectFileEditorProps {
+interface ProjectFileEditorProps {
   file: FileContent | null
   draft: ProjectFileDraft | null
   draftLoading?: boolean

@@ -76,7 +76,7 @@ export interface ProjectResearchSettings {
   }
 }
 
-export interface NewSearchDialogState {
+interface NewSearchDialogState {
   open: boolean
   setOpen: (open: boolean) => void
   thread: InquiryThread | undefined
@@ -84,7 +84,7 @@ export interface NewSearchDialogState {
   draft: ReturnType<typeof researchSetupDraftFromWorkflow>
 }
 
-export interface ProjectResearchController {
+interface ProjectResearchController {
   project: Project | null
   loading: boolean
   actionBusy: string | null

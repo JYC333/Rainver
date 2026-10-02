@@ -11,7 +11,7 @@ import { isSameOriginImage } from '../ai-elements/safeMarkdown'
 import { cn } from '../../lib/utils'
 import type { ReaderAnnotation } from '../../types/api'
 
-export interface AnchorBlockRef {
+interface AnchorBlockRef {
   index: number
   node_type: string
   from: number

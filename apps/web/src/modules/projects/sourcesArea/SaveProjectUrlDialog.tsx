@@ -11,7 +11,7 @@ import { Select } from '../../../components/ui/select'
 import { errMsg } from '../../../lib/utils'
 import type { ProjectSourceBinding, SourceChannel, SourceItem } from '../../../types/api'
 
-export interface ProjectSourceOption {
+interface ProjectSourceOption {
   value: string
   label: string
   connectionId: string

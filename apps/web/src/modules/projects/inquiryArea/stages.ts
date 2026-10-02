@@ -143,7 +143,7 @@ function hasStageProduct(stage: StageId, input: StageInput): boolean {
   }
 }
 
-export interface StageView {
+interface StageView {
   id: StageId
   /** This round produced the stage's own outcome. */
   complete: boolean
@@ -206,7 +206,7 @@ export function deriveStages(input: StageInput): { stages: StageView[]; current:
   }
 }
 
-export interface StepRecommendation {
+interface StepRecommendation {
   kind: InquiryNextFocusKind
   /** Drawn from state the user can check on this page, never a bare assertion. */
   reason: string

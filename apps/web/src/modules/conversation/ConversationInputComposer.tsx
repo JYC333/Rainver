@@ -70,7 +70,7 @@ export function conversationInputSourcesFromExecutionSummary(summary: Conversati
   })
 }
 
-export interface ConversationInputDraftController {
+interface ConversationInputDraftController {
   parts: ConversationInputPart[]
   unresolved: boolean
   references: ReactNode

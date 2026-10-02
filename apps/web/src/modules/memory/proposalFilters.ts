@@ -10,7 +10,7 @@ export const TYPE_FILTERS: { value: ProposalTypeFilter; label: string }[] = [
   { value: 'follow_up_task', label: 'Tasks' },
 ]
 
-export const KNOWLEDGE_PROPOSAL_TYPES = [
+const KNOWLEDGE_PROPOSAL_TYPES = [
   'knowledge_create',
   'knowledge_update',
   'knowledge_archive',

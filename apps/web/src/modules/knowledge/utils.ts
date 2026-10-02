@@ -78,7 +78,7 @@ export const KNOWLEDGE_WORKSPACE_SECTIONS: Exclude<KnowledgeSection, 'home'>[] =
   'cards',
 ]
 
-export const DEFAULT_KNOWLEDGE_SECTION: KnowledgeSection = 'notes'
+const DEFAULT_KNOWLEDGE_SECTION: KnowledgeSection = 'notes'
 
 const LAST_SECTION_KEY = 'rainver:knowledge-section'
 

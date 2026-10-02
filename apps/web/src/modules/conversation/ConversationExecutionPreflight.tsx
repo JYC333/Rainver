@@ -22,7 +22,7 @@ import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { ConversationGitContext } from './ConversationGitContext'
 
-export interface ConversationExecutionPreflightProps {
+interface ConversationExecutionPreflightProps {
   projectId: string
   roomId: string
   sessionId: string | null

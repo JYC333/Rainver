@@ -1,6 +1,6 @@
 import type { ProjectResearchReport, ProjectResearchWorkflow } from '../../types/api'
 
-export interface ResearchReportView {
+interface ResearchReportView {
   link: ProjectResearchReport
   title: string
   kindLabel: string

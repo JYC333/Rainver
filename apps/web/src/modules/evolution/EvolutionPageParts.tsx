@@ -81,7 +81,7 @@ function formatCount(value: number, locale: Locale) {
   return new Intl.NumberFormat(locale).format(value)
 }
 
-export function shortId(id: string | null | undefined) {
+function shortId(id: string | null | undefined) {
   return id ? `${id.slice(0, 8)}...` : '-'
 }
 

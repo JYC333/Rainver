@@ -1,10 +1,10 @@
 import { ConversationMessageInputSchema, type ConversationInputPart } from '@rainver/protocol'
 
-export const CONVERSATION_DRAFT_VERSION = 1
-export const CONVERSATION_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+const CONVERSATION_DRAFT_VERSION = 1
+const CONVERSATION_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 const DRAFT_PREFIX = 'rainver:conversation-draft:v1:'
 
-export interface ConversationDraft {
+interface ConversationDraft {
   version: typeof CONVERSATION_DRAFT_VERSION
   destination: string
   text: string
@@ -82,7 +82,7 @@ export function clearConversationDraft(destination: string, storage: Storage | n
   }
 }
 
-export function safeSessionStorage(): Storage | null {
+function safeSessionStorage(): Storage | null {
   try {
     return typeof window === 'undefined' ? null : window.sessionStorage
   } catch {

@@ -67,7 +67,7 @@ export function clearSessionResidue(): void {
 }
 
 /** Removes the API response cache, whatever state the app thinks it is in. */
-export async function dropApiCache(): Promise<void> {
+async function dropApiCache(): Promise<void> {
   if (typeof caches === 'undefined') return
   try { await caches.delete(API_CACHE_NAME) } catch { /* unsupported */ }
 }

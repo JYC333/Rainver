@@ -27,7 +27,7 @@ import {
 } from '@codemirror/view'
 import { loadLanguage, type CodeMirrorLanguage } from './codeMirrorLanguages'
 
-export interface CodeMirrorSelection {
+interface CodeMirrorSelection {
   from: number
   to: number
   anchor: number
@@ -38,7 +38,7 @@ export interface CodeMirrorSelection {
   endColumn: number
 }
 
-export interface CodeMirrorEditorProps {
+interface CodeMirrorEditorProps {
   value: string
   language?: CodeMirrorLanguage
   readOnly?: boolean
@@ -199,7 +199,7 @@ export function CodeMirrorEditor({
   return <div ref={host} className={['h-full min-h-0 w-full', className].filter(Boolean).join(' ')} />
 }
 
-export interface CodeMirrorMergeProps {
+interface CodeMirrorMergeProps {
   original: string
   current: string
   language?: CodeMirrorLanguage

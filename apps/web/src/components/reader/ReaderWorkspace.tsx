@@ -10,7 +10,7 @@ import { ReaderSelectionToolbar } from './ReaderSelectionToolbar'
 import { ReaderShortcutsDialog } from './ReaderShortcutsDialog'
 import { activeAnnotationsInDocumentOrder, type ReaderAnnotationType } from './readerModel'
 
-export interface ReaderWorkspaceControls { panelOpen: boolean; togglePanel: () => void }
+interface ReaderWorkspaceControls { panelOpen: boolean; togglePanel: () => void }
 
 export function ReaderWorkspace({ document, annotations, onAnnotationsChange, header, banner, onReferenceClick, remoteImages = false }: {
   document: ReaderDocumentPayload

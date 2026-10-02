@@ -55,7 +55,7 @@ export function isScheduledFrequency(fetchFrequency: string) {
   return fetchFrequency === 'hourly' || fetchFrequency === 'daily' || fetchFrequency === 'weekly'
 }
 
-export function isScheduleFormComplete(fetchFrequency: string, value: ScheduleFormValue) {
+function isScheduleFormComplete(fetchFrequency: string, value: ScheduleFormValue) {
   if (fetchFrequency === 'manual') return true
   if (fetchFrequency === 'hourly') return validMinute(value.minute)
   if (fetchFrequency === 'daily') return validHour(value.hour) && validMinute(value.minute)

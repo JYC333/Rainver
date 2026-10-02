@@ -45,7 +45,7 @@ const notesTreeCollisionDetection: CollisionDetection = args => {
  * component should continue to own APIs, routing, toasts/confirms, tabs, and
  * collection dialogs, passing those behaviors in through callbacks.
  */
-export interface NotesTreeProps {
+interface NotesTreeProps {
   collections: NoteCollection[]
   notes: NoteSummary[]
   selectedCollectionId: string | null

@@ -1,19 +1,19 @@
 import type { GraphProjection, GraphProjectionLayoutMode } from '@rainver/protocol'
 import type { GraphLayoutConfig, GraphViewState } from '../types'
 
-export const IN_THREAD_FORCE_NODE_LIMIT = 1500
+const IN_THREAD_FORCE_NODE_LIMIT = 1500
 export const WORKER_LAYOUT_NODE_LIMIT = 3000
-export const CLIENT_GRAPH_NODE_BUDGET = 5000
+const CLIENT_GRAPH_NODE_BUDGET = 5000
 export const CLIENT_GRAPH_EDGE_BUDGET = CLIENT_GRAPH_NODE_BUDGET * 3
-export const IN_THREAD_DYNAMIC_FORCE_ITERATIONS = 260
-export const WORKER_FORCE_ITERATIONS = 80
+const IN_THREAD_DYNAMIC_FORCE_ITERATIONS = 260
+const WORKER_FORCE_ITERATIONS = 80
 
 const COMPONENT_CLUSTER_BY = 'node.componentId'
 const SEMANTIC_CLUSTER_BY = 'node.clusterId || node.data.projection.clusterId || node.data.kind || node.componentId'
 
-export type GraphLayoutTier = 'in-thread' | 'worker' | 'degraded'
+type GraphLayoutTier = 'in-thread' | 'worker' | 'degraded'
 
-export interface GraphScalePolicy {
+interface GraphScalePolicy {
   nodeCount: number
   edgeCount: number
   layoutTier: GraphLayoutTier
@@ -22,7 +22,7 @@ export interface GraphScalePolicy {
   warning: string | null
 }
 
-export interface GraphLayoutResolution {
+interface GraphLayoutResolution {
   layout: GraphLayoutConfig
   mode: GraphProjectionLayoutMode
   warning: string | null
@@ -125,7 +125,7 @@ export function layoutWarningForNodeCount(nodeCount: number): string | null {
   return layoutWarningForCounts(nodeCount, 0)
 }
 
-export function layoutWarningForCounts(nodeCount: number, edgeCount: number): string | null {
+function layoutWarningForCounts(nodeCount: number, edgeCount: number): string | null {
   if (nodeCount > CLIENT_GRAPH_NODE_BUDGET && edgeCount > CLIENT_GRAPH_EDGE_BUDGET) {
     return 'Projection exceeds the client node and edge budgets; using a degraded layout and requiring producer-side capping or aggregation.'
   }

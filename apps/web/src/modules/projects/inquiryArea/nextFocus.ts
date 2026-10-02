@@ -8,7 +8,7 @@ export type ThreadTabId = 'evidence' | 'relations' | 'notes' | 'history'
  * kind now has somewhere to go: the two that did not — pause and waiting on
  * monitoring — were states rather than errands and are no longer actions.
  */
-export type NextFocusDestination =
+type NextFocusDestination =
   | { kind: 'link'; to: string; cta: string }
   | { kind: 'tab'; tab: ThreadTabId; cta: string }
 

@@ -19,7 +19,7 @@ import type { FileNode } from '../../types/api'
 import { errMsg } from '../../lib/utils'
 import { useConversationInputSendGuard, type ConversationInputFileSource } from '../conversation/ConversationInputComposer'
 
-export interface RoomMessageComposerValue {
+interface RoomMessageComposerValue {
   text: string
   mentionIds: string[]
   routingSegments: RoomMessageRoutingSegment[]
@@ -40,7 +40,7 @@ type MentionSuggestion =
   | { type: 'agent'; agent: MentionAgent }
   | { type: 'file'; file: FileCandidate }
 
-export interface RoomMessageRoutingSegment {
+interface RoomMessageRoutingSegment {
   recipient_agent_ids: string[]
   content: string
 }

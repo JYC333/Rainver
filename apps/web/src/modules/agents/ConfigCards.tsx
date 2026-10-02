@@ -6,7 +6,7 @@ import {
 } from './policyMap'
 
 /** Minimal shape shared by AgentVersionOut and AgentTemplateVersionOut. */
-export interface VersionLike {
+interface VersionLike {
   context_policy_json?: unknown
   memory_policy_json?: unknown
   output_policy_json?: unknown

@@ -102,7 +102,7 @@ function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
 }
 
-export interface NoteEditorProps {
+interface NoteEditorProps {
   /** The note to edit. Which note is open is the surface's decision, not this
    * component's — it used to read `useParams()`, which pinned it to one route. */
   noteId: string

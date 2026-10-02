@@ -1035,7 +1035,7 @@ export interface GraphProjectionQuery {
   include_clusters?: boolean
 }
 
-export interface GraphViewStateRecord {
+interface GraphViewStateRecord {
   scope_key: string
   state_json: Record<string, unknown>
   updated_at: string | null
@@ -2404,7 +2404,7 @@ export type HostLoginTarget =
   | { kind: 'logout' }
 
 /** The daemon's report for one install/uninstall of a managed runtime copy. */
-export interface RuntimeInstallResult {
+interface RuntimeInstallResult {
   host_id: string
   runtime_key: string
   ok: boolean
@@ -3277,7 +3277,7 @@ export const decisionCasesApi = {
   createDelivery: (projectId: string, caseId: string, commitmentId: string) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/commitments/${encodeURIComponent(commitmentId)}/deliver`, {}),
 }
 
-export interface LearningObjective {
+interface LearningObjective {
   id: string
   project_id: string | null
   title: string
@@ -3285,7 +3285,7 @@ export interface LearningObjective {
   status: string
 }
 
-export interface LearningItem {
+interface LearningItem {
   id: string
   project_id: string | null
   objective_id: string | null
@@ -3614,7 +3614,7 @@ export interface ModelProviderOut {
   updated_at: string
 }
 
-export interface ModelProviderModelsOut {
+interface ModelProviderModelsOut {
   models: string[]
   source: 'configured' | 'live'
 }
@@ -3639,7 +3639,7 @@ export interface ProviderPresetOut {
   task?: string | null
 }
 
-export interface ProviderFromPresetCreateRequest {
+interface ProviderFromPresetCreateRequest {
   preset_id: string
   api_key?: string | null
   name?: string
@@ -3650,7 +3650,7 @@ export interface ProviderFromPresetCreateRequest {
   is_default?: boolean
 }
 
-export interface ProviderFromPresetCreateResponse {
+interface ProviderFromPresetCreateResponse {
   provider: ModelProviderOut
 }
 
@@ -3666,7 +3666,7 @@ export interface ProviderTaskPolicyOut {
   updated_at: string
 }
 
-export interface ProviderTaskPolicyPutRequest {
+interface ProviderTaskPolicyPutRequest {
   chain: ProviderTaskChainEntry[]
   enabled?: boolean
 }
@@ -3689,7 +3689,7 @@ export interface ProviderVendorOut {
   subscription_only: boolean
 }
 
-export interface TestConnectionOut {
+interface TestConnectionOut {
   success: boolean
   message: string
   model?: string

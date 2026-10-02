@@ -22,9 +22,9 @@
  * need a server→client stream, which this deliberately is not.
  */
 
-export type NoteChangedReason = 'capture'
+type NoteChangedReason = 'capture'
 
-export interface NoteChangedDetail {
+interface NoteChangedDetail {
   /** The note that changed, when the write landed in one. */
   noteId: string | null
   /** The Project it belongs to, for surfaces scoped to one. */

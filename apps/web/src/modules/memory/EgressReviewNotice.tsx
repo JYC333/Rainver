@@ -11,7 +11,7 @@ export function isGrantDerivedProposal(proposal: Proposal): boolean {
   )
 }
 
-export function hasGrantingUserApproval(proposal: Proposal): boolean {
+function hasGrantingUserApproval(proposal: Proposal): boolean {
   return proposal.egress_approval_status === 'approved'
 }
 

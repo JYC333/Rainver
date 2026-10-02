@@ -70,7 +70,7 @@ const TAB_FILL_PATH =
 const TAB_STROKE_PATH =
   'M0 32 C6 32 10 27 10 22 L10 8 Q10 0 18 0 L158 0 Q166 0 166 8 L166 22 C166 27 170 32 176 32'
 
-export interface NotesPageProps {
+interface NotesPageProps {
   /** Where this surface lives — see {@link NotesSurfaceScope}. */
   scope: NotesSurfaceScope
 }

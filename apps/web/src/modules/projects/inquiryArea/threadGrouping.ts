@@ -2,7 +2,7 @@ import type { InquiryThread } from '../../../types/api'
 
 export type ThreadGroupId = 'focused' | 'blocked' | 'monitoring' | 'backlog' | 'closed'
 
-export interface ThreadGroup {
+interface ThreadGroup {
   id: ThreadGroupId
   label: string
   threads: InquiryThread[]
@@ -34,7 +34,7 @@ function groupIdFor(thread: InquiryThread): ThreadGroupId {
  * screenful needs an ordering the user controls, and `priority` is the only
  * field the domain has for it.
  */
-export function compareThreadsForNavigator(a: InquiryThread, b: InquiryThread): number {
+function compareThreadsForNavigator(a: InquiryThread, b: InquiryThread): number {
   if (a.priority !== b.priority) return b.priority - a.priority
   return a.created_at.localeCompare(b.created_at)
 }
@@ -81,7 +81,7 @@ export function eligiblePrimaryParents(threads: InquiryThread[], threadId: strin
   return threads.filter(thread => !descendants.has(thread.id))
 }
 
-export interface ThreadTreeRow { thread: InquiryThread; depth: number }
+interface ThreadTreeRow { thread: InquiryThread; depth: number }
 
 export function flattenThreadTree(threads: InquiryThread[]): ThreadTreeRow[] {
   const children = new Map<string | null, InquiryThread[]>()

@@ -109,7 +109,7 @@ function agentPersonaPointer(record: ActivityInboxRecord): AgentPersonaPointer |
   return { memoryId, revision: metadata?.revision === true }
 }
 
-export interface ActivityQueueProps {
+interface ActivityQueueProps {
   /**
    * Pin the queue to one Project. Omitted on the Space Inbox, where the Project
    * filter is a URL param the reader sets and clears; pinned, there is nothing

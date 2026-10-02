@@ -22,7 +22,7 @@ const parser = new MarkdownIt('default', { html: false, linkify: false, breaks: 
  *  reachable from a plain default import without esModuleInterop). */
 type Token = ReturnType<typeof parser.parse>[number]
 
-export interface ProseMirrorJsonNode {
+interface ProseMirrorJsonNode {
   type: string
   attrs?: Record<string, unknown>
   content?: ProseMirrorJsonNode[]

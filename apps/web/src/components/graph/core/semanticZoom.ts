@@ -1,6 +1,6 @@
 import type { GraphProjectionEdge, GraphProjectionNode } from '@rainver/protocol'
 
-export type SemanticZoomBand = 'overview' | 'standard' | 'detail'
+type SemanticZoomBand = 'overview' | 'standard' | 'detail'
 
 export function zoomBandForScale(scale: number): SemanticZoomBand {
   if (scale < 0.55) return 'overview'

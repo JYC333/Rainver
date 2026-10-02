@@ -105,7 +105,7 @@ function sameCurrentFilePart(part: ConversationInputPart, current: CurrentFileAt
       && part.relative_path === current.relativePath
 }
 
-export interface ConversationSurfaceProps {
+interface ConversationSurfaceProps {
   roomId: string
   /** Null while a new Conversation is still awaiting explicit execution setup. */
   conversationId: string | null
@@ -1564,7 +1564,7 @@ export function mergeMessages(current: RoomMessage[], incoming: readonly RoomMes
   return uniqueMessages([...merged, ...incoming.filter(message => !held.has(message.id))])
 }
 
-export function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
+function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
   const seen = new Set<string>()
   return messages.filter(message => {
     if (seen.has(message.id)) return false
@@ -1606,12 +1606,12 @@ export function delegatedRunIds(message: { metadata_json?: RoomMessage['metadata
   return Array.isArray(delegated) ? delegated.filter((id): id is string => typeof id === 'string') : []
 }
 
-export function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {
+function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {
   const value = metadata?.action_previews
   return Array.isArray(value) ? value as ChatActionPreview[] : []
 }
 
-export function uniqueIds(values: string[]): string[] {
+function uniqueIds(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))]
 }
 

@@ -198,7 +198,7 @@ export interface CollectionMove { id: string; parentId: string | null; sortOrder
 /** A placement's new position. `fromCollectionId` identifies which one moves. */
 export interface NoteMove { noteId: string; fromCollectionId: string; collectionId: string; sortOrder: number }
 
-export type ResolvedTreeDrop =
+type ResolvedTreeDrop =
   | { kind: 'move-collections'; updates: CollectionMove[] }
   | { kind: 'move-notes'; updates: NoteMove[] }
   /** An additive drop (U5): the note gains a placement instead of moving. */

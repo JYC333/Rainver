@@ -3,7 +3,7 @@ import { shouldShowEdgeLabel, shouldShowNodeLabel } from './semanticZoom'
 import { resolveEdgeStyle, resolveNodeStyle } from './graphTheme'
 import type { GraphLabelVisibility, GraphRenderData, GraphTheme, GraphViewState } from '../types'
 
-export interface MapProjectionOptions {
+interface MapProjectionOptions {
   theme: GraphTheme
   viewState: GraphViewState
   zoom?: number

@@ -17,7 +17,7 @@ function RoleRequiredCard({ title, message }: { title: string; message: string }
   )
 }
 
-export function canManageSpaceRole(role: string | undefined | null): boolean {
+function canManageSpaceRole(role: string | undefined | null): boolean {
   return role === 'owner' || role === 'admin'
 }
 

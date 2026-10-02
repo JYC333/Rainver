@@ -120,7 +120,7 @@ function SemanticQueryColumns({ query }: { query: ResearchQueryAttempt['semantic
   )
 }
 
-export function researchSetupDraftIsReady(draft: ResearchSetupDraft): boolean {
+function researchSetupDraftIsReady(draft: ResearchSetupDraft): boolean {
   const maxItems = Number(draft.max_items)
   return Boolean(
     draft.research_question.trim()

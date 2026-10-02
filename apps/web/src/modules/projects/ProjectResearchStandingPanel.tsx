@@ -11,7 +11,7 @@ import { SpaceLink as Link } from '../../core/spaceNav'
 import { errMsg } from '../../lib/utils'
 import type { ProjectResearchStandingStatus } from '../../types/api'
 
-export interface ProjectResearchStandingPanelProps {
+interface ProjectResearchStandingPanelProps {
   projectId: string
   canAct: boolean
 }

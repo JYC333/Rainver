@@ -28,7 +28,7 @@ export interface DraftControllerSnapshot {
   error: unknown
 }
 
-export interface DraftControllerOptions {
+interface DraftControllerOptions {
   buildMutation: (content: string, draft: ProjectFileDraft | null) => Promise<Omit<DraftMutationInput, 'content' | 'content_sha256' | 'byte_size'> | null>
   save: (input: DraftMutationInput) => Promise<ProjectFileDraft>
   initialContent: string
@@ -286,7 +286,7 @@ export class ProjectFileDraftController {
   }
 }
 
-export function isConflictError(error: unknown): boolean {
+function isConflictError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
   const value = error as { code?: unknown; payload?: { code?: unknown } }
   return value.code === 'draft_version_conflict'
