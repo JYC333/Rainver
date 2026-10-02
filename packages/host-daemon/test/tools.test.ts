@@ -139,6 +139,19 @@ describe("managed installations", () => {
     expect(capabilities.installations.acp_other).toBeUndefined();
   });
 
+  it("still reports a managed copy when the machine's own copy is held back", async () => {
+    await writeManifest("acp_goose", "1.2.3", "/opt/goose/bin/goose");
+    // An own copy that is on PATH, but whose packaged adapter could not be
+    // installed: only that copy is unusable, not the managed one beside it.
+    const capabilities = await detectCapabilities(
+      undefined,
+      [{ runtime_key: "acp_goose", runtime: process.execPath, login: LOGIN }],
+      async () => false,
+    );
+    expect(capabilities.installations.acp_goose?.map((installation) => installation.id)).toEqual(["managed:1.2.3"]);
+    expect(capabilities.runtimes).not.toContain(process.execPath);
+  });
+
   it("refuses a runtime key or version that could escape the tools directory, and removes what it installed", async () => {
     // The wire shape is the contract's (`HostServerFrameSchema`); what stays
     // here is the path policy, which no schema can know.
