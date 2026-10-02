@@ -263,6 +263,20 @@ export const PromptPromotionRequestSchema = z
 export type PromptPromotionRequest = z.infer<typeof PromptPromotionRequestSchema>;
 export type PromptPromotionRequestInput = z.input<typeof PromptPromotionRequestSchema>;
 
+/**
+ * Response of `POST /prompts/assets/:assetKey/promote`: a pointer to the
+ * promotion Proposal, not the Proposal itself. Review happens in
+ * `/api/v1/proposals`.
+ */
+export const PromptPromotionResultSchema = z
+  .object({
+    proposal_id: IdSchema,
+    status: z.string(),
+    proposal_type: z.string(),
+  })
+  .passthrough();
+export type PromptPromotionResult = z.infer<typeof PromptPromotionResultSchema>;
+
 export const PromptRollbackRequestSchema = z
   .object({
     label: z.string().min(1).default("production"),

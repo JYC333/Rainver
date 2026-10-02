@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService.js";
+import { SourceProviderCatalogService } from "../src/modules/sources/catalog/sourceProviderCatalogService.js";
 import { seedCustomSourceWorld } from "./support/customSourceWorld.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -208,5 +209,24 @@ describe("sourceChannelTargetConnection", () => {
     const service = new SourceChannelService(db.pool, loadConfig({}));
     await expect(feed(service, "Nowhere", "https://c.example/feed.xml", { source_connection_id: "connection-of-someone-else" }))
       .rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("serves catalog connectors and providers in the protocol's shape, on list and on update", async () => {
+    if (!db.available) return;
+    const catalog = new SourceProviderCatalogService(db.pool);
+    const listed = await catalog.listCatalog();
+    expect(listed.connectors.length).toBeGreaterThan(0);
+    for (const connector of listed.connectors) {
+      expect(connector).toMatchObject({ capabilities: expect.any(Object) });
+      expect(connector).toHaveProperty("config_schema");
+      expect(connector).not.toHaveProperty("capabilities_json");
+    }
+    const connector = listed.connectors[0]!;
+    expect(await catalog.updateConnector(connector.id, { status: "disabled" }))
+      .toMatchObject({ id: connector.id, status: "disabled", capabilities: connector.capabilities });
+    const provider = listed.providers[0]!;
+    const updated = await catalog.updateProvider(provider.id, { status: "disabled" });
+    expect(updated).toMatchObject({ id: provider.id, status: "disabled", capabilities: provider.capabilities, connector_mapping: provider.connector_mapping });
+    expect(updated).not.toHaveProperty("capabilities_json");
   });
 });

@@ -160,11 +160,13 @@ export interface OfficialPluginListItem {
   effective: OfficialPluginEffectiveState;
 }
 
-/**
- * Response for GET /api/v1/plugins/effective.
- * Maps plugin_id → effective state. Used by frontend overlay.
- */
+/** plugin_id → effective state, computed by the plugin service. */
 export type OfficialPluginEffectiveMap = Record<string, OfficialPluginEffectiveState>;
+
+/** Response for GET /api/v1/plugins/effective: the map, wrapped. Used by the frontend overlay. */
+export interface OfficialPluginEffectiveResponse {
+  plugins: OfficialPluginEffectiveMap;
+}
 
 // ── Request types ─────────────────────────────────────────────────────────────
 

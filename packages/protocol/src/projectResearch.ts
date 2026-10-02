@@ -2,7 +2,14 @@ import { z } from "zod";
 import { RESEARCH_QUESTION_MAX_LENGTH } from "./researchDiscovery.js";
 
 /** Public lifecycle vocabulary for the project research orchestration API. */
-export const ProjectResearchRunKindSchema = z.enum(["baseline", "historical_backfill", "incremental"]);
+export const ProjectResearchRunKindSchema = z.enum([
+  "baseline",
+  "historical_backfill",
+  "incremental",
+  "question_rescreen",
+  "synthesis_only",
+]);
+export type ProjectResearchRunKind = z.infer<typeof ProjectResearchRunKindSchema>;
 
 export const ProjectResearchHistoryModeSchema = z.enum(["bounded_range", "all_available"]);
 
@@ -17,7 +24,15 @@ export const ProjectResearchOperationStateSchema = z.enum([
   "skipped",
 ]);
 
-export const ProjectResearchCheckpointTypeSchema = z.enum(["screening_gate", "idea_review"]);
+export const ProjectResearchCheckpointTypeSchema = z.enum([
+  "screening_gate",
+  "idea_review",
+  "integrity_gate",
+  "manuscript_gate",
+  "review_gate",
+  "other",
+]);
+export type ProjectResearchCheckpointType = z.infer<typeof ProjectResearchCheckpointTypeSchema>;
 
 export const ProjectResearchExecutionConfigSchema = z.object({
   model_provider_id: z.string().trim().min(1).optional(),
@@ -26,6 +41,12 @@ export const ProjectResearchExecutionConfigSchema = z.object({
 
 export const ProjectResearchInitialIntakeRequestSchema = z.object({
   query_strategy_id: z.string().uuid(),
+  /** The Workflow and Thread the intake continues; a draft needs the Thread. */
+  workflow_id: z.string().optional(),
+  thread_id: z.string().optional(),
+  research_context_version_id: z.string().nullish(),
+  research_question: z.string().min(1).max(RESEARCH_QUESTION_MAX_LENGTH).optional(),
+  question_refinement: z.record(z.unknown()).nullish(),
   history_mode: ProjectResearchHistoryModeSchema.default("bounded_range"),
   from: z.string().nullable().optional(),
   to: z.string().nullable().optional(),

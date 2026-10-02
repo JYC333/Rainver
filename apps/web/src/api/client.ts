@@ -18,7 +18,6 @@ import type {
   TaskWorkView,
   WorkLoopStageKey,
   ActivityInboxRecord,
-  ActivityRecord,
   ActivitySourceType,
   AgentConfigUpdateBody,
   AgentCreateBody,
@@ -266,6 +265,7 @@ import type {
   PromptEvaluationRequest,
   PromptEvaluationResult,
   PromptPromotionRequestInput,
+  PromptPromotionResult,
   PromptRenderPreviewRequest,
   PromptRenderPreviewResult,
   PromptRollbackRequest,
@@ -442,6 +442,7 @@ import type {
   ConversationInputMediaOut,
   ConversationInputPart,
   ConversationInputFileSearchResponse,
+  OfficialPluginEffectiveResponse,
 } from '@rainver/protocol'
 import { ConversationInputMediaOutSchema } from '@rainver/protocol'
 
@@ -1233,7 +1234,7 @@ export const promptsApi = {
   evaluate: (assetKey: string, body: PromptEvaluationRequest) =>
     post<PromptEvaluationResult>(`/prompts/assets/${encodeURIComponent(assetKey)}/evaluate`, body),
   promote: (assetKey: string, body: PromptPromotionRequestInput) =>
-    post<Proposal>(`/prompts/assets/${encodeURIComponent(assetKey)}/promote`, body),
+    post<PromptPromotionResult>(`/prompts/assets/${encodeURIComponent(assetKey)}/promote`, body),
   listDeployments: (assetKey: string, params: { include_history?: boolean } = {}) => {
     const q: Record<string, string> = {}
     if (params.include_history !== undefined) q.include_history = String(params.include_history)
@@ -1360,7 +1361,7 @@ export const runsApi = {
   resume: (id: string) => post<{ id: string; status: string; resumed_at: string; resume_kind: string }>(`/runs/${id}/resume`, {}),
   abandon: (id: string, body: { reason?: string | null } = {}) => post<{ id: string; status: string; abandoned_at: string }>(`/runs/${id}/abandon`, body),
   activities: (id: string, params: Record<string, string> = {}) =>
-    get<Page<ActivityRecord>>(`/runs/${id}/activities?` + new URLSearchParams(params)),
+    get<Page<ActivityInboxRecord>>(`/runs/${id}/activities?` + new URLSearchParams(params)),
   artifacts: (id: string, params: Record<string, string> = {}) =>
     get<Page<Artifact>>(`/runs/${id}/artifacts?` + new URLSearchParams(params)),
   proposals: (id: string, params: Record<string, string> = {}) =>
@@ -3740,7 +3741,7 @@ export const providersApi = {
 // PATCH /api/v1/plugins/:id/settings — patch settings
 export const pluginsApi = {
   list: () => get<{ items: unknown[] }>('/plugins'),
-  effective: () => get<{ plugins: Record<string, unknown> }>('/plugins/effective'),
+  effective: () => get<OfficialPluginEffectiveResponse>('/plugins/effective'),
   get: (pluginId: string) => get<unknown>(`/plugins/${encodeURIComponent(pluginId)}`),
   install: (pluginId: string) =>
     post<unknown>(`/plugins/${encodeURIComponent(pluginId)}/install`, {}),

@@ -696,6 +696,7 @@ export class InquirySignalService {
     );
     return {
       id: packet.rows[0].id,
+      project_id: projectId,
       status: packet.rows[0].status,
       created_at: dateIso(packet.rows[0].created_at),
       closed_at: dateIso(packet.rows[0].closed_at),

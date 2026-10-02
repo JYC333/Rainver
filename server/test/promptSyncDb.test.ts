@@ -301,6 +301,9 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
 
     // A Space admin drafts the content the next release ships.
     const draft = await new PromptRepository(db.pool).createVersion(identity, assetKey, { content_json: v2Content });
+    // The same shape `listVersions` serves: `content`, never the raw `content_json`.
+    expect(draft).toMatchObject({ content: v2Content, content_hash: expect.any(String) });
+    expect(draft).not.toHaveProperty("content_json");
 
     const v2Dir = await singleManifestCatalog(assetKey, v2Content);
     const synced = await syncBuiltinPrompts(db.pool, v2Dir);

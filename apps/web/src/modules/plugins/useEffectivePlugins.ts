@@ -1,24 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import type { OfficialPluginEffectiveMap } from '@rainver/protocol'
 import { pluginsApi } from '../../api/client'
 import { MODULE_REGISTRY, modulesWithEffectivePlugins, type Module } from '../registry'
 
-interface EffectivePluginState {
-  plugin_id: string
-  installed: boolean
-  install_status?: string | null
-  installed_version?: string | null
-  has_row: boolean
-  enabled: boolean
-  visible: boolean
-  settings: Record<string, unknown>
-  enabled_at?: string | null
-  enabled_by_user_id?: string | null
-  disabled_at?: string | null
-  disabled_by_user_id?: string | null
-  updated_at?: string | null
-}
-
-type EffectivePluginMap = Record<string, EffectivePluginState>
+type EffectivePluginMap = OfficialPluginEffectiveMap
 
 interface UseEffectivePluginsResult {
   plugins: EffectivePluginMap
@@ -49,8 +34,8 @@ export function useEffectivePlugins(): UseEffectivePluginsResult {
     setLoading(true)
     setError(null)
     pluginsApi.effective()
-      .then((data: { plugins?: Record<string, unknown> }) => {
-        setPlugins((data?.plugins ?? {}) as EffectivePluginMap)
+      .then((data) => {
+        setPlugins(data?.plugins ?? {})
         setLoading(false)
       })
       .catch((err: unknown) => {

@@ -172,7 +172,8 @@ export const ClaimSummaryOutSchema = z
     subject_object_id: IdSchema.nullish(),
     subject_text: z.string().nullish(),
     claim_kind: z.string(),
-    claim_text: z.string(),
+    /** Null when the reader holds summary access only: the body is withheld. */
+    claim_text: z.string().nullable(),
     normalized_claim_hash: z.string(),
     confidence: ConfidenceSchema,
     confidence_method: z.string(),

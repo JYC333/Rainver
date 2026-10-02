@@ -93,11 +93,11 @@ export class PromptRepository {
   ): Promise<Record<string, unknown>> {
     const { row, promptType } = await this.requireWritablePromptAssetRow(identity, assetKey);
     const content = await this.validatedPromptContent(promptType, body.content_json);
-    return this.assets.createVersion(identity, row.id, {
+    return promptVersionOut(await this.assets.createVersion(identity, row.id, {
       ...body,
       content_json: content,
       content_hash: optionalString(body.content_hash) ?? sha256Json(content),
-    });
+    }));
   }
 
   async renderPreview(

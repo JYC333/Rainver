@@ -532,19 +532,6 @@ export const MemoryProposalCommandSchema = z.discriminatedUnion("operation", [
   MemoryProposalArchiveCommandSchema,
 ]);
 
-export const MemoryProposalCreateResultSchema = z
-  .object({
-    proposal_id: IdSchema,
-    proposal_type: z.enum([
-      "memory_create",
-      "memory_update",
-      "memory_archive",
-    ]),
-    status: z.string(),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
-
 // Memory search is identity-scoped: the surface intentionally has no space_id /
 // user_id fields. The server derives both from the authenticated identity, so a
 // request can never search another space or impersonate another user

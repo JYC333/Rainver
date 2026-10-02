@@ -22,6 +22,35 @@ interface SourceProviderCatalogRow {
   mapping_config_schema_json: unknown;
 }
 
+interface SourceConnectorCatalogRow {
+  id: string;
+  connector_key: string;
+  display_name: string;
+  connector_type: string;
+  ingestion_mode: string;
+  status: string;
+  capabilities_json: unknown;
+  config_schema_json: unknown;
+  created_at: unknown;
+  updated_at: unknown;
+}
+
+/** The protocol's `SourceConnector`: `_json` columns become `capabilities` / `config_schema`. */
+function connectorOut(row: SourceConnectorCatalogRow) {
+  return {
+    id: row.id,
+    connector_key: row.connector_key,
+    display_name: row.display_name,
+    connector_type: row.connector_type,
+    ingestion_mode: row.ingestion_mode,
+    status: row.status,
+    capabilities: row.capabilities_json ?? {},
+    config_schema: row.config_schema_json ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
 export interface ResolvedSourceProviderConnector {
   provider_id: string;
   provider_key: string;
@@ -86,7 +115,7 @@ export class SourceProviderCatalogService {
   async listCatalog() {
     const [providers, connectors, mappings] = await Promise.all([
       this.listProviders({ activeOnly: false }),
-      this.db.query(
+      this.db.query<SourceConnectorCatalogRow>(
         `SELECT id, connector_key, display_name, connector_type, ingestion_mode, status,
                 capabilities_json, config_schema_json, created_at, updated_at
            FROM source_connectors ORDER BY display_name, connector_key`,
@@ -101,7 +130,7 @@ export class SourceProviderCatalogService {
           ORDER BY p.provider_key, m.priority, c.connector_key`,
       ),
     ]);
-    return { providers, connectors: connectors.rows, mappings: mappings.rows };
+    return { providers, connectors: connectors.rows.map(connectorOut), mappings: mappings.rows };
   }
 
   async resolve(providerKey: string): Promise<ResolvedSourceProviderConnector> {
@@ -134,30 +163,45 @@ export class SourceProviderCatalogService {
     return row;
   }
 
-  async updateProvider(id: string, input: { status?: string }): Promise<unknown> {
+  async updateProvider(id: string, input: { status?: string }) {
     if (input.status && !["active", "disabled"].includes(input.status)) {
       throw new HttpError(422, "status must be active or disabled");
     }
-    const result = await this.db.query(
+    const result = await this.db.query<{ id: string }>(
       `UPDATE source_providers SET status = COALESCE($2, status), updated_at = now()
-        WHERE id = $1 RETURNING id, provider_key, display_name, provider_kind, category, status, capabilities_json, config_schema_json, created_at, updated_at`,
+        WHERE id = $1 RETURNING id`,
       [id, input.status ?? null],
     );
     if (!result.rows[0]) throw new HttpError(404, "Source provider not found");
-    return result.rows[0];
+    // Read back through the catalog projection so the response is the same
+    // provider shape the catalog lists, mapping included.
+    const row = await this.db.query<SourceProviderCatalogRow>(
+      `SELECT ${CATALOG_SELECT}
+         FROM source_providers p
+         LEFT JOIN LATERAL (
+           SELECT m.* FROM source_provider_connectors m
+            WHERE m.provider_id = p.id
+            ORDER BY CASE WHEN m.status = 'active' THEN 0 ELSE 1 END, m.priority, m.id
+            LIMIT 1
+         ) spc ON true
+         LEFT JOIN source_connectors c ON c.id = spc.connector_id
+        WHERE p.id = $1`,
+      [id],
+    );
+    return this.providerOut(row.rows[0]!);
   }
 
-  async updateConnector(id: string, input: { status?: string }): Promise<unknown> {
+  async updateConnector(id: string, input: { status?: string }) {
     if (input.status && !["active", "disabled"].includes(input.status)) {
       throw new HttpError(422, "status must be active or disabled");
     }
-    const result = await this.db.query(
+    const result = await this.db.query<SourceConnectorCatalogRow>(
       `UPDATE source_connectors SET status = COALESCE($2, status), updated_at = now()
         WHERE id = $1 RETURNING id, connector_key, display_name, connector_type, ingestion_mode, status, capabilities_json, config_schema_json, created_at, updated_at`,
       [id, input.status ?? null],
     );
     if (!result.rows[0]) throw new HttpError(404, "Source connector not found");
-    return result.rows[0];
+    return connectorOut(result.rows[0]);
   }
 
   async updateMapping(id: string, input: { status?: string; priority?: number }): Promise<unknown> {

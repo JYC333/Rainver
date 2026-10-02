@@ -1046,7 +1046,7 @@ export const POLICY_ACTION_REGISTRY = [
     audit_required: true,
     approval_capability: null,
     default_required_approver_role: null,
-    current_enforcement_point: "server/src/modules/sources/customSourceRoutes.ts",
+    current_enforcement_point: "server/src/modules/sources/customSources/customSourceRoutes.ts",
     description:
       "Regenerate a Custom Source handler version from its active version's manifest plus overrides, test it, and either auto-activate (unchanged envelope, Space policy allows) or create a review proposal.",
     lifecycle_status: "wired_direct",
@@ -1060,7 +1060,7 @@ export const POLICY_ACTION_REGISTRY = [
     audit_required: true,
     approval_capability: null,
     default_required_approver_role: null,
-    current_enforcement_point: "server/src/modules/sources/customSourceRoutes.ts",
+    current_enforcement_point: "server/src/modules/sources/customSources/customSourceRoutes.ts",
     description:
       "Activate a previously active (superseded) Custom Source handler version in place of the current active one, without a proposal — it can only reduce to an already-approved prior state, never broaden permissions.",
     lifecycle_status: "wired_direct",
@@ -1074,7 +1074,7 @@ export const POLICY_ACTION_REGISTRY = [
     audit_required: true,
     approval_capability: null,
     default_required_approver_role: null,
-    current_enforcement_point: "server/src/modules/sources/customSourceRoutes.ts",
+    current_enforcement_point: "server/src/modules/sources/customSources/customSourceRoutes.ts",
     description:
       "Create a Custom Source fetch credential (encrypted at rest, space-scoped); requires space admin. The plaintext secret is never returned by any API response.",
     lifecycle_status: "wired_direct",

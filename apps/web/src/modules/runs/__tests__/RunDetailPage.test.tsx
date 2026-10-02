@@ -268,7 +268,7 @@ describe('RunDetailPage route decision panel', () => {
     runsApiMock.activities.mockImplementation((id: string) => id === 'run-1'
       ? runAActivities
       : Promise.resolve({
-          items: [{ id: 'activity-b', title: 'Run B activity', activity_type: 'run', occurred_at: '2026-07-12T00:00:00Z', visibility: 'space_shared', content: null }],
+          items: [{ id: 'activity-b', title: 'Run B activity', source_type: 'run_event', occurred_at: '2026-07-12T00:00:00Z', visibility: 'space_shared', content: null }],
           total: 1, limit: 100, offset: 0,
         }))
     useRunMock.mockImplementation((requestedId: string | null) => ({
@@ -283,7 +283,7 @@ describe('RunDetailPage route decision panel', () => {
     await user.click(screen.getByRole('tab', { name: 'Activities' }))
     expect(await screen.findByText('Run B activity')).toBeInTheDocument()
     resolveRunAActivities({
-      items: [{ id: 'activity-a', title: 'Run A activity', activity_type: 'run', occurred_at: '2026-07-12T00:00:00Z', visibility: 'space_shared', content: null }],
+      items: [{ id: 'activity-a', title: 'Run A activity', source_type: 'run_event', occurred_at: '2026-07-12T00:00:00Z', visibility: 'space_shared', content: null }],
       total: 1, limit: 100, offset: 0,
     })
     await new Promise(resolve => setTimeout(resolve, 0))

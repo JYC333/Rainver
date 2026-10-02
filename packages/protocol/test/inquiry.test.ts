@@ -3,6 +3,7 @@ import {
   InquiryCandidateDecisionRequestSchema,
   InquiryCandidateSchema,
   InquiryCreateSignalRequestSchema,
+  InquiryEvidenceSignalSchema,
   InquiryLifecycleTransitionRequestSchema,
   InquiryThreadSchema,
 } from "../src/inquiry.js";
@@ -52,6 +53,44 @@ describe("Inquiry protocol", () => {
       created_at: "2026-07-23T00:00:00.000Z",
       updated_at: "2026-07-23T00:00:00.000Z",
     }).status).toBe("pending");
+  });
+
+  it("accepts an Evidence Signal sourced from a reviewed Experiment Interpretation", () => {
+    const signal = InquiryEvidenceSignalSchema.parse({
+      id: "signal-1",
+      space_id: "space-1",
+      project_id: "project-1",
+      thread_id: "thread-1",
+      corpus_item_id: null,
+      experiment_interpretation_id: "interpretation-1",
+      classification: "supports",
+      is_material: true,
+      confidence: 0.8,
+      model_version: null,
+      source_provenance: {},
+      dedupe_key: "dedupe-1",
+      producer_idempotency_key: null,
+      status: "pending",
+      candidate_id: null,
+      created_by_user_id: "user-1",
+      created_by_run_id: null,
+      created_at: "2026-07-23T00:00:00.000Z",
+    });
+    expect(signal.experiment_interpretation_id).toBe("interpretation-1");
+  });
+
+  it("requires the fields each Candidate decision needs on the server", () => {
+    expect(InquiryCandidateDecisionRequestSchema.safeParse({ decision: "accept" }).success).toBe(true);
+    expect(InquiryCandidateDecisionRequestSchema.safeParse({ decision: "merge" }).success).toBe(false);
+    expect(InquiryCandidateDecisionRequestSchema.safeParse({ decision: "merge", target_candidate_id: "candidate-2" }).success).toBe(true);
+    expect(InquiryCandidateDecisionRequestSchema.safeParse({ decision: "defer", reason: "later" }).success).toBe(false);
+    expect(InquiryCandidateDecisionRequestSchema.safeParse({
+      decision: "defer",
+      reason: "later",
+      defer_until: "2027-01-01T00:00:00.000Z",
+    }).success).toBe(true);
+    expect(InquiryCandidateDecisionRequestSchema.safeParse({ decision: "gap", gap_statement: " " }).success).toBe(false);
+    expect(InquiryCandidateDecisionRequestSchema.safeParse({ decision: "gap", gap_statement: "Nothing covers X" }).success).toBe(true);
   });
 
   it("rejects invalid Signal confidence, decisions, and lifecycle transitions", () => {

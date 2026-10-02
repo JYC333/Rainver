@@ -248,6 +248,7 @@ export class ProjectSourceBindingRepository {
       binding_id: string;
       project_id: string;
       source_channel_id: string;
+      source_connection_id: string;
       source_name: string;
       binding_status: string;
       connection_status: string;
@@ -277,6 +278,7 @@ export class ProjectSourceBindingRepository {
        SELECT psb.id AS binding_id,
               psb.project_id,
               psb.source_channel_id,
+              sc.id AS source_connection_id,
               sch.name AS source_name,
               psb.status AS binding_status,
               sc.status AS connection_status,
@@ -341,6 +343,7 @@ export class ProjectSourceBindingRepository {
         binding_id: row.binding_id,
         project_id: row.project_id,
         source_channel_id: row.source_channel_id,
+        source_connection_id: row.source_connection_id,
         source_name: row.source_name,
         status,
         last_success_at: lastSuccessAt,

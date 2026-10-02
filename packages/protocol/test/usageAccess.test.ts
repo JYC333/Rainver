@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   UsageEventDTOSchema,
   UsageQuerySchema,
+  UsageSourceTypeSchema,
   UsageSummaryResponseSchema,
 } from "../src/index";
 
 describe("usage access contracts", () => {
+  it("names every ledger source the server writes", () => {
+    expect(UsageSourceTypeSchema.safeParse("ambient_host_history").success).toBe(true);
+  });
+
   it("accepts only the unified dashboard views", () => {
     expect(UsageQuerySchema.parse({ view: "mine" })).toEqual({ view: "mine" });
     expect(UsageQuerySchema.parse({ view: "shared" })).toEqual({ view: "shared" });

@@ -327,7 +327,7 @@ export default function PromptLibraryPage() {
         scope_id: selectedVersion.scope_id,
         reason: `Promote ${selectedAsset.asset_key} v${selectedVersion.version} to production`,
       })
-      toast.success(`Promotion proposal created: ${proposal.id}`)
+      toast.success(`Promotion proposal created: ${proposal.proposal_id}`)
       await refreshSelectedAssetDetail()
     } catch (error) {
       toast.error(errMsg(error))

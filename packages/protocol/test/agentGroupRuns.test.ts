@@ -62,6 +62,7 @@ describe("agent group run contracts", () => {
       root_run_id: "run-root",
       manager_user_id: "user-1",
       manager_agent_id: "agent-manager",
+      discussion_id: "discussion-1",
       title: request.title,
       goal: request.goal,
       status: "active",
@@ -97,6 +98,7 @@ describe("agent group run contracts", () => {
       policy_decision_record_id: "policy-1",
       status: "queued",
       instruction: "Summarize the packet.",
+      tool_call_id: "call-1",
       created_at: now,
       updated_at: now,
     });

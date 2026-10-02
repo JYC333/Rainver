@@ -1,5 +1,41 @@
 import { describe, expect, it } from "vitest";
-import { ProjectResearchQuestionRefinementResponseSchema } from "../src/projectResearch.js";
+import {
+  ProjectResearchCheckpointTypeSchema,
+  ProjectResearchInitialIntakeRequestSchema,
+  ProjectResearchQuestionRefinementResponseSchema,
+  ProjectResearchRunKindSchema,
+} from "../src/projectResearch.js";
+
+describe("project research intake and lifecycle contracts", () => {
+  it("accepts the intake request the web sends and the server reads", () => {
+    const parsed = ProjectResearchInitialIntakeRequestSchema.parse({
+      workflow_id: "workflow-1",
+      thread_id: "thread-1",
+      research_context_version_id: "context-1",
+      query_strategy_id: "6f1c1b7e-2c6a-4d8e-9f1a-0b2c3d4e5f60",
+      research_question: "How do retry strategies affect completion rates?",
+      history_mode: "bounded_range",
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-02-01T00:00:00.000Z",
+      max_items: 500,
+      monitoring_field: "submittedDate",
+      report_depth: "quick",
+      question_refine_skipped: false,
+      question_refinement: null,
+      execution: { model_provider_id: "provider-1" },
+    });
+    expect(parsed.thread_id).toBe("thread-1");
+  });
+
+  it("names every stored run kind and checkpoint type", () => {
+    for (const kind of ["question_rescreen", "synthesis_only"]) {
+      expect(ProjectResearchRunKindSchema.safeParse(kind).success).toBe(true);
+    }
+    for (const type of ["integrity_gate", "manuscript_gate", "review_gate", "other"]) {
+      expect(ProjectResearchCheckpointTypeSchema.safeParse(type).success).toBe(true);
+    }
+  });
+});
 
 describe("project research question assessment contracts", () => {
   it("accepts a durable Thread-scoped conversation with its latest framework", () => {

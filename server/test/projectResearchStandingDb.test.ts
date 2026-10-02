@@ -189,6 +189,21 @@ async function seedSourceChannel(kind: "rss" | "web_page"): Promise<string> {
 }
 
 describe("project research standing comparison (real Postgres)", () => {
+  it("names each bound channel and its connection in the Project's source health", async () => {
+    if (!db.available) return;
+    const rssChannelId = await seedSourceChannel("rss");
+    const bindings = new ProjectSourceBindingService(db.pool);
+    const binding = await bindings.createBinding(identity, { project_id: PROJECT, source_channel_id: rssChannelId }) as { id: string };
+    const channel = await db.pool.query<{ source_connection_id: string }>(
+      `SELECT source_connection_id FROM source_channels WHERE id = $1`, [rssChannelId],
+    );
+    expect(await bindings.health(identity, PROJECT)).toEqual([expect.objectContaining({
+      binding_id: binding.id,
+      source_channel_id: rssChannelId,
+      source_connection_id: channel.rows[0]!.source_connection_id,
+    })]);
+  });
+
   it("runs the non-academic source-to-standing-to-focus evidence workflow", async () => {
     if (!db.available) return;
     const rssChannelId = await seedSourceChannel("rss");

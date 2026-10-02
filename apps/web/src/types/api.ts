@@ -105,12 +105,14 @@ import type {
   PromptEvaluationRequest,
   PromptEvaluationResult,
   PromptPromotionRequestInput,
+  PromptPromotionResult,
   PromptRenderPreviewRequest,
   PromptRenderPreviewResult,
   PromptRollbackRequest,
   PromptType,
   PromptVersion,
   PromptVersionCreateRequest,
+  ProjectResearchRunKind,
   ProposalAcceptOut,
   ReaderAnnotationCreate,
   RelationDiscoveryScanRequest,
@@ -292,12 +294,14 @@ export type {
   PromptEvaluationRequest,
   PromptEvaluationResult,
   PromptPromotionRequestInput,
+  PromptPromotionResult,
   PromptRenderPreviewRequest,
   PromptRenderPreviewResult,
   PromptRollbackRequest,
   PromptType,
   PromptVersion,
   PromptVersionCreateRequest,
+  ProjectResearchRunKind,
   ProposalAcceptOut,
   ReaderAnnotationCreate,
   RelationDiscoveryScanRequest,
@@ -1022,8 +1026,20 @@ export interface SourceRecipeCreateRequest extends SourceRecipePlanRequest {
   recipe?: SourceRecipeDefinition
 }
 
+/**
+ * The channel a recipe source was created with, keyed by its connection:
+ * `id` is the connection id and `source_channel_id` the channel's own id, so
+ * it is not a `SourceChannel` and must not be passed to channel routes as one.
+ */
+export type SourceRecipeCreateConnection = Omit<SourceChannel, 'id'> & {
+  id: string
+  source_channel_id: string
+  handler_kind: 'recipe'
+  status: 'paused'
+}
+
 export interface SourceRecipeCreateResponse {
-  connection: SourceChannel
+  connection: SourceRecipeCreateConnection
   recipe_version: SourceRecipeVersion
 }
 
@@ -1761,26 +1777,9 @@ export interface ActivityInboxRecord {
   visibility?: ObjectVisibility
   access_level?: ContentAccessLevel
   owner_user_id?: string | null
+  occurred_at?: string | null
   created_at: string
   updated_at: string
-}
-
-/** Run timeline row (`GET /runs/{id}/activities`). */
-export interface ActivityRecord {
-  id: string
-  space_id: string
-  source_run_id: string | null
-  session_id: string | null
-  user_id: string | null
-  activity_type: string
-  title: string | null
-  content: string | null
-  payload_json: Record<string, unknown>
-  visibility?: ObjectVisibility
-  access_level?: ContentAccessLevel
-  owner_user_id?: string | null
-  occurred_at: string
-  created_at: string
 }
 
 export interface Session {
@@ -3542,7 +3541,7 @@ export interface ProjectResearchReport {
   workflow_id: string
   operation_id: string
   synthesis_run_id: string
-  run_kind: 'baseline' | 'historical_backfill' | 'incremental' | 'question_rescreen' | 'synthesis_only'
+  run_kind: ProjectResearchRunKind
   research_question: string
   research_question_version: number
   status: 'awaiting_review' | 'complete' | 'rejected'
