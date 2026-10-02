@@ -139,7 +139,7 @@ service is sufficient.
 - `server/src/modules/academic/`
 - `server/src/db/schema/relations.ts`
 - `server/src/db/schema/academic.ts`
-- `server/src/modules/projectProfiles/`
+- `server/src/modules/extractionProfiles/`
 - `server/src/modules/graph/`
 - `.agent/architecture/PROJECTS.md`
 - `.agent/modules/graph-view.md`
