@@ -666,7 +666,7 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
               }));
               sink.send({ type: "usage_probe_result", request_id: frame.request_id, quota });
             } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
+              const message = sanitizeFailure(error);
               log(`usage_probe failed: ${message}`);
               sink.send({
                 type: "usage_probe_result",

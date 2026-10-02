@@ -829,7 +829,9 @@ read newer session formats.
 **Subscription quota.** `usage_probe { runtime_key, installation, login,
 timeout_seconds }` asks a host what one copy has left; the daemon reads that
 copy's own login and answers `usage_probe_result { quota }` — percentages,
-reset text, and a reason when it could not read one. Never the credential.
+reset text, and a reason when it could not read one. Never the credential, and
+never a path on the host: the reason passes `sanitizeFailure`, so vendor stderr
+or a spawn error names neither the copy nor its login file.
 Claude's is an OAuth call against `api.anthropic.com/api/oauth/usage`; Codex's
 runs `codex -s read-only -a untrusted app-server` and asks
 `account/rateLimits/read`, recovering the numbers from the refusal an

@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HostUsageQuota, RuntimeLoginSpec } from "@rainver/protocol";
 import { OWN_INSTALLATION, readToolManifestSync, type ToolManifest } from "./tools.js";
+import { sanitizeFailure } from "./ambientRedaction.js";
 
 /**
  * What one copy's subscription has left, read on the host that holds it.
@@ -32,8 +33,14 @@ function emptyQuota(): HostUsageQuota {
   return { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: null };
 }
 
+/**
+ * Every failure text leaves this host through here. Vendor stderr and spawn
+ * errors name this machine's paths (the managed copy, its `auth.json`), and
+ * ADR 0016 keeps a host's real paths on the host — the same `sanitizeFailure`
+ * the folder and ambient frames apply, bounded to 512 characters.
+ */
 function failed(error: string): HostUsageQuota {
-  return { ...emptyQuota(), error };
+  return { ...emptyQuota(), error: sanitizeFailure(error) };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
