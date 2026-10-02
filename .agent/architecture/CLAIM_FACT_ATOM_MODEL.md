@@ -43,7 +43,7 @@ Current Knowledge-adjacent tables:
 | `provenance_links` / `evidence_links` | Provenance lineage and candidate/context evidence links. Evidence links are not accepted object lineage. |
 | `claims` / `claim_sources` | Proposal-gated global semantic atoms and curated evidence/source paths. |
 | `object_relations` | Proposal-gated FK-backed object graph edges over `space_objects`; the only canonical relation graph. |
-| `retrieval_objects` | Derived retrieval index with closed object types: `knowledge_item`, `note`, `source`, `claim`, `memory_entry`, `project_public_summary`. |
+| `retrieval_objects` | Derived retrieval index with closed object types: `knowledge_item`, `note`, `source`, `claim`, `memory_entry`, `project_public_summary`, `source_item`, `extracted_evidence`, `inquiry_thread`. |
 
 Current independent roots that should not be folded into Knowledge include
 `projects`, `project_folders`, `activity_records`, `runs`, `artifacts`, `proposals`,
@@ -171,22 +171,25 @@ relations, retrieval identity, citations, permissions, or cross-domain claims.
 
 Implemented fields:
 
-- `object_id` (the claim id; PK/FK to `space_objects(id, space_id)`)
+- `id` (PK; extension tables reference it as `object_id`)
 - `space_id`
-- `object_type`: fixed enum. The implemented `ck_space_objects_object_type`
-  values are `knowledge_item`, `note`, `source`, `person`, `organization`,
-  `claim`, `inquiry_thread`, `decision_case`, and `experiment`. The CHECK and
-  the entity registry are asserted to agree by `test/ontologyRegistry.test.ts`
-  — `relationship` was dropped when that test was added, because it had no
-  extension table, no entity, and no writer. `project` and `project_folder` are
+- `object_type`: the only CHECK is `ck_space_objects_object_type_format`
+  (token shape); subtype membership is validated by the entity registry
+  (`modules/ontology/entities.ts`) at the only root writer. The registered
+  `space_objects` subtypes are `knowledge_item`, `note`, `source`, `person`,
+  `organization`, `claim`, `inquiry_thread`, `decision_case`, `experiment`, and
+  `research_workflow`; `test/ontologyRegistry.test.ts` asserts the CHECK stays
+  open and every registered subtype is valid. `project` and `project_folder` are
   registered *entities* without being `space_objects` rows (B12G). Types not in
-  the enum are listed in
+  the registry are listed in
   [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §19.
 - `title` (a projection of the domain's own label, truncated by the writer)
 - `summary` or `excerpt`
 - `visibility`, `access_level`
 - `owner_user_id`
 - `primary_project_id`
+- `focus_area_id` (classification only; never read by the content access
+  predicate)
 - `project_folder_id`
 - `created_by_user_id`
 - `created_by_agent_id`
@@ -198,13 +201,17 @@ tables until a repeated product need justifies promotion.
 
 Domain status is **not** on `space_objects` (ADR 0012 / B12D, B12E). Each
 extension table owns its own `status` column and constraint; the former shared
-column, its index, and its `object_type`-branching CHECK are gone. The six
+column, its index, and its `object_type`-branching CHECK are gone. The ten
 extension tables that own a status are `knowledge_items`
 (`draft|active|superseded|archived|deleted`), `notes`
 (`active|archived|deleted`), `sources`
 (`raw|processing|processed|archived|error`), `claims`
-(`active|disputed|superseded|rejected|archived`), and `relation_people` /
-`relation_organizations` (`active|archived|deleted`).
+(`active|disputed|superseded|rejected|archived`), `relation_people` /
+`relation_organizations` (`active|archived|deleted`), `inquiry_threads`
+(`lifecycle_status`: `active|resolved|rejected|superseded|archived`),
+`decision_cases` (`open|decided|archived`), `experiment_definitions`
+(`draft|active|paused|completed|archived`), and `project_research_workflows`
+(`not_started|active|paused|completed|archived`).
 
 A reader that knows its object type reads the extension column directly. A
 polymorphic reader uses `db/objectStatusSql.ts`, whose table/column list is
@@ -255,7 +262,7 @@ Global semantic assertions. Claims are proposal-gated for canonical writes.
 
 Implemented fields:
 
-- `id`
+- `object_id` (PK; FK to `space_objects(id, space_id)`)
 - `space_id`
 - `subject_object_id`: nullable FK to `space_objects(id)` when the claim is
   about an app-owned object
@@ -276,8 +283,9 @@ Implemented fields:
 - `resolution_state`: `unreviewed`, `confirmed`, `contradicted`, `stale`,
   `needs_source`
 - `valid_from`, `valid_until`, `observed_at`
-- `created_from_proposal_id`
-- `created_at`, `updated_at`, `archived_at`
+- `metadata_json`
+- `created_from_proposal_id`, `approved_by_user_id`
+- `created_at`, `updated_at`, `archived_at` live on the `space_objects` root
 
 Candidate claims should live in proposal payloads or private review artifacts
 until accepted. Do not index rejected or unaccepted candidates as context facts.
@@ -331,6 +339,8 @@ Implemented fields:
   `cites`, `summarizes`
 - `source_trust`
 - `confidence`
+- `metadata_json`
+- `created_by_user_id`
 - `created_at`
 
 `provenance_links` and `evidence_links` can still exist for generic provenance,
@@ -350,9 +360,12 @@ Implemented fields:
 - `link_type`
 - `confidence`
 - `status`: `candidate`, `active`, `rejected`, `archived`
+- `evidence_summary`
 - `source_claim_id`
 - `source_object_id`
 - `source_proposal_id`
+- `metadata_json`: its `relation_role = primary_inquiry_thread` discriminator
+  backs the one-to-one Workflow/Inquiry Thread `about` unique indexes
 - API response field `retrieval_projected`: derived boolean; true only when
   both endpoints are object types currently indexed by the Knowledge retrieval
   adapter.
