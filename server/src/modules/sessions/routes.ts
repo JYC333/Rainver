@@ -8,7 +8,7 @@ import { PgSessionRepository } from "./repository.js";
 import { withTransaction } from "../../db/tx.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
-import { dbPool, sendRouteError } from "../routeUtils/common.js";
+import { dbPool, jsonBody, sendRouteError } from "../routeUtils/common.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { ConversationExecutionContextService } from "./executionContextService.js";
 import { ConversationInputError, ConversationInputService } from "./conversationInputService.js";
@@ -328,13 +328,33 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           [sessionId, identity.spaceId, identity.userId],
         );
 
+        // A direct thread and its managed workspace are the Agent × person's,
+        // shared by every direct session of that Agent, so — like a Room's
+        // workspace, archived only when the last Agent leaves — they close
+        // only with the person's last active direct session of the Agent.
+        const stillInUse = await client.query<{ agent_id: string }>(
+          `SELECT DISTINCT binding.agent_id
+             FROM session_conversation_backends binding
+             JOIN sessions other ON other.id = binding.session_id AND other.space_id = binding.space_id
+            WHERE binding.space_id = $1
+              AND binding.bound_by_user_id = $2
+              AND binding.session_id <> $3
+              AND binding.agent_id = ANY($4::varchar[])
+              AND other.user_id = $2
+              AND other.room_id IS NULL
+              AND other.status = 'active'`,
+          [identity.spaceId, identity.userId, sessionId, directThreads.rows.map((thread) => thread.agent_id)],
+        );
+        const inUse = new Set(stillInUse.rows.map((row) => row.agent_id));
+        const closing = directThreads.rows.filter((thread) => !inUse.has(thread.agent_id));
+
         const threadRepository = new PgHostThreadRepository(client);
-        for (const thread of directThreads.rows) {
+        for (const thread of closing) {
           // Always pending: even a thread with no Rainver-managed cwd has this
           // Agent's runtime profile on the host to archive.
           await threadRepository.closeDirectAgent(thread.agent_id, identity.userId, true);
         }
-        return directThreads.rows
+        return closing
           .filter((thread) => thread.execution_host_id)
           .map((thread) => ({
             threadId: thread.id,
@@ -518,15 +538,6 @@ function parsePage(
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
   return request.params as Record<string, string | undefined>;
-}
-
-function jsonBody(request: FastifyRequest): Record<string, unknown> {
-  const text = request.body instanceof Buffer ? request.body.toString("utf8") : "";
-  if (!text) return {};
-  const parsed = JSON.parse(text) as unknown;
-  return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-    ? (parsed as Record<string, unknown>)
-    : {};
 }
 
 function optionalString(value: unknown): string | null {

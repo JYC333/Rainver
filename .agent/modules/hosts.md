@@ -1322,8 +1322,10 @@ Command Center thread page that did was deleted with the rest of that surface;
 what a remote Run produced is read as a turn, from the normalized event log
 below, through `modules/conversation`.
 
-Removing a managed Room specialist or deleting an owner's direct session
-closes its thread and sets `pending_archive_at`. The server asks the connected
+Removing a managed Room specialist or deleting the owner's last active direct
+session of an Agent (the thread is the Agent × person's, shared by all of their
+direct sessions of it) closes its thread and sets `pending_archive_at`. The
+server asks the connected
 daemon to rename the live directory to its timestamped `.removed-*` archive;
 if the daemon is offline, the pending row is replayed on the next hello or
 heartbeat. Re-adding a Room or sending the first direct message can request an

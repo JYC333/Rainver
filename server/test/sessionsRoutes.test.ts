@@ -208,6 +208,21 @@ describe("session write routes", () => {
     });
   });
 
+  it("answers a body that is not JSON as the client's error, not the server's", async () => {
+    __setSessionIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    withRepo({});
+    app = buildModuleServer(sessionsConfig(), [sessionsModule]);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/sessions",
+      headers: { "content-type": "application/json" },
+      payload: '{"title": ',
+    });
+
+    expect(res.statusCode).toBe(422);
+  });
+
   it("preserves creation-context authorization errors", async () => {
     __setSessionIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setContentCreationContextResolverForTests(async () => {

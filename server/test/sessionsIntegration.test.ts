@@ -374,6 +374,31 @@ describe("PgSessionRepository against real Postgres", () => {
     expect(await proposals.getVisible(SPACE, "user-2", rows[0]!.id)).toBeNull();
   });
 
+  it("reflects the newest messages when the chat outgrows the proposal, and names only those", async () => {
+    if (!db.available || !repo) return;
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, 'user-1', 'owner', 'active', now(), now())`,
+      [SPACE],
+    );
+    const session = await repo.createSession(SPACE, USER, { title: "long chat" });
+    const oldest = await repo.addMessage(SPACE, USER, session.id, { role: "user", content: `OLDEST ${"o".repeat(7_000)}` });
+    const middle = await repo.addMessage(SPACE, USER, session.id, { role: "assistant", content: `MIDDLE ${"m".repeat(7_000)}` });
+    const newest = await repo.addMessage(SPACE, USER, session.id, { role: "user", content: "NEWEST and what matters most" });
+
+    expect(await repo.reflectSession(SPACE, USER, session.id)).toMatchObject({ proposals_created: 1 });
+    const { rows } = await db.pool.query<{ payload_json: Record<string, unknown> }>(
+      `SELECT payload_json FROM proposals WHERE space_id = $1`, [SPACE],
+    );
+    const payload = rows[0]!.payload_json;
+    expect(payload.proposed_content).toContain("NEWEST");
+    expect(payload.proposed_content).toContain("MIDDLE");
+    expect(payload.proposed_content).not.toContain("OLDEST");
+    expect(payload.source_message_ids).toEqual([middle!.id, newest!.id]);
+    expect((payload.provenance_entries as Array<{ evidence_json: { message_count: number } }>)[0]!.evidence_json.message_count).toBe(2);
+    expect(payload.source_message_ids).not.toContain(oldest!.id);
+  });
+
   it("404s message listing for a session the user cannot see", async () => {
     if (!db.available || !repo) return;
     const owned = await repo.createSession(SPACE, USER, {});

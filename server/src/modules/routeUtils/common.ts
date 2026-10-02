@@ -139,7 +139,15 @@ export function bodyText(request: FastifyRequest): string {
 export function jsonBody(request: FastifyRequest): Record<string, unknown> {
   const text = bodyText(request);
   if (!text) return {};
-  const parsed = JSON.parse(text) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    // The app shell hands every body over as a raw buffer, so a body that is
+    // not JSON reaches here rather than Fastify's own parser: it is the
+    // client's error, not a server fault.
+    throw new HttpError(422, "Invalid JSON body");
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new HttpError(422, "JSON object body is required");
   }

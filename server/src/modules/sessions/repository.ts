@@ -98,6 +98,9 @@ interface MessageRow {
  * Owns list/get/create sessions plus list/add messages.
  * Session `reflect` creates proposal-first memory candidates in the server.
  */
+/** How much of a direct chat a reflection proposal carries, from its newest message back. */
+const REFLECTION_TRANSCRIPT_CHARS = 12_000;
+
 export class PgSessionRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -1263,15 +1266,23 @@ export class PgSessionRepository {
     if (!session) return null;
     const messages = await this.listMessages(spaceId, userId, sessionId, 200, 0);
     if (!messages) return null;
-    const usable = messages
+    const recent = messages
       .filter((message) => message.content.trim().length > 0)
       .slice(-40);
-    if (usable.length === 0) return { session_id: sessionId, proposals_created: 0 };
+    if (recent.length === 0) return { session_id: sessionId, proposals_created: 0 };
 
-    const transcript = usable
-      .map((message) => `${message.role}: ${message.content.trim()}`)
-      .join("\n\n")
-      .slice(0, 12_000);
+    // The newest messages are the reflection's substance, so the budget is
+    // spent from the end of the conversation backwards, and the provenance
+    // names exactly the messages whose text made it into the proposal.
+    const lines = recent.map((message) => `${message.role}: ${message.content.trim()}`);
+    let first = recent.length - 1;
+    let length = lines[first]!.length;
+    while (first > 0 && length + 2 + lines[first - 1]!.length <= REFLECTION_TRANSCRIPT_CHARS) {
+      first -= 1;
+      length += 2 + lines[first]!.length;
+    }
+    const usable = recent.slice(first);
+    const transcript = lines.slice(first).join("\n\n").slice(0, REFLECTION_TRANSCRIPT_CHARS);
     const title = session.title
       ? `Session reflection: ${session.title}`.slice(0, 512)
       : "Session reflection";

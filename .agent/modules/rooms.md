@@ -442,9 +442,10 @@ delegated scratch it never reads or imports.
 The same owner-only gate permits a direct chat with a host-bound Agent. Direct
 chat has one `host_threads` container per Agent × owner, renders recent messages
 from that session (not a Room summary), and exposes
-`POST /api/v1/agents/:agentId/chat/reset-context`. Deleting the direct session
-closes and archives both the Agent's runtime profile and, when Rainver managed
-it, the workspace; the first later message may opt into restoring the newest
+`POST /api/v1/agents/:agentId/chat/reset-context`. Deleting the person's last
+active direct session of the Agent (several direct sessions share the one
+container) closes and archives both the Agent's runtime profile and, when
+Rainver managed it, the workspace; the first later message may opt into restoring the newest
 archive, but never restores the vendor session. Removing a Room specialist
 follows the same archive-not-delete rule, with offline archives replayed on the
 daemon's next heartbeat — with one distinction the shared Conversation cwd
