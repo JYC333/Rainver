@@ -78,6 +78,17 @@ function makeHost(api: FinanceApi, enabled = true): FinanceWebHost {
   }
 }
 
+/** Renders the page and waits for the ledger's accounts, not just the book.
+ *  The book toolbar paints one commit before the ledger's mount effect runs
+ *  and loads the accounts: a posting editor opened in between has no account
+ *  to select, and a check run in between has its result reset by that
+ *  effect. */
+async function renderLoadedLedger(api: FinanceApi) {
+  const Page = createFinancePage(makeHost(api))
+  render(<Page />)
+  await screen.findByText('招商银行')
+}
+
 describe('FinancePage', () => {
   it('shows the enable/install path when the plugin is disabled', () => {
     const Page = createFinancePage(makeHost(fakeApi(), false))
@@ -104,9 +115,7 @@ describe('FinancePage', () => {
 
   it('blocks obviously invalid transaction submissions in the posting editor', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Transaction'))
     // The posting editor mounts in a state update; querying it synchronously
@@ -125,9 +134,7 @@ describe('FinancePage', () => {
 
   it('submits a balanced transaction with one interpolated posting', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Transaction'))
     fireEvent.change(await screen.findByLabelText('Posting 1 account'), { target: { value: 'acc-2' } })
@@ -154,9 +161,7 @@ describe('FinancePage', () => {
         ],
       }),
     })
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     expect(screen.getByText('Not checked yet')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Run checks'))
@@ -166,9 +171,7 @@ describe('FinancePage', () => {
 
   it('imports beancount text and reports the result', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('Import'))
     fireEvent.change(screen.getByLabelText('Beancount text'), {
@@ -208,9 +211,7 @@ describe('FinancePage', () => {
 
   it('opens a shared account from the guided type/group/name form', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Open'))
     fireEvent.change(screen.getByLabelText('Account type'), { target: { value: 'Assets' } })
@@ -227,9 +228,7 @@ describe('FinancePage', () => {
 
   it('preselects the posting commodity from the account default currency', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Transaction'))
     const commoditySelect = await screen.findByLabelText('Posting 1 commodity') as HTMLSelectElement
@@ -244,9 +243,7 @@ describe('FinancePage', () => {
 
   it('opens a private personal account', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Open'))
     fireEvent.change(screen.getByLabelText('Account group'), { target: { value: 'Bank' } })
@@ -263,9 +260,7 @@ describe('FinancePage', () => {
 
   it('rejects an invalid account segment before calling the API', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Open'))
     fireEvent.change(screen.getByLabelText('Account group'), { target: { value: 'bank card' } })
@@ -278,9 +273,7 @@ describe('FinancePage', () => {
 
   it('switches balance scope and refetches with the scope', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     await waitFor(() => expect(api.getBalances).toHaveBeenLastCalledWith('book-1', 'all'))
     fireEvent.click(screen.getByRole('button', { name: 'Mine' }))
@@ -291,9 +284,7 @@ describe('FinancePage', () => {
 
   it('marks personal accounts and toggles visibility from the ledger view', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     expect(await screen.findByText('personal 🔒')).toBeInTheDocument()
 
