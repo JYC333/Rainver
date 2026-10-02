@@ -9,8 +9,9 @@ credential secrecy, path safety, and current dogfooding readiness.
 
 ## 1. Authentication Boundary
 
-All durable-data API routes require authentication via `get_identity()` or
-`get_current_user()`. An unauthenticated request to any such route must return 401.
+All durable-data API routes require authentication via `resolveIdentity()`
+(`server/src/modules/routeUtils/common.ts`) or, for the cross-space `/me` routes,
+`resolveAnySpaceIdentity()`. An unauthenticated request to any such route must return 401.
 
 ### Intentional public endpoints
 
@@ -30,13 +31,13 @@ All other routes, including system-metadata endpoints, are auth-gated:
 
 - `GET /api/v1/auth/reauth/status` — reports only whether the current user's signed recent-auth grant remains valid and when it expires; the browser uses it to gate Security-page controls, while each sensitive mutation still enforces the grant server-side.
 - `POST /api/v1/invitations/accept` — an active account may consume only an unexpired, available invitation addressed to its own normalized email; membership and token consumption commit together.
-- `GET /capabilities`, `GET /capabilities/{id}`, `POST /capabilities/reload`
+- `GET /api/v1/capability-definitions`, `GET /api/v1/capability-definitions/{id}`, `GET /api/v1/capability-packs`
 - `GET /api/v1/server/catalog`, `/catalog/capabilities`, `/catalog/agent-templates`
 - `GET /api/v1/server/notifications/webhooks/policy`, `POST .../webhooks/dispatch`
-- `GET /jobs/handlers`
+- `GET /api/v1/jobs/handlers`
 - `GET /api/v1/system/backups`, `POST /api/v1/system/backups/manual` — instance-admin gated
-- `POST /hosts/{hostId}/installations/{adapterType}`, `.../rollback`, `DELETE .../{installation}` — instance-admin gated for the built-in host, owner-gated for a paired machine
-- `GET /providers/vendors`, `/providers/presets`
+- `POST /api/v1/hosts/{hostId}/installations/{runtimeKey}`, `.../rollback`, `DELETE .../{installation}` — instance-admin gated for the built-in host, owner-gated for a paired machine
+- `GET /api/v1/providers/vendors`, `/api/v1/providers/presets`
 
 ---
 
@@ -49,7 +50,7 @@ the response does not reveal whether an object exists in another space.
 Rules:
 - Raw `Model.id == id` queries without a `space_id` filter are forbidden in authenticated
   service methods.
-- Space_id comes from `get_identity()`, not from a request body field or a fetched object.
+- Space_id comes from `resolveIdentity()`, not from a request body field or a fetched object.
 - User-space authority comes from `SpaceMembership`. `User.space_id`,
   `User.default_space_id`, and global `User.role` are not part of the backend
   schema.
@@ -476,7 +477,7 @@ within a space. Room conversations are shared, Project-bound aggregates and
 are readable/writable only through `/rooms/{roomId}/conversations/*`.
 
 - `GET /sessions/{id}` requires authentication. `space_id` and `user_id` are extracted from
-  the request identity and forwarded to `SessionService.get_session()` as SQL filters.
+  the request identity and forwarded to `PgSessionRepository.getSession()` as SQL filters.
 - `GET /sessions/{id}/messages` follows the same pattern.
 - A cross-space request returns 404 (session not found in that space).
 - A same-space non-owner request returns 404 (session belongs to a different user).
@@ -534,15 +535,15 @@ the handler returns 404 before calling the consolidation service.
 
 Activity does not directly become active memory:
 
-1. `ActivityConsolidationService` creates **proposals** from activity records.
+1. `PgActivityConsolidationRepository` creates **proposals** from activity records.
 2. Proposals must be reviewed and accepted via `POST /proposals/{id}/accept`.
 3. `ProposalApplyService` handles the durable mutation — the only path through which
    activity-derived content becomes memory.
 
 Additional invariants:
 - Proposal apply is space-scoped: `accept(id, space_id=…)` returns None on space mismatch.
-- Unsupported proposal types (`task_create`, `plan_create`, and any unknown
-  type) raise `UnsupportedProposalTypeError` and leave the proposal in `pending` status.
+- Proposal types with no registered applier raise `UnknownProposalApplierError`
+  (422, `proposals/applierRegistry.ts`) and leave the proposal in `pending` status.
   The fail-closed behavior is tested.
 - Memory writes require policy/proposal gating: there is no public direct-write
   active-memory path accessible without policy enforcement.
@@ -569,7 +570,7 @@ Additional invariants:
   row attributed to the importer, with user-confirmation provenance. It does
   not insert `memory_entries` from the publications adapter, and it cannot
   import agent-scope types.
-- `MemoryProposalApplier.apply_create()` and `apply_update()` block grant-derived proposals
+- `PgMemoryApplyRepository.applyOnly()` (ahead of `applyCreate()` / `applyUpdate()`) blocks grant-derived proposals
   from applying to non-personal target spaces without prior egress approval.
 
 ### Project-level memory access (retrieval surfaces)
@@ -695,8 +696,9 @@ user-centered, not request-space-centered.
 
 ### 8b. PersonalView (`/me`) Cross-Space Aggregation
 
-`GET /me/summary`, `/me/timeline`, `/me/tasks`, `/me/pending` are intentionally cross-space.
-They aggregate across all spaces the user is a member of (`_member_space_ids(db, user_id)`).
+`GET /api/v1/me/summary`, `/api/v1/me/timeline`, `/api/v1/me/pending` are intentionally cross-space.
+They aggregate across all spaces the user has an active membership in (a `space_memberships`
+join in `server/src/modules/frontendSupport/`).
 Visibility filters are applied to tasks and proposals. No raw
 artifact payloads or full memory content is returned — pointer metadata only in timeline.
 
