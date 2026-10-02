@@ -19,9 +19,10 @@ interest-profile fact model remain separate support packages.
   surface for the profile snapshot, settings, topic candidate decisions,
   direct topic create/edit/archive, optional starter packs, and explicit
   bounded history backfill.
-- Digest-item routes own explicit serendipity feedback and the one-way action
-  that files an item into an active Project Corpus through the Project writer
-  gate.
+- The digest-item route owns explicit serendipity feedback. Filing an item into
+  an active Project Corpus is not a digest route: the Library page calls the
+  existing Project corpus-add route (`metadata_json.origin =
+  'information_digest'`), so the Project writer gate applies.
 
 ## Personal pipeline
 
