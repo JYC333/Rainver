@@ -94,10 +94,11 @@ by the existing job-lease retry and orphan rules, not by anything new.
 
 ### 5. A failed stage stops the job; nothing rolls back automatically
 
-Stages are pull, drain, backup, migrate, recreate, health. Each records its
-start, end, and log tail on the job. Failure at any stage ends the job as
-`failed` with that stage named; the UI shows it and the dump path. The first
-three stages touch no running container. Recovery is the documented host
+Stages are pull, drain, migrate (which takes the pre-migration dump before
+applying migrations), recreate, health. Each records its start, end, and log
+tail on the job. Failure at any stage ends the job as `failed` with that stage
+named; the UI shows it and the dump path. The first two stages touch no
+running container. Recovery is the documented host
 procedure. Automatic restore from a half-applied migration and automatic
 re-`up` of the previous digest are deliberately not built until real failures
 have been observed.
