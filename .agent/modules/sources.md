@@ -567,9 +567,9 @@ owns that job, the rule cursor, and the run audit rows:
   These rows are operational/audit state and are not shown as a normal Sources
   page run-history feed.
 - When a run finishes with `status='succeeded'`, Sources upserts one Activity
-  Inbox pointer row for the run's source connection and rule-local date:
+  Inbox pointer row for the run's source channel and rule-local date:
   `activity_records.aggregate_key =
-  source:briefing:<source_connection_id>:<local_date>`. The Activity row
+  source:briefing:<source_channel_id>:<local_date>`. The Activity row
   stores counts, run ids, artifact ids, and a short preview only; the full
   digest and per-item content remain in the Library read model. The
   `source_connections.config_json.daily_inbox_briefing` boolean disables or
