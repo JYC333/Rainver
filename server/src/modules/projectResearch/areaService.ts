@@ -446,12 +446,20 @@ export class ProjectResearchAreaService {
       const targetNote = requestedNoteId ? notes.find((n) => n.id === requestedNoteId) : undefined;
       if (targetNote) {
         // The notebook list this chose from is read-gated, and reading a note
-        // is not permission to have the model rewrite it.
-        await assertWritableSpaceObject(this.db, identity, targetNote.id, "Note not found");
-        const applied = await withNoteWrites(this.db, (scope) => scope.applyOps({
-          spaceId: identity.spaceId, noteId: targetNote.id, baseVersion: targetNote.version, rawOps, source: "ai_adhoc", runId, refs,
-        }));
-        if (applied) notebookEdit = { note_id: targetNote.id, version: applied.note.version, conflict: applied.conflict };
+        // is not permission to have the model rewrite it. A note the person
+        // cannot write leaves the edit undone and the answer standing: the
+        // Run is already spent, and a 404 here would lose the reply with it.
+        const writable = await assertWritableSpaceObject(this.db, identity, targetNote.id, "Note not found")
+          .then(() => true, (error: unknown) => {
+            if (error instanceof HttpError && (error.statusCode === 404 || error.statusCode === 403)) return false;
+            throw error;
+          });
+        if (writable) {
+          const applied = await withNoteWrites(this.db, (scope) => scope.applyOps({
+            spaceId: identity.spaceId, noteId: targetNote.id, baseVersion: targetNote.version, rawOps, source: "ai_adhoc", runId, refs,
+          }));
+          if (applied) notebookEdit = { note_id: targetNote.id, version: applied.note.version, conflict: applied.conflict };
+        }
       } else {
         const newTitle = text(notebookUpdate.new_note_title, 200) || "Untitled";
         const now = new Date().toISOString();

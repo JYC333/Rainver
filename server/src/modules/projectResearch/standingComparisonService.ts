@@ -47,6 +47,8 @@ function stringIds(value: unknown): string[] {
     : [];
 }
 
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "degraded", "failed", "cancelled", "orphaned"]);
+
 /** Project-level, workflow-free standing comparison lifecycle. */
 export class ProjectResearchStandingComparisonService {
   constructor(private readonly db: Queryable, private readonly config?: ServerConfig) {}
@@ -205,22 +207,27 @@ export class ProjectResearchStandingComparisonService {
       const batch = batchResult.rows[0];
       if (!batch) return { run_id: runId, status: "not_standing" };
       if (batch.status !== "running") return { batch_id: batch.id, status: batch.status };
-      const run = await db.query<{ status: string; output_json: unknown }>(
-        `SELECT status,output_json FROM runs WHERE id=$1 AND space_id=$2`,
-        [runId, spaceId],
-      );
-      const terminal = run.rows[0];
-      if (!terminal) throw new Error("Standing comparison run not found");
-      if (!['succeeded', 'degraded'].includes(terminal.status)) {
-        await markBatch(db, batch, "failed", now, { error: `Standing comparison run ${terminal.status}` });
-        return { batch_id: batch.id, status: "failed" };
-      }
-      const expected = stringIds(batch.source_item_ids_json);
-      const comparisons = parseMonitorComparisons(terminal.output_json, expected);
-      await this.persistResults(db, batch, runId, comparisons, now);
-      await markBatch(db, batch, "completed", now);
-      return { batch_id: batch.id, status: "completed", comparison_count: comparisons.length };
+      return this.settleRunningBatch(db, batch, runId, now);
     });
+  }
+
+  /** The running batch's Run is terminal: the batch follows it, within the caller's transaction and locks. */
+  private async settleRunningBatch(db: Queryable, batch: StandingBatchRow, runId: string, now: Date): Promise<Record<string, unknown>> {
+    const run = await db.query<{ status: string; output_json: unknown }>(
+      `SELECT status,output_json FROM runs WHERE id=$1 AND space_id=$2`,
+      [runId, batch.space_id],
+    );
+    const terminal = run.rows[0];
+    if (!terminal) throw new Error("Standing comparison run not found");
+    if (!['succeeded', 'degraded'].includes(terminal.status)) {
+      await markBatch(db, batch, "failed", now, { error: `Standing comparison run ${terminal.status}` });
+      return { batch_id: batch.id, status: "failed" };
+    }
+    const expected = stringIds(batch.source_item_ids_json);
+    const comparisons = parseMonitorComparisons(terminal.output_json, expected);
+    await this.persistResults(db, batch, runId, comparisons, now);
+    await markBatch(db, batch, "completed", now);
+    return { batch_id: batch.id, status: "completed", comparison_count: comparisons.length };
   }
 
   async status(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>> {
@@ -286,16 +293,40 @@ export class ProjectResearchStandingComparisonService {
           WHERE id=$1 AND space_id=$2 AND project_id=$3 FOR UPDATE`,
         [batchId, identity.spaceId, projectId],
       );
-      const batch = result.rows[0];
+      let batch = result.rows[0];
       if (!batch) throw new HttpError(404, "Standing comparison batch not found");
       if (batch.status === "pending" && isOverdue(batch, now)) {
         // Its dispatch job ran out of retries; retrying is how it runs again.
         await this.enqueueDispatch(identity.spaceId, projectId, batchId, identity.userId, now, now, db);
         return batchOut(batch);
       }
+      if (batch.status === "running" && batch.run_id) {
+        // Its Run ended without the reconcile that follows a Run (a job that
+        // exhausted its attempts, a Run recovered as orphaned): the batch
+        // follows the Run here, so it can be retried instead of showing
+        // running forever.
+        const run = await db.query<{ status: string }>(`SELECT status FROM runs WHERE id=$1 AND space_id=$2`, [batch.run_id, identity.spaceId]);
+        if (run.rows[0] && TERMINAL_RUN_STATUSES.has(run.rows[0].status)) {
+          await this.settleRunningBatch(db, batch, batch.run_id, now);
+          batch = (await db.query<StandingBatchRow>(
+            `SELECT * FROM project_research_standing_batches WHERE id=$1 AND space_id=$2`, [batchId, identity.spaceId],
+          )).rows[0]!;
+          if (batch.status === "completed") return batchOut(batch);
+        }
+      }
       if (batch.status === "pending" || batch.status === "running") return batchOut(batch);
       if (!["blocked_baseline", "failed", "budget_exhausted"].includes(batch.status)) {
         throw new HttpError(409, "Standing comparison batch cannot be retried");
+      }
+      // One pending batch per Project (`uq_project_research_standing_batches_open_project`):
+      // material that arrived since opened its own, which runs first.
+      const pending = await db.query<{ id: string }>(
+        `SELECT id FROM project_research_standing_batches
+          WHERE space_id=$1 AND project_id=$2 AND status='pending' AND id<>$3 LIMIT 1`,
+        [identity.spaceId, projectId, batchId],
+      );
+      if (pending.rows[0]) {
+        throw new HttpError(409, "Another standing comparison batch is already pending for this Project; retry once it has been dispatched");
       }
       await db.query(
         `UPDATE project_research_standing_batches

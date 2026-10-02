@@ -97,6 +97,21 @@ beforeAll(async () => {
 });
 
 describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
+  it("answers a submitted framework outside the limits as the person's error, not the model's", async () => {
+    if (!db.available || !app) return;
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${PROJECT}/research/question/assessment/confirm`,
+      payload: {
+        thread_id: THREAD,
+        refinement: { ...refinementOutput, sub_questions: ["x".repeat(250)] },
+        manually_adjusted: true,
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ code: "question_refinement_input_invalid" });
+  });
+
   it("returns an actionable structured assessment for an unanswerable query", async () => {
     if (!db.available || !app) return;
     const response = await app.inject({

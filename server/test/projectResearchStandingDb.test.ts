@@ -339,6 +339,39 @@ describe("project research standing comparison (real Postgres)", () => {
     )).rows[0]).toEqual({ status: "pending", count: 2 });
   });
 
+  it("refuses to retry a batch while another is already pending, instead of failing on the unique index", async () => {
+    if (!db.available) return;
+    const service = new ProjectResearchStandingComparisonService(db.pool);
+    const blocked = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: randomUUID() });
+    await expect(service.dispatchBatch(SPACE, blocked)).resolves.toMatchObject({ status: "blocked_baseline" });
+    // Material that arrived meanwhile opened the Project's one pending batch.
+    const pending = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: randomUUID() });
+    expect(pending).not.toBe(blocked);
+
+    await new ProjectResearchAreaService(db.pool).initializeArea(identity, PROJECT);
+    await expect(service.retryBatch(identity, PROJECT, blocked)).rejects.toMatchObject({ statusCode: 409 });
+    expect((await db.pool.query<{ status: string }>(`SELECT status FROM project_research_standing_batches WHERE id=$1`, [blocked])).rows[0])
+      .toEqual({ status: "blocked_baseline" });
+  });
+
+  it("lets a batch whose Run was orphaned be retried instead of showing running forever", async () => {
+    if (!db.available) return;
+    const service = new ProjectResearchStandingComparisonService(db.pool);
+    const batchId = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: randomUUID() });
+    // The job behind the Run exhausted its attempts: the Run is orphaned and
+    // no reconcile followed it.
+    const runId = await seedRun({ status: "orphaned" });
+    await db.pool.query(
+      `UPDATE project_research_standing_batches SET status='running', run_id=$2, updated_at=now() WHERE id=$1`,
+      [batchId, runId],
+    );
+
+    await expect(service.retryBatch(identity, PROJECT, batchId)).resolves.toMatchObject({ status: "pending" });
+    expect((await db.pool.query<{ status: string; run_id: string | null }>(
+      `SELECT status, run_id FROM project_research_standing_batches WHERE id=$1`, [batchId],
+    )).rows[0]).toEqual({ status: "pending", run_id: null });
+  });
+
   it("re-arms a pending batch whose dispatch job gave up", async () => {
     if (!db.available) return;
     const service = new ProjectResearchStandingComparisonService(db.pool);

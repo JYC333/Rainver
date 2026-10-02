@@ -136,7 +136,20 @@ export class ProjectResearchQuestionRefineService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const threadId = requiredString(body.thread_id, "thread_id");
     const refinementInput = objectValue(body.refinement);
-    const normalized = await normalizeResult(refinementInput);
+    // The same shape the model's output is held to, but this is the person's
+    // submission: a framework outside the limits is their input to correct,
+    // not an upstream fault to retry.
+    const normalized = await normalizeResult(refinementInput).catch((error: unknown) => {
+      if (error instanceof HttpError && error.statusCode === 502) {
+        const body = error.responseBody && typeof error.responseBody === "object" ? error.responseBody as Record<string, unknown> : {};
+        throw new HttpError(422, "The submitted question framework is invalid", {
+          code: "question_refinement_input_invalid",
+          message: error.message,
+          ...(body.diagnostics !== undefined ? { diagnostics: body.diagnostics } : {}),
+        });
+      }
+      throw error;
+    });
     const manuallyAdjusted = body.manually_adjusted === true;
     const conversations = new ProjectResearchQuestionAssessmentRepository(this.db);
     const session = await conversations.getConversation(identity, projectId, threadId);

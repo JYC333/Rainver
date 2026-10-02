@@ -824,6 +824,49 @@ describe("Research Area (real Postgres)", () => {
     expect(messages[2]?.content).toBe("Follow-up question.");
   });
 
+  it("notebookChat keeps the answer, and declines the edit, when the model picks a note the person may read but not write", async () => {
+    if (!db.available || !config) return;
+    const identity = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchAreaService(db.pool, config);
+    await service.initializeArea(identity, PROJECT);
+    // Another member's note, shared with the person at full read level.
+    const other = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Member','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [other, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, other, now]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, PROJECT, other, now]);
+    const note = await new PgKnowledgeRepository(db.pool).createNote({ spaceId: SPACE, userId: other }, {
+      title: "Member's private note", primary_project_id: PROJECT, plain_text: "Theirs.",
+    }) as { id: string; version: number };
+    await db.pool.query(`UPDATE space_objects SET visibility = 'selected_users' WHERE id = $1`, [note.id]);
+    await db.pool.query(
+      `INSERT INTO content_access_grants (id, space_id, resource_type, resource_id, grantee_user_id, granted_by_user_id, access_level, created_at, updated_at)
+       VALUES ($1,$2,'space_object',$3,$4,$5,'full',now(),now())`,
+      [randomUUID(), SPACE, note.id, USER, other],
+    );
+    __setProviderHttpClientForTests({
+      fetch: async () => openAiChatResponse({
+        choices: [{ message: { content: JSON.stringify({
+          answer: "I added the conclusion.",
+          notebook_update: { note_id: note.id, new_note_title: null, ops: [{ op: "append", index: null, count: null, markdown: "Conclusion" }], refs: [] },
+        }) } }],
+      }),
+    });
+
+    const result = await service.notebookChat(identity, PROJECT, {
+      message: "Add the conclusion to the member's note.",
+      execution: { model_provider_id: PROVIDER },
+    });
+    // The Run was spent and answered; only the write it is not entitled to is withheld.
+    expect(result).toMatchObject({ ok: true, reply: "I added the conclusion.", notebook_edit: null });
+    expect((await db.pool.query<{ version: number }>(`SELECT version FROM notes WHERE object_id = $1`, [note.id])).rows[0])
+      .toEqual({ version: note.version });
+    const messages = (await db.pool.query<{ role: string }>(
+      `SELECT role FROM messages WHERE session_id=$1 ORDER BY created_at ASC`, [result.session_id],
+    )).rows;
+    expect(messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
   it("notebookChat rejects a session_id that belongs to a different project", async () => {
     if (!db.available || !config) return;
     const identity = { spaceId: SPACE, userId: USER };

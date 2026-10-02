@@ -237,6 +237,20 @@ async function handleAgentRun(
               );
             }
             await finalizeChatTurn(config, repository, currentTerminal);
+            // The domain reconcilers ride on every terminal Run, this one
+            // included: a standing batch whose Run was orphaned here would
+            // otherwise show running forever, with nothing left to settle it.
+            const contract = await getDbPool(config.databaseUrl!).query<{ workflow_input_json: unknown }>(
+              `SELECT contract_snapshot_json->'workflow_input_json' AS workflow_input_json
+                 FROM runs WHERE id=$1 AND space_id=$2`,
+              [runId, job.space_id],
+            );
+            await enqueueRunTerminalReconcilers(getDbPool(config.databaseUrl!), {
+              space_id: job.space_id,
+              user_id: job.user_id,
+              run_id: runId,
+              workflow_input_json: recordValue(contract.rows[0]?.workflow_input_json),
+            });
           }
         }
       }

@@ -287,6 +287,58 @@ describe("sourcePostProcessingRecoveryDb", () => {
       });
     });
 
+    it("ends an incremental Operation waiting for its scan when the run's items all fall outside the publication window", async () => {
+      if (!db.available) return;
+      const now = new Date().toISOString();
+      const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
+      const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, { kind: "question", statement: "Research" });
+      await insertResearchWorkflowFixture(db.pool, {
+        id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+        currentStage: "monitoring", primaryThreadId: String(thread.id), state: {
+          channel_ids: [CHANNEL],
+          source_post_processing_rule_ids: [RULE],
+          monitoring: { active: true, field: "submittedDate", watermark_after: now },
+          research_question: "Research",
+          research_question_version: thread.version,
+          thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
+          report_depth: "full",
+          question_refine_skipped: false,
+          agent_id: AGENT,
+          runtime_profile_id: "profile-1",
+        }, now,
+      });
+      // "Run the update now" opened the Operation ahead of its scan.
+      await db.pool.query(
+        `INSERT INTO project_operations (
+           id,space_id,project_id,kind,title,status,created_by_user_id,progress_json,created_at,updated_at
+         ) VALUES ($1,$2,$3,'research','Incremental update','active',$4,$5::jsonb,$6,$6)`,
+        [OPERATION, SPACE, PROJECT, OWNER, JSON.stringify({
+          schema_version: "project_research_operation.v1", run_kind: "incremental", workflow_id: WORKFLOW,
+          agent_id: AGENT, research_question: "Research", research_question_version: thread.version,
+          channel_ids: [CHANNEL], source_item_ids: [], current_stage: "screening", stage_state: "running",
+          awaiting_source_scan: true, watermark: { before: null, after: now, overlap_hours: 48 },
+        }), now],
+      );
+      // The scan brought one item, but it was published long before the window.
+      await db.pool.query(`UPDATE source_items SET occurred_at = now() - interval '10 days' WHERE id = $1`, [ITEM_3]);
+      await db.pool.query(
+        `INSERT INTO source_post_processing_runs (
+           id, space_id, source_channel_id, agent_id, project_id, rule_id, trigger_type, status, input_item_ids_json, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,'manual','succeeded',$7::jsonb,$8)`,
+        [randomUUID(), SPACE, CHANNEL, AGENT, PROJECT, RULE, JSON.stringify([ITEM_3]), now],
+      );
+
+      await reconcileProjectResearch(db.pool, CONFIG);
+
+      // Nothing to screen, so the Operation ends instead of holding the
+      // Project's one active research slot until some later empty scan.
+      const operation = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(
+        `SELECT status, progress_json FROM project_operations WHERE id=$1`, [OPERATION],
+      );
+      expect(operation.rows[0]?.status).toBe("completed");
+      expect(operation.rows[0]?.progress_json).toMatchObject({ awaiting_source_scan: false, current_stage: "complete", stage_state: "skipped" });
+    });
+
     it("reconciles a run into the workflow watching its channel, not only the newest one", async () => {
       if (!db.available) return;
       const now = new Date().toISOString();

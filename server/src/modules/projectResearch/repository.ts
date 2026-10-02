@@ -1393,7 +1393,12 @@ export class ProjectResearchRepository {
     }
     const now = new Date().toISOString();
     const id = randomUUID();
-    await this.db.query(
+    // One transaction under the Project lock: the criteria row and the
+    // snapshot each screening rule screens by change together, and two saves
+    // cannot leave the rules holding the one that lost.
+    return withQueryableTransaction(this.db, async (db) => {
+    await lockActiveProjectForMutation(db, identity.spaceId, projectId);
+    await db.query(
       `INSERT INTO project_research_screening_criteria (
          id, space_id, project_id, include_keywords_json, exclude_keywords_json, domain_criteria_json,
          date_range_start, date_range_end, source_restrictions_json, required_evidence_fields_json,
@@ -1422,13 +1427,11 @@ export class ProjectResearchRepository {
         now,
       ],
     );
-    const row = await this.screeningCriteriaRow(identity.spaceId, projectId);
+    const row = await this.screeningCriteriaRow(identity.spaceId, projectId, db);
     if (!row) throw new HttpError(500, "Failed to upsert screening criteria");
-    const [availableDomainCriteria, effectiveCriteria] = await Promise.all([
-      availableProjectDomainCriteria(this.db, identity.spaceId, projectId),
-      loadProjectScreeningCriteria(this.db, identity.spaceId, projectId),
-    ]);
-    await this.db.query(
+    const availableDomainCriteria = await availableProjectDomainCriteria(db, identity.spaceId, projectId);
+    const effectiveCriteria = await loadProjectScreeningCriteria(db, identity.spaceId, projectId);
+    await db.query(
       `UPDATE source_post_processing_rules
           SET input_config_json = jsonb_set(
                 COALESCE(input_config_json, '{}'::jsonb),
@@ -1442,6 +1445,7 @@ export class ProjectResearchRepository {
       [identity.spaceId, projectId, JSON.stringify(effectiveCriteria), now],
     );
     return screeningCriteriaOut(row, availableDomainCriteria);
+    });
   }
 
   /**
@@ -1480,8 +1484,8 @@ export class ProjectResearchRepository {
     return criteria;
   }
 
-  private async screeningCriteriaRow(spaceId: string, projectId: string): Promise<ScreeningCriteriaRow | null> {
-    const result = await this.db.query<ScreeningCriteriaRow>(
+  private async screeningCriteriaRow(spaceId: string, projectId: string, db: Queryable = this.db): Promise<ScreeningCriteriaRow | null> {
+    const result = await db.query<ScreeningCriteriaRow>(
       `SELECT id, project_id, include_keywords_json, exclude_keywords_json, domain_criteria_json,
               date_range_start, date_range_end, source_restrictions_json, required_evidence_fields_json,
               created_at, updated_at

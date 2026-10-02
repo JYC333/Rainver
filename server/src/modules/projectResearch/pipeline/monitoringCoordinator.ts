@@ -297,6 +297,56 @@ export class ProjectResearchMonitoringCoordinator {
     }
   }
 
+  /**
+   * An incremental Operation created ahead of its scan is waiting for the
+   * scan's items. The scan found some, so `onSourceScanCompleted` did not end
+   * it, but the run that processed them brought none this Workflow can take
+   * (outside the publication window, held back by question drift, already
+   * claimed by another Operation). Nothing else would end it: the reconcile
+   * pass skips an Operation still waiting for its scan, so it stays active and
+   * blocks every other research action until a later scan happens to find
+   * nothing at all. The wait is over; it ends the way an empty scan ends it.
+   */
+  private async releaseIncrementalWaitingForScan(
+    spaceId: string,
+    projectId: string,
+    workflowId: string,
+    watermarkAfter: string | null,
+  ): Promise<void> {
+    const active = await this.ports.activeIncremental(spaceId, projectId, workflowId);
+    if (!active) return;
+    const waiting = researchState(active.progress_json);
+    if (!waiting.awaiting_source_scan || waiting.source_item_ids.length > 0) return;
+    const now = new Date().toISOString();
+    const progress = await this.ports.screeningProgressFor(spaceId, projectId, active.id, waiting, active.created_at);
+    const result = await advanceOperation(this.db, spaceId, active.id, {
+      from: ["monitor_setup", "backfill", "screening"],
+      to: "complete",
+      mutate: ({ state: current }) => {
+        current.awaiting_source_scan = false;
+        current.watermark = {
+          before: current.watermark.after,
+          after: laterPublicationWatermark(current.watermark.after, watermarkAfter),
+          overlap_hours: current.watermark.overlap_hours,
+        };
+        current.stage_state = "skipped";
+        current.screening_progress = {
+          ...progress,
+          phase: "completed",
+          total_items: 0,
+          classified_items: 0,
+          unclassified_items: 0,
+          message: "The monitoring scan found no new material within this Workflow's window.",
+          updated_at: now,
+        };
+      },
+      stepOverrides: deriveSkippedAfterScreeningSteps(),
+    });
+    if (result.applied && result.row && result.state) {
+      await this.recordScanSummary(result.row, result.state, { relevant: 0, maybe: 0, excluded: 0 });
+    }
+  }
+
   private async reconcileRunForWorkflow(
     spaceId: string,
     run: { project_id: string; source_channel_id: string; triggered_by_user_id: string | null },
@@ -369,14 +419,21 @@ export class ProjectResearchMonitoringCoordinator {
       watermark: priorWatermark,
       overlapHours: state.watermark.overlap_hours,
     });
-    if (sourceItemIds.length === 0) return;
+    if (sourceItemIds.length === 0) {
+      await this.releaseIncrementalWaitingForScan(spaceId, run.project_id, workflow.id, watermarkAfter);
+      return;
+    }
     if (await this.ports.hasResearchQuestionDrift(spaceId, run.project_id, workflow.state_json)) {
       await this.ports.appendPendingIncrementalItems(spaceId, run.project_id, workflow.id, sourceItemIds);
+      await this.releaseIncrementalWaitingForScan(spaceId, run.project_id, workflow.id, watermarkAfter);
       return;
     }
     const idempotencyKey = `source-post-processing:${run.source_channel_id}:${workflow.id}:${sourceItemIds[0]}`;
     const prior = await this.ports.operationByIdempotency(spaceId, run.project_id, idempotencyKey);
-    if (prior && prior.status !== "failed" && prior.status !== "cancelled") return;
+    if (prior && prior.status !== "failed" && prior.status !== "cancelled") {
+      await this.releaseIncrementalWaitingForScan(spaceId, run.project_id, workflow.id, watermarkAfter);
+      return;
+    }
     const active = await this.ports.activeIncremental(spaceId, run.project_id, workflow.id);
     if (active) {
       await refreshOperation(this.db, spaceId, active.id, ({ state: current }) => {

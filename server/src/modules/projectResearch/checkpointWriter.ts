@@ -36,10 +36,12 @@ export async function upsertPendingResearchCheckpoint(
   // reviewer judged that snapshot, so later ticks must not rewrite it.
   if (existing.rows[0] && existing.rows[0].status !== "pending") return existing.rows[0].id;
   if (existing.rows[0]) {
+    // Still pending at write time, not only at read time: a decision that
+    // lands between the two must keep the snapshot the reviewer judged.
     await db.query(
       `UPDATE project_research_checkpoints
           SET machine_result_json=$2::jsonb, updated_at=$3
-        WHERE id=$1 AND space_id=$4`,
+        WHERE id=$1 AND space_id=$4 AND status='pending'`,
       [existing.rows[0].id, JSON.stringify(input.machineResult), now, input.spaceId],
     );
     return existing.rows[0].id;
