@@ -8,7 +8,7 @@ import type {
   RetrievalSearchResponse,
   RetrievalSearchResult,
 } from "@rainver/protocol";
-import type { Queryable } from "../routeUtils/common.js";
+import { escapeLikePattern, type Queryable } from "../routeUtils/common.js";
 import { normalizeAlias, tokenizeSimple } from "./normalize.js";
 import { normalizeTextForSearch } from "./normalize.js";
 import { toVectorLiteral } from "./embeddingStore.js";
@@ -889,7 +889,10 @@ export class RetrievalSearchService {
     const trimmed = query.trim();
     if (!trimmed) return [];
     const tokens = tokenizeSimple(query);
-    const like = `%${trimmed}%`;
+    // The characters typed, not a pattern: `%` and `_` in a title or query
+    // would otherwise match anything, and create-safety would call every
+    // object a probable duplicate of "100%".
+    const like = `%${escapeLikePattern(trimmed)}%`;
     const objectProfileParam = objectProfileFilterParam(objectProfiles);
     // ts_rank_cd normalization flag 1 divides the rank by 1 + log(document
     // length): a BM25-style length penalty so a long page that merely mentions
@@ -921,7 +924,7 @@ export class RetrievalSearchService {
             AND ($5::varchar[] IS NULL OR (ro.object_profile = ANY($5::varchar[]) AND sok.id IS NOT NULL))
             AND (
               rc.tsv @@ plainto_tsquery('simple', $4)
-              OR rc.plain_text ILIKE $3
+              OR rc.plain_text ILIKE $3 ESCAPE '\\'
             )
        ),
        best AS (
