@@ -128,6 +128,10 @@ export class ExperimentInterpretationService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const row = await this.row(db, identity.spaceId, projectId, interpretationId, true);
       if (!row) throw new HttpError(404, "Experiment Interpretation not found");
+      // The same Definition read gate as every other Interpretation path: a
+      // Project writer must not review what they cannot see (B: a visibility
+      // rule applied only to lists is not a rule).
+      await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, row.definition_id, identity.userId, db);
       if (row.status !== "draft") throw new HttpError(409, `Interpretation already ${row.status}`);
       const now = new Date().toISOString();
       await db.query(

@@ -12,7 +12,7 @@ import { RESEARCH_OPERATION_FAILURE_NOTIFY_JOB } from "../src/modules/projectRes
 import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import { HttpError, type SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
-import { seedAgentWithVersion, seedServerHost, seedSpaceOwnerProject, seedRoomManager } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedServerHost, seedSpaceMember, seedSpaceOwnerProject, seedRoomManager } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../src/modules/projectResearch/researchCheckpointPolicy.js";
@@ -473,6 +473,38 @@ describe("researchAcquisitionServiceDb", () => {
           originSessionId: null,
         }),
       ).rejects.toMatchObject({ statusCode: 404 } satisfies Partial<HttpError>);
+    });
+
+    it("starts nothing for a Project viewer, or for a writer on a Thread they cannot read", async () => {
+      if (!db.available) return;
+      const VIEWER = "2bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      const WRITER = "2ccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      for (const [user, role] of [[VIEWER, "viewer"], [WRITER, "member"]] as const) {
+        await seedSpaceMember(db.pool, { space: SPACE, user });
+        await db.pool.query(
+          `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, 'active', now(), now())`,
+          [randomUUID(), SPACE, PROJECT, user, role],
+        );
+      }
+      const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
+        kind: "question",
+        statement: "What does the owner keep to themselves?",
+      });
+      const service = new ResearchAcquisitionService(db.pool);
+      const start = (userId: string) => service.startAcquisition({ spaceId: SPACE, userId }, PROJECT, {
+        threadId: String(thread.id), originRoomId: null, originSessionId: null,
+      });
+
+      await expect(start(VIEWER)).rejects.toMatchObject({ statusCode: 403 } satisfies Partial<HttpError>);
+
+      await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`, [String(thread.id), SPACE]);
+      await expect(start(WRITER)).rejects.toMatchObject({ statusCode: 404 } satisfies Partial<HttpError>);
+
+      const jobs = await db.pool.query(`SELECT id FROM jobs WHERE space_id=$1 AND job_type=$2`, [SPACE, RESEARCH_PIPELINE_START_JOB]);
+      expect(jobs.rows).toHaveLength(0);
+      // The owner, who can read it, still starts it.
+      await expect(start(OWNER)).resolves.toEqual({ status: "queued", thread_id: String(thread.id) });
     });
 
     it("enqueues a research_pipeline_start job carrying the Thread and Room origin", async () => {

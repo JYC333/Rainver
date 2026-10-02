@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { seedServerHost, seedMainlineRoomsForAllProjects, seedServerRuntimeProfile } from "./support/domainSeeds.js";
+import { seedServerHost, seedMainlineRoomsForAllProjects, seedServerRuntimeProfile, seedSpaceMember } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { assertScopesDoNotOverlap, managedScopeViolation, normalizeExecutorConfig, scopePathArray } from "../src/modules/experiments/common.js";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService.js";
@@ -262,6 +262,42 @@ describe("experimentsDb", () => {
       // A converted Interpretation is immutable; converting twice is refused.
       await expect(interpretations.convertToSignal(identity, PROJECT, interpretation.id as string, {}))
         .rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it("keeps a Project writer from reviewing an Interpretation of a Definition they cannot read", async () => {
+      if (!db.available) return;
+      const REVIEWER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      await seedSpaceMember(db.pool, { space: SPACE, user: REVIEWER });
+      await db.pool.query(
+        `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'member', 'active', now(), now())`,
+        [randomUUID(), SPACE, PROJECT, REVIEWER],
+      );
+      const hypothesis = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
+        kind: "hypothesis", statement: "Private experiment stays its owner's",
+      });
+      const definitions = new ExperimentDefinitionService(db.pool);
+      const definition = await definitions.createDefinition(identity, PROJECT, {
+        name: "Owner-only experiment", objective: "Review gate", primary_hypothesis_thread_id: hypothesis.id,
+      });
+      const version = await definitions.createVersion(identity, PROJECT, definition.id as string, { executor_type: "manual" });
+      await definitions.approveVersion(identity, PROJECT, definition.id as string, version.id as string);
+      const runs = new ExperimentRunService(db.pool);
+      const run = await runs.createRun(identity, PROJECT, definition.id as string, version.id as string, { is_baseline: true });
+      await runs.completeRun(identity, PROJECT, definition.id as string, run.id as string, {
+        status: "completed", observations: [{ metric_name: "p95_latency_ms", value_number: 200, is_primary: true }],
+      });
+      const interpretations = new ExperimentInterpretationService(db.pool);
+      const interpretation = await interpretations.createInterpretation(identity, PROJECT, definition.id as string, {
+        run_ids: [run.id], verdict: "inconclusive", conclusion: "One run says little.",
+      });
+      await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`, [definition.id, SPACE]);
+
+      const reviewer: SpaceUserIdentity = { spaceId: SPACE, userId: REVIEWER };
+      await expect(definitions.getDefinition(reviewer, PROJECT, definition.id as string)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(interpretations.markReviewed(reviewer, PROJECT, interpretation.id as string)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(db.pool.query<{ status: string }>(`SELECT status FROM experiment_interpretations WHERE id = $1`, [interpretation.id]))
+        .resolves.toMatchObject({ rows: [{ status: "draft" }] });
     });
 
     it("enforces managed_code_comparison config validation and baseline-first Run ordering", async () => {

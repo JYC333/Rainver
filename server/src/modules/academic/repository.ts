@@ -204,10 +204,14 @@ export class AcademicRepository {
   ): Promise<AcademicPaperRow | null> {
     const now = new Date().toISOString();
     if (patch.title !== undefined || patch.summary !== undefined) {
+      // Only a paper's root row: the owner check upstream is on the generic
+      // space_object, and a note or any other object this person owns must not
+      // be rewritten through the paper route around its own write path.
       await this.db.query(
         `UPDATE space_objects
             SET title = COALESCE($3, title), summary = CASE WHEN $4 THEN $5 ELSE summary END, updated_at = $6
-          WHERE id = $1 AND space_id = $2`,
+          WHERE id = $1 AND space_id = $2
+            AND EXISTS (SELECT 1 FROM academic_papers ap WHERE ap.object_id = space_objects.id AND ap.space_id = space_objects.space_id)`,
         [objectId, spaceId, patch.title ?? null, patch.summary !== undefined, patch.summary ?? null, now],
       );
     }

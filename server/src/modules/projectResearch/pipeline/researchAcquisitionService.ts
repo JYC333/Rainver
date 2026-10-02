@@ -1,6 +1,8 @@
 import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js";
 import { PgJobQueueRepository } from "../../jobs/repository.js";
+import { assertProjectWriter } from "../../projects/access.js";
+import { assertThreadReadable } from "../../inquiry/threadAccess.js";
 import { RESEARCH_PIPELINE_START_JOB } from "./researchAcquisitionPipelineJob.js";
 
 interface StartResearchAcquisitionInput {
@@ -50,6 +52,12 @@ export class ResearchAcquisitionService {
     input: StartResearchAcquisitionInput,
   ): Promise<StartResearchAcquisitionResult> {
     return withQueryableTransaction(this.db, async (db) => {
+      // The person whose turn this is must be able to write the Project and
+      // reach the Thread themselves — Project membership is necessary but not
+      // sufficient for a Thread (`threadAccess.ts`), and the pipeline that
+      // follows reads the Thread's statement into Project-visible records.
+      await assertProjectWriter(db, identity.spaceId, projectId, identity.userId);
+      await assertThreadReadable(db, identity, projectId, input.threadId, "change");
       const thread = await db.query<{ object_id: string }>(
         `SELECT object_id FROM inquiry_threads
           WHERE object_id=$1 AND space_id=$2 AND project_id=$3

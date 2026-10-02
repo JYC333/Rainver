@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -89,6 +90,20 @@ describe("academic module (real Postgres)", () => {
     expect(objectTypeResult.rows[0].object_type).toBe("source");
     const sourceTypeResult = await db.pool.query(`SELECT source_type FROM sources WHERE object_id = $1`, [paper.object_id]);
     expect(sourceTypeResult.rows[0].source_type).toBe("paper");
+  });
+
+  it("does not rewrite a non-paper object its owner names through the paper route", async () => {
+    if (!db.available) return;
+    const noteId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_at, updated_at)
+       VALUES ($1, $2, 'note', 'Keep this title', 'private', $3, now(), now())`,
+      [noteId, SPACE, USER],
+    );
+    await expect(service().updatePaper(identity, noteId, { title: "Rewritten", summary: "through the paper route" }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await expect(db.pool.query<{ title: string; summary: string | null }>(`SELECT title, summary FROM space_objects WHERE id = $1`, [noteId]))
+      .resolves.toMatchObject({ rows: [{ title: "Keep this title", summary: null }] });
   });
 
   it("rejects creating a duplicate paper by arxiv_id in the same space", async () => {
