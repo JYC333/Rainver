@@ -3,8 +3,6 @@ import type {
   LINK_STATUS_VALUES,
   LinkType,
   AgentRunGroup,
-  AgentRunGroupTimeline,
-  AgentRunGroupTrace,
   AskSpaceDomain,
   AskSpaceDomainSection,
   AskSpaceFollowUp,
@@ -48,8 +46,6 @@ import type {
   ConversationRetryResponse,
   RuntimeSessionConfigOption,
   RuntimeSessionConfigSelection,
-  CreateAgentRunGroupRequest,
-  CreateAgentRunGroupResponse,
   CreateRoomRequest,
   CreateRoomResponse,
   RoomAgentAddRequest,
@@ -164,8 +160,6 @@ import type {
   RoomUserMember,
   RunDelegation,
   RuntimeRenderMode,
-  SendAgentRunGroupMessageRequest,
-  SendAgentRunGroupMessageResponse,
   SendRoomMessageRequest,
   SkillConvertToCapabilityResponse,
   SkillImportApprovalProposalResponse,
@@ -199,15 +193,11 @@ import type {
   SpaceRetrievalSettings,
   SpaceRetrievalSettingsUpdate,
   ProjectFileDraft,
-  UpdateAgentRunGroupRequest,
-  UpdateAgentRunGroupResponse,
 } from '@rainver/protocol'
 export type {
   MemoryVersion,
   ConversationRetryResponse,
   AgentRunGroup,
-  AgentRunGroupTimeline,
-  AgentRunGroupTrace,
   AskSpaceDomain,
   AskSpaceDomainSection,
   AskSpaceFollowUp,
@@ -249,8 +239,6 @@ export type {
   ConversationBackendOption,
   RuntimeSessionConfigOption,
   RuntimeSessionConfigSelection,
-  CreateAgentRunGroupRequest,
-  CreateAgentRunGroupResponse,
   CreateRoomRequest,
   CreateRoomResponse,
   CrossSpaceResolvedItem,
@@ -365,8 +353,6 @@ export type {
   RoomUserMember,
   RunDelegation,
   RuntimeRenderMode,
-  SendAgentRunGroupMessageRequest,
-  SendAgentRunGroupMessageResponse,
   SendRoomMessageRequest,
   SkillConvertToCapabilityResponse,
   SkillImportApprovalProposalResponse,
@@ -398,8 +384,6 @@ export type {
   SpaceRetrievalSettings,
   SpaceRetrievalSettingsUpdate,
   ProjectFileDraft,
-  UpdateAgentRunGroupRequest,
-  UpdateAgentRunGroupResponse,
 }
 import { OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE } from '@rainver/protocol'
 
@@ -3229,26 +3213,6 @@ export interface HostRuntimeDefinitionOption {
   provider_api?: 'claude_compatible' | 'openai_compatible' | 'vendor' | null
 }
 
-export interface ProjectFolderExecutionConfig {
-  id: string
-  space_id: string
-  project_folder_id: string
-  repo_type: string | null
-  tech_stack_json: Record<string, unknown>
-  important_paths_json: unknown[]
-  forbidden_paths_json: unknown[]
-  test_commands_json: unknown[]
-  build_commands_json: unknown[]
-  architecture_boundaries_json: Record<string, unknown>
-  validation_recipe_id: string | null
-  created_at: string
-  updated_at: string
-}
-
-export type ProjectFolderExecutionConfigUpdate = Partial<Omit<ProjectFolderExecutionConfig,
-  'id' | 'space_id' | 'project_folder_id' | 'created_at' | 'updated_at'
->>
-
 export interface ProjectOverview {
   project: Pick<Project, 'id' | 'name' | 'status'>
   brief: ProjectBriefVersion | null
@@ -3636,68 +3600,6 @@ export interface ProjectResearchEvidenceMatrixItem {
     authors: unknown[]
     categories: unknown[]
   } | null
-}
-
-export type AcademicPaperType =
-  | 'article'
-  | 'preprint'
-  | 'conference_paper'
-  | 'book_chapter'
-  | 'thesis'
-  | 'report'
-  | 'other'
-
-export interface AcademicPaper {
-  object_id: string
-  title: string
-  summary: string | null
-  status: string
-  doi: string | null
-  arxiv_id: string | null
-  pmid: string | null
-  openalex_id: string | null
-  publication_date: string | null
-  venue: string | null
-  paper_type: AcademicPaperType
-  cited_by_count: number | null
-  reference_count: number | null
-  created_at: string
-  updated_at: string
-}
-
-export interface AcademicPaperCreate {
-  title: string
-  summary?: string | null
-  doi?: string | null
-  arxiv_id?: string | null
-  pmid?: string | null
-  openalex_id?: string | null
-  publication_date?: string | null
-  venue?: string | null
-  paper_type?: AcademicPaperType
-  source_uri?: string | null
-}
-
-export interface AcademicPaperUpdate {
-  title?: string
-  summary?: string | null
-  venue?: string | null
-  cited_by_count?: number | null
-  reference_count?: number | null
-}
-
-export interface AcademicPaperAuthor {
-  person_object_id: string
-  title: string
-  author_position: number | null
-  is_corresponding: boolean
-}
-
-export interface AcademicPaperCitation {
-  paper_object_id: string
-  title: string
-  doi: string | null
-  arxiv_id: string | null
 }
 
 export interface Feature {
