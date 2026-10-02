@@ -96,8 +96,9 @@ domain-agnostic mechanics (arms, fusion, ranking, evidence, create-safety,
 embeddings, rerank/rewrite/synthesis seams, maintenance). Per-domain adapters own
 canonical loading, edge projection, and the single `revalidate` read gate:
 Knowledge (`knowledge_item` / `note` / `source` / `claim`), Memory
-(`memory_entry`), Projects (`project_public_summary`), and Sources
-(`source_item` / `extracted_evidence`). Sources projections index titles,
+(`memory_entry`), Projects (`project_public_summary`), Sources
+(`source_item` / `extracted_evidence`), and Inquiry (`inquiry_thread`, behind
+the Project read gate). Sources projections index titles,
 excerpts, source metadata, preset metadata, and evidence excerpts; raw snapshots
 and full extracted reader text are not indexed by default. The boundary is
 strict — domains depend on the engine, never the reverse (`BOUNDARIES.md`
@@ -156,7 +157,7 @@ second-stage post-processing pass over those candidate items only.
   `mode: "exact"` stays exact alias/identity matching only, and unsupported
   relation wording falls back to ordinary recall.
 - **ANN.** Baseline is exact pgvector scan; at the default embedding dimension
-  (2560) `0001` ships `ix_retrieval_chunks_embedding_hnsw_2560`, a partial HNSW
+  (2560) `db/schema/retrieval.ts` (generated into `0000_baseline`) defines `ix_retrieval_chunks_embedding_hnsw_2560`, a partial HNSW
   index over `embedding::halfvec(2560)`, and the vector arm emits a matching
   constant-dimension halfvec query for dims in `ANN_HALFVEC_DIMENSIONS` (kept in
   sync with the migration); other dims keep the exact scan.
@@ -229,7 +230,7 @@ read, source-policy, egress, and Delivery authorization gates.
 
 ## Maintenance scan (read-only "context review cycle")
 
-`retrieval/maintenance.ts` (`RetrievalMaintenanceService.scan`, route
+`retrieval/maintenance/service.ts` (`RetrievalMaintenanceService.scan`, route
 `POST /api/v1/knowledge/retrieval/maintenance/scan`, owner/admin) is a READ-ONLY
 scan over the projection emitting one batched, clustered report: **duplicates**
 (by shared normalized name), **orphans** (no edges), **thin** pages, **stale**
@@ -294,7 +295,7 @@ owner-private (or `space_ops`) `relation_discovery_report` artifact plus a
 in the policy action registry + gateway risk map at `medium`). Accepting the
 packet is creator-owned (same Context Ops packet rule) and only creates child
 pending `object_relation_create` / `knowledge_create`
-proposals — never a direct edge or item write (invariants 6, 9). A note source
+proposals — never a direct edge or item write (invariant 6). A note source
 and a Knowledge item source both propose FK-backed `object_relation` edges over
 `space_objects`. Activity and Artifact anchors emit `relation_review_candidate` rows with
 no child write action because they are evidence surfaces, not governed graph
@@ -497,7 +498,7 @@ supports them.
 Object-level drill-downs are restricted to the injected Knowledge retrieval
 registry and revalidate every listed object through the adapter read gate **and**
 the source-connection read policy — the same two gates as search — so a finding
-never exposes a canonical-invisible or source-restricted title (invariant 3/7);
+never exposes a canonical-invisible or source-restricted title (invariants 2/3);
 `truncated` reflects readable findings only. Source-warning details list active
 source connections the operator owns (owners/admins see all) with policy posture
 labels only, never consent/credential payloads. The page also offers
@@ -613,8 +614,8 @@ See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9.
 
 Object types stay fixed (`knowledge_item` / `note` / `source` / `claim` /
 `memory_entry` / `project_public_summary` / `source_item` /
-`extracted_evidence`), encoded as a closed protocol enum and the
-`public.retrieval_object_type` SQL domain used by retrieval/object-schema
+`extracted_evidence` / `inquiry_thread`), encoded as a closed protocol enum and
+the `public.retrieval_object_type` Postgres enum type used by retrieval/object-schema
 endpoint columns. **Decision: do not adopt dynamic schema
 packs as the runtime primitive.** Rainver keeps the canonical domain boundary
 closed and uses the existing Space/User/Agent/Run/Proposal/Artifact governance
