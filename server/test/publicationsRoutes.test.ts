@@ -327,6 +327,43 @@ describe("publication routes", () => {
     expect(query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO artifacts"))).toBe(false);
   });
 
+  it("hides another member's private copy id when the idempotent import branch answers them", async () => {
+    const snapshot = artifactSnapshot();
+    const existingImport = {
+      id: "import-1",
+      publication_id: "publication-1",
+      target_space_id: "space-1",
+      publication_version: 1,
+      snapshot_hash: snapshotHash(snapshot),
+      imported_resource_type: "artifact",
+      imported_resource_id: "artifact-copy",
+      imported_by_user_id: "user-2",
+      created_at: "2026-07-10T11:00:00.000Z",
+    };
+    const query = vi.fn(async (sql: string) => {
+      const normalized = sql.replace(/\s+/g, " ");
+      if (normalized === "BEGIN" || normalized === "COMMIT") return { rows: [], rowCount: 0 };
+      if (normalized.includes("SELECT space_id FROM space_memberships")) {
+        return { rows: [{ space_id: "space-1" }], rowCount: 1 };
+      }
+      if (normalized.includes("FROM content_publications cp") && normalized.includes("FOR UPDATE")) {
+        return { rows: [publicationRow({ source_space_id: "source-space", snapshot_json: snapshot })], rowCount: 1 };
+      }
+      if (normalized.includes("FROM content_publication_imports")) return { rows: [existingImport], rowCount: 1 };
+      throw new Error(`Unexpected query: ${normalized}`);
+    });
+    vi.mocked(getDbPool).mockReturnValue(mockTransactionalPool(query) as never);
+    app = buildModuleServer(config(), [publicationsModule]);
+
+    const response = await app.inject({ method: "POST", url: "/api/v1/publications/publication-1/import" });
+
+    expect(response.statusCode).toBe(201);
+    // The same rule as GET: the copy is user-2's private resource, and its id
+    // would let user-1 ask for it by id on every surface that takes one.
+    expect(response.json()).toMatchObject({ imported_resource_type: "artifact", imported_resource_id: null, imported_by_user_id: "user-2" });
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO artifacts"))).toBe(false);
+  });
+
   it("rejects a fresh import once the publication has been revoked", async () => {
     const query = vi.fn(async (sql: string) => {
       const normalized = sql.replace(/\s+/g, " ");

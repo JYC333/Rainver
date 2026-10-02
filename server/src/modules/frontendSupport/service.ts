@@ -76,7 +76,7 @@ export class PgFrontendSupportService {
       this.activeTasks(identity, activeTasksLimit),
       this.activitySummary(identity.spaceId),
       this.runStatsToday(identity.spaceId),
-      this.jobQueueStatus(identity.spaceId),
+      this.jobQueueStatus(identity),
       this.runtimeStatus(identity.spaceId),
       this.modelProviderStatus(identity.spaceId),
       this.sourceSummary(identity.spaceId),
@@ -508,7 +508,10 @@ export class PgFrontendSupportService {
     };
   }
 
-  private async jobQueueStatus(spaceId: string): Promise<HomeSummaryOut["job_queue_status"]> {
+  private async jobQueueStatus(identity: SpaceUserIdentity): Promise<HomeSummaryOut["job_queue_status"]> {
+    // The counts are Space-wide, an accepted oracle (SECURITY_AND_ACCESS_BOUNDARIES).
+    // The error text is not a count: a Job is its submitter's (`GET /jobs/:id`
+    // answers 404 to anyone else), so the preview shows only the viewer's own.
     const result = await this.db.query<{
       queued: string | number;
       running: string | number;
@@ -523,12 +526,12 @@ export class PgFrontendSupportService {
          count(*) FILTER (WHERE status = 'failed' AND attempts < max_attempts)::text AS retryable,
          (SELECT error
             FROM jobs
-           WHERE space_id = $1 AND status = 'failed' AND error IS NOT NULL
+           WHERE space_id = $1 AND user_id = $2 AND status = 'failed' AND error IS NOT NULL
            ORDER BY updated_at DESC, id DESC
            LIMIT 1) AS recent_error_preview
        FROM jobs
        WHERE space_id = $1`,
-      [spaceId],
+      [identity.spaceId, identity.userId],
     );
     const row = result.rows[0];
     return {

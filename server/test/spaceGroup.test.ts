@@ -7,7 +7,7 @@ import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { knowledgeRetrievalAdapter } from "../src/modules/knowledge/retrievalAdapter.js";
 import { PgAnnotationRepository, PgCommentRepository, PgReaderRepository } from "../src/modules/reader/repository.js";
 import { seedSpaceDefaults } from "../src/modules/spaces/spaceSeeds.js";
-import { seedMainlineRoomsForAllProjects, seedRun, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { seedMainlineRoomsForAllProjects, seedRun, seedSpaceMember, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { PgFrontendSupportService } from "../src/modules/frontendSupport/service.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 import { resetTables } from "./support/resetTables.js";
@@ -368,5 +368,43 @@ describe("meSummaryDb", () => {
         recent_failed_runs_count: 4,
       }),
     ]);
+  });
+});
+
+describe("homeJobErrorPreviewDb", () => {
+  // The Home queue counts are an accepted Space-wide oracle; the failure text
+  // beside them is not a count. A Job is its submitter's (`GET /jobs/:id` is
+  // 404 to anyone else), so the preview names only the viewer's own failure.
+  const SPACE = "54444444-4444-4444-8444-444444444444";
+  const OWNER = "5ccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const MEMBER = "5ddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const BYSTANDER = "5eeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const PROJECT = "55555555-5555-4555-8555-555555555556";
+
+  const db = useTestDatabase(`${import.meta.filename}#homeJobErrorPreviewDb`, { max: 2 });
+
+  async function failedJob(userId: string, error: string, updatedAt: string): Promise<void> {
+    await db.pool.query(
+      `INSERT INTO jobs (id, space_id, user_id, job_type, status, priority, payload_json, error, attempts, max_attempts, created_at, updated_at)
+       VALUES ($1, $2, $3, 'source_scan', 'failed', 0, '{}'::jsonb, $4, 3, 3, $5, $5)`,
+      [randomUUID(), SPACE, userId, error, updatedAt],
+    );
+  }
+
+  it("previews only the viewer's own failed Job, while the counts stay Space-wide", async () => {
+    await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT, spaceType: "household" });
+    await seedSpaceMember(db.pool, { space: SPACE, user: MEMBER });
+    await seedSpaceMember(db.pool, { space: SPACE, user: BYSTANDER });
+    await failedJob(OWNER, "owner's private source refused: token rejected", "2026-09-01T10:00:00.000Z");
+    await failedJob(MEMBER, "member's scan failed", "2026-09-01T09:00:00.000Z");
+
+    const service = new PgFrontendSupportService(db.pool);
+    const owner = (await service.homeSummary({ spaceId: SPACE, userId: OWNER }, {})).job_queue_status;
+    const member = (await service.homeSummary({ spaceId: SPACE, userId: MEMBER }, {})).job_queue_status;
+    const bystander = (await service.homeSummary({ spaceId: SPACE, userId: BYSTANDER }, {})).job_queue_status;
+
+    expect(owner).toMatchObject({ failed: 2, recent_error_preview: "owner's private source refused: token rejected" });
+    expect(member).toMatchObject({ failed: 2, recent_error_preview: "member's scan failed" });
+    expect(bystander).toMatchObject({ failed: 2, recent_error_preview: null });
   });
 });

@@ -1402,7 +1402,8 @@ plan is retired; git history holds it. Accepted leftovers from that sequence
 stay accepted: Dev Vite bind-all (token still required); Reader artifact
 omitting `roomRunReadAccessSql`; `code_patch` payload bytes that live remote
 browse would refuse; Learning Space-global `project_id IS NULL` visibility;
-Home summary counts as Space-wide oracles.
+Home summary counts as Space-wide oracles (the failed-Job error preview beside those
+counts is the viewer's own, as `GET /jobs/:id` is).
 
 The 2026-09-11 security remediation sequence fixed the findings of the three
 reviews above by mechanism rather than by patch: one summary-withholding type,
