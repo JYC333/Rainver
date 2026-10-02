@@ -245,14 +245,14 @@ row when it passes triage (R3), so the absence is a state with a remedy rather
 than a missing button.
 
 ## Owns
-- `Note` model (working-knowledge layer; direct CRUD via `NoteService`)
+- `Note` model (working-knowledge layer; direct CRUD through `knowledge/noteWriter.ts` `withNoteWrites`)
 - `NoteCollection` / `NoteCollectionItem` models (space-scoped Notes folder tree)
 - `KnowledgeItem` model (canonical wiki layer)
 - `Source` model (independent provenance/evidence layer)
 - `KnowledgeItemSource` model (item↔source evidence links)
 - `ObjectRelation` model (proposal-gated canonical cross-object graph)
 - `NoteLink` model (`note_links`, direct working-note UI links)
-- `KnowledgeSummaryService` (Overview counts)
+- Overview counts (`PgKnowledgeRepository.summary`, `GET /api/v1/knowledge/summary`)
 - `/api/v1/knowledge` read and proposal API for wiki items; `/api/v1/knowledge/notes`
   + `/api/v1/knowledge/notes/{id}/links|backlinks` direct CRUD for notes;
   `/api/v1/notes/collections` direct CRUD for the Notes collection tree;
@@ -287,7 +287,7 @@ than a missing button.
 
 Backend source capability is ahead of the visible frontend: `knowledge` routes
 support source CRUD and item-source link CRUD, but `apps/web/src/api/client.ts`
-currently exposes `sourcesApi.list` only and `SourcesPage` is a list view. Treat
+currently exposes `knowledgeSourcesApi.list` only and `SourcesPage` is a list view. Treat
 this as current product scope, not as missing backend support.
 
 ## Does Not Own
@@ -452,7 +452,7 @@ endpoints remain collaborative within the current scope.
 
 ## Source Monitoring
 
-Knowledge proposal apply relies on proposal approval and the `proposal.apply` policy gate. `ProposalApplyService._enforce_source_monitoring()` has an explicit Knowledge branch; a full evaluator for external or untrusted Activity/Artifact-derived Knowledge is not implemented
+Knowledge proposal apply relies on proposal approval and the `proposal.apply` policy gate (`PgProposalApplyService`). The Knowledge appliers run no source-monitoring evaluation (it exists only in `modules/memory/sourceMonitoring.ts`); a full evaluator for external or untrusted Activity/Artifact-derived Knowledge is not implemented
 ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9).
 
 ## Policy Actions
@@ -460,17 +460,13 @@ Knowledge proposal apply relies on proposal approval and the `proposal.apply` po
 - `knowledge.create`
 - `knowledge.update`
 - `knowledge.archive`
-- `knowledge.relation_create`
-- `knowledge.relation_delete`
 - `claim.create`
 - `claim.update`
 - `claim.archive`
-- `claim.relation_create`
-- `claim.relation_delete`
 - `object_relation.create`
 - `object_relation.delete`
 
-These actions are `WIRED_VIA_PROPOSAL`: durable mutation is protected by `proposal.apply` and `ProposalApplyService`, not direct `PolicyGateway.enforce()` call sites. Unknown or not-yet-implemented Knowledge actions must fail closed.
+These actions are `WIRED_VIA_PROPOSAL`: durable mutation is protected by `proposal.apply` and `PgProposalApplyService`, not direct per-action policy call sites. Unknown or not-yet-implemented Knowledge actions must fail closed.
 
 ## Project And Project Folder Association
 
@@ -700,7 +696,7 @@ not replaced by Source.
 **Enforced by tests:**
 - `server/test/leafDomainInvariants.test.ts` — knowledge proposals do not auto-promote into memory and server proposal appliers own accepted knowledge mutations.
 - `server/test/leafDomainRepositoryBehavior.test.ts` — repository behavior around leaf-domain proposal boundaries.
-- Payload validation is enforced at apply time in `KnowledgeProposalApplier`: `knowledge_kind`, `content_format`, `visibility`, `verification_status`, `reflection_status`, and `confidence` for items; `link_type`, `status`, and `confidence` for relations. `link_type` legality — vocabulary, endpoint types, and whether the write may be direct — is checked by `assertLinkTypeAllowed` against `modules/ontology/linkTypes.ts`, which every `object_relations` writer must call.
+- Payload validation is enforced at apply time by the `apply*Proposal` functions in `knowledge/proposalApplier.ts` (registered by `registerKnowledgeProposalAppliers`): `knowledge_kind`, `content_format`, `visibility`, `verification_status`, `reflection_status`, and `confidence` for items; `link_type`, `status`, and `confidence` for relations. `link_type` legality — vocabulary, endpoint types, and whether the write may be direct — is checked by `assertLinkTypeAllowed` against `modules/ontology/linkTypes.ts`, which every `object_relations` writer must call.
 
 ## Related Files
 - `server/src/modules/knowledge/` - API, service, schemas, read models, and proposal appliers
