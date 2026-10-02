@@ -86,9 +86,10 @@ Token accounting lives in the canonical usage ledger, attributed to the Run.
 ACP reports exact per-turn usage with cache reads and writes separated;
 those events carry `usage_accuracy = provider_reported` and the `local_cli`
 execution channel. A provider-bound CLI Run is accounted at the provider
-proxy instead and emits no second CLI event. Usage reconstructed from
-historical transcripts is `transcript_lower_bound` — a recovery path for
-import that cannot attribute to a Run — and anything else is `unknown`. The
+proxy instead and emits no second CLI event. Usage read from an
+ambient session import is recorded as `provider_reported` with the vendor's
+own counts (`cli.history_usage`, attributed to the imported session rather
+than a Run), and anything else is `unknown`. The
 Run read model aggregates ledger events; `runs` carries no token columns.
 
 Subscription quota is separate from token accounting and cached per
