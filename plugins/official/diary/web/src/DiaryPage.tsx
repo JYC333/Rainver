@@ -11,8 +11,12 @@ function formatDate(iso: string): string {
   })
 }
 
+// The person's own calendar day: a UTC date is yesterday or tomorrow for
+// hours of every day away from UTC, and the header shows the local date.
 function todayDate(): string {
-  return new Date().toISOString().slice(0, 10)
+  const now = new Date()
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
 }
 
 // ── Entry Editor ──────────────────────────────────────────────────────────────
@@ -209,15 +213,21 @@ function DiaryPage({ host }: { host: DiaryWebHost }) {
   const [entry, setEntry] = useState<DiaryEntry | null>(null)
   const [loadingEntry, setLoadingEntry] = useState(true)
 
-  const loadEntry = useCallback((date: string) => {
+  // Read by date for today too: the server's "today" is its UTC day. A read
+  // for a day no longer selected is dropped, or the editor would open on the
+  // wrong day's text and save it over the selected one.
+  useEffect(() => {
+    let current = true
     setLoadingEntry(true)
-    const p = date === todayDate()
-      ? api.today().then((r) => r.entry)
-      : api.onThisDay(date).then((r) => r.entries.find((e) => e.entry_date === date) ?? null)
-    p.then((e) => { setEntry(e); setLoadingEntry(false) }).catch(() => setLoadingEntry(false))
-  }, [api])
-
-  useEffect(() => { loadEntry(selectedDate) }, [selectedDate, loadEntry])
+    api.onThisDay(selectedDate)
+      .then((r) => {
+        if (!current) return
+        setEntry(r.entries.find((e) => e.entry_date === selectedDate) ?? null)
+        setLoadingEntry(false)
+      })
+      .catch(() => { if (current) setLoadingEntry(false) })
+    return () => { current = false }
+  }, [api, selectedDate])
 
   const handleSelect = (date: string) => { setSelectedDate(date); setEntry(null) }
 

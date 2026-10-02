@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createDiaryPage } from '../../../../plugins/official/diary/web/src/DiaryPage'
 import type { DiaryApi, DiaryEntry, DiaryWebHost } from '../../../../plugins/official/diary/web/src/host'
@@ -48,7 +48,25 @@ function localToday(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
 
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllEnvs()
+})
+
 describe('DiaryPage', () => {
+  it('shows the day that was picked even when an earlier read answers last', async () => {
+    const today = localToday()
+    const { api, release } = heldApi([entry(today, 'Written today'), entry('2025-03-04', 'Written in March')])
+    renderPage(api)
+    fireEvent.click(await screen.findByRole('button', { name: '2025-03-04' }))
+
+    await release(today)
+    await release(new Date().toISOString().slice(0, 10))
+    await release('2025-03-04')
+
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Written in March'))
+  })
+
   it('saves what was typed when the person moves to another day before the autosave fires', async () => {
     const today = localToday()
     const { api, release } = heldApi([entry('2025-03-04', 'Written in March')])
@@ -60,5 +78,17 @@ describe('DiaryPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '2025-03-04' }))
 
     await waitFor(() => expect(api.saveEntry).toHaveBeenCalledWith(today, 'Unsaved thought'))
+  })
+
+  it("opens the person's own calendar day, not the UTC one", async () => {
+    vi.stubEnv('TZ', 'Asia/Shanghai')
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-01T23:30:00Z'))
+    const { api } = heldApi([])
+    renderPage(api)
+
+    expect(await screen.findByRole('heading', { name: /October 2, 2026/ })).toBeInTheDocument()
+    expect(api.today).not.toHaveBeenCalled()
+    expect(api.onThisDay).toHaveBeenCalledWith('2026-10-02')
   })
 })
