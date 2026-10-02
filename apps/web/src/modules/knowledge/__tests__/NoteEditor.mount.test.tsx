@@ -243,4 +243,24 @@ describe('NoteEditor keeps one save and one note in flight', () => {
     await waitFor(() => expect(notesApi.update).toHaveBeenCalledTimes(2))
     expect(notesApi.update).toHaveBeenLastCalledWith('note-1', expect.objectContaining({ title: 'Second', expect_version: 2 }))
   })
+
+  it('keeps the note switched to when an earlier note read answers late', async () => {
+    let finishA: (note: Note) => void = () => {}
+    vi.mocked(notesApi.get).mockImplementation(id => id === 'note-a'
+      ? new Promise<Note>(resolve => { finishA = resolve })
+      : Promise.resolve(makeNote({ id, title: `Note ${id}` })))
+    const { rerender } = render(renderEditor('note-b'))
+    expect(await screen.findByDisplayValue('Note note-b')).toBeInTheDocument()
+
+    rerender(renderEditor('note-a'))
+    await waitFor(() => expect(notesApi.get).toHaveBeenCalledWith('note-a'))
+    rerender(renderEditor('note-b'))
+    expect(await screen.findByDisplayValue('Note note-b')).toBeInTheDocument()
+
+    finishA(makeNote({ id: 'note-a', title: 'Note note-a' }))
+    await waitFor(() => expect(notesApi.links).toHaveBeenCalledWith('note-b'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(screen.getByDisplayValue('Note note-b')).toBeInTheDocument()
+    expect(notesApi.links).not.toHaveBeenCalledWith('note-a')
+  })
 })

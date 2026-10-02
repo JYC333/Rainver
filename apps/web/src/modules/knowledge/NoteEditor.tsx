@@ -184,7 +184,8 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
 
   const loadShares = useCallback(async (id: string) => {
     try {
-      setShares(await notesApi.shares(id))
+      const rows = await notesApi.shares(id)
+      if (noteRef.current?.id === id) setShares(rows)
     } catch {
       // Advisory: a note still reads and edits fine without its share list.
     }
@@ -209,6 +210,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   const loadLinks = useCallback(async (id: string) => {
     try {
       const [out, back] = await Promise.all([notesApi.links(id), notesApi.backlinks(id)])
+      if (noteRef.current?.id !== id) return
       // links() returns every link touching the note; keep only the outgoing ones here.
       setLinks(out.filter(l => l.source_type === 'note' && l.source_id === id))
       setBacklinks(back)
@@ -335,7 +337,12 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
     if (JSON.stringify(freshDoc) !== currentJson) setEditorDocument(freshDoc)
   }, [onNoteResolved])
 
+  // Only the latest load applies: the editor stays mounted across a switch, and
+  // a slow read for the note left behind used to replace the one switched to.
+  const loadSeqRef = useRef(0)
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current
+    const isCurrent = () => seq === loadSeqRef.current
     if (!noteId || !activeSpaceId) {
       setNote(null)
       setLoading(false)
@@ -363,6 +370,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
     try {
       const n = await notesApi.get(noteId)
       noteCacheRef.current.set(n.id, n)
+      if (!isCurrent()) return
       seedFromNote(n)
       onNoteResolved(n)
       // Links aren't on the critical path (they live behind a footer panel), so
@@ -370,11 +378,12 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
       void loadLinks(n.id)
       void loadShares(n.id)
     } catch (e) {
+      if (!isCurrent()) return
       if (isNotFoundError(e)) setNotFound(true)
       else toast.error(errMsg(e))
       setNote(null)
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [noteId, activeSpaceId, loadLinks, loadShares, onNoteResolved, seedFromNote, revalidate])
 
