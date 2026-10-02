@@ -12,14 +12,14 @@ export type RetrievalToolPolicyAction =
   | "source.retrieval.search"
   | "source.retrieval.brief";
 
-export interface RetrievalToolPolicyActor {
+interface RetrievalToolPolicyActor {
   spaceId: string;
   instructedByUserId: string;
   agentId?: string | null;
   runId?: string | null;
 }
 
-export interface RetrievalToolPolicyInput {
+interface RetrievalToolPolicyInput {
   databaseUrl?: string | null;
   actor: RetrievalToolPolicyActor;
   action: RetrievalToolPolicyAction;
@@ -35,7 +35,7 @@ export interface RetrievalToolPolicyInput {
   egressPolicyDenied?: boolean;
 }
 
-export interface RetrievalToolPolicyDecision {
+interface RetrievalToolPolicyDecision {
   allowed: boolean;
   policy_decision_record_id: string | null;
   message?: string;

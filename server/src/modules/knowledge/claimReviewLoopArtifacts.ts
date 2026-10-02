@@ -12,9 +12,9 @@ import type { Queryable } from "../routeUtils/common.js";
  * text or hidden claim counts are persisted; the report carries only the
  * findings the access-safe scan already surfaced.
  */
-export const CLAIM_CONTRADICTION_REPORT_ARTIFACT_TYPE = "claim_contradiction_report";
+const CLAIM_CONTRADICTION_REPORT_ARTIFACT_TYPE = "claim_contradiction_report";
 
-export interface ClaimContradictionReportContext {
+interface ClaimContradictionReportContext {
   spaceId: string;
   ownerUserId: string;
   report: ClaimContradictionReport;

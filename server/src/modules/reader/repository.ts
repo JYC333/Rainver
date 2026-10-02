@@ -162,7 +162,7 @@ interface SourceSnapshotRow {
 
 // ── Reader document output ────────────────────────────────────────────────────
 
-export interface ReaderDocumentOut {
+interface ReaderDocumentOut {
   document_type: string;
   document_id: string;
   space_id: string;
@@ -595,7 +595,7 @@ function persistedVisibility(value: string): "private" | "space_shared" | "selec
   throw new Error(`Invalid persisted Reader visibility: ${value}`);
 }
 
-export interface ReaderAnnotationRow {
+interface ReaderAnnotationRow {
   id: string;
   space_id: string;
   project_id: string | null;
@@ -646,7 +646,7 @@ function annotationAccessLevelSql(alias: string, userExpr: string): string {
   return contentAccessLevelSql({ definition: READER_ANNOTATION_ACCESS, alias, userExpr });
 }
 
-export interface ReaderAnnotationOut {
+interface ReaderAnnotationOut {
   id: string;
   space_id: string;
   project_id: string | null;
@@ -1082,7 +1082,7 @@ export class PgAnnotationRepository {
 
 // ── Comment/Thread repository ─────────────────────────────────────────────────
 
-export interface ReaderCommentThreadRow {
+interface ReaderCommentThreadRow {
   id: string;
   space_id: string;
   annotation_id: string;
@@ -1092,7 +1092,7 @@ export interface ReaderCommentThreadRow {
   updated_at: unknown;
 }
 
-export interface ReaderCommentRow {
+interface ReaderCommentRow {
   id: string;
   space_id: string;
   thread_id: string;
@@ -1103,7 +1103,7 @@ export interface ReaderCommentRow {
   updated_at: unknown;
 }
 
-export interface ReaderCommentThreadOut {
+interface ReaderCommentThreadOut {
   id: string;
   space_id: string;
   annotation_id: string;
@@ -1114,7 +1114,7 @@ export interface ReaderCommentThreadOut {
   comments: ReaderCommentOut[];
 }
 
-export interface ReaderCommentOut {
+interface ReaderCommentOut {
   id: string;
   space_id: string;
   thread_id: string;
@@ -1351,7 +1351,7 @@ export class PgCommentRepository {
 
 // ── Reader action result types ─────────────────────────────────────────────────
 
-export interface ReaderEvidenceResult {
+interface ReaderEvidenceResult {
   id: string;
   title: string;
   status: string;
@@ -1361,7 +1361,7 @@ export interface ReaderEvidenceResult {
   source_object_id: string;
 }
 
-export interface ReaderProposalResult {
+interface ReaderProposalResult {
   id: string;
   proposal_type: string;
   status: string;

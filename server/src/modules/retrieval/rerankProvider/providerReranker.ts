@@ -13,12 +13,12 @@ import { resolveRetrievalRerankSystemPrompt } from "../promptRegistry.js";
 import { RETRIEVAL_RERANK_TASK } from "./config.js";
 import { buildRerankPrompt, parseRerankScores } from "./prompt.js";
 
-export type RerankSystemPromptResolver = (
+type RerankSystemPromptResolver = (
   spaceId: string,
   viewerUserId: string,
 ) => Promise<string | null>;
 
-export interface ProviderRerankerOptions {
+interface ProviderRerankerOptions {
   /** Caller's own provider; the task chain is tried first, this is the safety net. */
   providerId?: string | null;
   /** When set, a best-effort provider-egress audit row is written per rerank call. */

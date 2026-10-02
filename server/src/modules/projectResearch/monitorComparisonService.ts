@@ -13,7 +13,7 @@ import {
   resolveProjectResearchMonitorComparePrompt,
 } from "./promptRegistry.js";
 
-export const MONITOR_COMPARISON_OUTPUT_CONTRACT = {
+const MONITOR_COMPARISON_OUTPUT_CONTRACT = {
   type: "json_schema",
   schema_id: "project_research.monitor_compare.v1",
   strict: true,
@@ -66,7 +66,7 @@ export const COMPARISON_BATCH_SIZE = 6;
  * title-string binding fail in silence — the comparison ran with an empty
  * current understanding and every item looked like a new direction.
  */
-export type MonitorComparisonQueueResult =
+type MonitorComparisonQueueResult =
   | { readonly outcome: "queued"; readonly runId: string; readonly jobId: string; readonly sourceItemIds: string[] }
   | { readonly outcome: "no_eligible_material" }
   | { readonly outcome: "no_baseline"; readonly role: NoteProjectRole };

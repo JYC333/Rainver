@@ -29,10 +29,10 @@ import {
  * context limit, where the model starts dropping entries from the tail
  * silently.
  */
-export const ANNOTATION_BATCH_SIZE = 10;
+const ANNOTATION_BATCH_SIZE = 10;
 
 /** Attempts before an item is parked as `failed` rather than retried forever. */
-export const ANNOTATION_MAX_ATTEMPTS = 3;
+const ANNOTATION_MAX_ATTEMPTS = 3;
 
 export interface AnnotationSweepResult {
   space_id: string;

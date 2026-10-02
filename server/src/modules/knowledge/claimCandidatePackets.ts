@@ -55,7 +55,7 @@ interface ClaimCandidateAction {
   } | null;
 }
 
-export interface ClaimCandidatePacketCreateResult {
+interface ClaimCandidatePacketCreateResult {
   artifactId: string;
   proposalId: string;
   candidateCount: number;

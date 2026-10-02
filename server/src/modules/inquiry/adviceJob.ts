@@ -9,7 +9,7 @@ import { pinnedResearchThreadId } from "../projectResearch/workflowOntology.js";
 import { InquiryAdviceService, type AdviceTriggerKind } from "./adviceService.js";
 import { completeBackgroundStep } from "./stepService.js";
 
-export const INQUIRY_ADVICE_JOB_TYPE = "inquiry_next_step_advice";
+const INQUIRY_ADVICE_JOB_TYPE = "inquiry_next_step_advice";
 
 /**
  * Automatic advice is queued, never generated inline: the commands that

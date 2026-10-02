@@ -12,7 +12,7 @@ import { hasProjectScreeningCriteria, loadProjectScreeningCriteria } from "../sc
 import { ProjectResearchDiscoveryBridge } from "./researchDiscoveryBridge.js";
 import type { ResearchThreadScopeRef } from "../threadScope.js";
 
-export interface InitialIntakeRuleInput {
+interface InitialIntakeRuleInput {
   researchQuestion: string;
   threadScope: ResearchThreadScopeRef[];
   agentId: string;
@@ -20,7 +20,7 @@ export interface InitialIntakeRuleInput {
   researchScope: ResearchScopeContext;
 }
 
-export interface InitialIntakeProvisionInput extends InitialIntakeRuleInput {
+interface InitialIntakeProvisionInput extends InitialIntakeRuleInput {
   historyMode: "bounded_range" | "all_available";
   from: string | null;
   to: string | null;
@@ -29,7 +29,7 @@ export interface InitialIntakeProvisionInput extends InitialIntakeRuleInput {
   idempotencyKey: string;
 }
 
-export interface InitialIntakeProvisionResult {
+interface InitialIntakeProvisionResult {
   channels: Record<string, unknown>[];
   bindings: Record<string, unknown>[];
   rules: Record<string, unknown>[];

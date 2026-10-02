@@ -38,7 +38,7 @@ function readableSpaceObjectClause(alias: string, userParam: string): string {
   return contentReadSql("space_object", alias, userParam);
 }
 
-export interface ClaimTrajectoryInput {
+interface ClaimTrajectoryInput {
   spaceId: string;
   userId: string;
   subjectObjectId?: string | null;
@@ -104,7 +104,7 @@ export async function buildClaimTrajectory(
   };
 }
 
-export interface ClaimContradictionScanInput {
+interface ClaimContradictionScanInput {
   spaceId: string;
   userId: string;
   subjectObjectId?: string | null;

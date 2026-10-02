@@ -8,7 +8,7 @@ export interface ResearchArtifactValidationFailure {
   message: string;
   diagnostics: Record<string, unknown>;
 }
-export type ResearchArtifactValidationResult =
+type ResearchArtifactValidationResult =
   | { ok: true; report: Record<string, unknown>; archive: ResearchArtifactRecord }
   | { ok: false; failure: ResearchArtifactValidationFailure };
 

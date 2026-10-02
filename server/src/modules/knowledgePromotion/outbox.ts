@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 
-export type DomainChangeSourceKind = "note" | "inquiry_thread" | "experiment_interpretation";
-export type DomainChangeSignificance = "trivial" | "material";
+type DomainChangeSourceKind = "note" | "inquiry_thread" | "experiment_interpretation";
+type DomainChangeSignificance = "trivial" | "material";
 
 /**
  * A Knowledge Candidate's stored, pinned reference — chosen at promotion
@@ -18,7 +18,7 @@ export type PinnedSourceRef =
   | { kind: "experiment_interpretation"; interpretation_id: string; content_hash: string; definition_id: string; run_ids: string[]; repro_lock_hash: string | null };
 
 /** The revision a `domain_change_outbox` row reports — no anchors: it describes the new revision, not any one Candidate's pin into it. */
-export type SourceRevisionRef =
+type SourceRevisionRef =
   | { kind: "note_revision"; note_id: string; revision_id: string; version: number; content_hash: string }
   | { kind: "inquiry_thread_revision"; thread_id: string; revision_id: string; version: number; content_hash: string };
 

@@ -25,7 +25,7 @@ import {
   sourcePolicyAllowsRead,
 } from "../retrieval/sourcePolicy.js";
 
-export interface ContextOpsSummaryInput {
+interface ContextOpsSummaryInput {
   spaceId: string;
   userId: string;
   windowDays: number;
@@ -34,7 +34,7 @@ export interface ContextOpsSummaryInput {
   now?: Date;
 }
 
-export interface ContextOpsDrilldownInput {
+interface ContextOpsDrilldownInput {
   spaceId: string;
   userId: string;
   section: ContextOpsDrilldownSection;

@@ -10,7 +10,7 @@ import {
 
 export const RETRIEVAL_DIAGNOSTICS_PACKET_PROPOSAL_TYPE = "retrieval_diagnostics_packet";
 
-export interface RetrievalDiagnosticsPacketContext {
+interface RetrievalDiagnosticsPacketContext {
   spaceId: string;
   ownerUserId: string;
   artifactId: string;

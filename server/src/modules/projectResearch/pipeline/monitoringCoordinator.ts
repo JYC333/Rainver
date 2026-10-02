@@ -38,7 +38,7 @@ interface ScanCounts {
   excluded: number;
 }
 
-export interface ResearchScanSummaryInput {
+interface ResearchScanSummaryInput {
   spaceId: string;
   projectId: string;
   workflowId: string;
@@ -54,7 +54,7 @@ export interface ResearchScanSummaryInput {
   onConflict?: "ignore" | "refresh_scan_time";
 }
 
-export interface ProjectResearchMonitoringPorts {
+interface ProjectResearchMonitoringPorts {
   projectWriterActor(spaceId: string, projectId: string): Promise<string | null>;
   screeningProgressFor(
     spaceId: string,
@@ -93,13 +93,13 @@ export interface ProjectResearchMonitoringPorts {
   ): Promise<void>;
 }
 
-export interface MonitoringOperationRow extends MonitoringOperation {
+interface MonitoringOperationRow extends MonitoringOperation {
   status: string;
   progress_json: unknown;
   created_at?: string;
 }
 
-export interface SourceScanCompletedInput {
+interface SourceScanCompletedInput {
   spaceId: string;
   sourceChannelId: string | null;
   scanJobId: string;

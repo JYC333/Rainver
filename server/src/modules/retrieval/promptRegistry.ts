@@ -1,9 +1,9 @@
 import type { Queryable } from "../routeUtils/common.js";
 import { resolvePrompt } from "../prompts/resolver.js";
 
-export const RETRIEVAL_QUERY_REWRITE_PROMPT_KEY = "retrieval.query_rewrite";
-export const RETRIEVAL_RERANK_PROMPT_KEY = "retrieval.rerank";
-export const RETRIEVAL_SYNTHESIS_PROMPT_KEY = "retrieval.synthesis";
+const RETRIEVAL_QUERY_REWRITE_PROMPT_KEY = "retrieval.query_rewrite";
+const RETRIEVAL_RERANK_PROMPT_KEY = "retrieval.rerank";
+const RETRIEVAL_SYNTHESIS_PROMPT_KEY = "retrieval.synthesis";
 
 export interface ResolvedQueryRewritePrompt {
   system: string;

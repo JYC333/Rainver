@@ -24,7 +24,7 @@ import { hasDeclaration } from "./linkTypes.js";
  * seams were originally cast through `as never`, which would have accepted a
  * transposed argument or a changed return silently.
  */
-export interface OntologyProposalInput {
+interface OntologyProposalInput {
   proposalType: string;
   title: string;
   payload: Record<string, unknown>;
@@ -41,7 +41,7 @@ function normalizedContentVisibility(value: string): "private" | "space_shared" 
 }
 
 /** The only fields this module reads off an endpoint object. */
-export interface OntologyObjectRef {
+interface OntologyObjectRef {
   object_type: string;
   title: string | null;
   project_folder_id: string | null;
@@ -49,7 +49,7 @@ export interface OntologyObjectRef {
   visibility: string;
 }
 
-export interface OntologyRepositorySeams {
+interface OntologyRepositorySeams {
   insertProposal: (identity: SpaceUserIdentity, input: OntologyProposalInput) => Promise<Record<string, unknown>>;
   /** Existence and visibility only — the row's shape belongs to its own module. */
   getVisibleClaimRow: (identity: SpaceUserIdentity, claimId: string) => Promise<object | null>;
@@ -77,7 +77,7 @@ function relationProposalVisibility(
   return targetReachesSourceAudience ? normalizedContentVisibility(from.visibility) : "private";
 }
 
-export const OBJECT_PROFILE_COLUMNS = `
+const OBJECT_PROFILE_COLUMNS = `
   id, space_id, key, label, description, base_object_type, status, version,
   field_schema_json, extraction_policy_json, retrieval_policy_json, ui_config_json,
   created_by_user_id, created_from_proposal_id, updated_from_proposal_id,

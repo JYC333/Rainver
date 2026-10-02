@@ -5,7 +5,7 @@ import { insertArtifactRow } from "../../artifacts/reviewArtifactWriter.js";
 
 export const RETRIEVAL_EXPLAIN_REPORT_ARTIFACT_TYPE = "retrieval_explain_report";
 
-export interface RetrievalExplainReportArtifactContext {
+interface RetrievalExplainReportArtifactContext {
   spaceId: string;
   ownerUserId: string;
   query: string;

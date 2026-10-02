@@ -38,7 +38,7 @@ export interface CreateResearchQueryAttemptInput {
   compiledQuery: ResearchCompiledQuery;
 }
 
-export interface CompleteResearchQueryAttemptInput {
+interface CompleteResearchQueryAttemptInput {
   observation?: ResearchPreviewObservation;
   score?: number;
   decision?: ResearchQueryDecision;

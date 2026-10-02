@@ -9,7 +9,7 @@ import {
   type ResearchStepOverride,
 } from "../operationProjection.js";
 
-export interface ResearchOperationProjection {
+interface ResearchOperationProjection {
   id: string;
   space_id: string;
   project_id: string;

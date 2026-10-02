@@ -67,7 +67,7 @@ export function addedBlockIds(previous: unknown, next: unknown): string[] {
   return blockIds(next).filter((id): id is string => id !== null && !before.has(id));
 }
 
-export interface NoteBlock {
+interface NoteBlock {
   id: string | null;
   type: string;
   text: string;

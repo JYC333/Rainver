@@ -43,7 +43,7 @@ export interface SpaceRetrievalSettingsOut {
   updated_at: string;
 }
 
-export interface ResolvedSpaceRetrievalSettings {
+interface ResolvedSpaceRetrievalSettings {
   defaultSearchMode: RetrievalSearchMode;
   rerankEnabled: boolean;
   queryRewriteEnabled: boolean;
@@ -59,7 +59,7 @@ export interface ResolvedSpaceRetrievalSettings {
   rankingConfig: RetrievalRuntimeRankingConfig;
 }
 
-export interface ResolvedRetrievalSearchControls {
+interface ResolvedRetrievalSearchControls {
   mode: RetrievalSearchMode;
   rewrite: boolean;
   useCache: boolean;
@@ -69,7 +69,7 @@ export interface ResolvedRetrievalSearchControls {
   rankingConfig: RetrievalRuntimeRankingConfig;
 }
 
-export interface RetrievalControlRequest {
+interface RetrievalControlRequest {
   mode?: RetrievalSearchMode;
   rewrite?: boolean;
   use_cache?: boolean;
@@ -78,7 +78,7 @@ export interface RetrievalControlRequest {
   max_results?: number;
 }
 
-export const SPACE_RETRIEVAL_SETTINGS_KEY = SETTINGS_KEYS.retrievalSpace;
+const SPACE_RETRIEVAL_SETTINGS_KEY = SETTINGS_KEYS.retrievalSpace;
 
 const RETRIEVAL_SEARCH_MODES: readonly RetrievalSearchMode[] = ["exact", "lexical", "hybrid", "hybrid_rerank"];
 const RETRIEVAL_TOOL_MODES: readonly RetrievalToolMode[] = [
@@ -104,7 +104,7 @@ const ALL_RETRIEVAL_MECHANICS: readonly RetrievalCalibrationMechanic[] = [
 
 type RuntimeMechanicConfig = RetrievalRuntimeRankingConfig["mechanics"][RetrievalCalibrationMechanic];
 
-export const DEFAULT_RETRIEVAL_RANKING_CONFIG: RetrievalRuntimeRankingConfig = {
+const DEFAULT_RETRIEVAL_RANKING_CONFIG: RetrievalRuntimeRankingConfig = {
   version: 1,
   eval_gate: {
     min_primary_metric_delta: 0,
@@ -119,7 +119,7 @@ export const DEFAULT_RETRIEVAL_RANKING_CONFIG: RetrievalRuntimeRankingConfig = {
   },
 };
 
-export const DEFAULT_SPACE_RETRIEVAL_SETTINGS: ResolvedSpaceRetrievalSettings = {
+const DEFAULT_SPACE_RETRIEVAL_SETTINGS: ResolvedSpaceRetrievalSettings = {
   defaultSearchMode: "hybrid",
   rerankEnabled: false,
   queryRewriteEnabled: false,
@@ -343,7 +343,7 @@ function outFromRead(
   };
 }
 
-export function normalizeRuntimeRankingConfig(value: unknown): RetrievalRuntimeRankingConfig {
+function normalizeRuntimeRankingConfig(value: unknown): RetrievalRuntimeRankingConfig {
   const root = record(value);
   const gate = record(root.eval_gate);
   const mechanics = record(root.mechanics);
@@ -364,7 +364,7 @@ export function normalizeRuntimeRankingConfig(value: unknown): RetrievalRuntimeR
   return normalized;
 }
 
-export function isRetrievalMechanicShipped(
+function isRetrievalMechanicShipped(
   config: RetrievalRuntimeRankingConfig,
   mechanic: ShippableRetrievalMechanic,
 ): boolean {
@@ -556,7 +556,7 @@ function isoOrNull(value: unknown): string | null {
   return null;
 }
 
-export class SpaceRetrievalSettingsError extends Error {
+class SpaceRetrievalSettingsError extends Error {
   constructor(message: string, readonly statusCode = 422) {
     super(message);
     this.name = "SpaceRetrievalSettingsError";

@@ -10,7 +10,7 @@ import { compileSemanticScholarSemanticQuery } from "./providers/semanticScholar
 import { compileWebSearchSemanticQuery } from "./providers/webSearch.js";
 import { HttpError } from "../../routeUtils/common.js";
 
-export interface ResearchProviderCompileOptions {
+interface ResearchProviderCompileOptions {
   pageSize?: number;
 }
 

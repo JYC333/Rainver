@@ -17,7 +17,7 @@ import type {
 } from "@rainver/protocol";
 import type { PolicyCheckRequest } from "@rainver/protocol";
 
-export interface QueryResult<Row> {
+interface QueryResult<Row> {
   rows: Row[];
   rowCount: number | null;
 }
@@ -38,7 +38,7 @@ export interface Queryable {
  * would be a false record of a person's action — the same falsehood
  * `approved_by = null` exists to avoid on the direct path.
  */
-export interface AgentProposalOrigin {
+interface AgentProposalOrigin {
   agentId: string;
   runId: string;
   rationale: string;

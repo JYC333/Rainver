@@ -8,7 +8,7 @@ export type SerendipityFeedback = "interesting" | "neutral" | "never";
 export const INTERESTING_COOLDOWN_DAYS = DEFAULT_INTEREST_PROFILE_SETTINGS.interesting_cooldown_days;
 export const NEUTRAL_COOLDOWN_DAYS = DEFAULT_INTEREST_PROFILE_SETTINGS.neutral_cooldown_days;
 
-export interface SerendipityFeedbackResult {
+interface SerendipityFeedbackResult {
   digest_item_id: string;
   domain_key: string;
   feedback: SerendipityFeedback;

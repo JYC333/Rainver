@@ -24,7 +24,7 @@ import { contentReadSql } from "../access/contentAccessSql.js";
  * `fromCollectionId` is what identifies the row being moved. Rows that only
  * shift position within their folder repeat their own folder there.
  */
-export interface NotesTreeReorderNotePlan {
+interface NotesTreeReorderNotePlan {
   kind: "notes";
   updates: Array<{
     noteId: string;
@@ -34,7 +34,7 @@ export interface NotesTreeReorderNotePlan {
   }>;
 }
 
-export type NotesTreeReorderPlan =
+type NotesTreeReorderPlan =
   | NotesTreeReorderNotePlan
   | {
       kind: "collections";

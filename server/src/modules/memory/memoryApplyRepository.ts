@@ -113,7 +113,7 @@ const GRANT_DERIVED_MARKERS = [
 /** The active entry a direct revision replaces, plus who wrote it. */
 export type DirectWriteTarget = AppliedMemoryRow & { created_by: string };
 
-export interface DirectWriteInput {
+interface DirectWriteInput {
   spaceId: string;
   actingUserId: string;
   agentId: string;
@@ -175,7 +175,7 @@ export const PERSONA_MEMORY_TYPE = "persona";
  * proposal; `apply` is the one case ADR 0003 §5 lets through — the Agent
  * owner's own unattended work.
  */
-export type PersonaDecision = "apply" | "proposal_in_turn" | "proposal_owner";
+type PersonaDecision = "apply" | "proposal_in_turn" | "proposal_owner";
 
 export function decidePersonaWrite(context: AgentWriteContext): PersonaDecision {
   // Whoever is responsible for this Run is not the person whose Agent this is,
@@ -213,7 +213,7 @@ export interface ApplyProposal {
   required_approver_role?: string | null;
 }
 
-export interface MemoryAcceptResult {
+interface MemoryAcceptResult {
   memoryId: string;
   supersededMemoryId: string | null;
   payloadJson: Record<string, unknown>;
@@ -245,7 +245,7 @@ export interface AppliedMemoryRow {
   origin_room_id: string | null;
 }
 
-export interface MemoryApplyResult {
+interface MemoryApplyResult {
   memory: AppliedMemoryRow;
   supersededMemoryId: string | null;
 }

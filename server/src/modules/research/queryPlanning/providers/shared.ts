@@ -32,7 +32,7 @@ export function boundedPageSize(value: number | undefined, maximum: number): num
   return Math.min(maximum, Math.max(1, Number.isInteger(value) ? Number(value) : Math.min(20, maximum)));
 }
 
-export function normalizeTerm(value: string): string {
+function normalizeTerm(value: string): string {
   return value.normalize("NFKC").replace(/\s+/g, " ").trim();
 }
 

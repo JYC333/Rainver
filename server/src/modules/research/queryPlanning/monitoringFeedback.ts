@@ -8,7 +8,7 @@ export interface ResearchQueryPerformanceObservation {
   observedAt: string;
 }
 
-export interface ResearchMonitoringFeedbackPolicy {
+interface ResearchMonitoringFeedbackPolicy {
   minimumObservations: number;
   rollingWindow: number;
   cooldownMs: number;
@@ -21,7 +21,7 @@ export interface ResearchMonitoringFeedbackPolicy {
   maximumQueueLatencyMs: number;
 }
 
-export interface ResearchMonitoringFeedbackDecision {
+interface ResearchMonitoringFeedbackDecision {
   direction: "broaden" | "narrow" | null;
   reason: string;
   metrics: {

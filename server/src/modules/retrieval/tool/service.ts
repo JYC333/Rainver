@@ -34,7 +34,7 @@ import type { RetrievalSearchService } from "../index.js";
  * in `runs/managedRetrievalTools.ts`: opted-in runs expose `retrieval.search`
  * / `retrieval.brief` through a bounded tool loop and preflight modes.
  */
-export interface RetrievalToolActor {
+interface RetrievalToolActor {
   spaceId: string;
   /** The run's instructing user — the viewer for ALL access control. */
   instructedByUserId: string;
@@ -44,7 +44,7 @@ export interface RetrievalToolActor {
   runId?: string | null;
 }
 
-export interface RetrievalToolSearchParams {
+interface RetrievalToolSearchParams {
   query: string;
   objectTypes?: RetrievalObjectType[];
   objectProfiles?: string[];

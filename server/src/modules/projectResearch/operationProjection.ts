@@ -47,7 +47,7 @@ const RESEARCH_STAGES: readonly ResearchStage[] = [
   "failed",
 ];
 
-export type ResearchOperationStatus = "draft" | "active" | "waiting_review" | "completed" | "failed" | "cancelled";
+type ResearchOperationStatus = "draft" | "active" | "waiting_review" | "completed" | "failed" | "cancelled";
 
 export type ResearchStepStatus = "pending" | "active" | "blocked" | "done" | "skipped";
 
@@ -276,7 +276,7 @@ export interface ResearchOperationRow {
   created_at?: string;
 }
 
-export interface ResearchMutationSpec {
+interface ResearchMutationSpec {
   /** Stages the operation must currently be in for the projection mutation to apply. */
   from: readonly ResearchStage[];
   to: ResearchStage;

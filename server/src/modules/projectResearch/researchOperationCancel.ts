@@ -9,7 +9,7 @@ export const RESEARCH_OPERATION_CANCEL_JOB = "research_operation_cancel";
  * the SQL below is built from it — because a status missed in one copy would
  * let cancel flip a finished Operation back to `cancelled` and enqueue a kill
  * for Runs that legitimately produced its result. */
-export const RESEARCH_OPERATION_TERMINAL_STATUSES = ["completed", "failed", "cancelled"] as const;
+const RESEARCH_OPERATION_TERMINAL_STATUSES = ["completed", "failed", "cancelled"] as const;
 
 const TERMINAL_SQL_LIST = RESEARCH_OPERATION_TERMINAL_STATUSES.map((status) => `'${status}'`).join(",");
 

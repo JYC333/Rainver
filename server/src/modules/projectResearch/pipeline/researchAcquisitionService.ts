@@ -3,7 +3,7 @@ import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js"
 import { PgJobQueueRepository } from "../../jobs/repository.js";
 import { RESEARCH_PIPELINE_START_JOB } from "./researchAcquisitionPipelineJob.js";
 
-export interface StartResearchAcquisitionInput {
+interface StartResearchAcquisitionInput {
   threadId: string;
   intentNote?: string | null;
   originRoomId: string | null;
@@ -20,7 +20,7 @@ export interface StartResearchAcquisitionInput {
   since?: string | null;
 }
 
-export type StartResearchAcquisitionResult =
+type StartResearchAcquisitionResult =
   | { status: "queued"; thread_id: string }
   | { status: "already_starting"; thread_id: string };
 

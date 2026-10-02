@@ -23,7 +23,7 @@ import {
   type StoredResearchQueryStrategy,
 } from "./repository.js";
 
-export interface AdaptiveResearchQueryInput {
+interface AdaptiveResearchQueryInput {
   projectId: string;
   researchContextVersionId: string;
   providers: ResearchProviderKey[];
@@ -33,7 +33,7 @@ export interface AdaptiveResearchQueryInput {
   operationId?: string | null;
 }
 
-export interface AdaptiveResearchQueryVersionInput {
+interface AdaptiveResearchQueryVersionInput {
   projectId: string;
   sourceStrategyId: string;
   direction: "broaden" | "narrow";
@@ -41,7 +41,7 @@ export interface AdaptiveResearchQueryVersionInput {
   credentials?: Partial<Record<ResearchProviderKey, string>>;
 }
 
-export interface AdaptiveResearchQueryProviderRetryInput {
+interface AdaptiveResearchQueryProviderRetryInput {
   projectId: string;
   strategyId: string;
   providerKey: ResearchProviderKey;

@@ -16,7 +16,7 @@ import {
 import { resolveNotebookNote } from "./notebookNotes.js";
 
 export const STANDING_COMPARISON_DAILY_RUN_LIMIT = 20;
-export const STANDING_COMPARISON_WINDOW_MINUTES = 15;
+const STANDING_COMPARISON_WINDOW_MINUTES = 15;
 export const STANDING_COMPARISON_JOB_TYPE = "project_research_standing_dispatch";
 export const STANDING_COMPARISON_RECONCILE_JOB_TYPE = "project_research_standing_reconcile";
 

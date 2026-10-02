@@ -471,7 +471,7 @@ export async function addNotePlacement(
  * placement with the share confirmed. A code because matching on prose is how
  * error handling rots.
  */
-export const NOTE_CROSS_PROJECT_SHARE_REQUIRED = "note_cross_project_share_required";
+const NOTE_CROSS_PROJECT_SHARE_REQUIRED = "note_cross_project_share_required";
 
 export async function bindNoteToPlacementProject(
   db: Queryable,
@@ -628,7 +628,7 @@ async function insertNotePlacement(
  * that Project's research baseline, so a user actor has to be able to write
  * to it.
  */
-export async function assignNoteProjectRole(db: Queryable, input: NoteProjectRoleInput): Promise<void> {
+async function assignNoteProjectRole(db: Queryable, input: NoteProjectRoleInput): Promise<void> {
   const at = input.at ?? new Date().toISOString();
   const role = input.role === null || input.role === undefined || input.role === "" ? null : input.role;
   if (role === null) {

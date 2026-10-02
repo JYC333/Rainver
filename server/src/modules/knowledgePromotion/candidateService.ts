@@ -18,7 +18,7 @@ import type { PinnedSourceRef } from "./outbox.js";
 const CANDIDATE_KINDS = new Set(["concept", "lesson", "procedure", "decision", "summary"]);
 const DECISIONS = new Set(["promote", "dismiss", "defer"]);
 
-export interface CandidateProposalActor {
+interface CandidateProposalActor {
   agentId?: string | null;
   runId?: string | null;
   idempotencyKey?: string | null;

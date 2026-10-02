@@ -9,7 +9,7 @@ interface MaterializedChannelRow {
   source_channel_id: string;
 }
 
-export interface MaterializedResearchDiscovery {
+interface MaterializedResearchDiscovery {
   question: string;
   sourceChannelIds: string[];
   scope: ResearchScopeContext;

@@ -35,7 +35,7 @@ export interface ClusterEdgeSummaryRow {
   weight: number;
 }
 
-export interface PagedRows<T> {
+interface PagedRows<T> {
   rows: T[];
   total: number;
   truncated?: boolean;

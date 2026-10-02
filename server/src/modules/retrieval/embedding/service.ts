@@ -28,7 +28,7 @@ export interface RetrievalEmbedder {
   ): Promise<{ vectors: number[][]; model: string }>;
 }
 
-export interface BackfillResult {
+interface BackfillResult {
   scanned: number;
   embedded: number;
   skipped: number;
@@ -45,7 +45,7 @@ export interface RetrievalEmbeddingAuditEvent {
   skipped: number;
 }
 
-export type RetrievalEmbeddingAudit = (event: RetrievalEmbeddingAuditEvent) => Promise<void>;
+type RetrievalEmbeddingAudit = (event: RetrievalEmbeddingAuditEvent) => Promise<void>;
 
 /**
  * Async embedding backfill over `retrieval_chunks`. Selects chunks with no

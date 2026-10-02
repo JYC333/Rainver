@@ -364,10 +364,3 @@ function record(value: unknown): Record<string, unknown> {
 function asIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
-
-export class MemoryMaintenanceJobError extends Error {
-  constructor(message: string, readonly statusCode = 400) {
-    super(message);
-    this.name = "MemoryMaintenanceJobError";
-  }
-}

@@ -20,7 +20,7 @@ import { assertProjectWriter } from "../projects/access.js";
  * exposed — so the actor must be able to write to both.
  */
 
-export interface SpaceObjectProjectShareRow {
+interface SpaceObjectProjectShareRow {
   project_id: string;
   shared_by_user_id: string;
   created_at: string;

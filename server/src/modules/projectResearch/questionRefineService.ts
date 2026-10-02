@@ -47,7 +47,7 @@ export interface QuestionRefinementResult {
   clarifying_questions: QuestionRefinementClarifyingQuestion[];
 }
 
-export interface QuestionAssessmentConfirmation {
+interface QuestionAssessmentConfirmation {
   id: string;
   version: number;
   question: string;

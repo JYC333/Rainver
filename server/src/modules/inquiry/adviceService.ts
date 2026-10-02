@@ -30,7 +30,7 @@ export const ADVICE_TRIGGER_KINDS = [
 ] as const;
 export type AdviceTriggerKind = (typeof ADVICE_TRIGGER_KINDS)[number];
 
-export const INQUIRY_ADVICE_OUTPUT_CONTRACT = {
+const INQUIRY_ADVICE_OUTPUT_CONTRACT = {
   type: "json_schema" as const,
   // v2: the enum this pins lost `pause` and `wait_for_monitoring` when Next
   // Focus became a Step record, so the identifier had to move with it rather
@@ -50,7 +50,7 @@ export const INQUIRY_ADVICE_OUTPUT_CONTRACT = {
   },
 };
 
-export interface InquiryThreadAdvice {
+interface InquiryThreadAdvice {
   id: string;
   project_id: string;
   thread_id: string;
@@ -110,7 +110,7 @@ type InvokeAdvice = (input: {
   spend: CredentialSpendBasis;
 }) => Promise<Record<string, unknown>>;
 
-export interface AdviceGenerationOptions {
+interface AdviceGenerationOptions {
   /**
    * Runs in the same transaction as the final upsert. Automatic jobs use this
    * to lock and re-check their queue row after the provider call, so a domain

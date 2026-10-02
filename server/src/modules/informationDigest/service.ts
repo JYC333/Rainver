@@ -8,7 +8,7 @@ import { PgSerendipityRepository } from "./serendipityRepository.js";
 import { selectSerendipity } from "./serendipitySelection.js";
 
 export const DEFAULT_INTEREST_SLOTS = 6;
-export const DEFAULT_PROJECT_SLOTS = 8;
+const DEFAULT_PROJECT_SLOTS = 8;
 export const DEFAULT_SERENDIPITY_SLOTS = 2;
 
 interface RankedCandidate {

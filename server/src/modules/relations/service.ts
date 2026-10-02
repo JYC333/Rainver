@@ -38,7 +38,7 @@ const ORG_TYPES = new Set([
 ]);
 const SOURCE_LINK_TYPES = new Set(["activity", "source_item", "evidence", "external"]);
 
-export interface PersonOut {
+interface PersonOut {
   object_id: string;
   title: string;
   summary: string | null;
@@ -49,7 +49,7 @@ export interface PersonOut {
   updated_at: string;
 }
 
-export interface OrganizationOut {
+interface OrganizationOut {
   object_id: string;
   title: string;
   summary: string | null;

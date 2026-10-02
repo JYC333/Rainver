@@ -16,7 +16,7 @@ import {
   sourcePolicyAllowsRead,
 } from "../retrieval/sourcePolicy.js";
 
-export const OBJECT_SCHEMA_SUGGESTION_REPORT_ARTIFACT_TYPE = "object_schema_suggestion_report";
+const OBJECT_SCHEMA_SUGGESTION_REPORT_ARTIFACT_TYPE = "object_schema_suggestion_report";
 
 interface RegistryKind {
   id: string;

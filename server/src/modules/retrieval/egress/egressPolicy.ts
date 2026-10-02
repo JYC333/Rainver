@@ -17,7 +17,7 @@
  */
 import { adapterProviderApi, adapterProviderRequirement } from "../../runs/adapterProviderRequirement.js";
 
-export interface RetrievalEgressRef {
+interface RetrievalEgressRef {
   object_type: string;
   object_id: string;
   source_connection_ids?: readonly string[];

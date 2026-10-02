@@ -22,7 +22,7 @@ export function normalizeThreadScope(value: unknown): ResearchThreadScopeRef[] {
   });
 }
 
-export interface ResearchThreadDriftResult {
+interface ResearchThreadDriftResult {
   /** True when the pinned ref no longer matches the Thread's live row (or the Thread is gone/inactive). */
   drifted: boolean;
   /** The Thread's current row, or null if it no longer exists/is no longer an active Question. */

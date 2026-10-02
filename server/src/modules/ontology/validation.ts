@@ -15,7 +15,7 @@ import { linkTypeDefinition } from "./linkTypes.js";
  */
 
 /** Endpoint-aware link type check, also enforcing the declared governance. */
-export interface LinkTypeCheck {
+interface LinkTypeCheck {
   linkType: string;
   fromObjectType?: string | null;
   toObjectType?: string | null;

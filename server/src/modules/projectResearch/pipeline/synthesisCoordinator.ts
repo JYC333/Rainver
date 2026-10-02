@@ -27,7 +27,7 @@ import { researchStage, researchState, advanceOperation as advanceResearchOperat
 import { deriveStepStates } from "../operationProjection.js";
 import { setResearchOperationState } from "./operationProjectionWriter.js";
 
-export const RESEARCH_SYNTHESIS_CAPABILITIES = [
+const RESEARCH_SYNTHESIS_CAPABILITIES = [
   "research.source_collect",
   "research.source_summarize",
   "research.evidence_extract",
@@ -35,7 +35,7 @@ export const RESEARCH_SYNTHESIS_CAPABILITIES = [
   "research.idea_generate",
 ];
 
-export interface SynthesisOperationRow {
+interface SynthesisOperationRow {
   id: string;
   space_id: string;
   project_id: string;
@@ -55,7 +55,7 @@ export interface QueueSynthesisInput {
   critiqueContext?: string;
 }
 
-export interface QueueSynthesisStageInput {
+interface QueueSynthesisStageInput {
   spaceId: string;
   userId: string;
   projectId: string;
@@ -63,7 +63,7 @@ export interface QueueSynthesisStageInput {
   workflowId: string;
 }
 
-export interface ProjectResearchSynthesisPorts {
+interface ProjectResearchSynthesisPorts {
   operation(spaceId: string, operationId: string): Promise<SynthesisOperationRow | null>;
   setWorkflowMonitoring(
     spaceId: string,

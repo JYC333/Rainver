@@ -81,7 +81,7 @@ function isDomainError(error: unknown): error is HttpError {
  * question refinement, strategy activation, initial intake, Room
  * continuation) runs against real Postgres in tests the same as in
  * production; only the LLM-planning + live-search stage needs a fake. */
-export interface ResearchAcquisitionPipelineTestDeps {
+interface ResearchAcquisitionPipelineTestDeps {
   adaptiveQueryDependencies?: ConstructorParameters<typeof AdaptiveQueryOrchestrator>[2];
 }
 

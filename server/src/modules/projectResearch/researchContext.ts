@@ -11,12 +11,12 @@ export interface ResearchScopeContext {
   nice_to_have: string[];
 }
 
-export interface ResearchRelevanceCriteria {
+interface ResearchRelevanceCriteria {
   include: string[];
   exclude: string[];
 }
 
-export interface ResearchRelevanceProfile {
+interface ResearchRelevanceProfile {
   enabled: true;
   objective: string;
   include_criteria: string[];

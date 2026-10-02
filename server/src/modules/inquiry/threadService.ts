@@ -39,9 +39,6 @@ export const NEXT_FOCUS_KINDS = [
 ] as const;
 export type NextFocusKind = (typeof NEXT_FOCUS_KINDS)[number];
 
-const ATTENTION_STATES = ["focused", "monitoring", "backlog", "blocked", "resolved", "rejected", "archived"] as const;
-type AttentionState = (typeof ATTENTION_STATES)[number];
-
 const THREAD_RELATION_KINDS = ["decomposes_into", "proposes", "depends_on", "supports", "contradicts", "supersedes", "related_to"] as const;
 
 interface ThreadRow {
@@ -700,4 +697,4 @@ export class InquiryThreadService {
   }
 }
 
-export { threadToOut, ATTENTION_STATES, type ThreadRow, type AttentionState };
+export { threadToOut, type ThreadRow };

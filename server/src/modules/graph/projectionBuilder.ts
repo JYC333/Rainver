@@ -16,9 +16,9 @@ import {
 } from "./projectionRepository.js";
 
 export type ServerGraphProjectionMode = Exclude<GraphProjectionViewMode, "debug">;
-export type GraphLensId = "academic_citation_v1";
+type GraphLensId = "academic_citation_v1";
 
-export interface BuildProjectionOptions {
+interface BuildProjectionOptions {
   mode: ServerGraphProjectionMode;
   rootId?: string;
   depth?: number;

@@ -182,7 +182,7 @@ export interface ProvenanceLinkRow {
   created_at: unknown;
 }
 
-export const KNOWLEDGE_ITEM_COLUMNS = `
+const KNOWLEDGE_ITEM_COLUMNS = `
   ki.object_id AS id, ki.space_id, so.primary_project_id AS project_id,
   so.project_folder_id, so.focus_area_id, ki.root_item_id, ki.supersedes_item_id,
   ki.redirect_to_item_id, ki.knowledge_kind, ki.slug, ki.aliases_json,
@@ -251,7 +251,7 @@ export const SOURCE_FROM = `
    AND so.object_type = 'source'
 `;
 
-export const NOTE_COLUMNS = `
+const NOTE_COLUMNS = `
   n.object_id AS id, n.space_id, so.title, n.content_json, n.content_format,
   n.content_schema_version, n.plain_text, so.summary AS excerpt, n.status,
   so.primary_project_id, so.focus_area_id, n.created_from_activity_id, so.created_by_user_id,

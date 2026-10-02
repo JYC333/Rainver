@@ -11,12 +11,12 @@ import { buildSynthesisPrompt, parseSynthesis, type SynthesisDoc } from "./promp
 
 const TASK_POLICY_REQUIRED_PROVIDER_ID = "__retrieval_synthesis_task_policy_required__";
 
-export type SynthesisSystemPromptResolver = (
+type SynthesisSystemPromptResolver = (
   spaceId: string,
   viewerUserId: string,
 ) => Promise<string | null>;
 
-export interface ProviderSynthesizerOptions {
+interface ProviderSynthesizerOptions {
   /** Explicit fallback provider after the task chain. Omit to require the task policy. */
   providerId?: string | null;
   /** When set, a best-effort provider-egress audit row is written per synthesis call. */

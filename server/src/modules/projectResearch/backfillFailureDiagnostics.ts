@@ -8,13 +8,13 @@ export interface FailedBackfillRow {
   error_json: unknown;
 }
 
-export interface BackfillFailureSummary {
+interface BackfillFailureSummary {
   code: "source_history_backfill_failed";
   message: string;
   diagnostics: Record<string, unknown>;
 }
 
-export interface BackfillPlanProgress {
+interface BackfillPlanProgress {
   status: string;
   items_ingested: number | null;
   error_json: unknown;

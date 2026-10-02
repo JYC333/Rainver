@@ -13,7 +13,7 @@ import type { Queryable } from "./repository.js";
 export const MEMORY_MAINTENANCE_REPORT_ARTIFACT_TYPE = "memory_maintenance_report";
 export const MEMORY_MAINTENANCE_PACKET_PROPOSAL_TYPE = "memory_maintenance_packet";
 
-export interface MemoryMaintenanceReportContext {
+interface MemoryMaintenanceReportContext {
   spaceId: string;
   ownerUserId: string;
   report: MemoryMaintenanceReport;

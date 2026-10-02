@@ -21,7 +21,7 @@ import { ensureProjectNotesFolder } from "../knowledge/noteProjectFolders.js";
 import { NOTEBOOK_SECTION_KEYS, SECTION_LABELS, resolveNotebookNote, resolveNotebookNotes, type NotebookNoteRow, type SectionKey } from "./notebookNotes.js";
 import { isNoteProjectRole, type NoteProjectRole } from "../knowledge/noteProjectRoles.js";
 
-export { NOTEBOOK_SECTION_KEYS, SECTION_LABELS };
+export { SECTION_LABELS };
 
 /**
  * D6: ad-hoc analysis has its own small budget lane, independent of the

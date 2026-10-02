@@ -7,7 +7,7 @@ import { canonicalAcademicIdentity } from "./identity.js";
 
 const PAPER_TYPES = new Set(["article", "preprint", "conference_paper", "book_chapter", "thesis", "report", "other"]);
 
-export interface PaperOut {
+interface PaperOut {
   object_id: string;
   title: string;
   summary: string | null;

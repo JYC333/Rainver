@@ -9,7 +9,7 @@ import {
 
 export type { SpaceRole } from "../access/roles.js";
 
-export interface ContextOpsPacketReviewProposal {
+interface ContextOpsPacketReviewProposal {
   space_id: string;
   visibility?: string | null;
   created_by_user_id?: string | null;
@@ -63,7 +63,7 @@ export async function canInitiateContextOpsScan(
   return roleCanInitiateContextOpsScan(role, settings.contextOpsScanMode);
 }
 
-export async function readSpaceRole(
+async function readSpaceRole(
   db: Queryable,
   spaceId: string,
   userId: string,
@@ -101,7 +101,7 @@ export function roleCanInitiateContextOpsScan(
   return role === "reviewer" || role === "member";
 }
 
-export function isSpaceOpsPacket(proposal: ContextOpsPacketReviewProposal): boolean {
+function isSpaceOpsPacket(proposal: ContextOpsPacketReviewProposal): boolean {
   const payload = proposal.payload_json ?? {};
   return proposal.visibility === "space_shared" && payload.review_scope === "space_ops";
 }

@@ -20,7 +20,7 @@ import {
   PgDailyReportSettingsRepository,
 } from "./repository.js";
 
-export interface DailyReportResult {
+interface DailyReportResult {
   run_id: string | null;
   artifact_id: string | null;
   proposal_ids: string[];

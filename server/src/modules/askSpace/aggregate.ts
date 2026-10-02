@@ -6,7 +6,7 @@ import type {
   AskSpaceProvenanceItem,
 } from "@rainver/protocol";
 
-export const DEFAULT_DOMAINS: AskSpaceDomain[] = ["knowledge"];
+const DEFAULT_DOMAINS: AskSpaceDomain[] = ["knowledge"];
 
 /** Bound how many cited sources cross into the provenance list. */
 export const PROVENANCE_CAP = 60;
@@ -72,7 +72,7 @@ export function collectProvenance(sections: AskSpaceDomainSection[]): AskSpacePr
 }
 
 /** The Claim Candidate Packet route caps `source_artifact_ids` at 12. */
-export const FOLLOW_UP_ARTIFACT_CAP = 12;
+const FOLLOW_UP_ARTIFACT_CAP = 12;
 
 /**
  * Proposal-first next steps. Each reuses an existing route — Think never adds a

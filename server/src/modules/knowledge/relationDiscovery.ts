@@ -133,14 +133,14 @@ function readableClause(userParam: string, alias = "so"): string {
   return contentReadSql("space_object", alias, userParam);
 }
 
-export interface RelationDiscoveryScanInput {
+interface RelationDiscoveryScanInput {
   spaceId: string;
   userId: string;
   request: RelationDiscoveryScanRequest;
   llmExtractor?: RelationDiscoveryLlmExtractor | null;
 }
 
-export interface RelationDiscoveryScanResult {
+interface RelationDiscoveryScanResult {
   report: RelationDiscoveryReport;
 }
 

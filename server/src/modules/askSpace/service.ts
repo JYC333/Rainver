@@ -30,7 +30,7 @@ import { buildClaimTrajectory } from "../knowledge/claimReviewLoop.js";
 import { persistAskSpaceSessionArtifact } from "./sessionArtifact.js";
 import { aggregateGaps, buildFollowUps, collectProvenance, dedupeDomains } from "./aggregate.js";
 
-export interface AskSpaceInput {
+interface AskSpaceInput {
   spaceId: string;
   userId: string;
   query: string;
@@ -112,7 +112,7 @@ interface DomainBriefArgs {
  * failure, follow-up gating — can be unit-tested without a live retrieval index
  * or provider. Production wiring uses the defaults.
  */
-export interface AskSpaceDeps {
+interface AskSpaceDeps {
   runDomainBrief?: (args: DomainBriefArgs) => Promise<RetrievalBriefResponse>;
   runCombinedSynthesis?: (args: {
     spaceId: string;

@@ -22,9 +22,9 @@ import {
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 import { ContextOpsService } from "./service.js";
 
-export const CONTEXT_REVIEW_CYCLE_REPORT_ARTIFACT_TYPE = "context_review_cycle_report";
+const CONTEXT_REVIEW_CYCLE_REPORT_ARTIFACT_TYPE = "context_review_cycle_report";
 
-export interface ContextReviewCycleWarning {
+interface ContextReviewCycleWarning {
   stage: string;
   error_code: string;
   message: string;
@@ -35,7 +35,7 @@ interface OptionalPacketError {
   error_message: string;
 }
 
-export interface ContextReviewCycleResult {
+interface ContextReviewCycleResult {
   artifact_id: string;
   review_scope: "private" | "space_ops";
   retrieval_maintenance: {

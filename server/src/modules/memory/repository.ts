@@ -30,7 +30,7 @@ export interface Queryable {
   ): Promise<QueryResult<Row>>;
 }
 
-export interface MemoryListFilters {
+interface MemoryListFilters {
   scope?: string | null;
   namespace?: string | null;
   memoryType?: string | null;
@@ -54,7 +54,7 @@ export interface MemoryListFilters {
   offset: number;
 }
 
-export interface MemorySearchFilters {
+interface MemorySearchFilters {
   query: string;
   scope?: string | null;
   namespace?: string | null;

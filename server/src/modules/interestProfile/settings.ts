@@ -30,7 +30,7 @@ export const DEFAULT_INTEREST_PROFILE_SETTINGS: InterestProfileSettings = {
  * At most this many external requests per weekly probe: the
  * `information_digest_probe_runs.request_count` CHECK holds the same bound.
  */
-export const MAX_PROBE_DOMAIN_BUDGET = 3;
+const MAX_PROBE_DOMAIN_BUDGET = 3;
 
 const RANGES: Record<keyof InterestProfileSettings, readonly [number, number]> = {
   coverage_half_life_days: [1, 3_650],

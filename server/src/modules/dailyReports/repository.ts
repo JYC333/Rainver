@@ -44,7 +44,7 @@ interface DailyReportSettingsValue {
 }
 
 const VALID_SOURCE_TYPES = new Set(["user_capture"]);
-export const DAILY_CAPTURE_REPORT_SETTINGS_KEY = SETTINGS_KEYS.dailyCaptureReport;
+const DAILY_CAPTURE_REPORT_SETTINGS_KEY = SETTINGS_KEYS.dailyCaptureReport;
 const DAILY_REPORT_SCHEDULER_TASK_TYPE = "daily_capture_report";
 
 const DEFAULT_DAILY_REPORT_SETTINGS: DailyReportSettingsValue = {
@@ -556,7 +556,7 @@ export function assertValidLocalDate(localDate: string): void {
   }
 }
 
-export function computeInitialNextRunAt(
+function computeInitialNextRunAt(
   setting: Pick<DailyReportSettingRow, "enabled" | "local_time" | "timezone">,
   after: Date = new Date(),
 ): string | null {

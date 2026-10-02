@@ -70,7 +70,7 @@ export interface ContentAccessibleDeclaration {
   publishable: boolean;
 }
 
-export interface EntityDefinition {
+interface EntityDefinition {
   entityType: string;
   /** Inherit interface declarations from this entity when absent here. */
   rootEntity?: string;
@@ -116,7 +116,7 @@ export interface EntityDefinition {
 
 const registry = new Map<string, EntityDefinition>();
 
-export function registerEntity(definition: EntityDefinition): void {
+function registerEntity(definition: EntityDefinition): void {
   const existing = registry.get(definition.entityType);
   if (existing && existing.owner !== definition.owner) {
     throw new Error(`Entity ${definition.entityType} already registered by ${existing.owner}`);
@@ -227,7 +227,7 @@ export function cardSourceTypes(): readonly string[] {
  *
  * Exactly one, named here rather than left implicit so the list stays auditable.
  */
-export const PROVENANCE_SOURCE_SENTINELS: readonly string[] = ["external_source"];
+const PROVENANCE_SOURCE_SENTINELS: readonly string[] = ["external_source"];
 
 /** Stored `provenance_links.source_type` tokens: declarations plus sentinels. */
 export function provenanceSourceTypes(): readonly string[] {

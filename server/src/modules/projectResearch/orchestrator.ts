@@ -3108,7 +3108,7 @@ function initialState(input: ResearchInput, workflowId: string, fingerprint: str
   };
 }
 
-export function incrementalStateFromWorkflow(
+function incrementalStateFromWorkflow(
   workflowValue: unknown,
   workflowId: string,
   sourceItemIds: string[],

@@ -15,7 +15,7 @@ export interface SerendipityProbeProvider {
   search(identity: SpaceUserIdentity, domainLabel: string): Promise<ExternalDiscoverySample[]>;
 }
 
-export interface SerendipityProbeResult {
+interface SerendipityProbeResult {
   period_start: string;
   status: "succeeded" | "degraded" | "failed" | "skipped";
   domain_keys: string[];
@@ -133,7 +133,7 @@ export class BraveSerendipityProbeProvider implements SerendipityProbeProvider {
   }
 }
 
-export function weekStart(at: Date): string {
+function weekStart(at: Date): string {
   const date = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));
   const weekday = date.getUTCDay() || 7;
   date.setUTCDate(date.getUTCDate() - weekday + 1);

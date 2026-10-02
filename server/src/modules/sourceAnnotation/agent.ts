@@ -3,7 +3,7 @@ import { PgAgentRepository } from "../agents/repository.js";
 import { HttpError } from "../routeUtils/common.js";
 import { SOURCE_ANNOTATION_SCHEMA_ID } from "./resultParser.js";
 
-export const SOURCE_ANNOTATOR_AGENT_KIND = "system_source_annotator";
+const SOURCE_ANNOTATOR_AGENT_KIND = "system_source_annotator";
 
 /**
  * The system-managed agent the annotation pass runs as.
@@ -49,7 +49,7 @@ export async function ensureSourceAnnotatorAgent(pool: Pool, spaceId: string): P
   return { id: created.id };
 }
 
-export async function refreshSourceAnnotatorAgentPrompt(
+async function refreshSourceAnnotatorAgentPrompt(
   pool: Pool,
   spaceId: string,
   agentId: string,
