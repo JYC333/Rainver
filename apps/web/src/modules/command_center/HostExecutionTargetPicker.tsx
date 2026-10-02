@@ -69,7 +69,7 @@ export default function HostExecutionTargetPicker({
   const [loading, setLoading] = useState(Boolean(projectId))
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState<string | null>(null)
-  const [login, setLogin] = useState<{ hostId: string; runtimeKey: string; installation: string } | null>(null)
+  const [login, setLogin] = useState<{ hostId: string; runtimeKey: string; installation: string; attempt: number } | null>(null)
   const [registerOpen, setRegisterOpen] = useState(false)
   const [registerPath, setRegisterPath] = useState<string | null>(null)
   const [registerName, setRegisterName] = useState('')
@@ -429,12 +429,16 @@ export default function HostExecutionTargetPicker({
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-2 text-xs">
                 <Badge variant="warning">Account not signed in</Badge>
-                <Button type="button" size="sm" variant="outline" onClick={() => setLogin({ hostId: value.host_id, runtimeKey: value.runtime_key, installation: value.installation })}>
+                <Button type="button" size="sm" variant="outline" onClick={() => setLogin(current => ({ hostId: value.host_id, runtimeKey: value.runtime_key, installation: value.installation, attempt: (current?.attempt ?? 0) + 1 }))}>
                   <LogIn className="mr-1 size-3.5" />Login
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">Models reported by ACP may still work without an account; choose one in the conversation.</p>
-              {login && <RuntimeLoginTerminal key={`${login.hostId}:${login.runtimeKey}:${login.installation}`} {...login} onDone={() => { void reload(); setLogin(null) }} />}
+              {login && <RuntimeLoginTerminal key={`${login.hostId}:${login.runtimeKey}:${login.installation}:${login.attempt}`} hostId={login.hostId} runtimeKey={login.runtimeKey} installation={login.installation} onDone={loggedIn => {
+                // A failed login stays open: its output is the only account of why.
+                void reload()
+                if (loggedIn === true) setLogin(null)
+              }} />}
             </div>
           )}
         </>
