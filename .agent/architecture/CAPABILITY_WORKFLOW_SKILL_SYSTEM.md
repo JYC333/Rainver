@@ -58,8 +58,8 @@ grants gets no Skill and no surface, which is the same fail-closed answer
 Its judgement rules come from `systemActions/conversationPolicy.ts`, the same
 constants the conversational surfaces assemble — `IDENTIFIER_POLICY`,
 `DURABLE_ACTION_CLAIM_POLICY` and `ACTION_RESULT_REPORTING_POLICY`, which is
-the set the Room dispatch prompt uses (`agentGroups/service.ts`); the managed
-loop assembles an overlapping subset. Editing one of those constants changes
+the set the Room dispatch prompt uses (`agentGroups/roomStandingContext.ts`).
+Editing one of those constants changes
 what every surface that includes it tells an agent, which is the point. What
 is Skill-specific and hand-written is the command mechanics and the ADR 0017
 §2 paragraph on direct writes and bounds — the latter restates substance
