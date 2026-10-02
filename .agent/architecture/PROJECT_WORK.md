@@ -408,11 +408,11 @@ which turn" is a query rather than a search through prompt text.
 
 ## 8. What an Agent may do
 
-Six System Actions (`projectWork/taskActions.ts`,
-`projectWork/artifactDeclarations.ts`, `projectWorkSystemActionExecutors.ts`).
-The first five are on the Room conversation tool surface and on a dispatched
-Run's; `artifact.submit` is on a dispatched Run's only, for the reason its
-own paragraph below gives:
+Seven System Actions (`projectWork/taskActions.ts`,
+`projectWork/artifactDeclarations.ts`, `projectWorkSystemActionExecutors.ts`),
+plus the read-only `task.list` that feeds them Task ids. The first six are on
+the Room conversation tool surface and on a dispatched Run's; `artifact.submit`
+is on a dispatched Run's only, for the reason its own paragraph below gives:
 
 | Action | Writes | Records |
 |---|---|---|
@@ -420,6 +420,7 @@ own paragraph below gives:
 | `task.report` | nothing | `task.reported` |
 | `task.handoff` | the claim on a Task | `task.responsibility_changed` |
 | `task.advance_stage` | the Loop fold | `task.stage_changed` |
+| `task.complete` | `status = done` (refused while a declared output is missing) | `task.flow_changed` + `task.reported` |
 | `task.request_review` | `status = waiting_for_review` | `task.flow_changed` + `task.reported` |
 | `artifact.submit` | a `run_artifact_declarations` row | `task.reported` |
 
@@ -436,7 +437,7 @@ remote-host path (`SYSTEM_ACTIONS.md`).
 
 They are the smallest set that lets an Agent advance work at all: name a piece
 of it, say what happened, give it to someone else, move it through its Loop,
-stop to ask, and hand over what the Task asked for. Without them an Agent could describe a decomposition in a
+close it, stop to ask, and hand over what the Task asked for. Without them an Agent could describe a decomposition in a
 reply but not create it — the gap between sounding like it advanced the work
 and having advanced it.
 
@@ -446,14 +447,15 @@ hand a decision back, the only signals a person gets are failures.
 
 ### The origin gate
 
-`task.create` and `task.advance_stage` are `require_approval` when the Run's
+`task.create`, `task.advance_stage`, and `task.complete` are `require_approval` when the Run's
 `trigger_origin` is `autonomous` or `automation`
 (`ruleUnattendedProjectWrite` in `decisionCore.ts`). The same action definition
 serves both origins, because it is the same write — what differs is who wanted
 it. A person saying "split this into three tasks" *is* the authorization for
 the Tasks that follow; the identical call from an unattended wake-up is a
 commitment made on the Project's behalf that nobody asked for, and a Loop stage
-skipped or reversed without a person seeing it is a claim about the work.
+skipped or reversed, or a Task closed, without a person seeing it is a claim
+about the work.
 
 The others are ungated at any origin. A report only records, a handoff can
 only give work away, a review request can only stop work, and a declaration
@@ -529,8 +531,9 @@ the current widening. A Task-domain change, recorded rather than done.
 
 **Who may write.** Reading a Task is not licence to change it. `PATCH
 /tasks/:taskId`, `POST /tasks/:taskId/stage`, `POST /tasks/:taskId/evaluations`
-(the newest evaluation decides the close gate) and the four Task-addressed
-Agent actions all require Project **writer** authority
+(the newest evaluation decides the close gate) and the five Task-addressed
+Agent actions (`task.report`, `task.handoff`, `task.advance_stage`,
+`task.complete`, `task.request_review`) all require Project **writer** authority
 (`assertProjectWriterForMutation`) on the Task's Project — and, for a move, on
 the Project it is moving to. `PATCH` and a new evaluation also take the
 archive fence (`lockActiveProjectForMutation`), so an archived Project's Task
