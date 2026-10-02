@@ -103,7 +103,7 @@ source pipeline, subscription model, data model, and API.
 ## Flow
 
 ```
-source_connection_user_subscriptions (subscribed + digest_enabled)
+source_channel_user_subscriptions (subscribed + digest_enabled)
   + source_channel_item_links + source_item_annotations
   + owner-private interest profile when maturity != cold
   -> information_digests + information_digest_items
@@ -126,14 +126,14 @@ project_corpus_items created today + source_item_annotations
   -> GET /api/v1/spaces/:spaceId/projects/:projectId/information-digests
   -> /projects/:projectId/digest
 
-source_connection_user_subscriptions (subscribed + digest_enabled)
+source_channel_user_subscriptions (subscribed + digest_enabled)
   + source_post_processing_runs/artifacts/decisions
   -> GET /api/v1/sources/briefings
   -> /library/digests
   -> /library/digests/:connectionId/:date detail
   -> /library/digests/.../items/:itemId reader
 
-source_connection_user_subscriptions (subscribed + library_enabled)
+source_channel_user_subscriptions (subscribed + library_enabled)
   + source_items
   + source_item_user_states
   -> GET /api/v1/sources/items
@@ -150,14 +150,14 @@ source item resolver + shared annotations
 not imply that the current user follows the underlying source.
 
 Activity Inbox points into Library through daily aggregate rows with
-`activity_records.aggregate_key = source:briefing:<source_connection_id>:<date>`.
+`activity_records.aggregate_key = source:briefing:<source_channel_id>:<date>`.
 Those rows contain only counts and a short preview; full digest and item
 content stay in the Library/Sources read model.
 
 Source recommendation inbox rows point back to Sources Pending. Reviewing or
 archiving the Activity row only clears the notification pointer; Follow,
 Dismiss, Mute, and Unsubscribe are stored in
-`source_connection_user_subscriptions`.
+`source_channel_user_subscriptions`.
 
 Project source collection inbox rows point to `/projects/:projectId/sources`.
 Reviewing or archiving those Activity rows clears only the notification pointer;
