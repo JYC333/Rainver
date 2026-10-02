@@ -1,10 +1,10 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setLocale } from '../../../i18n'
 import { StatusBadge } from '../../../components/ui/badge'
 import type { EvolutionTarget } from '../../../types/api'
-import { OverviewCards, SignalDialog, TargetList } from '../EvolutionPageParts'
+import { OverviewCards, SignalDialog, TargetConfigDialog, TargetList } from '../EvolutionPageParts'
 
 describe('Evolution page language', () => {
   beforeEach(() => act(() => setLocale('en')))
@@ -79,5 +79,30 @@ describe('Evolution page language', () => {
       source_type: 'manual',
       severity: 'medium',
     }))
+  })
+
+  it('clears the last constraint of an edited target rather than leaving it to the server merge', async () => {
+    const onSubmit = vi.fn(async () => {})
+    render(<TargetConfigDialog
+      open
+      mode="edit"
+      target={{
+        id: 'target-1', target_name: 'Example', target_type: 'agent_version', risk_level: 'medium',
+        enabled: true, status: 'active', engine_policy_json: {},
+        metadata_json: { constraints: ['Do not change the tone'] },
+      } as unknown as EvolutionTarget}
+      saving={false}
+      onOpenChange={vi.fn()}
+      onSubmit={onSubmit}
+    />)
+
+    fireEvent.change(screen.getByDisplayValue('Do not change the tone'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save target' }))
+
+    // The server merges metadata shallowly: an absent key keeps its old value.
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata_json: expect.objectContaining({ constraints: [] }) }),
+      'edit',
+    ))
   })
 })
