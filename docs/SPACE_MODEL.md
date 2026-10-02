@@ -38,15 +38,6 @@ CREATE TABLE space_memberships (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
-
-CREATE TABLE workspace_memberships (
-  id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
-  role TEXT NOT NULL,            -- owner | editor | viewer | agent_operator
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
 ```
 
 ## Personal space convention
@@ -92,15 +83,17 @@ reasoning context.
 
 ## Personal ledger / participation records
 
-A "participation record" or "personal ledger entry" for shared-space activity is a **future
-model concept** (see `docs/TARGET_VIEW_MODEL.md` → `ParticipationRecord`). It is not
-implemented. When built, it must **not** copy raw shared-space content into a user's personal
-space; it records only a pointer and the user's personal context around the activity.
+The `participation_records` table (`server/src/db/schema/personalMemoryGrants.ts`)
+holds pointer-only rows — source Space, object type and id, role, time — and the
+`/me` timeline reads it (`server/src/modules/frontendSupport/service.ts`), but no
+product path writes it yet. When writes are built, they must **not** copy raw
+shared-space content into a user's personal space; a row records only a pointer
+and the user's personal context around the activity.
 
 ## Rules
 
 - Every data record (Memory, Session, Task, Run, etc.) carries a `space_id`.
-- The ContextBuilder requires `space_id` and `user_id` — it will raise if either is missing.
+- The content read gate and the Runtime Context Gateway refuse to resolve content without an explicit `space_id`.
 - Memory queries filter by `space_id` first. No query can retrieve memory across spaces.
 - `space_shared` visibility means visible to all eligible members of the same space; named active grants may upgrade summary disclosure to full.
 - Workspace and Project are independent scope gates; they are not visibility values.
@@ -113,17 +106,11 @@ space; it records only a pointer and the user's personal context around the acti
 ## Roles
 
 Space-level roles:
-- `owner` — full control, can delete the space
+- `owner` — full control (there is no Space deletion route)
 - `admin` — manage members and workspaces
 - `reviewer` — proposal/review responsibility without admin membership control
 - `member` — normal access
 - `guest` — read-only, limited access
-
-Workspace-level roles:
-- `owner` — full workspace control
-- `editor` — read/write
-- `viewer` — read-only
-- `agent_operator` — can trigger agent runs
 
 ## Cross-space transfer
 
@@ -137,7 +124,7 @@ reasoning-context mechanism for a shared-space run. See
 ## See also
 
 - `docs/README.md` — full documentation index
-- `docs/TARGET_VIEW_MODEL.md` — target model concepts (PersonalView, ExecutionContext, etc.)
+- `docs/TARGET_VIEW_MODEL.md` — content ownership, scope, visibility, and disclosure rules
 - `docs/PERSONAL_MEMORY_GRANT.md` — explicit personal memory grant mechanism
 - `docs/CONTENT_PUBLICATIONS.md` — targeted cross-space snapshot transfer
 - `docs/POLICY_AND_PRIVACY_BOUNDARIES.md` — policy enforcement inventory
