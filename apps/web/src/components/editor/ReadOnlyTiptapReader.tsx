@@ -447,6 +447,7 @@ export const ReadOnlyTiptapReader = forwardRef<ReadOnlyTiptapReaderHandle, ReadO
     useEffect(() => {
       if (!editor) return
       editor.commands.setContent(contentJson)
+      // contentKey stands in for contentJson: an equal document in a new object must not reset the reader.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [editor, contentKey])
 

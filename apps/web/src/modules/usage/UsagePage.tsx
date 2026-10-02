@@ -484,6 +484,7 @@ export default function UsagePage() {
 
   useEffect(() => {
     void loadDashboard(query)
+    // queryKey stands in for query, so an equal query in a new object does not reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSpaceId, queryKey, customDimensionKey])
 

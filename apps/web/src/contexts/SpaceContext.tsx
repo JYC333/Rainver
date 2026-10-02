@@ -92,6 +92,7 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
     } catch {
       setSpaces([])
     }
+    // Keyed on the user id: a refreshed currentUser object for the same user must not refetch.
   }, [currentUser?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { reloadSpaces() }, [reloadSpaces])

@@ -174,6 +174,7 @@ export default function ProjectFilesPage() {
     } finally {
       setFoldersLoading(false)
     }
+    // preselectedId only picks the first selection; changing it must not reload the folders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
 

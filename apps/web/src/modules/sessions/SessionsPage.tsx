@@ -50,6 +50,7 @@ export default function SessionsPage() {
     if (!openId) return
     autoOpenRef.current = true
     openSession(openId)
+  // openSession is redeclared every render; the deep link is honoured once, guarded by autoOpenRef.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
