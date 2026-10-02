@@ -340,6 +340,9 @@ describe('Project chat sidecar', () => {
     vi.mocked(roomsApi.sendMessage).mockResolvedValue({ message: { id: 'm-1', session_id: 'conv-2', role: 'user', content: 'text', input_parts: [] }, conversation: { id: 'conv-2', title: 'Depth repair' }, task_group_ids: [], run_ids: [] } as never)
     renderWithCurrentFile(`/spaces/space-1/projects/${PROJECT}/files`, attachment)
     const bar = await screen.findByTestId('current-file-bar')
+    // The bar paints with the Room; the toggle stays disabled until the
+    // conversation's execution context says the file's Folder is in it.
+    await waitFor(() => expect(within(bar).getByRole('button', { name: 'Remove current file' })).toBeEnabled())
     fireEvent.click(within(bar).getByRole('button', { name: 'Remove current file' }))
     expect(within(bar).getByRole('button', { name: 'Add current file' })).toBeInTheDocument()
     fireEvent.click(within(bar).getByRole('button', { name: 'Add current file' }))
