@@ -184,8 +184,10 @@ does not make its Space a write target; only an explicit Project context does.
 Two stable tiers plus per-scene context (`src/core/navigation.tsx`, `src/components/shell/`):
 
 - **Global Rail** (`RAIL_ITEMS`) — narrow, icon-only desktop rail of major destinations, Home
-  first and stable: Home · Inbox · Library · Sources · Review · Knowledge · Shared · Tasks ·
-  Projects · Agents · Settings. Collapsible/expandable. On mobile this becomes the five-item
+  first and stable: Home · Command Center (the `/spaces/:spaceId` default landing page) ·
+  Inbox · Library · Sources · Review · Knowledge · Shared · Tasks · Projects · Agents ·
+  Evolution, with footer items Instance Settings (instance admin), Space Settings (space
+  admin) and Settings. Collapsible/expandable. On mobile this becomes the five-item
   bottom tab bar (`MOBILE_TAB_ITEMS`: Home · Inbox · Library · Review · Tasks).
 - **Scene Sidebar** (`SCENES`) — second-level navigation for the current scene, changes by
   scene (Inbox / Library / Review / Agents / Artifacts). Collapsible; when collapsed the expand
@@ -289,6 +291,13 @@ not be navigable.
 | Snapshot Rollback Defaults | Enabled | Space-admin-only section on Space Settings (`/space-settings`) configuring the space-wide `snapshot_retention_days_default` / `snapshot_max_count_default` that Project Folders inherit absent a per-Folder override |
 | Retrieval Settings | Enabled | Space-scoped UI for the `retrieval.space.settings` scoped setting and retrieval `provider_task_policies` (`/retrieval-settings`); members can view retrieval models, while owner/admin users can edit default search mode, retrieval embedding dimensions/models, native rerank model, rerank/rewrite availability, rewrite/cache/trace defaults, and default result budget. Query rewrite, rerank, and synthesis prompt editing links to Prompt Library rather than duplicating prompt controls here. |
 | Settings | Enabled | Functional |
+| Command Center | Enabled | `/command-center`; pairs machines, binds their providers, and manages what runs on them; the default landing page of a Space |
+| Ask Space | Enabled | `/ask-space`; one cited, gap-aware question across Knowledge, Memory, and Project summaries |
+| Context Health | Enabled | `/context-ops`; retrieval health, diagnostics, maintenance, feedback, and memory provenance aggregates |
+| Daily Report | Enabled | `/daily-report`; generates a structured daily report from captures; experience and memory proposals require review |
+| Optional Modules | Enabled (space admin) | `/plugins`; official optional module control plane |
+| Network | Enabled (space admin, not in navigation) | `/network-profiles`, reached from Space Settings |
+| Diary, Finance | Official plugins | `/diary`, `/finance`; static defaults `enabled: false, visible: true`, overlaid at runtime by `GET /api/v1/plugins/effective` |
 | Capabilities | Enabled | Capability/skill control-plane; developer-heavy but user-visible for review |
 | Prompt Library | Enabled | Space-admin prompt control plane at `/prompts`; lists prompt assets and versions, previews/evaluates immutable prompt versions, manages staging/production deployment refs, supports proposal-backed production promotion and rollback, and shows distinct prompt sets plus read-only workflow/capability usage context for auto research assets |
 | Agent Plans | Enabled | `/plans` is a read/review surface for Agent-generated Plans. Plan creation and revision start from Task Detail's Ask Agent to plan action; Plan Detail shows Source Task, review Proposal, Execute, Reconcile, versions, Plan Nodes, node Runs, and root Run. No raw-definition or New Plan form exists. |
@@ -411,10 +420,11 @@ The frontend is ready for personal dogfooding. The core product loop is usable:
 - Cross-space Home aggregates are limited to what `/me/*` exposes (proposals,
   tasks, runs, participation, timeline). There are no per-Space "captures
   waiting" / "review packets ready" / "cards due" aggregate endpoints.
-- Capture supports text and links. Conversation composers separately support
-  authenticated PNG/JPEG/WebP input and authorized Project Folder file
-  references; Capture itself does not accept files or images, and voice remains
-  disabled UI.
+- The floating Capture composer supports text and links; its voice entry is a
+  "soon" placeholder. The `/capture` page adds file upload and browser voice
+  recording, posted through `activityApi.upload` to the personal inbox.
+  Conversation composers separately support authenticated PNG/JPEG/WebP input
+  and authorized Project Folder file references.
 - Home has no Assistant chat entry; project-bound conversation lives only in
   the Rooms surface.
 
