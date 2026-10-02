@@ -266,6 +266,7 @@ export class PgJobQueueRepository {
     space_id: string;
     user_id?: string | null;
     status?: string | null;
+    job_type?: string | null;
   }): Promise<number> {
     const params: unknown[] = [input.space_id];
     const clauses = ["space_id = $1"];
@@ -276,6 +277,10 @@ export class PgJobQueueRepository {
     if (input.status) {
       params.push(input.status);
       clauses.push(`status = $${params.length}`);
+    }
+    if (input.job_type) {
+      params.push(input.job_type);
+      clauses.push(`job_type = $${params.length}`);
     }
     const result = await this.db.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM jobs WHERE ${clauses.join(" AND ")}`,
@@ -458,10 +463,17 @@ export class PgJobQueueRepository {
     return (result.rowCount ?? 0) > 0;
   }
 
+  /**
+   * Cancels the job if it is still in one of `fromStatuses`, in the same
+   * statement that checks it; returns whether it did. A caller that may not
+   * cancel a running job (the person's route) names the statuses it accepts,
+   * so a job that started between its read and this write stays as it is.
+   */
   async cancelJob(
     jobId: string,
     workerId: string | null,
     now: Date = new Date(),
+    fromStatuses: readonly string[] = ["pending", "claimed", "running"],
   ): Promise<boolean> {
     return withQueryableTransaction(this.db, async (db) => {
       const result = await db.query<{ id: string; job_type: string; space_id: string; run_id: string | null }>(
@@ -471,10 +483,10 @@ export class PgJobQueueRepository {
                 completed_at = $2::timestamptz,
                 updated_at = $2::timestamptz
           WHERE id = $1
-            AND status IN ('pending', 'claimed', 'running')
+            AND status = ANY($4::text[])
             AND (CAST($3 AS text) IS NULL OR claimed_by = $3)
          RETURNING id, job_type, space_id, payload_json->>'run_id' AS run_id`,
-        [jobId, now.toISOString(), workerId],
+        [jobId, now.toISOString(), workerId, [...fromStatuses]],
       );
       // Both Run-backed job types: cancelling the job that would have
       // performed a queued ProviderTask Run has to end that Run too, or the

@@ -1,9 +1,13 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { loadConfig } from "../src/config.js";
+import { jobsModule } from "../src/modules/jobs/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 
 /**
  * What the job queue owes the Run behind a job it stops carrying.
@@ -134,5 +138,55 @@ describe("job settlement of the Run behind a job (real Postgres)", () => {
       `SELECT status FROM jobs WHERE id = $1`, [job.id],
     )).rows[0]?.status).toBe("pending");
     expect(await runStatus(runId)).toEqual({ status: "queued", error_code: null });
+  });
+});
+
+describe("jobs routes (real Postgres)", () => {
+  afterEach(() => {
+    __setAuthIdentityForTests(null);
+    vi.restoreAllMocks();
+  });
+
+  function app() {
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER } as never);
+    return buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test" }), [jobsModule]);
+  }
+
+  it("counts the jobs the list filters by job_type, so the total and the items agree", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const jobs = new PgJobQueueRepository(db.pool);
+    for (const job_type of ["extract_text", "agent_run", "agent_run"]) {
+      await jobs.enqueue({ job_type, space_id: SPACE, user_id: OWNER, payload: {} });
+    }
+    const server = app();
+    try {
+      const response = await server.inject({ method: "GET", url: "/api/v1/jobs?job_type=extract_text&limit=50" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ total: 1 });
+      expect(response.json().items).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("does not cancel a job a worker started between the route's read and its write", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const jobs = new PgJobQueueRepository(db.pool);
+    const job = await jobs.enqueue({ job_type: "extract_text", space_id: SPACE, user_id: OWNER, payload: {} });
+    // The route read the job as pending; by the time it cancels, a worker has it running.
+    const read = vi.spyOn(PgJobQueueRepository.prototype, "getJob").mockImplementationOnce(async () => job);
+    await db.pool.query(`UPDATE jobs SET status = 'running', claimed_by = 'worker-1', claimed_at = now() WHERE id = $1`, [job.id]);
+    const server = app();
+    try {
+      const response = await server.inject({ method: "POST", url: `/api/v1/jobs/${job.id}/cancel` });
+      expect(read).toHaveBeenCalled();
+      expect(response.statusCode).toBe(409);
+      await expect(db.pool.query<{ status: string }>(`SELECT status FROM jobs WHERE id = $1`, [job.id]))
+        .resolves.toMatchObject({ rows: [{ status: "running" }] });
+      await expect(db.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM job_events WHERE job_id = $1 AND message = 'Job cancelled by user'`, [job.id]))
+        .resolves.toMatchObject({ rows: [{ n: "0" }] });
+    } finally {
+      await server.close();
+    }
   });
 });

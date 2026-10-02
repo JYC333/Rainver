@@ -64,6 +64,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         space_id: identity.spaceId,
         user_id: identity.userId,
         status: optionalString(q.status),
+        job_type: optionalString(q.job_type),
       });
       const items = await jobs.listJobs({
         space_id: identity.spaceId,
@@ -126,7 +127,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (!["pending", "claimed"].includes(job.status)) {
         throw new HttpError(409, `Cannot cancel a job in status '${job.status}'`);
       }
-      await queue().cancelJob(jobId, null);
+      // Checked again in the cancelling statement itself: a worker may have
+      // started the job since the read above, and a running job is not the
+      // person's to cancel — nor is a job that has since completed one to
+      // record as cancelled.
+      const cancelled = await queue().cancelJob(jobId, null, new Date(), ["pending", "claimed"]);
+      if (!cancelled) {
+        const current = await queue().getJob(jobId);
+        throw new HttpError(409, `Cannot cancel a job in status '${current?.status ?? "unknown"}'`);
+      }
       await queue().appendJobEvent({
         job_id: jobId,
         event_type: "status_change",
