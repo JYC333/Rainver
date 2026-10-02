@@ -142,6 +142,8 @@ export interface NoteRollbackInput {
   noteId: string;
   toVersion: number;
   userId: string;
+  /** Refuse unless the note is still at this version (undoing one edit). */
+  expectVersion?: number | null;
 }
 
 export interface NoteProjectRoleInput {

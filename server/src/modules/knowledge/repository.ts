@@ -1598,10 +1598,15 @@ export class PgKnowledgeRepository {
     return listNoteRevisionRows(this.db, { spaceId: identity.spaceId, noteId, limit });
   }
 
-  async rollbackNote(identity: SpaceUserIdentity, noteId: string, toVersion: number): Promise<Record<string, unknown>> {
+  async rollbackNote(
+    identity: SpaceUserIdentity,
+    noteId: string,
+    toVersion: number,
+    expectVersion?: number | null,
+  ): Promise<Record<string, unknown>> {
     await this.requireWritableNote(identity, noteId);
     await withNoteWrites(this.db, (scope) =>
-      scope.rollback({ spaceId: identity.spaceId, noteId, toVersion, userId: identity.userId }));
+      scope.rollback({ spaceId: identity.spaceId, noteId, toVersion, userId: identity.userId, expectVersion }));
     return (await this.getNote(identity, noteId))!;
   }
 

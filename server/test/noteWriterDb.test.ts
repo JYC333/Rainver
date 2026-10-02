@@ -236,6 +236,25 @@ describe("block ids on notes written before they existed (real Postgres)", () =>
     expect(ids[0]).not.toBe(result.addedBlockIds[0]);
   });
 
+  it("refuses to undo one edit once the note was written on top of it", async () => {
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const note = await repository.createNote(identity, { title: "Undo" }) as { id: string; version: number };
+    const doc = (text: string) => ({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text }] }] });
+    const edited = await repository.updateNote(identity, note.id, { content_json: doc("AI edit."), expect_version: note.version }) as { version: number };
+    await repository.updateNote(identity, note.id, { content_json: doc("Written after."), expect_version: edited.version });
+
+    await expect(repository.rollbackNote(identity, note.id, edited.version - 1, edited.version))
+      .rejects.toMatchObject({ statusCode: 409 });
+    const stored = await repository.getNote(identity, note.id) as { plain_text: string; version: number };
+    expect(stored.plain_text).toContain("Written after.");
+    expect(stored.version).toBe(edited.version + 1);
+
+    const undone = await repository.rollbackNote(identity, note.id, edited.version, edited.version + 1) as { plain_text: string };
+    expect(undone.plain_text).toContain("AI edit.");
+  });
+
   it("stamps a rollback that restores an id-less revision", async () => {
     if (!db.available) return;
     const repository = new PgKnowledgeRepository(db.pool);

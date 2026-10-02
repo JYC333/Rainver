@@ -1169,8 +1169,12 @@ export const notesApi = {
     del<void>(`/knowledge/notes/${id}/links/${linkId}`),
   revisions: (id: string, limit?: number) =>
     get<NoteRevision[]>(`/knowledge/notes/${id}/revisions` + (limit ? `?limit=${limit}` : '')),
-  rollback: (id: string, toVersion: number) =>
-    post<Note>(`/knowledge/notes/${id}/rollback`, { to_version: toVersion }),
+  /** With `expectVersion`, refused (409) unless the note is still at that version. */
+  rollback: (id: string, toVersion: number, expectVersion?: number) =>
+    post<Note>(`/knowledge/notes/${id}/rollback`, {
+      to_version: toVersion,
+      ...(expectVersion === undefined ? {} : { expect_version: expectVersion }),
+    }),
   /**
    * Jot a note against an object and link it in one call (N7). Two calls would
    * strand a note whenever the link failed, and the round trip for a note id

@@ -1712,12 +1712,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const toVersion = numberValue(jsonBody(request).to_version);
+      const body = jsonBody(request);
+      const toVersion = numberValue(body.to_version);
       if (toVersion === null || toVersion === undefined) {
         return reply.code(422).send({ detail: "to_version is required" });
       }
       return reply.send(
-        await repository().rollbackNote(identity, params(request).noteId ?? "", toVersion),
+        await repository().rollbackNote(identity, params(request).noteId ?? "", toVersion, numberValue(body.expect_version)),
       );
     } catch (error) {
       return sendRouteError(reply, error);
