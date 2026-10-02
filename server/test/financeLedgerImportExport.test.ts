@@ -161,6 +161,44 @@ describe("finance ledger Beancount import", () => {
     const directives = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id);
     expect(directives.map((d) => d["directive_type"])).toEqual(["open"]);
   });
+
+  it("drops an entry that fails part way whole, keeping the rest of the import", async () => {
+    // Stands in for any write failing after an entry's first rows are in.
+    await db.pool.query(`
+      CREATE OR REPLACE FUNCTION finance_test_refuse_posting() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'posting refused for test'; END $$;
+      CREATE TRIGGER finance_test_refuse_posting BEFORE INSERT ON finance_postings
+        FOR EACH ROW WHEN (NEW.account_name = 'Expenses:Boom') EXECUTE FUNCTION finance_test_refuse_posting();
+    `);
+    try {
+      const book = await createBook();
+      const result = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
+        text: `
+2026-01-01 open Assets:Cash USD
+2026-01-01 open Expenses:Boom USD
+2026-01-01 open Expenses:Food USD
+2026-01-02 * "Breaks"
+  Assets:Cash  -1.00 USD
+  Expenses:Boom  1.00 USD
+2026-01-03 * "Fine"
+  Assets:Cash  -2.00 USD
+  Expenses:Food  2.00 USD
+`,
+      });
+
+      expect(result.errors).toEqual([expect.objectContaining({ code: "import_persist_error" })]);
+      const transactions = await db.pool.query<{ narration: string; postings: number }>(
+        `SELECT t.narration, (SELECT count(*)::int FROM finance_postings p WHERE p.transaction_directive_id = t.directive_id) AS postings
+           FROM finance_transactions t WHERE t.book_id = $1`,
+        [book.id],
+      );
+      expect(transactions.rows).toEqual([{ narration: "Fine", postings: 2 }]);
+      const directives = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id);
+      expect(directives.filter((d) => d["directive_type"] === "transaction")).toHaveLength(1);
+    } finally {
+      await db.pool.query("DROP TRIGGER IF EXISTS finance_test_refuse_posting ON finance_postings");
+    }
+  });
 });
 
 describe("finance ledger Beancount export", () => {

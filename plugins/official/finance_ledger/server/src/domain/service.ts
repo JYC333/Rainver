@@ -33,6 +33,7 @@ import {
   financeLedgerRepository,
   type CreateCommodityRecord,
   type InsertPostingRecord,
+  isSequenceConflict,
 } from "./repository.js";
 import { Inventory } from "./inventory.js";
 import { Position } from "./position.js";
@@ -704,15 +705,6 @@ function interpolateBlankAmount(postings: TransactionPostingInput[]): Transactio
     posting === blank[0]
       ? { ...posting, amount: { number: residual.number.decimal, commoditySymbol: currency } }
       : posting);
-}
-
-function isSequenceConflict(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const pgError = err as { code?: string; constraint?: string };
-  return (
-    pgError.code === "23505" &&
-    (pgError.constraint ?? "").includes("book_date_sequence")
-  );
 }
 
 export { rootTypeForAccountName };

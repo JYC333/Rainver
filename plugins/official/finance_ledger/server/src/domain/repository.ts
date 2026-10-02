@@ -839,3 +839,13 @@ function transactionTouchesHiddenAccountSql(
        AND NOT (a.visibility = 'space' OR a.owner_user_id = ${viewerParam})
   )`;
 }
+
+/** A directive insert refused because its (book, date, sequence) was taken meanwhile. */
+export function isSequenceConflict(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const pgError = err as { code?: string; constraint?: string };
+  return (
+    pgError.code === "23505" &&
+    (pgError.constraint ?? "").includes("book_date_sequence")
+  );
+}
