@@ -165,6 +165,9 @@ export default function AgentGroupsPage() {
   }
 
   const loadRoom = useCallback(async () => {
+    // A callback kept from an earlier Room (a roster change finishing after a
+    // switch) must not load that Room over the one now selected.
+    if (roomId !== searchRef.current.get('room')) return
     const requestSequence = ++roomRequestSequence.current
     if (!roomId) {
       setDetail(null)

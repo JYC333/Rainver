@@ -468,6 +468,36 @@ describe('Rooms page', () => {
     expect(browserConfirm).not.toHaveBeenCalled()
   })
 
+  it('keeps the Room switched to when a roster change in the previous Room finishes late', async () => {
+    const secondRoom = { ...room, id: 'room-2', title: 'Second Room' }
+    vi.mocked(roomsApi.list).mockResolvedValue({ items: [room, secondRoom], total: 2, limit: 50, offset: 0 })
+    vi.mocked(roomsApi.get).mockImplementation(async id => (id === 'room-2'
+      ? { ...detail, room: secondRoom }
+      : {
+          ...detail,
+          agent_members: [
+            ...detail.agent_members,
+            { ...detail.agent_members[0]!, id: 'agent-member-2', agent_id: 'agent-2', agent_name: 'Critical Reviewer', agent_kind: 'standard', role: 'member' },
+          ],
+        }) as never)
+    let finishRemoval!: () => void
+    vi.mocked(roomsApi.removeAgent).mockImplementation(() => new Promise(resolve => { finishRemoval = () => resolve({} as never) }))
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Critical Reviewer' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(roomsApi.removeAgent).toHaveBeenCalledWith('room-1', 'agent-2'))
+
+    fireEvent.click(screen.getAllByText('Second Room')[0]!)
+    await waitFor(() => expect(roomsApi.get).toHaveBeenCalledWith('room-2'))
+    await waitFor(() => expect(screen.queryByRole('link', { name: 'Configure Critical Reviewer' })).not.toBeInTheDocument())
+
+    await act(async () => { finishRemoval() })
+    for (let i = 0; i < 3; i += 1) await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+    expect(screen.queryByRole('link', { name: 'Configure Critical Reviewer' })).not.toBeInTheDocument()
+    expect(roomsApi.get).toHaveBeenLastCalledWith('room-2')
+  })
+
   it('says so when a re-added specialist\'s host state was not restored', async () => {
     const toastError = vi.spyOn(toast, 'error')
     vi.mocked(roomsApi.agentCandidates).mockResolvedValue({
