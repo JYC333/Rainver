@@ -10,7 +10,8 @@ import { __setAuthIdentityForTests, __setAuthRepositoryForTests, type AuthReposi
 import type { CurrentUser } from "../src/modules/auth/identity.js";
 import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { __resetHostRegisterRateLimitForTests, HOST_REGISTER_MAX_ATTEMPTS } from "../src/modules/hosts/pairingRateLimit.js";
-import { PgHostRepository } from "../src/modules/hosts/repository.js";
+import { __setHostRepositoryForTests, PgHostRepository } from "../src/modules/hosts/repository.js";
+import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
 import { SERVER_OPENCODE_RELEASE } from "../src/modules/runtimeAdapters/opencodeRelease.js";
 import { MIN_HOST_DAEMON_VERSION } from "../src/modules/hosts/daemonCompatibility.js";
 import { supportsRuntimeBackendMode } from "../src/modules/runtimeAdapters/runtimeDefinitions.js";
@@ -115,6 +116,7 @@ beforeAll(async () => {
 afterEach(() => {
   __setAuthIdentityForTests(null);
   __setAuthRepositoryForTests(null);
+  __setHostRepositoryForTests(null);
   __resetHostRegisterRateLimitForTests();
 });
 
@@ -924,6 +926,63 @@ describe("hosts routes", () => {
       new Promise<number>((_, reject) => setTimeout(() => reject(new Error("socket was not closed by revoke")), 5000)),
     ]);
     expect(closeCode).toBe(1008);
+  });
+
+  it("does not register a daemon whose socket closed while its hello was still authenticating", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    __setAuthRepositoryForTests(stubAuth());
+    const issue = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/pairing-codes",
+      headers: { cookie: authCookie(OWNER_TOKEN) },
+      payload: { name: "Gone Mid-Hello" },
+    });
+    const { host_id: hostId, pairing_code: pairingCode } = issue.json();
+    const register = await app.inject({
+      method: "POST",
+      url: "/api/v1/hosts/register",
+      payload: { pairing_code: pairingCode, ...HELLO_INFO, platform: "linux", arch: "x64" },
+    });
+    const { token } = register.json();
+
+    // The hello's authenticate is held until the test lets it go; the
+    // upgrade's own authenticate (before the socket opens) is not.
+    let holdHello = false;
+    let releaseHello: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => { releaseHello = resolve; });
+    let heartbeatsRecorded = 0;
+    class HeldHostRepository extends PgHostRepository {
+      override async authenticate(bearer: string) {
+        if (holdHello) await held;
+        return super.authenticate(bearer);
+      }
+      override async recordHeartbeat(id: string, info: Parameters<PgHostRepository["recordHeartbeat"]>[1]) {
+        heartbeatsRecorded += 1;
+        return super.recordHeartbeat(id, info);
+      }
+    }
+    __setHostRepositoryForTests(new HeldHostRepository(db.pool));
+
+    const socket = hostSocket(token);
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener("open", () => {
+        holdHello = true;
+        socket.send(JSON.stringify({ type: "hello", token, ...HELLO_INFO, platform: "linux", arch: "x64" }));
+        socket.close();
+      });
+      socket.addEventListener("close", () => resolve());
+      socket.addEventListener("error", (event) => reject(event));
+      setTimeout(() => reject(new Error("timed out waiting for the socket to close")), 5000);
+    });
+    releaseHello();
+    // Everything the hello still does after authenticating is microtasks on
+    // this process, so one macrotask later it has finished.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(heartbeatsRecorded).toBe(0);
+    expect(sharedHostConnectionRegistry.isOnline(hostId)).toBe(false);
+    const row = await db.pool.query<{ status: string }>(`SELECT status FROM hosts WHERE id = $1`, [hostId]);
+    expect(row.rows[0]?.status).not.toBe("online");
   });
 
   it("rejects a WebSocket upgrade without a host bearer, a heartbeat before hello, and a mismatched hello token", async (ctx) => {

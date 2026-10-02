@@ -86,13 +86,17 @@ export async function recordHostThreadOutcome(
     );
     const owner = conversation.rows[0];
     if (owner?.session_id) {
+      // Said once per Run that proved the reset, not once per thread: the
+      // thread keeps its id across resets, and the explicit reset writes the
+      // same event, so a thread-wide check would swallow every later reset.
       const existing = await pool.query(
         `SELECT 1 FROM messages
           WHERE space_id = $1 AND session_id = $2
             AND metadata_json->>'host_thread_id' = $3
             AND metadata_json->>'host_thread_event' = 'session_reset'
+            AND metadata_json->>'host_thread_run_id' = $4
           LIMIT 1`,
-        [owner.space_id, owner.session_id, threadId],
+        [owner.space_id, owner.session_id, threadId, completedRun.id],
       );
       if (!existing.rows[0]) {
         await new PgSessionRepository(pool).addRoomSystemNotice(
@@ -105,6 +109,7 @@ export async function recordHostThreadOutcome(
             metadata: {
               host_thread_id: threadId,
               host_thread_event: "session_reset",
+              host_thread_run_id: completedRun.id,
             },
           },
         );

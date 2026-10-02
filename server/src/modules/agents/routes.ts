@@ -829,7 +829,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                        AND r.status <> ALL($3::text[])
                   ) AS run_in_flight
              FROM host_threads thread
-            WHERE thread.execution_host_id = $2
+            WHERE COALESCE(thread.execution_host_id, (
+                    SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id = thread.workspace_location_id
+                  )) = $2
               AND thread.status IN ('active', 'session_reset')
               AND (
                 thread.agent_id = $1

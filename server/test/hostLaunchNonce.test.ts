@@ -31,12 +31,46 @@ describe("launch nonce routing", () => {
     registry.receiveComplete("host-1", "run-1", { exit_code: 137, timed_out: true, error: null }, firstLaunch);
     let settled = false;
     void second.then(() => { settled = true; });
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     expect(settled).toBe(false);
-    expect(first).toBeUndefined();
+    // The retry settled the earlier dispatch; its late exit code never reached it.
+    expect(first).toMatchObject({ error: "superseded_by_retry" });
 
     registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, secondLaunch);
     await expect(second).resolves.toMatchObject({ exit_code: 0 });
+  });
+
+  it("frees the slot a superseded attempt held, so the next waiter starts", async () => {
+    const registry = new HostConnectionRegistry();
+    const connection = sink();
+    registry.registerConnection("host-1", connection);
+    const launched = () => connection.sent.filter((frame) => frame.type === "launch").map((frame) => frame.run_id);
+    // Two slots: A and C run, then A's retry and B wait.
+    void registry.dispatchLaunch("host-1", "run-a", { argv: ["claude"] }, undefined, undefined, undefined, 2);
+    void registry.dispatchLaunch("host-1", "run-c", { argv: ["claude"] }, undefined, undefined, undefined, 2);
+    const cLaunch = String(connection.sent.at(-1)!.launch_id);
+    void registry.dispatchLaunch("host-1", "run-a", { argv: ["claude"] }, undefined, undefined, undefined, 2);
+    void registry.dispatchLaunch("host-1", "run-b", { argv: ["claude"] }, undefined, undefined, undefined, 2);
+    expect(launched()).toEqual(["run-a", "run-c"]);
+
+    // C finishes: A's retry takes the slot and replaces the first attempt,
+    // which frees the slot that attempt held — B must not wait for A's retry.
+    registry.receiveComplete("host-1", "run-c", { exit_code: 0, timed_out: false, error: null }, cLaunch);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(launched()).toEqual(["run-a", "run-c", "run-a", "run-b"]);
+  });
+
+  it("reports whether the sink it unregisters was the live connection", () => {
+    const registry = new HostConnectionRegistry();
+    const first = sink();
+    const second = sink();
+    registry.registerConnection("host-1", first);
+    registry.registerConnection("host-1", second);
+    // The superseded socket's close must not read as the host going offline.
+    expect(registry.unregisterConnection("host-1", first)).toBe(false);
+    expect(registry.isOnline("host-1")).toBe(true);
+    expect(registry.unregisterConnection("host-1", second)).toBe(true);
+    expect(registry.isOnline("host-1")).toBe(false);
   });
 
   it("marks a launch the host queued for its directory until the host launches it, for its own dispatch only", async () => {

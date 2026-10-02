@@ -162,6 +162,8 @@ export const SystemNoticeMessageMetadataSchema = z.object({
   host_thread_id: IdSchema.nullish(),
   host_thread_event: z.string().nullish(),
   host_thread_reset_reason: z.string().nullish(),
+  /** The Run whose outcome proved a `session_reset`; one notice per such Run. */
+  host_thread_run_id: IdSchema.nullish(),
   discussion_notice: RoomDiscussionNoticeSchema.nullish(),
   ...CommonMessageMetadata,
 }).strict();

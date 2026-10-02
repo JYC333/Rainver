@@ -948,6 +948,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const upgradeHostId = wsUpgradeHosts.get(request) ?? null;
       let helloCompleted = false;
       let helloInProgress = false;
+      // Set by the `close` handler whether or not hello finished: a hello
+      // awaits the database twice, and a socket that closed meanwhile must
+      // not be registered as the host's live connection — nothing would ever
+      // unregister a sink that was dead when it was registered.
+      let socketClosed = false;
       // Which machine this connection is, learned at hello and reused by every
       // later acknowledgement: the probe list a daemon is told to install from
       // differs for the built-in Server Host (the release pin) and a paired one
@@ -1029,7 +1034,17 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               }
               helloCompleted = true;
               probeHostKind = host.kind === "server" ? "server" : "remote";
+              // Closed while authenticating: the host was never online on
+              // this socket, so its row is not written online either.
+              if (socketClosed) return;
               await hosts.recordHeartbeat(host.id, daemonHelloInfo(frame));
+              // Closed while the heartbeat was being recorded: the `close`
+              // handler ran before the row went online, so it is taken back
+              // here, and the dead sink is not registered.
+              if (socketClosed) {
+                await hosts.markOffline(host.id);
+                return;
+              }
               // Revoked while this hello was in flight: the registry has
               // closed the socket; no acknowledgement, no connection.
               if (!sharedHostConnectionRegistry.registerConnection(host.id, frameSink)) return;
@@ -1176,8 +1191,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       });
 
       socket.on("close", () => {
+        socketClosed = true;
         if (!helloCompleted) return;
-        sharedHostConnectionRegistry.unregisterConnection(hostId, frameSink);
+        const wasLive = sharedHostConnectionRegistry.unregisterConnection(hostId, frameSink);
+        // Superseded by this host's newer connection, which is still live:
+        // the host is online on that one, and marking it offline here would
+        // undo the heartbeat the new hello just recorded.
+        if (!wasLive && sharedHostConnectionRegistry.isOnline(hostId)) return;
         const hostsOnClose = hostRepositoryFromConfig(context.config);
         // Caught, not just fired: this is the last write of a connection that
         // is already gone, and an unhandled rejection terminates the process

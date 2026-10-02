@@ -1,5 +1,6 @@
 import {
   HostCapabilitiesSchema,
+  RuntimeAccountSchema,
   type HostCapabilities,
   type RuntimeInstallation,
   type RuntimeAuthMethod,
@@ -133,13 +134,17 @@ function promptCapabilities(value: unknown): RuntimePromptCapabilities | null {
     resource_link: typeof entry.resource_link === "boolean" ? entry.resource_link : null,
   };
 }
+/**
+ * One account the daemon read out of a CLI's credential file. Like an option
+ * above, an entry outside the wire's limits (a provider id longer than the
+ * schema allows) is dropped here rather than failing the whole hello.
+ */
 function accounts(value: unknown): RuntimeAccount[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.flatMap((item): RuntimeAccount[] => {
     const entry = record(item);
-    return typeof entry.id === "string" && entry.id && typeof entry.kind === "string" && entry.kind
-      ? [{ id: entry.id, kind: entry.kind }]
-      : [];
+    const parsed = RuntimeAccountSchema.safeParse({ id: entry.id, kind: entry.kind });
+    return parsed.success ? [parsed.data] : [];
   });
 }
 function installation(value: unknown, reportsSubscriptionQuota: boolean): RuntimeInstallation | null {

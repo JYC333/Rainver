@@ -1245,7 +1245,11 @@ fixed before this landed. **Since the phase-2 event-pipeline work**, it is calle
 from `agentRunHandler.ts`'s `handleAgentRun` (via
 `server/src/modules/hosts/threadOutcome.ts`'s `recordHostThreadOutcome`)
 once the dispatched Run's `agent_run` job reaches terminal — not from the
-dispatch route itself, which no longer waits around for that. Every session id a thread moves on from — reset, close, or a degraded resume — is appended to `retired_vendor_session_ids`, and ambient session import excludes those alongside the live id; clearing the live id alone would let the Agent's old sessions come back as the owner's own history.
+dispatch route itself, which no longer waits around for that. A reset it
+concludes is said in the Room once per Run that proved it (the notice carries
+`host_thread_run_id`); the thread keeps its id across resets and the explicit
+reset writes the same `session_reset` event, so a thread-wide check would have
+silenced every reset after the first. Every session id a thread moves on from — reset, close, or a degraded resume — is appended to `retired_vendor_session_ids`, and ambient session import excludes those alongside the live id; clearing the live id alone would let the Agent's old sessions come back as the owner's own history.
 
 `recordRunOutcome` also keeps what the live vendor session holds.
 `identity_digest` / `identity_digest_run_id` name the standing context (identity

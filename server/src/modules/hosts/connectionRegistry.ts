@@ -448,9 +448,14 @@ export class HostConnectionRegistry {
     return true;
   }
 
-  unregisterConnection(hostId: string, sink: HostFrameSink): void {
+  /**
+   * Returns whether `sink` was the host's live connection. A superseded or
+   * never-registered sink changes nothing and reports false, so the caller
+   * can tell a host that went offline from a host that merely reconnected.
+   */
+  unregisterConnection(hostId: string, sink: HostFrameSink): boolean {
     const connection = this.connections.get(hostId);
-    if (!connection || connection.sink !== sink) return;
+    if (!connection || connection.sink !== sink) return false;
     connection.sink = null;
     for (const [runId, pendingRun] of this.pending) {
       if (pendingRun.hostId !== hostId || pendingRun.graceTimer) continue;
@@ -463,6 +468,7 @@ export class HostConnectionRegistry {
       pendingRun.graceTimer.unref?.();
     }
     this.failPendingRequests(hostId);
+    return true;
   }
 
   isOnline(hostId: string): boolean {
@@ -545,6 +551,16 @@ export class HostConnectionRegistry {
     }
     const sink = connection.sink;
     const launchId = randomUUID();
+    // A retry of the same Run before its earlier attempt reported (the
+    // supervisor reuses the run id within seconds of a timed-out attempt's
+    // kill). The earlier dispatch is settled here rather than replaced in
+    // place: its promise is what releases the slot it held, and a slot whose
+    // release never fires stays idle while other Runs wait for it.
+    const previous = this.pending.get(runId);
+    if (previous) {
+      if (previous.graceTimer) clearTimeout(previous.graceTimer);
+      previous.resolveComplete({ exit_code: -1, timed_out: false, error: "superseded_by_retry" });
+    }
     const completion = new Promise<HostRunCompletion>((resolve) => {
       this.pending.set(runId, { hostId, launchId, onOutput, onStderr, onLaunched, resolveComplete: resolve, graceTimer: null, pendingStdin: [], waitingForWorkspace: false });
     });

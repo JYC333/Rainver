@@ -70,4 +70,18 @@ describe('host capability normalization', () => {
       expect.objectContaining({ id: 'browser', description: long(2000) }),
     ])
   })
+
+  it('drops one over-long held account instead of refusing the whole report', () => {
+    const current = normalizeHostCapabilities({
+      runtimes: [], versions: {}, installations: { opencode: [{
+        id: 'own', version: '1', logged_in: true,
+        accounts: [
+          { id: 'x'.repeat(300), kind: 'api' },
+          { id: 'anthropic', kind: 'k'.repeat(100) },
+          { id: 'openai', kind: 'api' },
+        ],
+      }] },
+    })
+    expect(current.installations.opencode?.[0]?.accounts).toEqual([{ id: 'openai', kind: 'api' }])
+  })
 })

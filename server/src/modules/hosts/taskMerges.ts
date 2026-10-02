@@ -757,11 +757,25 @@ async function giveBack(
     const aborted = await deps.hosts.requestTaskBranch(hostId, "task_merge_abort", { workspace, merge_id: merge.id });
     if (!aborted.ok && taskBranchRequestRetryable(aborted.error)) throw deferForHostAnswer(aborted.error);
   }
-  await db.query(
+  // Superseded only while the Task is still not done. Closed again while the
+  // host was giving the merge back, `enqueueTaskMerges` saw this merge under
+  // way and asked for no other, so superseding it now would leave a done Task
+  // with no merge at all; instead it starts over from a fresh rebase, since
+  // the host no longer holds the one it had.
+  const superseded = await db.query(
     `UPDATE task_merges SET status = 'superseded', completed_at = now(), updated_at = now()
-      WHERE id = $1 AND space_id = $2 AND status NOT IN ('merged', 'no_changes', 'superseded')`,
+      WHERE id = $1 AND space_id = $2 AND status NOT IN ('merged', 'no_changes', 'superseded')
+        AND NOT EXISTS (
+          SELECT 1 FROM tasks
+           WHERE tasks.id = task_merges.task_id AND tasks.space_id = task_merges.space_id
+             AND tasks.status = 'done' AND tasks.deleted_at IS NULL
+        )`,
     [merge.id, merge.space_id],
   );
+  if ((superseded.rowCount ?? 0) === 0 && !FINISHED.has(merge.status) && await taskStillDone(db, merge)) {
+    await transition(db, merge, "queued", {});
+    throw new JobDeferredError("The Task was closed again while this merge was being given back; starting it over", 1_000);
+  }
   return { skipped: "task_not_done" };
 }
 
