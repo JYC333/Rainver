@@ -15,6 +15,7 @@
  * Query rewriting does NOT consult this seam: it sends only the query string,
  * never candidate content.
  */
+import { isLoopbackAddress } from "@rainver/outbound-guard";
 import { adapterProviderApi, adapterProviderRequirement } from "../../runs/adapterProviderRequirement.js";
 
 interface RetrievalEgressRef {
@@ -117,14 +118,11 @@ export function runtimeProviderEgressDestination(
 function isLocalProviderUrl(value: string | null | undefined): boolean {
   if (!value) return false;
   try {
-    const host = new URL(value).hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "0.0.0.0" ||
-      host === "127.0.0.1" ||
-      host === "::1" ||
-      host.startsWith("127.")
-    );
+    // `hostname` keeps an IPv6 literal's brackets; strip them before judging
+    // it as an address. Judged as an address, never as a name prefix:
+    // `127.evil.com` is a hostname somebody else controls.
+    const host = new URL(value).hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+    return host === "localhost" || host === "0.0.0.0" || isLoopbackAddress(host);
   } catch {
     return false;
   }

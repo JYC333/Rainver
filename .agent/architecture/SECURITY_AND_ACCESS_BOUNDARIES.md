@@ -810,12 +810,14 @@ authority afterwards.
   must not appear in a DTO, log, environment variable, or HTTP body,
   including `/internal/*`. There is no HTTP credential-resolve hatch, and no
   internal route that spends a key on a caller's say-so.
-- Structured request logs carry no headers at all: Fastify's default `req`
-  serializer emits method, url, host and remote address, and nothing else, and
-  no route logs a request or response body. The redact paths in
-  `gateway/logging.ts` are defense in depth for the day a serializer changes —
-  they are unreachable while the default one is in place, and are listed here
-  as belt-and-braces, not as the mechanism. pino matches a redact path exactly,
+- Structured request logs carry no headers and no query string: the server's
+  own `req` serializer (`gateway/logging.ts`) emits method, path, host and
+  remote address, and nothing else — Fastify's default logged `req.url` whole,
+  which put an OAuth callback's authorization code and state on every
+  "incoming request" line — and no route logs a request or response body. The
+  redact paths in the same file are defense in depth for the day a serializer
+  changes — they are unreachable while this one is in place, and are listed
+  here as belt-and-braces, not as the mechanism. pino matches a redact path exactly,
   with no substring rule, so each spelling is listed on its own:
   `authorization` **and** `proxy-authorization`, `cookie`, `x-api-key`,
   `api-key`, `x-goog-api-key`, `anthropic-auth-token`,

@@ -29,7 +29,7 @@ function view(overrides: Partial<TaskWorkView> = {}): TaskWorkView {
       { key: 'verify', label: 'Evaluate' },
       { key: 'conclude', label: 'Conclude' },
     ],
-    responsible: { kind: 'user', id: 'user-1', display_name: 'Yuchuan' },
+    responsible: { kind: 'user', id: 'user-1', display_name: 'Test User' },
     completion: { ok: false, missing: ['evaluation'] },
     evaluation: null,
     present_outputs: [],

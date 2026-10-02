@@ -78,8 +78,8 @@ describe('ProjectConversationBackendCard', () => {
         host_kind: 'remote',
         host_online: true,
         locations: [{
-          id: 'location-1', project_folder_id: 'folder-1', folder_name: 'Financial-System',
-          display_path: '/home/yuchuan/Financial-System', execution_ready: true,
+          id: 'location-1', project_folder_id: 'folder-1', folder_name: 'project',
+          display_path: '/home/me/project', execution_ready: true,
         }],
         runtimes: [{
           runtime_key: 'claude_code',

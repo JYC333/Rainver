@@ -185,6 +185,38 @@ describe("safe header access", () => {
   });
 
   /**
+   * The query string too: an OAuth callback carries its authorization code
+   * and state there, and the default serializer logged `req.url` whole on
+   * every "incoming request" line.
+   */
+  it("keeps a request's query string out of the request log line", async () => {
+    const lines: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, done) { lines.push(String(chunk)); done(); },
+    });
+    const config = loadConfig({
+      SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
+      SERVER_LOG_LEVEL: "info",
+    });
+    const app = createServerApp(config, { logStream: stream });
+    registerGatewayConventions(app, config);
+    app.get("/api/v1/auth/callback/probe", async (_request, reply) => reply.send({ ok: true }));
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/auth/callback/probe?code=4/0Ab-oauth-code-value&state=state-secret-value",
+    });
+    expect(response.statusCode).toBe(200);
+    await app.close();
+
+    const emitted = lines.join("");
+    expect(emitted).toContain("/api/v1/auth/callback/probe");
+    expect(emitted).not.toContain("oauth-code-value");
+    expect(emitted).not.toContain("state-secret-value");
+  });
+
+  /**
    * And the list itself, because the test above cannot see it.
    *
    * With the default `req` serializer these paths never match, so removing one

@@ -127,7 +127,7 @@ describe('Project updates', () => {
       .mockResolvedValueOnce(page({
         items: [{
           id: 'event-0', event_kind: 'project.reported', occurred_at: '2026-08-26T09:00:00.000Z',
-          actor: { kind: 'user', id: 'user-1', display_name: 'Yuchuan' },
+          actor: { kind: 'user', id: 'user-1', display_name: 'Test User' },
           summary: 'Kicked the Project off', outcome: null, task: null,
         }],
         next_cursor: null,
