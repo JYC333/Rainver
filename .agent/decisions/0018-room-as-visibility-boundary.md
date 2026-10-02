@@ -80,29 +80,25 @@ oracle, and "people are discussing something without me" is itself the
 information the boundary exists to withhold. A member who wants others to know
 says so in the mainline; the system does not say it for them.
 
-One carve-out exists and is worth stating precisely, because a vague version
-of it would be tested against and pass. A non-member with no oversight sees
-nothing on any path: a Room's Runs are created `selected_users` with grants to
-its members, so the content predicate excludes them. A Space owner or admin
-under `oversight_mode` is different — the predicate's oversight disjunct
-admits them without a grant, at `summary` under `oversight_mode = 'summary'`
-and at **`full`** under `content` or `full`
+Oversight is no carve-out, and this is worth stating precisely, because a
+vague version of it would be tested against and pass. A Room's Runs are
+created `selected_users` with grants to its members, and a Space owner or
+admin under `oversight_mode` is admitted by the content predicate's oversight
+disjunct
 ([`SECURITY_AND_ACCESS_BOUNDARIES.md`](../architecture/SECURITY_AND_ACCESS_BOUNDARIES.md)).
-They never reach messages, which are gated on membership, and a Run's `prompt`
-and `instruction` are nulled on every read regardless of who is asking.
+That predicate is not sufficient on its own: a read of a Room-backed Run, or
+of a Proposal or Artifact that a Run produced, also ANDs
+`roomRunReadAccessSql`, which requires active Room membership plus Project
+readability and has no oversight branch. A Space owner or admin inside the
+Project but outside the Room is therefore excluded like any other non-member.
+They never reach messages either, which are gated on membership, and a Run's
+`prompt` and `instruction` are nulled on every read regardless of who is
+asking.
 
-Oversight is also narrower than "an admin sees everything", and the difference
-decides whether a test of this is meaningful. The predicate ANDs a Project
-scope conjunct (`projectReadAccessSql`) *outside* the disjunction oversight
-sits in, and that conjunct has no oversight branch — so a Space owner who is
-not a member of the Project is excluded from a Room's Runs whatever their
-`oversight_mode`. The carve-out reaches only an admin already inside the
-Project.
-
-Run detail/list, Home work-product lists, and Project Pulse counts use the
-same content predicate. Oversight tests must use an eligible admin who is
-inside the Project; an admin outside it is excluded by Project scope and does
-not exercise this exception. Room messages still require membership.
+Run detail/list, Home work-product lists, and Project Pulse counts carry both
+terms. Tests of this boundary must use an admin who is inside the Project but
+not on the Room roster; an admin outside the Project is excluded by Project
+scope and does not exercise the Room term.
 
 ### 4. The mainline Room is created with the Project
 
@@ -143,8 +139,8 @@ initialized Conversation remains pinned to its own execution context.
 - Roster management remains a real surface, reached from the conversation list
   section it governs rather than from top-level navigation.
 - Conversation reads and conversation-attention paths retain Room membership
-  gates; Run/Proposal/Artifact reads retain their shared content predicate and
-  the decision 3 oversight exception. Making the layer invisible in the interface must not
+  gates; Run/Proposal/Artifact reads AND their shared content predicate with
+  Room membership, so oversight admits no Room work product. Making the layer invisible in the interface must not
   make it invisible in the predicates — the two are opposite properties, and
   a section that renders "nothing" for a non-member is not the same as a query
   that returns nothing.
@@ -155,8 +151,7 @@ initialized Conversation remains pinned to its own execution context.
 
 - Room as a topic container, or a Rooms page as a navigation destination.
 - Any existence signal about a limited Room or its conversations to a
-  non-member, except the explicitly permitted oversight access to work-product
-  metadata in decision 3. Oversight never admits Room messages.
+  non-member. Oversight never admits Room messages or Room work products.
 - Preventing conversation creation while another conversation is empty.
 - Changing how a Room executes a message (ADR 0007 decision 6).
 - Merging the Room layer away.
