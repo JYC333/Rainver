@@ -25,7 +25,8 @@ write active memory, mutate agent versions, or bind runtime skills directly.
 ## Strategy Assets
 
 Strategy assets live in `evolution_strategy_assets`. Built-in system strategies
-are seeded in `0000_baseline.sql`; space-specific strategies use the same table
+are upserted at startup by `seedEvolutionStrategyAssets` in
+`server/src/db/seeds.ts`; space-specific strategies use the same table
 with `space_id` set. System and space keys are separately unique.
 
 Built-ins:
@@ -47,8 +48,11 @@ Built-ins:
 
 1. Loads the target in the caller's space.
 2. Requires `agent_id` from the request body or `target.metadata_json.agent_id`.
-3. Reads recent target signals and active system/space strategies.
-4. Uses `EvolutionSelector` to choose a strategy under target risk policy.
+3. Reads recent target signals and active system/space strategies. A target with
+   no recent signals is refused with 422 unless
+   `engine_policy_json.allow_no_signal` is `true`.
+4. Uses `EvolutionSelector` to choose a strategy under target risk policy. If
+   none is selected, it records a selector decision with no run and returns 422.
 5. Builds an `evolution_plan.prompt.v1` system/user prompt from the target,
    selected strategy, selector trace, and evidence.
 6. Creates a real `runs` row with `run_type = 'evolution'`.
@@ -56,8 +60,11 @@ Built-ins:
 8. Persists an `evolution_selector_decisions` row.
 9. Stores the final prompt on the run with the selector decision and request
    signal ids included.
-10. Writes an `evolution_plan.v1` artifact.
-11. Marks the run `waiting_for_review`.
+10. Executes the run synchronously through `RunOrchestrationService.executeRun`
+    and returns `run_id`, `selector_decision_id`, `selected_strategy_key`, the
+    run's resulting `run_status`, and an empty `proposal_ids`. The route writes
+    no artifact itself; `evolution_plan.v1` is only the strategy's preferred
+    artifact type hint.
 
 Evolution v1 only accepts `mode = "dry_run"` for this route. `live` execution is
 rejected because v1 produces review plans, not direct behavior changes.
