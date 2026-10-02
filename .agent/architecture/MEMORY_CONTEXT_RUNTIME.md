@@ -13,8 +13,9 @@ authority. Neither may silently become the other.
 proposal apply service, by one of two routes
 ([ADR 0003](../decisions/0003-memory-proposal-flow.md)): a proposal a person
 approved, or an Agent's own bounded write in a person's turn (`applyDirect` —
-private, normal-sensitivity, about the acting person, always a new version
-carrying its run, session and rationale). Public routes, Runs, retrievers,
+private, normal-sensitivity, always a new version carrying its run, session and
+rationale; the three note types and the persona land in the Agent's own
+`agent` scope, every other type is about the acting person). Public routes, Runs, retrievers,
 checkpoint extractors and adapters still cannot write around it, and a
 checkpoint promoting content into Memory is a write under ADR 0003 like any
 other. Note for anyone hardening this path: the direct route deliberately does
