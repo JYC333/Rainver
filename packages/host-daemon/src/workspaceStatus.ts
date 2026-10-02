@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { runLocationGit } from "@rainver/folder-read";
 
-export interface WorkspaceStatusReport {
+interface WorkspaceStatusReport {
   location_id: string;
   branch: string | null;
   git_head: string | null;

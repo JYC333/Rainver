@@ -62,18 +62,18 @@ const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const COMMIT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
 /** Who writes a commit no Run is the author of: leftovers of a Run that was never settled. */
-export const SYSTEM_GIT_IDENTITY = Object.freeze({ name: "Rainver", email: "rainver@localhost" });
+const SYSTEM_GIT_IDENTITY = Object.freeze({ name: "Rainver", email: "rainver@localhost" });
 /** What a refused settle or branch delete answers while the Task is in use; the control plane retries it later. */
 export const TASK_BUSY = "task_busy";
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** How long a settled Run's answer is kept for a repeated settle. */
-export const RUN_RECORD_RETENTION_MS = 30 * DAY_MS;
+const RUN_RECORD_RETENTION_MS = 30 * DAY_MS;
 /**
  * How long the nested repositories and submodule histories of a worktree whose
  * work is on the branch are kept in quarantine. A repository with submodules
  * leaves one set per Run, so keeping them for good fills the disk.
  */
-export const RETIRED_QUARANTINE_RETENTION_MS = 30 * DAY_MS;
+const RETIRED_QUARANTINE_RETENTION_MS = 30 * DAY_MS;
 /** A `-retired` quarantine target (or its `.git-modules` sibling), with the time it was made. */
 const RETIRED_TARGET = /-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z-[0-9a-f]{8}-retired(?:\.git-modules)?$/;
 /** Capturing a whole worktree (`add --all`) can take minutes on a large checkout. */
@@ -127,7 +127,7 @@ export interface LocationRepository {
  * - `unusable` — it is a checkout, but git refuses it or it is not what it
  *   looks like: the launch fails rather than running in the person's checkout.
  */
-export type LocationRepositoryCheck =
+type LocationRepositoryCheck =
   | { kind: "not_git" }
   | { kind: "no_commit" }
   | { kind: "repository"; repo: LocationRepository }
@@ -274,7 +274,7 @@ export function mergeRecordPath(locationId: string, taskId: string): string {
   return join(configDir(), "task-records", locationId, `${taskId}.merge.json`);
 }
 
-export async function mergeHoldsWorktree(locationId: string, taskId: string): Promise<boolean> {
+async function mergeHoldsWorktree(locationId: string, taskId: string): Promise<boolean> {
   return lstat(mergeRecordPath(locationId, taskId)).then(() => true, () => false);
 }
 
@@ -341,7 +341,7 @@ export async function touchTaskRecord(worktree: TaskWorktree, runId: string): Pr
  * never blocks on a FIFO, never reads a device: this is what an Agent can
  * plant as a worktree's `.git` or an entry's `gitdir`.
  */
-export async function readSmallRegularFile(path: string): Promise<string | null> {
+async function readSmallRegularFile(path: string): Promise<string | null> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(() => null);
   if (!handle) return null;
   try {
@@ -539,7 +539,7 @@ async function clearStaleLock(dirs: readonly string[], lockName: string): Promis
 }
 
 /** The Task branch's loose-ref lock, `refs/heads/rainver/task-<id>.lock`. */
-export function clearStaleRefLock(repo: LocationRepository, taskId: string): Promise<void> {
+function clearStaleRefLock(repo: LocationRepository, taskId: string): Promise<void> {
   const refs = join(repo.gitCommonDir, "refs");
   const heads = join(refs, "heads");
   return clearStaleLock([refs, heads, join(heads, "rainver")], `task-${taskId}.lock`);
@@ -559,7 +559,7 @@ export async function isAncestor(repoRoot: string, ancestor: string, descendant:
   return result.code === 0;
 }
 
-export interface ListedWorktree {
+interface ListedWorktree {
   path: string;
   /** `refs/heads/…`, or null when detached. */
   branch: string | null;
@@ -633,13 +633,13 @@ export async function moveBranch(repoRoot: string, ref: string, next: string, ex
  * but whose own `.git` no longer points there (rewritten, or relative from a
  * moved repository), has its `.git` pointed back first (`relinkWorktree`).
  */
-export type WorktreeState =
+type WorktreeState =
   | { kind: "absent" }
   | { kind: "junk" }
   | { kind: "worktree"; entry: string; onBranch: boolean }
   | { kind: "unrecognised" };
 
-export async function worktreeState(repo: LocationRepository, path: string, ref: string, relink: boolean): Promise<WorktreeState> {
+async function worktreeState(repo: LocationRepository, path: string, ref: string, relink: boolean): Promise<WorktreeState> {
   const info = await lstat(path).catch(() => null);
   if (!info) return { kind: "absent" };
   if (!info.isDirectory() || info.isSymbolicLink() || (await realpath(path).catch(() => null)) !== path) return { kind: "junk" };
@@ -676,7 +676,7 @@ async function removeWorktree(repo: LocationRepository, path: string, place: Tas
 }
 
 /** A symlink, file or FIFO at the worktree's path: unlinked, never followed. */
-export async function removeJunk(repo: LocationRepository, place: TaskPlace, path: string): Promise<void> {
+async function removeJunk(repo: LocationRepository, place: TaskPlace, path: string): Promise<void> {
   await unlink(path).catch(() => undefined);
   await removeOwnEntries(repo, path, place);
 }
@@ -1043,7 +1043,7 @@ export async function existingTaskWorktree(
 // ---------------------------------------------------------------------------
 // Settle and delete
 
-export interface TaskRunSettleResult {
+interface TaskRunSettleResult {
   ok: boolean;
   branch: string | null;
   commit: string | null;
@@ -1183,7 +1183,7 @@ function answerFromRunRecord(record: RunRecord, locationId: string, taskId: stri
   return { ok: true, branch: record.branch, commit: record.commit, error: null };
 }
 
-export interface TaskBranchDeleteResult {
+interface TaskBranchDeleteResult {
   ok: boolean;
   deleted: boolean;
   error: string | null;

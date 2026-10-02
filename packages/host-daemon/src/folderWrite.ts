@@ -8,7 +8,7 @@ import {
 } from "@rainver/folder-read";
 import { sanitizeFailure } from "./ambientRedaction.js";
 
-export interface FolderWriteRequest {
+interface FolderWriteRequest {
   request_id: string;
   workspace_location_id: string;
   path: string;
@@ -21,7 +21,7 @@ export interface FolderWriteRequest {
   root: string;
 }
 
-export type FolderWriteResult =
+type FolderWriteResult =
   | { type: "folder_write_result"; request_id: string; ok: true; path: string; exists: boolean; sha256: string | null; size: number; line_count: number }
   | { type: "folder_write_result"; request_id: string; ok: false; error: FolderWriteDaemonError; message?: string };
 

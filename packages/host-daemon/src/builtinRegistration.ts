@@ -17,13 +17,13 @@ import { builtinCredentialPath, loadConfig, normalizeServerUrl, saveConfig } fro
  * longer matches what was written), the next attempt picks the new one up
  * instead of the daemon disabling itself the way a revoked paired host does.
  */
-export interface BuiltinHostCredential {
+interface BuiltinHostCredential {
   server_url: string;
   host_id: string;
   token: string;
 }
 
-export function parseBuiltinCredential(raw: string): BuiltinHostCredential {
+function parseBuiltinCredential(raw: string): BuiltinHostCredential {
   const parsed = JSON.parse(raw) as Partial<BuiltinHostCredential>;
   if (typeof parsed.server_url !== "string" || typeof parsed.host_id !== "string" || typeof parsed.token !== "string") {
     throw new Error("built-in host credential is missing server_url, host_id or token");
@@ -35,7 +35,7 @@ export function parseBuiltinCredential(raw: string): BuiltinHostCredential {
   };
 }
 
-export type BuiltinAdoption = "not_builtin" | "unavailable" | "unchanged" | "adopted";
+type BuiltinAdoption = "not_builtin" | "unavailable" | "unchanged" | "adopted";
 
 /**
  * Adopts the credential when one is published and differs from what this

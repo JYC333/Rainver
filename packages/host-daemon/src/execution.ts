@@ -128,9 +128,9 @@ export function resolveInputResourcePaths(
 export type LaunchFrame = Omit<HostLaunchFrame, "type" | "workspace"> & { workspace?: LaunchWorkspace };
 export type WorkSurfaceFrame = HostLaunchWorkSurface;
 export type ProviderBindingFrame = HostLaunchProviderBinding;
-export type StdinFrame = Pick<HostServerFrameOf<"stdin">, "run_id" | "value">;
-export type StdinCloseFrame = Pick<HostServerFrameOf<"stdin_close">, "run_id">;
-export type TerminateFrame = Pick<HostServerFrameOf<"terminate">, "run_id"> & Partial<Pick<HostServerFrameOf<"terminate">, "launch_id">> & { force?: boolean };
+type StdinFrame = Pick<HostServerFrameOf<"stdin">, "run_id" | "value">;
+type StdinCloseFrame = Pick<HostServerFrameOf<"stdin_close">, "run_id">;
+type TerminateFrame = Pick<HostServerFrameOf<"terminate">, "run_id"> & Partial<Pick<HostServerFrameOf<"terminate">, "launch_id">> & { force?: boolean };
 
 interface ActiveRun {
   child: ChildProcess;
@@ -188,7 +188,7 @@ export function substituteCwd(value: string, cwd: string): string {
 }
 
 /** Every placeholder the control plane may have written, in argv, stdin, or a prompt. */
-export function substitutePlaceholders(value: string, placeholders: Record<string, string>): string {
+function substitutePlaceholders(value: string, placeholders: Record<string, string>): string {
   let result = value;
   for (const [placeholder, replacement] of Object.entries(placeholders)) {
     result = result.split(placeholder).join(replacement);
@@ -300,7 +300,7 @@ export function resolveAcpEntrypoint(command: string): string | null {
 }
 
 /** What actually gets spawned for an ACP argv: the vendor CLI as-is, or a bundled adapter through `node`. */
-export interface AcpLaunch {
+interface AcpLaunch {
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -685,7 +685,7 @@ function rainverCliPath(): string {
  * unsandboxed on a machine the user owns, so the control plane is not trusted
  * to have sent a key that stays inside the config directory.
  */
-export function providerProfileDir(profileKey: string): string {
+function providerProfileDir(profileKey: string): string {
   const segments = profileKey.split("/");
   const [agents, agentId, containerKind, containerId, runtimeKey, providerId] = segments;
   if (segments.length !== 6 || agents !== "agents") {
@@ -758,7 +758,7 @@ export function setEgressProxy(handle: EgressProxyHandle | null, serverUrl: stri
 }
 
 /** What a Run reached, and what it was refused; empty when this host runs no proxy. */
-export function runEgressLog(runId: string) {
+function runEgressLog(runId: string) {
   return egressProxy?.log(runId) ?? [];
 }
 
@@ -868,7 +868,7 @@ export function strictBindsForRun(input: {
  * process receives, which HOME it writes into, and what is bound — and none of
  * that is reachable by a test that has to spawn `bwrap` to observe it.
  */
-export interface StrictLaunch {
+interface StrictLaunch {
   command: string;
   args: string[];
   home: string;

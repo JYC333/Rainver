@@ -208,7 +208,7 @@ async function runtimeOptions(
 
 /** Asks one copy for its options; the caller decides how (`api.ts`). */
 export type AskRuntimeOptions = (lookup: RuntimeLookup, installation: string) => Promise<RuntimeOptions | null>;
-export type EnsureOwnRuntime = (lookup: RuntimeLookup) => Promise<boolean>;
+type EnsureOwnRuntime = (lookup: RuntimeLookup) => Promise<boolean>;
 
 export async function detectCapabilities(
   askOptions?: AskRuntimeOptions,

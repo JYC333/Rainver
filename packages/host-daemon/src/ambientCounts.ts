@@ -21,7 +21,7 @@ const FAILURE_INTERVAL_MS = 30 * 60 * 1000;
 const WINDOW_DAYS = 30;
 const MAX_SESSIONS = 50;
 
-export interface AmbientSessionCount {
+interface AmbientSessionCount {
   location_id: string;
   runtime_key: string;
   installation: string;
@@ -33,7 +33,7 @@ export interface AmbientSessionCount {
 }
 
 /** The subset of a server runtime probe this module needs. */
-export interface AmbientProbe {
+interface AmbientProbe {
   runtime_key: string;
   argv: string[];
   remote_host_only: boolean;

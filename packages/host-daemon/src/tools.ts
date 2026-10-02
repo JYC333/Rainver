@@ -23,7 +23,7 @@ import { downloadRuntimeArtifact, type RuntimeArtifactDownloadDependencies } fro
  */
 
 /** `managed:<version>` — an installation id, as opposed to `own`. */
-export const MANAGED_PREFIX = "managed:";
+const MANAGED_PREFIX = "managed:";
 export const OWN_INSTALLATION = "own";
 
 /** How a runtime is logged into and how a login is recognised (the spec's `credentials.login`). */
@@ -49,10 +49,10 @@ export interface ToolManifest {
   installed_at: string;
 }
 
-export type ToolDistribution = RuntimeDistribution;
+type ToolDistribution = RuntimeDistribution;
 /** The wire's `install_tool` frame, minus its type tag; nothing is rebuilt from it. */
-export type InstallToolFrame = Omit<HostServerFrameOf<"install_tool">, "type">;
-export type UninstallToolFrame = Omit<HostServerFrameOf<"uninstall_tool">, "type">;
+type InstallToolFrame = Omit<HostServerFrameOf<"install_tool">, "type">;
+type UninstallToolFrame = Omit<HostServerFrameOf<"uninstall_tool">, "type">;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function toolsDir(): string {

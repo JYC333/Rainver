@@ -22,9 +22,9 @@ import { clearVendorCredentialEnv } from "./providerBinding.js";
  * and nowhere else; the machine's own copy logs in as the machine.
  */
 /** The wire's `login_open` frame, minus its type tag. */
-export type LoginOpenFrame = Omit<HostServerFrameOf<"login_open">, "type">;
+type LoginOpenFrame = Omit<HostServerFrameOf<"login_open">, "type">;
 
-export interface LoginSession {
+interface LoginSession {
   write(data: string): void;
   close(): void;
 }
@@ -244,9 +244,9 @@ function openAgentAuthSession(
  */
 export const LOGIN_INPUT_SESSION_MAX_CHARS = 256 * 1024;
 export const LOGIN_INPUT_BURST_CHARS = 32 * 1024;
-export const LOGIN_INPUT_CHARS_PER_SECOND = 8 * 1024;
+const LOGIN_INPUT_CHARS_PER_SECOND = 8 * 1024;
 
-export interface LoginInputRefusal {
+interface LoginInputRefusal {
   reason: string;
   /** Too fast: the frame is dropped and the session goes on. Over the lifetime budget: the session ends. */
   fatal: boolean;

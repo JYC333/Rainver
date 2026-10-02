@@ -51,7 +51,7 @@ const leases = new Map<string, LocationLease>();
 const acquiring = new Map<string, Attempt>();
 
 /** What `acquireLocationLeases` answers: every lease is held, or the wait was cancelled and none is. */
-export type LeaseOutcome = "acquired" | "cancelled";
+type LeaseOutcome = "acquired" | "cancelled";
 
 /**
  * Takes every named Location's lease for one launch attempt, waiting in each

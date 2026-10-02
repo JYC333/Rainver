@@ -11,9 +11,9 @@ import { requireConfig, saveConfig } from "./config.js";
  * path (ADR 0016 §4).
  */
 
-export const LIST_DIRS_MAX_ENTRIES = 500;
+const LIST_DIRS_MAX_ENTRIES = 500;
 
-export interface ListDirsResult {
+interface ListDirsResult {
   ok: boolean;
   path: string | null;
   parent: string | null;
@@ -49,7 +49,7 @@ export async function listDirectories(rawPath: unknown): Promise<ListDirsResult>
   };
 }
 
-export interface RegisterWorkspaceResult {
+interface RegisterWorkspaceResult {
   ok: boolean;
   workspace_id: string | null;
   display_path: string | null;

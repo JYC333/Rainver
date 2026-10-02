@@ -86,7 +86,7 @@ const ETC = [
  * spawn (`codexStrictSandbox.ts`), which is the switch measured to stop
  * Codex's default read-only sandbox stacking on top of this namespace.
  */
-export const STRICT_SANDBOX_ENV: Readonly<Record<string, string>> = Object.freeze({
+const STRICT_SANDBOX_ENV: Readonly<Record<string, string>> = Object.freeze({
   RAINVER_STRICT_SANDBOX: "1",
 });
 

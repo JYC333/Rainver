@@ -4,7 +4,7 @@ import { ensureGitRepository } from "@rainver/folder-read";
 import { configDir } from "./config.js";
 
 const ARCHIVE_MARKER = ".removed-";
-export const MANAGED_WORKSPACE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const MANAGED_WORKSPACE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type ManagedWorkspaceContainerKind = "direct" | "conversation";
 
@@ -15,7 +15,7 @@ export type ManagedWorkspaceContainerKind = "direct" | "conversation";
  * WorkspaceLocation the user owns, and that Location is what their vendor
  * session already belongs to.
  */
-export type RuntimeProfileContainerKind = ManagedWorkspaceContainerKind | "location" | "agent";
+type RuntimeProfileContainerKind = ManagedWorkspaceContainerKind | "location" | "agent";
 
 export interface ManagedWorkspaceContainer {
   kind: ManagedWorkspaceContainerKind;
@@ -80,7 +80,7 @@ export function runtimeProfileContainerPath(
 }
 
 /** Every profile container of one Agent — what `host-state/reset` moves. */
-export function agentProfilesRoot(agentId: string): string {
+function agentProfilesRoot(agentId: string): string {
   assertManagedWorkspaceId(agentId, "agent_id");
   return join(configDir(), "agents", agentId, "profiles");
 }

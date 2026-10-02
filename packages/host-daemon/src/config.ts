@@ -96,7 +96,7 @@ export function normalizeServerUrl(raw: string): string {
  * true of `127.evil.com`, a hostname somebody else controls and can point
  * anywhere, which is exactly the thing plain HTTP must not be allowed for.
  */
-export function isLoopbackHostname(hostname: string): boolean {
+function isLoopbackHostname(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (host === "localhost" || host === "localhost.localdomain") return true;
   return isLoopbackAddress(host);

@@ -59,13 +59,13 @@ export const DEFAULT_LIMITS: AmbientTrimLimits = {
 
 export type AmbientTrimLimits = ProtocolAmbientTrimLimits;
 
-export type AmbientSessionSummary = ProtocolAmbientSessionSummary;
+type AmbientSessionSummary = ProtocolAmbientSessionSummary;
 
 export type AmbientRecord = ProtocolAmbientRecord;
 
 export type AmbientUsage = ProtocolAmbientUsage;
 
-export type AmbientSessionImport = ProtocolAmbientSessionImport;
+type AmbientSessionImport = ProtocolAmbientSessionImport;
 
 export interface AmbientRuntimeTarget {
   runtime_key: string;
@@ -391,7 +391,7 @@ export function listSessionsForTest(
  * source gone, and conflating them means a session outside the window looks
  * deleted.
  */
-export interface AmbientEnumeration {
+interface AmbientEnumeration {
   selected: AmbientSessionSummary[];
   held: string[];
   conclusive: boolean;

@@ -408,7 +408,7 @@ function probeCodex(home: string, manifest: ToolManifest | null, timeoutSeconds:
 
 // --- Entry point -----------------------------------------------------------
 
-export type UsageProbeFrame = {
+type UsageProbeFrame = {
   runtime_key: string;
   installation: string;
   login: RuntimeLoginSpec | null;

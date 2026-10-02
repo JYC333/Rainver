@@ -127,14 +127,14 @@ export interface EgressProxyHandle {
   close(): Promise<void>;
 }
 
-export interface UpstreamProxyConfig {
+interface UpstreamProxyConfig {
   url: URL;
   noProxy: string | null;
 }
 
 type TargetLookup = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
 
-export interface EgressProxyOptions {
+interface EgressProxyOptions {
   /** Test seam; production resolves every answer through the operating system. */
   lookup?: TargetLookup;
 }
