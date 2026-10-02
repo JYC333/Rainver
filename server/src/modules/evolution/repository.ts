@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "../../db/pool.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
+import { resolveContentCreationContext } from "../access/creationContext.js";
+import { assertProjectFolderInProject } from "../projects/access.js";
 import { withTransaction } from "../../db/tx.js";
 import {
   HttpError,
@@ -72,20 +74,24 @@ export class EvolutionRepository {
             AND (es.space_id = $1 OR es.space_id IS NULL)`,
         [identity.spaceId],
       ),
+      // Counts answer only what the viewer may read, like the lists beside
+      // them: a private proposal or Run of another member is not news here.
       this.db.query<{ total: string | number }>(
         `SELECT count(p.id)::text AS total
            FROM proposals p
            LEFT JOIN runs r ON r.id = p.created_by_run_id AND r.space_id = p.space_id
           WHERE p.space_id = $1
             AND p.status = 'pending'
-            AND (p.proposal_type LIKE 'evolution_%' OR r.run_type = 'evolution')`,
-        [identity.spaceId],
+            AND (p.proposal_type LIKE 'evolution_%' OR r.run_type = 'evolution')
+            AND ${contentReadSql("proposal", "p", "$2")}`,
+        [identity.spaceId, identity.userId],
       ),
       this.db.query<{ total: string | number }>(
-        `SELECT count(id)::text AS total
-           FROM runs
-          WHERE space_id = $1 AND run_type = 'evolution' AND created_at > now() - interval '30 days'`,
-        [identity.spaceId],
+        `SELECT count(r.id)::text AS total
+           FROM runs r
+          WHERE r.space_id = $1 AND r.run_type = 'evolution' AND r.created_at > now() - interval '30 days'
+            AND ${contentReadSql("run", "r", "$2")}`,
+        [identity.spaceId, identity.userId],
       ),
     ]);
     return {
@@ -439,9 +445,10 @@ export class EvolutionRepository {
          LEFT JOIN evolution_targets et ON et.id = esd.target_id
          LEFT JOIN evolution_strategy_assets esa ON esa.id = esd.selected_strategy_asset_id
         WHERE r.space_id = $1 AND r.run_type = 'evolution'
+          AND ${contentReadSql("run", "r", "$4")}
         ORDER BY r.created_at DESC
         LIMIT $2 OFFSET $3`,
-      [identity.spaceId, limit, offset],
+      [identity.spaceId, limit, offset, identity.userId],
     );
     return rows.rows.map((row) => ({
       run_id: row.run_id,
@@ -497,13 +504,32 @@ export class EvolutionRepository {
       throw new HttpError(422, selection.decisionReason);
     }
 
+    // The Run lands in the Project it names, so the caller needs write
+    // authority there, as for any other Run creation; a Folder is kept only
+    // with its Project, and only when it belongs to that Project.
+    const requestedProjectId = optionalString(body.project_id);
+    const requestedFolderId = optionalString(body.project_folder_id);
+    let projectId: string | null = null;
+    let projectFolderId: string | null = null;
+    if (requestedProjectId) {
+      const creation = await resolveContentCreationContext(this.db, {
+        userId: identity.userId,
+        requestSpaceId: identity.spaceId,
+        projectId: requestedProjectId,
+      });
+      projectId = creation.projectId;
+      if (requestedFolderId && projectId) {
+        await assertProjectFolderInProject(this.db, identity.spaceId, projectId, requestedFolderId);
+        projectFolderId = requestedFolderId;
+      }
+    }
     const input: PersistSelectedRunRequestInput = {
       identity,
       targetId,
       runMode: boundedRunMode(body.mode),
       runtimeProfileId: optionalString(body.runtime_profile_id),
-      projectFolderId: optionalString(body.project_folder_id),
-      projectId: optionalString(body.project_id),
+      projectFolderId,
+      projectId,
       target,
       agentId,
       recentSignals,

@@ -15,22 +15,30 @@ class FakeDb implements Queryable {
     if (sql.includes("FROM evolution_selector_decisions") || sql.includes("FROM (")) {
       return { rows: this.targetId ? [{ target_id: this.targetId } as Row] : [], rowCount: this.targetId ? 1 : 0 };
     }
+    // The lock statement and the dedup-window check: nothing held, nothing seen.
+    if (sql.includes("pg_advisory_xact_lock") || sql.includes("FROM evolution_signals")) {
+      return { rows: [], rowCount: 0 };
+    }
     return { rows: [{ id: "signal-1" } as Row], rowCount: 1 };
   }
 }
 
 class AutoTargetDb extends FakeDb {
   override async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []): Promise<QueryResult<Row>> {
-    if (sql.includes("FROM evolution_selector_decisions")) {
+    if (sql.includes("FROM evolution_selector_decisions") || sql.includes("FROM evolution_targets")) {
       this.calls.push({ sql, params });
       return { rows: [], rowCount: 0 };
     }
-    if (sql.includes("WITH lock") && params.length === 11) {
+    if (sql.includes("INSERT INTO evolution_targets")) {
       this.calls.push({ sql, params });
       return { rows: [{ id: "target-auto" } as Row], rowCount: 1 };
     }
     return super.query(sql, params);
   }
+}
+
+function insertedSignals(db: FakeDb): Array<readonly unknown[]> {
+  return db.calls.filter((call) => call.sql.includes("INSERT INTO evolution_signals")).map((call) => call.params);
 }
 
 describe("EvolutionSignalEmitter", () => {
@@ -55,9 +63,12 @@ describe("EvolutionSignalEmitter", () => {
     });
 
     expect(result).toEqual({ emitted: 3, skipped: 0, target_found: true });
-    expect(db.calls).toHaveLength(4);
-    expect(db.calls.slice(1).every((call) => call.sql.includes("pg_advisory_xact_lock") && call.sql.includes("NOT EXISTS"))).toBe(true);
-    expect(db.calls.slice(1).map((call) => call.params[4])).toEqual([
+    // Each rule locks its dedup key in a statement of its own before it
+    // checks the window and inserts.
+    const writes = db.calls.slice(1);
+    expect(writes.filter((call) => call.sql.includes("pg_advisory_xact_lock"))).toHaveLength(3);
+    expect(writes.filter((call) => call.sql.includes("FROM evolution_signals"))).toHaveLength(3);
+    expect(insertedSignals(db).map((params) => params[3])).toEqual([
       "run_finalization_failed",
       "run_cost_threshold",
       "run_latency_threshold",
@@ -118,7 +129,7 @@ describe("EvolutionSignalEmitter", () => {
       createdByRunId: "run-1",
     });
     expect(result).toEqual({ emitted: 1, skipped: 0, target_found: true });
-    expect(db.calls[1]?.params[4]).toBe("proposal_rejected");
+    expect(insertedSignals(db)[0]?.[3]).toBe("proposal_rejected");
   });
 
   it("boundedly provisions a task target when an ordinary run fails", async () => {
@@ -134,15 +145,15 @@ describe("EvolutionSignalEmitter", () => {
       evaluation: { outcome_status: "failed", failure_reason_code: "adapter_runtime_error" },
     });
     expect(result).toEqual({ emitted: 1, skipped: 0, target_found: true });
-    expect(db.calls[1]?.sql).toContain("INSERT INTO evolution_targets");
-    expect(db.calls[1]?.params.slice(1, 6)).toEqual([
+    const targetInsert = db.calls.find((call) => call.sql.includes("INSERT INTO evolution_targets"));
+    expect(targetInsert?.params.slice(1, 6)).toEqual([
       "space-1",
       "project_folder",
       "task",
       "task-1",
       "",
     ]);
-    expect(db.calls[2]?.params[4]).toBe("run_finalization_failed");
+    expect(insertedSignals(db)[0]?.[3]).toBe("run_finalization_failed");
   });
 
   it.each([
@@ -158,7 +169,8 @@ describe("EvolutionSignalEmitter", () => {
       }),
       evaluation: { outcome_status: "failed" },
     });
-    expect(db.calls[1]?.params.slice(1, 6)).toEqual(["space-1", targetType, refType, refId, ""]);
+    const targetInsert = db.calls.find((call) => call.sql.includes("INSERT INTO evolution_targets"));
+    expect(targetInsert?.params.slice(1, 6)).toEqual(["space-1", targetType, refType, refId, ""]);
   });
 
   it("maps both current rejection and future request-changes decisions", () => {

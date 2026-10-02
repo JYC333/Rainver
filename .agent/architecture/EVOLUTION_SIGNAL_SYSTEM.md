@@ -98,9 +98,13 @@ member states return `null`.
 
 Each rule carries a source type, source id, signal type, and dedup window. The
 payload stores a stable `dedup_key`. Insertion takes a PostgreSQL transaction
-advisory lock for that target/source tuple and checks the window atomically,
-so repeated finalization or worker delivery does not flood the stream without
-requiring a new migration or a second uniqueness table.
+advisory lock for that target/source tuple in a statement of its own, then
+checks the window and inserts in the same transaction (a lock and an
+existence check inside one statement would let the second writer wait and
+then act on a snapshot from before the first commit), so repeated
+finalization or worker delivery does not flood the stream without requiring a
+new migration or a second uniqueness table. Auto-provisioned targets are
+created the same way, one per target key.
 
 Signal writes are advisory telemetry. Finalization and proposal decisions
 remain authoritative if signal persistence fails: finalization, proposal

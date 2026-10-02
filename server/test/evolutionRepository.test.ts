@@ -14,6 +14,7 @@ import {
 } from "../src/modules/evolution/prompt.js";
 import { EvolutionRepository } from "../src/modules/evolution/repository.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 const CATALOG_ROOT = join(process.cwd(), "..", "catalog");
 
@@ -199,6 +200,62 @@ describe("EvolutionRepository core", () => {
     }
   });
 
+  it("hides another member's private evolution Run from the Run list and the summary count", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const owner = await seedIdentity();
+    const other = await seedMember(owner.spaceId);
+    const agentId = await seedAgent(owner);
+    await seedEvolutionRun(owner, agentId, "private");
+    const repository = new EvolutionRepository(db.pool);
+
+    expect(await repository.listRuns(owner, 50, 0)).toHaveLength(1);
+    expect(await repository.listRuns(other, 50, 0)).toHaveLength(0);
+    expect((await repository.summary(owner)).recent_runs).toBe(1);
+    expect((await repository.summary(other)).recent_runs).toBe(0);
+  });
+
+  it("counts only the pending evolution proposals the viewer may read", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const owner = await seedIdentity();
+    const other = await seedMember(owner.spaceId);
+    await db.pool.query(
+      `INSERT INTO proposals (
+         id, space_id, proposal_type, status, risk_level, urgency, preview, title,
+         summary, payload_json, created_at, updated_at, rationale, created_by_user_id,
+         owner_user_id, visibility, access_level
+       ) VALUES ($1, $2, 'evolution_plan', 'pending', 'low', 'normal', false, 'Private plan',
+         'Private plan', '{}'::jsonb, $3, $3, 'test', $4, $4, 'private', 'full')`,
+      [randomUUID(), owner.spaceId, new Date().toISOString(), owner.userId],
+    );
+    const repository = new EvolutionRepository(db.pool);
+
+    expect((await repository.summary(owner)).pending_proposals).toBe(1);
+    expect((await repository.summary(other)).pending_proposals).toBe(0);
+  });
+
+  it("refuses to attach an evolution Run to a Project the caller cannot write", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const owner = await seedIdentity();
+    const member = await seedMember(owner.spaceId);
+    const agentId = await seedAgent(owner);
+    const targetId = await seedTarget(owner, { agentId, maxStrategyRisk: "medium" });
+    await seedSignal(owner, targetId, "runtime_failure");
+    const projectId = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 'Private project', 'active', $4, $4)`,
+      [projectId, owner.spaceId, owner.userId, now],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+    const repository = new EvolutionRepository(db.pool);
+
+    await expect(repository.recordRunSetup(member, targetId, agentId, { project_id: projectId }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    const runs = await db.pool.query(`SELECT id FROM runs WHERE space_id = $1 AND project_id = $2`, [owner.spaceId, projectId]);
+    expect(runs.rowCount).toBe(0);
+  });
+
   it("returns deterministic validation results from target metadata", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const identity = await seedIdentity();
@@ -250,7 +307,52 @@ async function seedIdentity(): Promise<SpaceUserIdentity> {
      VALUES ($1, 'Space', 'team', $2, $3, $3)`,
     [spaceId, userId, now],
   );
+  await db.pool.query(
+    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+     VALUES ($1, $2, $3, 'owner', 'active', $4, $4)`,
+    [randomUUID(), spaceId, userId, now],
+  );
   return { spaceId, userId };
+}
+
+/** An active member of the Space who owns nothing in it. */
+async function seedMember(spaceId: string): Promise<SpaceUserIdentity> {
+  const userId = randomUUID();
+  const now = new Date().toISOString();
+  await db.pool.query(
+    `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+     VALUES ($1, 'Member', 'active', $2, $2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+    [userId, now],
+  );
+  await db.pool.query(
+    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+     VALUES ($1, $2, $3, 'member', 'active', $4, $4)`,
+    [randomUUID(), spaceId, userId, now],
+  );
+  return { spaceId, userId };
+}
+
+async function seedEvolutionRun(identity: SpaceUserIdentity, agentId: string, visibility: "private" | "space_shared"): Promise<string> {
+  const runId = randomUUID();
+  const now = new Date().toISOString();
+  const agent = await db.pool.query<{ current_version_id: string }>(
+    `SELECT current_version_id FROM agents WHERE id = $1 AND space_id = $2`,
+    [agentId, identity.spaceId],
+  );
+  const profile = await db.pool.query<{ id: string; runtime_key: string }>(
+    `SELECT id, runtime_key FROM agent_runtime_profiles WHERE agent_id = $1 AND space_id = $2 AND is_default = TRUE`,
+    [agentId, identity.spaceId],
+  );
+  await db.pool.query(
+    `INSERT INTO runs (
+       id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+       runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+       owner_user_id, visibility, created_at, updated_at, execution_kind
+     ) VALUES ($1, $2, $3, $4, 'evolution', 'manual', 'queued', 'dry_run',
+       $5, 'default', $6, '{}'::jsonb, $7, $8, $9, $9, 'agent')`,
+    [runId, identity.spaceId, agentId, agent.rows[0]!.current_version_id, profile.rows[0]!.id, profile.rows[0]!.runtime_key, identity.userId, visibility, now],
+  );
+  return runId;
 }
 
 async function seedAgent(identity: SpaceUserIdentity): Promise<string> {

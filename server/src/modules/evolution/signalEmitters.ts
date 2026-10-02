@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { withQueryableTransaction } from "../routeUtils/common.js";
 import type { Queryable } from "../runs/repository.js";
 import type { RunRecord } from "../runs/runRepositoryTypes.js";
 
@@ -211,62 +212,56 @@ export class EvolutionSignalEmitter {
       descriptor.targetRefId,
       descriptor.capabilityKey ?? "",
     ].join(":");
-    const result = await this.db.query<{ id: string }>(
-      `WITH lock AS (
-         SELECT pg_advisory_xact_lock(hashtext($1)) AS acquired
-       ), existing AS (
-         SELECT id
+    // The lock is its own statement: a statement takes its snapshot before it
+    // waits on a lock, so a lock and an existence check in one CTE let the
+    // second writer wait, then act on a snapshot from before the first commit.
+    return withQueryableTransaction(this.db, async (tx) => {
+      await tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`evolution-target:${targetKey}`]);
+      const existing = await tx.query<{ id: string }>(
+        `SELECT id
            FROM evolution_targets
-          WHERE space_id = $2
-            AND target_type = $3
-            AND target_ref_type = $4
-            AND target_ref_id = $5
-            AND COALESCE(capability_key, '') = $6
+          WHERE space_id = $1
+            AND target_type = $2
+            AND target_ref_type = $3
+            AND target_ref_id = $4
+            AND COALESCE(capability_key, '') = $5
             AND status = 'active'
           ORDER BY created_at ASC, id ASC
-          LIMIT 1
-       ), inserted AS (
-         INSERT INTO evolution_targets (
+          LIMIT 1`,
+        [run.space_id, descriptor.targetType, descriptor.targetRefType, descriptor.targetRefId, descriptor.capabilityKey ?? ""],
+      );
+      if (existing.rows[0]) return existing.rows[0].id;
+      const inserted = await tx.query<{ id: string }>(
+        `INSERT INTO evolution_targets (
            id, space_id, target_type, target_ref_type, target_ref_id,
            capability_key, current_version_id, risk_level, status, enabled,
            engine_policy_json, metadata_json, created_at, updated_at
-         )
-         SELECT $7, $2, $3, $4, $5, NULLIF($6, ''), NULL, $8, 'active', true,
-                $9::jsonb, $10::jsonb, $11, $11
-           FROM lock
-          WHERE NOT EXISTS (SELECT 1 FROM existing)
-         RETURNING id
-       )
-       SELECT id FROM existing
-       UNION ALL
-       SELECT id FROM inserted
-       LIMIT 1`,
-      [
-        `evolution-target:${targetKey}`,
-        run.space_id,
-        descriptor.targetType,
-        descriptor.targetRefType,
-        descriptor.targetRefId,
-        descriptor.capabilityKey ?? "",
-        randomUUID(),
-        riskLevel,
-        JSON.stringify({
-          source: "d1_auto_signal_target",
-          max_strategy_risk: maxStrategyRisk,
-          allowed_strategy_categories: ["repair", "harden", "review"],
-          allow_no_signal: true,
-        }),
-        JSON.stringify({
-          target_name: descriptor.targetName,
-          auto_provisioned: true,
-          source_run_id: run.id,
-          source_kind: recordValue(run.contract_snapshot_json).source &&
-            recordValue(recordValue(run.contract_snapshot_json).source).kind,
-        }),
-        now,
-      ],
-    );
-    return result.rows[0]?.id ?? null;
+         ) VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULL, $7, 'active', true, $8::jsonb, $9::jsonb, $10, $10)
+         RETURNING id`,
+        [
+          randomUUID(),
+          run.space_id,
+          descriptor.targetType,
+          descriptor.targetRefType,
+          descriptor.targetRefId,
+          descriptor.capabilityKey ?? "",
+          riskLevel,
+          JSON.stringify({
+            source: "d1_auto_signal_target",
+            max_strategy_risk: maxStrategyRisk,
+            allowed_strategy_categories: ["repair", "harden", "review"],
+            allow_no_signal: true,
+          }),
+          JSON.stringify({
+            target_name: descriptor.targetName,
+            auto_provisioned: true,
+            source_run_id: run.id,
+          }),
+          now,
+        ],
+      );
+      return inserted.rows[0]?.id ?? null;
+    });
   }
 
   private async targetForProposal(
@@ -302,48 +297,47 @@ export class EvolutionSignalEmitter {
         ...rule.payload,
         dedup_key: dedupKey(rule),
       };
-      const result = await this.db.query<{ id: string }>(
-        `WITH lock AS (
-           SELECT pg_advisory_xact_lock(hashtext($1)) AS acquired
-         ), inserted AS (
-           INSERT INTO evolution_signals (
+      const now = this.clock().toISOString();
+      // Lock first, in its own statement, for the reason given in
+      // ensureTargetForRun: the window check must see what the previous
+      // holder of the lock committed.
+      const inserted = await withQueryableTransaction(this.db, async (tx) => {
+        await tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", [dedupLockKey(rule)]);
+        const duplicate = await tx.query<{ id: string }>(
+          `SELECT id
+             FROM evolution_signals
+            WHERE target_id = $1::varchar
+              AND signal_type = $2::varchar
+              AND source_type = $3::varchar
+              AND source_id = $4::varchar
+              AND payload_json->>'dedup_key' = $5::text
+              AND created_at > $6::timestamptz - ($7::double precision * interval '1 second')
+            LIMIT 1`,
+          [rule.targetId, rule.signalType, rule.sourceType, rule.sourceId, payload.dedup_key, now, rule.dedupWindowSeconds],
+        );
+        if (duplicate.rows[0]) return false;
+        await tx.query(
+          `INSERT INTO evolution_signals (
              id, space_id, target_id, signal_type, source_type, source_id,
              severity, summary, payload_json, created_at
-           )
-           SELECT $2::varchar, $3::varchar, $4::varchar, $5::varchar,
-                  $6::varchar, $7::varchar, $8::varchar, $9::text,
-                  $10::jsonb, $11::timestamptz
-             FROM lock
-            WHERE NOT EXISTS (
-              SELECT 1
-                FROM evolution_signals
-               WHERE target_id = $4::varchar
-                 AND signal_type = $5::varchar
-                 AND source_type = $6::varchar
-                 AND source_id = $7::varchar
-                 AND payload_json->>'dedup_key' = $12::text
-                 AND created_at > $11::timestamptz - ($13::double precision * interval '1 second')
-            )
-           RETURNING id
-         )
-         SELECT id FROM inserted`,
-        [
-          dedupLockKey(rule),
-          randomId(),
-          rule.spaceId,
-          rule.targetId,
-          rule.signalType,
-          rule.sourceType,
-          rule.sourceId,
-          rule.severity,
-          rule.summary,
-          JSON.stringify(payload),
-          this.clock().toISOString(),
-          payload.dedup_key,
-          rule.dedupWindowSeconds,
-        ],
-      );
-      if (result.rows.length > 0) emitted += 1;
+           ) VALUES ($1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::varchar, $6::varchar,
+                     $7::varchar, $8::text, $9::jsonb, $10::timestamptz)`,
+          [
+            randomId(),
+            rule.spaceId,
+            rule.targetId,
+            rule.signalType,
+            rule.sourceType,
+            rule.sourceId,
+            rule.severity,
+            rule.summary,
+            JSON.stringify(payload),
+            now,
+          ],
+        );
+        return true;
+      });
+      if (inserted) emitted += 1;
     }
     return {
       emitted,
