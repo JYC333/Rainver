@@ -426,10 +426,10 @@ Policy rows are domain-specific. Deployment jobs do not use the reserved
 `deployment.propose` / `deployment.execute` actions.
 
 **Extracted design**
-- Wire reserved actions to real `PolicyGateway.enforce()` call sites
-  (`capability.*`, `tool_binding.enable`, `context.use_personal_grant`,
-  `workspace.*`, `artifact.export`, `proposal.approve`,
-  `memory.read_private`, `memory.promote_shared`).
+- Wire reserved actions to real `enforce()` (`policy/service.ts`) call sites
+  (`tool_binding.enable`, `context.use_personal_grant`, `artifact.export`,
+  `proposal.approve`, `memory.read_private`, `memory.promote_shared`,
+  `runtime_skill.execute`, `evidence.export`, `note.link.create`).
 - Per-user / per-project approval capabilities.
 - Space-level policy row overrides.
 - `RunDelegation.status` following child-run terminal states.
