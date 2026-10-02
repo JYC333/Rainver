@@ -490,15 +490,15 @@ account instead of the subscription this profile was given.
 
 ## Resilience Boundaries
 
-**B-R1** — `Run.status` includes `degraded` in addition to `queued|running|succeeded|failed|cancelled|waiting_for_review`. A run is `degraded` when it completes but with partial or compromised quality — the output is accessible but flagged for user review.
+**B-R1** — `Run.status` includes `degraded` in addition to `queued|running|cancelling|succeeded|failed|cancelled|orphaned|waiting_for_review|waiting_for_dependency` (`RUN_STATUS_VALUES`). A run is `degraded` when it completes but with partial or compromised quality — the output is accessible but flagged for user review.
 
 **B-R2** — `Run.mode` includes `live` (real execution, persists changes) and `dry_run` (preview, no persistent changes, artifacts not saved).
 
-**B-R3** — Artifact export is explicit: every artifact has `path` and/or `content`; `GET /api/v1/artifacts/{id}/export` returns a file download. Artifact paths point to persistent storage (`~/.rainver-data/artifacts/`), not sandbox working directories.
+**B-R3** — Artifact export is explicit: every artifact has a relative `storage_path` and/or `content`; `GET /api/v1/artifacts/{id}/export` returns a file download. Artifact files live in persistent storage (`<RAINVER_HOME>/storage/artifacts`, overridable by `ARTIFACT_STORAGE_ROOT`), not sandbox working directories.
 
-**B-R4** — `Proposal` has explicit temporal fields: `created_at`, `decided_at`, `deadline` (soft, optional), and computed `expired` (true when deadline passed and status is still `pending`). `urgency` field (`low|normal|high|critical`) affects sort order.
+**B-R4** — `Proposal` has explicit temporal fields: `created_at`, `reviewed_at`, `review_deadline` (soft, optional), `expires_at`, and computed `expired` (true when `expires_at` passed and status is still `pending`). `urgency` field (`low|normal|high|critical`) affects sort order.
 
-**B-R5** — All temporal fields are explicit on Run: `created_at`, `started_at`, `completed_at`, `scheduled_at`. No derived timestamps.
+**B-R5** — All temporal fields are explicit on Run: `created_at`, `started_at`, `ended_at`, `scheduled_at`. No derived timestamps.
 
 ---
 
@@ -585,15 +585,14 @@ changes. The server service process does not auto-migrate on startup.
 DB-persisted API-key storage remains disabled/deferred until the canonical
 schema adds that table.
 
-**B66** — A new Agent entry point (HTTP route, tool surface, managed-loop
-surface, or any future host) is a thin adapter over `SystemActionDispatcher`
+**B66** — A new Agent entry point (HTTP route, tool surface, or any future
+host) is a thin adapter over `SystemActionDispatcher`
 (`server/src/modules/systemActions/systemActionDispatcher.ts`). It may
 translate transport-specific request/response shapes and assemble which
 actions to expose, but it must not itself decide grants, evaluate policy,
 mutate a domain table, or otherwise define action semantics — that belongs to
 the single `SystemActionGateway`/`SystemActionDispatcher` path
-(`CliAgentToolTransport`'s Run-scoped REST tool surface and
-`ManagedAgentToolSurface`'s managed model loop both call it directly).
+(`CliAgentToolTransport`'s Run-scoped REST tool surface calls it directly).
 Runtime delegation materialization
 (`AgentGroupRuntimeDelegationMaterializer`) is a documented exception, not a
 model to copy: it runs after the Run has already terminated and so cannot go
