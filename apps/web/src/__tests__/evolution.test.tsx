@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import type {
@@ -591,5 +591,101 @@ describe('Evolution module', () => {
     expect(evolutionApi.summary).toHaveBeenCalledTimes(2)
     expect(proposalsApi.accept).not.toHaveBeenCalled()
     expect(proposalsApi.reject).not.toHaveBeenCalled()
+  })
+})
+
+function targetRow(over: Partial<EvolutionTarget>): EvolutionTarget {
+  return {
+    id: 'target-1', space_id: null, target_name: 'Target One', target_type: 'agent_version',
+    target_ref_type: 'capability', target_ref_id: 'cap-1', capability_key: 'cap-1',
+    current_version_id: null, current_version: null, scope: 'system', purpose: null,
+    risk_level: 'medium', status: 'active', enabled: true, recent_signal_count: 1, last_run_at: null,
+    engine_policy_json: {}, metadata_json: { agent_id: 'agent-1' },
+    created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+    ...over,
+  } as EvolutionTarget
+}
+
+function signalRow(targetId: string, summary: string): EvolutionSignal {
+  return {
+    id: `signal-${targetId}-${summary}`, space_id: 'personal-1', target_id: targetId, target_name: targetId,
+    target_type: 'agent_version', capability_key: 'cap', signal_type: 'runtime_failure', source_type: 'manual',
+    source_id: null, severity: 'medium', summary, payload_json: {}, created_at: '2026-01-01T00:00:00Z',
+  } as EvolutionSignal
+}
+
+describe('Evolution page keeps the current selection', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('shows the signals of the target selected last, not of a slower earlier request', async () => {
+    const one = targetRow({ id: 'target-1', target_name: 'Target One' })
+    const two = targetRow({ id: 'target-2', target_name: 'Target Two' })
+    mockEvolutionData({ targets: [one, two] })
+    let finishOne!: (signals: EvolutionSignal[]) => void
+    evolutionApiMock.targetSignals.mockImplementation((targetId: string) => (targetId === 'target-1'
+      ? new Promise<EvolutionSignal[]>(resolve => { finishOne = resolve })
+      : Promise.resolve([signalRow('target-2', 'Signal for two')])))
+    renderPage()
+    const user = userEvent.setup({ delay: null })
+
+    expect(await screen.findAllByText('Target One')).not.toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: /Target Two/ }))
+    await user.click(screen.getByRole('tab', { name: 'Trigger signals' }))
+    expect(await screen.findByText('Signal for two')).toBeInTheDocument()
+
+    await act(async () => { finishOne([signalRow('target-1', 'Signal for one')]) })
+    expect(screen.queryByText('Signal for one')).not.toBeInTheDocument()
+    expect(screen.getByText('Signal for two')).toBeInTheDocument()
+  })
+
+  it('does not reload the run target\'s signals over the target selected meanwhile', async () => {
+    const one = targetRow({ id: 'target-1', target_name: 'Target One' })
+    const two = targetRow({ id: 'target-2', target_name: 'Target Two' })
+    mockEvolutionData({ targets: [one, two] })
+    evolutionApiMock.targetSignals.mockImplementation((targetId: string) => Promise.resolve([signalRow(targetId, `Signal for ${targetId}`)]))
+    let finishRun!: () => void
+    evolutionApiMock.runTarget.mockImplementation(() => new Promise(resolve => {
+      finishRun = () => resolve({
+        run_id: 'run-1', target_id: 'target-1', selector_decision_id: 'decision-1',
+        selected_strategy_key: 'repair.runtime_failure', run_status: 'succeeded', proposal_ids: [],
+      })
+    }))
+    renderPage()
+    const user = userEvent.setup({ delay: null })
+
+    expect(await screen.findAllByText('Target One')).not.toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: /Create improvement plan/i }))
+    await waitFor(() => expect(evolutionApi.runTarget).toHaveBeenCalledWith('target-1', expect.anything()))
+    await user.click(screen.getByRole('button', { name: /Target Two/ }))
+    await user.click(screen.getByRole('tab', { name: 'Trigger signals' }))
+    expect(await screen.findByText('Signal for target-2')).toBeInTheDocument()
+
+    await act(async () => { finishRun() })
+    await waitFor(() => expect(evolutionApi.summary).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Create improvement plan/i })).toBeEnabled())
+    expect(screen.queryByText('Signal for target-1')).not.toBeInTheDocument()
+    expect(screen.getByText('Signal for target-2')).toBeInTheDocument()
+  })
+
+  it('selects a target copied from the Archived tab, on the Active tab where it lives', async () => {
+    const active = targetRow({ id: 'target-1', target_name: 'Target One' })
+    const archived = targetRow({ id: 'target-9', target_name: 'Old Target', status: 'archived' })
+    const created = targetRow({ id: 'target-created', target_name: 'Old Target copy' })
+    mockEvolutionData({ targets: [active, archived] })
+    evolutionApiMock.targets.mockResolvedValueOnce([active, archived]).mockResolvedValue([active, archived, created])
+    evolutionApiMock.createTarget.mockResolvedValue(created)
+    renderPage()
+    const user = userEvent.setup({ delay: null })
+
+    expect(await screen.findAllByText('Target One')).not.toHaveLength(0)
+    await user.click(screen.getByRole('tab', { name: /Archived/ }))
+    expect(await screen.findAllByText('Old Target')).not.toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: /Copy target/i }))
+    await user.click(screen.getByRole('button', { name: /Create target/i }))
+    await waitFor(() => expect(evolutionApi.createTarget).toHaveBeenCalled())
+
+    expect(await screen.findByRole('button', { name: /Old Target copy/ })).toHaveAttribute('aria-pressed', 'true')
   })
 })
