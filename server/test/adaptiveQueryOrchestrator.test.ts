@@ -323,6 +323,40 @@ describe("AdaptiveQueryOrchestrator", () => {
       expect(retriedAttempt).toBeTruthy();
     });
 
+    it("restarts a selected plan from the attempt that was selected, not from a later step that failed its preview", async () => {
+      const store = new FakeStore(["arxiv"]);
+      store.seedSelected("arxiv");
+      const plan = store.provider_plans()[0]!;
+      const selected = plan.attempts[0]!;
+      // A broaden step tried after the selection, never observed: the plan
+      // kept the selected attempt and this one carries only its error.
+      plan.attempts.push({
+        ...selected,
+        id: "later-broaden",
+        sequence: 2,
+        direction: "broaden",
+        semantic_query: { ...selected.semantic_query, qualifiers: [] },
+        observation: null,
+        score: null,
+        decision: null,
+        error_class: "timeout",
+      });
+
+      const orchestrator = new AdaptiveQueryOrchestrator({} as Queryable, {} as ServerConfig, {
+        repository: store,
+        contextRepository: { get: async () => contextVersion() },
+        intentPlanner: { plan: async () => { throw new Error("must not run"); } },
+        previewGateway: { preview: async () => ({ providerHitCount: 50, accessibleHitCount: 50, candidates: [] }) },
+        assessor: { assess: () => observation(50) },
+      });
+      await orchestrator.retryProvider({ spaceId: "space", userId: "user" }, {
+        projectId: "project", strategyId: "strategy", providerKey: "arxiv",
+      });
+
+      const retried = store.attempts.find((attempt) => attempt.providerPlanId === plan.id && attempt.round === 1);
+      expect(retried?.semanticQuery).toEqual(selected.semantic_query);
+    });
+
     it("continues a retried plan's attempts in a new round instead of colliding with round 0's sequence", async () => {
       const store = new FakeStore(["openalex"]);
       store.seedUnavailable("openalex");

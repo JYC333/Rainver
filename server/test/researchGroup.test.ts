@@ -770,6 +770,13 @@ describe("researchQueryRepositoryDb", () => {
         { round: 1, sequence: 1 },
       ]);
       expect(storedPlan).toMatchObject({ status: "selected", selected_attempt_id: round1Attempt.id });
+
+      // Once materialized, a forced recompute (a retry that outran the
+      // materialization) must leave the strategy materialized.
+      await db.pool.query(`UPDATE research_query_strategies SET status='materialized', materialized_at=now() WHERE id=$1`, [strategy.id]);
+      await queries.finalizeStrategy(SPACE, strategy.id, { force: true });
+      const materialized = await db.pool.query<{ status: string }>(`SELECT status FROM research_query_strategies WHERE id=$1`, [strategy.id]);
+      expect(materialized.rows[0]?.status).toBe("materialized");
     });
 
     it("resets an already-selected provider plan too, clearing its old selection so a retry can record its own — but refuses once the strategy is materialized", async () => {

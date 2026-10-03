@@ -229,16 +229,24 @@ export class AdaptiveQueryOrchestrator {
 
     const { nextRound } = await this.repository.resetProviderPlan(identity.spaceId, plan.id);
 
-    const lastAttempt = plan.attempts[plan.attempts.length - 1];
-    const intent = lastAttempt
-      ? lastAttempt.semantic_query
+    // The retry starts from the combination the plan stood on: the selected
+    // attempt when one was selected (the last attempt may be a later,
+    // unverified step that failed its preview), otherwise the last attempt
+    // that was actually observed, otherwise the last attempt at all.
+    const baseAttempt = (plan.selected_attempt_id
+      ? plan.attempts.find((attempt) => attempt.id === plan.selected_attempt_id)
+      : undefined)
+      ?? [...plan.attempts].reverse().find((attempt) => attempt.observation !== null)
+      ?? plan.attempts[plan.attempts.length - 1];
+    const intent = baseAttempt
+      ? baseAttempt.semantic_query
       : await this.intentPlanner!.plan(identity, contextVersion.context, input.execution);
-    // Seed the new round with the last attempt's exact compiled combination
-    // (not ladder.initial(intent), which re-ranks and truncates core/
-    // expansions/qualifiers/exclusions from scratch and would silently
-    // discard adaptations a prior narrow()/broaden() step already made).
-    const startingStep: ResearchQueryLadderStep | undefined = lastAttempt
-      ? { sequence: 1, direction: "initial", semanticQuery: lastAttempt.semantic_query }
+    // Seed the new round with that attempt's exact compiled combination (not
+    // ladder.initial(intent), which re-ranks and truncates core/expansions/
+    // qualifiers/exclusions from scratch and would silently discard
+    // adaptations a prior narrow()/broaden() step already made).
+    const startingStep: ResearchQueryLadderStep | undefined = baseAttempt
+      ? { sequence: 1, direction: "initial", semanticQuery: baseAttempt.semantic_query }
       : undefined;
     const providerBudget = Math.max(1, Math.trunc(Number(strategy.execution_budget.provider_candidate_budget) || 1));
 

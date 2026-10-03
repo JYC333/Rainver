@@ -394,6 +394,10 @@ export class ResearchQueryRepository {
         [strategyId, spaceId],
       );
       if (!strategy.rows[0]) throw new HttpError(404, "Research query strategy not found");
+      // A materialized strategy is past selection: channels exist and research
+      // reads it by that status. A forced recompute (a provider retry that
+      // started before materialization) must not write it back to selected.
+      if (strategy.rows[0].status === "materialized") return "selected";
       if (!options.force) {
         if (strategy.rows[0].status === "selected") return "selected";
         if (strategy.rows[0].status === "failed") return "failed";
