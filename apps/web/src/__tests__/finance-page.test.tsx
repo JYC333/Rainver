@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import {
   createFinancePage,
@@ -251,9 +251,11 @@ describe('FinancePage', () => {
   })
 
   it("defaults a new transaction's date to the user's local day, not the UTC day", async () => {
-    const previousTz = process.env.TZ
+    // Node re-reads TZ on change, so the zone can be set for this test alone.
+    const env = (globalThis as { process?: { env: Record<string, string | undefined> } }).process!.env
+    const previousTz = env.TZ
     // UTC+8, where 22:30 UTC on the 1st is 06:30 on the 2nd.
-    process.env.TZ = 'Etc/GMT-8'
+    env.TZ = 'Etc/GMT-8'
     vi.useFakeTimers({ now: new Date('2026-10-01T22:30:00Z'), toFake: ['Date'] })
     try {
       const api = fakeApi()
@@ -262,8 +264,8 @@ describe('FinancePage', () => {
       expect(await screen.findByLabelText('Date')).toHaveValue('2026-10-02')
     } finally {
       vi.useRealTimers()
-      if (previousTz === undefined) delete process.env.TZ
-      else process.env.TZ = previousTz
+      if (previousTz === undefined) delete env.TZ
+      else env.TZ = previousTz
     }
   })
 

@@ -41,6 +41,10 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, he
   const shellRef = useRef<HTMLDivElement>(null)
   const readerRef = useRef<ReadOnlyTiptapReaderHandle>(null)
   const commentInputRef = useRef<HTMLTextAreaElement>(null)
+  // The annotation whose threads the panel is showing. A thread list that
+  // arrives for an annotation selected earlier is dropped against this.
+  const selectedAnnotationIdRef = useRef<string | null>(null)
+  selectedAnnotationIdRef.current = selectedAnnotation?.id ?? null
   const ordered = useMemo(() => activeAnnotationsInDocumentOrder(annotations), [annotations])
 
   useEffect(() => { setSelection(null); setSelectedAnnotation(null); setThreads([]); setFocusedBlock(null) }, [document.document_type, document.document_id])
@@ -52,8 +56,12 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, he
 
   const selectAnnotation = useCallback((annotation: ReaderAnnotation, scroll = false) => {
     setSelectedAnnotation(annotation); setSelection(null); setPanelOpen(true)
+    selectedAnnotationIdRef.current = annotation.id
+    setThreads([])
     if (scroll) shellRef.current?.querySelector(`[data-annotation-id="${CSS.escape(annotation.id)}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    readerApi.listThreads(annotation.id).then(result => setThreads(result.items)).catch(error => toast.error(errMsg(error)))
+    readerApi.listThreads(annotation.id)
+      .then(result => { if (selectedAnnotationIdRef.current === annotation.id) setThreads(result.items) })
+      .catch(error => toast.error(errMsg(error)))
   }, [])
 
   const createAnnotation = useCallback(async (type: ReaderAnnotationType, selected: TextSelection) => {
@@ -121,7 +129,8 @@ export function ReaderWorkspace({ document, annotations, onAnnotationsChange, he
         createLabel={label} onCreateLabelChange={setLabel}
         commentInputRef={commentInputRef} onSelectAnnotation={annotation => selectAnnotation(annotation, true)}
         onAnnotationArchived={id => { onAnnotationsChange(annotations.filter(item => item.id !== id)); setSelectedAnnotation(null); setThreads([]) }}
-        onThreadsUpdated={setThreads} onClose={() => setPanelOpen(false)} />}
+        onThreadsUpdated={(annotationId, update) => { if (selectedAnnotationIdRef.current === annotationId) setThreads(update) }}
+        onClose={() => setPanelOpen(false)} />}
     </div>
     {selection && <ReaderSelectionToolbar selectionRect={selection.selectionRect} pending={pendingType !== null} onAction={type => void createAnnotation(type, selection)} />}
     <ReaderShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />

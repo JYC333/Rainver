@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from './button'
 import { cn } from '../../lib/utils'
@@ -15,6 +16,15 @@ export function Pagination({ total, limit, offset, onChange, className }: Pagina
   const pages    = Math.ceil(total / limit)
   const hasPrev  = offset > 0
   const hasNext  = offset + limit < total
+
+  // An offset past the end — the list shrank under the caller, say by the
+  // last item of page two leaving the filter — is an empty page with no way
+  // back once the controls are hidden. Settle it onto the last real page.
+  const lastPageOffset = total > 0 ? Math.floor((total - 1) / limit) * limit : 0
+  const pastEnd = offset > lastPageOffset
+  useEffect(() => {
+    if (pastEnd) onChange(lastPageOffset)
+  }, [pastEnd, lastPageOffset, onChange])
 
   if (total <= limit) return null
 

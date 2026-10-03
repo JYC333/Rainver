@@ -91,6 +91,29 @@ describe('ContentAccessControl', () => {
     }))
   })
 
+  it('offers nothing to save when the policy could not be reloaded, rather than an abandoned edit', async () => {
+    getPolicy.mockResolvedValueOnce(policy)
+    members.mockResolvedValue([])
+    render(<MemoryRouter><ContentAccessControl resourceType="artifact" resourceId="artifact-1" ownerUserId="user-1" /></MemoryRouter>)
+
+    // First visit: widen to the whole Space, then leave without saving.
+    fireEvent.click(screen.getByRole('button', { name: 'Access' }))
+    await screen.findByText('Only me')
+    fireEvent.click(screen.getByRole('button', { name: 'Whole Space' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByText('Content access')).toBeNull())
+
+    // Second visit: the server cannot be reached. What is on screen is not the
+    // current policy, so it must not be presented or saveable as one.
+    getPolicy.mockRejectedValueOnce(new Error('offline'))
+    fireEvent.click(screen.getByRole('button', { name: 'Access' }))
+    await screen.findByText('Content access')
+    await waitFor(() => expect(getPolicy).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('button', { name: 'Save access' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Whole Space' })).toBeNull()
+    expect(updatePolicy).not.toHaveBeenCalled()
+  })
+
   it('does not render an admin-only read bypass for an ordinary non-owner', () => {
     render(<ContentAccessControl resourceType="artifact" resourceId="artifact-1" ownerUserId="user-9" />)
     expect(screen.queryByRole('button', { name: 'Access' })).not.toBeInTheDocument()

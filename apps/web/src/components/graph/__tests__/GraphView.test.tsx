@@ -570,6 +570,24 @@ describe('GraphView', () => {
     expect(graph.destroyed).toBe(false)
   })
 
+  it('shows the layout the projection actually uses until the person picks one', () => {
+    // A global view comes back clustered; the toolbar used to say Force, and
+    // choosing Force then changed nothing because the control's value had
+    // not changed.
+    function Harness() {
+      const [viewState, setViewState] = useState(() => normalizeGraphViewState())
+      return (
+        <GraphView
+          projection={{ ...projection, layout: { mode: 'clustered' } }}
+          viewState={viewState}
+          onViewStateChange={(nextState) => setViewState(nextState)}
+        />
+      )
+    }
+    render(<Harness />)
+    expect(screen.getByRole('combobox', { name: /graph layout/i })).toHaveValue('clustered')
+  })
+
   it('keeps toolbar layout selections while graph data is unavailable', async () => {
     const user = userEvent.setup({ delay: null })
     function Harness() {

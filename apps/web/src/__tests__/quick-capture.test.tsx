@@ -80,6 +80,27 @@ describe('FloatingQuickCapture outside a Project', () => {
   })
 })
 
+describe('FloatingQuickCapture while a capture is saving', () => {
+  it('keeps what was typed after submitting, and clears only the text that was sent', async () => {
+    // The box keeps focus after a capture so the next thought can follow at
+    // once; a slow save must not throw away what arrived while it ran.
+    let finish: (value: unknown) => void = () => {}
+    createCapture.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const box = open()
+    fireEvent.change(box, { target: { value: 'First thought' } })
+    fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true })
+    await waitFor(() => expect(createCapture).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(box, { target: { value: 'First thought second thought' } })
+    finish({
+      activity_id: 'activity-2', destination: 'personal_inbox', space_id: 'personal-1', project_id: null,
+      visibility: 'private', status: 'raw', note_id: null, note_title: null,
+    })
+
+    await waitFor(() => expect(box).toHaveValue('second thought'))
+  })
+})
+
 describe('FloatingQuickCapture destination inference', () => {
   it('defaults hand-typed text to marginalia on the Area object', async () => {
     captureContext.value = { projectId: 'project-1', target: { objectId: 'thread-1', title: 'H3' } }
