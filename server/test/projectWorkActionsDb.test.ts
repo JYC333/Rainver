@@ -23,6 +23,7 @@ import {
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 
 /**
  * The Agent's Project write surface.
@@ -350,6 +351,40 @@ describe("task.complete", () => {
     const kinds = (await events(task)).map((event) => event.kind);
     expect(kinds).toContain("task.flow_changed");
     expect(kinds).toContain("task.reported");
+  });
+
+  it("stamps completed_at when the Agent closes the Task, as the Board and settlement do", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask(task);
+
+    await completeTask(db.pool!, await agentContext(), { task_id: task, summary: "done" });
+
+    const row = await db.pool!.query<{ completed_at: string | null }>(`SELECT completed_at FROM tasks WHERE id = $1`, [task]);
+    expect(row.rows[0]?.completed_at).not.toBeNull();
+  });
+
+  it("does not overwrite a cancel made while the Agent was completing the Task", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask(task);
+    const person = await db.pool!.connect();
+    try {
+      await person.query("BEGIN");
+      await person.query(`UPDATE tasks SET status = 'cancelled', cancelled_at = now() WHERE id = $1`, [task]);
+      let settled = false;
+      const closing = completeTask(db.pool!, await agentContext(), { task_id: task, summary: "finished" })
+        .finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool!, { settled: () => settled });
+      await person.query("COMMIT");
+      await expect(closing).rejects.toMatchObject({ statusCode: 409 });
+    } finally {
+      await person.query("ROLLBACK").catch(() => undefined);
+      person.release();
+    }
+    const row = await db.pool!.query<{ status: string }>(`SELECT status FROM tasks WHERE id = $1`, [task]);
+    expect(row.rows[0]?.status).toBe("cancelled");
+    expect((await events(task)).map((event) => event.kind)).not.toContain("task.flow_changed");
   });
 
   it("refuses a Task that is already closed rather than writing the move twice", async (ctx) => {

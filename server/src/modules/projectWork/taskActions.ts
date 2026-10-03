@@ -62,12 +62,17 @@ export async function requireProjectTask(
   taskId: string,
   instructedByUserId: string,
   projectId: string,
+  options: { lock?: boolean } = {},
 ): Promise<TaskRow & { project_id: string }> {
+  // A write path reads under the row lock, as the Board's updateTask does:
+  // the status it decides on must be the status it then changes, or two
+  // closes both pass the gate, and a cancel made meanwhile is overwritten.
   const result = await db.query<TaskRow>(
     `SELECT t.id, t.project_id, t.status, t.title
        FROM tasks t
       WHERE t.space_id = $1 AND t.id = $2 AND t.deleted_at IS NULL
-        AND ${contentReadSql("task", "t", "$3")}`,
+        AND ${contentReadSql("task", "t", "$3")}
+      ${options.lock ? "FOR UPDATE OF t" : ""}`,
     [spaceId, taskId, instructedByUserId],
   );
   const task = result.rows[0];
@@ -200,7 +205,15 @@ export async function handoffTask(
   context: AgentActionContext,
   input: { task_id: string; to: { kind: "user" | "agent"; id: string } | null; note?: string | null },
 ): Promise<{ task_id: string }> {
-  const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId, context.projectId);
+  return withQueryableTransaction(db, (tx) => handoffTaskIn(tx, context, input));
+}
+
+async function handoffTaskIn(
+  db: Queryable,
+  context: AgentActionContext,
+  input: { task_id: string; to: { kind: "user" | "agent"; id: string } | null; note?: string | null },
+): Promise<{ task_id: string }> {
+  const task = await requireProjectTask(db, context.spaceId, input.task_id, context.instructedByUserId, context.projectId, { lock: true });
   if (task.status === "done" || task.status === "cancelled") {
     throw new HttpError(409, `Task is ${task.status}; there is no work left to hand off`);
   }
@@ -242,10 +255,10 @@ export async function handoffTask(
     if (agent.rowCount === 0) throw new HttpError(422, "That Agent is not available to this Task's Project");
   }
 
-  await db.query(
+  const handed = await db.query(
     `UPDATE tasks
         SET claimed_by_user_id = $3, claimed_by_agent_id = $4, updated_at = now()
-      WHERE space_id = $1 AND id = $2`,
+      WHERE space_id = $1 AND id = $2 AND status NOT IN ('done', 'cancelled')`,
     [
       context.spaceId,
       task.id,
@@ -253,6 +266,7 @@ export async function handoffTask(
       input.to?.kind === "agent" ? input.to.id : null,
     ],
   );
+  if (handed.rowCount === 0) throw new HttpError(409, "Task was closed while it was being handed off");
   await appendProjectWorkEvent(db, {
     spaceId: context.spaceId,
     projectId: task.project_id,
@@ -326,7 +340,7 @@ export async function completeTask(
   input: { task_id: string; summary: string },
 ): Promise<{ task_id: string; status: string; event_id: string }> {
   return withQueryableTransaction(db, async (tx) => {
-    const task = await requireProjectTask(tx, context.spaceId, input.task_id, context.instructedByUserId, context.projectId);
+    const task = await requireProjectTask(tx, context.spaceId, input.task_id, context.instructedByUserId, context.projectId, { lock: true });
     if (task.status === "done") throw new HttpError(409, "Task is already done");
     if (task.status === "cancelled") throw new HttpError(409, "Task is cancelled and cannot be completed");
     const outputs = await tx.query<{ required_outputs_json: unknown }>(
@@ -352,10 +366,13 @@ export async function completeTask(
       });
     }
     const overridden = completion.missing;
-    await tx.query(
-      `UPDATE tasks SET status = 'done', updated_at = now() WHERE space_id = $1 AND id = $2`,
-      [context.spaceId, task.id],
+    const closed = await tx.query(
+      `UPDATE tasks
+          SET status = 'done', completed_at = COALESCE(completed_at, now()), updated_at = now()
+        WHERE space_id = $1 AND id = $2 AND status = $3`,
+      [context.spaceId, task.id, task.status],
     );
+    if (closed.rowCount === 0) throw new HttpError(409, "Task changed while it was being completed");
     const event = await appendProjectWorkEvent(tx, {
       spaceId: context.spaceId,
       projectId: task.project_id,
@@ -404,7 +421,7 @@ export async function requestTaskReview(
   input: { task_id: string; reason: string; options?: readonly string[] },
 ): Promise<{ task_id: string; status: string }> {
   return withQueryableTransaction(db, async (tx) => {
-    const task = await requireProjectTask(tx, context.spaceId, input.task_id, context.instructedByUserId, context.projectId);
+    const task = await requireProjectTask(tx, context.spaceId, input.task_id, context.instructedByUserId, context.projectId, { lock: true });
     if (task.status === "done" || task.status === "cancelled") {
       throw new HttpError(409, `Task is ${task.status} and cannot be sent for review`);
     }
@@ -414,11 +431,12 @@ export async function requestTaskReview(
     if (task.status === "waiting_for_review") {
       throw new HttpError(409, "Task is already waiting for a decision");
     }
-    await tx.query(
+    const held = await tx.query(
       `UPDATE tasks SET status = 'waiting_for_review', updated_at = now()
-        WHERE space_id = $1 AND id = $2`,
-      [context.spaceId, task.id],
+        WHERE space_id = $1 AND id = $2 AND status = $3`,
+      [context.spaceId, task.id, task.status],
     );
+    if (held.rowCount === 0) throw new HttpError(409, "Task changed while it was being sent for review");
 
     const event = await appendProjectWorkEvent(tx, {
       spaceId: context.spaceId,

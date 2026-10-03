@@ -9,6 +9,7 @@ import { PgRunRepository } from "../src/modules/runs/repository.js";
 import type { RunRecord } from "../src/modules/runs/runRepositoryTypes.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 
 /**
  * Real-Postgres coverage for Run settlement.
@@ -269,6 +270,31 @@ describe("run settlement", () => {
     const row = await db.pool!.query<{ status: string; blocked_reason: string | null }>(
       `SELECT status, blocked_reason FROM tasks WHERE id = $1`, [task]);
     expect(row.rows[0]).toEqual({ status: "blocked", blocked_reason: "Waiting on the vendor" });
+  });
+
+  it("does not erase a block placed while settlement was deciding, and writes no event for a move it did not make", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    const run = randomUUID();
+    await makeTask(task);
+    await makeRun(run, task, "succeeded", "2026-08-27T00:00:00.000Z");
+    await evaluate(task, run, "accept");
+    await finalize(run);
+    const person = await db.pool!.connect();
+    try {
+      await person.query("BEGIN");
+      await person.query(`UPDATE tasks SET status = 'blocked', blocked_reason = 'Waiting on the vendor' WHERE id = $1`, [task]);
+      let settled = false;
+      const settling = settleTasksForRun(db.pool!, SPACE, run).finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool!, { settled: () => settled });
+      await person.query("COMMIT");
+      await expect(settling).resolves.toEqual([]);
+    } finally {
+      await person.query("ROLLBACK").catch(() => undefined);
+      person.release();
+    }
+    expect(await taskRow(task)).toMatchObject({ status: "blocked" });
+    expect(await eventKindCounts(task)).toEqual({});
   });
 
   it("bubbles a Supervisor review hold up to the Task", async (ctx) => {
