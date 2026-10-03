@@ -47,12 +47,23 @@ export function scheduleRuleFromForm(fetchFrequency: string, value: ScheduleForm
   if (!isScheduledFrequency(fetchFrequency)) return null
   if (!isScheduleFormComplete(fetchFrequency, value)) return undefined
   if (fetchFrequency === 'hourly') {
-    return { frequency: 'hourly', minute: Number(value.minute) }
+    // The server runs the rule at a UTC minute; the form holds the local
+    // one, which differs in a zone offset by a part of an hour.
+    const candidate = new Date(now)
+    candidate.setMinutes(Number(value.minute), 0, 0)
+    return { frequency: 'hourly', minute: candidate.getUTCMinutes() }
   }
   if (fetchFrequency === 'daily') {
     return utcRuleFromLocalCandidate('daily', nextDailyLocalOccurrence(Number(value.hour), Number(value.minute), now))
   }
   return utcRuleFromLocalCandidate('weekly', nextWeeklyLocalOccurrence(Number(value.weekday), Number(value.hour), Number(value.minute), now))
+}
+
+/** The local minute the form shows for an hourly rule's UTC minute. */
+export function hourlyFormMinuteFromRule(utcMinute: number, now = new Date()): string {
+  const candidate = new Date(now)
+  candidate.setUTCMinutes(utcMinute, 0, 0)
+  return String(candidate.getMinutes())
 }
 
 function nextDailyLocalOccurrence(hour: number, minute: number, now: Date) {

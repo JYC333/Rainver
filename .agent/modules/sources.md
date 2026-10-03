@@ -347,9 +347,11 @@ can be retried, rather than becoming a generic runtime supervisor review.
 
 Scheduled source connections use frequency-specific rules rather than a raw
 "next run" picker. Hourly schedules choose a minute, daily schedules choose
-hour/minute, and weekly schedules choose weekday/hour/minute. The API stores
-the normalized UTC rule in `source_channels.schedule_rule_json` and returns
-it as `schedule_rule_json` alongside the computed `next_check_at`.
+hour/minute, and weekly schedules choose weekday/hour/minute. The web form
+takes local times and converts every frequency, the hourly minute included,
+into the UTC rule it submits, and reads a rule back as local time. The API
+stores the normalized UTC rule in `source_channels.schedule_rule_json` and
+returns it as `schedule_rule_json` alongside the computed `next_check_at`.
 After each scheduled scan, the next run is recomputed from the rule so schedules
 do not drift based on job completion time. The scheduler task owns only runtime
 cursor/state (`next_run_at`, `last_run_at`, status, and operational metadata),

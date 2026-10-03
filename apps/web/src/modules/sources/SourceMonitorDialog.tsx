@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useEffect, useState, useRef } from 'react'
 import { toast } from 'sonner'
 import { sourcesApi } from '../../api/client'
 import { Badge } from '../../components/ui/badge'
@@ -14,6 +14,7 @@ import {
   FREQUENCIES,
   scheduleRuleFromForm,
   type ScheduleFormValue,
+  hourlyFormMinuteFromRule,
 } from './sourcePageModel'
 import type { SourceCapturePolicy, SourceChannel, SourceProvider, SourceProviderCategoryGroup, SourceQueryPreview } from '../../types/api'
 
@@ -85,6 +86,8 @@ function SourceMonitorDialogContent({
   const [previewing, setPreviewing] = useState(false)
   const [preview, setPreview] = useState<SourceQueryPreview | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
+  const previewRequest = useRef(0)
+  const sourceNameEdited = useRef(false)
 
   const provider = providers.find(item => item.provider_key === providerKey)
   const searchMode = supportsSearch(provider)
@@ -107,6 +110,7 @@ function SourceMonitorDialogContent({
         ? 'category'
         : 'search'
     setProviderKey(nextProviderKey)
+    sourceNameEdited.current = false
     setSourceName(monitor?.source_name ?? initialSourceName ?? nextProvider?.display_name ?? '')
     setMonitorName(monitor?.name ?? '')
     setSearchQuery(String(monitor?.query.search_query ?? ''))
@@ -120,10 +124,20 @@ function SourceMonitorDialogContent({
     setPreviewError(null)
   }, [initialProviderKey, initialSourceName, monitor, open, providers])
 
+  // A new source is named after its platform until the name is edited by
+  // hand; then the typed name stays, through platform changes and clearing.
   useEffect(() => {
-    if (!provider) return
-    if (!sourceName.trim()) setSourceName(provider.display_name)
-  }, [provider, sourceName])
+    if (!provider || monitor || initialSourceName || sourceNameEdited.current) return
+    setSourceName(provider.display_name)
+  }, [initialSourceName, monitor, provider])
+
+  /** A preview answers one query; any change to that query withdraws it, including one still in flight. */
+  function clearPreview() {
+    previewRequest.current += 1
+    setPreview(null)
+    setPreviewError(null)
+    setPreviewing(false)
+  }
 
   function currentQuery(): Record<string, unknown> {
     if (!searchMode) return {}
@@ -145,15 +159,17 @@ function SourceMonitorDialogContent({
       setPreviewError('Select at least one arXiv category before testing it.')
       return
     }
+    const request = ++previewRequest.current
     setPreviewing(true)
     setPreview(null)
     setPreviewError(null)
     try {
-      setPreview(await sourcesApi.previewQuery({ provider_key: provider.provider_key, query: currentQuery(), ...(monitor ? { source_channel_id: monitor.id } : {}) }))
+      const result = await sourcesApi.previewQuery({ provider_key: provider.provider_key, query: currentQuery(), ...(monitor ? { source_channel_id: monitor.id } : {}) })
+      if (request === previewRequest.current) setPreview(result)
     } catch (error) {
-      setPreviewError(errMsg(error))
+      if (request === previewRequest.current) setPreviewError(errMsg(error))
     } finally {
-      setPreviewing(false)
+      if (request === previewRequest.current) setPreviewing(false)
     }
   }
 
@@ -248,11 +264,11 @@ function SourceMonitorDialogContent({
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="space-y-1 text-sm">
                   <span>Source platform</span>
-                  <Select options={providers.map(item => ({ value: item.provider_key, label: item.display_name }))} value={providerKey} onChange={setProviderKey} ariaLabel="Source platform" />
+                  <Select options={providers.map(item => ({ value: item.provider_key, label: item.display_name }))} value={providerKey} onChange={value => { setProviderKey(value); clearPreview() }} ariaLabel="Source platform" />
                 </label>
                 <label className="space-y-1 text-sm">
                   <span>Source name</span>
-                  <Input value={sourceName} onChange={event => setSourceName(event.target.value)} placeholder={provider?.display_name ?? 'Academic sources'} />
+                  <Input value={sourceName} onChange={event => { sourceNameEdited.current = true; setSourceName(event.target.value) }} placeholder={provider?.display_name ?? 'Academic sources'} />
                 </label>
                 <label className="space-y-1 text-sm">
                   <span>Capture policy</span>
@@ -289,7 +305,7 @@ function SourceMonitorDialogContent({
                 {isArxiv && (
                   <label className="block space-y-1 text-sm">
                     <span>Search scope</span>
-                    <Select options={ARXIV_SOURCE_MODE_OPTIONS} value={arxivMode} onChange={value => setArxivMode(value as ArxivSourceMode)} ariaLabel="Search scope" />
+                    <Select options={ARXIV_SOURCE_MODE_OPTIONS} value={arxivMode} onChange={value => { setArxivMode(value as ArxivSourceMode); clearPreview() }} ariaLabel="Search scope" />
                   </label>
                 )}
                 {(!isArxiv || arxivMode === 'search') && (
@@ -306,7 +322,7 @@ function SourceMonitorDialogContent({
                 {isArxiv && arxivMode === 'category' && (
                   <div className="block space-y-1 text-sm">
                     <span>Categories</span>
-                    <ArxivCategoryPicker groups={categoryGroups} value={categories} onChange={setCategories} />
+                    <ArxivCategoryPicker groups={categoryGroups} value={categories} onChange={value => { setCategories(value); clearPreview() }} />
                     <span className="text-xs text-muted-foreground">The monitor follows new papers in the selected categories.</span>
                   </div>
                 )}
@@ -363,7 +379,9 @@ function SourceMonitorDialogContent({
 function scheduleFormValueFromRule(rule: SourceChannel['schedule_rule'] | undefined): ScheduleFormValue {
   if (!rule || typeof rule !== 'object') return { ...DEFAULT_SCHEDULE }
   const minute = validSchedulePart(rule.minute, 0, 59) ? String(rule.minute) : DEFAULT_SCHEDULE.minute
-  if (rule.frequency === 'hourly') return { ...DEFAULT_SCHEDULE, minute }
+  if (rule.frequency === 'hourly') {
+    return { ...DEFAULT_SCHEDULE, minute: validSchedulePart(rule.minute, 0, 59) ? hourlyFormMinuteFromRule(rule.minute) : minute }
+  }
 
   if (
     (rule.frequency === 'daily' || rule.frequency === 'weekly')

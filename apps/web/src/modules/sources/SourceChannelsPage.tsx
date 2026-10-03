@@ -52,10 +52,13 @@ function formatTimestamp(value: string | null): string {
 function groupSources(channels: SourceChannel[]): SourceGroup[] {
   const groups = new Map<string, SourceGroup>()
   for (const channel of channels) {
+    // The source reads as running or not; archived monitors count as stopped
+    // for the whole, the same way whichever monitor comes first.
+    const status = channel.status === 'active' ? 'active' : 'paused'
     const existing = groups.get(channel.source_connection_id)
     if (existing) {
       existing.monitors.push(channel)
-      existing.status = existing.status === 'mixed' || existing.status !== channel.status
+      existing.status = existing.status === 'mixed' || existing.status !== status
         ? 'mixed'
         : existing.status
       continue
@@ -65,7 +68,7 @@ function groupSources(channels: SourceChannel[]): SourceGroup[] {
       name: channel.source_name,
       provider: channel.provider,
       monitors: [channel],
-      status: channel.status === 'active' ? 'active' : 'paused',
+      status,
     })
   }
   return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name))
