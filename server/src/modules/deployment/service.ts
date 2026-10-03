@@ -291,10 +291,13 @@ export class DeploymentService {
       return this.getJobDetail(jobId);
     }
     if (!recorded) {
-      const existing = await this.repository.getJob(jobId);
-      if (!existing) throw new DeploymentNotFoundError("Deployment job not found");
+      const existing = await this.getJobDetail(jobId);
+      // A retry of the terminal report whose first attempt committed between
+      // this attempt's event check and its update: the job is not running any
+      // more because of this very event, which is recorded.
+      if (existing.events.some((event) => event.event_id === input.event_id)) return existing;
       // Cancelled or swept while the stage ran: the job is not revived.
-      throw new DeploymentConflictError(`Deployment job is ${existing.status}, not running`);
+      throw new DeploymentConflictError(`Deployment job is ${existing.job.status}, not running`);
     }
     return this.getJobDetail(jobId);
   }

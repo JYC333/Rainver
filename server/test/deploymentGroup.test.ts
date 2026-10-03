@@ -13,6 +13,7 @@ import {
 import { deploymentModule } from "../src/modules/deployment/index.js";
 import { DeploymentService } from "../src/modules/deployment/service.js";
 import { DeploymentRepository } from "../src/modules/deployment/repository.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 import { UNATTENDED_RUN_JOB_TYPES } from "../src/modules/deployment/drainAdmission.js";
 import { scanAutomationsAndFire } from "../src/modules/automations/scheduler.js";
 import { JobDeferredError, JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
@@ -452,6 +453,34 @@ describe("deployment authority", () => {
     );
     expect(terminalRetry.job.status).toBe("succeeded");
     expect(terminalRetry.events.map((event) => event.event_id)).toEqual(["e1", "e2"]);
+  });
+
+  it("answers a terminal report retried while its first attempt was still committing", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const job = await service().createJob("update", ADMIN);
+    await service().heartbeat(beat());
+    const terminal = stageEvent({ stage: "health", status: "succeeded", terminal: true }, "e-final");
+
+    // The first attempt has ended the job but not committed; the retry reads
+    // no event yet and then finds the job no longer running.
+    const firstAttempt = await db.pool.connect();
+    try {
+      await firstAttempt.query("BEGIN");
+      await new DeploymentRepository(firstAttempt).appendEvent({
+        job_id: job.id, event_id: terminal.event_id, stage: terminal.stage, status: terminal.status,
+        log_tail: null, target_tag: null, result_json: undefined, terminal: true,
+      });
+      let settled = false;
+      const retry = service().recordStageEvent(job.id, terminal).finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      await firstAttempt.query("COMMIT");
+      const detail = await retry;
+      expect(detail.job.status).toBe("succeeded");
+      expect(detail.events.map((event) => event.event_id)).toEqual(["e-final"]);
+    } finally {
+      await firstAttempt.query("ROLLBACK").catch(() => undefined);
+      firstAttempt.release();
+    }
   });
 
   it("names the failure with the end of the stage's own output", async (ctx) => {
