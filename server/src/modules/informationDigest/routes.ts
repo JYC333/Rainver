@@ -246,12 +246,17 @@ function profileInputError(error: unknown): unknown {
 }
 
 function digestDate(value?: string): string {
-  const next = value ?? new Date().toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  const next = value ?? today;
   try {
     assertDate(next);
   } catch {
     throw new HttpError(422, "date must be a valid YYYY-MM-DD calendar date");
   }
+  // A read materializes the day's snapshot and consumes standby items for
+  // it; a day that has not come would spend them on a snapshot the
+  // scheduled delivery later replaces.
+  if (next > today) throw new HttpError(422, "date must not be later than today (UTC)");
   return next;
 }
 

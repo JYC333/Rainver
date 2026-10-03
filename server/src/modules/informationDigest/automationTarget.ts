@@ -89,7 +89,9 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
     await withTransaction(pool, async (client) => {
       await new PgAutomationRepository(client).completeNativeAutomationRun({
         automationRunId: started.automationRunId,
-        status: probe?.status === "degraded" ? "degraded" : "succeeded",
+        // A probe that failed outright is not a succeeded Automation run:
+        // the standby pool got nothing and somebody should see that.
+        status: probe?.status === "degraded" || probe?.status === "failed" ? "degraded" : "succeeded",
         result: probe
           ? {
               operation: "probe",

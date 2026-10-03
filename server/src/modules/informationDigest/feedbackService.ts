@@ -50,6 +50,13 @@ export class SerendipityFeedbackService {
       if (item.feedback && item.created_at) {
         return this.result(tx, spaceId, userId, digestItemId, item.domain_key, item.feedback, timestampIso(item.created_at)!);
       }
+      // The block and the cooldown live per domain, and one digest may hold
+      // two items of one domain: without this lock a "never" on one and an
+      // "interesting" on the other, concurrently, would let the second write
+      // the block back to null after answering the first as blocked.
+      await tx.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
+        `information-digest-feedback-domain:${spaceId}:${userId}:${item.domain_key}`,
+      ]);
 
       const state = await tx.query<{ blocked_at: string | null }>(
         `SELECT blocked_at FROM information_digest_serendipity_domain_states

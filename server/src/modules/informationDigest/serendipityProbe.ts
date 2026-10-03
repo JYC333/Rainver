@@ -81,9 +81,13 @@ export class SerendipityProbeService {
         }
       }
       const total = recommendations + externalResults;
-      const status = failures.length > 0 || requests === 0
-        ? (total > 0 ? "degraded" : "skipped")
-        : "succeeded";
+      // Every search failed and nothing landed: that is a failed probe, not a
+      // skipped one — skipped is for a week with nothing to ask.
+      const status = failures.length > 0
+        ? (total > 0 ? "degraded" : "failed")
+        : requests === 0
+          ? (total > 0 ? "degraded" : "skipped")
+          : "succeeded";
       await this.repo.finishProbe(runId, { status, requests, results: total, error: failures[0] });
       return { period_start: period, status, domain_keys: domainKeys, request_count: requests,
         external_result_count: externalResults, source_recommendation_count: recommendations, already_ran: false };
