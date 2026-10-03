@@ -149,12 +149,16 @@ function openAgentAuthSession(
     env: sanitizedEnv(launch.env, launch.home, frame.runtime_key),
   });
   log(`ACP authenticate ${frame.runtime_key} ${frame.installation}: ${method.id}`);
+  // Held until this session ends, as the terminal login holds it: a managed
+  // copy's replacement waits for an Agent Auth running from its directory.
+  const releaseLogin = holdRuntimeKey(frame.runtime_key);
   let buffer = "";
   let exited = false;
   let waitingTimer: ReturnType<typeof setTimeout> | null = null;
   const finish = (code: number, loggedInState: boolean) => {
     if (exited) return;
     exited = true;
+    releaseLogin();
     if (waitingTimer) clearTimeout(waitingTimer);
     sessions.delete(frame.session_id);
     try { child.kill(); } catch { /* already gone */ }

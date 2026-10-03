@@ -173,6 +173,27 @@ export async function requireConfig(): Promise<DaemonConfig> {
   return config;
 }
 
+let configUpdates: Promise<unknown> = Promise.resolve();
+
+/**
+ * Reads the current config, applies `mutate`, and writes the result, with
+ * concurrent updates applied one after another against the latest file.
+ * A caller that held its own earlier snapshot across a network round trip
+ * and wrote it back whole would drop whatever another update wrote meanwhile
+ * — two workspace registrations arriving together lost one path mapping.
+ */
+export function updateConfig(mutate: (current: DaemonConfig) => DaemonConfig | Promise<DaemonConfig>): Promise<DaemonConfig> {
+  const next = configUpdates.then(async () => {
+    const current = await loadConfig();
+    if (!current) throw new Error("Daemon config missing; run `rainver-host pair` first");
+    const updated = await mutate(current);
+    await saveConfig(updated);
+    return updated;
+  });
+  configUpdates = next.catch(() => undefined);
+  return next;
+}
+
 export async function saveConfig(config: DaemonConfig): Promise<void> {
   await mkdir(dirname(configPath()), { recursive: true, mode: 0o700 });
   // Written aside and renamed over: the heartbeat and request handlers read
