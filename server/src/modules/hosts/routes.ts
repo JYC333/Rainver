@@ -953,6 +953,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       // not be registered as the host's live connection — nothing would ever
       // unregister a sink that was dead when it was registered.
       let socketClosed = false;
+      // The `close` event is the last thing a closing socket does: its close
+      // frame has already been exchanged and `readyState` left OPEN by then.
+      // A hello that finished authenticating in that gap used to record the
+      // heartbeat and take it back; it now sees the socket going and writes
+      // nothing.
+      const socketGone = () => socketClosed || socket.readyState !== socket.OPEN;
       // Which machine this connection is, learned at hello and reused by every
       // later acknowledgement: the probe list a daemon is told to install from
       // differs for the built-in Server Host (the release pin) and a paired one
@@ -1036,12 +1042,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               probeHostKind = host.kind === "server" ? "server" : "remote";
               // Closed while authenticating: the host was never online on
               // this socket, so its row is not written online either.
-              if (socketClosed) return;
+              if (socketGone()) return;
               await hosts.recordHeartbeat(host.id, daemonHelloInfo(frame));
               // Closed while the heartbeat was being recorded: the `close`
               // handler ran before the row went online, so it is taken back
               // here, and the dead sink is not registered.
-              if (socketClosed) {
+              if (socketGone()) {
                 await hosts.markOffline(host.id);
                 return;
               }

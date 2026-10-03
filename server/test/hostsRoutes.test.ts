@@ -975,8 +975,9 @@ describe("hosts routes", () => {
       setTimeout(() => reject(new Error("timed out waiting for the socket to close")), 5000);
     });
     releaseHello();
-    // Everything the hello still does after authenticating is microtasks on
-    // this process, so one macrotask later it has finished.
+    // The client's close event means the server has answered its close frame,
+    // so the server socket is past OPEN whether or not its own close event has
+    // run yet; the hello finishes authenticating and writes nothing.
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(heartbeatsRecorded).toBe(0);
