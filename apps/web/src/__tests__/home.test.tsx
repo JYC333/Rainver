@@ -72,6 +72,21 @@ describe('HomePage (user-scoped Today Command Center)', () => {
     expect((await screen.findAllByText('Acme Team')).length).toBeGreaterThan(0)
   })
 
+  it('counts the failed runs By Space counts, not the failures among the few recent runs listed', async () => {
+    vi.mocked(meApi.summary).mockResolvedValueOnce({
+      pending_proposals_count: 1, assigned_tasks_count: 0, recent_runs: [], recent_participation: [], accessible_spaces_count: 2,
+      spaces: [
+        { space_id: 'personal-1', name: 'My Personal', type: 'personal', pending_proposals_count: 0, assigned_tasks_count: 0, recent_failed_runs_count: 2 },
+        { space_id: 'team-1', name: 'Acme Team', type: 'team', pending_proposals_count: 1, assigned_tasks_count: 0, recent_failed_runs_count: 3 },
+      ],
+    } as never)
+    renderHome()
+    await waitForHomeData()
+
+    expect(screen.getByRole('button', { name: /failed runs \(recent\)/ })).toHaveTextContent('5')
+    expect(screen.getByText('Inspect failed runs')).toBeInTheDocument()
+  })
+
   it('keeps the aside sections in the page so a stacked narrow layout still has them', async () => {
     const { container } = render(<MemoryRouter future={routerFuture}><HomePage /></MemoryRouter>)
     await waitForHomeData()
