@@ -860,4 +860,41 @@ describe("Source extraction inside a Project", () => {
       await rm(artifactStorageRoot, { recursive: true, force: true });
     }
   });
+
+  it("keeps a pause made while the connection scan was running", async () => {
+    if (!db.available) return;
+    let paused = false;
+    const server = createServer((_req, res) => {
+      // The person pauses the channel while the feed is being fetched.
+      void db.pool.query(`UPDATE source_channels SET status = 'paused' WHERE id = $1`, [CONNECTION]).then(() => {
+        paused = true;
+        res.writeHead(200, { "content-type": "application/rss+xml" });
+        res.end(`<?xml version="1.0"?><rss version="2.0"><channel><item><title>Feed item</title><link>https://example.test/item-1</link><guid>guid-1</guid><pubDate>Tue, 30 Jun 2026 09:00:00 GMT</pubDate><description>Feed excerpt.</description></item></channel></rss>`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      await db.pool.query(`UPDATE source_channels SET endpoint_url = $2 WHERE id = $1`, [CONNECTION, `http://127.0.0.1:${port}/feed`]);
+      const jobId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO extraction_jobs (id, space_id, connection_id, job_type, status, metadata_json, created_at)
+         VALUES ($1,$2,$3,'connection_scan','pending',$4::jsonb,$5)`,
+        [jobId, SPACE, CONNECTION, JSON.stringify({ source_channel_id: CONNECTION }), new Date().toISOString()],
+      );
+      const worker = new SourceExtractionWorker(db.pool, loadConfig({}), fixtureServerGuard);
+      await expect(worker.runPendingJob(jobId, SPACE)).resolves.toMatchObject({ status: "succeeded" });
+      expect(paused).toBe(true);
+
+      const task = await db.pool.query<{ status: string; next_run_at: string | null; last_run_at: string | null }>(
+        `SELECT status, next_run_at, last_run_at FROM scheduler_tasks WHERE task_type = 'source_channel_scan' AND task_key = $1`,
+        [CONNECTION],
+      );
+      expect(task.rows[0]).toMatchObject({ status: "paused", next_run_at: null });
+      expect(task.rows[0]?.last_run_at).not.toBeNull();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });

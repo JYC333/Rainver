@@ -1377,14 +1377,28 @@ export class SourceExtractionWorker {
     manualRun: boolean,
   ): Promise<void> {
     if (!connection.channel_id) return;
+    // From the channel as it is now, not the snapshot the scan started from
+    // (as rescheduleSourceChannelScanAfterRun does): a pause, archive, or
+    // change of frequency or rule made while the scan ran is kept.
+    const current = await this.db.query<{ status: string; fetch_frequency: string; schedule_rule_json: unknown }>(
+      `SELECT ch.status, ch.fetch_frequency, ch.schedule_rule_json FROM source_channels ch WHERE ch.id = $1`,
+      [connection.channel_id],
+    );
+    const channel = current.rows[0] ?? {
+      status: connection.status,
+      fetch_frequency: connection.fetch_frequency,
+      schedule_rule_json: connection.schedule_rule_json,
+    };
     const scheduleTask = await getSourceChannelScanTask(this.db, connection.channel_id);
-    const nextCheckAt = computeNextCheckAt(connection.fetch_frequency, completedAt, {
-      manualRun,
-      existingNextCheckAt: scheduleTask?.next_run_at,
-      scheduleRule: connection.schedule_rule_json,
-    });
+    const nextCheckAt = channel.status === "active"
+      ? computeNextCheckAt(channel.fetch_frequency, completedAt, {
+        manualRun,
+        existingNextCheckAt: scheduleTask?.next_run_at,
+        scheduleRule: channel.schedule_rule_json,
+      })
+      : null;
     await upsertSourceChannelScanTask(this.db, {
-      channel: { id: connection.channel_id, space_id: connection.space_id, owner_user_id: connection.owner_user_id, status: connection.status, fetch_frequency: connection.fetch_frequency },
+      channel: { id: connection.channel_id, space_id: connection.space_id, owner_user_id: connection.owner_user_id, status: channel.status, fetch_frequency: channel.fetch_frequency },
       nextRunAt: nextCheckAt,
       lastRunAt: completedAt,
       cursor: compactCursor(cursor) as Record<string, unknown>,
