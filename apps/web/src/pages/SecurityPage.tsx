@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { KeyRound, LogOut, ShieldCheck, UserRound } from 'lucide-react'
 import { ApiRequestError, authApi } from '../api/client'
+import { errMsg } from '../lib/utils'
 import type { AuthAccount, AuthSession } from '../types/api'
 import { Card, CardTitle } from '../components/ui/card'
 import { Button } from '../components/ui/button'
@@ -163,7 +164,7 @@ export default function SecurityPage() {
       </Card>
       <Card>
         <CardTitle>{t('mixed_surfaces.security.active_sessions')}</CardTitle>
-        <div className="space-y-2 mt-3">{sessions.map(session => <div key={session.id} className="flex items-center justify-between border rounded-md p-3"><div><p className="text-sm">{session.current ? t('mixed_surfaces.security.this_browser') : session.user_agent || t('mixed_surfaces.security.unknown_browser')}</p><p className="text-xs text-muted-foreground">{session.ip_address || t('mixed_surfaces.security.unknown_ip')} · {t('mixed_surfaces.security.expires', { date: new Date(session.expires_at).toLocaleString(locale) })}</p></div>{!session.current && <Button variant="outline" onClick={() => void authApi.revokeSession(session.id).then(reload)}>{t('mixed_surfaces.security.revoke')}</Button>}</div>)}<Button variant="outline" onClick={() => void authApi.revokeOtherSessions().then(reload)}><LogOut className="size-4 mr-2" />{t('mixed_surfaces.security.revoke_other')}</Button></div>
+        <div className="space-y-2 mt-3">{sessions.map(session => <div key={session.id} className="flex items-center justify-between border rounded-md p-3"><div><p className="text-sm">{session.current ? t('mixed_surfaces.security.this_browser') : session.user_agent || t('mixed_surfaces.security.unknown_browser')}</p><p className="text-xs text-muted-foreground">{session.ip_address || t('mixed_surfaces.security.unknown_ip')} · {t('mixed_surfaces.security.expires', { date: new Date(session.expires_at).toLocaleString(locale) })}</p></div>{!session.current && <Button variant="outline" onClick={() => void authApi.revokeSession(session.id).then(reload).catch(error => actionError(error, errMsg(error)))}>{t('mixed_surfaces.security.revoke')}</Button>}</div>)}<Button variant="outline" onClick={() => void authApi.revokeOtherSessions().then(reload).catch(error => actionError(error, errMsg(error)))}><LogOut className="size-4 mr-2" />{t('mixed_surfaces.security.revoke_other')}</Button></div>
       </Card>
     </>}
   </div>

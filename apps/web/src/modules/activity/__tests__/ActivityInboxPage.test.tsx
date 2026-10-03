@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Link, Route, Routes } from 'react-router-dom'
+import { toast } from 'sonner'
 import ActivityInboxPage from '../ActivityInboxPage'
 import { activityApi, projectsApi } from '../../../api/client'
 import type { ActivityInboxRecord, Project } from '../../../types/api'
@@ -115,6 +116,20 @@ describe('ActivityInboxPage', () => {
     expect(screen.getByText('1 maybe')).toBeInTheDocument()
     expect(screen.getByText('0 not relevant')).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Generate proposals' })).not.toBeInTheDocument()
+  })
+
+  it('empties the queue and reports the failure when a filter change cannot load', async () => {
+    vi.mocked(activityApi.list)
+      .mockResolvedValueOnce([activityRecord()])
+      .mockRejectedValueOnce(new Error('500 Internal Server Error'))
+
+    renderPage()
+    expect(await screen.findByText('Captured note')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'archived' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('500 Internal Server Error'))
+    expect(screen.queryByText('Captured note')).not.toBeInTheDocument()
   })
 
   it('keeps ordinary activity rows on the Activity detail flow', async () => {

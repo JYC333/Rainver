@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { FolderKanban, Newspaper, X } from 'lucide-react'
@@ -142,6 +142,9 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
   // Project names for the ownership tag below. A record carries `project_id`
   // but no name, and an id is not something a reader can recognise.
   const [projectNames, setProjectNames] = useState<Map<string, string>>(() => new Map())
+  // The filter buttons highlight the new filter at once; the list must not
+  // keep showing the previous filter's records behind it.
+  const listRequest = useRef(0)
 
   const load = useCallback(async () => {
     if (!activeSpaceId) {
@@ -149,17 +152,21 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
       setLoading(false)
       return
     }
+    const request = ++listRequest.current
     setLoading(true)
     try {
       const items = await activityApi.list({
         status: filter === 'all' ? undefined : filter,
         project_id: projectFilter || undefined,
       })
+      if (request !== listRequest.current) return
       setRecords(items)
     } catch (e) {
+      if (request !== listRequest.current) return
       toast.error(errMsg(e))
+      setRecords([])
     } finally {
-      setLoading(false)
+      if (request === listRequest.current) setLoading(false)
     }
   }, [filter, projectFilter, activeSpaceId])
 

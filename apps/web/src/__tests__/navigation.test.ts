@@ -72,6 +72,8 @@ describe('navigation model', () => {
     expect(sceneForPath('/spaces/x/projects')).toBeNull()
     expect(sceneForPath('/spaces/x/agents')?.id).toBe('agents')
     expect(sceneForPath('/spaces/x/sessions')?.id).toBe('agents')
+    // Every destination the Agents sidebar offers keeps that sidebar.
+    expect(sceneForPath('/spaces/x/plans')?.id).toBe('agents')
     expect(sceneForPath('/spaces/x/artifacts')?.id).toBe('artifacts')
     // Knowledge intentionally has no scene sidebar — it uses an in-header breadcrumb switcher.
     expect(sceneForPath('/spaces/x/knowledge')).toBeNull()

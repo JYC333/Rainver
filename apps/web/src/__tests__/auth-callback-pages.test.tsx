@@ -1,10 +1,11 @@
 import { StrictMode } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter, useLocation } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { configuration, completeRegistration, completeGoogleReauth, acceptInvitation, reloadSpaces, accounts, sessions, reauthStatus, reauth, authState } = vi.hoisted(() => ({
+const { configuration, completeRegistration, completeGoogleReauth, acceptInvitation, reloadSpaces, accounts, sessions, reauthStatus, reauth, revokeSession, authState } = vi.hoisted(() => ({
   configuration: vi.fn(),
+  revokeSession: vi.fn(),
   completeRegistration: vi.fn(),
   completeGoogleReauth: vi.fn(),
   acceptInvitation: vi.fn(),
@@ -17,6 +18,7 @@ const { configuration, completeRegistration, completeGoogleReauth, acceptInvitat
 }))
 
 vi.mock('../api/client', () => ({
+  ApiRequestError: class ApiRequestError extends Error {},
   authApi: {
     configuration,
     completeRegistration,
@@ -25,6 +27,7 @@ vi.mock('../api/client', () => ({
     sessions,
     reauthStatus,
     reauth,
+    revokeSession,
   },
   spacesApi: { acceptInvitation },
 }))
@@ -49,7 +52,7 @@ const routerFuture = { v7_relativeSplatPath: true, v7_startTransition: true } as
 
 function LocationProbe() {
   const location = useLocation()
-  return <output data-testid="location">{location.pathname}{location.search}</output>
+  return <output data-testid="location">{location.pathname}{location.search}{location.hash}</output>
 }
 
 describe('authentication callback pages', () => {
@@ -63,6 +66,7 @@ describe('authentication callback pages', () => {
     sessions.mockReset().mockResolvedValue([])
     reauthStatus.mockReset().mockResolvedValue({ expires_at: null })
     reauth.mockReset().mockResolvedValue({ ok: true, expires_in: 600 })
+    revokeSession.mockReset()
     authState.currentUser = null
     window.history.replaceState(null, '', '/')
   })
@@ -81,6 +85,21 @@ describe('authentication callback pages', () => {
     expect(await screen.findByText('Google registration could not be completed. Please retry from the invitation.')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByTestId('location')).not.toHaveTextContent('registration='))
     expect(completeRegistration).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns a signed-in person to the deep link with its query and hash', async () => {
+    authState.currentUser = { id: 'user-1', email: 'person@example.com' }
+    const from = { pathname: '/spaces/s1/prompts', search: '?asset=retrieval.rerank', hash: '#versions' }
+    render(
+      <MemoryRouter initialEntries={[{ pathname: '/login', state: { from } }]} future={routerFuture}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="*" element={<LocationProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByTestId('location')).toHaveTextContent('/spaces/s1/prompts?asset=retrieval.rerank#versions')
   })
 
   it('shows administrator setup only while bootstrap registration is available', async () => {
@@ -159,6 +178,22 @@ describe('authentication callback pages', () => {
     reauthStatus.mockResolvedValue({ expires_at: new Date(Date.now() + 600_000).toISOString() })
     render(<MemoryRouter future={routerFuture}><SecurityPage /></MemoryRouter>)
     expect(await screen.findByText('Login methods')).toBeInTheDocument()
+  })
+
+  it('reports a session revocation that failed instead of leaving the list unchanged silently', async () => {
+    reauthStatus.mockResolvedValue({ expires_at: new Date(Date.now() + 600_000).toISOString() })
+    sessions.mockResolvedValue([{
+      id: 'session-2', created_at: '2026-07-01T00:00:00.000Z', updated_at: '2026-07-01T00:00:00.000Z',
+      expires_at: '2026-08-01T00:00:00.000Z', ip_address: '203.0.113.5', user_agent: 'Firefox', current: false,
+    }])
+    revokeSession.mockRejectedValue(new Error('503 Service Unavailable'))
+    render(<MemoryRouter future={routerFuture}><SecurityPage /></MemoryRouter>)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Revoke' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('503 Service Unavailable')
+    expect(revokeSession).toHaveBeenCalledWith('session-2')
+    expect(screen.getByText('Firefox')).toBeInTheDocument()
   })
 
   it('offers Google verification without requiring a password from Google-only accounts', async () => {
