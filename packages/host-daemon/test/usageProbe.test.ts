@@ -162,6 +162,40 @@ describe("probing one copy on this host", () => {
     expect(fetchMock.mock.calls[0]?.[1]?.headers?.Authorization).toBe("Bearer secret-token");
   });
 
+  it("gives up on a response whose body never arrives within the budget it was given", async () => {
+    await installClaude({ claudeAiOauth: { accessToken: "secret-token", expiresAt: Date.now() + 3_600_000, scopes: ["user:profile"] } });
+    vi.useFakeTimers();
+    try {
+      // Headers arrive at once; the body never does. The control plane stops
+      // waiting at the frame's budget, so the host has to as well — the
+      // runtime key this probe holds would otherwise stay held until the HTTP
+      // client's own multi-minute body timeout.
+      let fetched: () => void = () => {};
+      const fetchStarted = new Promise<void>((resolve) => { fetched = resolve; });
+      const fetchMock = vi.fn((_url: string, init: { signal: AbortSignal }) => {
+        fetched();
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => new Promise<never>((_resolve, reject) => {
+            init.signal.addEventListener("abort", () => reject(new Error("The operation was aborted.")));
+          }),
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const pending = probeUsage({ runtime_key: "claude_code", installation: "managed:1.0.0", login: null, timeout_seconds: 3 });
+      await fetchStarted;
+      await vi.advanceTimersByTimeAsync(3_000);
+      const quota = await pending;
+
+      expect(quota).toMatchObject({ available: false });
+      expect(quota.error).toMatch(/did not answer in time/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("says the login expired instead of spending a dead token", async () => {
     await installClaude({ claudeAiOauth: { accessToken: "stale", expiresAt: Date.now() - 1_000, scopes: [] } });
     const fetchMock = vi.fn();

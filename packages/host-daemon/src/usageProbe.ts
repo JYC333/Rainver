@@ -123,40 +123,46 @@ async function probeClaude(home: string, login: RuntimeLoginSpec | null, timeout
   // The control plane budgets its own wait on the host giving up first, so a
   // bare fetch — which would hang to the HTTP client's own multi-minute
   // default — would leave the daemon answering a request nobody is holding.
+  // The deadline covers the body as well as the headers: a response that
+  // starts and then stalls is the same wait, and the same held runtime key.
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), Math.max(1, timeoutSeconds) * 1000);
   timer.unref?.();
-  let response: Response;
   try {
-    response = await fetch(CLAUDE_OAUTH_USAGE_URL, {
-      // Not followed: this carries the owner's OAuth access token, and a
-      // redirect is the upstream asking for it to be sent somewhere else.
-      redirect: "error",
-      method: "GET",
-      signal: abort.signal,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-        "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
-        "User-Agent": "claude-code/2.1.0",
-      },
-    });
-  } catch (error) {
-    return failed(abort.signal.aborted
-      ? "Claude usage API did not answer in time."
-      : `Claude usage API was unreachable: ${error instanceof Error ? error.message : String(error)}`);
+    let response: Response;
+    try {
+      response = await fetch(CLAUDE_OAUTH_USAGE_URL, {
+        // Not followed: this carries the owner's OAuth access token, and a
+        // redirect is the upstream asking for it to be sent somewhere else.
+        redirect: "error",
+        method: "GET",
+        signal: abort.signal,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+          "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
+          "User-Agent": "claude-code/2.1.0",
+        },
+      });
+    } catch (error) {
+      return failed(abort.signal.aborted
+        ? "Claude usage API did not answer in time."
+        : `Claude usage API was unreachable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!response.ok) return failed(`Claude usage API returned HTTP ${response.status}.`);
+    let quota: HostUsageQuota;
+    try {
+      quota = parseClaudeOAuthUsage(await response.json());
+    } catch {
+      return failed(abort.signal.aborted
+        ? "Claude usage API did not answer in time."
+        : "Claude usage API returned a response this host could not read.");
+    }
+    return quota.available ? quota : failed("Claude usage API returned no quota windows.");
   } finally {
     clearTimeout(timer);
   }
-  if (!response.ok) return failed(`Claude usage API returned HTTP ${response.status}.`);
-  let quota: HostUsageQuota;
-  try {
-    quota = parseClaudeOAuthUsage(await response.json());
-  } catch {
-    return failed("Claude usage API returned a response this host could not read.");
-  }
-  return quota.available ? quota : failed("Claude usage API returned no quota windows.");
 }
 
 // --- Codex CLI -------------------------------------------------------------
