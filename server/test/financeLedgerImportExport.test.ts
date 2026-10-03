@@ -135,7 +135,7 @@ describe("finance ledger Beancount import", () => {
     expect(reparsed.errors).toEqual([]);
     const balance = reparsed.entries.find((entry) => entry.type === "balance");
     expect(balance).toMatchObject({ amount: { currency: "USD" }, tolerance: { currency: "USD" } });
-    expect(String((balance as { tolerance: { number: { decimal: string } } }).tolerance.number.decimal)).toBe("0.01");
+    expect(String((balance as unknown as { tolerance: { number: { decimal: string } } }).tolerance.number.decimal)).toBe("0.01");
   });
 
   it("deduplicates identical imports by content hash", async () => {
