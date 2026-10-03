@@ -8,7 +8,26 @@ import { hashOpaqueToken } from "../modules/auth/securityPolicy.js";
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 type WhereClause = CleanedWhere;
 type AdapterDetails = Parameters<AdapterFactoryCustomizeAdapterCreator>[0];
+/**
+ * Raw session tokens by session id, for the one Better Auth flow that needs a
+ * list to carry them: revoke-other-sessions compares each listed session's
+ * token with the current one. Only sessions this process has validated are
+ * in it. Entries leave when the adapter deletes their rows, and the map is
+ * bounded, because Rainver's own logout and revoke paths delete sessions
+ * with plain SQL that never passes through here.
+ */
 type SessionTokenState = Map<string, string>;
+const SESSION_TOKEN_STATE_MAX = 10_000;
+
+function rememberSessionToken(state: SessionTokenState, sessionId: string, token: string): void {
+  state.delete(sessionId);
+  state.set(sessionId, token);
+  while (state.size > SESSION_TOKEN_STATE_MAX) {
+    const oldest = state.keys().next().value;
+    if (oldest === undefined) break;
+    state.delete(oldest);
+  }
+}
 type RainverAdapter = DBAdapter<BetterAuthOptions>;
 
 const TABLES = new Set(["users", "auth_accounts", "user_sessions", "auth_verifications"]);
@@ -106,7 +125,7 @@ function customAdapter(client: Queryable, details: AdapterDetails, sessionTokens
         ? where.find((clause) => clause.field === "token_hash" && typeof clause.value === "string")?.value as string | undefined
         : undefined;
       const row = scrubRows(model, result.rows, candidate)[0] ?? null;
-      if (model === "user_sessions" && row && candidate) sessionTokens.set(String(row.id), candidate);
+      if (model === "user_sessions" && row && candidate) rememberSessionToken(sessionTokens, String(row.id), candidate);
       return row as T | null;
     },
     findMany: async <T>({ model, where = [], select, limit, sortBy, offset }: { model: string; where?: WhereClause[]; select?: string[]; limit: number; sortBy?: { field: string; direction: "asc" | "desc" }; offset?: number }) => {
@@ -139,7 +158,7 @@ function customAdapter(client: Queryable, details: AdapterDetails, sessionTokens
         ? where.find((clause) => clause.field === "token_hash" && typeof clause.value === "string")?.value as string | undefined
         : undefined;
       const row = scrubRows(model, result.rows, candidate)[0] ?? null;
-      if (model === "user_sessions" && row && candidate) sessionTokens.set(String(row.id), candidate);
+      if (model === "user_sessions" && row && candidate) rememberSessionToken(sessionTokens, String(row.id), candidate);
       return row as T | null;
     },
     updateMany: async ({ model, where, update }: { model: string; where: WhereClause[]; update: Record<string, unknown> }) => {
@@ -156,16 +175,13 @@ function customAdapter(client: Queryable, details: AdapterDetails, sessionTokens
     },
     delete: async ({ model, where }: { model: string; where: WhereClause[] }) => {
       const params: unknown[] = [];
-      await client.query(`DELETE FROM ${tableName(model)} WHERE ${buildWhere(model, where, params)}`, params);
-      if (model === "user_sessions") {
-        for (const clause of where) {
-          if (clause.field === "id" && typeof clause.value === "string") sessionTokens.delete(clause.value);
-        }
-      }
+      const result = await client.query<{ id: string }>(`DELETE FROM ${tableName(model)} WHERE ${buildWhere(model, where, params)} RETURNING id`, params);
+      if (model === "user_sessions") for (const row of result.rows) sessionTokens.delete(String(row.id));
     },
     deleteMany: async ({ model, where }: { model: string; where: WhereClause[] }) => {
       const params: unknown[] = [];
-      const result = await client.query(`DELETE FROM ${tableName(model)} WHERE ${buildWhere(model, where, params)}`, params);
+      const result = await client.query<{ id: string }>(`DELETE FROM ${tableName(model)} WHERE ${buildWhere(model, where, params)} RETURNING id`, params);
+      if (model === "user_sessions") for (const row of result.rows) sessionTokens.delete(String(row.id));
       return result.rowCount ?? 0;
     },
     consumeOne: async <T>({ model, where }: { model: string; where: WhereClause[] }) => {
