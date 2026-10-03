@@ -522,6 +522,93 @@ describe('Knowledge routing', () => {
     }
   })
 
+  it('persists open tabs under the key it reads them back from', async () => {
+    const beta = makeNote({ id: 'note-beta', title: 'Beta note' })
+    vi.mocked(notesApi.get).mockResolvedValue(beta)
+    try {
+      renderAt('/spaces/personal-1/knowledge/notes/note-beta')
+      await screen.findByRole('tablist', { name: 'Open notes' })
+      // The same scope key the page reads on its next mount: a reload or a
+      // trip in and out of a hoist must find the tabs it just wrote.
+      await waitFor(() =>
+        expect(JSON.parse(sessionStorage.getItem('rainver:notes-tabs:personal-1:all') ?? '[]')).toEqual(['note-beta']))
+    } finally {
+      vi.mocked(notesApi.get).mockResolvedValue(null as unknown as Note)
+    }
+  })
+
+  it('shows the results of the latest search, not of a slower earlier one', async () => {
+    const draft = makeNote({ id: 'note-draft', title: 'Draft outline' })
+    const design = makeNote({ id: 'note-design', title: 'Design doc' })
+    let answerFirst: (value: { items: Note[]; total: number; limit: number; offset: number }) => void = () => {}
+    vi.mocked(notesApi.list).mockImplementation(async (params?: { q?: string }) => {
+      if (params?.q === 'd') return new Promise(resolve => { answerFirst = resolve })
+      if (params?.q === 'de') return { items: [design], total: 1, limit: 200, offset: 0 }
+      return { items: [], total: 0, limit: 200, offset: 0 }
+    })
+    try {
+      renderAt('/spaces/personal-1/knowledge/notes')
+      const search = await screen.findByPlaceholderText('Search notes')
+      fireEvent.change(search, { target: { value: 'd' } })
+      fireEvent.change(search, { target: { value: 'de' } })
+      expect(await screen.findByText('Design doc')).toBeInTheDocument()
+
+      answerFirst({ items: [draft], total: 1, limit: 200, offset: 0 })
+      await waitFor(() => expect(notesApi.list).toHaveBeenCalledWith(expect.objectContaining({ q: 'd' })))
+      expect(screen.getByText('Design doc')).toBeInTheDocument()
+      expect(screen.queryByText('Draft outline')).not.toBeInTheDocument()
+    } finally {
+      vi.mocked(notesApi.list).mockReset()
+      vi.mocked(notesApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
+    }
+  })
+
+  it('keeps the notes a bulk delete did not reach and drops the ones it did', async () => {
+    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], updated_at: '2025-04-01T00:00:00Z' })
+    const beta = makeNote({ id: 'note-beta', title: 'Beta note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], updated_at: '2025-03-01T00:00:00Z' })
+    const gamma = makeNote({ id: 'note-gamma', title: 'Gamma note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], updated_at: '2025-02-01T00:00:00Z' })
+    const deleted = new Set<string>()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    vi.mocked(notesApi.get).mockImplementation(async id => (
+      id === 'note-alpha' ? alpha : id === 'note-beta' ? beta : gamma
+    ))
+    // The server's view: whatever was deleted stays deleted on the next read.
+    vi.mocked(notesApi.list).mockImplementation(async () => {
+      const items = [alpha, beta, gamma].filter(note => !deleted.has(note.id))
+      return { items, total: items.length, limit: 200, offset: 0 }
+    })
+    vi.mocked(notesApi.delete).mockImplementation(async id => {
+      if (id === 'note-beta') throw new Error('Beta is locked')
+      deleted.add(id)
+      return { ...(id === 'note-alpha' ? alpha : gamma), status: 'deleted', deleted_at: '2026-06-09T00:00:00Z' }
+    })
+
+    try {
+      renderAt('/spaces/personal-1/knowledge/notes')
+
+      const tree = await screen.findByLabelText('Notes organization')
+      fireEvent.click(await within(tree).findByRole('button', { name: 'Alpha note' }))
+      await waitFor(() =>
+        expect(screen.getByTestId('loc')).toHaveTextContent('/spaces/personal-1/knowledge/notes/note-alpha'))
+      const gammaTreeItem = within(tree).getByRole('button', { name: 'Gamma note' })
+      fireEvent.click(gammaTreeItem, { shiftKey: true })
+      fireEvent.keyDown(gammaTreeItem, { key: 'Delete' })
+
+      await waitFor(() => expect(notesApi.delete).toHaveBeenCalledTimes(3))
+      // Alpha and Gamma are gone on the server; the view says so. Beta is not.
+      await waitFor(() => expect(within(tree).queryByRole('button', { name: 'Alpha note' })).not.toBeInTheDocument())
+      expect(within(tree).queryByRole('button', { name: 'Gamma note' })).not.toBeInTheDocument()
+      expect(within(tree).getByRole('button', { name: 'Beta note' })).toBeInTheDocument()
+      expect(confirmSpy).not.toHaveBeenCalled()
+    } finally {
+      confirmSpy.mockRestore()
+      vi.mocked(notesApi.get).mockResolvedValue(null as unknown as Note)
+      vi.mocked(notesApi.list).mockReset()
+      vi.mocked(notesApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
+      vi.mocked(notesApi.delete).mockReset()
+    }
+  })
+
   it('deletes notes from the tree with Delete or the right-click menu', async () => {
     const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }] })
     const beta = makeNote({ id: 'note-beta', title: 'Beta note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }] })

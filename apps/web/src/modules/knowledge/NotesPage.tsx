@@ -201,7 +201,12 @@ export default function NotesPage({ scope }: NotesPageProps) {
    * spans every Project would be the wrong half (U4). `collection_ids` carries
    * the hoisted subtree; absent, the search spans the Space.
    */
+  // Every keystroke and folder change starts a new list request; only the
+  // latest one may write the list, however the answers are ordered.
+  const notesRequestRef = useRef(0)
   const loadNotes = useCallback(async () => {
+    const requestId = ++notesRequestRef.current
+    const current = () => requestId === notesRequestRef.current
     const inScope = scopeCollectionIds === null || scopeCollectionIds.length > 0
     if (!activeSpaceId || !scopeReady || !inScope || (!searchQuery && !selectedCollectionId)) {
       setNotes([])
@@ -218,12 +223,14 @@ export default function NotesPage({ scope }: NotesPageProps) {
         status: showingArchive ? 'archived' : undefined,
         limit: 200,
       })
+      if (!current()) return
       setNotes(showingArchive ? page.items : hideArchivedOrDeletedNotes(page.items))
     } catch (e) {
+      if (!current()) return
       toast.error(errMsg(e))
       setNotes([])
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
   }, [activeSpaceId, scopeCollectionIds, scopeReady, searchQuery, selectedCollection?.system_role, selectedCollectionId])
 
@@ -293,7 +300,9 @@ export default function NotesPage({ scope }: NotesPageProps) {
     setOpenIds(prev => (prev.includes(noteId) ? prev : [...prev, noteId]))
   }, [noteId])
 
-  useEffect(() => { writeTabs(scope.tabsScopeKey, openIds) }, [scope.tabsScopeKey, openIds])
+  // Written under the same per-hoist key they are read from above; a reload
+  // or a trip in and out of a hoist reads this key back.
+  useEffect(() => { writeTabs(tabsScopeKey, openIds) }, [tabsScopeKey, openIds])
 
   const onNoteResolved = useCallback((n: Note) => {
     setResolvedTitles(prev => (prev[n.id] === n.title ? prev : { ...prev, [n.id]: n.title }))
@@ -444,36 +453,42 @@ export default function NotesPage({ scope }: NotesPageProps) {
     const uniqueNotes = [...new Map(targetNotes.map(note => [note.id, note])).values()]
     if (uniqueNotes.length === 0) return false
 
-    try {
-      await Promise.all(uniqueNotes.map(note => notesApi.delete(note.id)))
-      const deletedIds = new Set(uniqueNotes.map(note => note.id))
-      removeNoteIdsFromView(deletedIds)
-
-      toast.success(uniqueNotes.length === 1 ? 'Note deleted' : `${uniqueNotes.length} notes deleted`, {
+    // Each delete stands alone: the ones that went through leave the view
+    // (with their Undo), the first failure is reported, and the view is
+    // re-read either way so it matches what the server now holds.
+    const outcomes = await Promise.allSettled(uniqueNotes.map(note => notesApi.delete(note.id)))
+    const deletedNotes = uniqueNotes.filter((_note, index) => outcomes[index]!.status === 'fulfilled')
+    const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
+    if (deletedNotes.length > 0) {
+      removeNoteIdsFromView(new Set(deletedNotes.map(note => note.id)))
+      toast.success(deletedNotes.length === 1 ? 'Note deleted' : `${deletedNotes.length} notes deleted`, {
         action: {
           label: 'Undo',
-          onClick: () => { void restoreDeletedNotes(uniqueNotes) },
+          onClick: () => { void restoreDeletedNotes(deletedNotes) },
         },
       })
-      return true
-    } catch (e) {
-      toast.error(errMsg(e))
+    }
+    if (failure) {
+      toast.error(errMsg(failure.reason))
+      await Promise.all([loadAllNotes(), loadNotes()])
       return false
     }
-  }, [removeNoteIdsFromView, restoreDeletedNotes])
+    return true
+  }, [loadAllNotes, loadNotes, removeNoteIdsFromView, restoreDeletedNotes])
 
   const archiveNotes = useCallback(async (targetNotes: Array<Pick<NoteSummary, 'id' | 'title'>>) => {
     const uniqueNotes = resolveDeleteTargets(targetNotes)
     if (uniqueNotes.length === 0) return
 
-    try {
-      await Promise.all(uniqueNotes.map(note => notesApi.update(note.id, { status: 'archived' })))
-      removeNoteIdsFromView(new Set(uniqueNotes.map(note => note.id)))
-      toast.success(uniqueNotes.length === 1 ? 'Note archived' : `${uniqueNotes.length} notes archived`)
-      await Promise.all([loadAllNotes(), loadNotes()])
-    } catch (e) {
-      toast.error(errMsg(e))
+    const outcomes = await Promise.allSettled(uniqueNotes.map(note => notesApi.update(note.id, { status: 'archived' })))
+    const archivedNotes = uniqueNotes.filter((_note, index) => outcomes[index]!.status === 'fulfilled')
+    const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
+    if (archivedNotes.length > 0) {
+      removeNoteIdsFromView(new Set(archivedNotes.map(note => note.id)))
+      toast.success(archivedNotes.length === 1 ? 'Note archived' : `${archivedNotes.length} notes archived`)
     }
+    if (failure) toast.error(errMsg(failure.reason))
+    await Promise.all([loadAllNotes(), loadNotes()])
   }, [loadAllNotes, loadNotes, removeNoteIdsFromView, resolveDeleteTargets])
 
   const deleteNotes = useCallback(async (targetNotes: Array<Pick<NoteSummary, 'id' | 'title'>>) => {

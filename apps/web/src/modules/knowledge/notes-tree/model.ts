@@ -311,18 +311,34 @@ export function planCollectionMove(
 ): CollectionMove[] {
   const dragged = allCollections.find(collection => collection.id === draggedId)
   if (!dragged) return []
+  const known = new Set(allCollections.map(collection => collection.id))
+  // The layer a folder is drawn in (buildCollectionTree): under its parent,
+  // or at the root when that parent is not in the list — a hidden parent's
+  // children appear there, and a drop into the gap beside one names it.
+  const inLayer = (collection: NoteCollection, parentId: string | null) => parentId === null
+    ? collection.parent_id == null || !known.has(collection.parent_id)
+    : collection.parent_id === parentId
   const sourceParentId = dragged.parent_id ?? null
+  const byLayerOrder = (a: NoteCollection, b: NoteCollection) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
+  // A sibling that is only drawn in this layer keeps its own parent; the one
+  // being dragged takes the target's.
+  const placed = (collection: NoteCollection, parentId: string | null, sortOrder: number) => ({
+    id: collection.id,
+    parentId: collection.id === draggedId ? parentId : collection.parent_id ?? null,
+    sortOrder,
+  })
   const targetSiblings = allCollections
-    .filter(c => c.id === draggedId || (c.id !== draggedId && (c.parent_id ?? null) === targetParentId))
-    .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
+    .filter(c => c.id === draggedId || inLayer(c, targetParentId))
+    .sort(byLayerOrder)
+  const byId = new Map(allCollections.map(collection => [collection.id, collection]))
   const orderedTargetIds = reorderedSiblingIds(targetSiblings.map(c => c.id), draggedId, beforeId)
-  const targetUpdates = orderedTargetIds.map((id, sortOrder) => ({ id, parentId: targetParentId, sortOrder }))
+  const targetUpdates = orderedTargetIds.map((id, sortOrder) => placed(byId.get(id)!, targetParentId, sortOrder))
   if (sourceParentId === targetParentId) return targetUpdates
 
   const sourceUpdates = allCollections
-    .filter(c => c.id !== draggedId && (c.parent_id ?? null) === sourceParentId)
-    .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
-    .map((collection, sortOrder) => ({ id: collection.id, parentId: sourceParentId, sortOrder }))
+    .filter(c => c.id !== draggedId && inLayer(c, sourceParentId))
+    .sort(byLayerOrder)
+    .map((collection, sortOrder) => placed(collection, sourceParentId, sortOrder))
   return [...sourceUpdates, ...targetUpdates]
 }
 

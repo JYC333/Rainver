@@ -179,6 +179,31 @@ describe('NoteEditor is route-agnostic', () => {
  * The open note has to show a capture that was written into it from the
  * composer, without the user reloading and without the editor polling for it.
  */
+describe('NoteEditor link target search', () => {
+  it('stops saying Searching… once the search was cleared before it answered', async () => {
+    vi.mocked(notesApi.get).mockResolvedValue(makeNote())
+    render(
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <NoteEditor noteId="note-1" onNoteResolved={vi.fn()} />
+      </MemoryRouter>,
+    )
+    await screen.findByDisplayValue('Portable note')
+    fireEvent.click(screen.getByRole('button', { name: /Links/ }))
+    // Kind: Source (a searched kind).
+    fireEvent.click(screen.getByRole('button', { name: 'Note' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Source' }))
+    const search = await screen.findByLabelText('Search sources')
+
+    fireEvent.change(search, { target: { value: 'a' } })
+    expect(screen.getByText('Searching…')).toBeInTheDocument()
+    // Cleared before the debounced request went out: there is nothing being
+    // searched for, and the placeholder has to say so again.
+    fireEvent.change(search, { target: { value: '' } })
+    expect(screen.getByText('Type to search')).toBeInTheDocument()
+    expect(screen.queryByText('Searching…')).not.toBeInTheDocument()
+  })
+})
+
 describe('NoteEditor picks up an external write', () => {
   it('re-reads the note it is showing when that note is announced as changed', async () => {
     vi.mocked(notesApi.get)

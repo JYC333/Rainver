@@ -410,13 +410,17 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   // Candidates for the search-backed kinds. Debounced, and guarded against a
   // slow response for an earlier query landing after a newer one.
   useEffect(() => {
+    // Nothing to search for: also not searching. The previous run's cleanup
+    // only cancels its request; its "searching" would otherwise stand.
     if (!activeSpaceId || !SEARCHED_TARGET_KINDS.includes(linkKind)) {
       setSearchResults([])
+      setSearching(false)
       return
     }
     const query = searchQuery.trim()
     if (!query) {
       setSearchResults([])
+      setSearching(false)
       return
     }
     let cancelled = false

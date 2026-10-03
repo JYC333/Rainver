@@ -100,6 +100,26 @@ describe('planCollectionMove', () => {
     ])
   })
 
+  it('orders the root layer as drawn, orphans of a hidden parent included', () => {
+    // A hidden folder's children are drawn at the root; a drop into the gap
+    // beside one of them names it as `beforeId`. The plan has to know that
+    // sibling, or the dragged folder is appended and lands somewhere else.
+    const orphan = makeCollection({ id: 'orphan', name: 'Child of hidden', parent_id: 'hidden-parent', sort_order: 0 })
+    const r1 = makeCollection({ id: 'r1', name: 'R1', sort_order: 0 })
+    const r2 = makeCollection({ id: 'r2', name: 'R2', sort_order: 1 })
+    const r3 = makeCollection({ id: 'r3', name: 'R3', sort_order: 2 })
+
+    const updates = planCollectionMove('r3', null, 'orphan', [orphan, r1, r2, r3])
+
+    expect(updates).toEqual([
+      { id: 'r3', parentId: null, sortOrder: 0 },
+      // The orphan keeps its (hidden) parent; only its place in the layer moves.
+      { id: 'orphan', parentId: 'hidden-parent', sortOrder: 1 },
+      { id: 'r1', parentId: null, sortOrder: 2 },
+      { id: 'r2', parentId: null, sortOrder: 3 },
+    ])
+  })
+
   it('keeps the current order when dropped into its own leading gap', () => {
     const a = makeCollection({ id: 'a', parent_id: 'target', sort_order: 0 })
     const b = makeCollection({ id: 'b', parent_id: 'target', sort_order: 1 })
