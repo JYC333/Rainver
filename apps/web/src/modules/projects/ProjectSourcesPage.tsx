@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { AlertTriangle, BookOpen, FileText, Link2, Network, Play, Plus, RefreshCw, Rss, Search, Trash2 } from 'lucide-react'
@@ -229,8 +229,17 @@ export default function ProjectSourcesPage() {
     [health],
   )
 
+  // Every keystroke in the search and every filter change reloads; only the
+  // latest request may write, however the answers are ordered (the page
+  // also stays mounted across Projects, so an earlier Project's slower
+  // answer must not land on the next one).
+  const loadRequestRef = useRef(0)
+  const itemsRequestRef = useRef(0)
   const load = useCallback(async () => {
     if (!projectId) return
+    const requestId = ++loadRequestRef.current
+    const itemsRequestId = ++itemsRequestRef.current
+    const current = () => requestId === loadRequestRef.current
     setLoading(true)
     try {
       const [projectRow, channelRows, bindingRows, profileRows, healthRows, itemPage] = await Promise.all([
@@ -248,18 +257,20 @@ export default function ProjectSourcesPage() {
           limit: 50,
         }),
       ])
+      if (!current()) return
       setProject(projectRow)
       setChannels(channelRows)
       setBindings(bindingRows)
       setProfiles(profileRows)
-      const plans=(await Promise.all([...new Set(bindingRows.map(binding=>binding.source_channel_id))].map(channelId=>sourcesApi.channelBackfillPlans(channelId).catch(()=>[] as SourceBackfillPlan[])))).flat()
-      setBackfillPlans(plans.filter(plan=>bindingRows.some(binding=>binding.id===plan.project_source_binding_id)))
       setHealth(healthRows)
-      setItems(itemPage.items)
+      if (itemsRequestId === itemsRequestRef.current) setItems(itemPage.items)
+      const plans=(await Promise.all([...new Set(bindingRows.map(binding=>binding.source_channel_id))].map(channelId=>sourcesApi.channelBackfillPlans(channelId).catch(()=>[] as SourceBackfillPlan[])))).flat()
+      if (!current()) return
+      setBackfillPlans(plans.filter(plan=>bindingRows.some(binding=>binding.id===plan.project_source_binding_id)))
     } catch (error) {
-      toast.error(errMsg(error))
+      if (current()) toast.error(errMsg(error))
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
   }, [projectId, sourceFilter, typeFilter, dateFilter, query])
 
@@ -288,6 +299,7 @@ export default function ProjectSourcesPage() {
 
   const refreshSourceCollections = useCallback(async () => {
     if (!projectId) return
+    const itemsRequestId = ++itemsRequestRef.current
     try {
       const itemPage = await sourcesApi.projectItems({
           project_id: projectId,
@@ -297,7 +309,7 @@ export default function ProjectSourcesPage() {
           q: query || undefined,
           limit: 50,
         })
-      setItems(itemPage.items)
+      if (itemsRequestId === itemsRequestRef.current) setItems(itemPage.items)
     } catch {
       // Keep the current collections visible on a transient refresh failure.
     }

@@ -29,7 +29,10 @@ export function projectSourceOptions(
   channels: SourceChannel[],
 ): ProjectSourceOption[] {
   const channelById = Object.fromEntries(channels.map(channel => [channel.id, channel])) as Record<string, SourceChannel>
+  // Only an active binding routes a saved URL into the Project (the server
+  // matches `status = 'active'`); a paused one would save it into nothing.
   const linked = bindings
+    .filter(binding => binding.status === 'active')
     .map(binding => channelById[binding.source_channel_id])
     .filter((channel): channel is SourceChannel => Boolean(channel))
   return Array.from(

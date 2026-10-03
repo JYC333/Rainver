@@ -103,9 +103,14 @@ function AcceptDialog({ open, onOpenChange, candidate, onConfirm }: {
   const [changeSummary, setChangeSummary] = useState('')
   const [saving, setSaving] = useState(false)
 
+  // Reset when the dialog opens or shows another Candidate — not when a
+  // refresh hands over the same Candidate as a new object, which would
+  // discard what is being typed.
+  const candidateId = candidate?.id ?? null
   useEffect(() => {
     if (open && candidate) setChangeSummary(candidate.summary ?? candidate.title)
-  }, [open, candidate])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, candidateId])
 
   async function confirm() {
     if (!changeSummary.trim()) { toast.error('A change summary is required'); return }
@@ -414,13 +419,22 @@ export function ReviewView({ projectId, threads, candidates, deferredCandidates,
 
   async function decide(candidate: InquiryCandidate, decision: string, body: Record<string, unknown>) {
     await inquiryApi.decideCandidate(projectId, candidate.id, { decision, ...body })
-    if (packet?.status === 'open') {
-      const remaining = packet.candidates.filter(item => item.id !== candidate.id)
-      if (remaining.length === 0 && packet.id) {
-        await inquiryApi.closeReviewPacket(projectId, packet.id)
+    // Several cards can be decided at once. Each decision removes its own
+    // Candidate from the packet as it stands when the decision lands — read
+    // and written through the ref, which the render cycle has not caught up
+    // with yet — not from the packet as it was when this decision started,
+    // which would put the others back and never leave the packet empty.
+    const current = packetRef.current
+    if (current?.status === 'open') {
+      const remaining = current.candidates.filter(item => item.id !== candidate.id)
+      const next = { ...current, candidates: remaining }
+      packetRef.current = next
+      if (remaining.length === 0 && current.id) {
+        await inquiryApi.closeReviewPacket(projectId, current.id)
+        packetRef.current = null
         setPacket(null)
       } else {
-        setPacket({ ...packet, candidates: remaining })
+        setPacket(next)
       }
     }
     await onChanged()

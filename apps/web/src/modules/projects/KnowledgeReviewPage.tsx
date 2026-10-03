@@ -162,7 +162,14 @@ export default function KnowledgeReviewPage({ embedded = false }: { embedded?: b
       <Button size="sm" variant={status === 'pending' ? 'default' : 'outline'} onClick={() => setStatus('pending')}>Needs review</Button>
       <Button size="sm" variant={status === 'deferred' ? 'default' : 'outline'} onClick={() => setStatus('deferred')}>Deferred</Button>
       {status === 'pending' && <Button size="sm" variant="outline" onClick={() => setShowAll(value => !value)}>{showAll ? 'Use checkpoint batch' : 'View all'}</Button>}
-      {packetId && <Button size="sm" variant="outline" onClick={async () => { await knowledgePromotionApi.closePacket(projectId, packetId); await load() }}>Next checkpoint</Button>}
+      {packetId && <Button size="sm" variant="outline" onClick={async () => {
+        try {
+          await knowledgePromotionApi.closePacket(projectId, packetId)
+          await load()
+        } catch (error) {
+          toast.error(message(error))
+        }
+      }}>Next checkpoint</Button>}
     </div>
     <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
       <Card className="p-3 space-y-2">

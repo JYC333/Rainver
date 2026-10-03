@@ -99,7 +99,12 @@ export function ChecklistView({
 }: {
   projectId: string
   items: ResearchChecklistItem[]
-  onChange: (items: ResearchChecklistItem[]) => void
+  /**
+   * An update over the current list. Each request's answer is applied to the
+   * list as it is when the answer arrives, not to the list the request was
+   * made from — two toggles in flight at once would otherwise undo each other.
+   */
+  onChange: (update: (current: ResearchChecklistItem[]) => ResearchChecklistItem[]) => void
 }) {
   const [text, setText] = useState('')
   const [activeItem, setActiveItem] = useState<ResearchChecklistItem | null>(null)
@@ -112,7 +117,7 @@ export function ChecklistView({
     if (!text.trim()) return
     try {
       const item = await projectResearchApi.createChecklistItem(projectId, text)
-      onChange([...items, item])
+      onChange(current => [...current, item])
       setText('')
     } catch (error) {
       toast.error(errMsg(error))
@@ -122,7 +127,7 @@ export function ChecklistView({
   async function setStatus(item: ResearchChecklistItem, status: ResearchChecklistItem['status']) {
     try {
       const next = await projectResearchApi.updateChecklistItem(projectId, item.id, { status })
-      onChange(items.map((value) => value.id === next.id ? next : value))
+      onChange(current => current.map((value) => value.id === next.id ? next : value))
     } catch (error) {
       toast.error(errMsg(error))
     }
@@ -131,7 +136,7 @@ export function ChecklistView({
   async function remove(id: string) {
     try {
       await projectResearchApi.deleteChecklistItem(projectId, id)
-      onChange(items.filter((value) => value.id !== id))
+      onChange(current => current.filter((value) => value.id !== id))
     } catch (error) {
       toast.error(errMsg(error))
     }
@@ -154,7 +159,7 @@ export function ChecklistView({
     ) return
     const reordered = moveChecklistItem(items, draggedId, targetStatus, targetId)
     if (reordered === items) return
-    onChange(reordered)
+    onChange(() => reordered)
     const previousById = new Map(items.map(item => [item.id, item]))
     const updates = reordered.filter(item => {
       const previous = previousById.get(item.id)
@@ -166,6 +171,9 @@ export function ChecklistView({
         sort_order: item.sort_order,
       })))
     } catch (error) {
+      // The optimistic order was not (or only partly) saved: show the order
+      // the list had before the drag rather than one the server does not hold.
+      onChange(() => items)
       toast.error(errMsg(error))
     }
   }

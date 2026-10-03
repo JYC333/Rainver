@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { FlaskConical, Plus } from 'lucide-react'
 import { toast } from 'sonner'
@@ -76,7 +76,11 @@ export default function ExperimentAreaPage({ embedded = false }: { embedded?: bo
     }
   }, [projectId])
 
+  // The selection at the time the detail was requested; a slower answer for
+  // an experiment selected earlier must not replace the one selected now.
+  const selectedRequestRef = useRef(0)
   const loadSelected = useCallback(async () => {
+    const requestId = ++selectedRequestRef.current
     if (!projectId || !selectedId) {
       setDefinition(null)
       setRuns([])
@@ -89,10 +93,12 @@ export default function ExperimentAreaPage({ embedded = false }: { embedded?: bo
         experimentsApi.listRuns(projectId, selectedId),
         experimentsApi.listInterpretations(projectId, selectedId),
       ])
+      if (requestId !== selectedRequestRef.current) return
       setDefinition(definitionResult)
       setRuns(runResult)
       setInterpretations(interpretationResult)
     } catch (error) {
+      if (requestId !== selectedRequestRef.current) return
       toast.error(errMsg(error))
     }
   }, [projectId, selectedId])

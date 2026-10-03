@@ -106,6 +106,8 @@ vi.mock('../../../api/client', () => ({
     runStage: vi.fn(),
     checkpoints: vi.fn().mockResolvedValue([]),
     decideCheckpoint: vi.fn(),
+    updateItemLimit: vi.fn(),
+    updateInitialItemLimit: vi.fn(),
     screeningCriteria: vi.fn().mockResolvedValue({
       id: null,
       project_id: 'project-1',
@@ -449,6 +451,77 @@ describe('Research Area workbench', () => {
       expect(projectResearchApi.workflows).toHaveBeenCalledWith('project-1')
       expect(projectResearchApi.evidenceMatrix).toHaveBeenCalledWith('project-1')
     })
+  })
+
+  it('edits the saved item limit once the workflow\'s last import has finished, rather than a finished operation', async () => {
+    mockResearchProject()
+    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([{
+      id: 'workflow-1', project_id: 'project-1', current_stage: 'monitoring', status: 'active',
+      state_json: { research_question: 'Does caching improve latency?', monitoring: { active: true } },
+      primary_thread_id: 'thread-1', started_by_user_id: 'user-1', started_run_id: null,
+      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T00:00:00.000Z',
+    }] as never)
+    // The baseline import completed; the server refuses to raise its budget.
+    vi.mocked(projectsApi.operations).mockResolvedValueOnce([{
+      id: 'operation-1', project_id: 'project-1', kind: 'research', title: 'Research', status: 'completed',
+      progress_json: { workflow_id: 'workflow-1', run_kind: 'baseline', current_stage: 'complete', history: { max_items: 50 } },
+      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T01:00:00.000Z',
+    }] as never)
+    vi.mocked(projectResearchApi.updateInitialItemLimit).mockResolvedValue({
+      id: 'workflow-1', project_id: 'project-1', current_stage: 'monitoring', status: 'active',
+      state_json: { research_question: 'Does caching improve latency?', max_items: 80 },
+      primary_thread_id: 'thread-1', started_by_user_id: 'user-1', started_run_id: null,
+      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T02:00:00.000Z',
+    } as never)
+    window.localStorage.setItem('rainver:research-workflow:user-1:project-1', 'workflow-1')
+    try {
+      renderArea()
+
+      await openFocus()
+      const input = await screen.findByLabelText('New item limit')
+      expect(screen.queryByText(/Intake is already running/)).not.toBeInTheDocument()
+      fireEvent.change(input, { target: { value: '80' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Update' }))
+
+      await waitFor(() => expect(projectResearchApi.updateInitialItemLimit).toHaveBeenCalledWith('project-1', 80, 'workflow-1'))
+      expect(projectResearchApi.updateItemLimit).not.toHaveBeenCalled()
+    } finally {
+      window.localStorage.removeItem('rainver:research-workflow:user-1:project-1')
+      // This file does not clear call history between tests.
+      vi.mocked(projectResearchApi.checkpoints).mockClear()
+    }
+  })
+
+  it('reads the checkpoints of the workflow an Inquiry link switches to', async () => {
+    mockResearchProject()
+    const workflow = (id: string, threadId: string) => ({
+      id, project_id: 'project-1', current_stage: 'screening', status: 'active',
+      state_json: { research_question: `Question ${id}` }, primary_thread_id: threadId,
+      started_by_user_id: 'user-1', started_run_id: null,
+      created_at: '2026-07-24T00:00:00.000Z', updated_at: '2026-07-24T00:00:00.000Z',
+    })
+    vi.mocked(projectResearchApi.workflows).mockResolvedValueOnce([workflow('workflow-1', 'thread-1'), workflow('workflow-2', 'thread-2')] as never)
+    vi.mocked(inquiryApi.listThreads).mockResolvedValueOnce([{
+      id: 'thread-1', space_id: 'space-1', project_id: 'project-1', kind: 'question', statement: 'Does caching improve latency?',
+      lifecycle_status: 'active', attention_state: 'focused', priority: 0, primary_parent_id: null,
+      owner_user_id: 'user-1', next_focus_kind: null, next_focus_note: null, blocked_reason: null,
+      version: 1, created_from: 'user', created_by_user_id: 'user-1',
+      created_at: '2026-06-30T00:00:00.000Z', updated_at: '2026-06-30T00:00:00.000Z',
+    }])
+    // Remembered: workflow-2. The link names thread-1, whose workflow-1 is running.
+    window.localStorage.setItem('rainver:research-workflow:user-1:project-1', 'workflow-2')
+    try {
+      renderArea('?research=new&thread=thread-1')
+
+      await waitFor(() => expect(toast.info).toHaveBeenCalledWith(
+        'Research has already started for this Inquiry. Opening its operation instead.',
+      ))
+      // The pending checkpoints shown must be workflow-1's, not workflow-2's.
+      await waitFor(() => expect(projectResearchApi.checkpoints).toHaveBeenCalledWith('project-1', 'workflow-1'))
+    } finally {
+      window.localStorage.removeItem('rainver:research-workflow:user-1:project-1')
+      vi.mocked(projectResearchApi.checkpoints).mockClear()
+    }
   })
 
   it('keeps the research item limit in the Area instead of Project settings', async () => {

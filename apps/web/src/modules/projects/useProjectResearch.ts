@@ -25,6 +25,20 @@ function researchWorkflowThreadId(workflow: ProjectResearchWorkflow): string | n
   return workflow.primary_thread_id || null
 }
 
+/**
+ * Whether an import operation can still take a larger item budget — the
+ * server's own rule (`assertStillAcquiring`): not finished or cancelled, and
+ * not past material import into comparison, synthesis, idea review or
+ * completion. A finished baseline still names the limit it ran with, but
+ * editing it there is refused; the saved draft is what changes then.
+ */
+const PAST_IMPORT_STAGES = new Set(['comparison', 'synthesis', 'idea_review', 'complete'])
+function operationStillAcquiring(operation: ProjectOperation): boolean {
+  if (operation.status === 'completed' || operation.status === 'cancelled') return false
+  const stage = operation.progress_json.failed_stage ?? operation.progress_json.current_stage
+  return !PAST_IMPORT_STAGES.has(String(stage ?? ''))
+}
+
 function researchWorkflowForThread(
   workflows: ProjectResearchWorkflow[],
   threadId: string,
@@ -136,6 +150,8 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null)
   const [researchScanSummaries, setResearchScanSummaries] = useState<ProjectResearchScanSummary[]>([])
   const [researchCheckpoints, setResearchCheckpoints] = useState<ProjectResearchCheckpoint[]>([])
+  /** The workflow whose checkpoints `researchCheckpoints` holds (or was last asked for). */
+  const checkpointsWorkflowRef = useRef<string | null>(null)
   const [evidenceMatrix, setEvidenceMatrix] = useState<ProjectResearchEvidenceMatrixItem[]>([])
   const [researchReports, setResearchReports] = useState<ProjectResearchReport[]>([])
   const [modelProviders, setModelProviders] = useState<Awaited<ReturnType<typeof providersApi.list>>>([])
@@ -185,6 +201,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
       const storedWorkflowId = readStoredResearchWorkflowId(userId, projectId)
       const activeWorkflow = researchWorkflowForDisplayFrom(workflows, storedWorkflowId)
       setSelectedWorkflowId(activeWorkflow?.id ?? null)
+      checkpointsWorkflowRef.current = activeWorkflow?.id ?? null
       setResearchCheckpoints(
         activeWorkflow ? await projectResearchApi.checkpoints(projectId, activeWorkflow.id) : [],
       )
@@ -239,6 +256,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
         projectResearchApi.reports(projectId).catch(() => [] as ProjectResearchReport[]),
         projectResearchApi.scanSummaries(projectId).catch(() => [] as ProjectResearchScanSummary[]),
       ])
+      checkpointsWorkflowRef.current = activeWorkflow?.id ?? null
       setResearchCheckpoints(checkpoints)
       setEvidenceMatrix(matrix)
       setResearchReports(reports)
@@ -247,6 +265,18 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
       // Keep the last known research state visible on a transient failure.
     }
   }, [projectId, selectedWorkflowId])
+
+  // Checkpoints belong to one workflow. Every switch of the selected workflow
+  // — the picker, an Inquiry link to a running workflow, a search just
+  // started — re-reads them for that workflow, and a slower answer for a
+  // workflow selected earlier is dropped.
+  const loadCheckpoints = useCallback((workflowId: string) => {
+    if (!projectId) return
+    checkpointsWorkflowRef.current = workflowId
+    projectResearchApi.checkpoints(projectId, workflowId)
+      .then(rows => { if (checkpointsWorkflowRef.current === workflowId) setResearchCheckpoints(rows) })
+      .catch(error => toast.error(errMsg(error)))
+  }, [projectId])
 
   const refreshSourceSelection = useCallback(async () => {
     if (!projectId) return
@@ -364,6 +394,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
     if (existingWorkflow && !['not_started', 'paused'].includes(existingWorkflow.status)) {
       setSelectedWorkflowId(existingWorkflow.id)
       writeStoredResearchWorkflowId(userId, projectId, existingWorkflow.id)
+      loadCheckpoints(existingWorkflow.id)
       toast.info('Research has already started for this Inquiry. Opening its operation instead.')
       navigate(`/projects/${projectId}/research?tab=runs`, { replace: true })
       return
@@ -382,10 +413,8 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
     if (!projectId) return
     setSelectedWorkflowId(workflowId)
     writeStoredResearchWorkflowId(userId, projectId, workflowId)
-    projectResearchApi.checkpoints(projectId, workflowId)
-      .then(setResearchCheckpoints)
-      .catch(error => toast.error(errMsg(error)))
-  }, [projectId, userId])
+    loadCheckpoints(workflowId)
+  }, [loadCheckpoints, projectId, userId])
 
   // `workflowIdOverride` lets a caller force which workflow (if any) this
   // targets instead of the one currently selected — the independent "start
@@ -408,6 +437,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
       if (response.workflow) {
         setSelectedWorkflowId(response.workflow.id)
         writeStoredResearchWorkflowId(userId, project.id, response.workflow.id)
+        loadCheckpoints(response.workflow.id)
       }
       return true
     } catch (e) {
@@ -544,7 +574,8 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
   const operationForSettings = operations.find(item => item.kind === 'research'
     && item.progress_json.workflow_id === selectedWorkflowId
     && ['baseline', 'historical_backfill'].includes(String(item.progress_json.run_kind))
-    && numberValue(objectValue(item.progress_json.history).max_items) > 0)
+    && numberValue(objectValue(item.progress_json.history).max_items) > 0
+    && operationStillAcquiring(item))
 
   const selectedWorkflow = researchWorkflowForDisplayFrom(researchWorkflows, selectedWorkflowId)
   const setupDraft = researchSetupDraftFromWorkflow(

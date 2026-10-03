@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import { SpaceLink as Link } from '../../../core/spaceNav'
 import { inquiryApi } from '../../../api/client'
@@ -83,6 +83,11 @@ function RelationsTab({ projectId, detail, allThreads, onChanged }: {
   const [relationTarget, setRelationTarget] = useState('')
   const [relationKind, setRelationKind] = useState('related_to')
   const [primaryParentId, setPrimaryParentId] = useState(detail.primary_parent_id ?? '')
+  // The tab stays mounted while the selected Thread changes, and a refresh
+  // may bring a parent set elsewhere: the control shows this Thread's parent.
+  useEffect(() => {
+    setPrimaryParentId(detail.primary_parent_id ?? '')
+  }, [detail.id, detail.primary_parent_id])
   const byId = new Map(allThreads.map(thread => [thread.id, thread]))
   // Only the primary-parent tree must stay acyclic. A typed relation may point
   // at any other Thread, descendants included — `decomposes_into` pointing at

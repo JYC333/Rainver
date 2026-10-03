@@ -68,6 +68,26 @@ function renderPage() {
 }
 
 describe('ExperimentAreaPage', () => {
+  it('shows the experiment selected last, not one whose slower detail arrived later', async () => {
+    const second = { ...DEFINITION, id: 'definition-2', name: 'Second test', objective: 'Measure throughput' }
+    vi.mocked(experimentsApi.listDefinitions).mockResolvedValue([DEFINITION, second])
+    let answerFirst: (value: typeof DEFINITION & { versions: never[] }) => void = () => {}
+    vi.mocked(experimentsApi.getDefinition).mockImplementation((_projectId, id) => id === DEFINITION.id
+      ? new Promise(resolve => { answerFirst = resolve })
+      : Promise.resolve({ ...second, versions: [] }))
+    renderPage()
+
+    // The first experiment is selected on load and its detail is still loading
+    // when the person picks the second.
+    fireEvent.click(await screen.findByRole('button', { name: /Second test/ }))
+    expect(await screen.findByRole('heading', { name: 'Second test' })).toBeInTheDocument()
+
+    answerFirst({ ...DEFINITION, versions: [] })
+    await waitFor(() => expect(experimentsApi.getDefinition).toHaveBeenCalledWith('project-1', DEFINITION.id))
+    expect(screen.getByRole('heading', { name: 'Second test' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Cache test' })).not.toBeInTheDocument()
+  })
+
   it('links to a preselected Hypothesis creation flow when none exist', async () => {
     renderPage()
 
