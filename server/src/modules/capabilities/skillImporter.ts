@@ -594,7 +594,10 @@ function dirname(path: string): string {
 }
 
 function rawGitHubUrl(repo: string, ref: string, path: string): string {
-  return `https://raw.githubusercontent.com/${repo}/${ref}/${path}`;
+  // Tree paths and the decoded skill path are file names, not URL text: a
+  // `#` would end the URL, a `?` start a query, a bare `%` fail to parse.
+  const encoded = (value: string) => value.split("/").map((part) => encodeURIComponent(part)).join("/");
+  return `https://raw.githubusercontent.com/${repo}/${encoded(ref)}/${encoded(path)}`;
 }
 
 function assertTextContent(contentType: string | null, path: string, message: string): void {
