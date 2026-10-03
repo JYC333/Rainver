@@ -82,4 +82,12 @@ describe('Task work tab', () => {
     renderTab()
     expect(await screen.findByText(/No evaluation has accepted the result/)).toBeInTheDocument()
   })
+
+  it('reloads the Work view when the page asks it to', async () => {
+    const view = render(<MemoryRouter><TaskWorkTab taskId="task-1" refreshToken={0} /></MemoryRouter>)
+    await waitFor(() => expect(tasksApi.work).toHaveBeenCalledTimes(1))
+
+    view.rerender(<MemoryRouter><TaskWorkTab taskId="task-1" refreshToken={1} /></MemoryRouter>)
+    await waitFor(() => expect(tasksApi.work).toHaveBeenCalledTimes(2))
+  })
 })

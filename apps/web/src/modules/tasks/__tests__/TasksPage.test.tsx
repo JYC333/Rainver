@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Task } from '../../../types/api'
@@ -88,5 +88,21 @@ describe('TasksPage', () => {
       { spaceId: 'personal-1' },
     ))
     expect(await screen.findByTestId('where')).toHaveTextContent('/spaces/personal-1/tasks/task-2')
+  })
+
+  it('ignores a slower answer for a filter that is no longer selected', async () => {
+    let finishMine!: (page: { items: Task[] }) => void
+    mocked.listTasks
+      .mockImplementationOnce(() => new Promise(resolve => { finishMine = resolve }))
+      .mockResolvedValueOnce({ items: [{ ...TASK, id: 'task-9', title: 'Everyone task' }] })
+    renderPage()
+    await waitFor(() => expect(mocked.listTasks).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mine' }))
+    expect(await screen.findByText('Everyone task')).toBeInTheDocument()
+
+    await act(async () => { finishMine({ items: [{ ...TASK, title: 'Stale mine task' }] }) })
+    expect(screen.queryByText('Stale mine task')).not.toBeInTheDocument()
+    expect(screen.getByText('Everyone task')).toBeInTheDocument()
   })
 })

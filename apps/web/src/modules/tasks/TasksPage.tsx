@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ListTodo, Plus } from 'lucide-react'
 import { toast } from 'sonner'
@@ -54,6 +54,7 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true)
   const [boardId, setBoardId] = useState<string>('')
   const [mineOnly, setMineOnly] = useState(true)
+  const listRequest = useRef(0)
   const [fStatus, setFStatus] = useState<string>('')
   const [fPriority, setFPriority] = useState<string>('')
   const [fRisk, setFRisk] = useState<string>('')
@@ -79,6 +80,7 @@ export default function TasksPage() {
       setLoading(false)
       return
     }
+    const request = ++listRequest.current
     setLoading(true)
     try {
       const params: Record<string, string> = { limit: '200' }
@@ -89,12 +91,16 @@ export default function TasksPage() {
       // agree on whose Task it is.
       if (mineOnly) params.assigned_to_me = 'true'
       const p = await tasksApi.list(params)
+      // Only the latest request's page: Mine/Everyone, Board and Space change
+      // faster than the list answers.
+      if (request !== listRequest.current) return
       setTasks(p.items)
     } catch (e) {
+      if (request !== listRequest.current) return
       toast.error(errMsg(e))
       setTasks([])
     } finally {
-      setLoading(false)
+      if (request === listRequest.current) setLoading(false)
     }
   }, [boardId, activeSpaceId, mineOnly])
 
