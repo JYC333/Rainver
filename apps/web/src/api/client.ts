@@ -3657,7 +3657,8 @@ export const providersApi = {
     name: string
     provider_type: ProviderType | string
     api_key: string
-    default_model: string
+    /** null clears the default; undefined leaves it. */
+    default_model: string | null
     available_models: string[]
     base_url: string
     network_profile_id: string | null
@@ -3687,28 +3688,39 @@ export const providersApi = {
   sendSubscriptionLoginInput: (type: ManagedSubscriptionType, input: string) =>
     post<{ status: string }>(`/providers/subscriptions/login/input?type=${encodeURIComponent(type)}`, { input }),
 
-  async *subscriptionLoginStream(type: ManagedSubscriptionType): AsyncGenerator<ManagedSubscriptionLoginEvent> {
+  // The server ends the login session only when this response closes, and
+  // allows one session per user and type: the caller aborts when it leaves,
+  // as hostsApi.loginStream's callers do.
+  async *subscriptionLoginStream(type: ManagedSubscriptionType, signal?: AbortSignal): AsyncGenerator<ManagedSubscriptionLoginEvent> {
     const url = `${BASE}/providers/subscriptions/login/stream?type=${encodeURIComponent(type)}`
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
     headers['X-Rainver-Space-Id'] = _spaceId
-    const response = await fetch(url, { headers })
+    const response = await fetch(url, { headers, signal })
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
     if (!response.body) throw new Error('No response body')
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const blocks = buffer.split('\n\n')
-      buffer = blocks.pop() ?? ''
-      for (const block of blocks) {
-        const line = block.trim()
-        if (!line.startsWith('data: ')) continue
-        try { yield JSON.parse(line.slice(6)) as ManagedSubscriptionLoginEvent } catch { /* ignore malformed SSE */ }
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split('\n\n')
+        buffer = blocks.pop() ?? ''
+        for (const block of blocks) {
+          const line = block.trim()
+          if (!line.startsWith('data: ')) continue
+          try { yield JSON.parse(line.slice(6)) as ManagedSubscriptionLoginEvent } catch { /* ignore malformed SSE */ }
+        }
       }
+    } catch (caught) {
+      // An abort is the caller leaving, not a failure to report.
+      if (!(caught instanceof DOMException && caught.name === 'AbortError')) throw caught
+    } finally {
+      // A consumer that stops iterating lands here too; release the connection.
+      void reader.cancel().catch(() => undefined)
     }
   },
 

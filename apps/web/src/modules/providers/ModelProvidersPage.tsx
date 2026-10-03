@@ -55,6 +55,10 @@ export default function ModelProvidersPage() {
     setSpaces([])
     setPresets([])
     setVendors([])
+    // The runtime default is per Space too; left as it was, a Space whose
+    // providers fail to load would show the previous Space's default.
+    applyRuntimeDefault(null)
+    setRuntimeDefaultError(null)
     try {
       if (!activeSpaceId) {
         setConfigs([])
