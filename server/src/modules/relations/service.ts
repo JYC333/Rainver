@@ -206,7 +206,12 @@ export class RelationsService {
     if (body.summary !== undefined) patch.summary = optionalString(body.summary);
     if (body.pronouns !== undefined) patch.pronouns = optionalString(body.pronouns);
     if (body.headline !== undefined) patch.headline = optionalString(body.headline);
-    const updated = await this.repository.updatePerson(identity.spaceId, objectId, identity.userId, patch);
+    // Title and summary live on space_objects, pronouns and headline on
+    // relation_people: one transaction, so a refused second write does not
+    // leave the first one committed.
+    const updated = await withDbTransaction(this.pool, (client) =>
+      this.repository.updatePerson(client, identity.spaceId, objectId, identity.userId, patch),
+    );
     if (!updated) throw new HttpError(404, "Relation person not found");
     return personOut(updated);
   }
@@ -265,15 +270,23 @@ export class RelationsService {
     if (!PROVENANCE_SOURCES.has(source)) throw new HttpError(422, `source must be one of ${[...PROVENANCE_SOURCES].join(", ")}`);
     const confidence = numberValue(body.confidence);
     assertConfidence(confidence);
-    const row = await this.repository.createIdentity(identity.spaceId, {
-      objectId,
-      idType,
-      idValue: requiredString(body.id_value, "id_value"),
-      isPrimary: body.is_primary === true,
-      confidence,
-      source,
-      createdByUserId: identity.userId,
-    });
+    let row;
+    try {
+      row = await this.repository.createIdentity(identity.spaceId, {
+        objectId,
+        idType,
+        idValue: requiredString(body.id_value, "id_value"),
+        isPrimary: body.is_primary === true,
+        confidence,
+        source,
+        createdByUserId: identity.userId,
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new HttpError(409, "This identity already exists for the relation object");
+      }
+      throw error;
+    }
     return identityOut(row);
   }
 
@@ -458,4 +471,8 @@ export class RelationsService {
     }
     await Promise.all(checks);
   }
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
 }

@@ -202,6 +202,7 @@ export class RelationsRepository {
   }
 
   async updatePerson(
+    db: Queryable,
     spaceId: string,
     objectId: string,
     userId: string,
@@ -214,7 +215,7 @@ export class RelationsRepository {
   ): Promise<RelationPersonRow | null> {
     const now = new Date().toISOString();
     if (patch.title !== undefined || patch.summary !== undefined) {
-      await this.db.query(
+      await db.query(
         `UPDATE space_objects
             SET title = COALESCE($3, title), summary = CASE WHEN $4 THEN $5 ELSE summary END, updated_at = $6
           WHERE id = $1 AND space_id = $2 AND object_type = 'person'`,
@@ -222,7 +223,7 @@ export class RelationsRepository {
       );
     }
     if (patch.pronouns !== undefined || patch.headline !== undefined) {
-      await this.db.query(
+      await db.query(
         `UPDATE relation_people
             SET pronouns = CASE WHEN $3 THEN $4 ELSE pronouns END,
                 headline = CASE WHEN $5 THEN $6 ELSE headline END,
@@ -239,7 +240,7 @@ export class RelationsRepository {
         ],
       );
     }
-    return this.getPerson(this.db, spaceId, objectId, userId);
+    return this.getPerson(db, spaceId, objectId, userId);
   }
 
   async archivePerson(spaceId: string, objectId: string): Promise<void> {

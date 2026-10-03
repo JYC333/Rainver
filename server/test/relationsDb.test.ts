@@ -99,6 +99,22 @@ describe("relations module (real Postgres)", () => {
     ).rejects.toMatchObject({ statusCode: 404 });
   });
 
+  it("leaves a person untouched when one half of an update is refused", async () => {
+    if (!db.available) return;
+    const person = await service().createPerson(
+      { spaceId: SPACE, userId: USER },
+      { title: "Ada Lovelace", pronouns: "she/her" },
+    );
+    // Title lives on space_objects and pronouns on relation_people; the second
+    // write is refused by the column width, and the first must not stay.
+    await expect(service().updatePerson({ spaceId: SPACE, userId: USER }, person.object_id, {
+      title: "Ada Lovelace (renamed)",
+      pronouns: "x".repeat(40),
+    })).rejects.toThrow();
+    const after = await service().getPerson({ spaceId: SPACE, userId: USER }, person.object_id);
+    expect(after).toMatchObject({ title: "Ada Lovelace", pronouns: "she/her" });
+  });
+
   it("rewrites only a person through the person route, never another owned object", async () => {
     if (!db.available) return;
     await db.pool.query(
@@ -187,6 +203,16 @@ describe("relations module (real Postgres)", () => {
 
     const identities = await service().listIdentities({ spaceId: SPACE, userId: USER }, person.object_id);
     expect(identities).toHaveLength(1);
+  });
+
+  it("answers a repeated identity as a conflict, not a server error", async () => {
+    if (!db.available) return;
+    const person = await service().createPerson({ spaceId: SPACE, userId: USER }, { title: "Grace Hopper" });
+    const body = { id_type: "email", id_value: "grace@example.com" };
+    await service().createIdentity({ spaceId: SPACE, userId: USER }, person.object_id, body);
+    await expect(service().createIdentity({ spaceId: SPACE, userId: USER }, person.object_id, body))
+      .rejects.toMatchObject({ statusCode: 409 });
+    expect(await service().listIdentities({ spaceId: SPACE, userId: USER }, person.object_id)).toHaveLength(1);
   });
 
   it("creates a pending proposal instead of directly writing an affiliation edge", async () => {
