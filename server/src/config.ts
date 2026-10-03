@@ -194,6 +194,7 @@ const KNOWN_ENV_KEYS = new Set([
   "SERVER_MEMORY_MAINTENANCE_SCHEDULER_ENABLED",
   "SERVER_MEMORY_MAINTENANCE_SCHEDULER_INTERVAL_SECONDS",
   "SERVER_MEMORY_MAINTENANCE_SCHEDULER_BATCH_LIMIT",
+  "SERVER_MEMORY_DIRECT_WRITES_PER_SESSION",
   "SERVER_SOURCE_EXTRACTION_SCHEDULER_ENABLED",
   "SERVER_SOURCE_EXTRACTION_SCHEDULER_INTERVAL_SECONDS",
   "SERVER_CUSTOM_SOURCE_ALLOWED_LANGUAGES",
@@ -266,7 +267,16 @@ function parseBoundedInt(
   min: number,
   max: number,
 ): number {
-  const n = parseIntStrict(value, fallback, name);
+  if (value === undefined || value === "") return fallback;
+  const n = Number(value);
+  // A lower bound of 0 admits 0 (PROVIDER_PROXY_PORT=0 is the OS-assigned
+  // port); only a positive bound makes 0 a non-positive-integer failure.
+  if (!Number.isInteger(n) || (n <= 0 && min > 0)) {
+    throw new ConfigError(
+      `${name} must be a positive integer, got ${JSON.stringify(value)}`,
+      "invalid_positive_integer",
+    );
+  }
   if (n < min || n > max) {
     throw new ConfigError(
       `${name} must be between ${min} and ${max}, got ${JSON.stringify(n)}`,

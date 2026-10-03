@@ -11,7 +11,6 @@
  */
 
 import type { FastifyRequest } from "fastify";
-import { randomUUID } from "node:crypto";
 
 /** Standard correlation id header, preserved end-to-end. */
 export const REQUEST_ID_HEADER = "x-request-id";
@@ -29,11 +28,15 @@ export const SERVER_MARKER_VALUE = "server";
  */
 const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "proxy-authorization"]);
 
-/** Preserve an incoming `x-request-id`, or generate one if absent. */
+/**
+ * The request's one correlation id: the incoming `x-request-id` when the
+ * client sent one, otherwise the id Fastify generated for it (`appShell`
+ * configures both). Read from the request rather than minted here so that
+ * every caller on the same request — the response header, a route, the error
+ * envelope, the log line — gets the same id.
+ */
 export function resolveRequestId(request: FastifyRequest): string {
-  const incoming = request.headers[REQUEST_ID_HEADER];
-  const value = Array.isArray(incoming) ? incoming[0] : incoming;
-  return value || randomUUID();
+  return String(request.id);
 }
 
 /**

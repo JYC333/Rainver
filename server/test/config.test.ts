@@ -130,6 +130,14 @@ describe("loadConfig", () => {
     ).toThrow(ConfigError);
   });
 
+  it("accepts an explicit PROVIDER_PROXY_PORT of 0 as the OS-assigned port its bound admits", () => {
+    expect(loadConfig({ PROVIDER_PROXY_PORT: "0" }).providerProxyPort).toBe(0);
+    expect(loadConfig({ PROVIDER_PROXY_PORT: "8020" }).providerProxyPort).toBe(8020);
+    expect(() => loadConfig({ PROVIDER_PROXY_PORT: "-1" })).toThrow(ConfigError);
+    expect(() => loadConfig({ PROVIDER_PROXY_PORT: "70000" })).toThrow(ConfigError);
+    expect(() => loadConfig({ BUILTIN_HOST_MAX_CONCURRENT_RUNS: "0" })).toThrow(ConfigError);
+  });
+
   it("validates notification webhook egress semantics", () => {
     expect(() =>
       loadConfig({ SERVER_ENABLE_NOTIFICATION_WEBHOOK_EGRESS: "true" }),
@@ -242,6 +250,14 @@ describe("config diagnostics", () => {
 
   it("returns no diagnostics for a fully-known environment", () => {
     expect(collectConfigDiagnostics({ SERVER_LOG_LEVEL: "info" })).toEqual([]);
+  });
+
+  it("does not report a variable loadConfig reads as ignored", () => {
+    // The direct-write circuit breaker is read and applied; a warning that
+    // calls it ignored sends an operator to delete a setting that is in force.
+    const env = { SERVER_MEMORY_DIRECT_WRITES_PER_SESSION: "200" };
+    expect(loadConfig(env).memoryDirectWritesPerSession).toBe(200);
+    expect(collectConfigDiagnostics(env)).toEqual([]);
   });
 
   it("adds semantic diagnostics for server-owned config relationships", () => {
