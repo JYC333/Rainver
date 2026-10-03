@@ -57,6 +57,8 @@ interface DashboardData {
   dimensions: UsageDimensionsResponse | null
   subjects: UsageSubjectSummary[]
   sessions: UsageSessionSummary[]
+  /** Sessions matched by the filters; the list above holds at most one page. */
+  sessionTotal: number
   events: UsageEventDTO[]
   dimensionSummary: UsageSummaryResponse | null
   budgetPreview: UsageBudgetPreviewResponse | null
@@ -378,6 +380,7 @@ export default function UsagePage() {
     dimensions: null,
     subjects: [],
     sessions: [],
+    sessionTotal: 0,
     events: [],
     dimensionSummary: null,
     budgetPreview: null,
@@ -444,6 +447,7 @@ export default function UsagePage() {
         dimensions: null,
         subjects: [],
         sessions: [],
+        sessionTotal: 0,
         events: [],
         dimensionSummary: null,
         budgetPreview: null,
@@ -475,6 +479,7 @@ export default function UsagePage() {
         dimensions,
         subjects: safeItems(subjects.items),
         sessions: safeItems(sessions.items),
+        sessionTotal: sessions.total,
         events: safeItems(events.items),
         dimensionSummary,
         budgetPreview,
@@ -909,7 +914,7 @@ export default function UsagePage() {
                     {[
                       { label: 'Request', divisor: selectedTotals.request_count },
                       { label: 'Event', divisor: selectedTotals.event_count },
-                      { label: 'Session', divisor: data.sessions.length },
+                      { label: 'Session', divisor: data.sessionTotal },
                       { label: labelForGroupBy(data.summary?.group_by ?? 'Group'), divisor: data.summary?.items.length ?? 0 },
                     ].map(row => {
                       const divisor = Math.max(0, row.divisor)

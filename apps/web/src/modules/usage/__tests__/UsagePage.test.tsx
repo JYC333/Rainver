@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   UsageDimensionsResponse,
@@ -273,6 +273,15 @@ describe('UsagePage', () => {
     })
     expect(screen.queryByText('Year-Old Provider')).not.toBeInTheDocument()
     expect(screen.getAllByText('June Provider').length).toBeGreaterThan(0)
+  })
+
+  it('averages per session over every matched session, not the one page listed', async () => {
+    // One session on the page, four matched: 1670 tokens average to 418 per session.
+    vi.mocked(usageApi.sessions).mockResolvedValue({ ...sessions, total: 4 })
+    render(<UsagePage />)
+
+    const row = (await screen.findByRole('cell', { name: 'Session' })).closest('tr')!
+    expect(within(row).getAllByRole('cell')[1]).toHaveTextContent('418')
   })
 
   it('renders shared empty-state panels instead of empty tables when there is no usage', async () => {
