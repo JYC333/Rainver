@@ -395,6 +395,139 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(write?.contract_snapshot_json.workflow_input_json).toEqual({ topic: "tides" });
   });
 
+  it("supersedes the review proposal of a version that a newer version replaced", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO tasks (
+         id, space_id, task_role, title, description, task_type, status, priority,
+         risk_level, owner_user_id, visibility, access_level, created_by_user_id,
+         created_at, updated_at
+       ) VALUES ($1, $2, 'source', 'Reviewed task', 'Task whose plan needs review.', 'general',
+                 'inbox', 'normal', 'medium', $3, 'space_shared', 'full', $3, $4, $4)`,
+      [TASK, SPACE, USER, now],
+    );
+    const planningRun = await new PgTaskRepository(db.pool).requestPlanningRun(identity, TASK, {
+      agent_id: AGENT,
+      prompt: "Plan this source task.",
+    }) as { id: string };
+    const plans = new PgPlanRepository(db.pool);
+    const first = await plans.createPlanFromAgent(identity, {
+      sourceTaskId: TASK,
+      planningRunId: planningRun.id,
+      planningToolCallId: "tool-call-review-1",
+      agentId: AGENT,
+      definitionJson: agentPlanDefinition(),
+      budgetCap: 100,
+    });
+    const firstVersion = first.current_version as { id: string; status: string; approval_proposal_id: string | null };
+    expect(firstVersion.status).toBe("pending_review");
+    expect(firstVersion.approval_proposal_id).toBeTruthy();
+
+    // The planner revises before anyone reviewed: the first review is moot.
+    const second = await plans.createPlanFromAgent(identity, {
+      sourceTaskId: TASK,
+      planId: String(first.id),
+      planningRunId: planningRun.id,
+      planningToolCallId: "tool-call-review-2",
+      agentId: AGENT,
+      definitionJson: agentPlanDefinition(),
+      budgetCap: 100,
+    });
+    const secondVersion = second.current_version as { id: string; approval_proposal_id: string | null };
+    expect(secondVersion.id).not.toBe(firstVersion.id);
+
+    const proposals = await db.pool.query<{ id: string; status: string }>(
+      `SELECT id, status FROM proposals WHERE space_id = $1 AND proposal_type = 'plan_review' ORDER BY created_at ASC`,
+      [SPACE],
+    );
+    expect(proposals.rows).toEqual([
+      { id: firstVersion.approval_proposal_id, status: "superseded" },
+      { id: secondVersion.approval_proposal_id, status: "pending" },
+    ]);
+  });
+
+  it("finishes a Plan whose last node is an integration verdict in the same reconcile, not at the next recovery scan", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO tasks (
+         id, space_id, task_role, title, description, task_type, status, priority,
+         risk_level, owner_user_id, visibility, access_level, created_by_user_id,
+         created_at, updated_at
+       ) VALUES ($1, $2, 'source', 'Merged task', 'Task that ends on a merge.', 'general',
+                 'inbox', 'normal', 'medium', $3, 'space_shared', 'full', $3, $4, $4)`,
+      [TASK, SPACE, USER, now],
+    );
+    const planningRun = await new PgTaskRepository(db.pool).requestPlanningRun(identity, TASK, {
+      agent_id: AGENT,
+      prompt: "Plan this source task.",
+    }) as { id: string };
+    const definition = agentPlanDefinition("low");
+    const step = definition.nodes[0]!;
+    definition.nodes = [
+      { ...step, id: "gather", title: "Gather the material" },
+      { ...step, id: "merge", title: "Merge the result", depends_on: ["gather"], metadata_json: { ...step.metadata_json, node_kind: "integration" } } as never,
+    ];
+    const plans = new PgPlanRepository(db.pool);
+    const created = await plans.createPlanFromAgent(identity, {
+      sourceTaskId: TASK,
+      planningRunId: planningRun.id,
+      planningToolCallId: "tool-call-integration",
+      agentId: AGENT,
+      definitionJson: definition,
+      budgetCap: 100,
+    });
+    const versionId = (created.current_version as { id: string }).id;
+    await plans.executePlan(identity, String(created.id), { agentId: AGENT });
+    const gather = (await db.pool.query<{ run_id: string }>(
+      `SELECT pnr.run_id FROM plan_node_runs pnr JOIN plan_nodes n ON n.id = pnr.plan_node_id
+        WHERE n.plan_version_id = $1 AND n.node_key = 'gather'`,
+      [versionId],
+    )).rows[0]!;
+    const runs = new PgRunRepository(db.pool);
+    const gatherArtifactId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO artifacts (
+         id, space_id, run_id, artifact_type, title, export_formats_json,
+         created_at, updated_at
+       ) VALUES ($1, $2, $3, 'result', 'Gathered material', '[]'::jsonb, $4, $4)`,
+      [gatherArtifactId, SPACE, gather.run_id, now],
+    );
+    await dispatchAgentRun(gather.run_id, new Date().toISOString());
+    await runs.markRunTerminal({
+      run_id: gather.run_id,
+      space_id: SPACE,
+      status: "succeeded",
+      output_json: canonicalRunOutput({
+        success: true,
+        outputText: "done",
+        outputJson: {
+          result: "done",
+          materialization: [{ kind: "artifact", status: "succeeded", artifact_id: gatherArtifactId }],
+        },
+      }),
+      completed_at: new Date().toISOString(),
+    });
+    await runs.insertRunEvaluation({
+      space_id: SPACE,
+      run_id: gather.run_id,
+      outcome_status: "passed",
+      trajectory_status: "acceptable",
+      evaluated_at: new Date().toISOString(),
+    });
+
+    const reconciled = await plans.reconcilePlan(identity, String(created.id));
+
+    expect(reconciled.status).toBe("completed");
+    const nodes = await db.pool.query<{ node_key: string; status: string }>(
+      `SELECT node_key, status FROM plan_nodes WHERE plan_version_id = $1 ORDER BY node_key`,
+      [versionId],
+    );
+    expect(nodes.rows).toEqual([{ node_key: "gather", status: "done" }, { node_key: "merge", status: "done" }]);
+    expect((await db.pool.query<{ status: string }>(`SELECT status FROM plans WHERE id = $1`, [created.id])).rows[0]?.status).not.toBe("active");
+  });
+
   it("refuses a planning request from a member who cannot see the Task", async () => {
     const now = new Date().toISOString();
     const member = "55555555-5555-4555-8555-555555555555";

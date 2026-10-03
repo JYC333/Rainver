@@ -68,7 +68,9 @@ The first proposal creates the Plan and Version; later Agent planning Runs add
 the next Version. A source Task cannot have two logical Plans. Safe low-risk
 graphs may be auto-approved; all other graphs create a `plan_review` Proposal
 and keep their nodes blocked. Proposal application approves the Version and
-unblocks nodes in the same transaction. Human revision is a new planning Run,
+unblocks nodes in the same transaction. A later Version supersedes the earlier
+one and, with it, that one's still-pending `plan_review` Proposal, which could
+never be applied. Human revision is a new planning Run,
 not a direct `POST /plans/:id/revise` operation.
 
 ## Plan execution
@@ -159,7 +161,10 @@ are guarded by the operation's `current_execution_id`, so an older pass cannot
 overwrite the outcome of a newer authoritative pass.
 
 Post-finalization reconciliation is the immediate path, not the only recovery
-path. `ExecutionGraphRecoveryService` scans active Plan and Workflow executions
+path. Within one Plan pass, a node that settles without a Run (an integration
+verdict, a failed input binding) readies the nodes behind it and can finish
+or fail the Plan in that same pass, rather than at the next scan.
+`ExecutionGraphRecoveryService` scans active Plan and Workflow executions
 at startup and periodically, then idempotently reconciles each graph under its
 aggregate row lock. Each scan is a bounded page that continues where the
 previous one stopped and wraps after the last page, so a graph that is still

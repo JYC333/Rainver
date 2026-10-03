@@ -400,11 +400,25 @@ export class PgPlanRepository {
       });
       await insertPlanNodes(client, identity.spaceId, versionId, graph, versionStatus, now);
       if (current?.current_plan_version_id) {
-        await client.query(
+        const superseded = await client.query<{ approval_proposal_id: string | null }>(
           `UPDATE plan_versions SET status = 'superseded', updated_at = $3
-             WHERE space_id = $1 AND plan_id = $2 AND id <> $4 AND status IN ('approved', 'active', 'pending_review')`,
+             WHERE space_id = $1 AND plan_id = $2 AND id <> $4 AND status IN ('approved', 'active', 'pending_review')
+             RETURNING approval_proposal_id`,
           [identity.spaceId, planId, now, versionId],
         );
+        // A review proposal for a version that is no longer awaiting review
+        // can never be applied (the applier answers 409); left pending it
+        // would sit in the inbox beside the new version's own.
+        const staleProposalIds = superseded.rows
+          .map((row) => row.approval_proposal_id)
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+        if (staleProposalIds.length > 0) {
+          await client.query(
+            `UPDATE proposals SET status = 'superseded', updated_at = $3
+               WHERE space_id = $1 AND id = ANY($2::varchar[]) AND proposal_type = 'plan_review' AND status = 'pending'`,
+            [identity.spaceId, staleProposalIds, now],
+          );
+        }
       }
       let proposalId: string | null = null;
       if (approval.mode === "proposal_required") {
@@ -565,6 +579,29 @@ export class PgPlanRepository {
           ? plan.root_workflow_input_json as Record<string, unknown>
           : null,
       });
+      // Integration nodes and nodes whose input binding failed move to
+      // done/failed without a Run, so no finalization will reconcile for
+      // them: a Plan that ends on one of them is finished now, not at the
+      // next recovery scan.
+      const after = await client.query<{ id: string; status: string; depends_on: string[] }>(
+        `SELECT n.id, n.status,
+                COALESCE(array_agg(d.depends_on_node_id) FILTER (WHERE d.depends_on_node_id IS NOT NULL), ARRAY[]::varchar[]) AS depends_on
+           FROM plan_nodes n LEFT JOIN plan_node_dependencies d ON d.node_id = n.id AND d.space_id = n.space_id
+          WHERE n.space_id = $1 AND n.plan_version_id = $2 GROUP BY n.id`,
+        [identity.spaceId, plan.version_id],
+      );
+      const settled = after.rows.map((node) => ({ id: node.id, status: node.status, dependsOn: node.depends_on }));
+      if (this.scheduler.hasFailedNode(settled)) {
+        const verification = await verifyPlanIntegration(client, identity.spaceId, plan.version_id);
+        await finishPlan(client, identity.spaceId, planId, plan.root_run_id, "failed", "A plan node failed or was cancelled", verification);
+        return { plan_id: planId, status: "failed", scheduled_node_ids: scheduled };
+      }
+      if (this.scheduler.isComplete(settled)) {
+        const verification = await verifyPlanIntegration(client, identity.spaceId, plan.version_id);
+        const status = verification.status === "passed" ? "succeeded" : "failed";
+        await finishPlan(client, identity.spaceId, planId, plan.root_run_id, status, status === "succeeded" ? "All plan nodes completed" : verification.summary, verification);
+        return { plan_id: planId, status: status === "succeeded" ? "completed" : "failed", scheduled_node_ids: scheduled };
+      }
       return { plan_id: planId, status: "active", scheduled_node_ids: scheduled };
     });
   }
@@ -656,18 +693,27 @@ export class PgPlanRepository {
     );
     const scheduled: string[] = [];
     const queue = new PgJobQueueRepository(client);
-    const statusResult = await client.query<{ id: string; status: string }>(
-      `SELECT id, status FROM plan_nodes WHERE space_id = $1 AND plan_version_id = $2`,
-      [identity.spaceId, input.planVersionId],
-    );
     const dependenciesById = new Map(result.rows.map((node) => [node.id, node.depends_on]));
-    const readyNodeIds = new Set(this.scheduler.readyNodes(statusResult.rows.map((node) => ({
-      id: node.id,
-      status: node.status,
-      dependsOn: dependenciesById.get(node.id) ?? [],
-    }))).map((node) => node.id));
+    const readyNodeIdsNow = async (): Promise<Set<string>> => {
+      const statusResult = await client.query<{ id: string; status: string }>(
+        `SELECT id, status FROM plan_nodes WHERE space_id = $1 AND plan_version_id = $2`,
+        [identity.spaceId, input.planVersionId],
+      );
+      return new Set(this.scheduler.readyNodes(statusResult.rows.map((node) => ({
+        id: node.id,
+        status: node.status,
+        dependsOn: dependenciesById.get(node.id) ?? [],
+      }))).map((node) => node.id));
+    };
+    // A node settled here without a Run (an integration verdict, a failed
+    // input binding) can ready the nodes behind it in this same pass; the
+    // loop re-reads readiness until a pass schedules nothing new.
+    let readyNodeIds = await readyNodeIdsNow();
+    let settledWithoutRun = false;
+    for (let pass = 0; pass < result.rows.length + 1; pass += 1) {
+    settledWithoutRun = false;
     for (const node of result.rows) {
-      if (!readyNodeIds.has(node.id)) continue;
+      if (!readyNodeIds.has(node.id) || scheduled.includes(node.id)) continue;
       if (node.node_kind === "approval_checkpoint") {
         if (node.approval_proposal_id) continue;
         const proposalId = randomUUID();
@@ -688,6 +734,7 @@ export class PgPlanRepository {
         const now = new Date().toISOString();
         await client.query(`UPDATE plan_nodes SET status = $3, blocked_reason = CASE WHEN $3::varchar = 'failed' THEN $4 ELSE NULL END, updated_at = $5 WHERE space_id = $1 AND id = $2`, [identity.spaceId, node.id, verification.status === "passed" ? "done" : "failed", verification.summary, now]);
         scheduled.push(node.id);
+        settledWithoutRun = true;
         continue;
       }
       const childAgentId = node.assigned_agent_id ?? input.agentId;
@@ -710,6 +757,7 @@ export class PgPlanRepository {
           [identity.spaceId, node.id, `input_binding_unresolved:${error.bindingName}:${error.reason}`, now],
         );
         scheduled.push(node.id);
+        settledWithoutRun = true;
         continue;
       }
       const nodeBudgetSources = budgetSourcesForNode(node, input.budgetSources, input.planId);
@@ -760,6 +808,9 @@ export class PgPlanRepository {
       await client.query(`UPDATE plan_nodes SET status = 'in_progress', updated_at = $3 WHERE space_id = $1 AND id = $2`, [identity.spaceId, node.id, now]);
       await queue.enqueue({ job_type: "agent_run", space_id: identity.spaceId, user_id: identity.userId, agent_id: childAgentId, project_folder_id: input.projectFolderId, payload: { run_id: child.id, plan_id: input.planId, plan_version_id: input.planVersionId, plan_node_id: node.id } });
       scheduled.push(node.id);
+    }
+    if (!settledWithoutRun) break;
+    readyNodeIds = await readyNodeIdsNow();
     }
     return scheduled;
   }
