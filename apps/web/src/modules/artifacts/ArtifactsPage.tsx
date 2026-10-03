@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { BarChart3, FilePlus2, FileSearch, FolderKanban, Loader2, Package, SlidersHorizontal, X } from 'lucide-react'
@@ -64,6 +64,9 @@ export default function ArtifactsPage() {
   const [calibrating, setCalibrating] = useState(false)
   const [calibrationArtifactId, setCalibrationArtifactId] = useState<string | null>(null)
   const [calibrationDrafts, setCalibrationDrafts] = useState<RetrievalCalibrationDecision[]>([])
+  // Generating a report reloads once for the old filter and once, through the
+  // URL, for the new one; only the latest request's page may become the list.
+  const listRequest = useRef(0)
 
   const load = useCallback(async () => {
     if (!activeSpaceId) {
@@ -71,6 +74,7 @@ export default function ArtifactsPage() {
       setLoading(false)
       return
     }
+    const request = ++listRequest.current
     setLoading(true)
     try {
       const p = await artifactsApi.list({
@@ -79,12 +83,14 @@ export default function ArtifactsPage() {
         project_id: projectFilter || undefined,
         project_folder_id: folderFilter || undefined,
       })
+      if (request !== listRequest.current) return
       setItems(p.items)
     } catch (e) {
+      if (request !== listRequest.current) return
       toast.error(errMsg(e))
       setItems([])
     } finally {
-      setLoading(false)
+      if (request === listRequest.current) setLoading(false)
     }
   }, [fType, projectFilter, folderFilter, activeSpaceId])
 
@@ -130,7 +136,7 @@ export default function ArtifactsPage() {
       })
       setGeneratedArtifactId(result.artifact_id)
       setGeneratedProposalId(result.proposal_id ?? null)
-      setFType('retrieval_eval_report')
+      setArtifactTypeFilter('retrieval_eval_report')
       toast.success(result.proposal_id
         ? `Diagnostics packet created (${result.diagnostic_codes.join(', ') || 'no diagnostics'})`
         : `Diagnostics report created (${result.diagnostic_codes.join(', ') || 'no diagnostics'})`)
@@ -160,7 +166,7 @@ export default function ArtifactsPage() {
         persist_artifact: true,
       })
       setExplainArtifactId(result.artifact_id ?? null)
-      setFType('retrieval_explain_report')
+      setArtifactTypeFilter('retrieval_explain_report')
       toast.success(result.target.returned ? 'Explain report created: target returned' : 'Explain report created: target missed')
       await load()
     } catch (e) {
@@ -176,7 +182,13 @@ export default function ArtifactsPage() {
       toast.error('Access-safety proof is required')
       return null
     }
-    const evalDelta = parseMetricMap(calibrationEvalDelta)
+    let evalDelta: Record<string, number>
+    try {
+      evalDelta = parseMetricMap(calibrationEvalDelta)
+    } catch (error) {
+      toast.error(errMsg(error))
+      return null
+    }
     const evidenceArtifactIds = splitList(calibrationEvidenceIds)
     if (calibrationDecision === 'adopt' && evidenceArtifactIds.length === 0) {
       toast.error('Adopt decisions require evidence artifact ids')
@@ -219,7 +231,7 @@ export default function ArtifactsPage() {
       })
       setCalibrationArtifactId(result.artifact_id)
       setCalibrationDrafts([])
-      setFType('retrieval_calibration_decision')
+      setArtifactTypeFilter('retrieval_calibration_decision')
       toast.success(`Calibration decision saved (${result.decision_count})`)
       await load()
     } catch (e) {
