@@ -130,6 +130,12 @@ export function PersonalContextPanel({ run, currentUserId, personalSpaceId, spac
     }
   }
 
+  /** A preview answers one set of parameters; editing them withdraws it, so Allow never acts on parameters nobody previewed. */
+  function changeParameter(set: (value: string) => void, value: string) {
+    set(value)
+    setPreview(null)
+  }
+
   async function createGrant() {
     if (!preview?.eligible) return
     setCreating(true)
@@ -241,7 +247,7 @@ export function PersonalContextPanel({ run, currentUserId, personalSpaceId, spac
                 min={1}
                 max={50}
                 value={maxItems}
-                onChange={e => setMaxItems(e.target.value)}
+                onChange={e => changeParameter(setMaxItems, e.target.value)}
               />
             </div>
             <div>
@@ -251,7 +257,7 @@ export function PersonalContextPanel({ run, currentUserId, personalSpaceId, spac
                 min={60}
                 max={86400}
                 value={expiresSeconds}
-                onChange={e => setExpiresSeconds(e.target.value)}
+                onChange={e => changeParameter(setExpiresSeconds, e.target.value)}
               />
             </div>
           </div>

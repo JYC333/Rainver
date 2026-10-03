@@ -259,6 +259,17 @@ describe('RunDetailPage route decision panel', () => {
     expect(screen.getByRole('button', { name: 'Save workflow' })).toBeDisabled()
   })
 
+  it('says a run switched to could not be loaded instead of showing a skeleton forever', async () => {
+    useRunMock.mockImplementation((requestedId: string | null) => (requestedId === 'run-2'
+      ? { run, loading: false, error: 'Run not found' }
+      : { run, loading: false, error: null }))
+    renderPageWithSwitcher()
+    await screen.findByText('run-1', { exact: false })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch run' }))
+    expect(await screen.findByText('Run not found or not in this space')).toBeInTheDocument()
+  })
+
   it('ignores a late child-resource response from the previous run', async () => {
     let resolveRunAActivities: (value: { items: Array<Record<string, unknown>>; total: number; limit: number; offset: number }) => void = () => {}
     const runAActivities = new Promise<{ items: Array<Record<string, unknown>>; total: number; limit: number; offset: number }>(resolve => {

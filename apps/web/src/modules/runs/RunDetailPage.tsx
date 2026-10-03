@@ -414,7 +414,10 @@ export default function RunDetailPage() {
     polled && polled.id === runId && polled.space_id === activeSpaceId,
   )
 
-  if ((loading && !polled) || (polled !== null && !polledMatchesScope)) {
+  // A failure to load the Run named in the route is reported below even
+  // while the hook still holds the previous Run; otherwise a switch to a Run
+  // that cannot be loaded shows this skeleton for good.
+  if (!error && ((loading && !polled) || (polled !== null && !polledMatchesScope))) {
     return (
       <div className="p-6 space-y-4 max-w-4xl">
         <Skeleton className="h-10 w-64" />
