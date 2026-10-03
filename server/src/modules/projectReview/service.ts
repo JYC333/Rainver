@@ -1,4 +1,4 @@
-import { type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../routeUtils/common.js";
+import { HttpError, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../routeUtils/common.js";
 import { InquirySignalService } from "../inquiry/signalService.js";
 import { KnowledgePromotionCandidateService } from "../knowledgePromotion/candidateService.js";
 
@@ -11,6 +11,7 @@ export class ProjectReviewSessionService {
   constructor(private readonly db: Queryable) {}
 
   async open(identity: SpaceUserIdentity, projectId: string, limit = 5): Promise<Record<string, unknown>> {
+    if (!Number.isInteger(limit)) throw new HttpError(422, "limit must be an integer");
     const boundedLimit = Math.max(1, Math.min(limit, 20));
     return withQueryableTransaction(this.db, async (db) => {
       const inquiry = await new InquirySignalService(db).openReviewPacket(identity, projectId, boundedLimit);

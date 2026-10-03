@@ -222,6 +222,14 @@ export class KnowledgePromotionCandidateService {
           [identity.spaceId, projectId, actor.runId, actor.idempotencyKey],
         );
         if (existing.rows[0]) {
+          // The Candidate this call committed before losing has no Proposal
+          // and nobody drafted it on purpose; left pending it would sit in
+          // Knowledge Review as a duplicate of the winner's.
+          await this.db.query(
+            `DELETE FROM knowledge_promotion_candidates
+              WHERE id=$1 AND space_id=$2 AND status='pending' AND created_proposal_id IS NULL`,
+            [requiredString(candidate.id, "candidate.id"), identity.spaceId],
+          );
           const resolved = await this.getCandidate(identity, projectId, existing.rows[0].id);
           return { candidate: resolved, proposal_id: existing.rows[0].created_proposal_id };
         }

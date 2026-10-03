@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 import { seedServerRuntimeProfile, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig } from "../src/config.js";
@@ -324,6 +325,56 @@ describe("Knowledge promotion and revalidation (real Postgres)", () => {
       `SELECT pinned_source_ref_json FROM knowledge_items WHERE object_id=$1`, [knowledgeItemId],
     );
     expect(stored.rows[0]!.pinned_source_ref_json).toMatchObject({ kind: "inquiry_thread_revision", thread_id: hypothesis.id });
+  });
+
+  it("leaves one Candidate when identical agent promotions race on the idempotency key", async () => {
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Does the cache help?" });
+    await new InquiryIterationService(db.pool).recordIteration(identity, PROJECT, question.id as string, {
+      change_summary: "Measured", answer_state: "answered",
+    });
+    const runId = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, project_id, instructed_by_user_id, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $5, $6, 'space_shared', 'full', $7, $6, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
+      [runId, SPACE, AGENT, AGENT_VERSION, now, OWNER, PROJECT],
+    );
+    const actor = { agentId: AGENT, runId, idempotencyKey: "promote-raced", visibility: "space_shared" as const };
+    const body = {
+      thread_id: question.id, candidate_kind: "lesson" as const,
+      proposed_title: "The cache helps", proposed_content: "Measured: the cache helps.",
+    };
+
+    // The first call has created its Candidate and Proposal but not committed;
+    // the retry's idempotency check sees nothing yet and goes on to create its
+    // own Candidate before losing on the Proposal's unique index.
+    const first = await db.pool.connect();
+    try {
+      await first.query("BEGIN");
+      const winner = await new KnowledgePromotionCandidateService(first).proposeFromThreadForAgent(identity, PROJECT, body, actor);
+      let settled = false;
+      const retry = new KnowledgePromotionCandidateService(db.pool)
+        .proposeFromThreadForAgent(identity, PROJECT, body, actor)
+        .finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      await first.query("COMMIT");
+      expect((await retry).proposal_id).toBe(winner.proposal_id);
+    } finally {
+      await first.query("ROLLBACK").catch(() => undefined);
+      first.release();
+    }
+    const candidates = await db.pool.query<{ status: string; created_proposal_id: string | null }>(
+      `SELECT status, created_proposal_id FROM knowledge_promotion_candidates WHERE project_id=$1`, [PROJECT],
+    );
+    expect(candidates.rows).toHaveLength(1);
+    expect(candidates.rows[0]?.created_proposal_id).not.toBeNull();
+  });
+
+  it("refuses a review session limit that is not an integer instead of failing in the database", async () => {
+    if (!db.available) return;
+    await expect(new ProjectReviewSessionService(db.pool).open(identity, PROJECT, 2.5)).rejects.toMatchObject({ statusCode: 422 });
   });
 
   it("proposeFromThreadForAgent combines create+promote into one reviewable Proposal (inquiry.promote_knowledge)", async () => {
