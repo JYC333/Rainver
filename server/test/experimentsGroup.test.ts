@@ -12,6 +12,7 @@ import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js"
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 
 describe("experimentsCommon", () => {
   describe("Experiment executor configuration", () => {
@@ -393,6 +394,44 @@ describe("experimentsDb", () => {
       expect(observations).toEqual(expect.arrayContaining([
         expect.objectContaining({ metric_name: "accuracy", value_number: 0.91, source: "parsed" }),
       ]));
+    });
+
+    it("does not let a completion overwrite a terminal state committed under it", async () => {
+      if (!db.available) return;
+      const definitions = new ExperimentDefinitionService(db.pool);
+      const definition = await definitions.createDefinition(identity, PROJECT, { name: "Raced completion" });
+      const version = await definitions.createVersion(identity, PROJECT, definition.id as string, { executor_type: "manual" });
+      const primary = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
+        kind: "hypothesis", statement: "A completion arriving beside a reconcile keeps the reconcile's verdict",
+      });
+      await definitions.updateDefinition(identity, PROJECT, definition.id as string, { primary_hypothesis_thread_id: primary.id });
+      await definitions.approveVersion(identity, PROJECT, definition.id as string, version.id as string);
+      const runs = new ExperimentRunService(db.pool);
+      const run = await runs.createRun(identity, PROJECT, definition.id as string, version.id as string, { is_baseline: true });
+
+      // A reconcile holds the Run row failed but uncommitted; it locks only
+      // the Run, not the Project, so the completion is not serialized by the
+      // Project lock and must find the terminal state itself.
+      const reconcile = await db.pool.connect();
+      try {
+        await reconcile.query("BEGIN");
+        await reconcile.query(`UPDATE experiment_runs SET status='failed' WHERE id=$1 AND space_id=$2`, [run.id, SPACE]);
+        let settled = false;
+        const completion = runs.completeRun(identity, PROJECT, definition.id as string, run.id as string, { status: "completed" })
+          .finally(() => { settled = true; });
+        const outcome = expect(completion).rejects.toMatchObject({ statusCode: 409 });
+        await waitForLockWaiter(db.pool, { settled: () => settled });
+        await reconcile.query("COMMIT");
+        await outcome;
+      } finally {
+        await reconcile.query("ROLLBACK").catch(() => undefined);
+        reconcile.release();
+      }
+      expect((await db.pool.query<{ status: string }>(`SELECT status FROM experiment_runs WHERE id=$1`, [run.id])).rows)
+        .toEqual([{ status: "failed" }]);
+      expect((await db.pool.query<{ baseline_run_id: string | null }>(
+        `SELECT baseline_run_id FROM experiment_definitions WHERE object_id=$1`, [definition.id],
+      )).rows).toEqual([{ baseline_run_id: null }]);
     });
 
     it("requires a primary Hypothesis Thread before the first Run, and the DB rejects a Signal with both or neither source", async () => {

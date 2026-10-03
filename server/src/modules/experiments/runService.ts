@@ -389,7 +389,7 @@ export class ExperimentRunService {
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
-      const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId);
+      const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId, { forUpdate: true });
       if (!run) throw new HttpError(404, "Experiment Run not found");
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
         throw new HttpError(409, `Experiment Run is already ${run.status}`);
@@ -439,7 +439,7 @@ export class ExperimentRunService {
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
-      const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId);
+      const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId, { forUpdate: true });
       if (!run) throw new HttpError(404, "Experiment Run not found");
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
         throw new HttpError(409, `Experiment Run is already ${run.status}`);
@@ -500,11 +500,19 @@ export class ExperimentRunService {
     return result.rows[0] ?? null;
   }
 
-  private async runRowForDefinition(db: Queryable, spaceId: string, definitionId: string, runId: string): Promise<RunRow | null> {
+  /**
+   * `forUpdate` locks the Run row for a write that depends on its status:
+   * `reconcileManagedRun` locks only this row, not the Project, so a terminal
+   * check read without the lock could pass while a reconcile is committing
+   * the Run's failure, and the write that followed would overwrite it.
+   */
+  private async runRowForDefinition(
+    db: Queryable, spaceId: string, definitionId: string, runId: string, options: { forUpdate?: boolean } = {},
+  ): Promise<RunRow | null> {
     const result = await db.query<RunRow>(
       `SELECT r.* FROM experiment_runs r
          JOIN experiment_versions v ON v.id = r.version_id AND v.space_id = r.space_id
-        WHERE r.id=$1 AND r.space_id=$2 AND v.definition_id=$3`,
+        WHERE r.id=$1 AND r.space_id=$2 AND v.definition_id=$3${options.forUpdate ? " FOR UPDATE OF r" : ""}`,
       [runId, spaceId, definitionId],
     );
     return result.rows[0] ?? null;
