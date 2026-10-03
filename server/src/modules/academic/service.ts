@@ -92,25 +92,34 @@ export class AcademicService {
       );
       if (existing) throw new HttpError(409, "A paper with this doi/arxiv_id already exists in this space");
     }
-    return withDbTransaction(this.pool, async (client) => {
-      const row = await this.repository.createPaper(client, {
-        spaceId: identity.spaceId,
-        projectId: optionalString(body.project_id),
-        visibility: requiredString(body.visibility, "visibility"),
-        title,
-        summary: optionalString(body.summary),
-        doi,
-        arxivId,
-        pmid: canonicalAcademicIdentity(optionalString(body.pmid)),
-        openalexId: canonicalAcademicIdentity(optionalString(body.openalex_id)),
-        publicationDate: optionalString(body.publication_date),
-        venue: optionalString(body.venue),
-        paperType,
-        sourceUri: optionalString(body.source_uri),
-        createdByUserId: identity.userId,
+    try {
+      return await withDbTransaction(this.pool, async (client) => {
+        const row = await this.repository.createPaper(client, {
+          spaceId: identity.spaceId,
+          projectId: optionalString(body.project_id),
+          visibility: requiredString(body.visibility, "visibility"),
+          title,
+          summary: optionalString(body.summary),
+          doi,
+          arxivId,
+          pmid: canonicalAcademicIdentity(optionalString(body.pmid)),
+          openalexId: canonicalAcademicIdentity(optionalString(body.openalex_id)),
+          publicationDate: optionalString(body.publication_date),
+          venue: optionalString(body.venue),
+          paperType,
+          sourceUri: optionalString(body.source_uri),
+          createdByUserId: identity.userId,
+        });
+        return paperOut(row);
       });
-      return paperOut(row);
-    });
+    } catch (error) {
+      // The check above sees only papers this person may read and knows two
+      // of the identities; the Space's unique indexes are the authority.
+      if (isUniqueViolation(error)) {
+        throw new HttpError(409, "A paper with one of these identifiers already exists in this space");
+      }
+      throw error;
+    }
   }
 
   async getPaper(identity: SpaceUserIdentity, objectId: string): Promise<PaperOut> {
@@ -135,7 +144,11 @@ export class AcademicService {
     if (body.venue !== undefined) patch.venue = optionalString(body.venue);
     if (body.cited_by_count !== undefined) patch.citedByCount = numberValue(body.cited_by_count);
     if (body.reference_count !== undefined) patch.referenceCount = numberValue(body.reference_count);
-    const updated = await this.repository.updatePaper(identity.spaceId, objectId, identity.userId, patch);
+    // Title and summary live on space_objects, the rest on academic_papers:
+    // one transaction, so a refused second write does not leave the first.
+    const updated = await withDbTransaction(this.pool, (client) =>
+      this.repository.updatePaper(client, identity.spaceId, objectId, identity.userId, patch),
+    );
     if (!updated) throw new HttpError(404, "Paper not found");
     return paperOut(updated);
   }
@@ -203,4 +216,8 @@ export class AcademicService {
       throw new HttpError(404, "Paper not found");
     }
   }
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
 }

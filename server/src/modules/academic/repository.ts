@@ -197,6 +197,7 @@ export class AcademicRepository {
   }
 
   async updatePaper(
+    db: Queryable,
     spaceId: string,
     objectId: string,
     userId: string,
@@ -207,7 +208,7 @@ export class AcademicRepository {
       // Only a paper's root row: the owner check upstream is on the generic
       // space_object, and a note or any other object this person owns must not
       // be rewritten through the paper route around its own write path.
-      await this.db.query(
+      await db.query(
         `UPDATE space_objects
             SET title = COALESCE($3, title), summary = CASE WHEN $4 THEN $5 ELSE summary END, updated_at = $6
           WHERE id = $1 AND space_id = $2
@@ -216,7 +217,7 @@ export class AcademicRepository {
       );
     }
     if (patch.venue !== undefined || patch.citedByCount !== undefined || patch.referenceCount !== undefined) {
-      await this.db.query(
+      await db.query(
         `UPDATE academic_papers
             SET venue = CASE WHEN $3 THEN $4 ELSE venue END,
                 cited_by_count = CASE WHEN $5 THEN $6 ELSE cited_by_count END,
@@ -236,7 +237,7 @@ export class AcademicRepository {
         ],
       );
     }
-    return this.getPaper(this.db, spaceId, objectId, userId);
+    return this.getPaper(db, spaceId, objectId, userId);
   }
 
   async personExists(spaceId: string, objectId: string, userId: string): Promise<boolean> {

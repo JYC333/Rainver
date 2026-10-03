@@ -114,6 +114,26 @@ describe("academic module (real Postgres)", () => {
     });
   });
 
+  it("answers a duplicate the pre-check cannot see as a conflict, not a server error", async () => {
+    if (!db.available) return;
+    // openalex_id is unique per Space but not among the identifiers the
+    // pre-check looks at; the index refuses it.
+    await service().createPaper(identity, { title: "Paper One", openalex_id: "W1" });
+    await expect(service().createPaper(identity, { title: "Paper One Again", openalex_id: "W1" })).rejects.toMatchObject({
+      statusCode: 409,
+    });
+  });
+
+  it("leaves a paper untouched when one half of an update is refused", async () => {
+    if (!db.available) return;
+    const paper = await service().createPaper(identity, { title: "Original title", venue: "Venue" });
+    // Title lives on space_objects and the citation count on academic_papers;
+    // the second write is refused by the integer column, and the first must not stay.
+    await expect(service().updatePaper(identity, paper.object_id as string, { title: "Renamed", cited_by_count: 1.5 }))
+      .rejects.toThrow();
+    expect(await service().getPaper(identity, paper.object_id as string)).toMatchObject({ title: "Original title", venue: "Venue" });
+  });
+
   it("allows the same arxiv_id in different spaces", async () => {
     if (!db.available) return;
     await service().createPaper(identity, { title: "Paper One", arxiv_id: "2222.22222" });
