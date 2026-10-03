@@ -520,7 +520,10 @@ describe("a person's own archive and restore (real Postgres)", () => {
       await b.query("BEGIN");
       await new PgMemoryApplyRepository(a).setOwnStatus(SPACE, OWNER, first, "active");
       let settled = false;
+      // Its rejection is caught here, before the first restore's COMMIT
+      // triggers it; a handler attached a turn later reads as unhandled.
       const racing = new PgMemoryApplyRepository(b).setOwnStatus(SPACE, OWNER, second, "active")
+        .then(() => null, (error: unknown) => error)
         .finally(() => { settled = true; });
       // The first restore commits only once the second has run its course
       // against the uncommitted state: settled (through, with two live rows)
@@ -530,7 +533,9 @@ describe("a person's own archive and restore (real Postgres)", () => {
       )).rowCount ?? 0) > 0, { timeout: 10_000, interval: 20 });
       await a.query("COMMIT");
       try {
-        await expect(racing).rejects.toThrow(/newer version/);
+        const outcome = await racing;
+        expect(outcome).toBeInstanceOf(Error);
+        expect((outcome as Error).message).toMatch(/newer version/);
       } finally {
         await b.query("ROLLBACK").catch(() => undefined);
       }
