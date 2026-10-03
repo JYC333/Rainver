@@ -92,6 +92,27 @@ describe("buildChatConversationWindow", () => {
   });
 });
 
+describe("buildChatConversationWindow budget gaps", () => {
+  it("keeps the selected history contiguous: once a turn does not fit, older turns are dropped too", () => {
+    // 1 token/4 chars: the reply takes 90 of the 99 remaining tokens; the
+    // 25-token question that prompted it cannot fit or be compacted, and the
+    // 1-token message before it must not be selected across that gap.
+    const window = buildChatConversationWindow({
+      messages: [
+        message("m-1", "user", "ok"),
+        message("m-2", "user", "q".repeat(100)),
+        message("m-3", "assistant", "a".repeat(360)),
+        message("m-current", "user", "now"),
+      ],
+      currentMessage: message("m-current", "user", "now"),
+      maxTokens: 100,
+    });
+
+    expect(window.messages.map((entry) => entry.message_id)).toEqual(["m-3", "m-current"]);
+    expect(window.trace.overflow_recovery).toMatchObject({ messages_dropped_for_budget: 2 });
+  });
+});
+
 describe("conversationWindowToMessages", () => {
   it("keeps a user-led, role-alternating message list", () => {
     const window = buildChatConversationWindow({

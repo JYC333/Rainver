@@ -402,9 +402,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const body = jsonBody(request);
       const repo = agentRepository();
       const agentId = params(request).agentId ?? "";
+      // Parse the whole body before the first write: the identity and the
+      // config land in two statements, so a config field refused after the
+      // identity was written would answer 422 for a request half applied.
+      const parsedConfigPatch = hasConfigPatch(body) ? configPatch(body, identity.userId) : null;
       let agent = await applyAgentIdentityPatch(repo, identity.spaceId, identity.userId, agentId, body);
-      if (hasConfigPatch(body)) {
-        agent = await repo.updateConfig(identity.spaceId, agentId, configPatch(body, identity.userId));
+      if (parsedConfigPatch) {
+        agent = await repo.updateConfig(identity.spaceId, agentId, parsedConfigPatch);
       }
       if (!agent) {
         agent = await repo.getVisible(identity.spaceId, identity.userId, agentId);

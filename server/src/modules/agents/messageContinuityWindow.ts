@@ -66,8 +66,12 @@ export function buildChatConversationWindow(
   const selectedReversed: ChatConversationWindowMessage[] = [];
   const compactedMessageIds: string[] = [];
 
+  // The history is the most recent turns, contiguous: once a message does
+  // not fit, every older one is dropped too, or a short old message would be
+  // selected across the gap and read as the long reply's direct context.
+  let budgetExhausted = false;
   for (const message of [...recentCandidates].reverse()) {
-    if (remaining <= 0) {
+    if (budgetExhausted || remaining <= 0) {
       droppedByBudget.push(message);
       continue;
     }
@@ -84,6 +88,7 @@ export function buildChatConversationWindow(
       continue;
     }
     droppedByBudget.push(message);
+    budgetExhausted = true;
   }
 
   const selectedHistory = selectedReversed.reverse();

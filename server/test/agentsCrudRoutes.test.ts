@@ -446,6 +446,25 @@ describe("agents CRUD routes", () => {
     });
   });
 
+  it("refuses an Agent PATCH with an invalid config field before writing its identity fields", async () => {
+    const query = vi.fn(async (sql: string) => {
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    vi.mocked(getDbPool).mockReturnValue({ query } as never);
+    app = buildModuleServer(config(), [agentsModule]);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/agents/agent-1",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ name: "Renamed", execution_constraints: { max_run_time_seconds: 0 } }),
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().detail).toContain("execution_constraints");
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it("rejects runtime selection on Agent creation", async () => {
     const client = {
       query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
