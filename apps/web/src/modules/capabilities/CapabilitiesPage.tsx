@@ -236,6 +236,9 @@ export default function CapabilitiesPage() {
   const [selected, setSelected]   = useState<string | null>(null)
   const [importUrl, setImportUrl] = useState('')
   const [preview, setPreview] = useState<SkillImportPreviewResponse | null>(null)
+  // The URL that preview describes. Editing the field afterwards withdraws
+  // the preview, so Import never sends a package nobody looked at.
+  const [previewedUrl, setPreviewedUrl] = useState('')
   const [previewing, setPreviewing] = useState(false)
   const [importing, setImporting] = useState(false)
   const [reviewingId, setReviewingId] = useState<string | null>(null)
@@ -244,7 +247,8 @@ export default function CapabilitiesPage() {
   const [skillDetail, setSkillDetail] = useState<SkillPackage | null>(null)
   const [skillDetailLoading, setSkillDetailLoading] = useState(false)
 
-  const load = useCallback(async () => {
+  /** Resolves false when the lists could not be read; the error is already shown. */
+  const load = useCallback(async (): Promise<boolean> => {
     if (!activeSpaceId) {
       setCaps([])
       setPacks([])
@@ -252,7 +256,7 @@ export default function CapabilitiesPage() {
       setSelected(null)
       setSelectedSkillId(null)
       setSkillDetail(null)
-      return
+      return true
     }
     try {
       const [data, packData, skillData] = await Promise.all([
@@ -266,7 +270,11 @@ export default function CapabilitiesPage() {
       if (data.length && !selected) setSelected(data[0].id)
       if (skillData.items.length && !selectedSkillId) setSelectedSkillId(skillData.items[0].id)
       if (skillData.items.length === 0) setSelectedSkillId(null)
-    } catch (e) { toast.error(errMsg(e)) }
+      return true
+    } catch (e) {
+      toast.error(errMsg(e))
+      return false
+    }
   }, [selected, selectedSkillId, activeSpaceId])
 
   useEffect(() => { load() }, [load])
@@ -301,10 +309,8 @@ export default function CapabilitiesPage() {
     }
     setRefreshing(true)
     try {
-      await load()
-      toast.success('Capabilities refreshed')
-    } catch (e) { toast.error(errMsg(e)) }
-    finally { setRefreshing(false) }
+      if (await load()) toast.success('Capabilities refreshed')
+    } finally { setRefreshing(false) }
   }
 
   async function previewImport() {
@@ -313,9 +319,11 @@ export default function CapabilitiesPage() {
       return
     }
     setPreviewing(true)
+    const url = importUrl.trim()
     try {
-      const result = await capabilitiesFrameworkApi.previewSkillImport({ url: importUrl.trim() })
+      const result = await capabilitiesFrameworkApi.previewSkillImport({ url })
       setPreview(result)
+      setPreviewedUrl(url)
     } catch (e) {
       toast.error(errMsg(e))
       setPreview(null)
@@ -325,10 +333,10 @@ export default function CapabilitiesPage() {
   }
 
   async function importSkill() {
-    if (!importUrl.trim()) return
+    if (!currentPreview?.persistable) return
     setImporting(true)
     try {
-      await capabilitiesFrameworkApi.importSkill({ url: importUrl.trim() })
+      await capabilitiesFrameworkApi.importSkill({ url: previewedUrl })
       toast.success('Skill imported for review')
       setPreview(null)
       setImportUrl('')
@@ -371,8 +379,9 @@ export default function CapabilitiesPage() {
   }
 
   const selectedCap = caps.find(c => c.id === selected)
-  const previewScriptCount = preview
-    ? preview.package_files.filter(file => file.kind === 'script' || file.executable).length
+  const currentPreview = preview && previewedUrl === importUrl.trim() ? preview : null
+  const previewScriptCount = currentPreview
+    ? currentPreview.package_files.filter(file => file.kind === 'script' || file.executable).length
     : 0
 
   return (
@@ -441,32 +450,32 @@ export default function CapabilitiesPage() {
               <ArrowRight className="size-4 mr-1" />
               {previewing ? 'Previewing…' : 'Preview'}
             </Button>
-            <Button onClick={importSkill} disabled={importing || !preview?.persistable}>
+            <Button onClick={importSkill} disabled={importing || !currentPreview?.persistable}>
               <Download className="size-4 mr-1" />
               {importing ? 'Importing…' : 'Import'}
             </Button>
           </div>
         </div>
 
-        {preview && (
+        {currentPreview && (
           <div className="rounded-lg border border-border p-3 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium text-sm">{preview.normalized_skill.name}</span>
-              <Badge variant={riskVariant(preview.risk_level)}>{preview.risk_level}</Badge>
-              {preview.requested_permissions.map(permission => (
+              <span className="font-medium text-sm">{currentPreview.normalized_skill.name}</span>
+              <Badge variant={riskVariant(currentPreview.risk_level)}>{currentPreview.risk_level}</Badge>
+              {currentPreview.requested_permissions.map(permission => (
                 <Badge key={permission} variant="outline">{permission}</Badge>
               ))}
             </div>
-            <p className="text-sm text-muted-foreground">{preview.normalized_skill.description}</p>
+            <p className="text-sm text-muted-foreground">{currentPreview.normalized_skill.description}</p>
             <div className="flex flex-wrap gap-1.5">
-              <Badge variant="secondary">{preview.package_files.length} files</Badge>
-              <Badge variant="outline">{preview.package_root}</Badge>
+              <Badge variant="secondary">{currentPreview.package_files.length} files</Badge>
+              <Badge variant="outline">{currentPreview.package_root}</Badge>
               {previewScriptCount > 0 && <Badge variant="warning">{previewScriptCount} scripts</Badge>}
             </div>
-            <div className="font-mono text-[11px] text-muted-foreground truncate">sha256:{preview.package_hash}</div>
-            {preview.warnings.length > 0 && (
+            <div className="font-mono text-[11px] text-muted-foreground truncate">sha256:{currentPreview.package_hash}</div>
+            {currentPreview.warnings.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
-                {preview.warnings.map(warning => <Badge key={warning} variant="warning">{warning}</Badge>)}
+                {currentPreview.warnings.map(warning => <Badge key={warning} variant="warning">{warning}</Badge>)}
               </div>
             )}
           </div>
