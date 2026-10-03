@@ -365,6 +365,10 @@ describe("usage repository", () => {
           rowCount: 1,
         };
       }
+      if (sql.includes("sum(e.estimated_cost_usd) AS estimated_cost_usd")) {
+        // Two costed subjects in the window; the page above holds only one.
+        return { rows: [{ estimated_cost_usd: "20" }], rowCount: 1 };
+      }
       throw new Error(`unexpected query: ${sql}`);
     });
 
@@ -375,7 +379,8 @@ describe("usage repository", () => {
     }, 30);
 
     expect(result.observed_days).toBe(10);
-    expect(result.total_projected_estimated_cost_usd).toBe(30);
+    // Projected over every matched subject, not the page returned.
+    expect(result.total_projected_estimated_cost_usd).toBe(60);
     expect(result.items[0]).toMatchObject({
       meter_subject_type: "agent",
       meter_subject_id: "agent-1",
@@ -383,6 +388,41 @@ describe("usage repository", () => {
       projected_estimated_cost_usd: 30,
       costed_event_percentage: 50,
     });
+  });
+
+  it("reports the number of matched subjects and sessions, not the page size", async () => {
+    const db = new RecordingDb((sql) => {
+      if (sql.includes("'all' AS group_key")) return { rows: [], rowCount: 0 };
+      if (sql.includes("count(*) OVER () AS group_total")) {
+        return {
+          rows: [{
+            group_key: "run:run-1", group_label: "run run-1", group_total: "250",
+            session_id: "s-1", external_session_id: null, session_path: null, session_name: null, run_ids: ["run-1"],
+            event_count: 1, request_count: 1, input_tokens: 10, output_tokens: 5,
+            cache_creation_input_tokens: 0, cache_creation_1h_input_tokens: 0, cache_read_input_tokens: 0,
+            reasoning_tokens: 0, total_tokens: 15, estimated_cost_usd: null, observed_events: 1,
+            provider_reported: 1, proxy_observed: 0, transcript_lower_bound: 0, estimated: 0, quota_snapshot: 0, unknown: 0,
+            last_seen_at: "2026-07-08T00:00:00.000Z",
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    const repository = new PgUsageRepository(db);
+
+    expect((await repository.subjects({ ...baseFilters, limit: 1 })).total).toBe(250);
+    expect((await repository.sessions({ ...baseFilters, limit: 1 })).total).toBe(250);
+  });
+
+  it("pages events on a total order, with the id as the tie-breaker", async () => {
+    const db = new RecordingDb((sql) => {
+      if (sql.includes("count(*)::int AS total")) return { rows: [{ total: 0 }], rowCount: 1 };
+      expect(sql).toMatch(/ORDER BY occurred_at DESC, created_at DESC, id DESC/);
+      return { rows: [], rowCount: 0 };
+    });
+    await new PgUsageRepository(db).listEvents({ ...baseFilters, limit: 50, offset: 50 });
+    expect(db.calls.some((call) => call.sql.includes("id DESC"))).toBe(true);
   });
 
   it("returns instance operations as de-identified totals only", async () => {
