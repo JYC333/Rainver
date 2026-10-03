@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   UsageDimensionsResponse,
@@ -251,6 +251,28 @@ describe('UsagePage', () => {
         accuracy: 'transcript_lower_bound',
       }))
     })
+  })
+
+  it('keeps the latest filter answer when an earlier window answers later', async () => {
+    let answerEarlier: (value: UsageSummaryResponse) => void = () => {}
+    vi.mocked(usageApi.summary).mockImplementation(async (params = {}) => {
+      if (params.from?.startsWith('2025-01')) return new Promise(resolve => { answerEarlier = resolve })
+      if (params.from?.startsWith('2026-06')) return { ...summary(), items: [{ ...summary().items[0], group_label: 'June Provider' }] }
+      return summary()
+    })
+    render(<UsagePage />)
+    expect((await screen.findAllByText('OpenAI')).length).toBeGreaterThan(0)
+
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2025-01-01' } })
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-06-01' } })
+    expect((await screen.findAllByText('June Provider')).length).toBeGreaterThan(0)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh usage' })).toBeEnabled())
+
+    await act(async () => {
+      answerEarlier({ ...summary(), items: [{ ...summary().items[0], group_label: 'Year-Old Provider' }] })
+    })
+    expect(screen.queryByText('Year-Old Provider')).not.toBeInTheDocument()
+    expect(screen.getAllByText('June Provider').length).toBeGreaterThan(0)
   })
 
   it('renders shared empty-state panels instead of empty tables when there is no usage', async () => {

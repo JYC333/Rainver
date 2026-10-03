@@ -45,6 +45,9 @@ export default function SpaceSettingsPage() {
   const [snapshotDefaultDays, setSnapshotDefaultDays] = useState('')
   const [snapshotDefaultCount, setSnapshotDefaultCount] = useState('')
   const [savingSnapshotDefaults, setSavingSnapshotDefaults] = useState(false)
+  // Saving sends both defaults, so an unread Space must not be saved: empty
+  // fields would write null over whatever it holds.
+  const [snapshotDefaultsLoaded, setSnapshotDefaultsLoaded] = useState(false)
   const [savingEgressNotifications, setSavingEgressNotifications] = useState(false)
 
   useEffect(() => {
@@ -61,12 +64,19 @@ export default function SpaceSettingsPage() {
 
   useEffect(() => {
     if (!activeSpaceId || !manageable) return
+    let cancelled = false
+    setSnapshotDefaultsLoaded(false)
+    setSnapshotDefaultDays('')
+    setSnapshotDefaultCount('')
     spacesApi.getSnapshotDefaults(activeSpaceId)
       .then(d => {
+        if (cancelled) return
         setSnapshotDefaultDays(d.snapshot_retention_days_default !== null ? String(d.snapshot_retention_days_default) : '')
         setSnapshotDefaultCount(d.snapshot_max_count_default !== null ? String(d.snapshot_max_count_default) : '')
+        setSnapshotDefaultsLoaded(true)
       })
-      .catch(() => null)
+      .catch(err => { if (!cancelled) toast.error(errMsg(err)) })
+    return () => { cancelled = true }
   }, [activeSpaceId, manageable])
 
   async function handleSaveSnapshotDefaults() {
@@ -275,7 +285,7 @@ export default function SpaceSettingsPage() {
                 size="sm"
                 variant="outline"
                 className="h-8"
-                disabled={savingSnapshotDefaults}
+                disabled={savingSnapshotDefaults || !snapshotDefaultsLoaded}
                 onClick={handleSaveSnapshotDefaults}
               >
                 {savingSnapshotDefaults ? 'Saving…' : 'Save defaults'}
