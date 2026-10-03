@@ -85,7 +85,14 @@ export default function MemoryDetailPage() {
       const result = await memoryApi.delete(memory.id)
       const archived = 'content' in result && 'namespace' in result
       toast.success(archived ? 'Archived' : 'Archive proposal submitted')
-      setMemory(await memoryApi.get(memory.id))
+      // The history too: "Restore this version" appears only once no version
+      // in the chain is active, which is what archiving just changed.
+      const [row, chain] = await Promise.all([
+        memoryApi.get(memory.id),
+        memoryApi.versions(memoryId).catch(() => ({ items: [] as MemoryVersion[] })),
+      ])
+      setMemory(row)
+      setVersions(chain.items)
       if (!archived) toast.message('Review the archive proposal from Proposals.')
     } catch (e) {
       toast.error(errMsg(e))
