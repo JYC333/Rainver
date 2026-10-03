@@ -410,8 +410,19 @@ export class PgRouteDecisionRepository {
     );
     const selected = latest.rows[0]?.selected_runtime_profile_id;
     if (!selected) return false;
+    // Same arithmetic as retryRouteContext: a fallback is a chain member no
+    // attempt of this Run has selected yet. The latest chain alone can name
+    // Profiles earlier attempts already failed on, once the remainder ran out
+    // and routing was left unconstrained.
+    const attempted = await this.db.query<{ selected_runtime_profile_id: string }>(
+      `SELECT DISTINCT selected_runtime_profile_id
+         FROM route_decisions
+        WHERE space_id = $1 AND run_id = $2 AND selected_runtime_profile_id IS NOT NULL`,
+      [run.space_id, run.id],
+    );
+    const tried = new Set(attempted.rows.map((row) => row.selected_runtime_profile_id));
     const chain = stringArray(latest.rows[0]?.fallback_chain_json);
-    return chain.some((profileId) => profileId !== selected);
+    return chain.some((profileId) => !tried.has(profileId));
   }
 
   async listCandidates(

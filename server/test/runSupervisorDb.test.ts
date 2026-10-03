@@ -731,6 +731,28 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     expect(fallback.model_provider_id).toBe(PROVIDER);
   });
 
+  it("reports no fallback route once every Profile in the chain has been tried", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const runId = await seedRun({ max_attempts: 4 });
+    const routing = new PgRouteDecisionRepository(db.pool);
+    const decision = (attempt: number, selected: string, chain: string[]) => db.pool.query(
+      `INSERT INTO route_decisions (
+         id, space_id, run_id, attempt_number, status, selected_runtime_profile_id, selected_runtime_key,
+         selected_model_provider_id, reason, hints_json, candidates_json, rejected_json, fallback_chain_json,
+         score_trace_json, created_at
+       ) VALUES ($1, $2, $3, $4, 'selected', $5, 'opencode', NULL, 'test', '{}'::jsonb, '[]'::jsonb, '[]'::jsonb,
+                 $6::jsonb, '[]'::jsonb, now())`,
+      [randomUUID(), SPACE, runId, attempt, selected, JSON.stringify(chain)],
+    );
+    await decision(1, PROFILE, [PROFILE, FALLBACK_PROFILE]);
+    expect(await routing.hasFallbackRoute({ space_id: SPACE, id: runId })).toBe(true);
+    // The remainder ran out on attempt 3, so routing was unconstrained and the
+    // chain names the Profile attempt 1 already failed on: not a fallback.
+    await decision(2, FALLBACK_PROFILE, [FALLBACK_PROFILE]);
+    await decision(3, FALLBACK_PROFILE, [FALLBACK_PROFILE, PROFILE]);
+    expect(await routing.hasFallbackRoute({ space_id: SPACE, id: runId })).toBe(false);
+  });
+
   it("takes runtime capabilities from the current AgentVersion, not a Runtime Profile bag", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const routing = new PgRouteDecisionRepository(db.pool);
