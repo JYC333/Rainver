@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { toast } from 'sonner'
 import { BookOpen, CheckCircle2, ExternalLink, FileText, Library, RefreshCw, Search, XCircle } from 'lucide-react'
@@ -259,6 +259,9 @@ function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilte
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [extractionStatuses, setExtractionStatuses] = useState<Record<string, ExtractionJob['status']>>({})
+  // Every keystroke in the search box is a request; only the latest one's
+  // answer may become the list.
+  const listRequest = useRef(0)
 
   const channelByConnectionId = useMemo(
     () => new Map(channels.map(channel => [channel.source_connection_id, channel])),
@@ -286,6 +289,7 @@ function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilte
       setLoading(false)
       return
     }
+    const request = ++listRequest.current
     setLoading(true)
     try {
       const itemStatus = itemFilter
@@ -300,13 +304,15 @@ function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilte
           offset: itemOffset,
         }),
       ])
+      if (request !== listRequest.current) return
       setChannels(channelRows)
       setSourceItems(itemPage.items)
       setItemTotal(itemPage.total)
     } catch (e) {
+      if (request !== listRequest.current) return
       toast.error(errMsg(e))
     } finally {
-      setLoading(false)
+      if (request === listRequest.current) setLoading(false)
     }
   }, [activeSpaceId, itemFilter, itemQuery, channelFilter, libraryType, itemOffset, selectedConnectionId])
 
