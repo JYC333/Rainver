@@ -71,6 +71,51 @@ describe("GraphProjectionBuilder real-DB projections", () => {
     expect(projection.edges.every((edge) => edge.kind === "references")).toBe(true);
   });
 
+  it("returns an empty projection when a lens and the requested node kinds share no kind", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const ids = await seedGraphFixture();
+    const projection = await builder().build(ids.identity, {
+      mode: "global",
+      limit: 10,
+      includeClusters: true,
+      lensId: "academic_citation_v1",
+      nodeKinds: ["note"],
+    });
+    // A lens narrows; a request outside it matches nothing rather than everything.
+    expect(projection.nodes).toEqual([]);
+  });
+
+  it("orders and caps clusters by how many objects they hold", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const identity = await seedIdentity();
+    // Counts whose text forms sort the other way round ("9" > "10").
+    for (const [kind, count] of [["note", 10], ["knowledge_item", 9]] as const) {
+      for (let i = 0; i < count; i += 1) {
+        await seedSpaceObject(identity, { objectType: kind, title: `${kind} ${i}`, status: "active" });
+      }
+    }
+    const projection = await builder().build(identity, { mode: "global", limit: 1, includeClusters: true });
+    expect(projection.nodes.map((node) => node.id)).toEqual(["cluster:note"]);
+  });
+
+  it("caps a hop by distinct neighbours, not by the edges that reach them", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const identity = await seedIdentity();
+    const root = await seedSpaceObject(identity, { objectType: "knowledge_item", title: "Root", status: "active" });
+    const busy = await seedSpaceObject(identity, { objectType: "note", title: "Many relations", status: "active" });
+    const quiet = await seedSpaceObject(identity, { objectType: "note", title: "One older relation", status: "active" });
+    // Twenty-five newer relations to one neighbour fill the per-hop floor of
+    // twenty-five when edges are what is ranked; the other neighbour's single
+    // older edge is then ranked twenty-sixth and the neighbour disappears.
+    for (let i = 0; i < 25; i += 1) await seedRelation(identity, root, busy, `relation_${i}`);
+    await seedRelation(identity, root, quiet, "references", { updatedAt: new Date(Date.now() - 3_600_000).toISOString() });
+
+    const projection = await builder().build(identity, {
+      mode: "local", rootId: root, depth: 1, limit: 3, includeClusters: false,
+    });
+    expect(projection.nodes.map((node) => node.id).sort()).toEqual([root, busy, quiet].sort());
+  });
+
   it("keeps global projections within the requested node cap", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const ids = await seedGraphFixture();

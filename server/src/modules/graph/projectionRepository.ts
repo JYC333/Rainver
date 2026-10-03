@@ -107,7 +107,7 @@ export class GraphProjectionRepository {
           ${kindClause}
           ${projectCorpusClause}
         GROUP BY so.object_type
-        ORDER BY total DESC, so.object_type ASC`,
+        ORDER BY count(*) DESC, so.object_type ASC`,
       params,
     );
     return rows.rows.map((row) => ({ kind: row.kind, total: numberFromPg(row.total) }));
@@ -309,31 +309,39 @@ export class GraphProjectionRepository {
          SELECT $3::varchar AS node_id, 0 AS depth
           WHERE EXISTS (SELECT 1 FROM visible_objects WHERE id = $3)
        ),
-       first_ranked AS (
+       -- Each hop ranks distinct neighbours, not edges: two objects may share
+       -- several active relations, and ranking edges let one neighbour take
+       -- several of the hop's slots and report a cap hit with nothing cut.
+       first_neighbors AS (
          SELECT CASE WHEN e.from_object_id = $3 THEN e.to_object_id ELSE e.from_object_id END AS node_id,
-                row_number() OVER (
-                  ORDER BY e.updated_at DESC,
-                           CASE WHEN e.from_object_id = $3 THEN e.to_object_id ELSE e.from_object_id END ASC
-                ) AS rn
+                max(e.updated_at) AS updated_at
            FROM visible_edges e
           WHERE e.from_object_id = $3 OR e.to_object_id = $3
+          GROUP BY 1
+       ),
+       first_ranked AS (
+         SELECT node_id, row_number() OVER (ORDER BY updated_at DESC, node_id ASC) AS rn
+           FROM first_neighbors
        ),
        first_frontier AS (
          SELECT node_id, 1 AS depth
            FROM first_ranked
           WHERE rn <= $6
        ),
-       second_ranked AS (
-         SELECT CASE WHEN e.from_object_id = f.node_id THEN e.to_object_id ELSE e.from_object_id END AS node_id,
-                row_number() OVER (
-                  PARTITION BY f.node_id
-                  ORDER BY e.updated_at DESC,
-                           CASE WHEN e.from_object_id = f.node_id THEN e.to_object_id ELSE e.from_object_id END ASC
-                ) AS rn
+       second_neighbors AS (
+         SELECT f.node_id AS frontier_id,
+                CASE WHEN e.from_object_id = f.node_id THEN e.to_object_id ELSE e.from_object_id END AS node_id,
+                max(e.updated_at) AS updated_at
            FROM first_frontier f
            JOIN visible_edges e ON e.from_object_id = f.node_id OR e.to_object_id = f.node_id
           WHERE $4 >= 2
             AND CASE WHEN e.from_object_id = f.node_id THEN e.to_object_id ELSE e.from_object_id END <> $3
+          GROUP BY 1, 2
+       ),
+       second_ranked AS (
+         SELECT node_id,
+                row_number() OVER (PARTITION BY frontier_id ORDER BY updated_at DESC, node_id ASC) AS rn
+           FROM second_neighbors
        ),
        second_frontier AS (
          SELECT node_id, 2 AS depth
@@ -487,16 +495,19 @@ export class GraphProjectionRepository {
             AND r.status = 'active'
             ${edgeKindClause}
        ),
-       neighbor_ranked AS (
-         SELECT CASE WHEN e.from_object_id = m.id THEN e.to_object_id ELSE e.from_object_id END AS node_id,
-                false AS matched,
-                row_number() OVER (
-                  PARTITION BY m.id
-                  ORDER BY e.updated_at DESC,
-                           CASE WHEN e.from_object_id = m.id THEN e.to_object_id ELSE e.from_object_id END ASC
-                ) AS rn
+       neighbors AS (
+         SELECT m.id AS match_id,
+                CASE WHEN e.from_object_id = m.id THEN e.to_object_id ELSE e.from_object_id END AS node_id,
+                max(e.updated_at) AS updated_at
            FROM matched m
            JOIN visible_edges e ON e.from_object_id = m.id OR e.to_object_id = m.id
+          GROUP BY 1, 2
+       ),
+       neighbor_ranked AS (
+         SELECT node_id,
+                false AS matched,
+                row_number() OVER (PARTITION BY match_id ORDER BY updated_at DESC, node_id ASC) AS rn
+           FROM neighbors
        ),
        candidate_ids AS (
          SELECT id AS node_id, true AS matched FROM matched
