@@ -83,6 +83,10 @@ class FakeDb {
         rowCount: 1,
       };
     }
+    if (/count\(\*\) FILTER \(WHERE status = 'pending'\)/.test(norm) && /FROM proposals/.test(norm)) {
+      // Three pending in the window; the recent-packet page below holds one.
+      return { rows: [{ pending_total: "3" }] as Row[], rowCount: 1 };
+    }
     if (/FROM proposals/.test(norm)) {
       return {
         rows: [
@@ -185,7 +189,8 @@ describe("ContextOpsService", () => {
       maintenance: {
         recent_report_count: 1,
         finding_counts: { duplicate: 2 },
-        pending_packet_count: 1,
+        // Counted over the window, not over the page of recent packets.
+        pending_packet_count: 3,
       },
       diagnostics: {
         recent_report_count: 1,

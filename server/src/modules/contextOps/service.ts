@@ -171,6 +171,7 @@ export class ContextOpsService {
     const [
       maintenanceArtifacts,
       maintenancePackets,
+      pendingPacketCount,
       diagnosticsArtifacts,
       recentContextBriefs,
       retrievalFeedback,
@@ -178,6 +179,7 @@ export class ContextOpsService {
     ] = await Promise.all([
       this.loadMaintenanceArtifacts(input.spaceId, input.userId, windowStart, input.limit, Boolean(input.includeSpaceOpsReports)),
       this.loadMaintenancePackets(input.spaceId, input.userId, windowStart, input.limit, Boolean(input.includeSpaceOpsReports)),
+      this.countPendingMaintenancePackets(input.spaceId, input.userId, windowStart, Boolean(input.includeSpaceOpsReports)),
       this.loadDiagnosticsArtifacts(input.spaceId, input.userId, windowStart, input.limit, Boolean(input.includeSpaceOpsReports)),
       this.loadRecentContextBriefs(input.spaceId, input.userId, windowStart, input.limit),
       this.loadRetrievalFeedback(input.spaceId, input.userId, windowStart, input.windowDays),
@@ -195,7 +197,7 @@ export class ContextOpsService {
       maintenance: {
         recent_report_count: maintenanceArtifacts.length,
         finding_counts: aggregateMaintenanceFindings(maintenanceArtifacts),
-        pending_packet_count: maintenancePackets.filter((packet) => packet.status === "pending").length,
+        pending_packet_count: pendingPacketCount,
         recent_packets: maintenancePackets.map(proposalSummary),
       },
       diagnostics: aggregateDiagnostics(diagnosticsArtifacts),
@@ -609,6 +611,37 @@ export class ContextOpsService {
       [spaceId, userId, [...MAINTENANCE_PACKET_TYPES], windowStart.toISOString(), limit, includeSpaceOpsReports],
     );
     return result.rows;
+  }
+
+  /**
+   * Counted over the whole window, not over the `limit` most recent packets:
+   * an older pending packet pushed off that page by reviewed newer ones is
+   * still waiting for someone.
+   */
+  private async countPendingMaintenancePackets(
+    spaceId: string,
+    userId: string,
+    windowStart: Date,
+    includeSpaceOpsReports: boolean,
+  ): Promise<number> {
+    const result = await this.db.query<{ pending_total: string | number }>(
+      `SELECT count(*) FILTER (WHERE status = 'pending') AS pending_total
+         FROM proposals
+        WHERE space_id = $1
+          AND ${contentReadSql("proposal", "proposals", "$2")}
+          AND (
+            (${contentVisibilityFilterSql("proposals", ["private", "selected_users"])})
+            OR (
+              $5::boolean
+              AND ${contentVisibilityFilterSql("proposals", ["space_shared"])}
+              AND payload_json->>'review_scope' = 'space_ops'
+            )
+          )
+          AND proposal_type = ANY($3::varchar[])
+          AND created_at >= $4`,
+      [spaceId, userId, [...MAINTENANCE_PACKET_TYPES], windowStart.toISOString(), includeSpaceOpsReports],
+    );
+    return Number(result.rows[0]?.pending_total ?? 0);
   }
 
   private async loadDiagnosticsArtifacts(

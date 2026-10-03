@@ -130,7 +130,7 @@ export async function runContextReviewCycle(
   let retrievalProposalId: string | null = null;
   let retrievalProposalError: OptionalPacketError | null = null;
   if (input.request.create_packets) {
-    const step = await captureOptionalCheckpoint(warnings, "retrieval_maintenance_packet", () =>
+    const step = await captureOptionalCheckpoint(db, warnings, "retrieval_maintenance_packet", () =>
       createRetrievalMaintenanceProposalPacket(db, {
         spaceId: input.spaceId,
         ownerUserId: input.userId,
@@ -179,7 +179,7 @@ export async function runContextReviewCycle(
     });
     if (input.request.create_packets) {
       const createdMemoryArtifactId = memoryArtifactId;
-      const step = await captureOptionalCheckpoint(warnings, "memory_maintenance_packet", () =>
+      const step = await captureOptionalCheckpoint(db, warnings, "memory_maintenance_packet", () =>
         createMemoryMaintenanceProposalPacket(db, {
           spaceId: input.spaceId,
           ownerUserId: input.userId,
@@ -224,7 +224,7 @@ export async function runContextReviewCycle(
   let diagnosticsProposalId: string | null = null;
   let diagnosticsProposalError: OptionalPacketError | null = null;
   if (input.request.create_packets) {
-    const step = await captureOptionalCheckpoint(warnings, "retrieval_diagnostics_packet", () =>
+    const step = await captureOptionalCheckpoint(db, warnings, "retrieval_diagnostics_packet", () =>
       createRetrievalDiagnosticsProposalPacket(db, {
         spaceId: input.spaceId,
         ownerUserId: input.userId,
@@ -246,7 +246,7 @@ export async function runContextReviewCycle(
   let claimPacket: Awaited<ReturnType<typeof createClaimCandidatePacketFromArtifacts>> | null = null;
   let claimPacketError: OptionalPacketError | null = null;
   if (input.request.create_packets && claimSourceArtifactIds.length > 0) {
-    const step = await captureOptionalCheckpoint(warnings, "claim_candidate_packet", () =>
+    const step = await captureOptionalCheckpoint(db, warnings, "claim_candidate_packet", () =>
       createClaimCandidatePacketFromArtifacts(db, {
         spaceId: input.spaceId,
         ownerUserId: input.userId,
@@ -309,14 +309,31 @@ export async function runContextReviewCycle(
   return { artifact_id: artifactId, ...resultWithoutArtifact };
 }
 
-async function captureOptionalCheckpoint<T>(
+/**
+ * Runs an optional packet step so that its failure degrades the cycle rather
+ * than ending it. The cycle runs inside a caller's transaction (the route's
+ * and the automation's), where a failed statement aborts the transaction
+ * until it is rolled back to a savepoint; without one the warning would be
+ * recorded and every later statement, the report included, would fail.
+ */
+export async function captureOptionalCheckpoint<T>(
+  db: Queryable,
   warnings: ContextReviewCycleWarning[],
   stage: string,
   run: () => Promise<T>,
 ): Promise<{ value: T | null; error: OptionalPacketError | null }> {
+  const inTransaction = typeof (db as { release?: unknown }).release === "function";
+  const savepoint = "ctx_review_optional";
+  if (inTransaction) await db.query(`SAVEPOINT ${savepoint}`);
   try {
-    return { value: await run(), error: null };
+    const value = await run();
+    if (inTransaction) await db.query(`RELEASE SAVEPOINT ${savepoint}`);
+    return { value, error: null };
   } catch (error) {
+    if (inTransaction) {
+      await db.query(`ROLLBACK TO SAVEPOINT ${savepoint}`).catch(() => undefined);
+      await db.query(`RELEASE SAVEPOINT ${savepoint}`).catch(() => undefined);
+    }
     const message = error instanceof Error ? error.message : String(error);
     const errorCode = `${stage}_failed`;
     warnings.push({ stage, error_code: errorCode, message });

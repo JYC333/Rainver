@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import type { RetrievalBriefResponse } from "@rainver/protocol";
-import { runContextReviewCycle } from "../src/modules/contextOps/reviewCycle.js";
+import { captureOptionalCheckpoint, runContextReviewCycle } from "../src/modules/contextOps/reviewCycle.js";
 import { persistRetrievalBriefArtifact } from "../src/modules/retrieval/artifacts/brief.js";
 import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
@@ -138,6 +138,29 @@ async function seedRecentBrief(): Promise<string> {
     },
   });
 }
+
+describe("Context Review Cycle optional steps (real Postgres)", () => {
+  it("degrades past a failed optional packet step without aborting the cycle's transaction", async () => {
+    if (!db.available) return;
+    const client = await db.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const warnings: Array<{ stage: string; error_code: string; message: string }> = [];
+      const step = await captureOptionalCheckpoint(client, warnings, "claim_candidate_packet", async () => {
+        await client.query("INSERT INTO proposals (id) VALUES ($1)", ["not-a-complete-row"]);
+        return "unreachable";
+      });
+      expect(step.value).toBeNull();
+      expect(warnings).toEqual([expect.objectContaining({ stage: "claim_candidate_packet", error_code: "claim_candidate_packet_failed" })]);
+      // The report that follows an optional step must still be writable.
+      await expect(client.query("SELECT 1 AS alive")).resolves.toMatchObject({ rows: [{ alive: 1 }] });
+      await client.query("ROLLBACK");
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+  });
+});
 
 describe("Context Review Cycle (real Postgres)", () => {
   it("persists maintenance, diagnostics, claim packet, and Context Review Cycle report without canonical writes", async () => {
