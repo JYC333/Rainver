@@ -359,8 +359,11 @@ const proposalInputs:Record<string,z.ZodType>={
     answerability: z.string().optional(),
     // Hypothesis-kind cognitive fields.
     evaluation_state: z.enum(["untested", "supported", "challenged", "contradicted", "inconclusive"]).optional(),
-    confidence: z.number().min(0).max(100).optional(),
-    confidence_method: z.string().optional(),
+    // Stored as an integer percentage and a 32-character method label; the
+    // contract says so, rather than letting the database refuse the whole
+    // conclusion after the fact.
+    confidence: z.number().int().min(0).max(100).optional(),
+    confidence_method: z.string().max(32).optional(),
     // Shared.
     unresolved_gaps: z.string().optional(),
     confirmed_next_focus: z.string().optional(),
@@ -381,7 +384,9 @@ const proposalInputs:Record<string,z.ZodType>={
     intent_note: z.string().trim().min(1).max(2000).optional(),
     max_items: z.number().int().min(1).max(2000).optional()
       .describe("How many of the newest matching items this pass reads. Defaults to 200. Raise it only when the user asks for more."),
-    since: z.string().trim().min(1).optional()
+    since: z.string().trim().min(1)
+      .refine((value) => !Number.isNaN(Date.parse(value)), "since must be an ISO date")
+      .optional()
       .describe("ISO date; only material published on or after it is collected. Omit for all available history."),
   }).strict(),
   "research.list_operations": z.object({
