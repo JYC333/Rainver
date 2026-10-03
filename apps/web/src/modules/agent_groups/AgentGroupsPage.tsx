@@ -244,28 +244,33 @@ export default function AgentGroupsPage() {
     }, { replace: true })
   }, [roomId, rooms, setSearch])
 
-  useEffect(() => {
-    let cancelled = false
+  /** Loads the Room, reporting a failure on the page and as a toast; a retry goes through here too. */
+  const loadRoomReporting = useCallback(async (isCurrent: () => boolean = () => true) => {
     setRoomLoading(true)
     setRoomLoadError(null)
+    try {
+      await loadRoom()
+    } catch (error) {
+      if (!isCurrent()) return
+      const message = errMsg(error)
+      setRoomLoadError(message)
+      toast.error(message)
+    } finally {
+      if (isCurrent()) setRoomLoading(false)
+    }
+  }, [loadRoom])
+
+  useEffect(() => {
+    let cancelled = false
     setDetail(null)
     setConversations([])
     setBoundFolderName(null)
     setOverview(null)
     setExecutionReady(false)
     setDraftConversationId(null)
-    loadRoom()
-      .catch(error => {
-        if (cancelled) return
-        const message = errMsg(error)
-        setRoomLoadError(message)
-        toast.error(message)
-      })
-      .finally(() => {
-        if (!cancelled) setRoomLoading(false)
-      })
+    void loadRoomReporting(() => !cancelled)
     return () => { cancelled = true }
-  }, [loadRoom])
+  }, [loadRoomReporting])
 
   useEffect(() => {
     if (
@@ -388,6 +393,9 @@ export default function AgentGroupsPage() {
     : undefined
   const upsertConversation = useCallback((conversation: RoomConversationRecord) => {
     locallyCommittedConversations.current.set(conversation.id, conversation)
+    // A send or draft that finishes after a switch belongs to the Room it was
+    // made in: loadRoom restores it there, and it must not bind to this one.
+    if (conversation.room_id !== searchRef.current.get('room')) return
     setConversations(current => sortConversationsNewestFirst(current.some(item => item.id === conversation.id)
       ? current.map(item => item.id === conversation.id ? conversation : item)
       : [...current, conversation]))
@@ -435,7 +443,7 @@ export default function AgentGroupsPage() {
         <div className="p-6 max-w-[1600px] mx-auto space-y-3">
           {selectedRoom && <h1 className="text-xl font-semibold">{displayRoomTitle(selectedRoom, projects)}</h1>}
           <p className="text-sm text-destructive">Room details could not be loaded: {roomLoadError}</p>
-          <Button variant="outline" size="sm" onClick={() => void loadRoom()}>Try again</Button>
+          <Button variant="outline" size="sm" onClick={() => void loadRoomReporting()}>Try again</Button>
         </div>
       )
     }
@@ -451,7 +459,7 @@ export default function AgentGroupsPage() {
             Project-bound conversations where every human speaks under their own identity and subscription.
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => Promise.all([loadCatalog(), loadRoom()])}>
+        <Button variant="outline" size="sm" onClick={() => void Promise.all([loadCatalog(), loadRoom()]).catch(error => toast.error(errMsg(error)))}>
           <RefreshCw className="size-3.5 mr-1" />Refresh
         </Button>
       </header>
@@ -515,7 +523,9 @@ export default function AgentGroupsPage() {
                   disabled={retrying}
                   onClick={() => {
                     setRetrying(true)
-                    void loadCatalog().finally(() => setRetrying(false))
+                    void loadCatalog()
+                      .catch(error => toast.error(errMsg(error)))
+                      .finally(() => setRetrying(false))
                   }}
                 >
                   {retrying ? <Loader2 className="size-4 mr-1 animate-spin" /> : null}

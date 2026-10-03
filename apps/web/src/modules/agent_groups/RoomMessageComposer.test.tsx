@@ -183,6 +183,20 @@ describe('RoomMessageComposer keyboard behavior', () => {
     expect(document.querySelector('[data-file-reference]')).toHaveTextContent('src/App.tsx')
   })
 
+  it('finds a file beyond the first two hundred of a large Folder tree', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({
+      name: 'repo', path: '.', type: 'dir', children: [
+        ...Array.from({ length: 220 }, (_, index) => ({ name: `file-${index}.ts`, path: `src/file-${index}.ts`, type: 'file' as const, size: 1 })),
+        { name: 'zeta.ts', path: 'src/zeta.ts', type: 'file', size: 1 },
+      ],
+    })
+    render(<FileHarness />)
+    const editor = await getEditor()
+    await user.type(editor, '@zeta')
+    expect(await screen.findByRole('option', { name: /zeta\.ts/ })).toBeInTheDocument()
+  })
+
   it('keeps the @ menu open when authorized file search finishes with no matches', async () => {
     const user = userEvent.setup({ delay: null })
     let resolveTree!: (tree: FileNode) => void

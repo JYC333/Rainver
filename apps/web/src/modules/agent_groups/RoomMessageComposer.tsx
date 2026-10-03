@@ -621,9 +621,10 @@ function fileReferenceKey(part: Pick<ConversationInputFileReferencePart, 'projec
 
 function flattenFileTree(root: FileNode | null, source: ConversationInputFileSource & { workspaceLocationId: string }): FileCandidate[] {
   if (!root) return []
+  // Every file the tree holds (the server bounds the tree itself): the query
+  // filters before the menu trims to what it shows, so no file is unreachable.
   const files: FileCandidate[] = []
   const visit = (node: FileNode) => {
-    if (files.length >= 200) return
     if (node.type === 'file' && node.path !== '.') files.push({
       projectFolderId: source.projectFolderId,
       workspaceLocationId: source.workspaceLocationId,

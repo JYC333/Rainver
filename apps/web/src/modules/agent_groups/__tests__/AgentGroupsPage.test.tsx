@@ -498,6 +498,84 @@ describe('Rooms page', () => {
     expect(roomsApi.get).toHaveBeenLastCalledWith('room-2')
   })
 
+  it('does not bind a conversation from the previous Room when its send finishes late', async () => {
+    const secondRoom = { ...room, id: 'room-2', title: 'Second Room' }
+    const secondConversation = { ...initialConversation, id: 'session-2', room_id: 'room-2', title: 'Second thread' }
+    vi.mocked(roomsApi.list).mockResolvedValue({ items: [room, secondRoom], total: 2, limit: 50, offset: 0 })
+    vi.mocked(roomsApi.get).mockImplementation(async id => (id === 'room-2' ? { ...detail, room: secondRoom } : detail) as never)
+    vi.mocked(roomsApi.conversations).mockImplementation(async roomId => ({
+      items: [roomId === 'room-2' ? secondConversation : { ...initialConversation, title: 'Evidence review' }],
+      total: 1, limit: 50, offset: 0,
+    }) as never)
+    let finishSend!: () => void
+    vi.mocked(roomsApi.sendMessage).mockImplementation(() => new Promise(resolve => {
+      finishSend = () => resolve({
+        message: { id: 'm-late', session_id: 'session-1', role: 'user', content: 'late', metadata_json: {} },
+        conversation: initialConversation, task_group_ids: [], run_ids: [],
+      } as never)
+    }))
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'late' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.anything()))
+
+    fireEvent.click(screen.getAllByText('Second Room')[0]!)
+    await waitFor(() => expect(screen.getAllByText('Second thread').length).toBeGreaterThan(0))
+
+    await act(async () => { finishSend() })
+    for (let i = 0; i < 3; i += 1) await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+    expect(screen.queryByText('Evidence review')).not.toBeInTheDocument()
+    expect(vi.mocked(roomsApi.messages).mock.calls.some(([roomId, conversationId]) => roomId === 'room-2' && conversationId === 'session-1')).toBe(false)
+  })
+
+  it('retries a preset add under the same idempotency key until the add is confirmed', async () => {
+    vi.mocked(roomsApi.agentCandidates).mockResolvedValue({
+      agents: [], presets: [{ preset_id: 'preset-reviewer', name: 'Reviewer', description: 'Reviews the work' }],
+      total: 0, limit: 100, offset: 0,
+    })
+    vi.mocked(roomsApi.addAgentPreset).mockResolvedValue(detailWithReviewer as never)
+    let failNextRoomRead = false
+    vi.mocked(roomsApi.get).mockImplementation(async () => {
+      if (failNextRoomRead) {
+        failNextRoomRead = false
+        throw new Error('room unavailable')
+      }
+      return detail
+    })
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    const preset = await screen.findByRole('button', { name: /Reviewer/ })
+
+    // The add lands, then the refresh after it fails: the person sees an error.
+    failNextRoomRead = true
+    fireEvent.click(preset)
+    await waitFor(() => expect(roomsApi.addAgentPreset).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Reviewer/ })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: /Reviewer/ }))
+    await waitFor(() => expect(roomsApi.addAgentPreset).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Reviewer/ })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: /Reviewer/ }))
+    await waitFor(() => expect(roomsApi.addAgentPreset).toHaveBeenCalledTimes(3))
+
+    const keys = vi.mocked(roomsApi.addAgentPreset).mock.calls.map(call => call[2])
+    expect(keys[1]).toBe(keys[0])
+    expect(keys[2]).not.toBe(keys[0])
+  })
+
+  it('reports a failed retry of a Room that could not be loaded', async () => {
+    const toastError = vi.spyOn(toast, 'error')
+    vi.mocked(roomsApi.get).mockRejectedValue(new Error('room unavailable'))
+    renderRooms('/rooms?room=room-1')
+    expect(await screen.findByText(/Room details could not be loaded/)).toBeInTheDocument()
+    expect(toastError).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(roomsApi.get).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(toastError).toHaveBeenCalledTimes(2))
+    expect(screen.getByText(/Room details could not be loaded/)).toBeInTheDocument()
+    toastError.mockRestore()
+  })
+
   it('says so when a re-added specialist\'s host state was not restored', async () => {
     const toastError = vi.spyOn(toast, 'error')
     vi.mocked(roomsApi.agentCandidates).mockResolvedValue({
