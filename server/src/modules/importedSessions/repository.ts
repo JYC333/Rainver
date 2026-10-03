@@ -354,13 +354,26 @@ export class PgImportedSessionRepository {
     /** Exactly what the host enumerated this sync — never what the server holds. */
     listedVendorSessionIds: readonly string[];
   }): Promise<number> {
+    const listed = [...input.listedVendorSessionIds];
+    // The same enumeration is the only evidence the other way too: a session
+    // marked gone that the host lists again is present, whether or not its
+    // timestamp moved (an unchanged one is never replayed, so reconcile
+    // would never see it).
+    await this.db.query(
+      `UPDATE imported_sessions
+          SET source_state = 'present', updated_at = now()
+        WHERE space_id = $1 AND workspace_location_id = $2 AND runtime_key = $3 AND installation = $4
+          AND source_state = 'gone'
+          AND vendor_session_id = ANY($5::text[])`,
+      [input.spaceId, input.workspaceLocationId, input.runtimeKey, input.installation, listed],
+    );
     const result = await this.db.query(
       `UPDATE imported_sessions
           SET source_state = 'gone', updated_at = now()
         WHERE space_id = $1 AND workspace_location_id = $2 AND runtime_key = $3 AND installation = $4
           AND source_state <> 'gone'
           AND NOT (vendor_session_id = ANY($5::text[]))`,
-      [input.spaceId, input.workspaceLocationId, input.runtimeKey, input.installation, [...input.listedVendorSessionIds]],
+      [input.spaceId, input.workspaceLocationId, input.runtimeKey, input.installation, listed],
     );
     return result.rowCount ?? 0;
   }

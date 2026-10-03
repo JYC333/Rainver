@@ -12,6 +12,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 import { seedSpaceMember, seedSpaceOwnerProject, seedProjectMainlineRoom } from "./support/domainSeeds.js";
 import { PgImportedSessionRepository } from "../src/modules/importedSessions/repository.js";
 import { ImportedSessionService } from "../src/modules/importedSessions/service.js";
@@ -326,6 +327,40 @@ describe("imported session reconciliation", () => {
 expect((await repository.records(SPACE, first.session.id)).records).toHaveLength(1);
   });
 
+  it("marks a session present again when the host lists it after it was gone, even with its timestamp unmoved", async () => {
+    const repository = new PgImportedSessionRepository(db.pool);
+    const first = await repository.reconcile(reconcileInput());
+    const scope = { spaceId: SPACE, workspaceLocationId: LOCATION, runtimeKey: "claude_code", installation: "own" };
+    expect(await repository.markMissingAsGone({ ...scope, listedVendorSessionIds: [] })).toBe(1);
+    expect((await repository.byId(SPACE, first.session.id))?.source_state).toBe("gone");
+
+    // Restored from a backup: the host lists it again, nothing in it changed,
+    // so the daemon never replays it and reconcile never runs for it.
+    expect(await repository.markMissingAsGone({ ...scope, listedVendorSessionIds: ["sess-1"] })).toBe(0);
+    expect((await repository.byId(SPACE, first.session.id))?.source_state).toBe("present");
+  });
+
+  it("keeps both of two concurrent policy changes, so a withdrawn sync consent is never written back", async () => {
+    const service = new ImportedSessionService(db.pool, CONFIG);
+    const identity = { spaceId: SPACE, userId: OWNER };
+    await service.setPolicy(identity, LOCATION, { runtime_key: "claude_code", sync: true });
+    const withdrawing = await db.pool.connect();
+    try {
+      await withdrawing.query("BEGIN");
+      await new ImportedSessionService(withdrawing, CONFIG).setPolicy(identity, LOCATION, { runtime_key: "claude_code", sync: false });
+      let settled = false;
+      const toggling = service.setPolicy(identity, LOCATION, { runtime_key: "codex", sync: true }).finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      await withdrawing.query("COMMIT");
+      await toggling;
+    } finally {
+      await withdrawing.query("ROLLBACK").catch(() => undefined);
+      withdrawing.release();
+    }
+    const policy = await service.policy(identity, LOCATION);
+    expect(policy.entries.map((entry) => [entry.runtime_key, entry.sync]).sort()).toEqual([["claude_code", false], ["codex", true]]);
+  });
+
   it("reports a partial replay as partial and keeps what it produced", async () => {
     const repository = new PgImportedSessionRepository(db.pool);
     const outcome = await repository.reconcile(reconcileInput({
@@ -629,6 +664,29 @@ expect((await repository.records(SPACE, first.session.id)).records).toHaveLength
         { spaceId: SPACE, userId: OWNER },
         { kind: "imported_records", id: imported.session.id, item_ids: [ids[0]!, randomUUID()] },
       )).rejects.toMatchObject({ statusCode: 404 });
+    });
+
+    it("refreshes the summary when records arrive for a session its runtime does not date", async () => {
+      // No vendor timestamp and no dated records: `last_record_at` stays null
+      // however much the session grows, so the instant alone would call the
+      // first summary current forever.
+      const repository = new PgImportedSessionRepository(db.pool);
+      const undated = { session_id: "sess-undated", cwd: "/home/me/project", title: "Undated", updated_at: null };
+      const imported = await repository.reconcile(reconcileInput({ session: undated }));
+      await seedSummary(imported.session.id, { text: "An early account.", coveredThrough: null, count: 1 });
+      await repository.reconcile(reconcileInput({
+        session: undated,
+        records: [record({ record_key: "message:msg-1" }), record({ record_key: "message:msg-2", sequence: 1, text: "and then more" })],
+      }));
+      let calls = 0;
+      vi.spyOn(invocation, "completeProviderText").mockImplementation(async () => {
+        calls += 1;
+        return { text: "A fuller account.", provider: "test", provider_id: null, model: "test" } as never;
+      });
+
+      await expect(ensureImportedHistorySummary(db.pool, CONFIG, { spaceId: SPACE, userId: OWNER }, imported.session.id))
+        .resolves.toMatchObject({ summary_text: "A fuller account.", covered_record_count: 2 });
+      expect(calls).toBe(1);
     });
 
     it("writes a summary the first time one is asked for, and not again", async () => {

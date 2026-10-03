@@ -162,7 +162,15 @@ export async function ensureImportedHistorySummary(
   // `===` — `pg` decodes `timestamptz` to a `Date`, so identity comparison of
   // two reads is always false, which here would mean re-summarizing, and
   // re-billing the owner, on every reference.
-  if (existing && sameInstant(existing.covered_through_record_at, session.last_record_at)) return existing;
+  // A runtime that dates nothing leaves `last_record_at` null for good, so
+  // for such a session the instant alone would call a summary current
+  // forever; there the record count is the witness, and it moves whenever a
+  // sync adds records.
+  if (
+    existing
+    && sameInstant(existing.covered_through_record_at, session.last_record_at)
+    && (session.last_record_at !== null || existing.covered_record_count === session.record_count)
+  ) return existing;
   await refreshImportedHistorySummary(db, config, identity, session);
   return currentImportedHistorySummary(db, identity.spaceId, sessionId);
 }

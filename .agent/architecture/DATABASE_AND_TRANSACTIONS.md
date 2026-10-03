@@ -238,7 +238,10 @@ declines to write when the incoming `covered_through_record_at` is older than
 the stored one, so two overlapping runs cannot walk coverage backwards. And
 staleness is compared as an *instant*, never by identity — `pg` decodes
 `timestamptz` to a JS `Date`, so `===` between two reads is always false and
-would re-summarize, and re-bill, on every sync.
+would re-summarize, and re-bill, on every sync. A session its runtime does
+not date has no instant to compare (`last_record_at` stays null), so for it
+the covered record count against the session's record count is the
+staleness test instead.
 
 Writes happen on demand, never eagerly at import: the attach path resolves any
 missing summary *before* opening its transaction, precisely because doing so

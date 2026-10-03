@@ -190,14 +190,15 @@ export class ImportedHistoryExtractionService {
         const packetProposalId = facts.length === 0 && orphaned.length === 0
           ? null
           : await this.proposeMemoryPacket(tx, identity, projectId, facts, orphaned, records, checkpointId);
+        // Finalized in the same transaction as the proposals: a claim that
+        // outlived committed proposals would be released and read again,
+        // paying for the same records twice and proposing them twice.
+        await tx.query(
+          `UPDATE imported_session_records SET extracted_in = $2 WHERE extracted_in = $1`,
+          [`claim:${checkpointId}`, checkpointId],
+        );
         return { briefProposalId, packetProposalId };
       });
-      // Finalized only once the proposals exist: until this runs the batch is
-      // a claim, and a claim is recoverable.
-      await this.db.query(
-        `UPDATE imported_session_records SET extracted_in = $2 WHERE extracted_in = $1`,
-        [`claim:${checkpointId}`, checkpointId],
-      );
     } catch (error) {
       await this.releaseClaim(checkpointId);
       throw error;
