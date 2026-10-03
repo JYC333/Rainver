@@ -248,6 +248,35 @@ describe("controlled topic growth", () => {
     expect(ready[0].occurrence_count).toBe(4);
   });
 
+  it("counts an item once per candidate however many spellings it carries", async () => {
+    if (!db.available) return;
+    await seedAnnotatedItem({
+      domain: "artificial_intelligence",
+      topics: ["LLMs", "LLM", "large language models", "Large-Language-Model"],
+      readBy: [{ user: OWNER, readStatus: "read" }],
+    });
+    await service().runFactLayer(SPACE, OWNER);
+
+    const profile = await profiles().getProfile(SPACE, OWNER);
+    for (const key of ["llm", "large-language-model"]) {
+      expect(await profiles().getCandidate(profile!.id, key), key).toMatchObject({ occurrence_count: 1, read_count: 1 });
+    }
+  });
+
+  it("counts an item once when two passes run at the same time", async () => {
+    if (!db.available) return;
+    await profiles().ensureProfile(SPACE, OWNER);
+    await seedAnnotatedItem({
+      domain: "artificial_intelligence",
+      topics: ["model evaluation"],
+      readBy: [{ user: OWNER, readStatus: "read" }],
+    });
+    await Promise.all([service().runFactLayer(SPACE, OWNER), service().runFactLayer(SPACE, OWNER)]);
+
+    const profile = await profiles().getProfile(SPACE, OWNER);
+    expect(await profiles().getCandidate(profile!.id, "model-evaluation")).toMatchObject({ occurrence_count: 1, read_count: 1 });
+  });
+
   it("is idempotent: re-running does not double-count toward the threshold", async () => {
     if (!db.available) return;
     await seedAnnotatedItem({
@@ -452,6 +481,23 @@ describe("the confirmation boundary", () => {
     });
     const topics = await profiles().listTopics(profile.id);
     expect(topics).toHaveLength(1);
+    expect(topics[0].aliases).toContain("city-planning");
+  });
+
+  it("brings an archived topic back with its aliases and weight, not an empty copy", async () => {
+    if (!db.available) return;
+    const profile = await profiles().ensureProfile(SPACE, OWNER);
+    await profiles().upsertTopic({
+      spaceId: SPACE, userId: OWNER, profileId: profile.id,
+      label: "Urban planning", domainKey: "urbanism", aliases: ["city planning"], weight: 3,
+    });
+    expect(await profiles().archiveTopic(profile.id, "urban-planning")).toBe(true);
+
+    // The way a topic comes back in practice: created again with nothing but a label.
+    await profiles().upsertTopic({ spaceId: SPACE, userId: OWNER, profileId: profile.id, label: "Urban planning", domainKey: "urbanism" });
+    const topics = await profiles().listTopics(profile.id);
+    expect(topics).toHaveLength(1);
+    expect(topics[0]).toMatchObject({ weight: 3 });
     expect(topics[0].aliases).toContain("city-planning");
   });
 });

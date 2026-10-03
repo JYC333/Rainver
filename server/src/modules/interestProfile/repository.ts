@@ -145,8 +145,11 @@ export class PgInterestProfileRepository {
        ON CONFLICT (profile_id, topic_key) DO UPDATE
           SET label = EXCLUDED.label,
               domain_key = EXCLUDED.domain_key,
-              aliases_json = EXCLUDED.aliases_json,
-              weight = EXCLUDED.weight,
+              aliases_json = COALESCE(
+                (SELECT jsonb_agg(DISTINCT alias ORDER BY alias)
+                   FROM jsonb_array_elements(interest_topics.aliases_json || EXCLUDED.aliases_json) AS alias),
+                '[]'::jsonb),
+              weight = COALESCE($12::int, interest_topics.weight),
               status = 'active',
               updated_at = EXCLUDED.updated_at`,
       [
@@ -161,6 +164,9 @@ export class PgInterestProfileRepository {
         input.weight ?? 1,
         input.origin ?? "user",
         now,
+        // Only an explicit weight replaces the row's; a revival keeps what the
+        // reader set, as it keeps the aliases and history.
+        input.weight ?? null,
       ],
     );
     const topics = await this.db.query<InterestTopicRow & { aliases_json: unknown }>(
