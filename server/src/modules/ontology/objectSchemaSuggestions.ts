@@ -105,6 +105,9 @@ export async function scanObjectSchemaSuggestions(
   const usageKeys = new Set(usageRows.map((row) => registryKey(row.base_object_type, row.object_profile)));
   for (const row of registryRows) {
     if (row.status !== "active") continue;
+    // No usage loader, no verdict: a kind whose rows this scan never reads
+    // is not "unused", it is unobserved.
+    if (!USAGE_LOADED_BASE_TYPES.has(row.base_object_type)) continue;
     if (usageKeys.has(registryKey(row.base_object_type, row.key))) continue;
     findings.push({
       id: randomUUID(),
@@ -199,6 +202,9 @@ async function loadRegistryKinds(
   );
   return result.rows;
 }
+
+/** The base types `loadVisibleUsage` has a loader for; the others are listed from the registry only. */
+const USAGE_LOADED_BASE_TYPES = new Set(["knowledge_item", "claim", "source", "note", "memory_entry", "project_public_summary"]);
 
 async function loadVisibleUsage(
   db: Queryable,

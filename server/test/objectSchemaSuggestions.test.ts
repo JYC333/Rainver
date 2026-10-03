@@ -185,3 +185,30 @@ describe("scanObjectSchemaSuggestions", () => {
     expect(report.access_safety.raw_content_read).toBe(false);
   });
 });
+
+describe("scanObjectSchemaSuggestions on kinds without a usage loader", () => {
+  class WithSourceItemKindDb extends FakeObjectSchemaSuggestionDb {
+    override async query<Row = Record<string, unknown>>(sql: string) {
+      const base = await super.query<Row>(sql);
+      if (!/FROM space_object_profiles/.test(sql)) return base;
+      return {
+        rows: [
+          ...base.rows,
+          { id: "kind-feed-entry", key: "feed_entry", label: "Feed entry", base_object_type: "source_item", status: "active", version: 1 } as Row,
+        ],
+        rowCount: base.rows.length + 1,
+      };
+    }
+  }
+
+  it("does not call a source_item kind unused when the scan reads no source_item usage", async () => {
+    const report = await scanObjectSchemaSuggestions(new WithSourceItemKindDb(), {
+      spaceId: "space-1",
+      userId: "user-1",
+      request: { limit: 100, persist_artifact: false, review_scope: "private" },
+    });
+
+    expect(report.findings.filter((finding) => finding.base_object_type === "source_item")).toEqual([]);
+    expect(report.findings.some((finding) => finding.kind === "unused_active_profile" && finding.object_profile === "lesson")).toBe(true);
+  });
+});
