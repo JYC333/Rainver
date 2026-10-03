@@ -1,4 +1,6 @@
+import { execSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { delimiter } from "node:path";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,6 +53,61 @@ describe("folder-read git operations", () => {
       { path: "new name.txt", status: "renamed" },
     ]));
     expect(status.files).toHaveLength(2);
+  });
+
+  it("marks a diff git did not finish as truncated rather than passing a prefix off as the whole", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-folder-read-partial-diff-"));
+    roots.push(root);
+    await runGit(["init", "-q"], root);
+    await runGit(["config", "user.email", "test@example.invalid"], root);
+    await runGit(["config", "user.name", "Test"], root);
+    await writeFile(join(root, "README.md"), "before\n", "utf8");
+    await runGit(["add", "."], root);
+    await runGit(["commit", "-q", "-m", "initial"], root);
+    await writeFile(join(root, "README.md"), "after\n", "utf8");
+
+    // A git whose `diff` dies part-way through its output, the way a killed
+    // (timed out) or failing one does; every other command is the real git.
+    const fakeBin = join(root, "..", `${root.split("/").pop()}-bin`);
+    roots.push(fakeBin);
+    await mkdir(fakeBin);
+    const realGitPath = execSync("command -v git", { encoding: "utf8" }).trim();
+    await writeFile(join(fakeBin, "git"), [
+      "#!/bin/sh",
+      'case " $* " in',
+      '  *" diff "*"--name-only"*) exec "' + realGitPath + '" "$@" ;;',
+      '  *" diff "*) printf "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-before\n"; exit 128 ;;',
+      '  *) exec "' + realGitPath + '" "$@" ;;',
+      "esac",
+      "",
+    ].join("\n"), { mode: 0o755 });
+
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}${delimiter}${previousPath ?? ""}`;
+    try {
+      const result = await folderGitDiff(root, "README.md");
+      expect(result.diff).toContain("-before");
+      expect(result.truncated).toBe(true);
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+
+  it("stops reading a command's output at the caller's limit and says so", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-folder-read-output-cap-"));
+    roots.push(root);
+    await runGit(["init", "-q"], root);
+    await runGit(["config", "user.email", "test@example.invalid"], root);
+    await runGit(["config", "user.name", "Test"], root);
+    await writeFile(join(root, "big.txt"), "a\n".repeat(200_000), "utf8");
+    await runGit(["add", "."], root);
+    await runGit(["commit", "-q", "-m", "initial"], root);
+    await writeFile(join(root, "big.txt"), "b\n".repeat(200_000), "utf8");
+
+    const result = await runGit(["diff", "--no-ext-diff"], root, 30_000, { maxOutputBytes: 64 * 1024 });
+    expect(result.incomplete).toBe(true);
+    expect(result.code).not.toBe(0);
+    expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(64 * 1024);
   });
 
   it("uses a real git repository for status detection", async () => {

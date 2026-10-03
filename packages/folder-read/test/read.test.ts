@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -43,6 +43,28 @@ describe("folder-read filesystem operations", () => {
       line_count: 3,
       sha256: createHash("sha256").update("one\ntwo\n").digest("hex"),
     });
+  });
+
+  // Root may stat anything, so a permission the test relies on does not apply to it.
+  it.skipIf(process.getuid?.() === 0)("leaves out an entry it cannot stat instead of failing the whole tree", async () => {
+    // readdir lists a directory's names with read permission alone; stat of a
+    // name inside it needs search permission. An entry that vanishes between
+    // the two calls (an editor's or a Run's temporary file) looks the same to
+    // the walk as this one does, and used to fail the whole tree request.
+    const root = await tempRoot();
+    await mkdir(join(root, "ok"));
+    await writeFile(join(root, "ok", "kept.txt"), "kept", "utf8");
+    await mkdir(join(root, "locked"));
+    await writeFile(join(root, "locked", "unreachable.txt"), "x", "utf8");
+    await chmod(join(root, "locked"), 0o400);
+    try {
+      const tree = await buildTree(root);
+      expect(tree.children?.map((child) => child.path)).toEqual(["locked", "ok"]);
+      expect(tree.children?.find((child) => child.path === "locked")?.children).toEqual([]);
+      expect(tree.children?.find((child) => child.path === "ok")?.children?.map((child) => child.path)).toEqual(["ok/kept.txt"]);
+    } finally {
+      await chmod(join(root, "locked"), 0o700);
+    }
   });
 
   it("maps missing, directory, forbidden, and oversized reads to bounded errors", async () => {

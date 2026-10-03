@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import {
   diffTouchesSecretLikePath,
@@ -13,6 +14,7 @@ import {
   IGNORE_DIRS,
   MAX_DEPTH,
   MAX_DIFF_BYTES,
+  MAX_DIFF_OUTPUT_BYTES,
   MAX_FILE_BYTES,
   MAX_FILES,
   SHOW_HIDDEN,
@@ -194,11 +196,21 @@ export async function folderGitDiff(
   // runs for a path as well as for the whole Folder.
   const pathspec = safePath ? ["--", `:(literal)${safePath}`] : safePath === "" ? ["--", ""] : ["--"];
   let base = ["HEAD", ...pathspec];
-  let diff = (await runLocationGit(["diff", "--no-ext-diff", "--no-textconv", ...base], root, 15_000)).stdout;
-  if (!diff) {
+  // Bounded while it is read: the whole diff of a large change would
+  // otherwise sit in memory before the cap below could apply to it.
+  const gitOptions = { maxOutputBytes: MAX_DIFF_OUTPUT_BYTES };
+  let result = await runLocationGit(["diff", "--no-ext-diff", "--no-textconv", ...base], root, 15_000, gitOptions);
+  // No HEAD yet: diff the work tree against the index instead. A HEAD diff
+  // that was cut short is not that case, even when nothing had arrived yet.
+  if (!result.stdout && !result.incomplete) {
     base = pathspec;
-    diff = (await runLocationGit(["diff", "--no-ext-diff", "--no-textconv", ...base], root, 15_000)).stdout;
+    result = await runLocationGit(["diff", "--no-ext-diff", "--no-textconv", ...base], root, 15_000, gitOptions);
   }
+  let diff = result.stdout;
+  // A diff git did not finish — stopped at the timeout or the output limit,
+  // or failed after writing part of it — is at most a prefix of the real one,
+  // and is shown as such rather than as the whole change.
+  const partial = result.incomplete === true || (result.code !== 0 && diff.length > 0);
   if (diff) await assertDiffPathsReadable(root, base, opts);
   if (diffTouchesSecretLikePath(diff)) {
     throw new PathPolicyError("Diff includes blocked path");
@@ -206,8 +218,8 @@ export async function folderGitDiff(
   const redacted = redactSecretLikeDiff(diff);
   diff = redacted.diff;
   const encoded = Buffer.from(diff, "utf8");
-  const truncated = encoded.length > MAX_DIFF_BYTES;
-  if (truncated) diff = encoded.subarray(0, MAX_DIFF_BYTES).toString("utf8");
+  const truncated = partial || encoded.length > MAX_DIFF_BYTES;
+  if (encoded.length > MAX_DIFF_BYTES) diff = encoded.subarray(0, MAX_DIFF_BYTES).toString("utf8");
   return { diff, path: safePath, truncated, redacted: redacted.redacted };
 }
 
@@ -256,6 +268,10 @@ export function resolveRelativePath(
 async function buildTreeNode(root: string, nodePath: string, depth: number, counter: { count: number }, signal?: AbortSignal): Promise<FileNode> {
   throwIfAborted(signal);
   const info = await stat(nodePath);
+  return buildTreeNodeFrom(info, root, nodePath, depth, counter, signal);
+}
+
+async function buildTreeNodeFrom(info: Stats, root: string, nodePath: string, depth: number, counter: { count: number }, signal?: AbortSignal): Promise<FileNode> {
   const rel = nodePath === root ? "." : relative(root, nodePath).split("\\").join("/");
   const node: FileNode = {
     name: nodePath === root ? root.split(/[\\/]/).pop() || root : nodePath.split(/[\\/]/).pop() || nodePath,
@@ -276,9 +292,19 @@ async function buildTreeNode(root: string, nodePath: string, depth: number, coun
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory() && IGNORE_DIRS.has(entry.name)) continue;
     if (entry.name.startsWith(".") && !SHOW_HIDDEN.has(entry.name)) continue;
+    const childPath = join(nodePath, entry.name);
+    // Listed a moment ago, gone or unreadable now: an editor's or a Run's
+    // temporary file that was removed between readdir and stat, or an entry
+    // the process may not look at. The walk leaves it out; it does not fail
+    // the whole tree over it.
+    const childInfo = await stat(childPath).catch((error: NodeJS.ErrnoException) => {
+      if (error?.code === "ENOENT" || error?.code === "EACCES" || error?.code === "EPERM") return null;
+      throw error;
+    });
+    if (!childInfo) continue;
     counter.count += 1;
     if (counter.count > MAX_FILES) break;
-    children.push(await buildTreeNode(root, join(nodePath, entry.name), depth + 1, counter, signal));
+    children.push(await buildTreeNodeFrom(childInfo, root, childPath, depth + 1, counter, signal));
   }
   node.children = children;
   return node;

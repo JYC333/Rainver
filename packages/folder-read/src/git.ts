@@ -6,6 +6,12 @@ export interface CommandResult {
   code: number;
   stdout: string;
   stderr: string;
+  /**
+   * The command was stopped before it finished — at its timeout or at the
+   * caller's output limit — so `stdout` is at most a prefix of what it would
+   * have written.
+   */
+  incomplete?: boolean;
 }
 
 export class GitCommandError extends Error {
@@ -22,6 +28,12 @@ export class GitCommandError extends Error {
 export interface RunGitOptions {
   /** Extra variables layered over the process environment (e.g. `GIT_INDEX_FILE`). */
   env?: Record<string, string>;
+  /**
+   * Stop the command once its stdout has grown past this many bytes, and
+   * answer with the prefix read so far marked `incomplete`. Without it the
+   * whole output is held in memory before any caller can bound it.
+   */
+  maxOutputBytes?: number;
 }
 
 export async function runGit(
@@ -278,6 +290,7 @@ async function runCommand(
 ): Promise<CommandResult> {
   return new Promise((resolveResult) => {
     let stdout = "";
+    let stdoutBytes = 0;
     let stderr = "";
     let settled = false;
     let timer: NodeJS.Timeout;
@@ -288,6 +301,18 @@ async function runCommand(
       ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
     });
     child.stdout?.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      stdoutBytes += chunk.byteLength;
+      const limit = options.maxOutputBytes;
+      if (limit !== undefined && stdoutBytes > limit) {
+        const room = Math.max(0, limit - (stdoutBytes - chunk.byteLength));
+        stdout += chunk.subarray(0, room).toString("utf8");
+        settled = true;
+        clearTimeout(timer);
+        child.kill("SIGKILL");
+        resolveResult({ code: -1, stdout, stderr: stderr || "Command output exceeded the limit.", incomplete: true });
+        return;
+      }
       stdout += chunk.toString("utf8");
     });
     child.stderr?.on("data", (chunk: Buffer) => {
@@ -309,7 +334,7 @@ async function runCommand(
       if (settled) return;
       settled = true;
       child.kill("SIGKILL");
-      resolveResult({ code: -1, stdout, stderr: stderr || "Command timed out." });
+      resolveResult({ code: -1, stdout, stderr: stderr || "Command timed out.", incomplete: true });
     }, timeoutMs);
   });
 }
