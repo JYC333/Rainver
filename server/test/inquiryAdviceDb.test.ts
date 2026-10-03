@@ -7,7 +7,8 @@ import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
 import { InquiryAdviceService, INQUIRY_NEXT_STEP_ADVICE_PROMPT_KEY } from "../src/modules/inquiry/adviceService.js";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
-import { adviceJobMayPersist, queueAdviceForFocusedThread, runInquiryAdviceJob } from "../src/modules/inquiry/adviceJob.js";
+import { adviceJobMayPersist, queueAdviceForFocusedThread, runInquiryAdviceJob, tryQueueAdviceForFocusedThread } from "../src/modules/inquiry/adviceJob.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 import { PgJobQueueRepository } from "../src/modules/jobs/repository.js";
 import type { ServerConfig } from "../src/config.js";
 
@@ -526,6 +527,73 @@ describe("Inquiry next-step advice (real Postgres)", () => {
     const reread = await service.getAdvice(identity(), PROJECT, THREAD);
     expect(reread?.stale).toBe(true);
     expect(returned.stale).toBe(true);
+  });
+
+  it("a failed best-effort queue inside a caller's transaction leaves that transaction usable", async () => {
+    if (!db.available) return;
+    await new InquiryIterationService(db.pool).updateWork(identity(), PROJECT, THREAD, {
+      attention_state: "focused",
+      next_focus_kind: "read_evidence",
+    });
+    await queueAdviceForFocusedThread(db.pool, {
+      spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "iteration_recorded",
+    });
+    const holder = await db.pool.connect();
+    const command = await db.pool.connect();
+    try {
+      // Another session holds the Thread's queue row, as the generation guard
+      // does; the command's queue step cannot get it and gives up.
+      await holder.query("BEGIN");
+      await holder.query(
+        `SELECT id FROM jobs WHERE job_type = 'inquiry_next_step_advice' AND payload_json->>'thread_id' = $1 FOR UPDATE`,
+        [THREAD],
+      );
+      await command.query("BEGIN");
+      await command.query("SET LOCAL lock_timeout = '100ms'");
+      await tryQueueAdviceForFocusedThread(command, {
+        spaceId: SPACE, userId: OWNER, projectId: PROJECT, threadId: THREAD, triggerKind: "candidate_created",
+      });
+      // The command's own next statement must still run.
+      await expect(command.query("SELECT 1 AS alive")).resolves.toMatchObject({ rows: [{ alive: 1 }] });
+      await command.query("ROLLBACK");
+    } finally {
+      await holder.query("ROLLBACK").catch(() => undefined);
+      await command.query("ROLLBACK").catch(() => undefined);
+      holder.release();
+      command.release();
+    }
+  });
+
+  it("does not adopt a recommendation that was replaced while the adoption was in flight", async () => {
+    if (!db.available) return;
+    await serviceReturning({
+      recommended_focus_kind: "search_acquisition",
+      rationale: "No evidence has arrived yet.",
+      cited_refs: [],
+    }).generateAdvice(identity(), PROJECT, THREAD, "user_request");
+    const generating = await db.pool.connect();
+    try {
+      // Automatic generation has written a new recommendation and not yet
+      // committed when the person's Adopt reads the old one.
+      await generating.query("BEGIN");
+      await new InquiryAdviceService(generating, config, async () => ({
+        recommended_focus_kind: "synthesize",
+        rationale: "Enough has been read.",
+        cited_refs: [],
+      })).generateAdvice(identity(), PROJECT, THREAD, "search_completed");
+      let settled = false;
+      const adopting = serviceReturning({}).adoptAdvice(identity(), PROJECT, THREAD).finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      await generating.query("COMMIT");
+      await expect(adopting).rejects.toMatchObject({ statusCode: 409 });
+    } finally {
+      await generating.query("ROLLBACK").catch(() => undefined);
+      generating.release();
+    }
+    const advice = await serviceReturning({}).getAdvice(identity(), PROJECT, THREAD);
+    expect(advice).toMatchObject({ status: "open", recommended_focus_kind: "synthesize" });
+    const thread = await new InquiryThreadService(db.pool).getThread(identity(), PROJECT, THREAD);
+    expect(thread.next_focus_kind).toBeNull();
   });
 
   it("recording an Iteration on a focused Thread queues advice without blocking on a provider", async () => {

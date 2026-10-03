@@ -239,10 +239,29 @@ export class InquiryAdviceService {
         // this step came from — the distinction the bare enum could not hold.
         step_origin: "advice",
       });
+      // The row was read outside this transaction. Automatic generation may
+      // have replaced the recommendation since; adopting by `status = 'open'`
+      // alone would apply the old focus and mark the new advice taken.
+      const locked = await tx.query<{ id: string; status: string; recommended_focus_kind: string; updated_at: string | Date }>(
+        `SELECT id, status, recommended_focus_kind, updated_at FROM inquiry_thread_advice
+          WHERE space_id = $1 AND project_id = $2 AND thread_id = $3
+          FOR UPDATE`,
+        [identity.spaceId, projectId, threadId],
+      );
+      const row = locked.rows[0];
+      if (
+        !row
+        || row.id !== current.id
+        || row.status !== "open"
+        || row.recommended_focus_kind !== current.recommended_focus_kind
+        || new Date(row.updated_at).getTime() !== new Date(current.updated_at).getTime()
+      ) {
+        throw new HttpError(409, "The recorded next step changed while it was being adopted; read the current recommendation first.");
+      }
       await tx.query(
-        `UPDATE inquiry_thread_advice SET status = 'adopted', updated_at = $4
-          WHERE space_id = $1 AND project_id = $2 AND thread_id = $3 AND status = 'open'`,
-        [identity.spaceId, projectId, threadId, new Date().toISOString()],
+        `UPDATE inquiry_thread_advice SET status = 'adopted', updated_at = $3
+          WHERE space_id = $1 AND id = $2 AND status = 'open'`,
+        [identity.spaceId, row.id, new Date().toISOString()],
       );
       await recordThreadWorkEvent(tx, {
         spaceId: identity.spaceId,

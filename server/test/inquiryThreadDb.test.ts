@@ -250,6 +250,29 @@ describe("Inquiry Core (real Postgres)", () => {
     )).toBe(true);
   });
 
+  it("superseding a Thread closes its open steps and clears the projection, as any other exit from active does", async () => {
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Still open" });
+    const threadId = question.id as string;
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "read_evidence" });
+
+    await iterationSvc.reviseDefinition(identity, PROJECT, threadId, {
+      revision_kind: "semantic_change",
+      new_statement: "A different question",
+      structure_action: "supersede",
+    });
+
+    const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ kind: "read_evidence", status: "abandoned" });
+    const old = await threadSvc.getThread(identity, PROJECT, threadId);
+    expect(old.lifecycle_status).toBe("superseded");
+    expect(old.next_focus_kind).toBeNull();
+  });
+
   it("rejects semantic_change without structure_action, and rejects structure_action on wording_only", async () => {
     if (!db.available) return;
     const threadSvc = new InquiryThreadService(db.pool);
