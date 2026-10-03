@@ -2308,7 +2308,9 @@ therefore needs neither a source checkout nor pnpm. A channel-neutral
 `host-installer` bootstrap published from `master` is the single public install
 URL; it validates the selected channel's installer before executing it, with
 `stable` as the default. The installer keeps immutable build directories below
-`~/.local/share/rainver-host/releases/`, atomically moves `current`, installs a
+`~/.local/share/rainver-host/releases/` (each placed by a same-filesystem
+rename from a staging directory beside it, and replaced when an existing one
+is not a complete release), atomically moves `current`, installs a
 systemd user unit, and captures the installing user's PATH for CLI discovery.
 The daemon launcher loads the owner-only `service.env` itself before Node
 starts; the unit does not rely on systemd `EnvironmentFile` parsing, whose

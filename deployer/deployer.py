@@ -26,7 +26,7 @@ import stat
 from datetime import datetime, UTC
 from pathlib import Path
 
-from poll import build_poller
+from poll import build_poller, run_command
 from protocol import ALLOWED_JOB_TYPES
 
 log = logging.getLogger("deployer")
@@ -41,13 +41,11 @@ JOB_SCRIPTS: dict[str, Path] = {
 
 
 async def _run_script(script: Path, timeout: int = 300) -> tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(
-        str(script),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    return proc.returncode, stdout.decode(), stderr.decode()
+    # The pull loop's runner: the script gets its own session, and a script
+    # that runs past its budget is killed with the `docker compose` it
+    # started, rather than left changing the instance after the job was
+    # reported as failed — and beside whatever the operator runs next.
+    return await run_command(str(script), timeout=timeout)
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -82,13 +80,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             return
 
         started_at = datetime.now(UTC).isoformat()
-        try:
-            exit_code, stdout, stderr = await _run_script(script)
-        except asyncio.TimeoutError:
-            result = {"job_id": job_id, "status": "failed", "error": "Script timed out",
-                      "started_at": started_at, "completed_at": datetime.now(UTC).isoformat()}
-            _write(writer, result)
-            return
+        exit_code, stdout, stderr = await _run_script(script)
 
         status = "succeeded" if exit_code == 0 else "failed"
         log.info("job %s finished status=%s exit_code=%d", job_id, status, exit_code)

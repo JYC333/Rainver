@@ -256,6 +256,83 @@ describe("host release installer", () => {
     }
   });
 
+  it.runIf(process.platform === "linux")("does not switch to a release directory an interrupted install left half-copied", async () => {
+    // Moving the unpacked payload from the temporary directory to the final
+    // release name is a copy when the two are on different filesystems, and a
+    // copy can be interrupted. A directory that exists under the build's name
+    // but is not a complete release is one such leftover: it is replaced, not
+    // activated.
+    const root = await mkdtemp(join(tmpdir(), "rainver-host-partial-release-test-"));
+    const installRoot = join(root, "install");
+    const binDir = join(root, "bin");
+    const systemdDir = join(root, "systemd");
+    const configDir = join(root, "config");
+    const releaseDir = join(root, "release");
+    const packageDir = join(root, "package");
+    const fakeBin = join(root, "fake-bin");
+    const installed = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const incoming = "cccccccccccccccccccccccccccccccccccccccc";
+    const releaseArch = process.arch === "arm64" ? "arm64" : "x64";
+
+    try {
+      const hostPayload = join(packageDir, "rainver-host");
+      const adapterPayload = join(packageDir, "rainver-host-adapters");
+      await Promise.all([
+        mkdir(join(hostPayload, "app", "dist"), { recursive: true }),
+        mkdir(adapterPayload, { recursive: true }),
+        mkdir(releaseDir, { recursive: true }),
+        mkdir(fakeBin, { recursive: true }),
+        mkdir(configDir, { recursive: true }),
+        mkdir(join(installRoot, "releases", installed, "app", "dist"), { recursive: true }),
+        // The leftover: the build id arrived, app/ did not.
+        mkdir(join(installRoot, "releases", incoming, "app"), { recursive: true }),
+      ]);
+      await writeFile(join(installRoot, "releases", installed, "BUILD_ID"), `${installed}\n`);
+      await writeFile(join(installRoot, "releases", installed, "app", "dist", "cli.js"), "\n");
+      await writeFile(join(installRoot, "releases", incoming, "BUILD_ID"), `${incoming}\n`);
+      await symlink(`releases/${installed}`, join(installRoot, "current"));
+      await writeFile(join(fakeBin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      await symlink(process.execPath, join(fakeBin, "node"));
+
+      const installer = await readFile(installerPath);
+      const buildIdFile = `${incoming}\n`;
+      await writeFile(join(releaseDir, "install-host.sh"), installer, { mode: 0o755 });
+      await writeFile(join(releaseDir, "BUILD_ID"), buildIdFile);
+      await writeFile(join(hostPayload, "BUILD_ID"), buildIdFile);
+      await writeFile(join(hostPayload, "app", "package.json"), '{"type":"module"}\n');
+      await writeFile(join(hostPayload, "app", "dist", "cli.js"), 'console.log("0.1.0")\n');
+      await writeFile(join(hostPayload, "app", "dist", "daemon.js"), "\n");
+      await writeFile(join(adapterPayload, "BUILD_ID"), buildIdFile);
+      await writeFile(join(adapterPayload, "package.json"), '{"private":true}\n');
+      await runCommand("tar", ["-czf", join(releaseDir, `rainver-host-linux-${releaseArch}.tar.gz`), "-C", packageDir, "rainver-host"], process.env);
+      await runCommand("tar", ["-czf", join(releaseDir, `rainver-host-adapters-linux-${releaseArch}.tar.gz`), "-C", packageDir, "rainver-host-adapters"], process.env);
+      const assets = ["BUILD_ID", "install-host.sh", `rainver-host-linux-${releaseArch}.tar.gz`, `rainver-host-adapters-linux-${releaseArch}.tar.gz`];
+      const sums = await Promise.all(assets.map(async asset => (
+        `${createHash("sha256").update(await readFile(join(releaseDir, asset))).digest("hex")}  ${asset}`
+      )));
+      await writeFile(join(releaseDir, "SHA256SUMS"), `${sums.join("\n")}\n`);
+
+      const result = await runCommand("/bin/bash", [installerPath, "--update"], {
+        ...process.env,
+        PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+        XDG_CONFIG_HOME: join(root, "xdg-config"),
+        RAINVER_HOST_INSTALL_ROOT: installRoot,
+        RAINVER_HOST_BIN_DIR: binDir,
+        RAINVER_HOST_SYSTEMD_DIR: systemdDir,
+        RAINVER_HOST_CONFIG_DIR: configDir,
+        RAINVER_HOST_RELEASE_BASE_URL: `file://${releaseDir}`,
+      });
+
+      expect(result.stderr).toBe("");
+      expect(await readFile(join(installRoot, "current", "BUILD_ID"), "utf8")).toBe(buildIdFile);
+      expect(await readFile(join(installRoot, "current", "app", "dist", "daemon.js"), "utf8")).toBe("\n");
+      // Nothing of the staging step is left beside the releases.
+      expect((await readdir(join(installRoot, "releases"))).sort()).toEqual([installed, incoming]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(process.platform === "linux")("loads the captured CLI PATH and install bin directory through the generated daemon launcher", async () => {
     const root = await mkdtemp(join(tmpdir(), "rainver-host-path-test-"));
     const installRoot = join(root, "install");
