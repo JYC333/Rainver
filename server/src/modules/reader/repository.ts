@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { stat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ServerConfig } from "../../config.js";
-import { HttpError, dateIso, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, dateIso, objectValue, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { normalizeSourceConnectionReadGovernance, enforceSourceDerivedImportTarget } from "../sources/sourceConsent.js";
 import type { SourceItemRow } from "../sources/sourceRepositoryRows.js";
 import { ITEM_COLUMNS } from "../sources/sourceRepositoryRows.js";
@@ -986,7 +986,17 @@ export class PgAnnotationRepository {
     const now = new Date().toISOString();
     const id = randomUUID();
 
-    const result = await this.db.query<ReaderAnnotationRow>(
+    // A selected_users annotation takes its readers from its document's
+    // grants. A document type that is not a content resource (a research
+    // report) has none to inherit, so the request is refused before the row
+    // exists rather than written and then failed.
+    const sourceResourceType = documentType === "research_notebook" ? "space_object" : documentType;
+    if (visibility === "selected_users" && !contentResourceDefinition(sourceResourceType)) {
+      throw new HttpError(422, `selected_users is not available on ${documentType} documents`);
+    }
+
+    return withQueryableTransaction(this.db, async (tx) => {
+    const result = await tx.query<ReaderAnnotationRow>(
       `INSERT INTO reader_annotations (
          id, space_id, project_id, document_type, document_id,
          annotation_type, quote_text, anchor_json, color, label,
@@ -1004,8 +1014,7 @@ export class PgAnnotationRepository {
     );
     const annotation = result.rows[0]!;
     if (visibility === "selected_users") {
-      const sourceResourceType = documentType === "research_notebook" ? "space_object" : documentType;
-      await inheritContentAccessGrants(this.db, {
+      await inheritContentAccessGrants(tx, {
         spaceId: identity.spaceId,
         sourceResourceType,
         sourceResourceId: documentId,
@@ -1015,6 +1024,7 @@ export class PgAnnotationRepository {
       });
     }
     return annotationOut({ ...annotation, effective_access_level: "full" });
+    });
   }
 
   async updateAnnotation(
@@ -1230,34 +1240,37 @@ export class PgCommentRepository {
 
     const now = new Date().toISOString();
 
-    // Create or reuse open thread
-    let threadRow: ReaderCommentThreadRow;
-    const existingThread = await this.db.query<ReaderCommentThreadRow>(
-      `SELECT ${THREAD_COLUMNS} FROM reader_comment_threads
-        WHERE space_id = $1 AND annotation_id = $2 AND status = 'open' LIMIT 1`,
-      [identity.spaceId, annotationId],
-    );
-    if (existingThread.rows[0]) {
-      threadRow = existingThread.rows[0];
-    } else {
-      const threadResult = await this.db.query<ReaderCommentThreadRow>(
-        `INSERT INTO reader_comment_threads (id, space_id, annotation_id, status, created_by_user_id, created_at, updated_at)
-           VALUES ($1, $2, $3, 'open', $4, $5, $5) RETURNING ${THREAD_COLUMNS}`,
-        [randomUUID(), identity.spaceId, annotationId, identity.userId, now],
+    // Create or reuse the open thread, under the annotation's row lock: two
+    // first comments at once must land in one thread, and nothing else keeps
+    // the thread unique.
+    const threadRow = await withQueryableTransaction(this.db, async (tx) => {
+      await tx.query(`SELECT id FROM reader_annotations WHERE space_id = $1 AND id = $2 FOR UPDATE`, [identity.spaceId, annotationId]);
+      const existingThread = await tx.query<ReaderCommentThreadRow>(
+        `SELECT ${THREAD_COLUMNS} FROM reader_comment_threads
+          WHERE space_id = $1 AND annotation_id = $2 AND status = 'open'
+          ORDER BY created_at ASC, id ASC LIMIT 1`,
+        [identity.spaceId, annotationId],
       );
-      threadRow = threadResult.rows[0]!;
-    }
-
-    await this.db.query(
-      `INSERT INTO reader_comments (id, space_id, thread_id, body, status, created_by_user_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'active', $5, $6, $6)`,
-      [randomUUID(), identity.spaceId, threadRow.id, commentBody, identity.userId, now],
-    );
-
-    await this.db.query(
-      `UPDATE reader_comment_threads SET updated_at = $3 WHERE space_id = $1 AND id = $2`,
-      [identity.spaceId, threadRow.id, now],
-    );
+      let thread = existingThread.rows[0];
+      if (!thread) {
+        const threadResult = await tx.query<ReaderCommentThreadRow>(
+          `INSERT INTO reader_comment_threads (id, space_id, annotation_id, status, created_by_user_id, created_at, updated_at)
+             VALUES ($1, $2, $3, 'open', $4, $5, $5) RETURNING ${THREAD_COLUMNS}`,
+          [randomUUID(), identity.spaceId, annotationId, identity.userId, now],
+        );
+        thread = threadResult.rows[0]!;
+      }
+      await tx.query(
+        `INSERT INTO reader_comments (id, space_id, thread_id, body, status, created_by_user_id, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'active', $5, $6, $6)`,
+        [randomUUID(), identity.spaceId, thread.id, commentBody, identity.userId, now],
+      );
+      await tx.query(
+        `UPDATE reader_comment_threads SET updated_at = $3 WHERE space_id = $1 AND id = $2`,
+        [identity.spaceId, thread.id, now],
+      );
+      return thread;
+    });
 
     const allComments = await this.db.query<ReaderCommentRow>(
       `SELECT ${COMMENT_COLUMNS} FROM reader_comments WHERE space_id = $1 AND thread_id = $2 AND status = 'active' ORDER BY created_at ASC`,
@@ -1573,31 +1586,48 @@ export class PgReaderActionRepository {
       throw new HttpError(404, "Project not found");
     }
     // Prefix all annotation columns with ra. to avoid ambiguity with joined tables.
-    const cols = `ra.id, ra.space_id, ra.document_type, ra.document_id,
+    const cols = `ra.id, ra.space_id, ra.project_id, ra.document_type, ra.document_id,
   ra.annotation_type, ra.quote_text, ra.anchor_json, ra.color, ra.label, ra.visibility, ra.access_level,
   ra.status, ra.anchor_state, ra.created_by_user_id, ra.owner_user_id, ra.created_at, ra.updated_at`;
+    // The Project link is an existence test, not a join: one item may be
+    // linked through several active bindings, and a join would return the
+    // annotation once per binding. The consent branches are those of
+    // enforceConnectionReadConsent, the single-document gate, including a
+    // subscriber of one of the connection's channels.
     const r = await this.db.query<WithAccessLevel<ReaderAnnotationRow>>(
       `SELECT ${cols}, ${annotationAccessLevelSql("ra", "$3")} AS effective_access_level
          FROM reader_annotations ra
          JOIN source_items ii ON ii.id = ra.document_id AND ra.document_type = 'source_item'
               AND ii.space_id = $1 AND ii.deleted_at IS NULL
          JOIN source_connections sc ON sc.id = ii.connection_id
-         JOIN project_source_item_links psil
-              ON psil.space_id = ii.space_id
-             AND psil.source_item_id = ii.id
-             AND psil.project_id = $2
-             AND psil.status = 'active'
-         JOIN project_source_bindings psb
-              ON psb.space_id = psil.space_id
-             AND psb.id = psil.project_source_binding_id
-             AND psb.status = 'active'
         WHERE ra.space_id = $1
           AND ra.status = 'active'
+          AND EXISTS (
+            SELECT 1
+              FROM project_source_item_links psil
+              JOIN project_source_bindings psb
+                ON psb.space_id = psil.space_id
+               AND psb.id = psil.project_source_binding_id
+               AND psb.status = 'active'
+             WHERE psil.space_id = ii.space_id
+               AND psil.source_item_id = ii.id
+               AND psil.project_id = $2
+               AND psil.status = 'active'
+          )
           AND ${contentReadSql("reader_annotation", "ra", "$3")}
           AND ${contentReadSql("source_item", "ii", "$3")}
           AND (
             sc.consent_json->>'owner_user_id' = $3
             OR sc.consent_json->'allowed_reader_user_ids' @> to_jsonb($3::text)
+            OR EXISTS (
+              SELECT 1
+                FROM source_channel_user_subscriptions scus
+                JOIN source_channels sch ON sch.id = scus.source_channel_id
+               WHERE scus.space_id = $1
+                 AND sch.source_connection_id = sc.id
+                 AND scus.user_id = $3
+                 AND scus.status = 'subscribed'
+            )
             OR (
               (sc.consent_json->>'allow_space_admins')::boolean = true
               AND EXISTS (

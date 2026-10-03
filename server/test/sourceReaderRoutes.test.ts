@@ -639,6 +639,33 @@ describe("PgAnnotationRepository.createAnnotation — document scope", () => {
     expect(calls.some((call) => call.sql.includes("INSERT INTO content_access_grants"))).toBe(true);
   });
 
+  it("refuses selected_users on a research report before writing anything, since no grants exist to inherit", async () => {
+    const { db, calls } = sequentialDb([
+      [{ project_id: "project-1" }],
+      [{ owner_user_id: USER }],
+      [{ type: "personal" }],
+      [{ normalized_text: "fox" }],
+    ]);
+    const repo = new PgAnnotationRepository(db);
+
+    await expect(repo.createAnnotation(identity, {
+      annotation_type: "excerpt",
+      quote_text: "fox",
+      anchor_json: {
+        schema_version: 1,
+        quote_text: "fox",
+        text_range: { start: 0, end: 3, unit: "utf16" },
+        before_context: "",
+        after_context: "",
+      },
+      document_type: "research_report",
+      document_id: "report-1",
+      visibility: "selected_users",
+    })).rejects.toMatchObject({ statusCode: 422 });
+
+    expect(calls.some((call) => call.sql.includes("INSERT INTO reader_annotations"))).toBe(false);
+  });
+
   it("refuses to make an annotation wider than its document", async () => {
     const { db } = sequentialDb([
       [fakeItem({ project_id: "project-document", visibility: "private", access_level: "full" })],
