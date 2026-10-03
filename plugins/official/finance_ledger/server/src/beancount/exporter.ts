@@ -90,8 +90,12 @@ export class BeancountExporter {
 }
 
 function formatBalance(entry: BalanceEntry): string {
-  const tolerance = entry.tolerance ? ` ~ ${entry.tolerance.number.decimal}` : "";
-  return `${entry.date} balance ${entry.account} ${entry.amount.toString()}${tolerance}`;
+  // Beancount's order: `NUMBER ~ TOLERANCE CURRENCY`, so bean-check and Fava
+  // read what this writes.
+  const amount = entry.tolerance
+    ? `${entry.amount.number.decimal} ~ ${entry.tolerance.number.decimal} ${entry.amount.currency}`
+    : entry.amount.toString();
+  return `${entry.date} balance ${entry.account} ${amount}`;
 }
 
 function formatPosting(posting: PostingEntry): string {

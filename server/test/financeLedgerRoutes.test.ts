@@ -167,6 +167,21 @@ describe("finance ledger routes", () => {
       expect.objectContaining({ symbol: "USD" }),
     ]);
 
+    // The book's own currency is registered when the book is made; adding it
+    // again from the commodities panel is a conflict, not a server error.
+    const duplicate = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/commodities`,
+      payload: { symbol: "USD", commodity_type: "currency" },
+    });
+    expect(duplicate.statusCode).toBe(409);
+    const invalid = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/commodities`,
+      payload: { symbol: "usd!", commodity_type: "currency" },
+    });
+    expect(invalid.statusCode).toBe(422);
+
     const close = await app!.inject({
       method: "POST",
       url: `/api/v1/finance/books/${bookId}/accounts/${checkingId}/close`,

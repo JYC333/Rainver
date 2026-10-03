@@ -146,6 +146,25 @@ describe("finance ledger service", () => {
     ).rejects.toThrow("Account is closed");
   });
 
+  it("accepts a posting dated the day the account closes, as its own Beancount check does", async () => {
+    // Validation orders a day's close after its transactions (sort.ts), so an
+    // imported file may move the last balance out on the closing date; the
+    // same entry typed in has to pass too.
+    const { book, checking, groceries } = await createBasicLedger();
+    await financeLedgerService.closeAccount(db.pool, SPACE_A, book.id, checking.id, "2026-07-01", USER_1);
+
+    await expect(
+      financeLedgerService.createTransactionDraft(db.pool, SPACE_A, book.id, USER_1, {
+        date: "2026-07-01",
+        narration: "Closing transfer",
+        postings: [
+          { accountId: checking.id, amount: { number: "-12.50", commoditySymbol: "USD" } },
+          { accountId: groceries.id, amount: { number: "12.50", commoditySymbol: "USD" } },
+        ],
+      }),
+    ).resolves.toBeDefined();
+  });
+
   it("allocates distinct sequences under concurrent same-date entry", async () => {
     const { book, checking, groceries } = await createBasicLedger();
 

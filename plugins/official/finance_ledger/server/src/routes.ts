@@ -300,15 +300,25 @@ export function registerFinanceLedgerRoutes(
       const book = await requireBook(request, identity);
       const body = ctx.http.parseJsonBody(request);
       const commodityType = optionalString(body, "commodity_type");
-      const commodity = await financeLedgerService.createCommodity(db, identity.spaceId, book.id, {
-        symbol: requireString(body, "symbol"),
-        commodityType:
-          commodityType === "currency" || commodityType === "security" || commodityType === "crypto"
-            ? commodityType
-            : "custom",
-        name: optionalString(body, "name"),
-      });
-      reply.code(201).send({ commodity });
+      try {
+        const commodity = await financeLedgerService.createCommodity(db, identity.spaceId, book.id, {
+          symbol: requireString(body, "symbol"),
+          commodityType:
+            commodityType === "currency" || commodityType === "security" || commodityType === "crypto"
+              ? commodityType
+              : "custom",
+          name: optionalString(body, "name"),
+        });
+        reply.code(201).send({ commodity });
+      } catch (err) {
+        if (err instanceof RequestError) throw err;
+        // (book_id, symbol) is unique: the book's own currency is registered
+        // when the book is made, so adding it again is the ordinary case.
+        if (isUniqueViolation(err)) {
+          throw new RequestError(409, "a commodity with that symbol already exists in this book");
+        }
+        throw new RequestError(422, err instanceof Error ? err.message : "invalid commodity");
+      }
     }),
   );
 

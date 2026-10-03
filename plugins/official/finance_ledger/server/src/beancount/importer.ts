@@ -223,6 +223,18 @@ function parseBalance(date: string, tail: string, source: { filename: string; li
   const parts = tail.split(/\s+/).filter(Boolean);
   if (parts.length < 3) throw new Error("balance requires account, number, and currency");
   const account = parts[0]!;
+  // Beancount's `NUMBER ~ TOLERANCE CURRENCY`; the currency-before-tilde
+  // order this plugin used to write is still read, for files it exported.
+  if (parts[2] === "~") {
+    if (parts.length < 5) throw new Error("balance tolerance requires a tolerance number and currency");
+    const currency = parts[4]!;
+    return {
+      type: "balance", date, account,
+      amount: Amount.of(parts[1]!, currency),
+      tolerance: Amount.of(parts[3]!, currency),
+      meta: {}, source,
+    };
+  }
   const amount = Amount.of(parts[1]!, parts[2]!);
   let tolerance: Amount | null = null;
   const toleranceIndex = parts.indexOf("~");

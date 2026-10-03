@@ -114,6 +114,30 @@ describe("finance ledger Beancount import", () => {
     });
   });
 
+  it("reads and writes a balance tolerance in Beancount's order", async () => {
+    // Beancount writes `NUMBER ~ TOLERANCE CURRENCY`. A file from bean-check
+    // or Fava has to import, and what this plugin exports has to parse there.
+    const book = await createBook();
+    const imported = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
+      text: `
+2026-01-01 open Assets:Cash USD
+2026-01-01 open Equity:Opening-Balances
+2026-01-02 pad Assets:Cash Equity:Opening-Balances
+2026-01-03 balance Assets:Cash 100.00 ~ 0.01 USD
+`,
+    });
+    expect(imported.errors).toEqual([]);
+    await financeLedgerService.postImportBatch(db.pool, SPACE_A, book.id, imported.importSourceId!);
+
+    const exported = await financeLedgerService.exportBeancount(db.pool, SPACE_A, book.id, USER_1);
+    expect(exported.content).toContain("2026-01-03 balance Assets:Cash 100.00 ~ 0.01 USD");
+    const reparsed = financeLedgerEngine.loadFromText(exported.content, "roundtrip.beancount");
+    expect(reparsed.errors).toEqual([]);
+    const balance = reparsed.entries.find((entry) => entry.type === "balance");
+    expect(balance).toMatchObject({ amount: { currency: "USD" }, tolerance: { currency: "USD" } });
+    expect(String((balance as { tolerance: { number: { decimal: string } } }).tolerance.number.decimal)).toBe("0.01");
+  });
+
   it("deduplicates identical imports by content hash", async () => {
     const book = await createBook();
     const first = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import {
   createFinancePage,
@@ -192,6 +192,79 @@ describe('FinancePage', () => {
     render(<Page />)
     expect(await screen.findByText('Create your first book to start recording accounts and transactions.')).toBeInTheDocument()
     expect(screen.getByText('+ New book')).toBeInTheDocument()
+  })
+
+  it('shows the failure, not the first-book prompt, when the book list cannot be loaded', async () => {
+    const api = fakeApi({ listBooks: vi.fn().mockRejectedValue(new Error('Finance service unavailable')) })
+    const Page = createFinancePage(makeHost(api))
+    render(<Page />)
+    expect(await screen.findByText('Finance service unavailable')).toBeInTheDocument()
+    expect(screen.queryByText('Create your first book to start recording accounts and transactions.')).not.toBeInTheDocument()
+  })
+
+  it('refreshes the open account ledger after a transaction is posted', async () => {
+    const api = fakeApi()
+    await renderLoadedLedger(api)
+
+    fireEvent.click(screen.getByText('Food'))
+    await screen.findByText('Ledger — Expenses:Food')
+    await waitFor(() => expect(api.getAccountLedger).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByText('+ Transaction'))
+    fireEvent.change(await screen.findByLabelText('Posting 1 account'), { target: { value: 'acc-2' } })
+    fireEvent.change(screen.getByLabelText('Posting 1 amount'), { target: { value: '42.10' } })
+    fireEvent.change(screen.getByLabelText('Posting 2 account'), { target: { value: 'acc-1' } })
+    fireEvent.click(screen.getByText('Post transaction'))
+
+    await waitFor(() => expect(api.createTransaction).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(api.getAccountLedger).toHaveBeenCalledTimes(2))
+    expect(api.getAccountLedger).toHaveBeenLastCalledWith('book-1', 'acc-2')
+  })
+
+  it('shows the ledger of the account selected last, not of a slower earlier request', async () => {
+    let answerFood: (value: { postings: unknown[] }) => void = () => {}
+    const posting = (id: string, accountName: string, amount: string) => ({
+      id, transaction_directive_id: 'dir-1', account_id: 'x', account_name: accountName,
+      amount_text: amount, commodity_symbol: 'USD', price_number_text: null, price_commodity_symbol: null,
+      price_is_total: false, flag: null, sort_order: 0,
+    })
+    const api = fakeApi({
+      getAccountLedger: vi.fn().mockImplementation((_bookId: string, accountId: string) => (
+        accountId === 'acc-2'
+          ? new Promise((resolve) => { answerFood = resolve })
+          : Promise.resolve({ postings: [posting('p-checking', 'Assets:Bank:Checking', '-12.50')] })
+      )),
+    })
+    await renderLoadedLedger(api)
+
+    fireEvent.click(screen.getByText('Food'))
+    await screen.findByText('Ledger — Expenses:Food')
+    fireEvent.click(screen.getByText('招商银行'))
+    await screen.findByText('Ledger — Assets:Bank:Checking')
+    expect(await screen.findByText('-12.50 USD')).toBeInTheDocument()
+
+    answerFood({ postings: [posting('p-food', 'Expenses:Food', '12.50')] })
+    await waitFor(() => expect(api.getAccountLedger).toHaveBeenCalledTimes(2))
+    // The late answer for Food must not replace Checking's rows.
+    expect(screen.getByText('-12.50 USD')).toBeInTheDocument()
+    expect(screen.queryByText('12.50 USD')).not.toBeInTheDocument()
+  })
+
+  it("defaults a new transaction's date to the user's local day, not the UTC day", async () => {
+    const previousTz = process.env.TZ
+    // UTC+8, where 22:30 UTC on the 1st is 06:30 on the 2nd.
+    process.env.TZ = 'Etc/GMT-8'
+    vi.useFakeTimers({ now: new Date('2026-10-01T22:30:00Z'), toFake: ['Date'] })
+    try {
+      const api = fakeApi()
+      await renderLoadedLedger(api)
+      fireEvent.click(screen.getByText('+ Transaction'))
+      expect(await screen.findByLabelText('Date')).toHaveValue('2026-10-02')
+    } finally {
+      vi.useRealTimers()
+      if (previousTz === undefined) delete process.env.TZ
+      else process.env.TZ = previousTz
+    }
   })
 
   it('creates a book with a selected currency and auto-registers it as a commodity', async () => {

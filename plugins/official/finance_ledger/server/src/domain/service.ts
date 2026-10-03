@@ -600,7 +600,9 @@ export class FinanceLedgerService {
     if (account.opened_at > date) {
       throw new Error(`Account is not open yet: ${account.name}`);
     }
-    if (account.closed_at && account.closed_at <= date) {
+    // A day's close sorts after its transactions (sort.ts), so a posting on
+    // the closing date is valid here as it is in the Beancount validation.
+    if (account.closed_at && account.closed_at < date) {
       throw new Error(`Account is closed: ${account.name}`);
     }
     return account;
