@@ -74,6 +74,15 @@ describe('conversation drafts', () => {
     expect(readConversationDraft('room:room-1')).toBeNull()
   })
 
+  it('keeps the stored draft when the current text cannot be sent as written', () => {
+    writeConversationDraft({ destination: 'room:room-1:session-1', text: 'short', input_parts: [] })
+    writeConversationDraft({ destination: 'room:room-1:session-1', text: 'x'.repeat(8001), input_parts: [] })
+    expect(readConversationDraft('room:room-1:session-1')?.text).toBe('short')
+
+    writeConversationDraft({ destination: 'room:room-1:session-1', text: '   ', input_parts: [] })
+    expect(readConversationDraft('room:room-1:session-1')).toBeNull()
+  })
+
   it('clears after a successful send', () => {
     writeConversationDraft({ destination: 'direct:agent-1:project-1:new', text: 'send me', input_parts: [] })
     clearConversationDraft('direct:agent-1:project-1:new')

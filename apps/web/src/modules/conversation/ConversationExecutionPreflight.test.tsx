@@ -271,6 +271,31 @@ describe('ConversationExecutionPreflight', () => {
     })))
   })
 
+  it('reports an Agent with several CLIs as ready once one is chosen', async () => {
+    const multiDetail = {
+      ...detail,
+      agent_members: [
+        { role: 'manager', agent_id: 'agent-1', agent_name: 'Project Agent' },
+        { role: 'specialist', agent_id: 'agent-2', agent_name: 'Research Agent' },
+      ],
+    } as unknown as RoomDetail
+    const base = draftResponse().available_runtime_profiles[0]
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
+      ...draftResponse(),
+      available_runtime_profiles: [
+        base,
+        { ...base, agent_id: 'agent-2', agent_name: 'Research Agent', runtime_profile_id: 'runtime-research', preferred: false },
+        { ...base, agent_id: 'agent-2', agent_name: 'Research Agent', runtime_profile_id: 'runtime-research-backup', runtime_key: 'codex_cli', runtime_installation: 'codex', preferred: false },
+      ],
+    } as never)
+    renderPanel('session-1', vi.fn(), multiDetail)
+    await screen.findByText('choose one runtime')
+    fireEvent.click(screen.getByRole('button', { name: 'CLI installation for Research Agent' }))
+    fireEvent.click(screen.getByRole('option', { name: /codex_cli/ }))
+    await waitFor(() => expect(screen.getAllByText('runtime ready')).toHaveLength(2))
+    expect(screen.queryByText('choose one runtime')).not.toBeInTheDocument()
+  })
+
   it('blocks a draft with no reported CLI and keeps the Host recovery action visible', async () => {
     vi.mocked(sessionsApi.executionContext).mockResolvedValue({
       ...draftResponse(), available_runtime_profiles: [],

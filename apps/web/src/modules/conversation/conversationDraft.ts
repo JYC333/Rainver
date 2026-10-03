@@ -54,11 +54,15 @@ export function writeConversationDraft(
   storage: Storage | null = safeSessionStorage(),
 ): void {
   if (!storage || !draft.destination.trim()) return
-  const input = ConversationMessageInputSchema.safeParse({ text: draft.text, input_parts: draft.input_parts })
-  if (!input.success || (!input.data.text && input.data.input_parts.length === 0)) {
+  if (!draft.text.trim() && draft.input_parts.length === 0) {
     clearConversationDraft(draft.destination, storage)
     return
   }
+  // Text that cannot be sent as written (over the length cap, too many
+  // attachments) is still what the person is working on: leave the last
+  // sendable draft in place rather than deleting it.
+  const input = ConversationMessageInputSchema.safeParse({ text: draft.text, input_parts: draft.input_parts })
+  if (!input.success) return
   try {
     storage.setItem(storageKey(draft.destination), JSON.stringify({
       version: CONVERSATION_DRAFT_VERSION,

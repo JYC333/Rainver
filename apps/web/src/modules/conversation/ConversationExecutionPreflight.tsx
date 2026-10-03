@@ -439,15 +439,14 @@ export function ConversationExecutionPreflight({
           <div className="rounded border border-border bg-muted/20 px-2 py-1.5 text-xs">
             <span className="font-medium">Agents</span>
             <div className="mt-1 space-y-1">
-              {participantChoices.map(({ member, options, selectedId }) => {
-                const usable = options.filter(profile => profile.usable).length
-                return <div key={member.agent_id} className="flex items-center justify-between gap-2">
+              {participantChoices.map(({ member, options, selected }) => (
+                <div key={member.agent_id} className="flex items-center justify-between gap-2">
                   <span className="min-w-0 flex-1">{member.agent_name}{member.role === 'manager' ? ' · manager' : ''}</span>
-                  <span className={usable === 1 && Boolean(selectedId) ? 'text-muted-foreground' : 'text-destructive'}>
-                    {usable === 1 && selectedId ? 'runtime ready' : usable === 0 ? 'runtime unavailable' : 'choose one runtime'}
+                  <span className={selected ? 'text-muted-foreground' : 'text-destructive'}>
+                    {selected ? 'runtime ready' : options.length === 0 ? 'runtime unavailable' : 'choose one runtime'}
                   </span>
                 </div>
-              })}
+              ))}
               {participantChoices.length === 0 && (
                 <span className="text-destructive">Project Agent setup is pending; configure a usable backend and retry.</span>
               )}

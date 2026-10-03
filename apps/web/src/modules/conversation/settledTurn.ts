@@ -21,13 +21,17 @@ export function settledTurn(
 ): RunTurn | null {
   if (!streamed) return null
   const steps = streamed.parts.filter(part => part.type !== 'text')
+  // Steps keep their stream positions (a host turn interleaves text with
+  // them), so the reply takes the first index above every kept step rather
+  // than `steps.length`, which can land on a step and double a React key.
+  const textIndex = steps.reduce((max, part) => Math.max(max, part.index), -1) + 1
   return {
     ...streamed,
     state,
     // Only a settled turn has nothing left to wait on. A blocked one keeps
     // what it is blocked on, because that is what names the link out.
     blocked_on: state === 'blocked' ? streamed.blocked_on : null,
-    parts: [...steps, { type: 'text', index: steps.length, text }],
+    parts: [...steps, { type: 'text', index: textIndex, text }],
   }
 }
 
