@@ -308,6 +308,35 @@ describe("information digest persistence", () => {
     expect((await db.pool.query(`SELECT status FROM source_item_annotations WHERE source_item_id=$1`, [id])).rows).toEqual([{ status: "pending" }]);
   });
 
+  it("backfills the most recent subscribed history first, whatever the item ids sort like", async () => {
+    if (!db.available) return;
+    // Ids sort the other way round from recency, so a LIMIT applied in id
+    // order would pick the older item.
+    const older = { id: "00000000-0000-4000-8000-00000000aaaa", at: `${DATE}T01:00:00.000Z` };
+    const newer = { id: "ffffffff-ffff-4fff-8fff-ffffffffffff", at: `${DATE}T05:00:00.000Z` };
+    for (const item of [older, newer]) {
+      await db.pool.query(
+        `INSERT INTO source_items
+           (id,space_id,owner_user_id,visibility,connection_id,item_type,title,source_uri,occurred_at,
+            first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+         VALUES ($1,$2,$3,'space_shared',$4,'feed_entry','Historical',$5,$6,$6,$6,'excerpt_saved','summary_only',$6,$6)`,
+        [item.id, SPACE, OWNER, CONNECTION, `https://example.test/history/${item.id}`, item.at],
+      );
+      await db.pool.query(
+        `INSERT INTO source_channel_item_links (id,space_id,source_channel_id,source_item_id,status,matched_at,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'active',$5,$5,$5)`,
+        [randomUUID(), SPACE, CHANNEL, item.id, item.at],
+      );
+    }
+
+    const repo = new PgSourceAnnotationRepository(db.pool);
+    expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(1);
+    expect((await db.pool.query(`SELECT source_item_id FROM source_item_annotations WHERE space_id=$1`, [SPACE])).rows)
+      .toEqual([{ source_item_id: newer.id }]);
+    expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(1);
+    expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(0);
+  });
+
   it("selects personal and Project candidates by UTC day regardless of the database session timezone", async () => {
     if (!db.available) return;
     const personalItem = await seedItem({ title: "UTC personal", hour: 1 });

@@ -107,7 +107,11 @@ export class SourceAnnotationService {
       throw error;
     }
     if (allowedItemIds.length === 0) {
-      return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: itemIds.length, failed: 0, run_id: null, status: "blocked", reason: "source_egress_denied" };
+      // Every item was parked as skipped, so the queue moved on: this is a
+      // batch that made progress, not a space that cannot proceed. Reporting it
+      // as blocked ended the job here and left the next batch — items from
+      // sources that do allow egress — to the next sweep.
+      return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: itemIds.length, failed: 0, run_id: null, status: "ok", reason: "source_egress_denied" };
     }
     const allowed = new Set(allowedItemIds);
     const promptItems: AnnotationPromptItem[] = batch

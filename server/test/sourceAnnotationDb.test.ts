@@ -356,6 +356,26 @@ describe("annotation service", () => {
     expect(prompt.rows[0]?.system_prompt).toContain(`matching schema ${SOURCE_ANNOTATION_SCHEMA_ID}.`);
   });
 
+  it("moves on past a batch every source of which refused egress, instead of stopping the space", async () => {
+    if (!db.available) return;
+    const itemId = await seedItem();
+    await repo().enqueueItems(SPACE, [itemId], CHANNEL);
+    await ensureSourceAnnotatorAgent(db.pool, SPACE);
+    await db.pool.query(
+      `UPDATE source_connections
+          SET consent_json = consent_json || '{"allow_local_provider_egress": false, "allow_external_model_egress": false}'::jsonb
+        WHERE id = $1`,
+      [CONNECTION],
+    );
+
+    const result = await service().annotatePendingBatch(SPACE);
+
+    // The refused items left the queue as skipped, so this batch made progress
+    // and the job may take the next one; `blocked` is for a space that cannot.
+    expect(result).toMatchObject({ status: "ok", skipped: 1, annotated: 0, failed: 0, reason: "source_egress_denied" });
+    expect(await repo().getByItemId(SPACE, itemId)).toMatchObject({ status: "skipped" });
+  });
+
   it("keeps items queued when the egress check fails for a reason other than a denial", async () => {
     if (!db.available) return;
     const itemId = await seedItem();
