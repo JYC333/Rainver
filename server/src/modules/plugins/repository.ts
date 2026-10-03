@@ -55,7 +55,20 @@ interface PatchSettingsInput {
   userId: string | null;
   pluginId: string;
   settings: Record<string, unknown>;
+  /** The enabled state a row created by this patch starts in (the plugin's default). */
+  defaultEnabled: boolean;
   actorUserId: string;
+}
+
+/**
+ * The conflict target for the scope's partial unique index, so an INSERT that
+ * races another first write of the same scope updates that row instead of
+ * failing on the index.
+ */
+function scopeConflictTarget(spaceId: string | null): string {
+  return spaceId != null
+    ? "ON CONFLICT (plugin_id, space_id) WHERE space_id IS NOT NULL AND user_id IS NULL"
+    : "ON CONFLICT (plugin_id, user_id) WHERE space_id IS NULL AND user_id IS NOT NULL";
 }
 
 interface UpsertInstallInput {
@@ -203,33 +216,37 @@ export const pluginRepository = {
     const settings = input.settings === undefined ? null : JSON.stringify(input.settings);
     const visible = input.visible ?? null;
 
-    const existing = await this.findEnablement(
-      db,
-      input.pluginId,
-      input.spaceId,
-      input.userId,
-    );
-
-    if (existing) {
-      const sql = `
-        UPDATE official_plugin_enablements
-        SET enabled = $1,
-            visible = COALESCE($2, visible),
-            settings_json = CASE WHEN $3::jsonb IS NOT NULL
-                                 THEN $3::jsonb
-                                 ELSE settings_json END,
-            enabled_at = CASE WHEN $1 THEN $4::timestamptz
-                              ELSE enabled_at END,
-            enabled_by_user_id = CASE WHEN $1 THEN $5
-                                      ELSE enabled_by_user_id END,
-            disabled_at = CASE WHEN NOT $1 THEN $6::timestamptz
-                               ELSE disabled_at END,
-            disabled_by_user_id = CASE WHEN NOT $1 THEN $7
-                                       ELSE disabled_by_user_id END,
-            updated_at = $8::timestamptz
-        WHERE id = $9
-        RETURNING *`;
-      const result = await db.query<PluginEnablementRow>(sql, [
+    // One statement for create and update: a SELECT-then-INSERT let two first
+    // writes of the same scope both miss the row and the loser fail on the
+    // unique index. On conflict the existing row keeps whatever this write
+    // does not set (visibility, settings, the other state's timestamps).
+    const result = await db.query<PluginEnablementRow>(
+      `INSERT INTO official_plugin_enablements
+         (id, space_id, user_id, plugin_id, enabled, visible, settings_json,
+          enabled_at, enabled_by_user_id, disabled_at, disabled_by_user_id,
+          created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6, true), COALESCE($7::jsonb, '{}'::jsonb),
+               $8::timestamptz, $9, $10::timestamptz, $11,
+               $12::timestamptz, $12::timestamptz)
+       ${scopeConflictTarget(input.spaceId)} DO UPDATE
+       SET enabled = EXCLUDED.enabled,
+           visible = COALESCE($6, official_plugin_enablements.visible),
+           settings_json = COALESCE($7::jsonb, official_plugin_enablements.settings_json),
+           enabled_at = CASE WHEN EXCLUDED.enabled THEN EXCLUDED.enabled_at
+                             ELSE official_plugin_enablements.enabled_at END,
+           enabled_by_user_id = CASE WHEN EXCLUDED.enabled THEN EXCLUDED.enabled_by_user_id
+                                     ELSE official_plugin_enablements.enabled_by_user_id END,
+           disabled_at = CASE WHEN NOT EXCLUDED.enabled THEN EXCLUDED.disabled_at
+                              ELSE official_plugin_enablements.disabled_at END,
+           disabled_by_user_id = CASE WHEN NOT EXCLUDED.enabled THEN EXCLUDED.disabled_by_user_id
+                                      ELSE official_plugin_enablements.disabled_by_user_id END,
+           updated_at = EXCLUDED.updated_at
+       RETURNING *`,
+      [
+        randomUUID(),
+        input.spaceId,
+        input.userId,
+        input.pluginId,
         input.enabled,
         visible,
         settings,
@@ -238,43 +255,8 @@ export const pluginRepository = {
         disabledAt,
         disabledBy,
         now,
-        existing.id,
-      ]);
-      await this.insertEvent(db, {
-        spaceId: input.spaceId,
-        pluginId: input.pluginId,
-        eventType: input.enabled ? "enabled" : "disabled",
-        actorUserId: input.actorUserId,
-        targetUserId: input.userId,
-      });
-      return result.rows[0]!;
-    }
-
-    const id = randomUUID();
-    const sql = `
-      INSERT INTO official_plugin_enablements
-        (id, space_id, user_id, plugin_id, enabled, visible, settings_json,
-         enabled_at, enabled_by_user_id, disabled_at, disabled_by_user_id,
-         created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb,
-              $8::timestamptz, $9, $10::timestamptz, $11,
-              $12::timestamptz, $13::timestamptz)
-      RETURNING *`;
-    const result = await db.query<PluginEnablementRow>(sql, [
-      id,
-      input.spaceId,
-      input.userId,
-      input.pluginId,
-      input.enabled,
-      input.visible ?? true,
-      settings ?? "{}",
-      enabledAt,
-      enabledBy,
-      disabledAt,
-      disabledBy,
-      now,
-      now,
-    ]);
+      ],
+    );
     await this.insertEvent(db, {
       spaceId: input.spaceId,
       pluginId: input.pluginId,
@@ -285,31 +267,36 @@ export const pluginRepository = {
     return result.rows[0]!;
   },
 
+  /**
+   * Merges `settings` into the scope's row, creating the row in the plugin's
+   * default enabled state when there is none yet (settings may be configured
+   * before a plugin is enabled). The merge happens in SQL so two concurrent
+   * patches of different keys both land; a row this patch creates carries no
+   * enabled/disabled stamps, since nobody toggled it.
+   */
   async patchSettings(
     db: Queryable,
     input: PatchSettingsInput,
-  ): Promise<PluginEnablementRow | null> {
-    const existing = await this.findEnablement(
-      db,
-      input.pluginId,
-      input.spaceId,
-      input.userId,
-    );
-    if (!existing) return null;
-
-    const mergedSettings = { ...existing.settings_json, ...input.settings };
+  ): Promise<PluginEnablementRow> {
     const now = new Date().toISOString();
-    const sql = `
-      UPDATE official_plugin_enablements
-      SET settings_json = $1::jsonb,
-          updated_at = $2::timestamptz
-      WHERE id = $3
-      RETURNING *`;
-    const result = await db.query<PluginEnablementRow>(sql, [
-      JSON.stringify(mergedSettings),
-      now,
-      existing.id,
-    ]);
+    const result = await db.query<PluginEnablementRow>(
+      `INSERT INTO official_plugin_enablements
+         (id, space_id, user_id, plugin_id, enabled, visible, settings_json, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, true, $6::jsonb, $7::timestamptz, $7::timestamptz)
+       ${scopeConflictTarget(input.spaceId)} DO UPDATE
+       SET settings_json = official_plugin_enablements.settings_json || EXCLUDED.settings_json,
+           updated_at = EXCLUDED.updated_at
+       RETURNING *`,
+      [
+        randomUUID(),
+        input.spaceId,
+        input.userId,
+        input.pluginId,
+        input.defaultEnabled,
+        JSON.stringify(input.settings),
+        now,
+      ],
+    );
     await this.insertEvent(db, {
       spaceId: input.spaceId,
       pluginId: input.pluginId,
@@ -318,7 +305,7 @@ export const pluginRepository = {
       targetUserId: input.userId,
       metadata: { keys_patched: Object.keys(input.settings) },
     });
-    return result.rows[0] ?? null;
+    return result.rows[0]!;
   },
 
   async insertEvent(

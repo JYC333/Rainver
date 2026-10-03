@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 import {
   listOfficialPlugins,
   getOfficialPlugin,
@@ -500,6 +501,64 @@ describe("pluginService.patchSettings", () => {
     );
     expect(result.effective.settings.include_in_context).toBe(true);
     expect(result.effective.has_row).toBe(true);
+  });
+
+  it("records pre-configuring a plugin nobody toggled as a settings update, not a disable", async () => {
+    await pluginService.patchSettings(db, DIARY_PLUGIN_ID, SPACE_A, USER_1, { include_in_context: true });
+    const row = await testDb.pool.query<{ enabled: boolean; disabled_at: string | null; disabled_by_user_id: string | null }>(
+      "SELECT enabled, disabled_at, disabled_by_user_id FROM official_plugin_enablements WHERE plugin_id = $1",
+      [DIARY_PLUGIN_ID],
+    );
+    expect(row.rows).toEqual([{ enabled: false, disabled_at: null, disabled_by_user_id: null }]);
+    const events = await testDb.pool.query<{ event_type: string }>(
+      "SELECT event_type FROM official_plugin_events WHERE plugin_id = $1 ORDER BY created_at",
+      [DIARY_PLUGIN_ID],
+    );
+    expect(events.rows).toEqual([{ event_type: "settings_updated" }]);
+  });
+
+  it("keeps both keys when two settings patches overlap", async () => {
+    await installDiary();
+    await pluginService.enablePlugin(db, DIARY_PLUGIN_ID, SPACE_A, USER_1, {});
+    const first = await testDb.pool.connect();
+    try {
+      await first.query("BEGIN");
+      await pluginService.patchSettings(first, DIARY_PLUGIN_ID, SPACE_A, USER_1, { daily_reminder_enabled: true });
+      let settled = false;
+      const second = pluginService
+        .patchSettings(db, DIARY_PLUGIN_ID, SPACE_A, USER_1, { ai_reflection_enabled: true })
+        .finally(() => { settled = true; });
+      await waitForLockWaiter(testDb.pool, { settled: () => settled });
+      await first.query("COMMIT");
+      const result = await second;
+      expect(result.effective.settings).toMatchObject({ daily_reminder_enabled: true, ai_reflection_enabled: true });
+    } finally {
+      await first.query("ROLLBACK").catch(() => undefined);
+      first.release();
+    }
+  });
+});
+
+describe("pluginService first-write concurrency", () => {
+  it("lets two first enables of the same scope both succeed", async () => {
+    await installDiary();
+    const first = await testDb.pool.connect();
+    try {
+      await first.query("BEGIN");
+      await pluginService.enablePlugin(first, DIARY_PLUGIN_ID, SPACE_A, USER_1, {});
+      let settled = false;
+      const second = pluginService
+        .enablePlugin(db, DIARY_PLUGIN_ID, SPACE_A, USER_1, {})
+        .finally(() => { settled = true; });
+      await waitForLockWaiter(testDb.pool, { settled: () => settled });
+      await first.query("COMMIT");
+      await expect(second).resolves.toMatchObject({ effective: { enabled: true } });
+    } finally {
+      await first.query("ROLLBACK").catch(() => undefined);
+      first.release();
+    }
+    const rows = await testDb.pool.query("SELECT 1 FROM official_plugin_enablements WHERE plugin_id = $1", [DIARY_PLUGIN_ID]);
+    expect(rows.rowCount).toBe(1);
   });
 });
 

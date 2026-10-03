@@ -189,21 +189,9 @@ export const pluginService = {
       userId: scopeUserId,
       pluginId,
       settings,
+      defaultEnabled: descriptor.default_enabled,
       actorUserId: userId,
     });
-
-    if (!row) {
-      const created = await pluginRepository.upsertEnablement(db, {
-        spaceId: scopeSpaceId,
-        userId: scopeUserId,
-        pluginId,
-        enabled: descriptor.default_enabled,
-        settings,
-        actorUserId: userId,
-      });
-      const install = await pluginRepository.findInstall(db, pluginId);
-      return { descriptor, effective: rowToEffective(descriptor, created, install) };
-    }
 
     const install = await pluginRepository.findInstall(db, pluginId);
     return { descriptor, effective: rowToEffective(descriptor, row, install) };
