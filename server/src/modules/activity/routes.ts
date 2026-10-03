@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -53,6 +53,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (upload.file.length > MAX_UPLOAD_BYTES) {
         throw new HttpError(413, `file exceeds ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit`);
       }
+      // Everything the request can be refused for comes before the file
+      // reaches disk; a refused upload left a file no record pointed at.
+      const kind = (upload.fields.kind || "file").toLowerCase();
+      if (kind !== "file" && kind !== "voice") throw new HttpError(422, "kind must be 'file' or 'voice'");
       const originalName = basename(upload.filename || "");
       const creation = await resolveContentCreationContext(dbPool(context.config), {
         userId: identity.userId,
@@ -63,9 +67,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const storedName = `${randomUUID().replace(/-/g, "")}${ext}`;
       const dir = join(context.config.rainverHome, "storage", "uploads", creation.spaceId);
       await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, storedName), upload.file);
-      const kind = (upload.fields.kind || "file").toLowerCase();
-      if (kind !== "file" && kind !== "voice") throw new HttpError(422, "kind must be 'file' or 'voice'");
+      const storedPath = join(dir, storedName);
+      await writeFile(storedPath, upload.file);
       const contentType = upload.contentType || "application/octet-stream";
       const title =
         upload.fields.title ||
@@ -76,19 +79,27 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         (kind === "voice"
           ? `Voice capture (${contentType}, ${upload.file.length} bytes)`
           : `File capture: ${originalName || storedName} (${contentType}, ${upload.file.length} bytes)`);
-      const out = await repository().create({ spaceId: creation.spaceId, userId: identity.userId }, applyContentCreationContext({
-        source_type: kind === "voice" ? "voice_capture" : "file_capture",
-        content,
-        title,
-        project_folder_id: upload.fields.project_folder_id,
-        metadata_json: {
-          capture_kind: kind,
-          filename: originalName || null,
-          mime_type: contentType,
-          size_bytes: upload.file.length,
-          stored_path: `${creation.spaceId}/${storedName}`,
-        },
-      }, creation));
+      let out: Awaited<ReturnType<ReturnType<typeof repository>["create"]>>;
+      try {
+        out = await repository().create({ spaceId: creation.spaceId, userId: identity.userId }, applyContentCreationContext({
+          source_type: kind === "voice" ? "voice_capture" : "file_capture",
+          content,
+          title,
+          project_folder_id: upload.fields.project_folder_id,
+          metadata_json: {
+            capture_kind: kind,
+            filename: originalName || null,
+            mime_type: contentType,
+            size_bytes: upload.file.length,
+            stored_path: `${creation.spaceId}/${storedName}`,
+          },
+        }, creation));
+      } catch (error) {
+        // The record is what makes the file reachable; without it the file
+        // would stay on disk with nothing to clean it up.
+        await unlink(storedPath).catch(() => undefined);
+        throw error;
+      }
       return reply.send(out);
     } catch (error) {
       return sendRouteError(reply, error);

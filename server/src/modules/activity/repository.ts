@@ -161,6 +161,8 @@ export const TRUST_BY_SOURCE_TYPE: Record<string, string> = {
   source: "internal_system",
 };
 
+const CONSOLIDATABLE_STATUSES = new Set(["raw", "processed"]);
+
 export class PgActivityRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -301,6 +303,12 @@ export class PgActivityRepository {
     if (activity.aggregate_key) {
       throw new HttpError(422, "Activity pointer records cannot be consolidated");
     }
+    // Only unprocessed material is consolidated: a record that already has
+    // its proposals would get a second set, and an archived one would be
+    // pulled back into the inbox by the status write below.
+    if (!CONSOLIDATABLE_STATUSES.has(activity.status)) {
+      throw new HttpError(409, `Activity record is ${activity.status}; only raw or processed records can be consolidated`);
+    }
     if (!activity.content || !activity.content.trim()) {
       throw new HttpError(422, "Activity record has no content to consolidate");
     }
@@ -329,8 +337,8 @@ export class PgActivityRepository {
           SET status = 'proposals_generated',
               processed_at = $3,
               updated_at = $3
-        WHERE id = $1 AND space_id = $2`,
-      [activity.id, identity.spaceId, now],
+        WHERE id = $1 AND space_id = $2 AND status = ANY($4::text[])`,
+      [activity.id, identity.spaceId, now, [...CONSOLIDATABLE_STATUSES]],
     );
     return [proposal];
   }
