@@ -157,12 +157,17 @@ export function CodeMirrorEditor({
     })
     const view = new EditorView({ state, parent: host.current })
     viewRef.current = view
+    // The language arrives asynchronously, so a view rebuilt for a read-only
+    // switch starts without it; the language effect below only runs when the
+    // language itself changes.
+    applyLanguage(view, language)
     return () => {
       view.destroy()
       viewRef.current = null
     }
-    // The document is intentionally read only during construction. Changes
-    // are synchronized below without recreating the view on every keystroke.
+    // The document and language are intentionally read only during
+    // construction. Changes are synchronized below without recreating the
+    // view on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readOnly, ariaLabel])
 
@@ -185,16 +190,17 @@ export function CodeMirrorEditor({
   }, [indent])
 
   useEffect(() => {
-    let cancelled = false
     const view = viewRef.current
-    if (!view) return
-    void loadLanguage(language).then(extension => {
-      if (!cancelled && viewRef.current === view) {
-        view.dispatch({ effects: languageCompartment.current.reconfigure(extension) })
-      }
-    })
-    return () => { cancelled = true }
+    if (view) applyLanguage(view, language)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [language])
+
+  function applyLanguage(view: EditorView, next: CodeMirrorLanguage) {
+    void loadLanguage(next).then(extension => {
+      // Only the view that asked, and only while it is still the one shown.
+      if (viewRef.current === view) view.dispatch({ effects: languageCompartment.current.reconfigure(extension) })
+    })
+  }
 
   return <div ref={host} className={['h-full min-h-0 w-full', className].filter(Boolean).join(' ')} />
 }

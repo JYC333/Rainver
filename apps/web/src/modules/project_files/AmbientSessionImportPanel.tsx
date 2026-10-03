@@ -48,11 +48,13 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
       setPolicy(offer.policy)
       setCounts(offer.counts)
       setSessions(listed.sessions)
+      // The stored default is the one a background sync reads, so it wins
+      // over a choice this panel still holds.
       setVisibility(current => ({
+        ...current,
         ...Object.fromEntries(
           offer.policy.entries.map(entry => [`${entry.runtime_key}:${entry.installation}`, entry.default_visibility]),
         ),
-        ...current,
       }))
     } catch (error) {
       toast.error(errMsg(error))
@@ -61,11 +63,15 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
     }
   }, [location.id])
 
-  useEffect(() => { void load() }, [load])
-
   // A server-host checkout runs managed profiles and has no ambient history
-  // at all, so the whole surface is absent there rather than empty.
-  if (location.execution_host_kind !== 'remote') return null
+  // at all, so the whole surface is absent there rather than empty — and it
+  // is not asked, since the server answers that question with a 422.
+  const remote = location.execution_host_kind === 'remote'
+  useEffect(() => {
+    if (remote) void load()
+  }, [load, remote])
+
+  if (!remote) return null
 
   const runtimes = countedRuntimes(counts, policy)
   const visibilityFor = (runtimeKey: string, installation: string): 'private' | 'space_shared' =>
@@ -89,6 +95,7 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
     sync: boolean,
   ) {
     const key = `${runtimeKey}:${installation}`
+    const previous = visibilityFor(runtimeKey, installation)
     setVisibility(current => ({ ...current, [key]: next }))
     setBusy(key)
     try {
@@ -100,6 +107,9 @@ export function AmbientSessionImportPanel({ location }: { location: WorkspaceLoc
         auto_extract: autoExtractFor(runtimeKey, installation),
       }))
     } catch (error) {
+      // Not recorded, so not chosen: the control goes back to what is stored,
+      // or "Import now" would import under a visibility the next sync ignores.
+      setVisibility(current => ({ ...current, [key]: previous }))
       toast.error(errMsg(error))
     } finally {
       setBusy(null)
