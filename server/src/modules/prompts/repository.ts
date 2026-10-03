@@ -12,7 +12,7 @@ import {
 } from "../evolution/assetAccess.js";
 import { EvolvableAssetEvaluationRepository } from "../evolution/assetEvaluationRepository.js";
 import { EvolvableAssetRepository } from "../evolution/assetRepository.js";
-import { HttpError, objectValue, optionalObject, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, objectValue, optionalObject, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { sha256Json } from "./hash.js";
 import { missingRequiredVariables, renderPromptMessages, renderPromptTemplate } from "./renderer.js";
 
@@ -209,7 +209,10 @@ export class PromptRepository {
     if (!version) throw new HttpError(422, "version_id does not reference a version of this prompt asset");
     validateVersionForDeployment(identity, normalized, scope.scopeType, scope.scopeId, version);
     const proposalId = optionalString(body.promoted_from_proposal_id);
-    if (normalized === "production") {
+    // Production requires a proposal; any label that names one must name an
+    // accepted promotion proposal for this deployment, or the ref's foreign
+    // key would refuse it after the current ref had already been archived.
+    if (normalized === "production" || proposalId) {
       await this.assertAcceptedPromotionProposal(identity, row.id, versionId, scope.scopeType, scope.scopeId, normalized, proposalId);
     }
     return this.insertDeploymentRef(identity, row.id, scope.scopeType, scope.scopeId, normalized, versionId, proposalId);
@@ -335,25 +338,29 @@ export class PromptRepository {
     );
     if (existing.rows[0]) return deploymentRefOut(existing.rows[0]);
 
-    await this.db.query(
-      `UPDATE prompt_deployment_refs
-          SET status = 'archived', updated_at = $6
-        WHERE asset_id = $1
-          AND scope_type = $2
-          AND scope_id IS NOT DISTINCT FROM $3
-          AND label = $4
-          AND status = 'active'
-          AND space_id IS NOT DISTINCT FROM $5`,
-      [assetId, scopeType, scopeId, label, spaceId, now],
-    );
+    // Archive and insert together: an insert refused after the archive had
+    // committed left the label with no active ref at all.
     const id = randomUUID();
-    await this.db.query(
-      `INSERT INTO prompt_deployment_refs (
-         id, space_id, asset_id, scope_type, scope_id, label, version_id, status,
-         promoted_by_user_id, promoted_from_proposal_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10, $10)`,
-      [id, spaceId, assetId, scopeType, scopeId, label, versionId, identity.userId, proposalId, now],
-    );
+    await withQueryableTransaction(this.db, async (db) => {
+      await db.query(
+        `UPDATE prompt_deployment_refs
+            SET status = 'archived', updated_at = $6
+          WHERE asset_id = $1
+            AND scope_type = $2
+            AND scope_id IS NOT DISTINCT FROM $3
+            AND label = $4
+            AND status = 'active'
+            AND space_id IS NOT DISTINCT FROM $5`,
+        [assetId, scopeType, scopeId, label, spaceId, now],
+      );
+      await db.query(
+        `INSERT INTO prompt_deployment_refs (
+           id, space_id, asset_id, scope_type, scope_id, label, version_id, status,
+           promoted_by_user_id, promoted_from_proposal_id, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10, $10)`,
+        [id, spaceId, assetId, scopeType, scopeId, label, versionId, identity.userId, proposalId, now],
+      );
+    });
     const result = await this.db.query<DeploymentRefRow>(`SELECT ${DEPLOYMENT_REF_COLUMNS} FROM prompt_deployment_refs WHERE id = $1`, [id]);
     const row = result.rows[0];
     if (!row) throw new HttpError(500, "Failed to set prompt deployment ref");

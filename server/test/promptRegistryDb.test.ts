@@ -84,6 +84,21 @@ async function approvedVersion(assetId: string, content: Record<string, unknown>
 }
 
 describe("Prompt registry facade (real Postgres)", () => {
+  it("keeps the current staging ref when a deployment names a proposal that does not exist", async () => {
+    if (!db.available) return;
+    const asset = await createPromptAsset("test.staging_proposal", "text");
+    const v1 = await approvedVersion(asset.id as string, { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v1" });
+    const v2 = await approvedVersion(asset.id as string, { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v2" });
+    await repo().setDeployment(identity, "test.staging_proposal", "staging", { scope_type: "space", version_id: v1 });
+
+    await expect(repo().setDeployment(identity, "test.staging_proposal", "staging", {
+      scope_type: "space", version_id: v2, promoted_from_proposal_id: randomUUID(),
+    })).rejects.toMatchObject({ statusCode: 422 });
+
+    const active = await repo().listDeployments(identity, "test.staging_proposal");
+    expect(active.map((ref) => [ref.label, ref.version_id])).toEqual([["staging", v1]]);
+  });
+
   it("hides generic evolvable_assets rows that have no prompt_type marker", async () => {
     if (!db.available) return;
     await evolvableRepo().createAsset(identity, {
