@@ -374,6 +374,35 @@ describe("Runtime Context common planner", () => {
     });
   });
 
+  it("keeps the newest turns of trimmed continuity, ahead of an equally ranked hit", () => {
+    const current = currentMessage("now");
+    const continuity = item({
+      id: "continuity", acquisition: "continuity", rank: 1,
+      text: `${"old ".repeat(200)}newest turn`,
+    });
+    // Whatever the ids' order, the conversation is placed before the hit.
+    const hits = ["hit-a", "hit-b", "hit-c", "hit-d", "hit-e", "hit-f"]
+      .map((id) => item({ id, text: "h".repeat(200), acquisition: "retrieval", rank: 1 }));
+    const hit = hits.find((candidate) => candidate.id.localeCompare(continuity.id) < 0)!;
+    const result = new ContextWindowPlanner().plan({
+      model: "custom-small",
+      modelWindowOverride: {
+        contextWindowTokens: 100,
+        defaultOutputReserveTokens: 8,
+        providerOverheadTokens: 8,
+        catalogVersion: "test-catalog.v1",
+      },
+      items: [current, hit, continuity],
+      currentMessageItemId: current.id,
+    });
+
+    const decided = (id: string) => result.windowPlan.decisions.find((decision) => decision.item_id === id);
+    expect(decided(continuity.id)?.decision).toBe("trimmed");
+    const trimmed = result.items.find((candidate) => candidate.id === continuity.id)!;
+    expect(contextItemText(trimmed).endsWith("old newest turn")).toBe(true);
+    expect(decided(hit.id)?.decision).toBe("blocked");
+  });
+
   it("blocks a ranked item once the window is spent", () => {
     // 20 - 5 reserved - 4 overhead = 11, of which the planner fills 90 %: 9.
     const current = currentMessage("x".repeat(36));

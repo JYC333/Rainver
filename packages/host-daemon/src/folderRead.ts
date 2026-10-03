@@ -14,7 +14,7 @@ import {
 } from "@rainver/folder-read";
 import { sanitizeFailure } from "./ambientRedaction.js";
 
-export type FolderReadKind = ProtocolFolderReadKind;
+type FolderReadKind = ProtocolFolderReadKind;
 
 export interface FolderReadRequest {
   request_id: string;
@@ -30,7 +30,7 @@ export type FolderReadResult =
   | { type: "folder_read_result"; request_id: string; ok: true; kind: FolderReadKind; result: FileNode | FileContent | GitStatus | GitDiff }
   | { type: "folder_read_result"; request_id: string; ok: false; error: FolderReadErrorCode; message?: string };
 
-export type FolderReadErrorCode = FolderReadDaemonError;
+type FolderReadErrorCode = FolderReadDaemonError;
 
 export class FolderReadFrameError extends Error {
   constructor(readonly code: FolderReadErrorCode, message: string) {

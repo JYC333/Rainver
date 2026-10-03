@@ -131,7 +131,11 @@ export default function HostAgentRow({
           const accountSummary = multiAccount
             ? accounts.length === 0 ? 'no accounts' : `${accounts.length} account${accounts.length === 1 ? '' : 's'}`
             : null
-          const canLogout = entry.logged_in === true || (multiAccount && accounts.length > 0)
+          // Only where a logout path exists: the server accepts one through a
+          // CLI login or a logout command, both of which leave `authMethods`
+          // empty. A copy signed in only by its advertised Agent Auth has
+          // nothing to log out of here.
+          const canLogout = (entry.logged_in === true || (multiAccount && accounts.length > 0)) && authMethods.length === 0
           const quota = usageLabel(usage.get(entry.id))
           const badge = (
             <Badge variant={entry.logged_in === false || (multiAccount && accounts.length === 0) ? 'warning' : 'secondary'}>

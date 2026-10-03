@@ -77,9 +77,11 @@ Folder-relative path, so the Agent can read the authorized current workspace
 file itself; the file body is not appended to the user message. A manual retry
 hydrates the persisted immutable snapshot instead, preserving the original
 input for retry semantics. Files & Code
-also lets a Project writer create or edit a bounded text file directly. Direct
-File-page saves do not create proposals; the previous content is retained for
-the page's Rollback action and rollback stops if the file changed afterward.
+also lets a Project writer create or edit a bounded text file in a private
+recovery draft; Save to Folder writes it against the exact draft version and
+the Host-observed file hash, and does not create a proposal. There is no
+Rollback action: History offers Restore as draft, which never modifies the
+file.
 When a Conversation run changes an authorized Project Folder, a mounted Files &
 Code page refreshes that Folder's tree and Git status when the turn settles;
 content currently being edited is not replaced.

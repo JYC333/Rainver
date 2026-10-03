@@ -16,7 +16,7 @@ export interface ProjectFileRevisionOut {
   status: string;
 }
 
-export interface ProjectFileRevision extends ProjectFileRevisionOut {
+interface ProjectFileRevision extends ProjectFileRevisionOut {
   space_id: string;
   project_id: string;
   before_content: string | null;

@@ -29,7 +29,7 @@ function view(overrides: Partial<TaskWorkView> = {}): TaskWorkView {
       { key: 'verify', label: 'Evaluate' },
       { key: 'conclude', label: 'Conclude' },
     ],
-    responsible: { kind: 'user', id: 'user-1', display_name: 'Yuchuan' },
+    responsible: { kind: 'user', id: 'user-1', display_name: 'Test User' },
     completion: { ok: false, missing: ['evaluation'] },
     evaluation: null,
     present_outputs: [],
@@ -81,5 +81,13 @@ describe('Task work tab', () => {
   it('names what is missing before the Task can close', async () => {
     renderTab()
     expect(await screen.findByText(/No evaluation has accepted the result/)).toBeInTheDocument()
+  })
+
+  it('reloads the Work view when the page asks it to', async () => {
+    const view = render(<MemoryRouter><TaskWorkTab taskId="task-1" refreshToken={0} /></MemoryRouter>)
+    await waitFor(() => expect(tasksApi.work).toHaveBeenCalledTimes(1))
+
+    view.rerender(<MemoryRouter><TaskWorkTab taskId="task-1" refreshToken={1} /></MemoryRouter>)
+    await waitFor(() => expect(tasksApi.work).toHaveBeenCalledTimes(2))
   })
 })

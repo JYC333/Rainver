@@ -81,7 +81,7 @@ export const DEFAULT_RANKING_SIGNALS: RankingSignalConfig = {
  * object id, title, query, or snippet. Populated by `applyRankingSignals` when a
  * sink is passed; surfaced only as aggregate `trace.boost_attribution`.
  */
-export interface RankingTelemetry {
+interface RankingTelemetry {
   boost_attribution: Record<string, number>;
 }
 
@@ -106,7 +106,7 @@ const NAME_MATCH_KINDS: ReadonlySet<EvidenceKind> = new Set<EvidenceKind>([
  * title. Access-neutral: reads only the candidate's own title. An empty query
  * never matches (so create-safety / blank queries get no spurious boost).
  */
-export function titlePhraseMatches(title: string, normalizedQuery: string): boolean {
+function titlePhraseMatches(title: string, normalizedQuery: string): boolean {
   if (!normalizedQuery) return false;
   return normalizeTextForSearch(title).includes(normalizedQuery);
 }

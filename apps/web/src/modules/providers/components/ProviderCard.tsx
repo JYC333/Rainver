@@ -60,7 +60,7 @@ export default function ProviderCard({
     try {
       const updated = await providersApi.patch(config.id, {
         name: editName,
-        default_model: editDefaultModel || undefined,
+        default_model: editDefaultModel.trim() || null,
         available_models: editModels.split(',').map(model => model.trim()).filter(Boolean),
         base_url: editBaseUrl.trim(),
         network_profile_id: editNetworkProfileId,
@@ -184,13 +184,13 @@ export default function ProviderCard({
         </div>
       )}
       <div className="flex gap-2">
-        <Button size="sm" variant="outline" onClick={async () => { setTesting(true); try { setTestResult(await onTest(config.id)) } finally { setTesting(false) } }} disabled={testing}>
+        <Button size="sm" variant="outline" onClick={async () => { setTesting(true); try { setTestResult(await onTest(config.id)) } catch (error) { setTestResult({ success: false, message: errMsg(error) }) } finally { setTesting(false) } }} disabled={testing}>
           {testing ? <Loader2 className="size-3.5 animate-spin" /> : 'Test'}
         </Button>
         {config.manageable !== false && (
           <>
             <Button size="sm" variant="outline" onClick={() => setEditing(true)}>Edit</Button>
-            <Button size="sm" variant="outline" onClick={async () => { setDeleting(true); try { await onDelete(config.id) } finally { setDeleting(false) } }} disabled={deleting} className="text-red-500">
+            <Button size="sm" variant="outline" onClick={async () => { setDeleting(true); try { await onDelete(config.id) } catch (error) { toast.error(errMsg(error)) } finally { setDeleting(false) } }} disabled={deleting} className="text-red-500">
               {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
             </Button>
           </>

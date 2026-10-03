@@ -1,5 +1,5 @@
 import type { Queryable } from "@rainver/protocol";
-import { AccountNotFoundError } from "./errors.js";
+import { AccountNotFoundError, FinanceRuleError } from "./errors.js";
 import type { LedgerLoadResult } from "../beancount/entries.js";
 import { financeLedgerEngine, postingEntryFromRow } from "../beancount/engine.js";
 import { transactionBalanceErrors } from "../beancount/validation.js";
@@ -33,9 +33,11 @@ import {
   financeLedgerRepository,
   type CreateCommodityRecord,
   type InsertPostingRecord,
+  isSequenceConflict,
 } from "./repository.js";
 import { Inventory } from "./inventory.js";
 import { Position } from "./position.js";
+import { attempt } from "./transaction.js";
 
 export interface CreateFinanceBookInput {
   name: string;
@@ -237,6 +239,21 @@ export class FinanceLedgerService {
     date: string,
     viewerUserId: string,
   ): Promise<FinanceAccountRow> {
+    // Refused where the ledger's own validator would call the result invalid:
+    // closed before it opened, closed twice, or closed under later entries.
+    const account = await this.repository.findAccountForViewer(
+      db, spaceId, bookId, accountId, viewerUserId, { writable: true },
+    );
+    if (!account) throw new AccountNotFoundError();
+    if (account.closed_at) {
+      throw new FinanceRuleError(`Account is already closed: ${account.name}`);
+    }
+    if (date < account.opened_at) {
+      throw new FinanceRuleError(`Close date ${date} is before ${account.name} opened`);
+    }
+    if (await this.repository.hasPostedEntriesAfter(db, spaceId, bookId, accountId, date)) {
+      throw new FinanceRuleError(`${account.name} has posted entries after ${date}`);
+    }
     return this.repository.closeAccount(db, spaceId, bookId, accountId, date, viewerUserId);
   }
 
@@ -264,10 +281,12 @@ export class FinanceLedgerService {
     // MAX+1 allocation races with concurrent inserts on the same book/date;
     // the unique constraint rejects the loser, so retry with a fresh sequence.
     let lastConflict: unknown;
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    for (let round = 0; round < 10; round += 1) {
       const sequence = await this.repository.nextSequence(db, spaceId, bookId, input.date);
       try {
-        return await insert(sequence);
+        // Under a savepoint inside a transaction: the conflict aborts the
+        // statement, and the retry must not find the transaction aborted.
+        return await attempt(db, () => insert(sequence));
       } catch (err) {
         if (!isSequenceConflict(err)) throw err;
         lastConflict = err;
@@ -285,6 +304,7 @@ export class FinanceLedgerService {
     userId: string,
     input: CreateTransactionDraftInput,
   ): Promise<FinanceDirectiveRow> {
+    const postings = interpolateBlankAmount(input.postings);
     const directive = await this.createDirectiveDraft(db, spaceId, bookId, userId, {
       directiveType: "transaction",
       date: input.date,
@@ -307,7 +327,7 @@ export class FinanceLedgerService {
     });
 
     let sortOrder = 0;
-    for (const posting of input.postings) {
+    for (const posting of postings) {
       const account = await this.requireActiveAccount(
         db,
         spaceId,
@@ -580,7 +600,9 @@ export class FinanceLedgerService {
     if (account.opened_at > date) {
       throw new Error(`Account is not open yet: ${account.name}`);
     }
-    if (account.closed_at && account.closed_at <= date) {
+    // A day's close sorts after its transactions (sort.ts), so a posting on
+    // the closing date is valid here as it is in the Beancount validation.
+    if (account.closed_at && account.closed_at < date) {
       throw new Error(`Account is closed: ${account.name}`);
     }
     return account;
@@ -667,15 +689,26 @@ export class FinanceLedgerService {
 
 export const financeLedgerService = new FinanceLedgerService();
 
-function isSequenceConflict(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const pgError = err as { code?: string; constraint?: string };
-  return (
-    pgError.code === "23505" &&
-    (pgError.constraint ?? "").includes("book_date_sequence")
-  );
+/**
+ * The one posting left without an amount takes the negated sum of the others,
+ * as Beancount interpolates it. The form offers this ("blank = auto"); stored
+ * blank, the transaction could never be posted. Left as it is when the other
+ * amounts span currencies, which posting then reports as incomplete.
+ */
+function interpolateBlankAmount(postings: TransactionPostingInput[]): TransactionPostingInput[] {
+  const blank = postings.filter((posting) => !posting.amount);
+  if (blank.length !== 1) return postings;
+  const amounts = postings.flatMap((posting) =>
+    posting.amount ? [Amount.of(posting.amount.number, posting.amount.commoditySymbol)] : []);
+  const currency = amounts[0]?.currency;
+  if (!currency || amounts.some((amount) => amount.currency !== currency)) return postings;
+  const residual = amounts.reduce((sum, amount) => sum.add(amount), Amount.of("0", currency)).negate();
+  return postings.map((posting) =>
+    posting === blank[0]
+      ? { ...posting, amount: { number: residual.number.decimal, commoditySymbol: currency } }
+      : posting);
 }
 
 export { rootTypeForAccountName };
 
-export { AccountNotFoundError } from "./errors.js";
+export { AccountNotFoundError, FinanceRuleError } from "./errors.js";

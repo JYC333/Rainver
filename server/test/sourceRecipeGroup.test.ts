@@ -6,15 +6,18 @@ import { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SourceRecipeDefinition } from "@rainver/protocol";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
+import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { PgSourcesRepository } from "../src/modules/sources/repository.js";
+import { SourceRecipeService } from "../src/modules/sources/sourceRecipeService.js";
 import { analyzeSourceRecipe, SOURCE_RECIPE_PRIMITIVE_REGISTRY } from "../src/modules/sources/sourceRecipes/primitiveRegistry.js";
 import { SourceRecipeCreateService } from "../src/modules/sources/sourceRecipes/recipeCreateService.js";
 import { SourceRecipeDryRunService } from "../src/modules/sources/sourceRecipes/recipeDryRunService.js";
 import { insertSourceRecipeVersion } from "../src/modules/sources/sourceRecipes/recipeVersionStore.js";
+import { enqueueDueSourceRecipeScans, reclaimStuckSourceRecipeScans } from "../src/modules/sources/sourceRecipes/recipeScanWorker.js";
 import { listSourceRuns } from "../src/modules/sources/sourceRunReadModel.js";
 import { seedCustomSourceWorld, upsertCustomSourceSpacePolicy } from "./support/customSourceWorld.js";
 import { resetTables } from "./support/resetTables.js";
@@ -102,9 +105,16 @@ describe("sourceRecipeCreateFlow", () => {
     });
     expect(created.connection.handler_kind).toBe("recipe");
     expect(created.connection.status).toBe("paused");
-    // Paused channels intentionally do not carry an active scheduler rule;
-    // activation applies the requested schedule atomically.
-    expect(created.connection.schedule_rule).toBeNull();
+    // A paused channel keeps the requested rule without a next run;
+    // activation schedules it.
+    expect(created.connection.schedule_rule).toEqual(HOURLY_SCHEDULE_RULE);
+    const draftTask = await db.pool.query<{ status: string; next_run_at: string | null }>(
+      `SELECT st.status, st.next_run_at
+         FROM scheduler_tasks st JOIN source_channels ch ON ch.id = st.task_key
+        WHERE st.task_type = 'source_channel_scan' AND ch.source_connection_id = $1`,
+      [created.connection.id],
+    );
+    expect(draftTask.rows).toEqual([{ status: "paused", next_run_at: null }]);
 
     const dryRun = await dryRunService!.dryRunRecipeVersion(IDENTITY, created.connection.id, {
       recipe_version_id: created.recipe_version.id,
@@ -123,6 +133,86 @@ describe("sourceRecipeCreateFlow", () => {
   }
 
   describe("SourceRecipeCreateService (real Postgres)", () => {
+    it("reads a recipe source's versions only for a reader of its connection", async () => {
+      if (!db.available) return;
+      const plan = await createService!.planSource(IDENTITY, {
+        name: "Recipe Feed", endpoint_url: "https://example.com/feed.xml", fetch_frequency: "hourly",
+        capture_policy: "extract_text", fixture_content: RSS_FIXTURE,
+      });
+      const created = await createService!.createSource(IDENTITY, {
+        name: "Recipe Feed", endpoint_url: "https://example.com/feed.xml", fetch_frequency: "hourly",
+        capture_policy: "extract_text", recipe: plan.recipe,
+      });
+      const member = { spaceId: SPACE_A, userId: "user-member" };
+      await db.pool.query(
+        `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+         VALUES ($1, 'Member', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+        [member.userId],
+      );
+      await db.pool.query(
+        `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+         VALUES (gen_random_uuid()::text, $1, $2, 'member', 'active', now(), now())`,
+        [SPACE_A, member.userId],
+      );
+      const recipes = new SourceRecipeService(db.pool, config!);
+      const page = { limit: 10, offset: 0 };
+
+      await db.pool.query(`UPDATE source_connections SET visibility = 'private' WHERE id = $1`, [created.connection.id]);
+      await expect(recipes.listVersions(member, created.connection.id, page)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(recipes.getVersion(member, created.connection.id, created.recipe_version.id))
+        .rejects.toMatchObject({ statusCode: 404 });
+
+      await db.pool.query(`UPDATE source_connections SET visibility = 'space_shared' WHERE id = $1`, [created.connection.id]);
+      await expect(recipes.listVersions(member, created.connection.id, page)).resolves.toMatchObject({ total: 1 });
+    });
+
+    it("activates one recipe version when another is activated while it was being checked", async () => {
+      if (!db.available) return;
+      const endpointUrl = await startFixtureServer(RSS_FIXTURE);
+      const plan = await createService!.planSource(IDENTITY, {
+        name: "Recipe Feed", endpoint_url: endpointUrl, fetch_frequency: "hourly", capture_policy: "extract_text", fixture_content: RSS_FIXTURE,
+      });
+      const created = await createService!.createSource(IDENTITY, {
+        name: "Recipe Feed", endpoint_url: endpointUrl, fetch_frequency: "hourly", capture_policy: "extract_text", recipe: plan.recipe,
+      });
+      const first = created.recipe_version.id;
+      const stored = await db.pool.query<{ recipe_json: SourceRecipeDefinition; policy_envelope_json: never; primitive_versions_json: Record<string, number> }>(
+        `SELECT recipe_json, policy_envelope_json, primitive_versions_json FROM source_recipe_versions WHERE id = $1`,
+        [first],
+      );
+      const second = (await insertSourceRecipeVersion(db.pool, {
+        spaceId: SPACE_A,
+        connectionId: created.connection.id,
+        recipe: stored.rows[0]!.recipe_json,
+        policyEnvelope: stored.rows[0]!.policy_envelope_json,
+        primitiveVersions: stored.rows[0]!.primitive_versions_json,
+        createdByUserId: IDENTITY.userId,
+      })).id;
+      for (const versionId of [first, second]) {
+        await dryRunService!.dryRunRecipeVersion(IDENTITY, created.connection.id, { recipe_version_id: versionId, fixture_content: RSS_FIXTURE });
+      }
+
+      // The second activation reads the connection, then the first one lands.
+      const original = PgCustomSourceHandlerRepository.prototype.getEffectiveSettings;
+      const settings = vi.spyOn(PgCustomSourceHandlerRepository.prototype, "getEffectiveSettings")
+        .mockImplementationOnce(async function (this: PgCustomSourceHandlerRepository, identity) {
+          await createService!.activateRecipe(IDENTITY, created.connection.id, { recipe_version_id: first });
+          return original.call(this, identity);
+        });
+      try {
+        await expect(createService!.activateRecipe(IDENTITY, created.connection.id, { recipe_version_id: second }))
+          .rejects.toMatchObject({ statusCode: 409 });
+      } finally {
+        settings.mockRestore();
+      }
+
+      const versions = await db.pool.query<{ id: string; status: string }>(
+        `SELECT id, status FROM source_recipe_versions WHERE source_connection_id = $1 AND status = 'active'`,
+        [created.connection.id],
+      );
+      expect(versions.rows).toEqual([{ id: first, status: "active" }]);
+    });
+
     it("plans, creates, dry-runs, activates, and scans a recipe source into Source", async () => {
       if (!db.available) return;
       const endpointUrl = await startFixtureServer(RSS_FIXTURE);
@@ -223,6 +313,89 @@ describe("sourceRecipeCreateFlow", () => {
           source_item_id: firstItem.rows[0]!.id,
         }),
       ]);
+    });
+
+    it("reclaims a recipe scan left running so its channel is scheduled again", async () => {
+      if (!db.available) return;
+      const endpointUrl = await startFixtureServer(RSS_FIXTURE);
+      const { created } = await createDryRunActivatedRecipeSource(endpointUrl);
+      const channelId = created.connection.source_channel_id;
+      const repo = new PgSourcesRepository(db.pool, config!, fixtureServerGuard);
+      const queued = await repo.scanChannel(IDENTITY, channelId);
+      // A restart mid-scan leaves the job running.
+      await db.pool.query(
+        `UPDATE extraction_jobs SET status = 'running', started_at = now() - interval '15 minutes' WHERE id = $1`,
+        [queued.id],
+      );
+      const makeDue = () => db.pool.query(
+        `UPDATE scheduler_tasks SET next_run_at = now() - interval '1 minute' WHERE task_type = 'source_channel_scan' AND task_key = $1`,
+        [channelId],
+      );
+      await makeDue();
+      expect(await enqueueDueSourceRecipeScans(db.pool)).toBe(0);
+
+      expect(await reclaimStuckSourceRecipeScans(db.pool)).toBe(1);
+      const job = await db.pool.query<{ status: string; error_code: string | null }>(
+        `SELECT status, error_code FROM extraction_jobs WHERE id = $1`,
+        [queued.id],
+      );
+      expect(job.rows[0]).toEqual({ status: "failed", error_code: "stuck_reclaimed" });
+      await makeDue();
+      expect(await enqueueDueSourceRecipeScans(db.pool)).toBe(1);
+    });
+
+    it("fails a recipe scan whose source cannot be loaded instead of leaving it running", async () => {
+      if (!db.available) return;
+      const endpointUrl = await startFixtureServer(RSS_FIXTURE);
+      const { created } = await createDryRunActivatedRecipeSource(endpointUrl);
+      const repo = new PgSourcesRepository(db.pool, config!, fixtureServerGuard);
+      const queued = await repo.scanChannel(IDENTITY, created.connection.source_channel_id);
+      await db.pool.query(
+        `UPDATE extraction_jobs SET metadata_json = metadata_json || '{"source_channel_id":"missing-channel"}'::jsonb WHERE id = $1`,
+        [queued.id],
+      );
+
+      await repo.runJob(IDENTITY, queued.id).catch(() => undefined);
+
+      const job = await db.pool.query<{ status: string }>(`SELECT status FROM extraction_jobs WHERE id = $1`, [queued.id]);
+      expect(job.rows[0]?.status).toBe("failed");
+    });
+
+    it("carries an out-of-envelope activation's schedule as a rule the owner can approve any time, and refuses a bad one now", async () => {
+      if (!db.available) return;
+      const endpointUrl = await startFixtureServer(RSS_FIXTURE);
+      const plan = await createService!.planSource(IDENTITY, {
+        name: "Timed Recipe Feed", endpoint_url: endpointUrl, fetch_frequency: "hourly", capture_policy: "extract_text", fixture_content: RSS_FIXTURE,
+      });
+      const created = await createService!.createSource(IDENTITY, {
+        name: "Timed Recipe Feed", endpoint_url: endpointUrl, fetch_frequency: "hourly", capture_policy: "extract_text", recipe: plan.recipe,
+      });
+      const dryRun = await dryRunService!.dryRunRecipeVersion(IDENTITY, created.connection.id, {
+        recipe_version_id: created.recipe_version.id, fixture_content: RSS_FIXTURE,
+      });
+      await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { allowed_domains: ["other.example"] });
+
+      // A rule for another frequency is the requester's mistake, answered now
+      // rather than when the owner approves.
+      await expect(createService!.activateRecipe(IDENTITY, created.connection.id, {
+        recipe_version_id: dryRun.recipe_version.id, schedule_rule: { frequency: "daily", hour: 9, minute: 0 },
+      })).rejects.toMatchObject({ statusCode: 422 });
+      expect((await db.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM proposals WHERE space_id = $1`, [SPACE_A])).rows[0]!.n).toBe("0");
+
+      // An absolute first check is kept as the rule it implies: approved two
+      // days later, the applier computes the next run from the rule instead
+      // of refusing a time that has passed.
+      const nextCheckAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      nextCheckAt.setUTCMinutes(45, 0, 0);
+      const activation = await createService!.activateRecipe(IDENTITY, created.connection.id, {
+        recipe_version_id: dryRun.recipe_version.id, next_check_at: nextCheckAt.toISOString(),
+      });
+      expect(activation.status).toBe("pending_approval");
+      const payload = (await db.pool.query<{ payload_json: Record<string, unknown> }>(
+        `SELECT payload_json FROM proposals WHERE id = $1`, [activation.proposal_id],
+      )).rows[0]!.payload_json;
+      expect(payload.schedule_rule).toEqual({ frequency: "hourly", minute: 45 });
+      expect(payload).not.toHaveProperty("next_check_at");
     });
 
     it("routes policy-envelope deltas through a source_recipe_activation proposal applier", async () => {

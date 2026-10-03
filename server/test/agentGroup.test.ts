@@ -1,8 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { AgentGroupRuntimeDelegationMaterializer } from "../src/modules/agentGroups/runtimeDelegationMaterializer.js";
 import { type AgentRunGroupRecord, PgAgentGroupRepository, type RunDelegationRecord } from "../src/modules/agentGroups/repository.js";
 import { PgAgentChatRepository, PgAgentRepository } from "../src/modules/agents/repository.js";
 import type { Queryable, QueryResult } from "../src/modules/routeUtils/common.js";
+import { withDbTransaction } from "../src/modules/routeUtils/common.js";
+import { useTestDatabase } from "./support/testDatabase.js";
+import { resetTables } from "./support/resetTables.js";
+import { seedAgentWithVersion, seedServerHost, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 import type { RunEventInput } from "../src/modules/runs/runRepositoryTypes.js";
 
@@ -124,6 +129,46 @@ describe("agentAssistantSettingsRepository", () => {
         response_style: "casual",
       })).rejects.toMatchObject({ statusCode: 422 });
     });
+  });
+});
+
+describe("agentRuntimeProfileNamesDb", () => {
+  const db = useTestDatabase(`${import.meta.filename}#agentRuntimeProfileNamesDb`);
+
+  it("keeps a second backend whose display name is already taken instead of failing", async () => {
+    if (!db.available) return;
+    const space = randomUUID();
+    const owner = randomUUID();
+    const agent = randomUUID();
+    const [hostA, hostB] = [randomUUID(), randomUUID()];
+    await resetTables(db.pool, ["agent_runtime_profiles", "agents", "hosts", "machines", "projects", "spaces", "users"], { cascade: true });
+    const { now } = await seedSpaceOwnerProject(db.pool, { space, owner, project: randomUUID() });
+    await seedAgentWithVersion(db.pool, { agent, version: randomUUID(), space, owner, now });
+    await seedServerHost(db.pool, { id: hostA, now });
+    // Another member's paired laptop, reporting the same managed copy.
+    await db.pool.query(
+      `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
+       VALUES ($1, $2, 'laptop', 'laptop', $3, $3)`,
+      [hostB, owner, now],
+    );
+    await db.pool.query(
+      `INSERT INTO hosts (id, owner_user_id, machine_id, name, kind, environment_kind, status, capabilities_json, last_heartbeat_at, created_at, updated_at)
+       SELECT $1, $2, $1, 'laptop', 'remote', 'linux_native', 'online', capabilities_json, now(), $3, $3 FROM hosts WHERE id = $4`,
+      [hostB, owner, now, hostA],
+    );
+    const agents = new PgAgentRepository(db.pool);
+    const ensure = (hostId: string) => withDbTransaction(db.pool, (client) => agents.ensureRuntimeProfileInTransaction(client, space, agent, {
+      name: "On MacBook Pro · claude_code", runtimeKey: "claude_code", executionHostId: hostId,
+      workspaceMode: "managed", runtimeInstallation: "managed:1.0.0", actorUserId: owner,
+    }));
+
+    const first = await ensure(hostA);
+    const second = await ensure(hostB);
+    expect(first.name).toBe("On MacBook Pro · claude_code");
+    expect(second.id).not.toBe(first.id);
+    expect(second.name).toMatch(/^On MacBook Pro · claude_code · [0-9a-f]{8}$/);
+    // Ensuring the first backend again finds it and keeps its name.
+    await expect(ensure(hostA)).resolves.toMatchObject({ id: first.id, name: first.name });
   });
 });
 

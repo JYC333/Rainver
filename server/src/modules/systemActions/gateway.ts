@@ -1,7 +1,7 @@
 import type { SystemActionActorType, SystemActionDefinition, SystemActionId } from "@rainver/protocol";
 import { loadSystemActionRegistry } from "./registry.js";
 
-export interface SystemActionActor {
+interface SystemActionActor {
   type: SystemActionActorType;
   space_id: string;
   user_id?: string | null;
@@ -9,7 +9,7 @@ export interface SystemActionActor {
   run_id?: string | null;
 }
 
-export interface SystemActionPolicyDecision {
+interface SystemActionPolicyDecision {
   allowed: boolean;
   policy_decision_record_id?: string | null;
   reason?: string;
@@ -24,7 +24,7 @@ export interface SystemActionDispatchContext {
 }
 
 export type SystemActionExecutor = (input: unknown, context: SystemActionDispatchContext) => Promise<unknown>;
-export type SystemActionPolicyEnforcer = (
+type SystemActionPolicyEnforcer = (
   definition: SystemActionDefinition,
   input: unknown,
   context: SystemActionDispatchContext,

@@ -20,7 +20,7 @@ used to live here are in
 | Multi-device conflict resolution | Not present |
 | Public internet sharing | Not present. Instance-local targeted publication exists (`publications`) |
 | Public SaaS / multi-tenant | Out of scope |
-| API key persistence UI | Feature-gated (501 in production); no `api_keys` table |
+| API key authentication and management | Not implemented: Bearer requests and `/api/v1/auth/keys` return 501; no `api_keys` table |
 | Files & Code interactive session execution | Removed. Files & Code has bounded human file editing, but no interactive Agent-session execution |
 | Runtime adapter bypassing credential resolver | Blocked by `RunOrchestrationService` |
 | Runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` |
@@ -44,7 +44,7 @@ external webhook/cron marketplace.
 
 - Personal spaces (`personal`) and household shared spaces (`household`).
 - Explicit membership and space switching.
-- Auth via session cookies or API keys. No dev-identity fallback.
+- Auth via session cookies only; Bearer API keys are rejected with 501. No dev-identity fallback.
 - Activity Inbox via `POST /api/v1/activity`.
 - Sources via `/api/v1/sources/*`.
 - Capture destinations via `POST /api/v1/captures`.

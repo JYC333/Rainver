@@ -5,9 +5,9 @@ import { withTransaction } from "../../db/tx.js";
 import { seedSpaceDefaults } from "../spaces/spaceSeeds.js";
 import { hashOpaqueToken, normalizeAuthEmail } from "./securityPolicy.js";
 
-export type RegistrationAuthority = "bootstrap" | "space_invitation";
-export interface RegistrationIntentResult { intentId: string; claimSecret: string; authority: RegistrationAuthority; email: string; invitationId: string | null }
-export interface RegistrationCompletion { userId: string; intentId: string; authority: RegistrationAuthority }
+type RegistrationAuthority = "bootstrap" | "space_invitation";
+interface RegistrationIntentResult { intentId: string; claimSecret: string; authority: RegistrationAuthority; email: string; invitationId: string | null }
+interface RegistrationCompletion { userId: string; intentId: string; authority: RegistrationAuthority }
 
 type RegistrationClient = {
   query<T = unknown>(text: string, values?: readonly unknown[]): Promise<{ rows: T[]; rowCount: number | null }>;
@@ -29,6 +29,14 @@ type ResumableIntent = {
 };
 
 const ACTIVE_INTENT_STATES = "('issued', 'claimed', 'provisioning')";
+export const PERSONAL_SPACE_NAME_SUFFIX = "'s Personal Space";
+/**
+ * The longest display name registration accepts: it must fit `users.display_name`
+ * and, with the suffix, `spaces.name` (both varchar(256)). A longer name used to
+ * pass the route, create the pending identity, and fail provisioning on every
+ * retry until the intent expired.
+ */
+export const REGISTRATION_DISPLAY_NAME_MAX = 256 - PERSONAL_SPACE_NAME_SUFFIX.length;
 
 export class RegistrationService {
   constructor(private readonly pool: Pool, private readonly config: ServerConfig) {}
@@ -191,7 +199,7 @@ export class RegistrationService {
       if (!personal.rows[0]) {
         const spaceId = randomUUID();
         const name = input.displayName?.trim() || intent.email.split("@", 1)[0]!;
-        await client.query("INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ($1, $2, 'personal', $3, now(), now())", [spaceId, `${name}'s Personal Space`, input.userId]);
+        await client.query("INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at) VALUES ($1, $2, 'personal', $3, now(), now())", [spaceId, `${name}${PERSONAL_SPACE_NAME_SUFFIX}`, input.userId]);
         await client.query("INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'owner', 'active', now(), now())", [randomUUID(), spaceId, input.userId]);
         await seedSpaceDefaults(client, spaceId, input.userId);
       }
@@ -292,6 +300,42 @@ async function retireActiveIntents(client: RegistrationClient, pendingUserId: st
 }
 
 async function expireStaleIntents(client: RegistrationClient, now: Date): Promise<number> {
+  const expiredCount = await expireIntents(client, now);
+  await deleteUnboundPendingUsers(client, now);
+  return expiredCount;
+}
+
+/**
+ * A provider signup can create a pending identity whose email no intent
+ * names — at Google, the person picked another account — so no intent ever
+ * binds it and intent expiry never reclaims it. Once it is older than any
+ * intent could be, it is deleted like an expired intent's identity; left in
+ * place it would count as a user and close bootstrap registration for good.
+ */
+async function deleteUnboundPendingUsers(client: RegistrationClient, now: Date): Promise<void> {
+  const unbound = await client.query<{ id: string }>(
+    `SELECT u.id
+       FROM users u
+      WHERE u.status = 'pending'
+        AND u.created_at <= $1::timestamptz - interval '30 minutes'
+        AND NOT EXISTS (
+          SELECT 1 FROM registration_intents active
+           WHERE (active.pending_user_id = u.id OR active.email = u.email)
+             AND active.state IN ${ACTIVE_INTENT_STATES}
+        )
+        AND NOT EXISTS (SELECT 1 FROM space_memberships m WHERE m.user_id = u.id)
+      FOR UPDATE OF u`,
+    [now],
+  );
+  const userIds = unbound.rows.map((row) => row.id);
+  if (!userIds.length) return;
+  await client.query("UPDATE registration_intents SET pending_user_id = NULL WHERE pending_user_id = ANY($1::text[])", [userIds]);
+  await client.query("DELETE FROM user_sessions WHERE user_id = ANY($1::text[])", [userIds]);
+  await client.query("DELETE FROM auth_accounts WHERE user_id = ANY($1::text[])", [userIds]);
+  await client.query("DELETE FROM users WHERE id = ANY($1::text[]) AND status = 'pending'", [userIds]);
+}
+
+async function expireIntents(client: RegistrationClient, now: Date): Promise<number> {
   const expired = await client.query<{ id: string; pending_user_id: string | null }>(
     `UPDATE registration_intents
         SET state = 'expired', last_activity_at = $1

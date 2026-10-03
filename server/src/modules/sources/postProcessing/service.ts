@@ -23,6 +23,8 @@ import {
   requiredString,
   type Queryable,
   type SpaceUserIdentity,
+  withQueryableTransaction,
+  bestEffortStep,
 } from "../../routeUtils/common.js";
 import { normalizeThreadScope, checkPinnedThreadDrift } from "../../projectResearch/threadScope.js";
 import {
@@ -39,6 +41,9 @@ import { readSpaceRetrievalSettings } from "../../retrieval/settings.js";
 import { resolveProviderCommandStore } from "../../providers/commands/store.js";
 import { contentDecisionFromDb } from "../../access/contentAccessQuery.js";
 import { assertSourcePromptEgressAllowed } from "../sourcePromptEgress.js";
+import { assertSourceConnectionManageable, assertSourceConnectionReadable } from "../sourceConnectionAccess.js";
+import { assertProjectReadable, assertProjectWriter } from "../../projects/access.js";
+import { canReadAgent } from "../../agents/agentAccess.js";
 import { sourceItemFullContentReadClause } from "../sourceItemAccess.js";
 import { itemColumnsForAlias, type EvidenceRow, type SourceItemRow, type SourceConnectionRow } from "../sourceRepositoryRows.js";
 import { sourceRetrievalRegistry } from "../retrievalAdapter.js";
@@ -117,6 +122,15 @@ const SOURCE_POST_PROCESSING_PROMPT_BYTES_PER_CHAR = 3;
 const SOURCE_POST_PROCESSING_PROMPT_FIXED_RESERVE_CHARS = 12_000;
 const SOURCE_POST_PROCESSING_EXTRACTED_TEXT_SNIPPET_RESERVE_CHARS = 2_400;
 
+/**
+ * Only the cursor window moves between runs. A time window (`local_day`,
+ * `last_24h`) hands every run the same batch, so draining one would repeat
+ * that batch until the batch limit.
+ */
+function windowMovesWithCursor(rule: SourcePostProcessingRuleRow): boolean {
+  return normalizeInputConfig(rule.input_config_json).window === "new_since_last_success";
+}
+
 export class SourcePostProcessingService {
   constructor(
     private readonly db: Queryable,
@@ -124,7 +138,7 @@ export class SourcePostProcessingService {
   ) {}
 
   async listRules(identity: SpaceUserIdentity, connectionId: string): Promise<SourcePostProcessingRuleOut[]> {
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     return new PgSourcePostProcessingRepository(this.db).listRules(identity.spaceId, connectionId);
   }
 
@@ -133,7 +147,7 @@ export class SourcePostProcessingService {
     connectionId: string,
     body: Record<string, unknown>,
   ): Promise<SourcePostProcessingRuleOut> {
-    const connection = await this.requireConnection(identity.spaceId, connectionId);
+    const connection = await this.requireManagedConnection(identity, connectionId);
     const triggerType = normalizeTriggerType(body.trigger_type);
     const triggerConfig = normalizeTriggerConfig(body.trigger_config_json, triggerType);
     const inputConfig = normalizeInputConfig(body.input_config_json);
@@ -142,7 +156,7 @@ export class SourcePostProcessingService {
     await this.enforceSourceTargets(connection, actions);
     const agentId = await this.resolveAgentId(identity, optionalString(body.agent_id));
     const projectId = optionalString(body.project_id);
-    if (projectId) await this.assertProjectInSpace(identity.spaceId, projectId);
+    if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     this.validateInputContextBinding(projectId, inputConfig, actions);
     const name = optionalString(body.name) ?? defaultRuleName(triggerType, actions);
     return new PgSourcePostProcessingRepository(this.db).createRule({
@@ -170,7 +184,7 @@ export class SourcePostProcessingService {
     if (!existing || existing.source_channel_id !== connectionId) {
       throw new HttpError(404, "Post-processing rule not found");
     }
-    const connection = await this.requireConnection(identity.spaceId, connectionId);
+    const connection = await this.requireManagedConnection(identity, connectionId);
     const triggerType = Object.hasOwn(body, "trigger_type")
       ? normalizeTriggerType(body.trigger_type)
       : existing.trigger_type;
@@ -191,7 +205,7 @@ export class SourcePostProcessingService {
       ? await this.resolveAgentId(identity, optionalString(body.agent_id))
       : undefined;
     const projectId = Object.hasOwn(body, "project_id") ? optionalString(body.project_id) : undefined;
-    if (projectId) await this.assertProjectInSpace(identity.spaceId, projectId);
+    if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     this.validateInputContextBinding(
       projectId === undefined ? existing.project_id : projectId,
       inputConfig ?? normalizeInputConfig(existing.input_config_json),
@@ -219,6 +233,7 @@ export class SourcePostProcessingService {
     if (!rule || rule.source_channel_id !== connectionId) {
       throw new HttpError(404, "Post-processing rule not found");
     }
+    await this.requireManagedConnection(identity, connectionId);
     return this.executeRule(rule, {
       triggerType: "manual",
       actorUserId: identity.userId,
@@ -372,6 +387,10 @@ export class SourcePostProcessingService {
         stoppedReason = "no_inputs";
         break;
       }
+      if (!windowMovesWithCursor(rule)) {
+        stoppedReason = "window_processed";
+        break;
+      }
     }
     const backlog = await repo.backlog(identity.spaceId, connectionId);
     const ruleBacklog = backlog.rules.find((item) => item.rule_id === ruleId);
@@ -391,12 +410,12 @@ export class SourcePostProcessingService {
     limit: number,
     offset: number,
   ): Promise<{ items: SourcePostProcessingRunOut[]; total: number; limit: number; offset: number }> {
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     return new PgSourcePostProcessingRepository(this.db).listRuns(identity.spaceId, connectionId, limit, offset);
   }
 
   async backlog(identity: SpaceUserIdentity, connectionId: string): Promise<SourcePostProcessingBacklogOut> {
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     return new PgSourcePostProcessingRepository(this.db).backlog(identity.spaceId, connectionId);
   }
 
@@ -412,8 +431,8 @@ export class SourcePostProcessingService {
       offset: number;
     },
   ): Promise<{ items: SourcePostProcessingItemDecisionOut[]; total: number; limit: number; offset: number }> {
-    if (filters.connectionId) await this.requireConnection(identity.spaceId, filters.connectionId);
-    if (filters.projectId) await this.assertProjectInSpace(identity.spaceId, filters.projectId);
+    if (filters.connectionId) await this.requireReadableConnection(identity, filters.connectionId);
+    if (filters.projectId) await assertProjectReadable(this.db, identity.spaceId, filters.projectId, identity.userId);
     return new PgSourcePostProcessingRepository(this.db).listDecisions({
       spaceId: identity.spaceId,
       userId: identity.userId,
@@ -437,8 +456,8 @@ export class SourcePostProcessingService {
       offset: number;
     },
   ): Promise<{ items: SourcePostProcessingBriefingDaySummaryOut[]; total: number; limit: number; offset: number }> {
-    if (filters.connectionId) await this.requireConnection(identity.spaceId, filters.connectionId);
-    if (filters.projectId) await this.assertProjectInSpace(identity.spaceId, filters.projectId);
+    if (filters.connectionId) await this.requireReadableConnection(identity, filters.connectionId);
+    if (filters.projectId) await assertProjectReadable(this.db, identity.spaceId, filters.projectId, identity.userId);
     return new PgSourcePostProcessingRepository(this.db).listBriefings({
       spaceId: identity.spaceId,
       userId: identity.userId,
@@ -457,7 +476,7 @@ export class SourcePostProcessingService {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new HttpError(422, "date must be an ISO calendar date (YYYY-MM-DD)");
     }
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     const briefing = await new PgSourcePostProcessingRepository(this.db).getBriefing({
       spaceId: identity.spaceId,
       userId: identity.userId,
@@ -697,7 +716,7 @@ export class SourcePostProcessingService {
     await this.enforceSourceTargets(connection, actions);
     const agentId = await this.resolveAgentId(identity, optionalString(body.agent_id));
     const projectId = optionalString(body.project_id);
-    if (projectId) await this.assertProjectInSpace(identity.spaceId, projectId);
+    if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     this.validateInputContextBinding(projectId, normalizeInputConfig(body.input_config_json), actions);
     const batch = await repo.collectInputBatch({
       spaceId: identity.spaceId,
@@ -825,6 +844,10 @@ export class SourcePostProcessingService {
       }
       if (run.input_item_ids.length === 0) {
         stoppedReason = "no_inputs";
+        break;
+      }
+      if (!windowMovesWithCursor(rule)) {
+        stoppedReason = "window_processed";
         break;
       }
     }
@@ -1094,32 +1117,39 @@ export class SourcePostProcessingService {
         retrievalContextRefs(retrievalContext),
       );
       result.item_decisions = mergeSyntheticItemDecisions(result.item_decisions, prefilter.syntheticDecisions);
-      const materialized = await this.materializeOutputs({
-        triggerType: input.triggerType,
-        sourceChannelId: input.sourceChannelId,
-        connection: input.connection,
-        rule: input.rule,
-        postProcessingRunId: postRun.id,
-        agentRun,
-        actorUserId: input.actorUserId,
-        items: batch.items,
-        evidence: batch.evidence,
-        actions: input.actions,
-        inputConfig: input.inputConfig,
-        cursorBefore: batch.cursorBefore,
-        cursorAfter: batch.cursorAfter,
-        retrievalContext,
-        result,
-        evidenceCardPromptHash,
-      });
-      if (input.rule && input.inputConfig.window !== "explicit") {
-        await repo.advanceRuleCursor({
-          spaceId: input.rule.space_id,
-          ruleId: input.rule.id,
-          cursor: batch.cursorAfter,
+      // A run's outputs and its cursor advance commit together: a step that
+      // fails part-way must not leave a digest or Evidence behind for a batch
+      // the cursor will hand to the next run again.
+      const materialized = await withQueryableTransaction(this.db, async (db) => {
+        const outputs = await new SourcePostProcessingService(db, this.config).materializeOutputs({
+          triggerType: input.triggerType,
+          sourceChannelId: input.sourceChannelId,
+          connection: input.connection,
+          rule: input.rule,
+          postProcessingRunId: postRun.id,
+          agentRun,
+          actorUserId: input.actorUserId,
+          items: batch.items,
+          evidence: batch.evidence,
+          actions: input.actions,
+          inputConfig: input.inputConfig,
+          cursorBefore: batch.cursorBefore,
+          cursorAfter: batch.cursorAfter,
+          retrievalContext,
+          result,
+          evidenceCardPromptHash,
         });
-        await repo.recordRuleFire(input.rule.space_id, input.rule.id);
-      }
+        if (input.rule && input.inputConfig.window !== "explicit") {
+          const txRepo = new PgSourcePostProcessingRepository(db);
+          await txRepo.advanceRuleCursor({
+            spaceId: input.rule.space_id,
+            ruleId: input.rule.id,
+            cursor: batch.cursorAfter,
+          });
+          await txRepo.recordRuleFire(input.rule.space_id, input.rule.id);
+        }
+        return outputs;
+      });
       return repo.markRunFinished({
         runId: postRun.id,
         spaceId: input.connection.space_id,
@@ -1709,6 +1739,7 @@ export class SourcePostProcessingService {
       }
     }
     if (input.inputConfig.deep_analysis.enabled && input.rule) {
+      const rule = input.rule;
       const deepConfig = input.inputConfig.deep_analysis;
       const candidateItemIds = input.result.item_decisions
         .filter((decision) => deepConfig.trigger_relevance.includes(decision.relevance as "relevant" | "maybe"))
@@ -1717,14 +1748,14 @@ export class SourcePostProcessingService {
         .filter((id) => itemById.has(id))
         .slice(0, deepConfig.max_candidates_per_run);
       const uniqueCandidateItemIds = [...new Set(candidateItemIds)];
-      try {
+      await bestEffortStep(this.db, "source_deep_analysis_followup", async () => {
         const alreadyExtracted = await repo.loadExtractedTextSnippets(input.connection.space_id, uniqueCandidateItemIds, 1);
         const readyItemIds = uniqueCandidateItemIds.filter((id) => alreadyExtracted.has(id));
         if (readyItemIds.length > 0) {
           const followUp = await this.enqueueDeepAnalysisFollowUp({
             spaceId: input.connection.space_id,
             sourceChannelId: input.sourceChannelId,
-            ruleId: input.rule.id,
+            ruleId: rule.id,
             itemIds: readyItemIds,
             sourceRunId: input.postProcessingRunId,
             userId: input.actorUserId,
@@ -1741,16 +1772,16 @@ export class SourcePostProcessingService {
             source_post_processing_followups: [{
               phase: "deep_analysis",
               source_post_processing_run_id: input.postProcessingRunId,
-              source_post_processing_rule_id: input.rule.id,
+              source_post_processing_rule_id: rule.id,
               triggered_by_user_id: input.actorUserId,
               trigger_type: input.triggerType,
               content_source: deepConfig.content_source,
             }],
           },
         }));
-      } catch (error) {
+      }, (error) => {
         if (input.inputConfig.deep_analysis.content_source === "require_extracted_text") throw error;
-      }
+      });
     }
     if (input.actions.create_proposals) {
       const proposalMarkdown = input.result.proposal_markdown ?? input.result.digest_markdown;
@@ -1786,7 +1817,7 @@ export class SourcePostProcessingService {
 
   private async resolveAgentId(identity: SpaceUserIdentity, requestedAgentId: string | null): Promise<string> {
     if (requestedAgentId) {
-      await this.assertAgentUsable(identity.spaceId, requestedAgentId);
+      await this.assertAgentUsable(identity, requestedAgentId);
       return requestedAgentId;
     }
     const pool = this.requirePool();
@@ -1794,25 +1825,34 @@ export class SourcePostProcessingService {
     return agent.id;
   }
 
-  private async assertAgentUsable(spaceId: string, agentId: string): Promise<void> {
+  /** A rule runs its Agent on its author's behalf, so the author must be able to read it. */
+  private async assertAgentUsable(identity: SpaceUserIdentity, agentId: string): Promise<void> {
     const row = await this.db.query<{ id: string }>(
       `SELECT id FROM agents WHERE space_id = $1 AND id = $2 AND status = 'active' LIMIT 1`,
-      [spaceId, agentId],
+      [identity.spaceId, agentId],
     );
-    if (!row.rows[0]) throw new HttpError(404, "Agent not found or inactive");
-  }
-
-  private async assertProjectInSpace(spaceId: string, projectId: string): Promise<void> {
-    const row = await this.db.query<{ id: string }>(
-      `SELECT id FROM projects WHERE space_id = $1 AND id = $2 AND status <> 'deleted' LIMIT 1`,
-      [spaceId, projectId],
-    );
-    if (!row.rows[0]) throw new HttpError(404, "Project not found");
+    if (!row.rows[0] || !(await canReadAgent(this.db, identity, agentId))) {
+      throw new HttpError(404, "Agent not found or inactive");
+    }
   }
 
   private async requireConnection(spaceId: string, connectionId: string): Promise<SourceConnectionRow> {
     const connection = await new PgSourcePostProcessingRepository(this.db).getConnection(spaceId, connectionId);
     if (!connection) throw new HttpError(404, "Source connection not found");
+    return connection;
+  }
+
+  /** A channel's rules, runs and briefings are read under its connection's read decision. */
+  private async requireReadableConnection(identity: SpaceUserIdentity, channelId: string): Promise<SourceConnectionRow> {
+    const connection = await this.requireConnection(identity.spaceId, channelId);
+    await assertSourceConnectionReadable(this.db, identity, connection.id);
+    return connection;
+  }
+
+  /** Writing or running a channel's rules takes authority over its connection. */
+  private async requireManagedConnection(identity: SpaceUserIdentity, channelId: string): Promise<SourceConnectionRow> {
+    const connection = await this.requireConnection(identity.spaceId, channelId);
+    await assertSourceConnectionManageable(this.db, identity, connection.id);
     return connection;
   }
 
@@ -1945,7 +1985,7 @@ export function sourcePostProcessingExecutionRequest(postProcessingRunId: string
   };
 }
 
-export function sourcePostProcessingRuntimePrompt(instruction: string): string {
+function sourcePostProcessingRuntimePrompt(instruction: string): string {
   return instruction;
 }
 

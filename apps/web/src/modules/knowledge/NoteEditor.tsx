@@ -34,9 +34,9 @@ import {
 } from '../../components/editor'
 
 /**
- * Checked against the widened target list (NB): all five still read sensibly
+ * Checked against the widened target list (NB): all four still read sensibly
  * for every offered kind — a note references a Source, is derived from a
- * Claim, belongs to a Question. None needed constraining, because a
+ * Claim, is a source for a Question. None needed constraining, because a
  * `note_link` is navigational and carries no graph authority (N4); the
  * backend validates the link type's name but deliberately not its endpoints,
  * so a combination that reads oddly is a wording choice, not a broken edge.
@@ -46,7 +46,6 @@ const LINK_TYPE_OPTIONS: { value: EntityLinkType; label: string }[] = [
   { value: 'references', label: 'references' },
   { value: 'derived_from', label: 'derived from' },
   { value: 'source_for', label: 'source for' },
-  { value: 'belongs_to', label: 'belongs to' },
 ]
 
 const TARGET_KIND_LABELS: Record<NoteLinkTargetType, string> = {
@@ -103,7 +102,7 @@ function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
 }
 
-export interface NoteEditorProps {
+interface NoteEditorProps {
   /** The note to edit. Which note is open is the surface's decision, not this
    * component's — it used to read `useParams()`, which pinned it to one route. */
   noteId: string
@@ -185,7 +184,8 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
 
   const loadShares = useCallback(async (id: string) => {
     try {
-      setShares(await notesApi.shares(id))
+      const rows = await notesApi.shares(id)
+      if (noteRef.current?.id === id) setShares(rows)
     } catch {
       // Advisory: a note still reads and edits fine without its share list.
     }
@@ -210,6 +210,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   const loadLinks = useCallback(async (id: string) => {
     try {
       const [out, back] = await Promise.all([notesApi.links(id), notesApi.backlinks(id)])
+      if (noteRef.current?.id !== id) return
       // links() returns every link touching the note; keep only the outgoing ones here.
       setLinks(out.filter(l => l.source_type === 'note' && l.source_id === id))
       setBacklinks(back)
@@ -227,33 +228,47 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   // loaded) the save is refused rather than silently overwriting it; the
   // user's in-progress edit stays on screen and the History panel shows
   // what changed underneath them.
-  const performSaveImpl = useCallback(async () => {
+  //
+  // Saves run one after another, each on the version the one before it
+  // produced: two in flight sent the same `expect_version`, and the server
+  // refused the second as a change from elsewhere. What a save sends is read
+  // when it is asked for, so a flush on switching notes still sends the note
+  // being left.
+  const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
+  const savedVersionRef = useRef(new Map<string, number>())
+  const performSaveImpl = useCallback(() => {
     const current = noteRef.current
-    if (!current) return
+    if (!current) return Promise.resolve()
     const snapshot = editorRef.current?.getSnapshot() ?? richTextSnapshotFromDocument(editorDocumentRef.current)
     const trimmedTitle = titleRef.current.trim()
-    try {
-      const updated = await notesApi.update(current.id, {
-        ...(trimmedTitle ? { title: trimmedTitle } : {}),
-        ...snapshot,
-        expect_version: current.version,
-      })
-      onNoteResolved(updated)
-      noteCacheRef.current.set(updated.id, updated)
-      // Don't clobber the view if we've since navigated to a different note.
-      if (noteRef.current?.id === current.id) {
-        noteRef.current = updated
-        setNote(updated)
+    const run = saveChainRef.current.then(async () => {
+      const expectVersion = Math.max(current.version, savedVersionRef.current.get(current.id) ?? 0)
+      try {
+        const updated = await notesApi.update(current.id, {
+          ...(trimmedTitle ? { title: trimmedTitle } : {}),
+          ...snapshot,
+          expect_version: expectVersion,
+        })
+        savedVersionRef.current.set(updated.id, updated.version)
+        onNoteResolved(updated)
+        noteCacheRef.current.set(updated.id, updated)
+        // Don't clobber the view if we've since navigated to a different note.
+        if (noteRef.current?.id === current.id) {
+          noteRef.current = updated
+          setNote(updated)
+        }
+        setRevisions(null)
+      } catch (e) {
+        if (e instanceof ApiRequestError && e.status === 409) {
+          toast.error('This note changed elsewhere while you were editing. Your edit was not saved — check History, then retry.')
+        } else {
+          toast.error(errMsg(e))
+        }
+        throw e
       }
-      setRevisions(null)
-    } catch (e) {
-      if (e instanceof ApiRequestError && e.status === 409) {
-        toast.error('This note changed elsewhere while you were editing. Your edit was not saved — check History, then retry.')
-      } else {
-        toast.error(errMsg(e))
-      }
-      throw e
-    }
+    })
+    saveChainRef.current = run.catch(() => undefined)
+    return run
   }, [onNoteResolved])
 
   // `flushKey: noteId` flushes a pending save when switching to a different
@@ -322,7 +337,12 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
     if (JSON.stringify(freshDoc) !== currentJson) setEditorDocument(freshDoc)
   }, [onNoteResolved])
 
+  // Only the latest load applies: the editor stays mounted across a switch, and
+  // a slow read for the note left behind used to replace the one switched to.
+  const loadSeqRef = useRef(0)
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current
+    const isCurrent = () => seq === loadSeqRef.current
     if (!noteId || !activeSpaceId) {
       setNote(null)
       setLoading(false)
@@ -350,6 +370,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
     try {
       const n = await notesApi.get(noteId)
       noteCacheRef.current.set(n.id, n)
+      if (!isCurrent()) return
       seedFromNote(n)
       onNoteResolved(n)
       // Links aren't on the critical path (they live behind a footer panel), so
@@ -357,11 +378,12 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
       void loadLinks(n.id)
       void loadShares(n.id)
     } catch (e) {
+      if (!isCurrent()) return
       if (isNotFoundError(e)) setNotFound(true)
       else toast.error(errMsg(e))
       setNote(null)
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [noteId, activeSpaceId, loadLinks, loadShares, onNoteResolved, seedFromNote, revalidate])
 
@@ -388,13 +410,17 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   // Candidates for the search-backed kinds. Debounced, and guarded against a
   // slow response for an earlier query landing after a newer one.
   useEffect(() => {
+    // Nothing to search for: also not searching. The previous run's cleanup
+    // only cancels its request; its "searching" would otherwise stand.
     if (!activeSpaceId || !SEARCHED_TARGET_KINDS.includes(linkKind)) {
       setSearchResults([])
+      setSearching(false)
       return
     }
     const query = searchQuery.trim()
     if (!query) {
       setSearchResults([])
+      setSearching(false)
       return
     }
     let cancelled = false

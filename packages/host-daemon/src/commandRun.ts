@@ -23,7 +23,7 @@ import { existingTaskWorktree, taskLeaseKey, useTaskWorktree } from "./taskWorkt
  * more right to the machine than the Run did — while a trusted host runs it
  * natively, exactly as it runs that owner's Runs.
  */
-export interface CommandRunRequest {
+interface CommandRunRequest {
   request_id: string;
   workspace?: { kind: "location"; workspace_location_id?: string; workspace_relative_path?: string; worktree?: { task_id: string; merge_id?: string } } | { kind: "managed"; agent_id?: string; container?: ManagedWorkspaceContainer };
   workspace_location_id?: string;
@@ -41,7 +41,7 @@ export interface CommandRunRequest {
   isolation?: HostLaunchIsolation;
 }
 
-export interface CommandRunResult {
+interface CommandRunResult {
   exit_code: number;
   stdout: string;
   stderr: string;

@@ -26,7 +26,7 @@ export interface AgentDelegationTarget {
   capabilities_json?: Record<string, unknown> | null;
 }
 
-export interface AgentDelegationToolBinding {
+interface AgentDelegationToolBinding {
   targets: AgentDelegationTarget[];
   toolDefinitions: CanonicalToolDefinition[];
   service: Pick<AgentGroupRunService, "spawnChildRun"> & Partial<Pick<AgentGroupRunService, "preflightSpawnChildRunPolicy" | "spawnChildRunAuthorized">>;
@@ -369,7 +369,9 @@ async function runAgentWaitForResultsToolCall(
           status,
           error: status === "run_not_running"
             ? `This Run can no longer wait for results (status=${waitState.current_status ?? "unknown"}).`
-            : "The selected dependency Runs changed before the wait could be persisted.",
+            : status === "dependency_cycle"
+              ? "Those Runs are themselves waiting for this Run's result, so neither could ever finish. Answer without waiting for them."
+              : "The selected dependency Runs changed before the wait could be persisted.",
         },
         summary: {
           tool_name: call.name,

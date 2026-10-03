@@ -12,24 +12,24 @@ import { withDbTransaction } from "../routeUtils/common.js";
 import { DeploymentRepository, isUniqueViolation } from "./repository.js";
 
 /** ADR 0020 §4: the drain waits this long before the deployer proceeds anyway. */
-export const DEFAULT_DRAIN_TIMEOUT_SECONDS = 600;
+const DEFAULT_DRAIN_TIMEOUT_SECONDS = 600;
 
 /** A stage's output is a diagnostic on a job row, not a log store. */
-export const MAX_LOG_TAIL_BYTES = 8 * 1024;
+const MAX_LOG_TAIL_BYTES = 8 * 1024;
 
 /**
  * A running job whose deployer has not reported for this long is lost. It has
  * to exceed the deployer's own per-stage budget (thirty minutes), or a slow
  * pull would be swept while it is still working.
  */
-export const DEPLOYER_LOST_AFTER_MS = 60 * 60 * 1000;
+const DEPLOYER_LOST_AFTER_MS = 60 * 60 * 1000;
 
 /**
  * A queued job nobody claimed in this long has no deployer. The heartbeat is
  * every thirty seconds, so the only thing this waits out is a deployer
  * restart — and a non-terminal job defers every unattended Run meanwhile.
  */
-export const DEPLOYER_UNAVAILABLE_AFTER_MS = 30 * 60 * 1000;
+const DEPLOYER_UNAVAILABLE_AFTER_MS = 30 * 60 * 1000;
 
 /**
  * No heartbeat for this long and the deployer is treated as not there.
@@ -39,9 +39,9 @@ export const DEPLOYER_UNAVAILABLE_AFTER_MS = 30 * 60 * 1000;
  * and a queued update pauses every unattended Run until the sweep fails it
  * half an hour later.
  */
-export const DEPLOYER_OFFLINE_AFTER_MS = 3 * 60 * 1000;
+const DEPLOYER_OFFLINE_AFTER_MS = 3 * 60 * 1000;
 
-export class DeploymentConflictError extends Error {
+class DeploymentConflictError extends Error {
   readonly statusCode = 409;
   constructor(message: string) {
     super(message);
@@ -49,7 +49,7 @@ export class DeploymentConflictError extends Error {
   }
 }
 
-export class DeploymentNotFoundError extends Error {
+class DeploymentNotFoundError extends Error {
   readonly statusCode = 404;
   constructor(message: string) {
     super(message);
@@ -57,7 +57,7 @@ export class DeploymentNotFoundError extends Error {
   }
 }
 
-export class DeploymentUnsupportedError extends Error {
+class DeploymentUnsupportedError extends Error {
   readonly statusCode = 422;
   constructor(message: string) {
     super(message);
@@ -72,7 +72,7 @@ export class DeploymentUnsupportedError extends Error {
  * every unattended Run from the moment it exists, and only the half-hour sweep
  * would release them.
  */
-export class DeploymentDeployerOfflineError extends Error {
+class DeploymentDeployerOfflineError extends Error {
   readonly statusCode = 503;
   constructor(message: string) {
     super(message);
@@ -291,10 +291,13 @@ export class DeploymentService {
       return this.getJobDetail(jobId);
     }
     if (!recorded) {
-      const existing = await this.repository.getJob(jobId);
-      if (!existing) throw new DeploymentNotFoundError("Deployment job not found");
+      const existing = await this.getJobDetail(jobId);
+      // A retry of the terminal report whose first attempt committed between
+      // this attempt's event check and its update: the job is not running any
+      // more because of this very event, which is recorded.
+      if (existing.events.some((event) => event.event_id === input.event_id)) return existing;
       // Cancelled or swept while the stage ran: the job is not revived.
-      throw new DeploymentConflictError(`Deployment job is ${existing.status}, not running`);
+      throw new DeploymentConflictError(`Deployment job is ${existing.job.status}, not running`);
     }
     return this.getJobDetail(jobId);
   }

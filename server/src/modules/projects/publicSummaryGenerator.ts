@@ -13,7 +13,7 @@ import {
 import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import type { MemoryAuthFields } from "../memory/memoryReadAuth.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
-import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { writePolicyAudit } from "../policy/auditWriter.js";
 import { assertProjectWriter } from "./access.js";
 import {
@@ -26,11 +26,7 @@ import {
 } from "./publicSummaryPrompt.js";
 import { PgProjectRepository } from "./repository.js";
 
-export const PROJECT_PUBLIC_SUMMARY_TASK = "project_public_summary";
-export {
-  PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION,
-  PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION,
-} from "./publicSummaryPrompt.js";
+const PROJECT_PUBLIC_SUMMARY_TASK = "project_public_summary";
 import type { ContentAccessLevel } from "../access/contentAccessTypes.js";
 
 interface ProjectContextRow {
@@ -98,7 +94,7 @@ interface GeneratorContext extends PublicSummaryPromptContext {
   allowedSourceRefs: Map<string, PublicSummarySourceRef>;
 }
 
-export interface GeneratePublicSummaryInput {
+interface GeneratePublicSummaryInput {
   providerId?: string | null;
   model?: string | null;
   maxTokens?: number | null;
@@ -368,6 +364,8 @@ export class ProjectPublicSummaryGenerator {
         WHERE space_id = $1
           AND project_id = $2
           AND ${contentReadSql("artifact", "a", "$3", { includeOversight: false })}
+          -- A Room's outputs stay with its members (ADR 0018 decision 3).
+          AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}
         ORDER BY created_at DESC, id DESC
         LIMIT 16`,
       [identity.spaceId, projectId, identity.userId],
@@ -387,6 +385,7 @@ export class ProjectPublicSummaryGenerator {
         WHERE p.space_id = $1
           AND p.project_id = $2
           AND ${contentReadSql("proposal", "p", "$3", { includeOversight: false })}
+          AND ${roomRunReadAccessSql("p.created_by_run_id", "p.space_id", "$3")}
         ORDER BY p.created_at DESC, p.id DESC
         LIMIT 16`,
       [identity.spaceId, projectId, identity.userId],

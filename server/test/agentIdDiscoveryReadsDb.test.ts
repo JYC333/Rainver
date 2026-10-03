@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { SystemActionId } from "@rainver/protocol";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import { seedAgentWithVersion } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedSpaceMember } from "./support/domainSeeds.js";
 import { loadConfig } from "../src/config.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
@@ -52,11 +52,11 @@ beforeEach(async () => {
 
 const identity = () => ({ spaceId: SPACE, userId: OWNER });
 
-async function executorsFor(projectId: string): Promise<Map<SystemActionId, SystemActionExecutor>> {
+async function executorsFor(projectId: string, instructedBy = OWNER): Promise<Map<SystemActionId, SystemActionExecutor>> {
   const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: await mkdtemp(join(tmpdir(), "rainver-list-threads-")) });
   const run = {
     id: randomUUID(), space_id: SPACE, agent_id: AGENT, project_id: projectId, run_group_id: null,
-    instructed_by_user_id: OWNER, trigger_origin: "manual", status: "running", visibility: "space_shared",
+    instructed_by_user_id: instructedBy, trigger_origin: "manual", status: "running", visibility: "space_shared",
   } as unknown as RunRecord;
   const executors = new Map<SystemActionId, SystemActionExecutor>();
   registerInquirySystemActionExecutors(executors, config, run);
@@ -166,5 +166,30 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
       { operation_id: "classification-run" },
       { idempotency_key: "call-6" } as never,
     )).rejects.toThrow(`No research Operation has id 'classification-run'. Use one of these ids exactly: ${running} — Acquisition: classification (active)`);
+  });
+
+  it("stops listing research Operations once the instructing person's Project membership is gone", async () => {
+    if (!db.available) return;
+    const MEMBER = "5ddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    await seedSpaceMember(db.pool, { space: SPACE, user: MEMBER });
+    const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Agent memory" });
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'member', 'active', now(), now())`,
+      [randomUUID(), SPACE, project.id, MEMBER],
+    );
+    await db.pool.query(
+      `INSERT INTO project_operations (id, space_id, project_id, kind, title, status, created_by_user_id, progress_json, version, created_at, updated_at)
+       VALUES ($1, $2, $3, 'research', 'Acquisition: classification', 'active', $4, '{}'::jsonb, 1, now(), now())`,
+      [randomUUID(), SPACE, project.id, OWNER],
+    );
+    const executors = await executorsFor(project.id as string, MEMBER);
+    const list = () => executors.get("research.list_operations" as SystemActionId)!({}, { idempotency_key: randomUUID() } as never) as Promise<ExecutorResult>;
+
+    expect((await list()).modelResult).toMatchObject({ operations: [expect.objectContaining({ title: "Acquisition: classification" })] });
+
+    // Revoked mid-Run: the Run goes on, this read does not.
+    await db.pool.query(`DELETE FROM project_members WHERE project_id = $1 AND user_id = $2`, [project.id, MEMBER]);
+    await expect(list()).rejects.toMatchObject({ statusCode: 404 });
   });
 });

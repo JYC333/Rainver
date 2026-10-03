@@ -22,9 +22,9 @@ import { clearVendorCredentialEnv } from "./providerBinding.js";
  * and nowhere else; the machine's own copy logs in as the machine.
  */
 /** The wire's `login_open` frame, minus its type tag. */
-export type LoginOpenFrame = Omit<HostServerFrameOf<"login_open">, "type">;
+type LoginOpenFrame = Omit<HostServerFrameOf<"login_open">, "type">;
 
-export interface LoginSession {
+interface LoginSession {
   write(data: string): void;
   close(): void;
 }
@@ -149,20 +149,29 @@ function openAgentAuthSession(
     env: sanitizedEnv(launch.env, launch.home, frame.runtime_key),
   });
   log(`ACP authenticate ${frame.runtime_key} ${frame.installation}: ${method.id}`);
+  // Held until this session ends, as the terminal login holds it: a managed
+  // copy's replacement waits for an Agent Auth running from its directory.
+  const releaseLogin = holdRuntimeKey(frame.runtime_key);
   let buffer = "";
   let exited = false;
   let waitingTimer: ReturnType<typeof setTimeout> | null = null;
   const finish = (code: number, loggedInState: boolean) => {
     if (exited) return;
     exited = true;
+    releaseLogin();
     if (waitingTimer) clearTimeout(waitingTimer);
     sessions.delete(frame.session_id);
     try { child.kill(); } catch { /* already gone */ }
     send({ type: "login_exit", session_id: frame.session_id, exit_code: code, logged_in: loggedInState });
   };
   const write = (message: Record<string, unknown>) => child.stdin?.write(`${JSON.stringify(message)}\n`);
-  child.stdout?.on("data", (chunk: Buffer) => {
-    buffer += chunk.toString("utf8");
+  // EPIPE from a write as the agent exits arrives on the stream; the close
+  // that follows is the report.
+  child.stdin?.on("error", () => { /* reported by close */ });
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    buffer += chunk;
     let at = buffer.indexOf("\n");
     while (at !== -1) {
       const line = buffer.slice(0, at);
@@ -206,7 +215,7 @@ function openAgentAuthSession(
       }
     }
   });
-  child.stderr?.on("data", (chunk: Buffer) => send({ type: "login_output", session_id: frame.session_id, data: chunk.toString("utf8") }));
+  child.stderr?.on("data", (chunk: string) => send({ type: "login_output", session_id: frame.session_id, data: chunk }));
   child.on("error", (error) => {
     send({ type: "login_output", session_id: frame.session_id, data: `${error.message}\n` });
     finish(1, false);
@@ -239,9 +248,9 @@ function openAgentAuthSession(
  */
 export const LOGIN_INPUT_SESSION_MAX_CHARS = 256 * 1024;
 export const LOGIN_INPUT_BURST_CHARS = 32 * 1024;
-export const LOGIN_INPUT_CHARS_PER_SECOND = 8 * 1024;
+const LOGIN_INPUT_CHARS_PER_SECOND = 8 * 1024;
 
-export interface LoginInputRefusal {
+interface LoginInputRefusal {
   reason: string;
   /** Too fast: the frame is dropped and the session goes on. Over the lifetime budget: the session ends. */
   fatal: boolean;
@@ -325,8 +334,10 @@ export function openLoginSession(
         : frame.auth_method?.type === "terminal" || frame.login_action === "cli" ? code === 0 : loggedIn(resolved.home, resolved.login),
     });
   };
-  child.stdout?.on("data", (chunk: Buffer) => send({ type: "login_output", session_id: frame.session_id, data: chunk.toString("utf8") }));
-  child.stderr?.on("data", (chunk: Buffer) => send({ type: "login_output", session_id: frame.session_id, data: chunk.toString("utf8") }));
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => send({ type: "login_output", session_id: frame.session_id, data: chunk }));
+  child.stderr?.on("data", (chunk: string) => send({ type: "login_output", session_id: frame.session_id, data: chunk }));
   child.on("error", (error) => {
     send({ type: "login_output", session_id: frame.session_id, data: `${error.message}\n` });
     finish(-1);

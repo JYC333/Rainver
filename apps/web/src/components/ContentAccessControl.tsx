@@ -80,6 +80,10 @@ export function ContentAccessControl({
     if (!open || !activeSpaceId || !canManage) return
     let cancelled = false
     setLoading(true)
+    // What was on screen last time — possibly an edit that was never saved,
+    // possibly another resource's policy — is not this resource's current
+    // policy. Nothing is editable or saveable until this load has answered.
+    setPolicy(null)
     Promise.all([
       contentAccessApi.get(resourceType, resourceId),
       spacesApi.members(activeSpaceId),

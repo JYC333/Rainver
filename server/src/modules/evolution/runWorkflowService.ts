@@ -8,6 +8,10 @@ import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { sha256Json } from "./hash.js";
 import { normalizeAssetOwnerScopeForCreate } from "./assetAccess.js";
 import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
+import { materializePlanGraph, PlanGraphError } from "../plans/graph.js";
+
+/** `WorkflowDefinitionSchema.nodes` max; every source becomes one node. */
+const MAX_WORKFLOW_NODES = 30;
 
 const RISK_ORDER = ["low", "medium", "high", "critical"] as const;
 const MAX_TEXT_LENGTH = 512;
@@ -19,7 +23,7 @@ interface WorkflowSource {
   contract_snapshot_json: unknown;
 }
 
-export interface RunWorkflowPreview {
+interface RunWorkflowPreview {
   run_id: string;
   source_kind: "run" | "plan";
   risk_level: string;
@@ -136,12 +140,26 @@ export class RunWorkflowService {
             contract_snapshot_json: run.contract_snapshot_json,
           }))
         : [sourceFromRun(run)];
+    if (sources.length > MAX_WORKFLOW_NODES) {
+      throw new HttpError(
+        422,
+        `This Run cannot be saved as a workflow: it would need ${sources.length} nodes and a workflow holds at most ${MAX_WORKFLOW_NODES}`,
+      );
+    }
     const maxRisk = sources.reduce<string>((current, source) => {
       const risk = normalizedRisk(contractRecord(source.contract_snapshot_json).risk_level);
       return riskRank(risk) > riskRank(current) ? risk : current;
     }, "low");
     const definition = await this.buildDefinition(run, sources, artifacts, verification, input, maxRisk);
     const parsed = protocol.WorkflowDefinitionSchema.parse(definition);
+    // A saved workflow runs through the plan executor, so it has to satisfy the
+    // executor's graph limits here rather than fail at every launch.
+    await materializePlanGraph(parsed).catch((error: unknown) => {
+      if (error instanceof PlanGraphError) {
+        throw new HttpError(422, `This Run cannot be saved as a workflow: ${error.message}`);
+      }
+      throw error;
+    });
     return {
       run_id: run.id,
       source_kind: children.length > 0 || run.run_type === "workflow" ? "plan" : "run",

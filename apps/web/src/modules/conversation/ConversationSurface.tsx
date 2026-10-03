@@ -41,7 +41,7 @@ import { ConversationComposer } from './ConversationComposer'
 import type { ConversationInputPart } from '@rainver/protocol'
 import { ConversationInputPartsView, type ConversationInputFileSource } from './ConversationInputComposer'
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
-import { clearConversationDraft, readConversationDraft, writeConversationDraft } from './conversationDraft'
+import { clearConversationDraft, draftFileSearchQuery, readConversationDraft, writeConversationDraft } from './conversationDraft'
 import { ConversationRunControls } from './ConversationRunControls'
 import { notifyProjectFolderContentChanged } from '../../core/projectFolderEvents'
 import {
@@ -105,7 +105,7 @@ function sameCurrentFilePart(part: ConversationInputPart, current: CurrentFileAt
       && part.relative_path === current.relativePath
 }
 
-export interface ConversationSurfaceProps {
+interface ConversationSurfaceProps {
   roomId: string
   /** Null while a new Conversation is still awaiting explicit execution setup. */
   conversationId: string | null
@@ -220,6 +220,7 @@ export function ConversationSurface({
   const [inputParts, setInputParts] = useState<ConversationInputPart[]>([])
   const previousConversationId = useRef<string | null | undefined>(undefined)
   const [resetToken, setResetToken] = useState(0)
+  const [restoredDraft, setRestoredDraft] = useState<{ token: number; text: string } | null>(null)
   const [sending, setSending] = useState(false)
   const [loadedBackendCatalogs, setLoadedBackendCatalogs] = useState<Record<string, ConversationBackendCatalog>>({})
   const [sessionConfig, setSessionConfig] = useState<Record<string, SessionConfigSelection[]>>({})
@@ -285,7 +286,10 @@ export function ConversationSurface({
             return part
           }
           if (conversationId && part.kind === 'file_reference') {
-            const result = await conversationInputApi.searchFiles(conversationId, part.relative_path)
+            // The search accepts at most 200 characters while a path may run
+            // to 4096; the file name finds the candidates and the full path
+            // picks the reference back out of them.
+            const result = await conversationInputApi.searchFiles(conversationId, draftFileSearchQuery(part.relative_path))
             return result.items.some(item => item.project_folder_id === part.project_folder_id
               && item.workspace_location_id === part.workspace_location_id
               && item.relative_path === part.relative_path)
@@ -304,7 +308,10 @@ export function ConversationSurface({
       if (cancelled) return
       setComposer(current => ({ ...current, text: draft.text }))
       setInputParts(validated.filter((part): part is ConversationInputPart => part !== null))
-      setResetToken(value => value + 1)
+      // Put back into the editor, not reset: the reset token is the
+      // after-send clear, and it emptied the restored text and attachments,
+      // which the next write then deleted from storage.
+      setRestoredDraft(current => ({ token: (current?.token ?? 0) + 1, text: draft.text }))
       draftReadyRef.current = draftDestination
     })()
     return () => { cancelled = true }
@@ -1217,6 +1224,7 @@ export function ConversationSurface({
             // must still let the user write and retain the message.
             disabled={sending}
             resetToken={resetToken}
+            restore={restoredDraft}
             onSubmit={() => void sendMessage()}
             projectId={detail?.room.project_id}
             projectFolderId={detail?.room.project_folder_id}
@@ -1559,7 +1567,7 @@ export function mergeMessages(current: RoomMessage[], incoming: readonly RoomMes
   return uniqueMessages([...merged, ...incoming.filter(message => !held.has(message.id))])
 }
 
-export function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
+function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
   const seen = new Set<string>()
   return messages.filter(message => {
     if (seen.has(message.id)) return false
@@ -1601,12 +1609,12 @@ export function delegatedRunIds(message: { metadata_json?: RoomMessage['metadata
   return Array.isArray(delegated) ? delegated.filter((id): id is string => typeof id === 'string') : []
 }
 
-export function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {
+function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {
   const value = metadata?.action_previews
   return Array.isArray(value) ? value as ChatActionPreview[] : []
 }
 
-export function uniqueIds(values: string[]): string[] {
+function uniqueIds(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))]
 }
 

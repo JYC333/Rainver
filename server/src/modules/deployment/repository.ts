@@ -83,7 +83,7 @@ function toEvent(row: EventRow): DeploymentJobEvent {
   return { ...row, at: iso(row.at) };
 }
 
-export interface AppendEventInput {
+interface AppendEventInput {
   job_id: string;
   event_id: string;
   stage: DeploymentStage;

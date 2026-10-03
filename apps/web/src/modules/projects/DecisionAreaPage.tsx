@@ -34,7 +34,9 @@ export default function DecisionAreaPage() {
     ])
     setCases(rows)
     setThreads(threadRows)
-    const id = caseId ?? searchParams.get('open') ?? selected?.id ?? rows[0]?.id
+    // `?open=` lands the first load on a Case; once a Case is selected the
+    // selection wins, or every action's reload would jump back to the link.
+    const id = caseId ?? selected?.id ?? searchParams.get('open') ?? rows[0]?.id
     setSelected(id ? await decisionCasesApi.get(projectId, id) : null)
   }, [projectId, searchParams, selected?.id])
   useEffect(() => { load().catch(error => toast.error(err(error))) }, [projectId])

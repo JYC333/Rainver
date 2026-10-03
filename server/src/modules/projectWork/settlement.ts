@@ -321,7 +321,8 @@ async function settleTasksForRunIn(
                 WHERE e.space_id = $1 AND e.subject_type = 'task' AND e.subject_id = t.id
                   AND e.event_kind = 'task.flow_changed'
                   AND e.data_json->>'to' = 'waiting_for_review'
-             ), '-infinity'::timestamptz)))`,
+             ), '-infinity'::timestamptz)))
+      FOR UPDATE OF t`,
     [spaceId, runId, SETTLED_RUN_STATUSES, NON_EXECUTION_TASK_RUN_ROLES],
   );
 
@@ -338,6 +339,22 @@ async function settleTasksForRunIn(
       row.evaluation_id !== null,
       missing,
     );
+
+    // The row is locked by the candidate query, so its status is the one the
+    // guards above saw. The event is written only once the row has moved:
+    // an event for a change that did not happen would still commit.
+    const updated = await db.query<{ id: string }>(
+      `UPDATE tasks
+          SET status = $3::varchar,
+              completed_at = CASE WHEN $3::varchar = 'done' THEN COALESCE(completed_at, now()) ELSE completed_at END,
+              updated_at = now()
+        WHERE id = $2 AND space_id = $1
+          AND status NOT IN ('done', 'cancelled', 'blocked')
+        RETURNING id`,
+      [spaceId, row.task_id, outcome.flow],
+    );
+    if (updated.rows.length === 0) continue;
+    settled.push(row.task_id);
 
     const settlementEvent = row.project_id
       ? await appendProjectWorkEvent(db, {
@@ -365,18 +382,6 @@ async function settleTasksForRunIn(
         })
       : null;
 
-    const updated = await db.query<{ id: string }>(
-      `UPDATE tasks
-          SET status = $3::varchar,
-              completed_at = CASE WHEN $3::varchar = 'done' THEN COALESCE(completed_at, now()) ELSE completed_at END,
-              updated_at = now()
-        WHERE id = $2 AND space_id = $1
-          AND status NOT IN ('done', 'cancelled')
-        RETURNING id`,
-      [spaceId, row.task_id, outcome.flow],
-    );
-    if (updated.rows.length === 0) continue;
-    settled.push(row.task_id);
 
     if (outcome.flow === "done") {
       // Done by any path lands its branch (ADR 0016 §11).

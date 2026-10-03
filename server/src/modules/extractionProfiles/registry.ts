@@ -13,12 +13,12 @@ export interface ExtractionProfileMaterializationResult {
   created: boolean;
 }
 
-export type ExtractionProfileMaterializer = (
+type ExtractionProfileMaterializer = (
   db: Queryable,
   input: ExtractionProfileMaterializationInput,
 ) => Promise<ExtractionProfileMaterializationResult | null>;
 
-export interface ExtractionProfileEntry {
+interface ExtractionProfileEntry {
   key: string;
   displayName: string;
   /**

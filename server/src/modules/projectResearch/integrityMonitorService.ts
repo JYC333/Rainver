@@ -3,8 +3,8 @@ import type { Queryable } from "../routeUtils/common.js";
 import { objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 
-export type ResearchIntegrityEventType = "retraction" | "correction" | "expression_of_concern" | "reinstatement";
-export type ResearchIntegrityAlert = {
+type ResearchIntegrityEventType = "retraction" | "correction" | "expression_of_concern" | "reinstatement";
+type ResearchIntegrityAlert = {
   doi: string;
   source_item_id: string | null;
   event_key: string;

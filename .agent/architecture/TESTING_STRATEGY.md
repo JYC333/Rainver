@@ -5,7 +5,7 @@ them fast. Commands are in [`../COMMANDS.md`](../COMMANDS.md).
 
 ## Scope
 
-Five Vitest suites, one per package, each run from its package root:
+Seven Vitest suites, one per package, each run from its package root:
 
 | Package | Tests | Notes |
 |---|---|---|
@@ -13,6 +13,8 @@ Five Vitest suites, one per package, each run from its package root:
 | `packages/protocol/` | `test/**/*.test.ts` | Schema parsing and frozen registry fixtures |
 | `packages/host-daemon/` | `test/**/*.test.ts` | Pure node |
 | `packages/agent-cli/` | `test/**/*.test.ts` | Spawns the command as a real child process against a stub control plane |
+| `packages/folder-read/` | `test/**/*.test.ts` | Path policy, reads, and git |
+| `packages/outbound-guard/` | `test/**/*.test.ts` | Outbound block list and fetch guard |
 | `apps/web/` | `src/**/*.test.{ts,tsx}` | jsdom by default; pure-logic files opt out |
 
 Tests are unit-style (deterministic rules, parsers, state transitions, no
@@ -250,10 +252,15 @@ rule out a regression. Re-run only the failing file first. If baseline compariso
 is needed, use an isolated checkout and preserve the current uncommitted work;
 do not automatically stash or reset it. A file that passes alone but times out
 under full fan-out needs concurrency and timing investigation before attribution.
-Two patterns have produced such flakes here: assuming the order in which
-concurrent fakes are reached, and attaching a
+Four patterns have produced such flakes here: assuming the order in which
+concurrent fakes are reached; attaching a
 rejection handler one event-loop turn after the commit that triggers the
-rejection (Vitest 4 counts that as an unhandled error).
+rejection (Vitest 4 counts that as an unhandled error); querying a
+server-wide catalog view such as `pg_locks` or `pg_stat_activity` without
+limiting it to the file's own database, which reaches into other files sharing
+the container; and acting on a web page after its first render but before its
+start-up loads have run, which a later reset then undoes — wait for the request
+or the loaded element, not only for the first visible text.
 
 There are no hand-written subset schemas any more: every real-Postgres file
 clones the migrated baseline, so a test that seeds rows the real constraints

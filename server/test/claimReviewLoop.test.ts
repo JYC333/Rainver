@@ -5,10 +5,15 @@ import {
   type ClaimContradictionLlmJudge,
 } from "../src/modules/knowledge/claimReviewLoop.js";
 import type { ClaimRow } from "../src/modules/knowledge/knowledgeRepositoryRows.js";
+import type { WithAccessLevel } from "../src/modules/access/contentAccessTypes.js";
+
+type VisibleClaimRow = WithAccessLevel<ClaimRow>;
 import type { QueryResult, Queryable } from "../src/modules/routeUtils/common.js";
 
-function claimRow(overrides: Partial<ClaimRow> = {}): ClaimRow {
+function claimRow(overrides: Partial<VisibleClaimRow> = {}): VisibleClaimRow {
   return {
+    // The viewer these fakes model holds full access; the real SELECT carries the level.
+    effective_access_level: "full",
     id: "claim-1",
     space_id: "space-1",
     subject_object_id: "subject-1",

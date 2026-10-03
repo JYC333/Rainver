@@ -18,7 +18,7 @@ type PreviewFetcher = (
 const PREVIEW_ATTEMPT_TIMEOUT_MS = 10_000;
 const PREVIEW_UNAVAILABLE_MESSAGE = "The source provider is temporarily unavailable or rate limiting; try again shortly.";
 
-export interface ProviderPreviewInput {
+interface ProviderPreviewInput {
   compiledQuery: ResearchCompiledQuery;
   accessibleResultCap: number;
   credentialId?: string | null;

@@ -1,3 +1,5 @@
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_TASK_TIMEOUT_SECONDS,
@@ -228,5 +230,34 @@ describe("SchedulerRegistry liveness", () => {
     await registry.stop();
 
     hang.resolve();
+  });
+
+  it("lets a finished pass's outcome be collected while the scheduler keeps running", async () => {
+    // A pass raced against a stop signal that only resolves at shutdown; each
+    // pass left its race chained to that signal for the life of the process.
+    setFlagsFromString("--expose-gc");
+    const gc = runInNewContext("gc") as () => void;
+    let failure: WeakRef<Error> | null = null;
+    const registry = new SchedulerRegistry({ warn() {}, error() {} });
+    registry.register({
+      name: "failing",
+      intervalSeconds: 3600,
+      awaitRunOnStart: true,
+      run: async () => {
+        const error = new Error("pass failed");
+        failure = new WeakRef(error);
+        throw error;
+      },
+    });
+    await registry.start();
+    try {
+      for (let attempt = 0; attempt < 5 && failure!.deref(); attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+        gc();
+      }
+      expect(failure!.deref()).toBeUndefined();
+    } finally {
+      await registry.stop();
+    }
   });
 });

@@ -37,6 +37,12 @@ function JsonBlock({ value }: { value: unknown }) {
   )
 }
 
+/** A side list that could not be read is said, and nothing is set in its place. */
+function reportSideLoad(error: unknown): null {
+  toast.error(errMsg(error))
+  return null
+}
+
 export default function TaskDetailPage() {
   const { taskId = '', projectId = '' } = useParams()
   // Opened from a Project's Board, Back belongs to that Board: sending the
@@ -57,6 +63,7 @@ export default function TaskDetailPage() {
   const [runtimeProfileError, setRuntimeProfileError] = useState('')
   const [boards, setBoards] = useState<Board[]>([])
   const [loading, setLoading] = useState(true)
+  const [workRefresh, setWorkRefresh] = useState(0)
   const [mode, setMode] = useState<string>('live')
   const [agentPick, setAgentPick] = useState<string>('')
   const [creatingRun, setCreatingRun] = useState(false)
@@ -83,17 +90,20 @@ export default function TaskDetailPage() {
     try {
       const [t, r, a, p, ag, boardPage, nextPlan] = await Promise.all([
         tasksApi.get(taskId),
-        tasksApi.runs(taskId, { limit: '50' }),
-        tasksApi.artifacts(taskId, { limit: '50' }),
-        tasksApi.proposals(taskId, { limit: '50' }),
+        // The Task is the page; its side lists are not. One of them failing
+        // is reported and leaves what was loaded, instead of replacing the
+        // Task with "not found".
+        tasksApi.runs(taskId, { limit: '50' }).catch(reportSideLoad),
+        tasksApi.artifacts(taskId, { limit: '50' }).catch(reportSideLoad),
+        tasksApi.proposals(taskId, { limit: '50' }).catch(reportSideLoad),
         agentsApi.list({ limit: '50' }).catch(() => []),
         boardsApi.list({ limit: '100' }).catch(() => ({ items: [] as Board[] })),
         tasksApi.plan(taskId).catch(() => null),
       ])
       setTask(t)
-      setRuns(r.items)
-      setArts(a.items)
-      setProps(p.items)
+      if (r) setRuns(r.items)
+      if (a) setArts(a.items)
+      if (p) setProps(p.items)
       setAgents(ag)
       setBoards(boardPage.items)
       setPlan(nextPlan)
@@ -104,6 +114,12 @@ export default function TaskDetailPage() {
       setLoading(false)
     }
   }, [taskId, activeSpaceId])
+
+  /** Work (stages, completion, timeline) reloads when a write on this page may have changed it. */
+  const reloadAfterWrite = useCallback(async () => {
+    setWorkRefresh(value => value + 1)
+    await load()
+  }, [load])
 
   useEffect(() => { load() }, [load])
   const profileAgentId = task?.assigned_agent_id || agentPick
@@ -157,7 +173,7 @@ export default function TaskDetailPage() {
       if (aid) body.agent_id = aid
       await tasksApi.createRun(taskId, body)
       toast.success('Queued run created')
-      await load()
+      await reloadAfterWrite()
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -178,7 +194,7 @@ export default function TaskDetailPage() {
           : {}),
       })
       toast.success(`Planning Run queued: ${run.id.slice(0, 8)}…`)
-      await load()
+      await reloadAfterWrite()
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
@@ -200,7 +216,7 @@ export default function TaskDetailPage() {
     await tasksApi.update(task.id, body)
     toast.success('Task contract updated')
     setEditOpen(false)
-    await load()
+    await reloadAfterWrite()
   }
 
   if (loading && !task) {
@@ -343,7 +359,7 @@ export default function TaskDetailPage() {
         </TabsList>
 
         <TabsContent value="work" className="space-y-4 mt-4">
-          <TaskWorkTab taskId={taskId} onChanged={() => void load()} />
+          <TaskWorkTab taskId={taskId} refreshToken={workRefresh} onChanged={() => void load()} />
         </TabsContent>
 
         <TabsContent value="overview" className="space-y-4 mt-4">

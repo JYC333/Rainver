@@ -83,7 +83,7 @@ import {
  */
 export const REMOTE_HOST_ACP_CWD_PLACEHOLDER = REMOTE_CWD_PLACEHOLDER;
 
-export interface RemoteHostCliAdapterInput {
+interface RemoteHostCliAdapterInput {
   run: AgentRunRecord;
   prompt: string | null;
   invocation_delivery?: InvocationDelivery;
@@ -431,6 +431,11 @@ async function runRemoteHostCliAdapter(
   const threadEvents = createThreadEventNormalizer();
   const runtimeEvents = createVendorEventNormalizer(spec.runtime_key);
   const timeoutSeconds = resolveTimeoutSeconds(input, spec.limits.default_timeout_seconds, spec.limits.max_timeout_seconds);
+  // Credentials this run carries must outlive it. Its budget starts when the
+  // host launches it, and the launch may first wait up to one budget (see
+  // `RemoteWsCliCommandExecutor`), so the longest it can live is two budgets;
+  // the margin keeps a request in flight at that boundary from being cut off.
+  const credentialLifetimeSeconds = 2 * timeoutSeconds + 300;
 
   // The control plane's choice of model backend for this run, if it made one.
   // Read from the thread message rather than `runs.model_provider_id` — see
@@ -469,9 +474,7 @@ async function runRemoteHostCliAdapter(
             runtimeKey: spec.runtime_key,
             binding: bound,
             scope,
-            // Outlive the run itself, the way the server-host path does, so a
-            // request in flight at the timeout boundary is not cut off.
-            ttlSeconds: timeoutSeconds + 300,
+            ttlSeconds: credentialLifetimeSeconds,
             leaseRegistry: deps.leaseRegistry,
             // Reads this host's kind and proxy override to resolve a proxy URL
             // it can actually reach. `config.databaseUrl` is proven
@@ -528,7 +531,7 @@ async function runRemoteHostCliAdapter(
         config,
         run: input.run,
         hostId,
-        timeoutSeconds,
+        lifetimeSeconds: credentialLifetimeSeconds,
       });
     } catch (error) {
       return remoteFailureWithEvent(
@@ -627,7 +630,21 @@ async function runRemoteHostCliAdapter(
   // Named here because the result envelope reports it too, and both must be
   // the same answer.
   const installation = dispatchInstallation(input.run);
-  const strictHost = await hostIsStrict(deps.config?.databaseUrl, hostId, deps.db);
+  let strictHost: boolean;
+  try {
+    strictHost = await hostIsStrict(deps.config?.databaseUrl, hostId, deps.db);
+  } catch (error) {
+    // Not knowing is not "trusted". A built-in host taken for a paired machine
+    // would launch without its strict session config and with direct egress
+    // in place of the instance's managed route (B62); the Run fails instead.
+    return remoteFailureWithEvent(
+      input,
+      spec.runtime_key,
+      "host_trust_unavailable",
+      `Could not read the execution host's trust mode: ${error instanceof Error ? error.message : String(error)}`,
+      startedAt,
+    );
+  }
   const egressTransport = !deps.executor && strictHost && deps.config
     ? managedHostEgressTransport(await readInstanceOperationsPolicy(deps.config))
     : { mode: "direct" } satisfies HostEgressTransport;
@@ -777,15 +794,21 @@ async function runRemoteHostCliAdapter(
     : { external_session_id: null, usage: null, model_usage: [], subscription_quota: null };
   if (result.timed_out) {
     const stalled = result.failure_code === "stall_timeout";
+    const neverLaunched = result.failure_code === "launch_wait_timeout";
     const idle = typeof result.idle_seconds === "number" ? result.idle_seconds : null;
     // Say which kind of stuck this was. "Remote Run timed out" is true of a
-    // runtime that worked for the whole budget and of one that said nothing
-    // after the first second, and only the second is worth retrying quickly.
-    const detail = stalled
-      ? `Remote Run produced no output for ${idle ?? "?"}s and was stopped.`
-      : idle !== null && idle > 0
-        ? `Remote Run timed out after ${timeoutSeconds}s (last output ${idle}s earlier).`
-        : `Remote Run timed out after ${timeoutSeconds}s.`;
+    // runtime that worked for the whole budget, of one that said nothing
+    // after the first second, and of one the host never started; only the
+    // second is worth retrying quickly, and the third was not the runtime's
+    // doing at all. The executor's stderr carries that third reason, and the
+    // idle count measured while no process existed says nothing.
+    const detail = neverLaunched
+      ? result.stderr || `The host did not start this run within its ${timeoutSeconds}s budget.`
+      : stalled
+        ? `Remote Run produced no output for ${idle ?? "?"}s and was stopped.`
+        : idle !== null && idle > 0
+          ? `Remote Run timed out after ${timeoutSeconds}s (last output ${idle}s earlier).`
+          : `Remote Run timed out after ${timeoutSeconds}s.`;
     await input.thread_event_sink?.([
       { event_type: "diagnostic", text: detail },
       { event_type: "status", status: "run_timeout" },
@@ -959,7 +982,7 @@ export function taskMergeIdOf(run: { contract_snapshot_json?: unknown }): string
   return typeof mergeId === "string" && mergeId.length > 0 ? mergeId : null;
 }
 
-export interface TaskWorktreeRun {
+interface TaskWorktreeRun {
   contract_snapshot_json?: unknown;
   run_type?: string | null;
   required_sandbox_level?: string | null;
@@ -983,9 +1006,8 @@ export function executionTaskId(run: TaskWorktreeRun): string | null {
 async function hostIsStrict(databaseUrl: string | null | undefined, hostId: string, db?: Queryable): Promise<boolean> {
   if (!databaseUrl) return false;
   const result = await (db ?? getDbPool(databaseUrl))
-    .query<{ kind: string }>(`SELECT kind FROM hosts WHERE id = $1 LIMIT 1`, [hostId])
-    .catch(() => null);
-  return result?.rows[0]?.kind === "server";
+    .query<{ kind: string }>(`SELECT kind FROM hosts WHERE id = $1 LIMIT 1`, [hostId]);
+  return result.rows[0]?.kind === "server";
 }
 
 async function remoteFailureWithEvent(
@@ -1233,7 +1255,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
           ? "The host did not start this run within its time budget: another Run was writing its workspace, or the host had no free slot."
           : "",
         timed_out: true,
-        failure_code: expiry ?? "timeout",
+        failure_code: expiredBeforeLaunch ? "launch_wait_timeout" : expiry ?? "timeout",
         idle_seconds: Math.round((Date.now() - lastOutputAt) / 1000),
       };
     }

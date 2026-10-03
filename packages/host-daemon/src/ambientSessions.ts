@@ -59,13 +59,13 @@ export const DEFAULT_LIMITS: AmbientTrimLimits = {
 
 export type AmbientTrimLimits = ProtocolAmbientTrimLimits;
 
-export type AmbientSessionSummary = ProtocolAmbientSessionSummary;
+type AmbientSessionSummary = ProtocolAmbientSessionSummary;
 
 export type AmbientRecord = ProtocolAmbientRecord;
 
 export type AmbientUsage = ProtocolAmbientUsage;
 
-export type AmbientSessionImport = ProtocolAmbientSessionImport;
+type AmbientSessionImport = ProtocolAmbientSessionImport;
 
 export interface AmbientRuntimeTarget {
   runtime_key: string;
@@ -110,6 +110,9 @@ class AcpProcess {
     });
     this.child.stdout?.on("data", (chunk: Buffer) => this.consume(chunk.toString("utf8")));
     this.child.on("error", (error) => this.fail(error instanceof Error ? error : new Error(String(error))));
+    // EPIPE from writing to a runtime that already exited arrives here, not
+    // at the write; an unheard stream error ends the daemon.
+    this.child.stdin?.on("error", (error) => this.fail(error));
     this.child.on("close", () => this.fail(new Error("the runtime exited before the request completed")));
   }
 
@@ -388,7 +391,7 @@ export function listSessionsForTest(
  * source gone, and conflating them means a session outside the window looks
  * deleted.
  */
-export interface AmbientEnumeration {
+interface AmbientEnumeration {
   selected: AmbientSessionSummary[];
   held: string[];
   conclusive: boolean;

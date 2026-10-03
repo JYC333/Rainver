@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RunMaterializationItemSummary } from "@rainver/protocol";
 import type { AgentRunRecord, Queryable } from "../src/modules/runs/repository.js";
@@ -31,6 +35,19 @@ function run(overrides: Partial<AgentRunRecord> = {}): AgentRunRecord {
     contract_snapshot_json: {},
     output_json: {},
     ...overrides,
+  };
+}
+
+function emptyPlan() {
+  return {
+    recipe_id: null,
+    commands: null,
+    required_checks: null,
+    artifact_expectations: null,
+    timeout_seconds: null,
+    profile_test_commands: null,
+    profile_build_commands: null,
+    forbidden_paths: null,
   };
 }
 
@@ -90,6 +107,55 @@ describe("verification engine", () => {
       "proposal_created",
     ]);
     expect(hasDeclaredVerificationChecks(current)).toBe(true);
+  });
+
+  it("declares a check only where it would build one", () => {
+    // Natural-language criteria build no declaration, so a successful Run
+    // must not be recorded as missing a verification nobody could run; a
+    // check written with `kind` builds one and counts.
+    const prose = run({
+      contract_snapshot_json: {
+        acceptance_criteria_json: { checks: ["all unit tests pass", "README updated"] },
+      },
+    });
+    expect(buildVerificationDeclarations(prose, emptyPlan(), [])).toEqual([]);
+    expect(hasDeclaredVerificationChecks(prose)).toBe(false);
+
+    const byKind = run({
+      contract_snapshot_json: {
+        acceptance_criteria_json: { checks: [{ kind: "file_exists", path: "README.md" }] },
+      },
+    });
+    expect(buildVerificationDeclarations(byKind, emptyPlan(), [])).toHaveLength(1);
+    expect(hasDeclaredVerificationChecks(byKind)).toBe(true);
+  });
+
+  it("keeps diff_scope to the declared paths rather than any file with the same name", async () => {
+    const engine = new PgVerificationEngine(new VerificationDb(), undefined, {
+      async run(input) {
+        const stdout = input.command[1] === "diff" ? "packages/protocol/package.json\0server/package.json\0" : "";
+        return { returncode: 0, stdout, stderr: "", timed_out: false };
+      },
+    });
+    const results = await engine.verify({
+      run: run({
+        contract_snapshot_json: {
+          acceptance_criteria_json: {
+            checks: [
+              { type: "diff_scope", allowed_paths: ["package.json"] },
+              { type: "no_forbidden_change", forbidden_paths: ["package.json"] },
+            ],
+          },
+        },
+      }),
+      execution_target: { host_id: "host-1", workspace_location_id: "loc-1" },
+      base_commit_sha: "HEAD",
+      output_json: {},
+      materialization_items: [] as RunMaterializationItemSummary[],
+    });
+    expect(results.find((result) => result.verifier_type === "diff_scope")).toMatchObject({ status: "failed" });
+    // The forbidden direction stays conservative: a same-named file anywhere still counts.
+    expect(results.find((result) => result.verifier_type === "no_forbidden_change")).toMatchObject({ status: "failed" });
   });
 
   it("treats plan verification recipe references as executable checks", () => {
@@ -207,6 +273,40 @@ describe("verification engine", () => {
     expect(calls.map((call) => call.command)).toEqual([["pnpm", "test"]]);
   });
 
+  it("refuses a validation command with an empty quoted argument instead of sending it to the host", async () => {
+    const db = new VerificationDb();
+    const calls: string[][] = [];
+    const engine = new PgVerificationEngine(db, undefined, {
+      async run(input) {
+        calls.push(input.command);
+        return { returncode: 0, stdout: "", stderr: "", timed_out: false };
+      },
+    });
+    const results = await engine.verify({
+      run: run({
+        contract_snapshot_json: {
+          acceptance_criteria_json: {
+            // The host wire refuses an empty argument and answers nothing, so
+            // sending this would wait out the command timeout.
+            checks: [{ type: "command", command: 'pnpm test -- -t ""' }],
+          },
+        },
+      }),
+      execution_target: {
+        host_id: "host-1",
+        workspace_location_id: "loc-1",
+        runtime_tree_key: "codex_cli",
+        installation: "managed:1.11.0",
+      },
+      base_commit_sha: null,
+      output_json: {},
+      materialization_items: [] as RunMaterializationItemSummary[],
+    });
+
+    expect(results[0]).toMatchObject({ verifier_type: "command", status: "error" });
+    expect(calls).toEqual([]);
+  });
+
   it("asks the host for changed files when a git-backed verifier declares it", async () => {
     const db = new VerificationDb();
     const calls: string[][] = [];
@@ -227,8 +327,59 @@ describe("verification engine", () => {
       output_json: {},
       materialization_items: [] as RunMaterializationItemSummary[],
     });
-    expect(calls).toContainEqual(["git", "diff", "--name-only", "HEAD"]);
-    expect(calls).toContainEqual(["git", "status", "--porcelain"]);
+    expect(calls.map((call) => call.slice(0, 2))).toEqual([["git", "diff"], ["git", "status"]]);
+  });
+
+  it("names every file a Run changed, inside new directories and across renames", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "rainver-verify-git-"));
+    try {
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: workspace, stdio: "pipe" });
+      git("init", "-q");
+      git("-c", "user.email=t@test.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base");
+      mkdirSync(join(workspace, "src"));
+      writeFileSync(join(workspace, "src", "a.ts"), "export const a = 1;\n");
+      writeFileSync(join(workspace, "src", "keys.pem"), "secret\n");
+      git("add", ".");
+      git("-c", "user.email=t@test.invalid", "-c", "user.name=t", "commit", "-q", "-m", "files");
+      // What the Run did: a file in a directory that did not exist, a rename,
+      // and a forbidden file moved away.
+      mkdirSync(join(workspace, "secrets"));
+      writeFileSync(join(workspace, "secrets", "key.pem"), "secret\n");
+      git("mv", "src/a.ts", "src/b.ts");
+      git("mv", "src/keys.pem", "src/moved.txt");
+
+      const engine = new PgVerificationEngine(new VerificationDb(), undefined, {
+        async run(input) {
+          const [command, ...args] = input.command;
+          const stdout = execFileSync(command!, args, { cwd: workspace, encoding: "utf8" });
+          return { returncode: 0, stdout, stderr: "", timed_out: false };
+        },
+      });
+      const results = await engine.verify({
+        run: run({
+          contract_snapshot_json: {
+            acceptance_criteria_json: {
+              checks: [
+                { type: "no_forbidden_change", forbidden_paths: ["secrets/key.pem", "src/keys.pem"] },
+                { type: "file_changed", path: "secrets/key.pem" },
+              ],
+            },
+          },
+        }),
+        execution_target: { host_id: "host-1", workspace_location_id: "loc-1" },
+        base_commit_sha: null,
+        output_json: {},
+        materialization_items: [] as RunMaterializationItemSummary[],
+      });
+      const forbidden = results.find((result) => result.verifier_type === "no_forbidden_change");
+      expect(forbidden).toMatchObject({ status: "failed" });
+      expect(String(forbidden?.evidence_refs_json)).toContain(JSON.stringify(
+        ["secrets/key.pem", "src/a.ts", "src/b.ts", "src/keys.pem", "src/moved.txt"],
+      ));
+      expect(results.find((result) => result.verifier_type === "file_changed")).toMatchObject({ status: "passed" });
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it("reports a command verifier unavailable when the run has no host workspace", async () => {

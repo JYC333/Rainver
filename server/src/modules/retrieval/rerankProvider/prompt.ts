@@ -9,12 +9,12 @@ import { RERANK_SNIPPET_MAX_CHARS } from "./config.js";
  * the caller then keeps the deterministic fused order.
  */
 
-export interface RerankPrompt {
+interface RerankPrompt {
   system: string;
   user: string;
 }
 
-export interface ParsedRerankScore {
+interface ParsedRerankScore {
   index: number;
   score: number;
 }

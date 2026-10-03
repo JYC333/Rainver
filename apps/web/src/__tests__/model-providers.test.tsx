@@ -38,6 +38,7 @@ vi.mock('../contexts/AuthContext', () => ({
 }))
 
 import ModelProvidersPage from '../modules/providers/ModelProvidersPage'
+import { providersApi } from '../api/client'
 
 const EMPTY = /no model providers configured/i
 
@@ -412,5 +413,49 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
     await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2))
     expect(screen.queryByText('Stale Personal Provider')).toBeNull()
     expect(screen.getByText('Team Provider')).toBeInTheDocument()
+  })
+
+  it('clears the default model when the field is emptied on save', async () => {
+    listMock.mockResolvedValue([provider])
+    vi.mocked(providersApi.patch).mockResolvedValue({ ...provider, default_model: null } as never)
+    render(<ModelProvidersPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    // The default-model field comes before the available-models field.
+    fireEvent.change(screen.getAllByDisplayValue('gpt-4o')[0]!, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(providersApi.patch).toHaveBeenCalledWith('p1', expect.objectContaining({ default_model: null })))
+  })
+
+  it('says so when a provider test or delete fails', async () => {
+    listMock.mockResolvedValue([provider])
+    vi.mocked(providersApi.test).mockRejectedValue(new Error('network down'))
+    vi.mocked(providersApi.delete).mockRejectedValue(new Error('still referenced'))
+    const { container } = render(<ModelProvidersPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Test' }))
+    expect(await screen.findByText('network down')).toBeInTheDocument()
+
+    fireEvent.click(container.querySelector('button.text-red-500') as HTMLButtonElement)
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('still referenced'))
+    expect(screen.getByRole('heading', { name: 'My OpenAI' })).toBeInTheDocument()
+  })
+
+  it('does not show the previous Space\'s runtime default when the next Space fails to load', async () => {
+    listMock.mockResolvedValueOnce([provider]).mockRejectedValueOnce(new Error('providers unavailable'))
+    getRuntimeDefaultMock.mockResolvedValue({
+      space_id: 'personal-1', runtime_key: 'opencode', backend_mode: 'model_provider',
+      model_provider_id: provider.id, model_name: provider.default_model, state: 'ready', state_reason: null,
+    })
+    const view = render(<ModelProvidersPage />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'OpenCode backend mode' })).toHaveTextContent('My OpenAI'))
+
+    activeSpace.id = 'team-2'
+    activeSpace.name = 'Team'
+    view.rerender(<ModelProvidersPage />)
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('providers unavailable'))
+
+    expect(screen.queryByRole('button', { name: 'OpenCode backend mode' })?.textContent ?? '').not.toContain('My OpenAI')
   })
 })

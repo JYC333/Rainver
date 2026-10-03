@@ -48,6 +48,24 @@ afterAll(async () => {
   if (rainverHome) await rm(rainverHome, { recursive: true, force: true });
 });
 
+describe("provider command responses", () => {
+  it("answers create and update with the key and ownership state the list shows", async () => {
+    if (!db.available || !rainverHome) return;
+    const store = resolveProviderCommandStore({ databaseUrl: db.connectionUri, rainverHome } as ServerConfig);
+    const created = await store.createProvider(SPACE, OWNER, {
+      name: "Keyed provider",
+      provider_type: "openai",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-test-key",
+    }) as Record<string, unknown>;
+    expect(created).toMatchObject({ has_api_key: true, manageable: true });
+
+    const renamed = await store.updateProvider(SPACE, OWNER, String(created.id), { name: "Renamed" }) as Record<string, unknown>;
+    expect(renamed).toMatchObject({ name: "Renamed", has_api_key: true, manageable: true });
+    expect(renamed.grant_id).toBeTruthy();
+  });
+});
+
 describe("managed subscription OAuth persistence", () => {
   it("keeps Codex tokens encrypted, owner-bound, and refreshes once under a row lock", async () => {
     if (!db.available || !rainverHome) return;

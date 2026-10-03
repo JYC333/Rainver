@@ -731,6 +731,28 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     expect(fallback.model_provider_id).toBe(PROVIDER);
   });
 
+  it("reports no fallback route once every Profile in the chain has been tried", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const runId = await seedRun({ max_attempts: 4 });
+    const routing = new PgRouteDecisionRepository(db.pool);
+    const decision = (attempt: number, selected: string, chain: string[]) => db.pool.query(
+      `INSERT INTO route_decisions (
+         id, space_id, run_id, attempt_number, status, selected_runtime_profile_id, selected_runtime_key,
+         selected_model_provider_id, reason, hints_json, candidates_json, rejected_json, fallback_chain_json,
+         score_trace_json, created_at
+       ) VALUES ($1, $2, $3, $4, 'selected', $5, 'opencode', NULL, 'test', '{}'::jsonb, '[]'::jsonb, '[]'::jsonb,
+                 $6::jsonb, '[]'::jsonb, now())`,
+      [randomUUID(), SPACE, runId, attempt, selected, JSON.stringify(chain)],
+    );
+    await decision(1, PROFILE, [PROFILE, FALLBACK_PROFILE]);
+    expect(await routing.hasFallbackRoute({ space_id: SPACE, id: runId })).toBe(true);
+    // The remainder ran out on attempt 3, so routing was unconstrained and the
+    // chain names the Profile attempt 1 already failed on: not a fallback.
+    await decision(2, FALLBACK_PROFILE, [FALLBACK_PROFILE]);
+    await decision(3, FALLBACK_PROFILE, [FALLBACK_PROFILE, PROFILE]);
+    expect(await routing.hasFallbackRoute({ space_id: SPACE, id: runId })).toBe(false);
+  });
+
   it("takes runtime capabilities from the current AgentVersion, not a Runtime Profile bag", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const routing = new PgRouteDecisionRepository(db.pool);
@@ -955,14 +977,117 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       resumed_at: new Date().toISOString(),
     });
     expect(resumed?.status).toBe("queued");
+    // The review the first attempt waited for is over: it gets its terminal
+    // outcome back, and only the new attempt is open.
     expect((await db.pool.query<{ attempt_number: number; status: string }>(
       `SELECT attempt_number, status
          FROM run_attempts WHERE space_id = $1 AND run_id = $2 ORDER BY attempt_number`,
       [SPACE, runId],
     )).rows).toEqual([
-      { attempt_number: 1, status: "waiting_for_review" },
+      { attempt_number: 1, status: "failed" },
       { attempt_number: 2, status: "queued" },
     ]);
+  });
+
+  it("does not requeue an approval-paused run while its execution lock is still held", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const runId = await seedRun();
+    const repository = new PgRunRepository(db.pool);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    expect(await repository.tryAcquireExecutionLock({ run_id: runId, worker_id: "worker-1" })).toBe(true);
+    // A policy pause is written while the executor still owns the Run. A job
+    // queued at this moment finds the lock, ends as a duplicate, and leaves
+    // the Run queued with nothing left to run it.
+    await repository.markRunWaitingForReview({
+      run_id: runId,
+      space_id: SPACE,
+      approval_code: "policy_requires_approval_runtime_execute",
+      message: "approval required",
+      risk_level: "high",
+      paused_at: new Date().toISOString(),
+    });
+    const grant = { run_id: runId, space_id: SPACE, granted_by_user_id: USER, granted_at: new Date().toISOString() };
+    expect(await repository.grantRunApprovalAndRequeue(grant)).toBeNull();
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("waiting_for_review");
+
+    await repository.releaseExecutionLock(runId);
+    expect((await repository.grantRunApprovalAndRequeue(grant))?.status).toBe("queued");
+  });
+
+  it("records no decision for a Run another finalizer already requeued", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const runId = await seedRun({ max_attempts: 2 });
+    const repository = new PgRunRepository(db.pool);
+    await db.pool.query(
+      `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 1, 'queued', now(), now())`,
+      [randomUUID(), SPACE, runId],
+    );
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.markRunTerminal({
+      run_id: runId,
+      space_id: SPACE,
+      status: "failed",
+      error_json: { error_code: "runtime_stall_timeout", error_text: "no output" },
+      completed_at: new Date().toISOString(),
+    });
+    const stale = (await repository.getRun(SPACE, runId))!;
+    // Two finalizers read the failed Run; the first one's Supervisor has
+    // already retried it, so attempt 2 is queued and has not run.
+    expect(await repository.requeueRunForRetry({
+      run_id: runId,
+      space_id: SPACE,
+      updated_at: new Date().toISOString(),
+      reason_code: "runtime_stall_timeout",
+      attempt_number: 2,
+    })).not.toBeNull();
+
+    const supervisor = new PgRunSupervisor(db.pool, new EvolutionSignalEmitter(db.pool));
+    expect(await supervisor.supervise({
+      run: stale,
+      evaluation: { failure_reason_code: "runtime_stall_timeout", outcome_status: "failed" },
+    })).toBeNull();
+
+    // No human_review decision hangs on an attempt that has not failed yet —
+    // one there would swallow the real supervision when it does.
+    expect((await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM run_supervisor_decisions WHERE space_id = $1 AND run_id = $2`,
+      [SPACE, runId],
+    )).rows[0]?.count).toBe("0");
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("queued");
+    expect(await repository.getLatestRunAttempt(SPACE, runId)).toMatchObject({ attempt_number: 2, status: "queued" });
+  });
+
+  it("reuses the attempt's evaluation when finalization is retried after a partial failure", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const runId = await seedRun();
+    const repository = new PgRunRepository(db.pool);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.markRunTerminal({
+      run_id: runId,
+      space_id: SPACE,
+      status: "succeeded",
+      output_json: { status: "succeeded" },
+      completed_at: new Date().toISOString(),
+    });
+    // A first pass wrote its evaluation and then failed before the
+    // finalization row that would have made the retry a no-op.
+    const prior = await repository.insertRunEvaluation({
+      space_id: SPACE,
+      run_id: runId,
+      outcome_status: "passed",
+      trajectory_status: "acceptable",
+      evidence_json: { attempt_number: 1 },
+      evaluated_at: new Date().toISOString(),
+    });
+
+    const finalization = await new PostRunFinalizationService(repository).finalize(runId, SPACE);
+
+    expect(finalization.run_evaluation_id).toBe(prior.id);
+    expect((await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM run_evaluations WHERE space_id = $1 AND run_id = $2`,
+      [SPACE, runId],
+    )).rows[0]?.count).toBe("1");
   });
 
   it("enforces a run cost cap across attempts before scheduling a retry", async (ctx) => {
@@ -1061,7 +1186,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       visibility: "space_shared",
       status: "pending",
     });
-    expect(await repository.listProposalSummaries(SPACE, runId)).toEqual([]);
+    expect(await repository.listProposalSummaries(SPACE, runId, USER)).toEqual([]);
     await db.pool.query(
       `UPDATE runs SET started_at = $3, updated_at = $3 WHERE space_id = $1 AND id = $2`,
       [SPACE, runId, startedAt],
@@ -1080,7 +1205,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     await repository.releaseExecutionLock(runId);
     expect((await repository.getRun(SPACE, runId))?.status).toBe("orphaned");
     expect((await repository.getLatestRunAttempt(SPACE, runId))?.status).toBe("orphaned");
-    expect((await repository.listProposalSummaries(SPACE, runId)).map((proposal) =>
+    expect((await repository.listProposalSummaries(SPACE, runId, USER)).map((proposal) =>
       proposal.status
     )).toEqual(["rejected", "rejected"]);
   });
@@ -1105,6 +1230,38 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     expect((await repository.getRun(SPACE, runId))?.status).toBe("cancelled");
     expect((await repository.getLatestRunAttempt(SPACE, runId))?.status).toBe("cancelled");
     expect(await repository.listOrphanedRunIds()).toEqual([]);
+  });
+
+  it("keeps finalized orphaned Runs out of the startup orphan sweep", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const repository = new PgRunRepository(db.pool);
+    const finalized = await seedRun();
+    const fresh = await seedRun();
+    for (const [runId, age] of [[finalized, "2 hours"], [fresh, "1 minute"]] as const) {
+      await db.pool.query(
+        `UPDATE runs SET status = 'orphaned', error_json = '{"error_code":"orphaned"}'::jsonb,
+                updated_at = now() - $3::interval
+          WHERE space_id = $1 AND id = $2`,
+        [SPACE, runId, age],
+      );
+    }
+    // A chat or fail-fast Run the supervisor leaves orphaned stays that way
+    // after its finalization. Once a backlog of those filled the page, a
+    // newly orphaned Task Run never reached finalization at all.
+    await db.pool.query(
+      `INSERT INTO run_finalizations (id, space_id, run_id, attempt_number, status, finalized_at, created_at)
+       VALUES ($1, $2, $3, 1, 'completed', now(), now())`,
+      [randomUUID(), SPACE, finalized],
+    );
+    expect(await repository.listOrphanedRunIds(1)).toEqual([{ id: fresh, space_id: SPACE }]);
+
+    // A later attempt orphaned again has not been finalized.
+    await db.pool.query(
+      `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 2, 'orphaned', now(), now())`,
+      [randomUUID(), SPACE, finalized],
+    );
+    expect(await repository.listOrphanedRunIds(1)).toEqual([{ id: finalized, space_id: SPACE }]);
   });
 });
 

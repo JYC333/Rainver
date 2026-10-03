@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ModelProviderOut } from '../../../api/client'
+import { providersApi, type ModelProviderOut } from '../../../api/client'
 import ManagedSubscriptionsPanel from '../components/ManagedSubscriptionsPanel'
 
 vi.mock('../../../api/client', async importOriginal => {
@@ -76,5 +76,23 @@ describe('ManagedSubscriptionsPanel', () => {
 
     expect(screen.getByText(/requires the configured instance admin/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument()
+  })
+
+  it('closes the login stream when the panel goes away, so the server session ends with it', async () => {
+    let signal: AbortSignal | undefined
+    vi.mocked(providersApi.subscriptionLoginStream).mockImplementation(async function* (_type, abort?: AbortSignal) {
+      signal = abort
+      yield { type: 'progress', message: 'Waiting for the browser…' }
+      await new Promise<void>(resolve => abort?.addEventListener('abort', () => resolve(), { once: true }))
+    })
+    const view = render(
+      <ManagedSubscriptionsPanel providers={[]} isInstanceAdmin onChanged={() => {}} onDisconnected={() => {}} />,
+    )
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Connect' })[0]!)
+    await waitFor(() => expect(providersApi.subscriptionLoginStream).toHaveBeenCalled())
+    expect(signal).toBeInstanceOf(AbortSignal)
+    view.unmount()
+    expect(signal?.aborted).toBe(true)
   })
 })

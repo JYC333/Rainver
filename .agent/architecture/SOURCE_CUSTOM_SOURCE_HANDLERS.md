@@ -1,22 +1,21 @@
 # Sources Custom Source Handlers
 
 Status: implemented through Phase 8 backend create-flow/proposal integration,
-frontend create/detail/settings surfaces, first scan-job integration, and
-Level 2 Source Recipe Phase 8 source-detail/compatibility/test flow
-(2026-07-01). The schema, read models, runner, deterministic handler
+first scan-job integration, and the Level 2 Source Recipe
+compatibility/test flow (2026-07-01). The schema, read models, runner, deterministic handler
 generation, fixture tests, inside-envelope activation, handler-run history,
 manual/scheduled scan queueing, trusted endpoint fetch path, Custom Source
 proposal payloads/appliers, Source Recipe plan/create/dry-run/activate
 services, Source Recipe proposal applier, recipe scan worker,
-`source_runs` read model, and declarative-pipeline bridge exist. Sources
-exposes Custom Source draft creation, a recipe-first `/sources` Create Source
-card, and `/sources/connections/:connectionId` Source Detail product tabs
-(Overview, Plan, Preview, Items, Evidence, Runs) with handler internals under
-Advanced.
+`source_runs` read model, and declarative-pipeline bridge exist as backend
+APIs/services. The web `/sources` area is `SourceChannelsPage` plus
+`/sources/:sourceId` (`SourceChannelDetailPage`); no page calls the Custom
+Source draft/handler or Source Recipe plan/create/dry-run/activate APIs yet. The
+web surfaces for this feature are `CustomSourceSpacePolicyPanel` (Space
+Settings) and `CustomSourceRunnerSettingsPanel` (Instance Settings).
 Repair/rollback and credentialed source support are implemented backend-side
 (see "Repair" and "Credentialed Sources" below). Browser/Python handlers are
-not implemented. Source Detail has no Repair tab and no credential-management
-UI — those routes exist as API/service only
+not implemented. There is no Repair or credential-management UI — those routes exist as API/service only
 ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11).
 
 `typescript_node` remains the generated-code Level 3 fallback. Existing
@@ -372,8 +371,8 @@ Schema: `source_handler_versions.language`'s `CHECK` constraint in
 ## Level 2 Source Recipes
 
 Status: implemented through Phase 8 (`server/src/modules/sources/sourceRecipes/`,
-`server/src/modules/sources/sourceRecipeRoutes.ts`, the `/sources` Create Source
-card, Source Detail normal/Advanced split, and compatibility bridge).
+`server/src/modules/sources/sourceRecipeRoutes.ts`, and the compatibility
+bridge; backend only, with no web page wired to it).
 
 Source Recipes are the normal configurable source path. They do not execute
 generated code. A recipe version stores structured JSON over a fixed primitive
@@ -393,20 +392,21 @@ Implemented flow:
 - `activateRecipe` activates a dry-run-tested version directly when the policy
   envelope stays inside bounds; envelope broadening creates a
   `source_recipe_activation` proposal and binds the version until review.
+  Activation re-checks under the connection lock that the active version is
+  still the one the envelope was compared with and that the version is still
+  activatable with a passing dry-run, and otherwise answers 409.
 - `recipeScanWorker` handles manual/scheduled scans for active recipe sources
   and materializes validated output through the shared Sources
-  materializer.
+  materializer. Its scheduler first reclaims a recipe scan job left `running`
+  for over ten minutes, so a crashed process cannot block a channel forever.
 - `listSourceRuns` projects product run history from extraction jobs, handler
   runs, and recipe dry-run results so the UI does not expose raw worker tables
   by default.
 - `SourceRecipePipelineBridgeService` explicitly bridges existing
   `declarative_pipeline_v1` handler versions into draft recipe sources.
 
-The frontend `/sources` Create Source card wires plan, create, dry-run, and
-activate into one flow with URL/name/frequency/capture inputs, plan/sample
-preview, and activation/proposal feedback. Source Detail now exposes Overview,
-Plan, Preview, Items, Evidence, Runs, and Advanced; raw handler versions/runs,
-policy envelopes, recipe JSON, and extraction jobs are kept in Advanced.
+The Source Recipe plan, create, dry-run, and activate flow is API-only; the
+web client declares these calls but no frontend page wires them yet.
 
 ## Repair
 
@@ -433,8 +433,9 @@ While a repair attempt is in flight, `source_connections.repair_status` is
 `repair_pending`; any failure past that point (generation, the fixture test
 itself throwing rather than just failing, envelope evaluation, activation, or
 proposal creation) reverts it to `repair_required` rather than leaving it
-stuck `repair_pending` forever. A repair call rejects outright (409) if the
-connection is already `repair_pending`, so two repair attempts cannot race on
+stuck `repair_pending` forever, and so does rejecting the repair's proposal.
+A repair call rejects outright (409) if the connection is already
+`repair_pending`, so two repair attempts cannot race on
 the same connection through the API (this is an application-level guard, not
 a row lock — a true concurrent double-call at the database level is not
 separately interlocked).
@@ -449,7 +450,7 @@ Repair auto-activates only when:
 Otherwise a proposal is created before activation:
 
 - envelope unchanged but Space policy requires review →
-  `custom_source_repair_activation` (see "Phase 6 Proposal Payloads" above);
+  `custom_source_repair_activation` (see "Phase 6 Proposal Payloads" below);
 - envelope broadened (new/changed network origins, credential request,
   browader capture/retention, larger limits, language change, disabled log
   redaction) → the same `custom_source_policy_delta`/
@@ -684,7 +685,7 @@ hard limits are read-only via the existing
 active handler version and latest run:
 
 - `repair_status` — `ok`, `repair_required` (3+ consecutive non-succeeded
-  runs, or a failed repair attempt — see "Repair" above), `repair_pending`
+  runs, or a failed or rejected repair attempt — see "Repair" above), `repair_pending`
   (a repair or activation is awaiting either a live run or proposal review),
   or `disabled` (nothing sets this automatically).
 - `recent_run_status_counts` — a breakdown of the last 20

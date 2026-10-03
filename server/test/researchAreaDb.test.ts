@@ -40,7 +40,7 @@ beforeAll(async () => {
 afterEach(() => { __setProviderHttpClientForTests(null); });
 beforeEach(async () => { if (!db.available) return; await resetTables(
   db.pool,
-  ["research_checklist_items", "research_evidence_cards", "note_revisions", "note_collection_items", "note_collections", "notes", "space_objects", "project_corpus_items", "source_items", "projects", "space_memberships", "users", "spaces", "runs", "agent_runtime_profiles", "agent_versions", "agents", "model_provider_space_grants", "model_providers", "jobs",
+  ["research_checklist_items", "research_evidence_cards", "note_revisions", "note_collection_items", "note_collections", "notes", "space_objects", "project_corpus_items", "source_items", "project_members", "projects", "space_memberships", "users", "spaces", "runs", "agent_runtime_profiles", "agent_versions", "agents", "model_provider_space_grants", "model_providers", "jobs",
    "provider_task_snapshots", "provider_task_deliveries", "provider_task_controls"],
   { cascade: true },
 ); const now = new Date().toISOString(); await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]); await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Owner','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER, now]); await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]); await db.pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Project','active',$4,$4)`, [PROJECT, SPACE, USER, now]);
@@ -93,6 +93,51 @@ describe("Research Area (real Postgres)", () => {
     const reader = await new PgReaderRepository(db.pool, { artifactStorageRoot: "/tmp", sandboxRoot: "/tmp" } as ServerConfig).getDocument(identity, "research_notebook", understandingId);
     expect(reader).toMatchObject({ document_type: "research_notebook", document_id: understandingId, normalized_text: "Current finding", content_hash: updated.content_hash });
     await expect(knowledge.updateNote(identity, understandingId, { expect_version: 1, content_json: doc })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("gives a summary-level reader no note body and no ask-AI rewrite of it", async () => {
+    if (!db.available || !config) return;
+    const owner = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchAreaService(db.pool, config);
+    const area = await service.initializeArea(owner, PROJECT);
+    const understanding = area.notes[0]!;
+    const doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "OWNER ONLY FINDING" }] }] };
+    await new PgKnowledgeRepository(db.pool).updateNote(owner, understanding.id, { expect_version: 1, content_json: doc, plain_text: "OWNER ONLY FINDING" });
+    await db.pool.query(`UPDATE space_objects SET visibility = 'space_shared', access_level = 'summary' WHERE id = $1`, [understanding.id]);
+    const member = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Member','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [member, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, member, now]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, PROJECT, member, now]);
+    const reader = { spaceId: SPACE, userId: member };
+
+    const seen = (await service.getArea(reader, PROJECT)).notes.find((note: { id: string }) => note.id === understanding.id);
+    expect(seen).toMatchObject({ title: "Current understanding", body_withheld: true });
+    expect(JSON.stringify(seen)).not.toContain("OWNER ONLY FINDING");
+    await expect(service.askAi(reader, PROJECT, {
+      prompt: "Rewrite it.", section_key: "understanding", execution: { model_provider_id: PROVIDER },
+    })).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("does not move a role away from a note the ask-AI caller cannot read", async () => {
+    if (!db.available || !config) return;
+    const owner = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchAreaService(db.pool, config);
+    const understanding = (await service.initializeArea(owner, PROJECT)).notes[0]!;
+    await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [understanding.id]);
+    const member = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Member','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [member, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, member, now]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, PROJECT, member, now]);
+
+    await expect(service.askAi({ spaceId: SPACE, userId: member }, PROJECT, {
+      prompt: "Rewrite it.", execution: { model_provider_id: PROVIDER },
+    })).rejects.toMatchObject({ statusCode: 404 });
+    const holders = await db.pool.query<{ object_id: string }>(
+      `SELECT object_id FROM notes WHERE role_project_id = $1 AND project_role = 'understanding'`, [PROJECT],
+    );
+    expect(holders.rows).toEqual([{ object_id: understanding.id }]);
   });
 
   it("nests the project's auto-created notes folder under the seeded PARA 'Projects' folder", async () => {
@@ -321,6 +366,29 @@ describe("Research Area (real Postgres)", () => {
     expect(supportOnly.signalIds).toHaveLength(1);
     expect((await db.pool.query(`SELECT n.version FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id WHERE so.primary_project_id=$1 AND so.title='Current understanding'`, [PROJECT])).rows[0]).toEqual({ version: 1 });
     expect((await db.pool.query(`SELECT count(*)::int AS count FROM inquiry_evidence_signals WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT])).rows[0]?.count).toBe(2);
+  });
+
+  it("keeps material a person excluded out of the monitoring comparison, whatever the AI relevance says", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString(); const item = randomUUID(); const corpusItemId = randomUUID();
+    await new ProjectResearchAreaService(db.pool).initializeArea({ spaceId: SPACE, userId: USER }, PROJECT);
+    await db.pool.query(
+      `INSERT INTO source_items (id,space_id,owner_user_id,visibility,item_type,title,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+       VALUES ($1,$2,$3,'space_shared','feed_entry','Excluded paper',$4,$4,'excerpt_saved','summary_only',$4,$4)`,
+      [item, SPACE, USER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO project_corpus_items (id,space_id,project_id,source_item_id,role,status,triage_status,triage_confirmed_by_user,relevance,read_status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'candidate','active','excluded',true,'relevant','unread',$5,$5)`,
+      [corpusItemId, SPACE, PROJECT, item, now],
+    );
+    await seedCorpusSourceProvenance(corpusItemId, item, now);
+    const result = await new ProjectResearchMonitorComparisonService(db.pool).queue({
+      spaceId: SPACE, userId: USER, projectId: PROJECT, agentId: randomUUID(), runtimeProfileId: null,
+      researchQuestion: "Does the effect replicate?", sourceItemIds: [item],
+      workflowId: randomUUID(), operationId: randomUUID(),
+    });
+    expect(result).toEqual({ outcome: "no_eligible_material" });
   });
 
   it("deduplicates cited-DOI integrity alerts and creates review work", async () => {
@@ -754,6 +822,49 @@ describe("Research Area (real Postgres)", () => {
     expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(messages[0]?.content).toBe("What is the current understanding?");
     expect(messages[2]?.content).toBe("Follow-up question.");
+  });
+
+  it("notebookChat keeps the answer, and declines the edit, when the model picks a note the person may read but not write", async () => {
+    if (!db.available || !config) return;
+    const identity = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchAreaService(db.pool, config);
+    await service.initializeArea(identity, PROJECT);
+    // Another member's note, shared with the person at full read level.
+    const other = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Member','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [other, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, other, now]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, PROJECT, other, now]);
+    const note = await new PgKnowledgeRepository(db.pool).createNote({ spaceId: SPACE, userId: other }, {
+      title: "Member's private note", primary_project_id: PROJECT, plain_text: "Theirs.",
+    }) as { id: string; version: number };
+    await db.pool.query(`UPDATE space_objects SET visibility = 'selected_users' WHERE id = $1`, [note.id]);
+    await db.pool.query(
+      `INSERT INTO content_access_grants (id, space_id, resource_type, resource_id, grantee_user_id, granted_by_user_id, access_level, created_at, updated_at)
+       VALUES ($1,$2,'space_object',$3,$4,$5,'full',now(),now())`,
+      [randomUUID(), SPACE, note.id, USER, other],
+    );
+    __setProviderHttpClientForTests({
+      fetch: async () => openAiChatResponse({
+        choices: [{ message: { content: JSON.stringify({
+          answer: "I added the conclusion.",
+          notebook_update: { note_id: note.id, new_note_title: null, ops: [{ op: "append", index: null, count: null, markdown: "Conclusion" }], refs: [] },
+        }) } }],
+      }),
+    });
+
+    const result = await service.notebookChat(identity, PROJECT, {
+      message: "Add the conclusion to the member's note.",
+      execution: { model_provider_id: PROVIDER },
+    });
+    // The Run was spent and answered; only the write it is not entitled to is withheld.
+    expect(result).toMatchObject({ ok: true, reply: "I added the conclusion.", notebook_edit: null });
+    expect((await db.pool.query<{ version: number }>(`SELECT version FROM notes WHERE object_id = $1`, [note.id])).rows[0])
+      .toEqual({ version: note.version });
+    const messages = (await db.pool.query<{ role: string }>(
+      `SELECT role FROM messages WHERE session_id=$1 ORDER BY created_at ASC`, [result.session_id],
+    )).rows;
+    expect(messages.map((m) => m.role)).toEqual(["user", "assistant"]);
   });
 
   it("notebookChat rejects a session_id that belongs to a different project", async () => {

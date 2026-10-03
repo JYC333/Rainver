@@ -47,7 +47,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const parsed = protocol.TurnContextRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) return reply.code(422).send({ error: "Invalid Turn Context Request" });
+      if (!parsed.success) return reply.code(422).send({ detail: "Invalid Turn Context Request" });
       const envelope = await createProductionRuntimeContextPlanningService(dbPool(context.config), context.config).preview({
         identity,
         turn: parsed.data,

@@ -23,8 +23,8 @@ Registered today:
 
 | Shape | Entities |
 |---|---|
-| Ontology objects | `space_object` (root) and its subtypes: knowledge item, note, source, claim, `inquiry_thread`, `experiment`, `decision_case`, `research_workflow`, `project_public_summary` |
-| Independent roots | `task`, `run`, `proposal`, `artifact`, `activity`, `memory_entry`, `project`, `project_folder`, `agent`, `user`, `source_connection`, `source_item`, `source_snapshot`, `extracted_evidence`, `reader_annotation`, `token_usage_event`, `imported_session` |
+| Ontology objects | `space_object` (root) and its subtypes: knowledge item, note, source, claim, `person`, `organization`, `inquiry_thread`, `experiment`, `decision_case`, `research_workflow` |
+| Independent roots | `task`, `run`, `proposal`, `artifact`, `activity`, `memory_entry`, `project`, `project_folder`, `agent`, `user`, `source_connection`, `source_item`, `source_snapshot`, `extracted_evidence`, `reader_annotation`, `token_usage_event`, `imported_session`, and the retrieval-only `project_public_summary` (no content-access row of its own; its owning Project gates it) |
 
 `ontologyRegistry.test.ts` asserts that every registered Entity implements
 every interface it declares, and that no per-mechanism type list exists in
@@ -179,7 +179,9 @@ twelfth, and the miss is silent (B12H).
 `(project IS NULL OR projectReadAccess)`. A null Project on a Project-owned
 object does not narrow access — it removes the Project gate entirely and
 leaves only visibility. A forgotten `primary_project_id` is a silent
-disclosure, not a stricter default.
+disclosure, not a stricter default. The one later write of that column, a
+content-access policy update, refuses to clear it for a `requiresProjectScope`
+type for the same reason.
 
 This is enforced by the single writer plus a source-scanning test, **not** by
 a database constraint, because such a constraint would have to name subtypes

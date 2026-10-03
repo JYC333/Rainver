@@ -20,20 +20,24 @@ ActivityRecord first — not active memory.
 
 ## Capture Types
 
+These are usage examples, not stored types. A capture is distinguished only by
+its destination; its Activity `source_type` is `web_capture` when the text is a
+URL and `user_capture` otherwise.
+
 | Type | Example |
 |---|---|
 | Thought | "I want to learn Rust" |
 | Life log | "Had lunch with the team" |
 | Idea | "What if we added X feature" |
 | Reflection | "Today I noticed I work better in the morning" |
-| Chat import | Paste/import from external chat |
+| Chat import | Paste from an external chat (whole-session import belongs to imported sessions) |
 | URL clip | Save a web article for later processing |
 
 ## Destinations
 
 One floating composer serves every page and posts to `POST /api/v1/captures`.
 Outside a Project the only destination is the personal inbox; inside one there
-are four. Ownership and pipeline are separate axes (ADR 0013 amendment 3b):
+are three, plus `object_marginalia` when the composer has a target object. Ownership and pipeline are separate axes (ADR 0013 amendment 3b):
 
 | Destination | Scope | Visibility | Pipeline |
 |---|---|---|---|
@@ -112,6 +116,11 @@ owner/admin; a capture with no Project is movable by its owner alone. Taking
 gated by it. Any crossing of a Space boundary — by either verb, to any
 destination — announces itself to the other members as pointer metadata when
 the Space has egress notifications on.
+
+The capture and its note are read as the caller alone, without Space
+oversight: a relocated block becomes a row other people read, and oversight is
+audit, not a route to publish. A colleague's private capture an admin can read
+only by oversight answers 404 to both preview and relocation.
 
 What counts as leaving is the *resolved destination Space*, not the destination
 name: a Project destination takes its Space from the caller's `project_id`, so

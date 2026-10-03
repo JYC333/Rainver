@@ -535,10 +535,27 @@ export class InquiryIterationService {
          VALUES ($1,$2,$3,$4,$5,'superseded',$6,$7,$8)`,
         [randomUUID(), identity.spaceId, projectId, threadId, thread.lifecycle_status, optionalString(body.impact_note), identity.userId, now],
       );
+      // Like any Thread leaving `active` (transitionLifecycle): its open steps
+      // end here and the projection follows, or rows no command can ever
+      // close stay behind, since a superseded Thread transitions no further.
+      // Its open recommendation retires with it.
+      await closeOpenSteps(db, {
+        spaceId: identity.spaceId,
+        threadId,
+        reason: "abandoned",
+        at: now,
+        includeBackground: true,
+      });
       await db.query(
-        `UPDATE inquiry_threads SET lifecycle_status = 'superseded', attention_state = 'archived'
+        `UPDATE inquiry_threads SET lifecycle_status = 'superseded', attention_state = 'archived',
+           blocked_reason = NULL, ${STEP_PROJECTION_SET_SQL}, ${STEP_NOTE_SET_SQL}
           WHERE object_id = $1 AND space_id = $2`,
         [threadId, identity.spaceId],
+      );
+      await db.query(
+        `UPDATE inquiry_thread_advice SET status = 'dismissed', updated_at = $3
+          WHERE space_id = $1 AND thread_id = $2 AND status = 'open'`,
+        [identity.spaceId, threadId, now],
       );
       await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
       const supersededThread = await db.query<ThreadRow>(

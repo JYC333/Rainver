@@ -154,7 +154,7 @@ export default function ResearchAreaPage() {
           <ChecklistView
             projectId={projectId}
             items={area.checklist}
-            onChange={(items) => setArea({ ...area, checklist: items })}
+            onChange={(update) => setArea(current => current ? { ...current, checklist: update(current.checklist) } : current)}
           />
         </TabsContent>
         <TabsContent value="runs"><ResearchRunsTab projectId={projectId} /></TabsContent>

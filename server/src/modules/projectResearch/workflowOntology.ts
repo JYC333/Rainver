@@ -3,6 +3,7 @@ import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { HttpError, withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { assertLinkTypeAllowed } from "../ontology/validation.js";
+import { threadReadableSql } from "../inquiry/threadAccess.js";
 
 export interface ResearchWorkflowRow {
   id: string;
@@ -128,10 +129,14 @@ export async function setResearchWorkflowThread(
     now: string;
   },
 ): Promise<void> {
+  // The Workflow copies the Thread's statement into its own title and state,
+  // so the person binding it must be able to reach the Thread themselves.
   const thread = await db.query<{ object_id: string }>(
-    `SELECT object_id FROM inquiry_threads
-      WHERE object_id=$1 AND space_id=$2 AND project_id=$3`,
-    [input.threadId, input.spaceId, input.projectId],
+    `SELECT t.object_id FROM inquiry_threads t
+       JOIN space_objects so ON so.id = t.object_id AND so.space_id = t.space_id
+      WHERE t.object_id=$1 AND t.space_id=$2 AND t.project_id=$3
+        AND ${threadReadableSql("so", "$4", "change")}`,
+    [input.threadId, input.spaceId, input.projectId, input.userId],
   );
   if (!thread.rows[0]) throw new HttpError(422, "Inquiry Thread not found in this Project");
   const duplicate = await db.query<{ id: string }>(

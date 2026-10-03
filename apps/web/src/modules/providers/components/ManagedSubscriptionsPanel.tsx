@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ExternalLink, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
@@ -34,12 +34,19 @@ export default function ManagedSubscriptionsPanel({
   const [connecting, setConnecting] = useState<ManagedSubscriptionType | null>(null)
   const [events, setEvents] = useState<Partial<Record<ManagedSubscriptionType, ManagedSubscriptionLoginEvent>>>({})
   const [manualInput, setManualInput] = useState('')
+  // The open login stream, closed when the panel goes away: the server keeps
+  // the login session (and refuses a second one) for as long as it is open.
+  const loginStream = useRef<AbortController | null>(null)
+  useEffect(() => () => loginStream.current?.abort(), [])
 
   async function connect(type: ManagedSubscriptionType) {
+    const controller = new AbortController()
+    loginStream.current?.abort()
+    loginStream.current = controller
     setConnecting(type)
     setEvents(previous => ({ ...previous, [type]: { type: 'progress', message: 'Starting secure login…' } }))
     try {
-      for await (const event of providersApi.subscriptionLoginStream(type)) {
+      for await (const event of providersApi.subscriptionLoginStream(type, controller.signal)) {
         setEvents(previous => ({ ...previous, [type]: event }))
         if (event.type === 'auth_url') openSafeHttpUrl(event.url)
         if (event.type === 'connected') {
@@ -49,8 +56,9 @@ export default function ManagedSubscriptionsPanel({
         if (event.type === 'error') toast.error(event.message)
       }
     } catch (error) {
-      toast.error(errMsg(error))
+      if (!controller.signal.aborted) toast.error(errMsg(error))
     } finally {
+      if (loginStream.current === controller) loginStream.current = null
       setConnecting(null)
     }
   }

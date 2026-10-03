@@ -81,8 +81,10 @@ bookmark is wrong the first time someone uses their own CLI normally.
   window or cap) is kept separate from `selected` (what this sync will replay),
   and an enumeration that returned rows of which none matched the folder is
   reported inconclusive rather than as evidence the folder is empty.
-- **Nothing is mirrored.** A vanished source sets `source_state = 'gone'`;
-  unbinding a Location, unregistering a Folder, or unpairing a host sets the
+- **Nothing is mirrored.** A vanished source sets `source_state = 'gone'`, and
+  a host that lists that session again sets it back to `present` from the
+  same enumeration (an unchanged session is never replayed, so nothing else
+  would); unbinding a Location, unregistering a Folder, or unpairing a host sets the
   owning columns null and deletes nothing. Re-binding the same folder re-adopts
   the orphaned rows instead of importing a second copy.
 
@@ -120,8 +122,9 @@ relation and is only ever cited as provenance.
 
 `imported_session_records` holds the trimmed records. `extracted_in` carries
 `claim:<id>` while an extraction holds a batch and the bare id once its
-proposals exist — the two are distinguishable so a batch left behind by a
-process that died can be swept back, which the pending count does before
+proposals exist — written in the proposals' own transaction, so a claim never
+outlives committed proposals — the two are distinguishable so a batch left
+behind by a process that died can be swept back, which the pending count does before
 reporting, because that count is what decides whether the button that would
 have swept it is shown at all.
 

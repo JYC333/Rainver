@@ -162,6 +162,8 @@ export const SystemNoticeMessageMetadataSchema = z.object({
   host_thread_id: IdSchema.nullish(),
   host_thread_event: z.string().nullish(),
   host_thread_reset_reason: z.string().nullish(),
+  /** The Run whose outcome proved a `session_reset`; one notice per such Run. */
+  host_thread_run_id: IdSchema.nullish(),
   discussion_notice: RoomDiscussionNoticeSchema.nullish(),
   ...CommonMessageMetadata,
 }).strict();
@@ -531,19 +533,6 @@ export const MemoryProposalCommandSchema = z.discriminatedUnion("operation", [
   MemoryProposalUpdateCommandSchema,
   MemoryProposalArchiveCommandSchema,
 ]);
-
-export const MemoryProposalCreateResultSchema = z
-  .object({
-    proposal_id: IdSchema,
-    proposal_type: z.enum([
-      "memory_create",
-      "memory_update",
-      "memory_archive",
-    ]),
-    status: z.string(),
-    ...SecretResponseGuards,
-  })
-  .passthrough();
 
 // Memory search is identity-scoped: the surface intentionally has no space_id /
 // user_id fields. The server derives both from the authenticated identity, so a

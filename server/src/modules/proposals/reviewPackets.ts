@@ -29,7 +29,7 @@ export function visibilityForReviewScope(value: ReviewScope | undefined): "priva
   return value === "space_ops" ? "space_shared" : "private";
 }
 
-export interface InsertProposalRowInput {
+interface InsertProposalRowInput {
   id?: string;
   spaceId: string;
   proposalType: string;
@@ -108,27 +108,40 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
 
 /**
  * Look up an existing pending packet proposal by lineage_key.
- * Returns the existing proposal id if found, null otherwise.
+ * Returns the existing proposal if found, null otherwise.
  *
  * Packet generators embed a deterministic `lineage_key` in their payload so
  * callers can skip creation when equivalent work is already pending review.
+ * Equivalent means the same creator and the same review audience too: a
+ * private packet is reviewable by its creator alone, so another person's
+ * packet — or the same person's packet at a different scope — is not the one
+ * this caller asked for, and its id is not theirs to be handed. Callers run
+ * inside a transaction; the lock makes a concurrent caller with the same
+ * lineage wait and then find this one's packet instead of inserting its own.
  */
 export async function lookupExistingPendingPacket(
   db: Queryable,
   spaceId: string,
   proposalType: string,
   lineageKey: string,
-): Promise<string | null> {
-  const result = await db.query<{ id: string }>(
-    `SELECT id FROM proposals
+  audience: { createdByUserId: string; visibility: string },
+): Promise<{ id: string; payload_json: Record<string, unknown> } | null> {
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `review-packet:${spaceId}:${proposalType}:${lineageKey}:${audience.createdByUserId}:${audience.visibility}`,
+  ]);
+  const result = await db.query<{ id: string; payload_json: Record<string, unknown> | null }>(
+    `SELECT id, payload_json FROM proposals
       WHERE space_id = $1
         AND proposal_type = $2
         AND payload_json->>'lineage_key' = $3
         AND status = 'pending'
+        AND created_by_user_id = $4
+        AND visibility = $5
       LIMIT 1`,
-    [spaceId, proposalType, lineageKey],
+    [spaceId, proposalType, lineageKey, audience.createdByUserId, audience.visibility],
   );
-  return result.rows[0]?.id ?? null;
+  const row = result.rows[0];
+  return row ? { id: row.id, payload_json: row.payload_json ?? {} } : null;
 }
 
 export interface ChildProposalDraft {
@@ -145,7 +158,7 @@ export interface ChildProposalDraft {
 }
 
 /** Insert one child proposal generated from an accepted packet. */
-export async function insertChildProposalRow(
+async function insertChildProposalRow(
   context: ProposalApplyContext,
   draft: ChildProposalDraft,
 ): Promise<string> {
@@ -166,7 +179,7 @@ export async function insertChildProposalRow(
   return row.id;
 }
 
-export interface AcceptReviewPacketBuild {
+interface AcceptReviewPacketBuild {
   children: ChildProposalDraft[];
   /** Optional per-candidate skip records (claim/relation packets track these). */
   skipped?: Record<string, unknown>[];
@@ -176,7 +189,7 @@ export interface AcceptReviewPacketBuild {
   resultExtra?: Record<string, unknown>;
 }
 
-export interface AcceptReviewPacketOptions {
+interface AcceptReviewPacketOptions {
   expectedOperation: string;
   resultType: ProposalAcceptResultType;
   privateMessage: string;

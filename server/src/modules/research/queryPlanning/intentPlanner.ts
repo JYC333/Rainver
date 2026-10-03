@@ -11,7 +11,7 @@ import { completeProviderMessages } from "../../providers/invocation/invocation.
 import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import { HttpError, type Queryable, type SpaceUserIdentity } from "../../routeUtils/common.js";
 
-export const RESEARCH_QUERY_INTENT_PROMPT_KEY = "research_query.intent_plan";
+const RESEARCH_QUERY_INTENT_PROMPT_KEY = "research_query.intent_plan";
 
 export interface ResearchIntentExecution {
   modelProviderId?: string;

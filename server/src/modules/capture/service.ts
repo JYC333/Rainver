@@ -11,7 +11,7 @@ export type CaptureDestination =
   | "project_raw"
   | "personal_inbox";
 
-export interface CaptureResult {
+interface CaptureResult {
   activity_id: string;
   destination: CaptureDestination;
   space_id: string;
@@ -24,7 +24,7 @@ export interface CaptureResult {
   block_id: string | null;
 }
 
-export interface CaptureInput {
+interface CaptureInput {
   userId: string;
   requestSpaceId: string;
   destination: CaptureDestination;

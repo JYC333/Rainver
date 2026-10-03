@@ -30,7 +30,7 @@ export async function materializeExternalDiscovery(
     if (!uri || !sample.title.trim()) continue;
     const existing = await db.query<{ id: string; owner_user_id: string | null; visibility: string }>(
       `SELECT id, owner_user_id, visibility FROM source_items
-        WHERE space_id=$1 AND project_id IS NOT DISTINCT FROM $3 AND canonical_uri=$2 AND deleted_at IS NULL LIMIT 1`,
+        WHERE space_id=$1 AND project_id IS NOT DISTINCT FROM $3 AND (canonical_uri=$2 OR source_uri=$2) AND deleted_at IS NULL LIMIT 1`,
       [input.spaceId, uri, input.projectId],
     );
     const row = existing.rows[0];

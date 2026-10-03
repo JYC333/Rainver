@@ -57,7 +57,7 @@ export function sourceItemConnectionGateClause(itemAlias: string, userParam: str
 }
 
 /** SQL form of the Reader connection-consent gate for Source-derived content. */
-export function sourceConnectionReaderConsentClause(connectionAlias: string, userParam: string): string {
+function sourceConnectionReaderConsentClause(connectionAlias: string, userParam: string): string {
   return `(
     ${connectionAlias}.owner_user_id = ${userParam}
     OR ${connectionAlias}.consent_json->>'owner_user_id' = ${userParam}

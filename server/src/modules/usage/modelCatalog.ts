@@ -139,6 +139,34 @@ export function trimTextToModelTokens(text: string, maximumTokens: number): stri
   return text.slice(0, length);
 }
 
+/**
+ * The longest suffix of `text` whose estimate is at most `maximumTokens`, for
+ * text whose newest part is at its end. A suffix's estimate only grows as it
+ * reaches further back, so cutting again to a cut's own estimate returns the
+ * same cut.
+ */
+export function trimTextToModelTokensFromEnd(text: string, maximumTokens: number): string {
+  if (!Number.isInteger(maximumTokens) || maximumTokens < 0) {
+    throw new Error("maximumTokens must be a non-negative integer");
+  }
+  // Cut only between code points, never inside a surrogate pair.
+  const starts: number[] = [];
+  let offset = 0;
+  for (const character of text) {
+    starts.push(offset);
+    offset += character.length;
+  }
+  starts.push(text.length);
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (estimateModelTokens(text.slice(starts[middle])) <= maximumTokens) high = middle;
+    else low = middle + 1;
+  }
+  return text.slice(starts[low]);
+}
+
 /** A run of ASCII letters and digits: a quarter token a character, three quarters once it holds a digit. */
 function runQuarters(length: number, hasDigit: boolean): number {
   return length * (hasDigit ? 3 : 1);

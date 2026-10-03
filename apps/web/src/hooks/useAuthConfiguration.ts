@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { authApi } from '../api/client'
 import type { AuthConfiguration } from '../types/api'
 
-export const DEFAULT_AUTH_CONFIGURATION: AuthConfiguration = Object.freeze({
+const DEFAULT_AUTH_CONFIGURATION: AuthConfiguration = Object.freeze({
   google_auth_available: false,
   bootstrap_registration_available: false,
   password_min_length: 15,

@@ -574,6 +574,40 @@ describe("merging a done Task", () => {
     expect(await mergeRow()).toMatchObject({ status: "superseded" });
   });
 
+  it("keeps merging a Task closed again while the host was giving its merge back", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    await markDone();
+    // Waiting on the person's checkout: the merge polls, and a reopen wakes it.
+    const host = scriptedHost({
+      task_merge_prepare: [rebased(), rebased()],
+      task_merge_finish: [finished("waiting_local_changes", { overlapping_files: ["src/parser.ts"] }), finished("merged")],
+    });
+    const merges = worker(host.registry);
+    await expect(merges.processOne()).resolves.toMatchObject({ status: "deferred" });
+    expect(await mergeRow()).toMatchObject({ status: "waiting_local_changes" });
+
+    // Reopened, then closed again while the host is still answering the
+    // abort: the second `done` finds this merge under way and asks for no
+    // other, so this one must not be given up.
+    await new PgTaskRepository(db.pool).updateTask(owner, TASK, { status: "in_progress" });
+    const registry = host.registry;
+    const sink = registry as unknown as { connections: Map<string, { sink: { send(frame: HostServerFrame): void } }> };
+    const live = sink.connections.get(HOST)!.sink;
+    const send = live.send.bind(live);
+    live.send = (frame) => {
+      if (frame.type !== "task_merge_abort") return send(frame);
+      host.sent.push(frame);
+      void markDone().then(() => registry.receiveTaskBranchResult(HOST, "task_merge_abort_result", frame.request_id, { ok: true, error: null } as never));
+    };
+    await expect(merges.processOne()).resolves.toMatchObject({ status: "deferred" });
+    expect(await mergeRow()).toMatchObject({ status: "queued" });
+    live.send = send;
+
+    await dueNow();
+    await expect(merges.processOne()).resolves.toMatchObject({ status: "completed" });
+    expect(await mergeRow()).toMatchObject({ status: "merged" });
+  });
+
   it("continues after a failed resolution Run a supervisor holds for review", async (ctx) => {
     if (!db.available) return ctx.skip();
     await markDone();

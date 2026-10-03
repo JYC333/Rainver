@@ -205,6 +205,25 @@ if [[ "$ensure_adapters" == false ]]; then
   fi
 fi
 
+# Puts an unpacked payload at its final directory without the final name ever
+# holding a partial tree. The temporary directory is often another filesystem
+# (tmpfs), where `mv` is a copy that an interruption leaves half done; so the
+# payload first goes to a staging directory beside its destination, and the
+# last step is a same-filesystem rename. A leftover staging directory is swept
+# with the other retained-release housekeeping; a leftover under the final
+# name cannot happen from here, and one from an older installer is replaced
+# by the completeness checks at each call site.
+place_payload_dir() {
+  local payload="$1" destination="$2" parent stage
+  parent="$(dirname "$destination")"
+  mkdir -p "$parent"
+  stage="$(mktemp -d "$parent/.stage.XXXXXX")"
+  mv "$payload" "$stage/payload"
+  rm -rf -- "$destination"
+  mv -T "$stage/payload" "$destination"
+  rmdir "$stage"
+}
+
 install_adapter_pack() {
   local asset="rainver-host-adapters-linux-${release_arch}.tar.gz"
   local unpacked="$temp_dir/unpacked-adapters"
@@ -228,7 +247,9 @@ install_adapter_pack() {
     previous_adapter_build_id="$(tr -d '\r\n' < "$INSTALL_ROOT/adapters/current/BUILD_ID")"
   fi
   local adapter_dir="$INSTALL_ROOT/adapters/releases/$adapter_build_id"
-  if [[ ! -d "$adapter_dir" ]]; then mv "$payload" "$adapter_dir"; fi
+  if [[ ! -f "$adapter_dir/package.json" || "$(tr -d '\r\n' < "$adapter_dir/BUILD_ID" 2>/dev/null)" != "$adapter_build_id" ]]; then
+    place_payload_dir "$payload" "$adapter_dir"
+  fi
   ln -s "releases/$adapter_build_id" "$INSTALL_ROOT/adapters/.current-$$"
   mv -Tf "$INSTALL_ROOT/adapters/.current-$$" "$INSTALL_ROOT/adapters/current"
   while IFS= read -r -d '' candidate; do
@@ -294,7 +315,7 @@ else
   fi
   node_version="$("$node_payload/bin/node" --version | tr -d '\r\n')"
   node_dir="$INSTALL_ROOT/runtime/node-${node_version}-${release_arch}"
-  if [[ ! -d "$node_dir" ]]; then mv "$node_payload" "$node_dir"; fi
+  if [[ ! -x "$node_dir/bin/node" ]]; then place_payload_dir "$node_payload" "$node_dir"; fi
   ln -s "$(basename "$node_dir")" "$INSTALL_ROOT/runtime/.node-current-$$"
   mv -Tf "$INSTALL_ROOT/runtime/.node-current-$$" "$INSTALL_ROOT/runtime/node-current"
   node_command="$INSTALL_ROOT/runtime/node-current/bin/node"
@@ -336,8 +357,9 @@ if [[ -f "$INSTALL_ROOT/current/BUILD_ID" ]] && [[ "$(tr -d '\r\n' < "$INSTALL_R
   echo "Rainver Host ${release_channel} ($build_id) is already installed."
 else
   release_dir="$INSTALL_ROOT/releases/$build_id"
-  if [[ ! -d "$release_dir" ]]; then
-    mv "$payload" "$release_dir"
+  if [[ ! -f "$release_dir/app/dist/cli.js" || ! -f "$release_dir/app/dist/daemon.js" \
+    || "$(tr -d '\r\n' < "$release_dir/BUILD_ID" 2>/dev/null)" != "$build_id" ]]; then
+    place_payload_dir "$payload" "$release_dir"
   fi
   ln -s "releases/$build_id" "$INSTALL_ROOT/.current-$$"
   mv -Tf "$INSTALL_ROOT/.current-$$" "$INSTALL_ROOT/current"
@@ -347,12 +369,22 @@ fi
 # Retain the active daemon build and one rollback build rather than
 # accumulating every rolling build. Node and adapters are stored separately.
 # The previous directory may still serve this daemon until its idle restart.
-while IFS= read -r -d '' candidate; do
-  candidate_id="$(basename "$candidate")"
-  if [[ "$candidate_id" != "$build_id" && "$candidate_id" != "$previous_build_id" ]]; then
-    rm -rf -- "$candidate"
-  fi
-done < <(find "$INSTALL_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -print0)
+# A restart request still pending from an earlier update means the running
+# daemon may be on a build older than "previous" (it stays up while Runs are
+# active), and nothing here can tell which: keep every release until it has
+# restarted, and the first install after that prunes them.
+restart_pending=false
+if [[ -f "$CONFIG_DIR/update-restart-requested" ]] && systemctl --user is-active --quiet rainver-host.service; then
+  restart_pending=true
+fi
+if [[ "$restart_pending" == false ]]; then
+  while IFS= read -r -d '' candidate; do
+    candidate_id="$(basename "$candidate")"
+    if [[ "$candidate_id" != "$build_id" && "$candidate_id" != "$previous_build_id" ]]; then
+      rm -rf -- "$candidate"
+    fi
+  done < <(find "$INSTALL_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -print0)
+fi
 
 if command -v codex >/dev/null 2>&1 || command -v claude >/dev/null 2>&1; then
   install_adapter_pack

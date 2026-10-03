@@ -32,6 +32,31 @@ import { declareRunArtifact, type RunArtifactRole } from "./artifactDeclarations
 /** Enough for an Agent to find the Task meant without flooding the turn. */
 const MAX_LISTED_TASKS = 50;
 
+/**
+ * How many Tasks one turn may create: ADR 0017 §2's decomposition ceiling,
+ * the same five `inquiry.create_thread` holds Threads to. It is an execution
+ * bound, so the narrower pacing the conversation prompt asks for does not
+ * replace it. Refusing costs a turn: the Agent is told to continue in the next.
+ */
+export const TASK_FAN_OUT_PER_TURN = 5;
+
+/**
+ * Counted from the Tasks this Run created itself rather than a counter, so a
+ * retried or resumed Run cannot spend the budget twice. A follow-up Task
+ * applied from the Run's proposal after it ends is not a tool call of the
+ * turn and carries its proposal id.
+ */
+async function countTasksCreatedInTurn(db: Queryable, spaceId: string, projectId: string, runId: string): Promise<number> {
+  const result = await db.query<{ total: string }>(
+    `SELECT count(*)::text AS total
+       FROM tasks
+      WHERE space_id = $1 AND project_id = $2
+        AND source_run_id = $3 AND source_proposal_id IS NULL`,
+    [spaceId, projectId, runId],
+  );
+  return Number(result.rows[0]?.total ?? 0);
+}
+
 export function registerProjectWorkSystemActionExecutors(
   executors: Map<SystemActionId, SystemActionExecutor>,
   config: ServerConfig,
@@ -94,6 +119,14 @@ export function registerProjectWorkSystemActionExecutors(
       // membership revoked mid-turn must lose, deterministically.
       await lockActiveProjectForMutation(tx, run.space_id, projectId);
       await assertProjectWriterForMutation(tx, run.space_id, projectId, identity.userId);
+      // Counted under the Project lock, so two calls in one turn cannot both
+      // see four and both create.
+      if (await countTasksCreatedInTurn(tx, run.space_id, projectId, run.id) >= TASK_FAN_OUT_PER_TURN) {
+        throw new HttpError(
+          429,
+          `This turn already created ${TASK_FAN_OUT_PER_TURN} Tasks. Continue in the next turn, or tell the user what is left to create.`,
+        );
+      }
       // The Task is created under the person who asked — they own it and it
       // inherits their access — but `task.created` is attributed to the Agent,
       // because the Agent is what made it. The timeline is the record of who

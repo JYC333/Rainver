@@ -12,3 +12,11 @@ export class AccountNotFoundError extends Error {
     this.name = "AccountNotFoundError";
   }
 }
+
+/** A request the ledger's rules refuse, answered as 422 rather than a 500. */
+export class FinanceRuleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FinanceRuleError";
+  }
+}

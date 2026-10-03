@@ -19,7 +19,7 @@ export interface RoomRecord {
   personal_for_user_id: string | null;
 }
 
-export interface RoomUserMemberRecord {
+interface RoomUserMemberRecord {
   id: string;
   space_id: string;
   room_id: string;

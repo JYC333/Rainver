@@ -26,6 +26,12 @@ keep in step.
 | `claude_code` | implemented | managed `claude-agent-acp` distribution | Host-native login |
 | `codex_cli` | implemented | managed `codex-acp` distribution | Host-native login |
 
+Beside these builtins, each ACP registry agent an instance admin enables in
+`modules/acpAgents` is published as a dynamic adapter `acp_<id>`
+(`runtimeAdapters/dynamicSpecs.ts`): implemented, ACP, `remote_host_only`, and
+`credential_mode: cli_profile`, so it is a selectable runtime with Host-native
+login only.
+
 Gemini CLI, generic `custom`, and `capability` entries are not selectable ACP
 Agent runtimes. In particular, `model_api` and `ts_agent_host` are not runtime
 definitions.
@@ -116,7 +122,7 @@ same question (B58). **Today that is OpenCode alone.** Claude Code and
 Codex CLI declare `cli_profile`, so their definitions report
 `supports_model_provider: false` and `assertBackendModeBinding` answers a
 `model_provider` Profile for them with 422 — they run on the Host's own vendor
-login. A `model_provider` Profile must name an enabled same-Space Provider, an
+login. A `model_provider` Profile must name an enabled Provider granted to the Space, an
 explicit model, and an execution Host with an installation; either Host kind
 qualifies, because the daemon receives a proxy lease address rather than a key
 (`assertProviderExecutionTarget`, `hostProviderProxyBaseUrl`). The Server

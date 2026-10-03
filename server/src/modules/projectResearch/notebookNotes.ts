@@ -42,7 +42,7 @@ export interface NotebookNoteRow {
  * the role marker exists to prevent, so the absence is a value the caller has
  * to destructure rather than a `null` that reads like "nothing to add".
  */
-export type NotebookNoteResolution =
+type NotebookNoteResolution =
   | { readonly present: true; readonly note: NotebookNoteRow }
   | { readonly present: false; readonly role: NoteProjectRole; readonly reason: "no_note_in_role" };
 

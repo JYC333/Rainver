@@ -73,6 +73,9 @@ async function seedAnnotatedItem(options: {
   domain: string;
   topics?: string[];
   readBy?: { user: string; readStatus: string; openedAt?: string }[];
+  /** Whose item it is and who may see it; shared with the Space by default. */
+  owner?: string;
+  visibility?: "space_shared" | "private";
 }): Promise<string> {
   const itemId = randomUUID();
   const now = new Date().toISOString();
@@ -80,8 +83,8 @@ async function seedAnnotatedItem(options: {
     `INSERT INTO source_items (
        id, space_id, owner_user_id, visibility, connection_id, item_type, title, source_uri,
        first_seen_at, last_seen_at, content_state, retention_policy, created_at, updated_at
-     ) VALUES ($1,$2,$3,'space_shared',$4,'feed_entry',$5,$6,$7,$7,'excerpt_saved','summary_only',$7,$7)`,
-    [itemId, SPACE, OWNER, CONNECTION, `Item ${itemId.slice(0, 8)}`, `https://example.com/${itemId}`, now],
+     ) VALUES ($1,$2,$3,$8,$4,'feed_entry',$5,$6,$7,$7,'excerpt_saved','summary_only',$7,$7)`,
+    [itemId, SPACE, options.owner ?? OWNER, CONNECTION, `Item ${itemId.slice(0, 8)}`, `https://example.com/${itemId}`, now, options.visibility ?? "space_shared"],
   );
   await annotations().enqueueItems(SPACE, [itemId], null);
   await annotations().markSucceeded(SPACE, {
@@ -194,6 +197,26 @@ describe("controlled topic growth", () => {
     expect(snapshot.topics).toEqual([]);
   });
 
+  it("does not count another member's private items toward this reader's candidates", async () => {
+    if (!db.available) return;
+    for (let i = 0; i < NEW_TOPIC_READ_THRESHOLD; i += 1) {
+      await seedAnnotatedItem({ domain: "artificial_intelligence", topics: ["Deep Sea Mining"], readBy: [{ user: OWNER, readStatus: "read" }] });
+    }
+    // Enough of OTHER's private items — a discovery probe's results, say — to
+    // cross the occurrence threshold if they counted for OWNER.
+    for (let i = 0; i < NEW_TOPIC_OCCURRENCE_THRESHOLD; i += 1) {
+      await seedAnnotatedItem({ domain: "artificial_intelligence", topics: ["deep sea mining"], owner: OTHER, visibility: "private" });
+    }
+    await service().runFactLayer(SPACE, OWNER);
+
+    expect((await service().snapshot(SPACE, OWNER)).ready_candidates).toEqual([]);
+    const candidates = await db.pool.query<{ occurrence_count: number; display_phrase: string }>(
+      `SELECT occurrence_count, display_phrase FROM interest_topic_candidates WHERE space_id = $1 AND user_id = $2`,
+      [SPACE, OWNER],
+    );
+    expect(candidates.rows).toEqual([{ occurrence_count: NEW_TOPIC_READ_THRESHOLD, display_phrase: "Deep Sea Mining" }]);
+  });
+
   it("does not promote a phrase the reader never engages with", async () => {
     if (!db.available) return;
     for (let i = 0; i < NEW_TOPIC_OCCURRENCE_THRESHOLD + 3; i += 1) {
@@ -223,6 +246,35 @@ describe("controlled topic growth", () => {
     const ready = (await service().snapshot(SPACE, OWNER)).ready_candidates;
     expect(ready).toHaveLength(1);
     expect(ready[0].occurrence_count).toBe(4);
+  });
+
+  it("counts an item once per candidate however many spellings it carries", async () => {
+    if (!db.available) return;
+    await seedAnnotatedItem({
+      domain: "artificial_intelligence",
+      topics: ["LLMs", "LLM", "large language models", "Large-Language-Model"],
+      readBy: [{ user: OWNER, readStatus: "read" }],
+    });
+    await service().runFactLayer(SPACE, OWNER);
+
+    const profile = await profiles().getProfile(SPACE, OWNER);
+    for (const key of ["llm", "large-language-model"]) {
+      expect(await profiles().getCandidate(profile!.id, key), key).toMatchObject({ occurrence_count: 1, read_count: 1 });
+    }
+  });
+
+  it("counts an item once when two passes run at the same time", async () => {
+    if (!db.available) return;
+    await profiles().ensureProfile(SPACE, OWNER);
+    await seedAnnotatedItem({
+      domain: "artificial_intelligence",
+      topics: ["model evaluation"],
+      readBy: [{ user: OWNER, readStatus: "read" }],
+    });
+    await Promise.all([service().runFactLayer(SPACE, OWNER), service().runFactLayer(SPACE, OWNER)]);
+
+    const profile = await profiles().getProfile(SPACE, OWNER);
+    expect(await profiles().getCandidate(profile!.id, "model-evaluation")).toMatchObject({ occurrence_count: 1, read_count: 1 });
   });
 
   it("is idempotent: re-running does not double-count toward the threshold", async () => {
@@ -429,6 +481,23 @@ describe("the confirmation boundary", () => {
     });
     const topics = await profiles().listTopics(profile.id);
     expect(topics).toHaveLength(1);
+    expect(topics[0].aliases).toContain("city-planning");
+  });
+
+  it("brings an archived topic back with its aliases and weight, not an empty copy", async () => {
+    if (!db.available) return;
+    const profile = await profiles().ensureProfile(SPACE, OWNER);
+    await profiles().upsertTopic({
+      spaceId: SPACE, userId: OWNER, profileId: profile.id,
+      label: "Urban planning", domainKey: "urbanism", aliases: ["city planning"], weight: 3,
+    });
+    expect(await profiles().archiveTopic(profile.id, "urban-planning")).toBe(true);
+
+    // The way a topic comes back in practice: created again with nothing but a label.
+    await profiles().upsertTopic({ spaceId: SPACE, userId: OWNER, profileId: profile.id, label: "Urban planning", domainKey: "urbanism" });
+    const topics = await profiles().listTopics(profile.id);
+    expect(topics).toHaveLength(1);
+    expect(topics[0]).toMatchObject({ weight: 3 });
     expect(topics[0].aliases).toContain("city-planning");
   });
 });

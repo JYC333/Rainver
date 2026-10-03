@@ -399,7 +399,7 @@ const egressReview = z.object({
   required_egress_approver_user_ids: z.array(z.string().min(1)).min(1),
 }).passthrough();
 
-export const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
+const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   memoryCreate,
   memoryUpdate,
   memoryArchive,
@@ -448,8 +448,6 @@ export const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   egressReview,
   researchHistoryExtend,
 ]);
-
-export type ProposalPayload = z.infer<typeof ProposalPayloadSchema>;
 
 export class ProposalPayloadValidationError extends Error {
   readonly statusCode = 422;

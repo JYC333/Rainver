@@ -12,7 +12,7 @@ import { createServerApp, type ServerAppOptions } from "./gateway/appShell.js";
 import { registerServerRoutes } from "./gateway/routeRegistry.js";
 import type { PluginHost } from "./modules/plugins/host/index.js";
 
-export interface BuildServerOptions extends ServerAppOptions {
+interface BuildServerOptions extends ServerAppOptions {
   /** Optional plugin host — activates built-in plugins after SERVER_MODULES. */
   pluginHost?: PluginHost;
 }

@@ -440,7 +440,7 @@ export class ProjectResearchOrchestrator {
     if (!workflow) throw new HttpError(409, "There is no active research workflow to update");
     const workflowState = objectValue(workflow.state_json);
     const workflowQuestion = optionalString(workflowState.research_question);
-    const ruleIds = stringArray(workflowState.source_post_processing_rule_ids);
+    const ruleIds = workflowRuleIds(workflowState);
     if (!workflowQuestion) throw new HttpError(409, "The research workflow has no question snapshot to update");
     const currentThreadScope = normalizeThreadScope(workflowState.thread_scope);
     const scopedThread = currentThreadScope[0];
@@ -624,8 +624,8 @@ export class ProjectResearchOrchestrator {
       throw new HttpError(409, "This research workflow already covers the earliest available history");
     }
     const channelIds = stringArray(workflowState.channel_ids);
-    const bindingIds = stringArray(workflowState.project_source_binding_ids);
-    const ruleIds = stringArray(workflowState.source_post_processing_rule_ids);
+    const bindingIds = workflowBindingIds(workflowState);
+    const ruleIds = workflowRuleIds(workflowState);
     if (!channelIds.length || channelIds.length !== bindingIds.length || channelIds.length !== ruleIds.length) throw new HttpError(409, "The research workflow has not completed monitor setup");
 
     const coverage = historyCoverage(workflowState);
@@ -1751,6 +1751,7 @@ export class ProjectResearchOrchestrator {
     if (state.run_kind !== "baseline" && state.run_kind !== "historical_backfill") {
       throw new HttpError(409, "Only material backfill operations have an item limit");
     }
+    assertStillAcquiring(operation.status, state);
     const planIds = state.source_backfill_plan_ids?.length
       ? state.source_backfill_plan_ids
       : state.source_backfill_plan_id ? [state.source_backfill_plan_id] : [];
@@ -1817,6 +1818,7 @@ export class ProjectResearchOrchestrator {
     if (stage === "monitor_setup") {
       throw new HttpError(409, "This operation hasn't started importing material yet");
     }
+    assertStillAcquiring(operation.status, state);
     const active = await this.activeResearchOperation(identity.spaceId, projectId, state.workflow_id);
     if (active && active.id !== operation.id) throw new HttpError(409, "Another Project Research operation is already active for this workflow");
     const additionalItems = body.additional_max_items === undefined ? 0 : Number(body.additional_max_items);
@@ -1991,6 +1993,8 @@ export class ProjectResearchOrchestrator {
         channel_ids: state.channel_ids,
         project_source_binding_id: state.project_source_binding_id,
         source_post_processing_rule_id: state.source_post_processing_rule_id,
+        project_source_binding_ids: state.project_source_binding_ids,
+        source_post_processing_rule_ids: state.source_post_processing_rule_ids,
         source_backfill_plan_id: state.source_backfill_plan_id,
         source_backfill_plan_ids: state.source_backfill_plan_ids,
         agent_id: state.agent_id,
@@ -3104,7 +3108,7 @@ function initialState(input: ResearchInput, workflowId: string, fingerprint: str
   };
 }
 
-export function incrementalStateFromWorkflow(
+function incrementalStateFromWorkflow(
   workflowValue: unknown,
   workflowId: string,
   sourceItemIds: string[],
@@ -3130,8 +3134,8 @@ export function incrementalStateFromWorkflow(
     report_depth: normalizeReportDepth(workflow.report_depth),
     question_refine_skipped: workflow.question_refine_skipped === true,
     channel_ids: stringArray(workflow.channel_ids),
-    project_source_binding_ids: stringArray(workflow.project_source_binding_ids),
-    source_post_processing_rule_ids: stringArray(workflow.source_post_processing_rule_ids),
+    project_source_binding_ids: workflowBindingIds(workflow),
+    source_post_processing_rule_ids: workflowRuleIds(workflow),
     project_source_binding_id: optionalString(workflow.project_source_binding_id),
     source_post_processing_rule_id: optionalString(workflow.source_post_processing_rule_id),
     source_backfill_plan_id: null,
@@ -3183,8 +3187,8 @@ function historicalBackfillStateFromWorkflow(
     report_depth: normalizeReportDepth(workflow.report_depth),
     question_refine_skipped: workflow.question_refine_skipped === true,
     channel_ids: stringArray(workflow.channel_ids),
-    project_source_binding_ids: stringArray(workflow.project_source_binding_ids),
-    source_post_processing_rule_ids: stringArray(workflow.source_post_processing_rule_ids),
+    project_source_binding_ids: workflowBindingIds(workflow),
+    source_post_processing_rule_ids: workflowRuleIds(workflow),
     project_source_binding_id: optionalString(workflow.project_source_binding_id),
     source_post_processing_rule_id: optionalString(workflow.source_post_processing_rule_id),
     source_backfill_plan_id: null,
@@ -3268,4 +3272,36 @@ function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)]));
   return value;
+}
+
+/**
+ * A Workflow's monitor bindings and screening rules. Intake wrote only the
+ * singular id before it wrote these lists, so a Workflow from then reads its
+ * one binding and rule from the singular key.
+ */
+function workflowBindingIds(state: Record<string, unknown>): string[] {
+  const ids = stringArray(state.project_source_binding_ids);
+  const single = optionalString(state.project_source_binding_id);
+  return ids.length > 0 ? ids : single ? [single] : [];
+}
+
+function workflowRuleIds(state: Record<string, unknown>): string[] {
+  const ids = stringArray(state.source_post_processing_rule_ids);
+  const single = optionalString(state.source_post_processing_rule_id);
+  return ids.length > 0 ? ids : single ? [single] : [];
+}
+
+/**
+ * Raising the limit or rescanning sends an operation back to backfill. One
+ * that has finished, or moved past screening, cannot re-enter from there: its
+ * decided screening gate keeps it from ever reaching screening again, so it
+ * would sit in backfill for good. Continuing past that point is a new
+ * historical operation.
+ */
+function assertStillAcquiring(status: string, state: { current_stage?: string | null; failed_stage?: string | null }): void {
+  const stage = state.failed_stage ?? state.current_stage;
+  if (status === "completed" || status === "cancelled"
+    || stage === "comparison" || stage === "synthesis" || stage === "idea_review" || stage === "complete") {
+    throw new HttpError(409, "This operation is past material import; start a historical extension to collect more");
+  }
 }

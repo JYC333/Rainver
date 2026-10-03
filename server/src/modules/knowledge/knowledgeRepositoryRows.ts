@@ -182,7 +182,7 @@ export interface ProvenanceLinkRow {
   created_at: unknown;
 }
 
-export const KNOWLEDGE_ITEM_COLUMNS = `
+const KNOWLEDGE_ITEM_COLUMNS = `
   ki.object_id AS id, ki.space_id, so.primary_project_id AS project_id,
   so.project_folder_id, so.focus_area_id, ki.root_item_id, ki.supersedes_item_id,
   ki.redirect_to_item_id, ki.knowledge_kind, ki.slug, ki.aliases_json,
@@ -251,7 +251,7 @@ export const SOURCE_FROM = `
    AND so.object_type = 'source'
 `;
 
-export const NOTE_COLUMNS = `
+const NOTE_COLUMNS = `
   n.object_id AS id, n.space_id, so.title, n.content_json, n.content_format,
   n.content_schema_version, n.plain_text, so.summary AS excerpt, n.status,
   so.primary_project_id, so.focus_area_id, n.created_from_activity_id, so.created_by_user_id,
@@ -352,6 +352,5 @@ export const CLAIM_RESOLUTION_STATES = new Set(["unreviewed", "confirmed", "cont
 export const CLAIM_EVIDENCE_ROLES = new Set(["supports", "contradicts", "mentions", "derived_from", "cites", "summarizes"]);
 export const CLAIM_SOURCE_REF_TYPES = new Set(["activity", "artifact", "run_event", "extracted_evidence", "source_snapshot", "external_pointer", "source_item"]);
 export const CLAIM_SOURCE_TRUST_LEVELS = new Set(["trusted", "normal", "untrusted", "unknown"]);
-export const OBJECT_RELATION_STATUSES = new Set(["candidate", "active", "rejected", "archived"]);
 export const SOURCE_TYPES = new Set(["activity_record", "chat_capture", "webpage", "article", "paper", "pdf", "file", "email", "manual_reference", "external_note"]);
 export const SOURCE_STATUSES = new Set(["raw", "processing", "processed", "archived", "error"]);

@@ -1,27 +1,16 @@
 // API response shapes shared with the server HTTP contracts.
 import type {
+  LINK_STATUS_VALUES,
+  LinkType,
   AgentRunGroup,
-  AgentRunGroupMember,
-  AgentRunGroupTimeline,
-  AgentRunGroupTrace,
-  AgentRunMention,
-  AgentRunMessage,
-  AgentRunMessageRecipientSegment,
-  AgentRunMessageRoutingMode,
-  AskSpaceClaimTrajectory,
   AskSpaceDomain,
   AskSpaceDomainSection,
   AskSpaceFollowUp,
-  AskSpaceFollowUpKind,
-  AskSpaceGapSummary,
-  AskSpaceProvenanceItem,
   AskSpaceRequest,
   AskSpaceResponse,
   AutomationTargetType,
   CapabilityDefinition,
   CapabilityPackDescriptor,
-  CapabilityRuntimeBinding,
-  CapabilitySourceKind,
   CapabilityStatus,
   CaptureDestination,
   CaptureRequest,
@@ -34,7 +23,6 @@ import type {
   RunTurn,
   ToolCallTurnPart,
   TurnPart,
-  TurnState,
   TurnStreamFrame,
   ClaimCandidatePacketCreateRequest,
   ClaimCandidatePacketCreateRequestInput,
@@ -42,23 +30,14 @@ import type {
   ClaimContradictionScanRequest,
   ClaimContradictionScanRequestInput,
   ClaimContradictionScanResponse,
-  ContextObservationItem,
-  ContextObservationSeverity,
-  ContextOpsArtifactSummary,
-  ContextOpsContextObservationReport,
-  ContextOpsContextObservationScanRequest,
   ContextOpsContextObservationScanRequestInput,
   ContextOpsContextObservationScanResponse,
   ContextOpsCountMap,
   ContextOpsDrilldown,
-  ContextOpsDrilldownObject,
   ContextOpsDrilldownSection,
-  ContextOpsPacketSummary,
   ContextOpsReviewMode,
   ContextOpsScanMode,
-  ContextOpsSourceWarningDetail,
   ContextOpsSummary,
-  ContextReviewCycleRequest,
   ContextReviewCycleRequestInput,
   ContextReviewCycleResponse,
   ConversationBackendBinding,
@@ -67,8 +46,6 @@ import type {
   ConversationRetryResponse,
   RuntimeSessionConfigOption,
   RuntimeSessionConfigSelection,
-  CreateAgentRunGroupRequest,
-  CreateAgentRunGroupResponse,
   CreateRoomRequest,
   CreateRoomResponse,
   RoomAgentAddRequest,
@@ -76,9 +53,7 @@ import type {
   RoomAgentCandidatesResponse,
   RoomAgentMember,
   RoomAgentMutationResponse,
-  RoomAgentPreset,
   RoomAgentPresetRequest,
-  CrossSpacePointer,
   CrossSpaceResolvedItem,
   CrossSpaceRetrievalRequest,
   CrossSpaceRetrievalResponse,
@@ -87,31 +62,21 @@ import type {
   CustomSourceCredentialDTO,
   CustomSourceInstanceRunnerSettingsUpdate,
   CustomSourcePolicyEnvelope,
-  CustomSourcePolicyLimits,
   CustomSourceRetentionPolicy,
   CustomSourceSpacePolicyUpdate,
   InquiryAttentionState,
   InquiryCandidate,
-  InquiryCandidateDecision,
-  InquiryCandidateStatus,
   InquiryDeltaBriefContent,
-  InquiryDeltaGapChange,
-  InquiryDeltaPositionChange,
   InquiryEvidenceSignal,
   InquiryIteration,
-  InquiryLifecycleStatus,
   InquiryNextFocusKind,
   InquiryOpenStep,
   InquiryReviewPacket,
   InquiryThread,
   InquiryThreadAdvice,
-  InquiryThreadKind,
   InquiryThreadStep,
-  MemoryMaintenanceFinding,
-  MemoryMaintenanceFindingKind,
   MemoryMaintenanceJob,
   MemoryMaintenanceJobRunResponse,
-  MemoryMaintenanceObject,
   MemoryMaintenanceReport,
   MemoryMaintenanceScanRequest,
   MemoryMaintenanceScanRequestInput,
@@ -122,10 +87,6 @@ import type {
   ObjectSchemaImportRequest,
   ObjectSchemaImportRequestInput,
   ObjectSchemaImportResponse,
-  ObjectSchemaManifestKind,
-  ObjectSchemaManifestRelationHint,
-  ObjectSchemaSuggestionFinding,
-  ObjectSchemaSuggestionReport,
   ObjectSchemaSuggestionScanRequest,
   ObjectSchemaSuggestionScanRequestInput,
   ObjectSchemaSuggestionScanResponse,
@@ -133,29 +94,25 @@ import type {
   ProjectInstructionVersion,
   ProjectResearchQuestionAssessmentConfirmation,
   ProjectResearchQuestionAssessmentConfirmationResponse,
-  ProjectResearchQuestionAssessmentMessage,
   ProjectResearchQuestionAssessmentSession,
   ProjectResearchQuestionRefinement,
   ProjectResearchQuestionRefinementResponse,
   ProjectResearchQuestionRefinementResult,
-  PromptAssetContent,
   PromptAssetDetail,
   PromptAssetScopeType,
   PromptAssetSummary,
   PromptDeploymentRef,
   PromptEvaluationRequest,
   PromptEvaluationResult,
-  PromptMessage,
-  PromptPromotionRequest,
   PromptPromotionRequestInput,
+  PromptPromotionResult,
   PromptRenderPreviewRequest,
   PromptRenderPreviewResult,
   PromptRollbackRequest,
   PromptType,
   PromptVersion,
   PromptVersionCreateRequest,
-  PromptVersionSource,
-  PromptVersionStatus,
+  ProjectResearchRunKind,
   ProposalAcceptOut,
   ReaderAnnotationCreate,
   RelationDiscoveryScanRequest,
@@ -170,21 +127,16 @@ import type {
   ResearchQueryStrategy,
   ResearchReportV1,
   ResearchSemanticConcept,
-  RetrievalBrief,
   RetrievalBriefRequest,
   RetrievalBriefResponse,
   RetrievalCalibrationDecision,
   RetrievalCalibrationDecisionRequest,
   RetrievalCalibrationDecisionResponse,
   RetrievalCalibrationMechanic,
-  RetrievalCitation,
   RetrievalExplainRequest,
   RetrievalExplainResponse,
   RetrievalFeedbackRequest,
   RetrievalFeedbackResponse,
-  RetrievalFeedbackSignal,
-  RetrievalGapAnalysis,
-  RetrievalGapItem,
   RetrievalMaintenanceScanRequest,
   RetrievalMaintenanceScanRequestInput,
   RetrievalObjectType,
@@ -197,7 +149,6 @@ import type {
   RetrievalToolMode,
   Room,
   RoomConversation,
-  RoomConversationSummary,
   RoomConversationSummaryResponse,
   RoomDetail,
   RoomInvitation,
@@ -211,48 +162,30 @@ import type {
   RoomUserMember,
   RunDelegation,
   RuntimeRenderMode,
-  SendAgentRunGroupMessageRequest,
-  SendAgentRunGroupMessageResponse,
   SendRoomMessageRequest,
   SkillConvertToCapabilityResponse,
   SkillImportApprovalProposalResponse,
   SkillImportPreviewResponse,
-  SkillLibraryIndexItem,
   SkillLibraryIndexResponse,
   SkillLocalOverlay,
-  SkillLocalOverlayConfig,
-  SkillLocalOverlayScope,
-  SkillLocalOverlayStatus,
   SkillLocalOverlayUpsertRequest,
   SkillPackage,
   SkillPackageFile,
-  SkillPackageFilePreview,
   SkillPackageStatus,
-  SkillRiskLevel,
-  SkillSource,
   SourceChannel,
   SourceConnector,
   SourcePolicyEnvelope,
   SourceProvider,
   SourceProviderCategoryGroup,
-  SourceProviderCategoryOption,
-  SourceProviderSetupSchema,
   SourceRecipeDefinition,
   SourceRecipeDryRunResult,
-  SourceRecipeDryRunStatus,
   SourceRecipePrimitiveName,
   SourceRecipeStepTrace,
-  SourceRecipeStepTraceStatus,
   SourceRecipeVersionStatus,
-  SourceRunImplementation,
-  SourceRunKind,
-  SourceRunStatus,
   SpaceObjectProfileCreateProposalRequest,
   SpaceObjectProfileCreateProposalRequestInput,
   SpaceObjectProfileOut,
   SpaceObjectProfilePage,
-  SpaceObjectProfileRelationHintDirection,
-  SpaceObjectProfileRelationHintLinkType,
   SpaceObjectProfileRelationHintRequest,
   SpaceObjectProfileStatus,
   SpaceObjectProfileUpdateProposalRequest,
@@ -262,34 +195,19 @@ import type {
   SpaceRetrievalSettings,
   SpaceRetrievalSettingsUpdate,
   ProjectFileDraft,
-  UpdateAgentRunGroupRequest,
-  UpdateAgentRunGroupResponse,
 } from '@rainver/protocol'
 export type {
   MemoryVersion,
   ConversationRetryResponse,
   AgentRunGroup,
-  AgentRunGroupMember,
-  AgentRunGroupTimeline,
-  AgentRunGroupTrace,
-  AgentRunMention,
-  AgentRunMessage,
-  AgentRunMessageRecipientSegment,
-  AgentRunMessageRoutingMode,
-  AskSpaceClaimTrajectory,
   AskSpaceDomain,
   AskSpaceDomainSection,
   AskSpaceFollowUp,
-  AskSpaceFollowUpKind,
-  AskSpaceGapSummary,
-  AskSpaceProvenanceItem,
   AskSpaceRequest,
   AskSpaceResponse,
   AutomationTargetType,
   CapabilityDefinition,
   CapabilityPackDescriptor,
-  CapabilityRuntimeBinding,
-  CapabilitySourceKind,
   CapabilityStatus,
   CaptureDestination,
   CaptureRequest,
@@ -301,7 +219,6 @@ export type {
   RunTurn,
   ToolCallTurnPart,
   TurnPart,
-  TurnState,
   TurnStreamFrame,
   ClaimCandidatePacketCreateRequest,
   ClaimCandidatePacketCreateRequestInput,
@@ -309,23 +226,14 @@ export type {
   ClaimContradictionScanRequest,
   ClaimContradictionScanRequestInput,
   ClaimContradictionScanResponse,
-  ContextObservationItem,
-  ContextObservationSeverity,
-  ContextOpsArtifactSummary,
-  ContextOpsContextObservationReport,
-  ContextOpsContextObservationScanRequest,
   ContextOpsContextObservationScanRequestInput,
   ContextOpsContextObservationScanResponse,
   ContextOpsCountMap,
   ContextOpsDrilldown,
-  ContextOpsDrilldownObject,
   ContextOpsDrilldownSection,
-  ContextOpsPacketSummary,
   ContextOpsReviewMode,
   ContextOpsScanMode,
-  ContextOpsSourceWarningDetail,
   ContextOpsSummary,
-  ContextReviewCycleRequest,
   ContextReviewCycleRequestInput,
   ContextReviewCycleResponse,
   ConversationBackendBinding,
@@ -333,11 +241,8 @@ export type {
   ConversationBackendOption,
   RuntimeSessionConfigOption,
   RuntimeSessionConfigSelection,
-  CreateAgentRunGroupRequest,
-  CreateAgentRunGroupResponse,
   CreateRoomRequest,
   CreateRoomResponse,
-  CrossSpacePointer,
   CrossSpaceResolvedItem,
   CrossSpaceRetrievalRequest,
   CrossSpaceRetrievalResponse,
@@ -346,31 +251,21 @@ export type {
   CustomSourceCredentialDTO,
   CustomSourceInstanceRunnerSettingsUpdate,
   CustomSourcePolicyEnvelope,
-  CustomSourcePolicyLimits,
   CustomSourceRetentionPolicy,
   CustomSourceSpacePolicyUpdate,
   InquiryAttentionState,
   InquiryCandidate,
-  InquiryCandidateDecision,
-  InquiryCandidateStatus,
   InquiryDeltaBriefContent,
-  InquiryDeltaGapChange,
-  InquiryDeltaPositionChange,
   InquiryEvidenceSignal,
   InquiryIteration,
-  InquiryLifecycleStatus,
   InquiryNextFocusKind,
   InquiryOpenStep,
   InquiryReviewPacket,
   InquiryThread,
   InquiryThreadAdvice,
-  InquiryThreadKind,
   InquiryThreadStep,
-  MemoryMaintenanceFinding,
-  MemoryMaintenanceFindingKind,
   MemoryMaintenanceJob,
   MemoryMaintenanceJobRunResponse,
-  MemoryMaintenanceObject,
   MemoryMaintenanceReport,
   MemoryMaintenanceScanRequest,
   MemoryMaintenanceScanRequestInput,
@@ -381,10 +276,6 @@ export type {
   ObjectSchemaImportRequest,
   ObjectSchemaImportRequestInput,
   ObjectSchemaImportResponse,
-  ObjectSchemaManifestKind,
-  ObjectSchemaManifestRelationHint,
-  ObjectSchemaSuggestionFinding,
-  ObjectSchemaSuggestionReport,
   ObjectSchemaSuggestionScanRequest,
   ObjectSchemaSuggestionScanRequestInput,
   ObjectSchemaSuggestionScanResponse,
@@ -392,29 +283,25 @@ export type {
   ProjectInstructionVersion,
   ProjectResearchQuestionAssessmentConfirmation,
   ProjectResearchQuestionAssessmentConfirmationResponse,
-  ProjectResearchQuestionAssessmentMessage,
   ProjectResearchQuestionAssessmentSession,
   ProjectResearchQuestionRefinement,
   ProjectResearchQuestionRefinementResponse,
   ProjectResearchQuestionRefinementResult,
-  PromptAssetContent,
   PromptAssetDetail,
   PromptAssetScopeType,
   PromptAssetSummary,
   PromptDeploymentRef,
   PromptEvaluationRequest,
   PromptEvaluationResult,
-  PromptMessage,
-  PromptPromotionRequest,
   PromptPromotionRequestInput,
+  PromptPromotionResult,
   PromptRenderPreviewRequest,
   PromptRenderPreviewResult,
   PromptRollbackRequest,
   PromptType,
   PromptVersion,
   PromptVersionCreateRequest,
-  PromptVersionSource,
-  PromptVersionStatus,
+  ProjectResearchRunKind,
   ProposalAcceptOut,
   ReaderAnnotationCreate,
   RelationDiscoveryScanRequest,
@@ -429,21 +316,16 @@ export type {
   ResearchQueryStrategy,
   ResearchReportV1,
   ResearchSemanticConcept,
-  RetrievalBrief,
   RetrievalBriefRequest,
   RetrievalBriefResponse,
   RetrievalCalibrationDecision,
   RetrievalCalibrationDecisionRequest,
   RetrievalCalibrationDecisionResponse,
   RetrievalCalibrationMechanic,
-  RetrievalCitation,
   RetrievalExplainRequest,
   RetrievalExplainResponse,
   RetrievalFeedbackRequest,
   RetrievalFeedbackResponse,
-  RetrievalFeedbackSignal,
-  RetrievalGapAnalysis,
-  RetrievalGapItem,
   RetrievalMaintenanceScanRequest,
   RetrievalMaintenanceScanRequestInput,
   RetrievalObjectType,
@@ -460,10 +342,8 @@ export type {
   RoomAgentCandidatesResponse,
   RoomAgentMember,
   RoomAgentMutationResponse,
-  RoomAgentPreset,
   RoomAgentPresetRequest,
   RoomConversation,
-  RoomConversationSummary,
   RoomConversationSummaryResponse,
   RoomDetail,
   RoomInvitation,
@@ -477,48 +357,29 @@ export type {
   RoomUserMember,
   RunDelegation,
   RuntimeRenderMode,
-  SendAgentRunGroupMessageRequest,
-  SendAgentRunGroupMessageResponse,
   SendRoomMessageRequest,
   SkillConvertToCapabilityResponse,
   SkillImportApprovalProposalResponse,
   SkillImportPreviewResponse,
-  SkillLibraryIndexItem,
   SkillLibraryIndexResponse,
   SkillLocalOverlay,
-  SkillLocalOverlayConfig,
-  SkillLocalOverlayScope,
-  SkillLocalOverlayStatus,
   SkillLocalOverlayUpsertRequest,
   SkillPackage,
   SkillPackageFile,
-  SkillPackageFilePreview,
   SkillPackageStatus,
-  SkillRiskLevel,
-  SkillSource,
   SourceChannel,
   SourceConnector,
   SourcePolicyEnvelope,
   SourceProvider,
   SourceProviderCategoryGroup,
-  SourceProviderCategoryOption,
-  SourceProviderSetupSchema,
   SourceRecipeDefinition,
   SourceRecipeDryRunResult,
-  SourceRecipeDryRunStatus,
-  SourceRecipePrimitiveName,
   SourceRecipeStepTrace,
-  SourceRecipeStepTraceStatus,
   SourceRecipeVersionStatus,
-  SourceRunImplementation,
-  SourceRunKind,
-  SourceRunStatus,
   SpaceObjectProfileCreateProposalRequest,
   SpaceObjectProfileCreateProposalRequestInput,
   SpaceObjectProfileOut,
   SpaceObjectProfilePage,
-  SpaceObjectProfileRelationHintDirection,
-  SpaceObjectProfileRelationHintLinkType,
   SpaceObjectProfileRelationHintRequest,
   SpaceObjectProfileStatus,
   SpaceObjectProfileUpdateProposalRequest,
@@ -527,8 +388,6 @@ export type {
   SpaceRetrievalSettings,
   SpaceRetrievalSettingsUpdate,
   ProjectFileDraft,
-  UpdateAgentRunGroupRequest,
-  UpdateAgentRunGroupResponse,
 }
 import { OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE } from '@rainver/protocol'
 
@@ -680,7 +539,6 @@ export interface ContentDemotionDisclosure {
 }
 export type MemoryVisibility = ContentVisibility
 export type ObjectVisibility = ContentVisibility
-export type ProposalStatus   = 'pending' | 'accepted' | 'rejected'
 export type KnowledgeItemKind =
   | 'concept'
   | 'lesson'
@@ -714,31 +572,6 @@ export type KnowledgeRelationStatus = 'candidate' | 'active' | 'rejected' | 'arc
  */
 export const SPACE_OBJECT_PROFILE_KEYS_BY_BASE_OBJECT_TYPE: Record<RetrievalObjectType, readonly string[]> =
   OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE
-export type RetrievalEvidenceKind =
-  | 'alias_hit'
-  | 'exact_title_match'
-  | 'slug_match'
-  | 'source_url_match'
-  | 'lexical_match'
-  | 'vector_match'
-  | 'graph_neighbor'
-  | 'weak_match'
-export interface RetrievalEvidence {
-  kind: RetrievalEvidenceKind
-  field?: string
-  matched_text?: string
-  source?: string
-  confidence?: number
-  [key: string]: unknown
-}
-
-export interface AskSpaceClaimTrajectorySignal {
-  kind: string
-  from_claim_id: string
-  to_claim_id: string
-  summary: string
-  confidence_tier: 'high' | 'medium' | 'low'
-}
 
 export interface CrossSpaceResolveResponse {
   items: CrossSpaceResolvedItem[]
@@ -788,18 +621,6 @@ export interface RetrievalDiagnosticsReportResponse {
   proposal_id?: string
 }
 export type RetrievalCalibrationDecisionValue = 'adopt' | 'defer' | 'reject'
-export interface RetrievalRuntimeMechanicConfig {
-  state: RetrievalRankingMechanicState
-  calibration_artifact_id?: string | null
-  shipped_at?: string | null
-  eval_gate: {
-    status: 'not_run' | 'passed' | 'failed'
-    metric?: string | null
-    value?: number | null
-    threshold: number
-    checked_at?: string | null
-  }
-}
 export interface RetrievalMaintenanceScanResponse {
   counts: Record<string, number>
   scanned: number
@@ -821,16 +642,6 @@ export type ActivitySourceType =
   | 'external_source'
   | 'source'
 export type SessionStatus    = 'active' | 'closed'
-/** Canonical run lifecycle (Run API). */
-export type RunLifecycleStatus =
-  | 'queued'
-  | 'running'
-  | 'succeeded'
-  | 'failed'
-  | 'cancelled'
-  | 'degraded'
-  | 'waiting_for_review'
-  | 'waiting_for_dependency'
 
 export interface AuthorizationRequest {
   id: string
@@ -853,8 +664,6 @@ export interface AuthorizationRequest {
 }
 
 export type MessageRole      = 'user' | 'assistant' | 'system' | 'tool'
-
-export type ModelSelectionMode = 'cli_default' | 'cli_model_override' | 'rainver_provider'
 
 export type NetworkProfileMode = 'direct' | 'http_proxy'
 
@@ -1136,7 +945,7 @@ export interface CustomSourceInstanceRunnerSettings {
 
 export type SourceRecipeSourceType = 'rss' | 'atom' | 'web_list' | 'web_page'
 
-export interface SourceRecipeOutputItem {
+interface SourceRecipeOutputItem {
   external_id: string
   title: string
   source_uri: string
@@ -1217,8 +1026,20 @@ export interface SourceRecipeCreateRequest extends SourceRecipePlanRequest {
   recipe?: SourceRecipeDefinition
 }
 
+/**
+ * The channel a recipe source was created with, keyed by its connection:
+ * `id` is the connection id and `source_channel_id` the channel's own id, so
+ * it is not a `SourceChannel` and must not be passed to channel routes as one.
+ */
+export type SourceRecipeCreateConnection = Omit<SourceChannel, 'id'> & {
+  id: string
+  source_channel_id: string
+  handler_kind: 'recipe'
+  status: 'paused'
+}
+
 export interface SourceRecipeCreateResponse {
-  connection: SourceChannel
+  connection: SourceRecipeCreateConnection
   recipe_version: SourceRecipeVersion
 }
 
@@ -1245,23 +1066,6 @@ export interface SourceRecipeActivationResult {
   deltas: string[]
   proposal_id: string | null
   recipe_version: SourceRecipeVersion
-}
-
-export interface SourceRunSummary {
-  id: string
-  space_id: string
-  source_connection_id: string
-  run_kind: SourceRunKind
-  implementation: SourceRunImplementation
-  status: SourceRunStatus
-  items_created?: number | null
-  error?: string | null
-  extraction_job_id?: string | null
-  handler_run_id?: string | null
-  recipe_version_id?: string | null
-  created_at: string
-  started_at?: string | null
-  completed_at?: string | null
 }
 
 export interface ExtractedEvidence {
@@ -1907,10 +1711,9 @@ export interface NoteRevision {
 export type EntityType =
   | 'note' | 'knowledge_item' | 'source' | 'project'
   | 'project_folder' | 'activity' | 'run' | 'proposal'
-export type EntityLinkType =
-  | 'references' | 'related_to' | 'belongs_to'
-  | 'captured_from' | 'source_for' | 'derived_from'
-export type EntityLinkStatus = 'suggested' | 'accepted' | 'rejected'
+// The protocol's link vocabulary: the server rejects any other name.
+export type EntityLinkType = LinkType
+export type EntityLinkStatus = (typeof LINK_STATUS_VALUES)[number]
 
 export interface EntityLink {
   id: string
@@ -1974,26 +1777,9 @@ export interface ActivityInboxRecord {
   visibility?: ObjectVisibility
   access_level?: ContentAccessLevel
   owner_user_id?: string | null
+  occurred_at?: string | null
   created_at: string
   updated_at: string
-}
-
-/** Run timeline row (`GET /runs/{id}/activities`). */
-export interface ActivityRecord {
-  id: string
-  space_id: string
-  source_run_id: string | null
-  session_id: string | null
-  user_id: string | null
-  activity_type: string
-  title: string | null
-  content: string | null
-  payload_json: Record<string, unknown>
-  visibility?: ObjectVisibility
-  access_level?: ContentAccessLevel
-  owner_user_id?: string | null
-  occurred_at: string
-  created_at: string
 }
 
 export interface Session {
@@ -2111,23 +1897,6 @@ export interface Task {
   policy_json?: Record<string, unknown> | null
   tags?: string[] | null
   metadata_json?: Record<string, unknown> | null
-}
-
-export interface BoardColumn {
-  id: string
-  space_id: string
-  board_id: string
-  name: string
-  description: string | null
-  status_key: string
-  position: number
-  wip_limit: number | null
-  is_done_column: boolean
-  is_default_column: boolean
-  metadata_json: Record<string, unknown> | null
-  created_at: string
-  updated_at: string
-  deleted_at: string | null
 }
 
 export interface Board {
@@ -3278,7 +3047,6 @@ export interface WorkspaceLocation {
  */
 export type {
   AmbientImportPolicy,
-  AmbientImportPolicyEntry,
   AmbientSessionCount,
   AmbientSyncReport,
   ExtractionOutcome,
@@ -3343,21 +3111,14 @@ export type {
   ConversationAttachmentAccessMode,
   ConversationAttachmentMutation,
   ConversationAttachmentMutationResponse,
-  ConversationAttachmentStatus,
-  ConversationAttachmentSummary,
   ConversationExecutionHostSummary,
   ConversationExecutionInitializeRequest,
   ConversationExecutionPreflightRequest,
   ConversationExecutionPreflightResponse,
   ConversationExecutionRuntimeProfile,
   ConversationExecutionSelection,
-  ConversationExecutionState,
   ConversationExecutionSummary,
-  ConversationPrimarySelection,
-  ConversationPrimarySummary,
   ConversationRuntimeChoice,
-  ConversationRuntimeSelection,
-  ConversationWorkspaceMode,
   HostCapabilities,
   HostExecutionTarget,
   HostExecutionTargetRuntime,
@@ -3450,26 +3211,6 @@ export interface HostRuntimeDefinitionOption {
    *  `vendor` follows each provider's own vendor protocol (OpenCode). */
   provider_api?: 'claude_compatible' | 'openai_compatible' | 'vendor' | null
 }
-
-export interface ProjectFolderExecutionConfig {
-  id: string
-  space_id: string
-  project_folder_id: string
-  repo_type: string | null
-  tech_stack_json: Record<string, unknown>
-  important_paths_json: unknown[]
-  forbidden_paths_json: unknown[]
-  test_commands_json: unknown[]
-  build_commands_json: unknown[]
-  architecture_boundaries_json: Record<string, unknown>
-  validation_recipe_id: string | null
-  created_at: string
-  updated_at: string
-}
-
-export type ProjectFolderExecutionConfigUpdate = Partial<Omit<ProjectFolderExecutionConfig,
-  'id' | 'space_id' | 'project_folder_id' | 'created_at' | 'updated_at'
->>
 
 export interface ProjectOverview {
   project: Pick<Project, 'id' | 'name' | 'status'>
@@ -3626,26 +3367,6 @@ export interface ExperimentInterpretation {
   repro_lock: Record<string, unknown>
   status: 'draft' | 'reviewed' | 'converted'
   resulting_signal_id: string | null
-  created_at: string
-  updated_at: string
-}
-
-export interface ProjectResearchProfile {
-  id: string
-  project_id: string
-  preset_key: string
-  research_question: string | null
-  working_title: string | null
-  domain: string | null
-  output_type: string | null
-  paper_type: string | null
-  citation_style: string | null
-  target_venue: string | null
-  language: string
-  experiment_intake_declaration: string
-  status: string
-  approved_by_user_id: string | null
-  approved_at: string | null
   created_at: string
   updated_at: string
 }
@@ -3820,7 +3541,7 @@ export interface ProjectResearchReport {
   workflow_id: string
   operation_id: string
   synthesis_run_id: string
-  run_kind: 'baseline' | 'historical_backfill' | 'incremental' | 'question_rescreen' | 'synthesis_only'
+  run_kind: ProjectResearchRunKind
   research_question: string
   research_question_version: number
   status: 'awaiting_review' | 'complete' | 'rejected'
@@ -3878,68 +3599,6 @@ export interface ProjectResearchEvidenceMatrixItem {
     authors: unknown[]
     categories: unknown[]
   } | null
-}
-
-export type AcademicPaperType =
-  | 'article'
-  | 'preprint'
-  | 'conference_paper'
-  | 'book_chapter'
-  | 'thesis'
-  | 'report'
-  | 'other'
-
-export interface AcademicPaper {
-  object_id: string
-  title: string
-  summary: string | null
-  status: string
-  doi: string | null
-  arxiv_id: string | null
-  pmid: string | null
-  openalex_id: string | null
-  publication_date: string | null
-  venue: string | null
-  paper_type: AcademicPaperType
-  cited_by_count: number | null
-  reference_count: number | null
-  created_at: string
-  updated_at: string
-}
-
-export interface AcademicPaperCreate {
-  title: string
-  summary?: string | null
-  doi?: string | null
-  arxiv_id?: string | null
-  pmid?: string | null
-  openalex_id?: string | null
-  publication_date?: string | null
-  venue?: string | null
-  paper_type?: AcademicPaperType
-  source_uri?: string | null
-}
-
-export interface AcademicPaperUpdate {
-  title?: string
-  summary?: string | null
-  venue?: string | null
-  cited_by_count?: number | null
-  reference_count?: number | null
-}
-
-export interface AcademicPaperAuthor {
-  person_object_id: string
-  title: string
-  author_position: number | null
-  is_corresponding: boolean
-}
-
-export interface AcademicPaperCitation {
-  paper_object_id: string
-  title: string
-  doi: string | null
-  arxiv_id: string | null
 }
 
 export interface Feature {
@@ -4250,8 +3909,8 @@ export interface SummaryRunOut {
 export type SourcePostProcessingTriggerType = 'items_materialized' | 'schedule' | 'manual'
 export type SourcePostProcessingRuleStatus = 'active' | 'paused' | 'archived'
 export type SourcePostProcessingRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'skipped'
-export type SourcePostProcessingStrategy = 'batch_digest' | 'screen_then_digest' | 'screen_extract_digest'
-export type SourcePostProcessingContentSource =
+type SourcePostProcessingStrategy = 'batch_digest' | 'screen_then_digest' | 'screen_extract_digest'
+type SourcePostProcessingContentSource =
   | 'excerpt_only'
   | 'prefer_extracted_text_for_candidates'
   | 'require_extracted_text_for_candidates'
@@ -4274,11 +3933,11 @@ export interface SourcePostProcessingActions {
 }
 
 export type SourcePostProcessingRetrievalDomain = 'knowledge' | 'project' | 'memory' | 'source'
-export type SourcePostProcessingRetrievalMode = 'exact' | 'lexical' | 'hybrid' | 'hybrid_rerank'
-export type SourcePostProcessingDeepAnalysisContentSource = 'prefer_extracted_text' | 'require_extracted_text'
-export type SourcePostProcessingDeepAnalysisOutput = 'deep_report' | 'per_item_deep_summary'
+type SourcePostProcessingRetrievalMode = 'exact' | 'lexical' | 'hybrid' | 'hybrid_rerank'
+type SourcePostProcessingDeepAnalysisContentSource = 'prefer_extracted_text' | 'require_extracted_text'
+type SourcePostProcessingDeepAnalysisOutput = 'deep_report' | 'per_item_deep_summary'
 
-export interface SourcePostProcessingRetrievalContextConfig {
+interface SourcePostProcessingRetrievalContextConfig {
   enabled: boolean
   domains: SourcePostProcessingRetrievalDomain[]
   query?: string
@@ -4286,14 +3945,14 @@ export interface SourcePostProcessingRetrievalContextConfig {
   mode: SourcePostProcessingRetrievalMode
 }
 
-export interface SourcePostProcessingCandidatePrefilterConfig {
+interface SourcePostProcessingCandidatePrefilterConfig {
   enabled: boolean
   mode: SourcePostProcessingRetrievalMode
   max_candidates: number
   min_score?: number
 }
 
-export interface SourcePostProcessingDeepAnalysisConfig {
+interface SourcePostProcessingDeepAnalysisConfig {
   enabled: boolean
   trigger_relevance: Array<'relevant' | 'maybe'>
   min_confidence: number
@@ -4302,13 +3961,13 @@ export interface SourcePostProcessingDeepAnalysisConfig {
   output: SourcePostProcessingDeepAnalysisOutput
 }
 
-export interface SourcePostProcessingRelevanceDecisionPolicy {
+interface SourcePostProcessingRelevanceDecisionPolicy {
   relevant?: string
   maybe?: string
   not_relevant?: string
 }
 
-export interface SourcePostProcessingRelevanceProfile {
+interface SourcePostProcessingRelevanceProfile {
   enabled: boolean
   objective?: string
   include_criteria: string[]
@@ -4903,13 +4562,6 @@ export interface AutomationFireResult {
   warnings?: Array<{ stage: string; error_code: string; message: string }>
 }
 
-export interface RelocationBlock {
-  block_id: string
-  text: string
-  /** The capture's own block. Preselected; the rest are offered unchecked. */
-  anchored: boolean
-}
-
 /** A user-created durable focus area. Classifies content; decides no access (ADR 0015). */
 export interface FocusArea {
   id: string
@@ -4936,10 +4588,8 @@ export interface FocusAreaContents {
 export type {
   WorkLoopStageKey,
   ResponsibleActor,
-  TaskCompletion,
   ProjectBoardCard,
   ProjectBoardColumn,
-  TaskWorkEvent,
   ProjectWorkUpdate,
   ProjectWorkUpdatesResponse,
   ProjectMainlineRoomResponse,
@@ -4949,7 +4599,6 @@ export type {
   ProjectReadersResponse,
   ThreadReferencePick,
   ThreadReferenceProvenance,
-  ThreadReferenceDisclosureRequired,
   ProjectConversationsResponse,
   InstanceOperationsSettings,
   InstanceOperationsSettingsUpdate,

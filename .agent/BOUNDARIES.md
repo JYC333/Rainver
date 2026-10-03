@@ -13,11 +13,17 @@ Load this file for any task that changes structure, models, APIs, or agent behav
 **B3** — One deployment instance can host many spaces. Do not create one instance per user or one instance per space.
 
 **B4** — Space is the product-level isolation boundary. Data in space A must
-never be accessible to code running in the context of space B. The sole
-content-bearing exception is ADR 0013's enumerated, user-centred `/me/retrieval*`
-path: it has no request-Space authority, applies each source Space's read gate
-independently, persists retrieved content only as re-authorized pointers, and
-grants no write authority to another Space.
+never be accessible to code running in the context of space B. Two enumerated,
+user-centred exceptions carry content across it, both recorded in
+[SECURITY_AND_ACCESS_BOUNDARIES §8](architecture/SECURITY_AND_ACCESS_BOUNDARIES.md):
+ADR 0013's `/me/retrieval*` path, which has no request-Space authority, applies
+each source Space's read gate independently, persists retrieved content only as
+re-authorized pointers, and grants no write authority to another Space; and ADR
+0013 decision 9's capture relocation (`/captures/:activityId/relocation`),
+which reads a capture the caller can already read as an active member of its
+Space, without oversight, and writes it only where the caller holds Project
+write access, under the source Space's copy-out setting for another member's
+content.
 
 **B5** — `space_id` is required on every core data entity. Runtime Context acquisition and Delivery persistence require an explicit Space and reject cross-Space authority drift.
 
@@ -175,12 +181,16 @@ reads `systemActionsForObjectType` directly and keeps only its own wording.
 
 **B12I** — The `ontology` module owns the ontology's own definitions and
 storage: the Object Type / Link Type / entity registries and their interface
-declarations, registry-backed validation, polymorphic status resolution, and
-the `space_objects` / `object_relations` / `space_object_profiles` reads and
-proposal writes. It does **not** own the tables of the domains that register
-into it — those modules register their own entities and supply their own
-implementations, as with `ProposalApplierRegistry`. `ontology` must never take
-ownership of a domain table merely because that domain is registered.
+declarations, registry-backed validation, polymorphic status resolution, the
+`space_objects` / `object_relations` / `space_object_profiles` tables, the
+shared endpoint and governance checks every write to them calls, and the
+creation of ontology-object proposals. Domains keep their own read and write
+sites on those tables and call the shared checks (ADR 0012 decision 3); the
+`object_relation_create` applier, for one, lives in `knowledge`. `ontology`
+does **not** own the tables of the domains that register into it — those
+modules register their own entities and supply their own implementations, as
+with `ProposalApplierRegistry`. `ontology` must never take ownership of a
+domain table merely because that domain is registered.
 
 Where a shared concern genuinely spans both — proposal creation, Claim lookup —
 it is passed in as an explicit seam rather than duplicated or absorbed, so the
@@ -215,8 +225,10 @@ then mutate what it cannot see.
 **B13** — Every file-capable runtime-adapter invocation crosses the typed host
 daemon boundary. Callers may send runtime/adapter/workspace identifiers, an
 argv the control plane rendered from an adapter spec, and an isolation policy —
-never a host path, an image, or an ambient environment map, and the daemon
-resolves the executable from the copy it installed rather than from the frame.
+never a host path, an image, or an ambient environment map. The daemon resolves
+the executable itself, never from a path in the frame: a managed installation
+from the manifest of the copy it installed, an `own` installation by the
+server-rendered command name through the child's own `PATH` (ADR 0016 §7).
 Deterministic Verification Engine checks use the
 separate `command_run` frame: it carries a server-defined command and one
 workspace identity, with no shell, no ambient environment, no provider channel
@@ -490,15 +502,15 @@ account instead of the subscription this profile was given.
 
 ## Resilience Boundaries
 
-**B-R1** — `Run.status` includes `degraded` in addition to `queued|running|succeeded|failed|cancelled|waiting_for_review`. A run is `degraded` when it completes but with partial or compromised quality — the output is accessible but flagged for user review.
+**B-R1** — `Run.status` includes `degraded` in addition to `queued|running|cancelling|succeeded|failed|cancelled|orphaned|waiting_for_review|waiting_for_dependency` (`RUN_STATUS_VALUES`). A run is `degraded` when it completes but with partial or compromised quality — the output is accessible but flagged for user review.
 
 **B-R2** — `Run.mode` includes `live` (real execution, persists changes) and `dry_run` (preview, no persistent changes, artifacts not saved).
 
-**B-R3** — Artifact export is explicit: every artifact has `path` and/or `content`; `GET /api/v1/artifacts/{id}/export` returns a file download. Artifact paths point to persistent storage (`~/.rainver-data/artifacts/`), not sandbox working directories.
+**B-R3** — Artifact export is explicit: every artifact has a relative `storage_path` and/or `content`; `GET /api/v1/artifacts/{id}/export` returns a file download. Artifact files live in persistent storage (`<RAINVER_HOME>/storage/artifacts`, overridable by `ARTIFACT_STORAGE_ROOT`), not sandbox working directories.
 
-**B-R4** — `Proposal` has explicit temporal fields: `created_at`, `decided_at`, `deadline` (soft, optional), and computed `expired` (true when deadline passed and status is still `pending`). `urgency` field (`low|normal|high|critical`) affects sort order.
+**B-R4** — `Proposal` has explicit temporal fields: `created_at`, `reviewed_at`, `review_deadline` (soft, optional), `expires_at`, and computed `expired` (true when `expires_at` passed and status is still `pending`). `urgency` field (`low|normal|high|critical`) affects sort order.
 
-**B-R5** — All temporal fields are explicit on Run: `created_at`, `started_at`, `completed_at`, `scheduled_at`. No derived timestamps.
+**B-R5** — All temporal fields are explicit on Run: `created_at`, `started_at`, `ended_at`, `scheduled_at`. No derived timestamps.
 
 ---
 
@@ -532,7 +544,7 @@ execution-engine data rather than a capability grouping.
 
 ## Runtime Adapter Boundaries
 
-**B38** — The Rainver core is runtime-agnostic. OpenCode, Claude Code, Codex, Cursor, and any other vendor CLI are optional runtime adapters, not the foundation. Core features (memory, knowledge, flashcards, activity capture, proposals, assistant chat) must work without any coding-agent runtime installed.
+**B38** — The Rainver core is runtime-agnostic. OpenCode, Claude Code, Codex, Cursor, and any other vendor CLI are optional runtime adapters, not the foundation. Core features (memory, knowledge, flashcards, activity capture, proposals) must work without any coding-agent runtime installed. Assistant chat is an `agent` Run and, like every autonomous multi-turn turn, executes through the ACP runtime on an execution host (ADR 0022): it needs a logged-in CLI copy on some host the person can reach — the built-in Server Host's managed OpenCode by default — but depends on no vendor in particular, and the server keeps no in-process Agent loop to fall back to.
 
 **B39** — No vendor CLI or external runtime is the source of truth for memory, policy, permissions, or audit records. These always live in the Rainver database regardless of which runtime adapter is active.
 
@@ -585,15 +597,14 @@ changes. The server service process does not auto-migrate on startup.
 DB-persisted API-key storage remains disabled/deferred until the canonical
 schema adds that table.
 
-**B66** — A new Agent entry point (HTTP route, tool surface, managed-loop
-surface, or any future host) is a thin adapter over `SystemActionDispatcher`
+**B66** — A new Agent entry point (HTTP route, tool surface, or any future
+host) is a thin adapter over `SystemActionDispatcher`
 (`server/src/modules/systemActions/systemActionDispatcher.ts`). It may
 translate transport-specific request/response shapes and assemble which
 actions to expose, but it must not itself decide grants, evaluate policy,
 mutate a domain table, or otherwise define action semantics — that belongs to
 the single `SystemActionGateway`/`SystemActionDispatcher` path
-(`CliAgentToolTransport`'s Run-scoped REST tool surface and
-`ManagedAgentToolSurface`'s managed model loop both call it directly).
+(`CliAgentToolTransport`'s Run-scoped REST tool surface calls it directly).
 Runtime delegation materialization
 (`AgentGroupRuntimeDelegationMaterializer`) is a documented exception, not a
 model to copy: it runs after the Run has already terminated and so cannot go

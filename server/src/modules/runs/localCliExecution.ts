@@ -5,7 +5,7 @@ export interface CliExecutionResult {
   stdout: string;
   stderr: string;
   timed_out: boolean;
-  failure_code?: "timeout" | "stall_timeout" | "sandbox_runner_unavailable" | "sandbox_namespace_unavailable" | "output_limit_exceeded";
+  failure_code?: "timeout" | "launch_wait_timeout" | "stall_timeout" | "sandbox_runner_unavailable" | "sandbox_namespace_unavailable" | "output_limit_exceeded";
   /**
    * How long the runtime had been silent when the run was given up on. Set on
    * a timeout or stall so the failure can say whether the runtime was working

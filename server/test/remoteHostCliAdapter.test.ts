@@ -512,6 +512,36 @@ describe("executeRemoteHostCliAdapter", () => {
     });
   });
 
+  it("fails closed when the host's trust mode cannot be read, instead of running as if on a trusted machine", async () => {
+    const registry = new HostConnectionRegistry();
+    const sink = new FakeSink();
+    registry.registerConnection("host-1", sink);
+    const db: Queryable = {
+      async query<Row = Record<string, unknown>>(sql: string) {
+        if (sql.startsWith("SELECT kind FROM hosts")) throw new Error("connection terminated unexpectedly");
+        return { rows: [] as Row[], rowCount: 0 };
+      },
+    };
+    const result = await executeRemoteHostCliAdapter(
+      { run: run({ runtime_key: "opencode" }), prompt: "hi", model: null, resume_session_id: null },
+      "host-1",
+      "folder-1",
+      {
+        connectionRegistry: registry,
+        bindings: NO_PROVIDER_BINDINGS,
+        config: loadConfig({
+          SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
+          SERVER_INTERNAL_TOKEN: "internal-token",
+        }),
+        db,
+      },
+    );
+    // A built-in host whose kind went unread would have launched with a paired
+    // machine's settings: no strict session config and direct egress (B62).
+    expect(result).toMatchObject({ success: false, error_code: "host_trust_unavailable" });
+    expect(sink.sent.some((f) => f.type === "launch")).toBe(false);
+  });
+
   it("reports the host offline without hanging when no connection is registered", async () => {
     const registry = new HostConnectionRegistry();
     const result = await executeRemoteHostCliAdapter(
@@ -933,6 +963,50 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
     }
   });
 
+  it("issues the provider lease for the longest the run can live, a full launch wait plus its budget", async () => {
+    // The run budget starts at `launched`, and a launch the host or this server
+    // queued may wait up to one budget first. A lease sized to the budget alone
+    // expired mid-run after a long queue, and every provider call then failed
+    // authentication.
+    const leases = new ProviderProxyLeaseRegistry();
+    const issue = vi.spyOn(leases, "create");
+    setProviderProxyBaseUrlForProcess("http://server:8021", null);
+    const sink = new FakeSink();
+    const connections = new HostConnectionRegistry();
+    connections.registerConnection("host-1", sink);
+    __setProvidersDbPortForTests({
+      async getProvider() {
+        return { id: "prov-1", name: "MiniMax", claude_compatible_base_url: "https://api.minimaxi.com/anthropic", default_model: "M2" };
+      },
+    } as never);
+    try {
+      const execution = executeRemoteHostCliAdapter(
+        { run: run({ runtime_key: "claude_code" }), prompt: "hi", model: null, resume_session_id: null, timeout_seconds: 600 },
+        "host-1",
+        "folder-1",
+        {
+          connectionRegistry: connections,
+          config: loadConfig({ PROVIDER_PROXY_PORT: "8021", FRONTEND_URL: "http://192.168.1.5:3000" }),
+          db: { query: async () => ({ rows: [{ provider_proxy_base_url: null, kind: "remote" }], rowCount: 1 }) } as never,
+          bindings: {
+            resolve: async () => ({ provider_id: "prov-1", model: "M2" }),
+            record: async () => {},
+            profileScope: NO_PROVIDER_BINDINGS.profileScope,
+          },
+          leaseRegistry: leases,
+          policyEnforcer: allowCredentialSpend,
+        },
+      );
+      await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
+      expect(issue).toHaveBeenCalledTimes(1);
+      expect(issue.mock.calls[0]![1].ttl_ms).toBeGreaterThanOrEqual(2 * 600 * 1000);
+      connections.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
+      await execution;
+    } finally {
+      __setProvidersDbPortForTests(null);
+    }
+  });
+
   it("tells the runtime which model, in the identifier space that runtime uses", async () => {
     // Nothing threaded a model into a remote run before, so this path is new:
     // the model the *binding* resolved, translated, rather than the router's.
@@ -1285,6 +1359,41 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       const gaveUp = await queuedForever;
       expect(gaveUp.success).toBe(false);
       expect(sink.sent).toContainEqual(expect.objectContaining({ type: "terminate", run_id: "run-2", launch_id: launchIdOf(sink, "run-2") }));
+    }, 30_000);
+
+    it("says a run the host never started was never started, not that it ran out of time", async () => {
+      vi.useFakeTimers();
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const diagnostics: string[] = [];
+      const execution = executeRemoteHostCliAdapter(
+        {
+          run: run({ runtime_key: "opencode" }),
+          prompt: "hi",
+          model: null,
+          resume_session_id: null,
+          timeout_seconds: 15,
+          adapter_config: { stall_timeout_seconds: 5 },
+          thread_event_sink: async (events: ThreadEventDraft[]) => {
+            for (const event of events) if (event.event_type === "diagnostic" && event.text) diagnostics.push(event.text);
+          },
+        },
+        "host-1",
+        "folder-1",
+        { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
+      );
+      await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
+      registry.receiveWaitingForWorkspace("host-1", "run-1", launchIdOf(sink, "run-1"));
+      await vi.advanceTimersByTimeAsync(15_000);
+      const gaveUp = await execution;
+
+      expect(gaveUp).toMatchObject({ success: false, error_code: "runtime_timeout" });
+      // The executor wrote down why; the person reading the thread gets that
+      // reason, not an idle count measured against a process that never ran.
+      expect(gaveUp.error_message).toMatch(/did not start this run within its time budget/);
+      expect(gaveUp.error_message).not.toMatch(/last output/);
+      expect(diagnostics.join("\n")).toMatch(/did not start this run within its time budget/);
     }, 30_000);
 
     it("lets a slow but talking run keep going past the stall budget", async () => {

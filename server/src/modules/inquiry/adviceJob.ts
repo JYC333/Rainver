@@ -9,7 +9,7 @@ import { pinnedResearchThreadId } from "../projectResearch/workflowOntology.js";
 import { InquiryAdviceService, type AdviceTriggerKind } from "./adviceService.js";
 import { completeBackgroundStep } from "./stepService.js";
 
-export const INQUIRY_ADVICE_JOB_TYPE = "inquiry_next_step_advice";
+const INQUIRY_ADVICE_JOB_TYPE = "inquiry_next_step_advice";
 
 /**
  * Automatic advice is queued, never generated inline: the commands that
@@ -180,10 +180,22 @@ export async function tryQueueAdviceForFocusedThread(
   db: Queryable,
   input: Parameters<typeof queueAdviceForFocusedThread>[1],
 ): Promise<void> {
+  // Some callers reach this inside their own transaction (a Candidate
+  // decision records its Iteration on the decision's client). Swallowing a
+  // failed statement there is not enough: PostgreSQL has already aborted the
+  // transaction, and the command's next statement would fail with it. A
+  // savepoint makes the queue step the only thing that is undone.
+  const inCallerTransaction = typeof (db as { release?: unknown }).release === "function";
+  if (inCallerTransaction) await db.query("SAVEPOINT inquiry_advice_queue");
   try {
     await queueAdviceForFocusedThread(db, input);
+    if (inCallerTransaction) await db.query("RELEASE SAVEPOINT inquiry_advice_queue");
   } catch {
     // Intentionally swallowed — see the doc comment above.
+    if (inCallerTransaction) {
+      await db.query("ROLLBACK TO SAVEPOINT inquiry_advice_queue").catch(() => undefined);
+      await db.query("RELEASE SAVEPOINT inquiry_advice_queue").catch(() => undefined);
+    }
   }
 }
 

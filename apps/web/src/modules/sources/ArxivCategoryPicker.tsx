@@ -45,16 +45,24 @@ export function ArxivCategoryPicker({ groups, value, onChange, maxSelected = 10 
       const target = event.target as Node
       if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false)
     }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false)
-    }
     document.addEventListener('mousedown', handlePointerDown)
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-      document.removeEventListener('keydown', handleKeyDown)
-    }
+    return () => document.removeEventListener('mousedown', handlePointerDown)
   }, [])
+
+  // Escape closes this list only. The Dialog around it dismisses on Escape
+  // from a document-level capture listener, so the key is taken on the
+  // window in the capture phase, before that listener ever sees it.
+  useEffect(() => {
+    if (!open) return undefined
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      setOpen(false)
+    }
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [open])
 
   useLayoutEffect(() => {
     if (!open) return undefined

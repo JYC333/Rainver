@@ -26,7 +26,7 @@ deployment control — is hardened and tested.
 
 - Public launch.
 - SaaS or remote multi-tenant deployment.
-- A test of all future ambitions (Automation, connector marketplace, crawler,
+- A test of all future ambitions (connector marketplace, crawler,
   marketplace, mobile client).
 
 **Rule:** Only allowed surfaces may be used for daily dogfood workflows. Disabled surfaces
@@ -99,7 +99,7 @@ Do not rely on any of these for daily dogfood workflows.
 | External chat/media/file import pipelines | Not implemented |
 | Web crawler | Not implemented |
 | Vector index over external corpus | Not implemented |
-| Automation/Trigger engine | Not implemented |
+| Automation/Trigger engine | Implemented for manual and schedule-triggered Automations (`/automations`); no external event trigger |
 | Connector marketplace / integration lifecycle | Not implemented |
 | Full capability marketplace or install/discovery UX | Not implemented |
 | Automatic system self-evolution | Removed; Evolution runs require an explicit Agent |
@@ -513,7 +513,8 @@ curl -s "http://localhost:3000/api/v1/deployments/jobs" \
 In the frontend:
 - Navigate to all gallery cards; confirm no connector marketplace, crawler, or automatic
   system self-evolution controls are visible.
-- Wiki, Cards, and Time cards show "soon" badge and are non-interactive.
+- The Time card shows the "soon" badge and is non-interactive; Cards is not in
+  navigation; Knowledge (with Wiki) is enabled.
 
 ---
 
@@ -743,8 +744,8 @@ Resume dogfooding only after the failed gate passes and the incident note is fil
    data.
 
 3. **Memory write bypasses the structural write boundary** — A direct internal memory
-   write succeeds without going through the proposal-approval path (`create_from_approved_proposal`)
-   or the bootstrap seed path (`create_system_seed_memory`).
+   write succeeds without going through the canonical memory applier
+   (`PgMemoryApplyRepository`, ADR 0003 / B10).
 
 4. **Accepted policy does not affect enforcement** — An accepted, active `Policy` row
    with the selected class does not change the enforcement decision it was meant to govern.
@@ -844,7 +845,7 @@ Backup manifest inspected: <yes / no>
 |---|---|
 | `Credential.secret_ref` full decryption deferred | Only `ModelProvider` encrypted keys decryptable; full secret_ref deferred |
 | Obsolete agents-module runtime path | Runtime execution uses `RuntimeAdapterSpec`; new adapters must start there |
-| Most PolicyEngine enforcement points not yet wired to persisted policy | Active classes: `memory.private_placement`, `run.user_private_scope`; structural write boundary via sentinel; rest documented in `PRODUCT_AND_BOUNDARIES.md` |
+| Persisted policy not wired to enforcement | `policy_change` writes versioned `policies` rows, but no enforcement point reads them yet; the structural memory write boundary is the canonical applier; rest documented in `PRODUCT_AND_BOUNDARIES.md` |
 | Artifact archive/delete API | Not implemented; artifacts accumulate. See [unimplemented-from-guides.md](../.agent/plans/unimplemented-from-guides.md) §17 |
 | Activity archive | Implemented (`PATCH /api/v1/activity/:activityId/archive`). No hard-delete API |
 | Workspace stale status has no recovery UI | Operator must use `PATCH /workspaces/{id}` |

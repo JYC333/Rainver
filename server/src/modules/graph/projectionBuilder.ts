@@ -16,9 +16,9 @@ import {
 } from "./projectionRepository.js";
 
 export type ServerGraphProjectionMode = Exclude<GraphProjectionViewMode, "debug">;
-export type GraphLensId = "academic_citation_v1";
+type GraphLensId = "academic_citation_v1";
 
-export interface BuildProjectionOptions {
+interface BuildProjectionOptions {
   mode: ServerGraphProjectionMode;
   rootId?: string;
   depth?: number;
@@ -59,7 +59,11 @@ export function resolveGraphProjectionOptions(options: BuildProjectionOptions): 
   const lens = GRAPH_LENSES[options.lensId];
   return {
     ...options,
-    nodeKinds: applyLensFilter(lens.nodeKinds, options.nodeKinds).filter(isGraphableKind),
+    // The no-match sentinel survives the graphable filter: dropping it left an
+    // empty list, which the repository reads as "no kind restriction", so a
+    // lens combined with a disjoint node_kinds request widened to every kind.
+    nodeKinds: applyLensFilter(lens.nodeKinds, options.nodeKinds)
+      .filter((kind) => kind === NO_LENS_MATCH || isGraphableKind(kind)),
     edgeKinds: applyLensFilter(lens.edgeKinds, options.edgeKinds),
   };
 }

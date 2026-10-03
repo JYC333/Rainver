@@ -19,6 +19,7 @@ import { parseRunContextTaint } from "../runs/contextTaint.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { ContentAccessAuditService } from "./audit.js";
 import { ContentDemotionService } from "./demotion.js";
+import { entityDefinition } from "../ontology/entities.js";
 
 interface ResourcePolicyRow {
   id: string;
@@ -166,8 +167,17 @@ export class ContentAccessService {
       if (update.project_id !== null && !definition.projectColumn) {
         throw new HttpError(422, "This content type does not support Project scope");
       }
+      if (update.project_id === null && resourceType === "space_object"
+        && await this.isProjectOwnedObject(client, identity.spaceId, resourceId)) {
+        // B12H: a null Project removes the Project gate on this object entirely.
+        throw new HttpError(422, "This object belongs to its Project and cannot be moved out of it");
+      }
       const requiredApprovers = taintApprovers(resource.context_taint);
-      if (widensVisibility(resource.visibility, update.visibility) && requiredApprovers.length > 0) {
+      if (requiredApprovers.length > 0 && widensAudience(
+        resource,
+        await this.loadGrants(client, identity.spaceId, resourceType, resourceId),
+        update,
+      )) {
         throw new HttpError(409, "Context-tainted content requires owner approval before publication", {
           code: "context_taint_approval_required",
           required_approver_user_ids: requiredApprovers,
@@ -347,6 +357,15 @@ export class ContentAccessService {
   }
 
   /** Whether this memory row is the Agent's own rather than a person's. */
+  private async isProjectOwnedObject(db: Queryable, spaceId: string, objectId: string): Promise<boolean> {
+    const found = await db.query<{ object_type: string }>(
+      `SELECT object_type FROM space_objects WHERE space_id = $1 AND id = $2`,
+      [spaceId, objectId],
+    );
+    const objectType = found.rows[0]?.object_type;
+    return Boolean(objectType && entityDefinition(objectType)?.requiresProjectScope);
+  }
+
   private async isAgentScopeMemory(db: Queryable, spaceId: string, resourceId: string): Promise<boolean> {
     const row = await db.query<{ scope_type: string }>(
       `SELECT scope_type FROM memory_entries WHERE space_id = $1 AND id = $2 LIMIT 1`,
@@ -427,6 +446,26 @@ function taintApprovers(value: unknown): string[] {
 function widensVisibility(current: string, requested: ContentVisibility): boolean {
   const rank: Record<ContentVisibility, number> = { private: 0, selected_users: 1, space_shared: 2 };
   return isContentVisibility(current) && rank[requested] > rank[current];
+}
+
+/**
+ * Whether an update lets anyone read more than before. A tainted record sits
+ * at `selected_users` by design, so a wider visibility tier is not the only
+ * widening: a new grantee, or a body raised from summary to full, is one too.
+ */
+function widensAudience(
+  resource: { visibility: string; access_level: string },
+  priorGrants: readonly { grantee_user_id: string; access_level: string }[],
+  update: ContentAccessUpdate,
+): boolean {
+  if (widensVisibility(resource.visibility, update.visibility)) return true;
+  if (update.visibility === "private") return false;
+  if (resource.access_level !== "full" && update.access_level === "full") return true;
+  const prior = new Map(priorGrants.map((grant) => [grant.grantee_user_id, grant.access_level]));
+  return update.grants.some((grant) => {
+    const before = prior.get(grant.user_id);
+    return before === undefined || (before !== "full" && grant.access_level === "full");
+  });
 }
 
 function narrowsVisibility(current: string, requested: ContentVisibility): boolean {

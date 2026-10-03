@@ -25,7 +25,7 @@ const TASK_BRANCH_REPLIES = {
   task_merge_finish: "task_merge_finish_result",
 } as const;
 type TaskBranchRequestType = keyof typeof TASK_BRANCH_REPLIES;
-export type TaskBranchReplyType = (typeof TASK_BRANCH_REPLIES)[TaskBranchRequestType];
+type TaskBranchReplyType = (typeof TASK_BRANCH_REPLIES)[TaskBranchRequestType];
 export type TaskBranchReply<T extends TaskBranchRequestType> =
   Omit<HostDaemonFrameOf<(typeof TASK_BRANCH_REPLIES)[T]>, "type" | "request_id">;
 type ReplyOf<F> = F extends unknown ? Omit<F, "type" | "request_id"> : never;
@@ -139,7 +139,7 @@ interface HostConnection {
 
 /** What the daemon reports back for one `install_tool` / `uninstall_tool` request. */
 /** Terminal report of one ambient-session import; sessions arrive before it, one frame each. */
-export interface AmbientImportResult {
+interface AmbientImportResult {
   ok: boolean;
   error: string | null;
   session_count: number;
@@ -157,7 +157,7 @@ export interface AmbientImportResult {
  * a command that failed and a host that never replied are different facts and
  * a verifier has to be able to say which.
  */
-export interface HostCommandOutcome {
+interface HostCommandOutcome {
   ok: boolean;
   exit_code: number;
   stdout: string;
@@ -168,7 +168,7 @@ export interface HostCommandOutcome {
   entries?: string[];
 }
 
-export interface ToolInstallResult {
+interface ToolInstallResult {
   ok: boolean;
   error: string | null;
   /** The installation id (`managed:<version>`) the action produced or removed. */
@@ -200,13 +200,13 @@ export type FolderWriteSuccess = {
 };
 export type FolderWriteResult = FolderWriteSuccess | { ok: false; error: FolderWriteFailureCode; message?: string };
 
-export interface ManagedWorkspaceResult {
+interface ManagedWorkspaceResult {
   ok: boolean;
   changed: boolean;
   error: string | null;
 }
 
-export interface HostDirectoryListing {
+interface HostDirectoryListing {
   ok: boolean;
   path: string | null;
   parent: string | null;
@@ -215,7 +215,7 @@ export interface HostDirectoryListing {
   error: string | null;
 }
 
-export interface HostWorkspaceRegistration {
+interface HostWorkspaceRegistration {
   ok: boolean;
   workspace_id: string | null;
   display_path: string | null;
@@ -223,7 +223,7 @@ export interface HostWorkspaceRegistration {
 }
 
 /** What a daemon's login terminal sends back, frame by frame. */
-export type LoginSessionEvent =
+type LoginSessionEvent =
   | { type: "output"; data: string }
   | { type: "exit"; exit_code: number; logged_in: boolean | null };
 
@@ -243,9 +243,9 @@ const HOST_COMMAND_GRACE_MS = 30 * 1000;
  * bound normal work.
  */
 const AMBIENT_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
-export const FOLDER_READ_TIMEOUT_MS = 15_000;
-export const FOLDER_WRITE_TIMEOUT_MS = 15_000;
-export const HOST_ACTION_TIMEOUT_MS = 15_000;
+const FOLDER_READ_TIMEOUT_MS = 15_000;
+const FOLDER_WRITE_TIMEOUT_MS = 15_000;
+const HOST_ACTION_TIMEOUT_MS = 15_000;
 const MANAGED_WORKSPACE_TIMEOUT_MS = 15_000;
 /**
  * Long enough for Codex to start its app-server and answer, short enough that
@@ -410,7 +410,15 @@ export class HostConnectionRegistry {
     this.undeliveredStops.set(hostId, stops);
   }
 
-  registerConnection(hostId: string, sink: HostFrameSink): void {
+  registerConnection(hostId: string, sink: HostFrameSink): boolean {
+    // Revoked after its hello authenticated but before it got here: the
+    // revoke's `closeConnection` found nothing to close, and the token is
+    // already gone, so this socket must not become the host's live
+    // connection — `isOnline` would otherwise dispatch Runs to a revoked host.
+    if (this.revokedHosts.has(hostId)) {
+      sink.close(1008, "host_revoked");
+      return false;
+    }
     // A second connection from the same host (e.g. daemon restart racing its
     // own reconnect) replaces the stale one rather than stacking silently.
     this.connections.get(hostId)?.sink?.close(1000, "superseded_by_new_connection");
@@ -437,11 +445,17 @@ export class HostConnectionRegistry {
     for (const [launchId, stop] of stops ?? []) {
       sink.send({ type: "terminate", run_id: stop.runId, launch_id: launchId, force: stop.force });
     }
+    return true;
   }
 
-  unregisterConnection(hostId: string, sink: HostFrameSink): void {
+  /**
+   * Returns whether `sink` was the host's live connection. A superseded or
+   * never-registered sink changes nothing and reports false, so the caller
+   * can tell a host that went offline from a host that merely reconnected.
+   */
+  unregisterConnection(hostId: string, sink: HostFrameSink): boolean {
     const connection = this.connections.get(hostId);
-    if (!connection || connection.sink !== sink) return;
+    if (!connection || connection.sink !== sink) return false;
     connection.sink = null;
     for (const [runId, pendingRun] of this.pending) {
       if (pendingRun.hostId !== hostId || pendingRun.graceTimer) continue;
@@ -454,6 +468,7 @@ export class HostConnectionRegistry {
       pendingRun.graceTimer.unref?.();
     }
     this.failPendingRequests(hostId);
+    return true;
   }
 
   isOnline(hostId: string): boolean {
@@ -536,6 +551,16 @@ export class HostConnectionRegistry {
     }
     const sink = connection.sink;
     const launchId = randomUUID();
+    // A retry of the same Run before its earlier attempt reported (the
+    // supervisor reuses the run id within seconds of a timed-out attempt's
+    // kill). The earlier dispatch is settled here rather than replaced in
+    // place: its promise is what releases the slot it held, and a slot whose
+    // release never fires stays idle while other Runs wait for it.
+    const previous = this.pending.get(runId);
+    if (previous) {
+      if (previous.graceTimer) clearTimeout(previous.graceTimer);
+      previous.resolveComplete({ exit_code: -1, timed_out: false, error: "superseded_by_retry" });
+    }
     const completion = new Promise<HostRunCompletion>((resolve) => {
       this.pending.set(runId, { hostId, launchId, onOutput, onStderr, onLaunched, resolveComplete: resolve, graceTimer: null, pendingStdin: [], waitingForWorkspace: false });
     });

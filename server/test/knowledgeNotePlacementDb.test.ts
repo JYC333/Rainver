@@ -135,6 +135,23 @@ describe("note placements (real Postgres)", () => {
       .toEqual([second, third].sort());
   });
 
+  it("refuses dragging a placement into a folder that already holds the note", async () => {
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const first = await insertNoteCollection(db.pool, { space: SPACE, name: "First" });
+    const second = await insertNoteCollection(db.pool, { space: SPACE, name: "Second" });
+    const note = await repository.createNote(identity, { title: "Twice placed", collection_id: first }) as { id: string };
+    await repository.addNotePlacement(identity, note.id, second);
+
+    // The same answer the placement action gives, not the unique index's 500.
+    await expect(withTransaction(db.pool, (client) => persistNotesTreeReorder(client, identity, {
+      kind: "notes",
+      updates: [{ noteId: note.id, fromCollectionId: first, collectionId: second, sortOrder: 0 }],
+    }))).rejects.toMatchObject({ statusCode: 409 });
+    expect(placements(await repository.getNote(identity, note.id)).map((placement) => placement.collection_id).sort())
+      .toEqual([first, second].sort());
+  });
+
   it("refuses a reorder that names a folder the note is not placed in", async () => {
     if (!db.available || !app) return;
     const repository = new PgKnowledgeRepository(db.pool);

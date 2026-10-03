@@ -25,11 +25,10 @@ import {
   isKnowledgeRetrievalObjectType,
   isKnowledgeRetrievalProjectedRelation,
 } from "./retrievalObjectTypes.js";
-import { RETRIEVAL_OBJECT_TYPE_VALUES } from "../retrieval/objectTypes.js";
 import { allowedObjectProfileKeys } from "../ontology/objectProfileSubtypeKeys.js";
 import { isContentOwner } from "../access/contentAccessPolicy.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
-import { isProvenanceSourceType } from "../ontology/entities.js";
+import { isProvenanceSourceType, retrievableEntityTypes } from "../ontology/entities.js";
 
 // The retrieval projection is a derived index. A projection failure must not
 // roll back an accepted canonical Knowledge mutation, but the reindex runs
@@ -339,7 +338,9 @@ const VALID_CLAIM_SOURCE_TRUST_LEVELS = new Set([
 ]);
 
 
-const VALID_OBJECT_PROFILE_BASE_TYPES = new Set<string>(RETRIEVAL_OBJECT_TYPE_VALUES);
+// The ontology registry, the same set proposal creation validates against
+// (B12G); a second copy here let a proposal be accepted that could never apply.
+const VALID_OBJECT_PROFILE_BASE_TYPES = new Set<string>(retrievableEntityTypes());
 const CREATE_OBJECT_PROFILE_STATUSES = new Set(["draft", "active"]);
 const OBJECT_PROFILE_RELATION_HINT_DIRECTIONS = new Set(["from", "to", "either"]);
 const OBJECT_PROFILE_KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
@@ -635,11 +636,16 @@ async function applyKnowledgeUpdateProposal(
     );
   }
 
-  const confidence = parseConfidence(payload.confidence);
+  // A field the update does not mention keeps the current version's value, as
+  // the format and status fields above do: a revalidation that only rewrites
+  // the content must not strip the item's aliases, tags, or confidence.
+  const confidence = hasPayloadKey(payload, "confidence")
+    ? parseConfidence(payload.confidence)
+    : current.confidence;
   const aliases = hasPayloadKey(payload, "aliases")
     ? toStringArray(payload.aliases)
-    : [];
-  const tags = hasPayloadKey(payload, "tags") ? toStringArray(payload.tags) : [];
+    : parseJsonArray(current.aliases_json);
+  const tags = hasPayloadKey(payload, "tags") ? toStringArray(payload.tags) : parseJsonArray(current.tags_json);
   const sourceRefs = provenanceEntriesFromPayload(payload.source_refs);
   const slug = optionalString(payload.slug) ?? current.slug;
   const pinnedSourceRef = optionalObject(payload.pinned_source_ref);
@@ -1435,7 +1441,10 @@ async function requireKnowledgeItem(
   itemId: string,
   proposal: ProposalApplyContext["proposal"],
 ): Promise<KnowledgeItemRow> {
-  const row = await getKnowledgeItemById(db, spaceId, itemId);
+  // Locked: two accepted updates of one item must not both read it active and
+  // each write a version n+1 beside the other; the second waits, reads the
+  // first's supersession, and is refused here.
+  const row = await getKnowledgeItemById(db, spaceId, itemId, { lock: true });
   if (row.status !== "active" && row.status !== "draft") {
     throw new KnowledgeApplyValidationError("target Knowledge item is not active");
   }
@@ -1452,11 +1461,16 @@ async function requireKnowledgeItem(
   return row;
 }
 
-async function getKnowledgeItemById(db: Queryable, spaceId: string, itemId: string): Promise<KnowledgeItemRow> {
+async function getKnowledgeItemById(
+  db: Queryable,
+  spaceId: string,
+  itemId: string,
+  options: { lock?: boolean } = {},
+): Promise<KnowledgeItemRow> {
   const result = await db.query<KnowledgeItemRow>(
     `SELECT ${KNOWLEDGE_ITEM_COLUMNS}
        FROM ${KNOWLEDGE_ITEM_FROM}
-      WHERE ki.object_id = $1 AND ki.space_id = $2`,
+      WHERE ki.object_id = $1 AND ki.space_id = $2${options.lock ? " FOR UPDATE OF ki" : ""}`,
     [itemId, spaceId],
   );
   const row = result.rows[0];

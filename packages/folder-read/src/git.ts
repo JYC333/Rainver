@@ -6,6 +6,12 @@ export interface CommandResult {
   code: number;
   stdout: string;
   stderr: string;
+  /**
+   * The command was stopped before it finished — at its timeout or at the
+   * caller's output limit — so `stdout` is at most a prefix of what it would
+   * have written.
+   */
+  incomplete?: boolean;
 }
 
 export class GitCommandError extends Error {
@@ -22,6 +28,12 @@ export class GitCommandError extends Error {
 export interface RunGitOptions {
   /** Extra variables layered over the process environment (e.g. `GIT_INDEX_FILE`). */
   env?: Record<string, string>;
+  /**
+   * Stop the command once its stdout has grown past this many bytes, and
+   * answer with the prefix read so far marked `incomplete`. Without it the
+   * whole output is held in memory before any caller can bound it.
+   */
+  maxOutputBytes?: number;
 }
 
 export async function runGit(
@@ -242,12 +254,23 @@ export async function ensureGitRepository(path: string): Promise<boolean> {
   return result.code === 0;
 }
 
+/**
+ * Parses `git status --porcelain=v1 -z`: NUL-separated `XY path` entries, with
+ * a rename or copy followed by one more field holding its original path. The
+ * NUL form is what keeps names raw — the line form quotes and octal-escapes
+ * any non-ASCII name and writes a rename as `old -> new`.
+ */
 export function parsePorcelain(output: string): GitChangedFile[] {
   const result: GitChangedFile[] = [];
-  for (const line of output.split(/\r?\n/)) {
-    if (line.length < 3) continue;
-    const xy = line.slice(0, 2);
-    const path = line.slice(3).trim();
+  const fields = output.split("\0");
+  for (let index = 0; index < fields.length; index += 1) {
+    const entry = fields[index]!;
+    if (entry.length < 4) continue;
+    const xy = entry.slice(0, 2);
+    const path = entry.slice(3);
+    // The original path of a rename or copy is its own field; it names no
+    // second changed file.
+    if (xy.includes("R") || xy.includes("C")) index += 1;
     let status = "modified";
     if (xy.includes("?")) status = "untracked";
     else if (xy.includes("R")) status = "renamed";
@@ -267,6 +290,7 @@ async function runCommand(
 ): Promise<CommandResult> {
   return new Promise((resolveResult) => {
     let stdout = "";
+    let stdoutBytes = 0;
     let stderr = "";
     let settled = false;
     let timer: NodeJS.Timeout;
@@ -277,6 +301,18 @@ async function runCommand(
       ...(options.env ? { env: { ...process.env, ...options.env } } : {}),
     });
     child.stdout?.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      stdoutBytes += chunk.byteLength;
+      const limit = options.maxOutputBytes;
+      if (limit !== undefined && stdoutBytes > limit) {
+        const room = Math.max(0, limit - (stdoutBytes - chunk.byteLength));
+        stdout += chunk.subarray(0, room).toString("utf8");
+        settled = true;
+        clearTimeout(timer);
+        child.kill("SIGKILL");
+        resolveResult({ code: -1, stdout, stderr: stderr || "Command output exceeded the limit.", incomplete: true });
+        return;
+      }
       stdout += chunk.toString("utf8");
     });
     child.stderr?.on("data", (chunk: Buffer) => {
@@ -298,7 +334,7 @@ async function runCommand(
       if (settled) return;
       settled = true;
       child.kill("SIGKILL");
-      resolveResult({ code: -1, stdout, stderr: stderr || "Command timed out." });
+      resolveResult({ code: -1, stdout, stderr: stderr || "Command timed out.", incomplete: true });
     }, timeoutMs);
   });
 }

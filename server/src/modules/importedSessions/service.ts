@@ -141,11 +141,25 @@ export class ImportedSessionService {
     return readAmbientImportPolicy(this.db, locationId);
   }
 
-  private async writePolicy(locationId: string, policy: AmbientImportPolicy): Promise<void> {
-    await this.db.query(
-      `UPDATE workspace_locations SET ambient_import_policy_json = $2::jsonb, updated_at = now() WHERE id = $1`,
-      [locationId, JSON.stringify(policy)],
-    );
+  /**
+   * Read-modify-write of the whole policy document under the Location's row
+   * lock: two switches flipped at once (one runtime's sync, another's
+   * auto-extract) must both land, and a withdrawn consent must never be
+   * written back by a request that read the policy before it was withdrawn.
+   */
+  private async rewritePolicy(
+    locationId: string,
+    change: (policy: AmbientImportPolicy) => AmbientImportPolicy,
+  ): Promise<AmbientImportPolicy> {
+    return withQueryableTransaction(this.db, async (tx) => {
+      await tx.query(`SELECT id FROM workspace_locations WHERE id = $1 FOR UPDATE`, [locationId]);
+      const next = change(await readAmbientImportPolicy(tx, locationId));
+      await tx.query(
+        `UPDATE workspace_locations SET ambient_import_policy_json = $2::jsonb, updated_at = now() WHERE id = $1`,
+        [locationId, JSON.stringify(next)],
+      );
+      return next;
+    });
   }
 
   /** Counts the daemon last observed, for the offer; never content. */
@@ -182,8 +196,8 @@ export class ImportedSessionService {
     },
   ): Promise<AmbientImportPolicy> {
     await this.requireTarget(identity, locationId);
-    const policy = await this.readPolicy(locationId);
     const installation = input.installation ?? OWN_INSTALLATION;
+    return this.rewritePolicy(locationId, (policy) => {
     const entry: AmbientImportPolicyEntry = {
       runtime_key: input.runtime_key,
       installation,
@@ -206,18 +220,14 @@ export class ImportedSessionService {
       (existing) => !(existing.runtime_key === entry.runtime_key && existing.installation === entry.installation),
     );
     entries.push(entry);
-    const next: AmbientImportPolicy = { entries, offered_at: policy.offered_at ?? new Date().toISOString() };
-    await this.writePolicy(locationId, next);
-    return next;
+    return { entries, offered_at: policy.offered_at ?? new Date().toISOString() };
+    });
   }
 
   /** Marks the offer answered without consenting, so the banner stops asking. */
   async dismissOffer(identity: SpaceUserIdentity, locationId: string): Promise<AmbientImportPolicy> {
     await this.requireTarget(identity, locationId);
-    const policy = await this.readPolicy(locationId);
-    const next: AmbientImportPolicy = { ...policy, offered_at: policy.offered_at ?? new Date().toISOString() };
-    await this.writePolicy(locationId, next);
-    return next;
+    return this.rewritePolicy(locationId, (policy) => ({ ...policy, offered_at: policy.offered_at ?? new Date().toISOString() }));
   }
 
   /**

@@ -30,7 +30,7 @@ import {
  * the runtime therefore never marks the block sent, which would silently
  * withhold the Agent's identity — the worse failure.
  */
-export interface RoomStandingContext {
+interface RoomStandingContext {
   text: string;
   digest: string;
 }

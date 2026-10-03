@@ -46,6 +46,9 @@ export default function ProviderSelector({
 }: ProviderSelectorProps) {
   const [providers, setProviders] = useState<ModelProviderOut[]>([])
   const [models, setModels] = useState<string[]>([])
+  // Which provider `models` was read for: a list still showing the previous
+  // provider must not be applied to the next one.
+  const [modelsFor, setModelsFor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   const loadProviders = useCallback(() => {
@@ -103,14 +106,28 @@ export default function ProviderSelector({
   }, [isSelectable, onChange, providers, value?.provider_id])
 
   useEffect(() => {
-    if (!value?.provider_id) { setModels([]); return }
-    providersApi.models(value.provider_id)
-      .then(r => setModels(r.models))
+    if (!value?.provider_id) { setModels([]); setModelsFor(null); return }
+    const providerId = value.provider_id
+    let current = true
+    providersApi.models(providerId)
+      .then(r => { if (current) { setModels(r.models); setModelsFor(providerId) } })
       .catch(() => {
-        const p = providers.find(x => x.id === value.provider_id)
+        if (!current) return
+        const p = providers.find(x => x.id === providerId)
         setModels(p?.available_models ?? (p?.default_model ? [p.default_model] : []))
+        setModelsFor(providerId)
       })
+    return () => { current = false }
   }, [value?.provider_id, providers])
+
+  // A select whose value is not among its options shows the first option
+  // while the value stays as it was, so what is saved and what is shown
+  // differed. An unset model takes the first listed one, the one on screen.
+  useEffect(() => {
+    if (value?.provider_id && value.provider_id === modelsFor && !value.model && models.length > 0) {
+      onChange({ ...value, model: models[0]! })
+    }
+  }, [models, modelsFor, onChange, value])
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">Loading providers…</p>
@@ -191,6 +208,8 @@ export default function ProviderSelector({
               onChange={e => onChange({ ...value, model: e.target.value })}
               className="flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm font-mono disabled:cursor-not-allowed disabled:opacity-60"
             >
+              {/* A model set elsewhere (a task default) and not listed stays shown. */}
+              {value.model && !models.includes(value.model) && <option value={value.model}>{value.model}</option>}
               {models.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
           ) : (

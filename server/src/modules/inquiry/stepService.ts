@@ -25,15 +25,15 @@ import { type NextFocusKind } from "./threadService.js";
  */
 const BACKGROUND_STEP_KINDS: readonly NextFocusKind[] = ["search_acquisition", "design_run_experiment"];
 
-export type StepSlot = "primary" | "background";
-export type StepStatus = "in_progress" | "done" | "abandoned";
-export type StepOrigin = "user" | "advice" | "system";
+type StepSlot = "primary" | "background";
+type StepStatus = "in_progress" | "done" | "abandoned";
+type StepOrigin = "user" | "advice" | "system";
 
 function slotForKind(kind: NextFocusKind): StepSlot {
   return BACKGROUND_STEP_KINDS.includes(kind) ? "background" : "primary";
 }
 
-export interface StepRow {
+interface StepRow {
   id: string;
   space_id: string;
   project_id: string;
@@ -83,7 +83,7 @@ export function stepToOut(row: StepRow): Record<string, unknown> {
  * with it. The single-primary-step unique index is what keeps `max(kind)`
  * unambiguous.
  */
-export const STEP_PRIMARY_KIND_SQL =
+const STEP_PRIMARY_KIND_SQL =
   `(SELECT max(s.kind) FROM inquiry_thread_steps s
       WHERE s.thread_id = inquiry_threads.object_id AND s.space_id = inquiry_threads.space_id
         AND s.slot = 'primary' AND s.status = 'in_progress')`;
@@ -98,7 +98,7 @@ export const STEP_PROJECTION_SET_SQL = `next_focus_kind = ${STEP_PRIMARY_KIND_SQ
  * outliving it and attaching stale wording to whatever comes next. The note
  * itself is written on the step, never here.
  */
-export const STEP_PRIMARY_NOTE_SQL =
+const STEP_PRIMARY_NOTE_SQL =
   `(SELECT max(s.note) FROM inquiry_thread_steps s
       WHERE s.thread_id = inquiry_threads.object_id AND s.space_id = inquiry_threads.space_id
         AND s.slot = 'primary' AND s.status = 'in_progress')`;

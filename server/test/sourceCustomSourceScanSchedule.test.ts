@@ -18,6 +18,7 @@ import { fixtureServerGuard } from "./support/outboundGuard.js";
 import { generateCustomSourceHandlerSource } from "../src/modules/sources/customSources/customSourceHandlerTemplate.js";
 import { sha256 } from "../src/modules/sources/sourceRepositoryMappers.js";
 import { PgSourcesRepository } from "../src/modules/sources/repository.js";
+import { SourceChannelService } from "../src/modules/sources/channels/sourceChannelService.js";
 
 // Real-Postgres + real-child-process + real local HTTP server (not a live
 // external provider — a loopback server this test controls) integration
@@ -31,16 +32,22 @@ let config: ServerConfig | undefined;
 let artifactStorageRoot: string | undefined;
 let httpServer: Server | undefined;
 let serverPort = 0;
+/** Runs inside the fixture server before it answers, i.e. while a scan is in flight. */
+let duringFetch: (() => Promise<void>) | undefined;
 
 const db = useTestDatabase(import.meta.filename, { max: 10 });
 
 beforeAll(async () => {
   if (!db.available) return;
   httpServer = createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "text/html" });
-    res.end(`<html><body>
-      <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
-    </body></html>`);
+    const hook = duringFetch;
+    duringFetch = undefined;
+    void (hook ? hook() : Promise.resolve()).finally(() => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(`<html><body>
+        <div class="article"><a href="/a1">First Title</a><p>First excerpt text.</p></div>
+      </body></html>`);
+    });
   });
   await new Promise<void>((resolveListen) => httpServer!.listen(0, "127.0.0.1", resolveListen));
   const address = httpServer.address();
@@ -108,6 +115,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  duringFetch = undefined;
   if (artifactStorageRoot) await rm(artifactStorageRoot, { recursive: true, force: true });
 });
 
@@ -241,6 +249,26 @@ describe("enqueueDueSourceConnectionScans (built_in only)", () => {
     await insertConnection({ id: connId, handlerKind: "built_in" });
     const count = await enqueueDueSourceChannelScans(db.pool, 25);
     expect(count).toBe(1);
+  });
+});
+
+describe("Source channel schedule rule", () => {
+  it("keeps a custom schedule rule across pause and resume", async () => {
+    if (!db.available || !config) return;
+    const connId = randomUUID();
+    await insertConnection({ id: connId, handlerKind: "built_in", fetchFrequency: "daily" });
+    const channels = new SourceChannelService(db.pool, config);
+    const identity = { spaceId: SPACE_A, userId: "user-1" };
+    const rule = { frequency: "daily", hour: 9, minute: 30 };
+    await channels.update(identity, connId, { fetch_frequency: "daily", schedule_rule: rule });
+
+    const paused = await channels.update(identity, connId, { status: "paused" });
+    expect(paused).toMatchObject({ status: "paused", schedule_rule: rule, scan_state: { next_run_at: null } });
+
+    const resumed = await channels.update(identity, connId, { status: "active" });
+    expect(resumed?.schedule_rule).toEqual(rule);
+    const next = new Date(resumed!.scan_state.next_run_at as string);
+    expect([next.getUTCHours(), next.getUTCMinutes()]).toEqual([9, 30]);
   });
 });
 
@@ -440,6 +468,55 @@ describe("runPendingCustomSourceHandlerRuns", () => {
     expect(reEnqueued).toBe(0);
   });
 
+  it("fails the run and advances the schedule when its credential cannot be resolved", async () => {
+    if (!db.available) return;
+    const connId = randomUUID();
+    await insertConnection({ id: connId, handlerKind: "generated_custom", nextCheckAt: new Date(0).toISOString() });
+    await insertActiveHandlerVersion(connId, {
+      policyEnvelope: {
+        ...POLICY_ENVELOPE,
+        allowed_network_origins: [`http://127.0.0.1:${serverPort}`],
+        credential_ref: "missing-credential",
+      },
+    });
+    await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
+
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config!, 10, fixtureServerGuard)).toBe(1);
+
+    const run = await db.pool.query<{ status: string }>(
+      `SELECT status FROM source_handler_runs WHERE source_connection_id = $1`,
+      [connId],
+    );
+    expect(run.rows.map((row) => row.status)).toEqual(["failed"]);
+    const scheduleTask = await db.pool.query<{ next_run_at: string | null }>(
+      `SELECT next_run_at FROM scheduler_tasks WHERE task_type = 'source_channel_scan' AND task_key = $1`,
+      [connId],
+    );
+    expect(new Date(scheduleTask.rows[0]!.next_run_at!).getTime()).toBeGreaterThan(Date.now());
+    expect(await enqueueDueCustomSourceHandlerRuns(db.pool, 25)).toBe(0);
+  });
+
+  it("keeps a pause made while the scan was running", async () => {
+    if (!db.available || !config) return;
+    const connId = randomUUID();
+    await insertConnection({ id: connId, handlerKind: "generated_custom", nextCheckAt: new Date(0).toISOString() });
+    await insertActiveHandlerVersion(connId);
+    await enqueueDueCustomSourceHandlerRuns(db.pool, 25);
+    const channels = new SourceChannelService(db.pool, config);
+    duringFetch = async () => {
+      await channels.update({ spaceId: SPACE_A, userId: "user-1" }, connId, { status: "paused" });
+    };
+
+    expect(await runPendingCustomSourceHandlerRuns(db.pool, config, 10, fixtureServerGuard)).toBe(1);
+
+    const scheduleTask = await db.pool.query<{ status: string; next_run_at: string | null; last_run_at: string | null }>(
+      `SELECT status, next_run_at, last_run_at FROM scheduler_tasks WHERE task_type = 'source_channel_scan' AND task_key = $1`,
+      [connId],
+    );
+    expect(scheduleTask.rows[0]).toMatchObject({ status: "paused", next_run_at: null });
+    expect(scheduleTask.rows[0]?.last_run_at).not.toBeNull();
+  });
+
   it("records a blocked handler run and fails the paired extraction_job", async () => {
     if (!db.available) return;
     const connId = randomUUID();
@@ -619,5 +696,27 @@ describe("automatic Custom Source repair status transitions", () => {
       [connId],
     );
     expect(after.rows[0]?.repair_status).toBe("repair_pending");
+  });
+});
+
+describe("due scan task batch", () => {
+
+  it("does not let a due task no scheduler can run hold the batch's place", async () => {
+    if (!db.available) return;
+    // An active channel whose connection still awaits activation.
+    const blocked = randomUUID();
+    await insertConnection({ id: blocked, handlerKind: "built_in", status: "paused" });
+    await db.pool.query(`UPDATE source_connections SET name = 'Blocked source' WHERE id = $1`, [blocked]);
+    await db.pool.query(`UPDATE source_channels SET status = 'active' WHERE id = $1`, [blocked]);
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET status = 'active', next_run_at = $2 WHERE task_type = 'source_channel_scan' AND task_key = $1`,
+      [blocked, new Date(0).toISOString()],
+    );
+    const runnable = randomUUID();
+    await insertConnection({ id: runnable, handlerKind: "built_in", nextCheckAt: new Date(1000).toISOString() });
+
+    expect(await enqueueDueSourceChannelScans(db.pool, 1)).toBe(1);
+    const jobs = await db.pool.query(`SELECT connection_id FROM extraction_jobs`);
+    expect(jobs.rows).toEqual([{ connection_id: runnable }]);
   });
 });

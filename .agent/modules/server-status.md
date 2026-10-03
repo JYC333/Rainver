@@ -28,8 +28,14 @@ Implemented:
 |---|---|---|---|---|
 | `database` | `SELECT 1` | reachable | — | unreachable |
 | `scheduler` | worst per-task health | all tasks healthy | some task `failing` | some task `stalled`, or background services not running |
-| `jobs_worker` | live worker id in this process | running | not running, nothing queued | not running while jobs are pending |
+| `jobs_worker` | live worker id in this process | running | not running, nothing queued (or depth unreadable) | not running while jobs are pending |
 | `jobs_queue` | instance-wide pending/running counts | counted | depth unreadable | pending work with no worker |
+
+The production source reads queue depth through the worker
+(`scheduler/backgroundServices.ts`), so with no worker the depth is `null`:
+`jobs_worker` reports `degraded` ("No jobs worker running") and `jobs_queue`
+`degraded` ("Queue depth unavailable"). The `error` cells are reachable only
+from a source that can count the queue without a worker.
 
 Not implemented — deliberately absent rather than reported healthy on no
 evidence: LLM Provider reachability, per-adapter runtime tools
@@ -96,7 +102,8 @@ a scheduled task is stalled — that is why `/api/v1/status` exists.
 - **Degraded**: a non-critical observed component is unhealthy (scheduler
   task `failing`, jobs worker absent with an empty queue).
 - **Error**: a critical observed component is down (database unreachable,
-  jobs pending with no worker, a scheduler task `stalled`).
+  jobs pending with no worker when the depth is readable, a scheduler task
+  `stalled`).
 
 The API does not probe LLM keys, adapters, or Docker. Those absences are
 omitted, not reported as `ok` or `error`.
@@ -107,7 +114,8 @@ omitted, not reported as `ok` or `error`.
 - `overall` is the worst component status — if any component is `error`, overall is `error`
 - A component the server has no evidence about is omitted, never reported `ok`
 - Absence of a background component is a condition of its own: no jobs worker
-  is `degraded` when nothing is queued and `error` when work is waiting
+  is `degraded` when nothing is queued or the depth is unreadable, and `error`
+  when the source can see work waiting
 
 ## Related Files
 - `server/src/modules/system/routes.ts` — `/health`, `/api/v1/status`, features

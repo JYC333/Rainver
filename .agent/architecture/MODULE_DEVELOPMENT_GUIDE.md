@@ -93,9 +93,9 @@ Keep facades narrow so tests and peer modules do not couple to internal helpers.
 - Kernel modules must not import product modules.
 - Cross-module writes to Memory/Knowledge go through proposal/application flows, not direct
   service calls.
-- `router` owns intent classification, adapter resolution, and `needs_cli`.
+- `routing` owns deterministic runtime route selection (adapter resolution).
 - `runs` owns execution lifecycle, run state/events/finalization/output/artifacts.
-- `runtimes` own adapter execution and use injected ports for run evidence/process handles.
+- `runtimeAdapters` own adapter execution and use injected ports for run evidence/process handles.
 - `providers` own model invocation and provider credentials.
 - `tasks` own task-board behavior, task-run product linkage, and task evaluation.
 - `proposals` own approval/apply orchestration and the applier registry; target modules
@@ -103,7 +103,7 @@ Keep facades narrow so tests and peer modules do not couple to internal helpers.
   orchestration is owned by the server for registered appliers, and
   unregistered proposal types fail closed until their owning module migrates.
 
-`ProposalApplyService` and the proposal repository live under
+`PgProposalApplyService` (`applyService.ts`) and the proposal repository live under
 `server/src/modules/proposals/`, matching their logical ownership.
 
 ## Extension Points
@@ -113,7 +113,7 @@ Keep facades narrow so tests and peer modules do not couple to internal helpers.
 | HTTP route | Add or update `routes.ts` and register the module in `routeRegistry.ts`. |
 | Periodic work | Keep tick behavior in the owning module; register `ScheduledTask` through `server/src/modules/scheduler/backgroundServices.ts` and `SchedulerRegistry`. |
 | Durable async job | Add a handler in the owning module and register it with the server job worker registry. |
-| Per-space initialization | Register the hook through the server module/service path; hooks run in the caller transaction and must not commit. |
+| Per-space initialization | Add the default to `seedSpaceDefaults` (`server/src/modules/spaces/spaceSeeds.ts`), which `spaces/repository.ts` calls inside the Space-creation transaction; it must not commit. There is no hook registry. |
 | Post-run side effect | Register a run-finalized hook with `PostRunFinalizationService` integration. |
 | Proposal apply behavior | Put mutation logic in the target module and register it with the server proposal applier registry. |
 | Runtime adapter | Register adapter/spec in `server/src/modules/runtimeAdapters`; adapters return `RuntimeAdapterResult` and use server runtime services. |

@@ -127,4 +127,6 @@ export const SourceChannelCreateRequestSchema = z.object({
   fetch_frequency: SourceFetchFrequencySchema.optional(),
   schedule_rule: z.record(z.unknown()).optional(),
   capture_policy: SourceChannelCapturePolicySchema.optional(),
+  /** The caller's own Source to add the monitor to; otherwise one is found or made by provider. */
+  source_connection_id: z.string().trim().min(1).optional(),
 }).passthrough();

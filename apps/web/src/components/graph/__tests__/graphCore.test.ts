@@ -63,6 +63,17 @@ describe('graph core pure helpers', () => {
     expect(states['cluster:note']).not.toContain('faded')
   })
 
+  it('sets state only on the elements drawn, so hidden kinds and edge filters keep highlighting working', () => {
+    // G6 refuses a whole state batch that names an element it does not hold.
+    const theme = createGraphTheme('light')
+    const state = normalizeGraphViewState({ hoveredNodeId: 'n1', hiddenKinds: ['claim'], activeEdgeKinds: ['cluster_contains'] })
+    const drawn = mapProjectionToRenderData(projection, { theme, viewState: state, zoom: 1 })
+    const states = buildElementStateMap(projection, state)
+
+    expect(Object.keys(states).sort()).toEqual([...drawn.nodes, ...drawn.edges].map((element) => element.id).sort())
+    expect(states.n1).toContain('active')
+  })
+
   it('builds targeted interaction label patches for hovered and selected nodes', () => {
     const state = normalizeGraphViewState({ hoveredNodeId: 'n2' })
     const labels = buildInteractionLabelVisibility(projection, state, { selectedNodeId: null, hoveredNodeId: null }, 0.2)

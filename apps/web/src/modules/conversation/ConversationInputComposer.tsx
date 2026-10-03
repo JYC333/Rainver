@@ -70,7 +70,7 @@ export function conversationInputSourcesFromExecutionSummary(summary: Conversati
   })
 }
 
-export interface ConversationInputDraftController {
+interface ConversationInputDraftController {
   parts: ConversationInputPart[]
   unresolved: boolean
   references: ReactNode
@@ -150,9 +150,17 @@ export function useConversationInputDraft({
     if (upload.media) void conversationInputApi.deletePendingImage(upload.media.media_id).catch(() => undefined)
   }, [])
 
+  // Images that count against the cap: attached parts plus uploads still in
+  // flight, which have no part yet. A failed upload holds no slot; its retry
+  // passes `retryLocalId` and skips the check.
+  const imageSlotsUsed = useCallback(() => (
+    partsRef.current.filter(part => part.kind === 'image').length
+    + uploadsRef.current.filter(upload => !upload.media && !upload.error && !cancelledUploadsRef.current.has(upload.localId)).length
+  ), [])
+
   const uploadImage = useCallback(async (file: File, retryLocalId?: string) => {
     if (!ConversationImageMediaTypeSchema.options.includes(file.type as never)) return
-    if (partsRef.current.filter(part => part.kind === 'image').length >= CONVERSATION_MAX_IMAGES && !retryLocalId) {
+    if (imageSlotsUsed() >= CONVERSATION_MAX_IMAGES && !retryLocalId) {
       setFileError(`You can attach up to ${CONVERSATION_MAX_IMAGES} images.`)
       return
     }
@@ -160,12 +168,15 @@ export function useConversationInputDraft({
     cancelledUploadsRef.current.delete(localId)
     const current = uploadsRef.current.find(upload => upload.localId === localId)
     const previewUrl = current?.previewUrl ?? URL.createObjectURL(file)
-    setUploads(items => {
-      const next: UploadState = { localId, file, previewUrl, progress: 0 }
-      return items.some(item => item.localId === localId)
-        ? items.map(item => item.localId === localId ? next : item)
-        : [...items, next]
-    })
+    const started: UploadState = { localId, file, previewUrl, progress: 0 }
+    // Mirror the state update synchronously so the next file in the same
+    // batch sees this slot taken before React renders.
+    uploadsRef.current = uploadsRef.current.some(item => item.localId === localId)
+      ? uploadsRef.current.map(item => item.localId === localId ? started : item)
+      : [...uploadsRef.current, started]
+    setUploads(items => items.some(item => item.localId === localId)
+      ? items.map(item => item.localId === localId ? started : item)
+      : [...items, started])
     try {
       const media = await conversationInputApi.uploadImage(file, progress => {
         if (cancelledUploadsRef.current.has(localId)) return
@@ -193,7 +204,7 @@ export function useConversationInputDraft({
         ? { ...item, error: errMsg(error), progress: 0 }
         : item))
     }
-  }, [changeParts])
+  }, [changeParts, imageSlotsUsed])
 
   const receiveImages = useCallback((files: File[]) => {
     const images = files.filter(file => ConversationImageMediaTypeSchema.options.includes(file.type as never))
@@ -201,8 +212,10 @@ export function useConversationInputDraft({
       setFileError('Only PNG, JPEG, and WebP images are supported.')
     }
     if (images.length === 0) return
-    void Promise.all(images.map(file => uploadImage(file)))
-  }, [uploadImage])
+    const remaining = Math.max(0, CONVERSATION_MAX_IMAGES - imageSlotsUsed())
+    if (images.length > remaining) setFileError(`You can attach up to ${CONVERSATION_MAX_IMAGES} images.`)
+    void Promise.all(images.slice(0, remaining).map(file => uploadImage(file)))
+  }, [imageSlotsUsed, uploadImage])
 
   const onPaste = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     const files = Array.from(event.clipboardData.files)
@@ -321,7 +334,9 @@ export function useConversationInputDraft({
       if (bytes.byteLength > CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) {
         throw new Error(`file is too large to reference (max ${formatBytes(CONVERSATION_MAX_FILE_SNAPSHOT_BYTES)})`)
       }
-      const sha256 = content.sha256 ?? await digestHex(bytes)
+      // The server admits the decoded body it freezes, so the digest is the
+      // body's: `content.sha256` hashes the bytes on disk, a BOM included.
+      const sha256 = await digestHex(bytes)
       const part: ConversationInputFileReferencePart = {
         kind: 'file_reference',
         project_folder_id: candidate.projectFolderId,

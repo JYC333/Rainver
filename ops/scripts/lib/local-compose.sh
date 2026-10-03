@@ -210,7 +210,9 @@ local_compose_env_value() {
         value="${value#\'}"
         value="${value%%\'*}"
       else
-        value="${value%%#*}"
+        # As Compose reads it: an inline comment starts at whitespace followed
+        # by `#`; a `#` inside the value (a password) is part of the value.
+        value="${value%%[[:space:]]#*}"
         value="$(local_compose_trim "$value")"
       fi
 

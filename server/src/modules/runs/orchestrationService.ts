@@ -111,6 +111,7 @@ import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { mergeRunQuota } from "../hosts/usageService.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { redactEvidenceText } from "./evidenceRedaction.js";
+import { resolveExecutionHost } from "./executionHostResolution.js";
 
 export interface RunExecutionRepositoryPort {
   getRun(spaceId: string, runId: string): Promise<RunRecord | null>;
@@ -211,7 +212,7 @@ export interface RunExecutionRepositoryPort {
   }): Promise<RunRecord | null>;
 }
 
-export interface RunExecutionAdapterDeps {
+interface RunExecutionAdapterDeps {
   materializer?: RunMaterializationService;
   runtimeContextGateway?: RuntimeContextInvocationGatewayPort
     & Partial<Pick<RuntimeContextGatewayPort, "ingestRuntimeEvent" | "recordRuntimeEventGap">>;
@@ -270,7 +271,7 @@ export interface RunExecutionAdapterDeps {
   cliContinuity?: RuntimeContextCliContinuityService;
 }
 
-export interface RunRouteResolverPort {
+interface RunRouteResolverPort {
   routeRun(run: AgentRunRecord): Promise<AgentRunRecord>;
 }
 
@@ -285,7 +286,7 @@ export type RunPolicyEnforcer = (
   request: Parameters<typeof enforce>[2],
 ) => Promise<EnforceResult>;
 
-export interface RunCodePatchCollectorPort {
+interface RunCodePatchCollectorPort {
   collect(input: {
     run: RunRecord;
     worktreePath: string | null;
@@ -573,31 +574,7 @@ export class RunOrchestrationService {
     this.builtinHostResolver = adapters.builtinHostResolver ?? null;
     this.hostKindResolver = adapters.hostKindResolver
       ?? (repository instanceof PgRunRepository && config.databaseUrl
-        ? async ({ executionHostId, workspaceLocationId, projectFolderId, spaceId }) => {
-            const pool = getDbPool(config.databaseUrl!);
-            const result = workspaceLocationId
-              ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
-                  `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE id = $1 AND space_id = $2 LIMIT 1`,
-                  [workspaceLocationId, spaceId],
-                )
-                : executionHostId
-                ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
-                    `SELECT id, kind AS execution_host_kind, id AS execution_host_id FROM hosts WHERE id = $1 LIMIT 1`,
-                    [executionHostId],
-                  )
-                : projectFolderId
-                ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
-                    `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE project_folder_id = $1 AND space_id = $2 AND status = 'active' LIMIT 1`,
-                    [projectFolderId, spaceId],
-                  )
-                : { rows: [] as Array<{ id: string; execution_host_kind: string; execution_host_id: string }> };
-            const row = result.rows[0];
-            return {
-              hostKind: (row?.execution_host_kind as HostKind | undefined) ?? "server",
-              hostId: row?.execution_host_id ?? "",
-              workspaceLocationId: row?.execution_host_kind === "remote" && !workspaceLocationId ? null : row?.id ?? null,
-            };
-          }
+        ? (input) => resolveExecutionHost(getDbPool(config.databaseUrl!), input)
         : null);
     this.usageRecorder = adapters.usageRecorder
       ?? (repository instanceof PgRunRepository && config.databaseUrl
@@ -773,7 +750,14 @@ export class RunOrchestrationService {
           exit_code: 1,
           completed_at: startedAt,
         }, run, null, false);
+        // A failure cannot be published over a cancellation that arrived
+        // first; the execution owner publishes that cancellation instead.
+        const cancelled = rejected ? null : await this.publishPendingCancellation(run, startedAt);
+        if (cancelled) executionLockHeld = false;
         await releaseExecutionAuthority();
+        if (cancelled) {
+          return { run_id: run.id, status: "cancelled", error_code: "run_cancelled" };
+        }
         return {
           run_id: run.id,
           status: protocolRunStatus(rejected?.status ?? "failed"),
@@ -857,28 +841,7 @@ export class RunOrchestrationService {
           exit_code: 1,
           completed_at: startedAt,
         }, run, null, false);
-        if (!rejected) {
-          const current = await this.repository.getRun(run.space_id, run.id);
-          if (current?.status === "cancelling") {
-            rejected = await this.publishRunTerminalWithConversationRuntime({
-              run_id: run.id,
-              space_id: run.space_id,
-              status: "cancelled",
-              output_text: "",
-              output_json: canonicalRunOutput({
-                success: false,
-                outputText: "",
-                outputJson: { error_code: "run_cancelled" },
-              }),
-              error_json: {
-                error_code: "run_cancelled",
-                error_text: "Run cancellation won the terminal publication race.",
-              },
-              exit_code: 1,
-              completed_at: startedAt,
-            }, run, null, false);
-          }
-        }
+        if (!rejected) rejected = await this.publishPendingCancellation(run, startedAt);
         if (rejected) executionLockHeld = false;
         const finalization = await this.finalizeTerminalRunBestEffort(
           rejected ?? { ...run, status: "failed", ended_at: startedAt },
@@ -909,6 +872,14 @@ export class RunOrchestrationService {
         required_sandbox_level: run.required_sandbox_level,
       });
       if (!running) {
+        // Stopped after this worker took the lock: the public cancel could not
+        // publish under it, so the Run is `cancelling`, never ran, and only
+        // its execution owner can end it.
+        const cancelled = await this.publishPendingCancellation(run, startedAt);
+        if (cancelled) {
+          executionLockHeld = false;
+          return { run_id: run.id, status: "cancelled", error_code: "run_cancelled" };
+        }
         const current = await this.repository.getRun(run.space_id, run.id);
         return {
           run_id: run.id,
@@ -1059,6 +1030,31 @@ export class RunOrchestrationService {
         executionPort,
         effectiveBindings,
       );
+      // A stop that arrived while the Run was being prepared reached no
+      // process (the adapter registers one only when it dispatches) and could
+      // not publish under this lock. Dispatching now would run the whole turn
+      // and only then report it cancelled.
+      const cancelledBeforeDispatch = await this.publishPendingCancellation(effectiveRun, startedAt);
+      if (cancelledBeforeDispatch) {
+        executionLockHeld = false;
+        if (preparedRuntime.invocation_delivery && preparedRuntime.invocation_attempts) {
+          await preparedRuntime.invocation_attempts.acknowledge(
+            preparedRuntime.invocation_delivery,
+            adapterFailureEnvelope(effectiveRun, "run_cancelled", "The Run was cancelled before it was dispatched."),
+          );
+          await preparedRuntime.invocation_attempts.finalize(preparedRuntime.invocation_delivery, "run_cancelled");
+        }
+        if (step) await this.updateRunStepStatusBestEffort({
+          step_id: step.id,
+          run_id: effectiveRun.id,
+          space_id: effectiveRun.space_id,
+          status: "cancelled",
+          ended_at: new Date().toISOString(),
+          error_type: "run_cancelled",
+          error_message: "The Run was cancelled before it was dispatched.",
+        });
+        return { run_id: effectiveRun.id, status: "cancelled", error_code: "run_cancelled" };
+      }
       let adapterResult: RunAdapterResultEnvelope;
       try {
         adapterResult = await this.invokeAdapter(
@@ -2087,7 +2083,14 @@ export class RunOrchestrationService {
         "Dispatching a CLI runtime requires the built-in execution host, which needs a database.",
       );
     }
-    this.builtinHostIdPromise ??= new PgHostRepository(getDbPool(this.config.databaseUrl)).ensureServerHostId();
+    // Cache the answer, not the attempt: a rejected promise left here would
+    // fail every later unbound CLI Run in this worker until a restart.
+    this.builtinHostIdPromise ??= new PgHostRepository(getDbPool(this.config.databaseUrl))
+      .ensureServerHostId()
+      .catch((error: unknown) => {
+        this.builtinHostIdPromise = null;
+        throw error;
+      });
     return this.builtinHostIdPromise;
   }
 
@@ -2429,7 +2432,7 @@ export class RunOrchestrationService {
     if (prepared?.cli_execution_lease && this.cliContinuity) {
       const lease = prepared.cli_execution_lease;
       prepared.cli_execution_lease = null;
-      await this.cliContinuity.releaseExecutionLease(lease.binding_id, lease.lease_id).catch(() => {});
+      await this.cliContinuity.releaseExecutionLease(lease.lease_id).catch(() => {});
     }
     const executionPort = prepared?.execution_port ?? this.serverExecutionPort;
     if (prepared?.exchange) {
@@ -3081,6 +3084,34 @@ export class RunOrchestrationService {
       }
     }
     return terminal;
+  }
+
+  /**
+   * Cancellation can linearize first by moving the Run to `cancelling` while
+   * this worker holds its execution lock; public cancellation never removes
+   * that lock, so the execution owner publishes the cancellation. Returns the
+   * cancelled Run, or null when the Run is not `cancelling`.
+   */
+  private async publishPendingCancellation(run: RunRecord, completedAt: string): Promise<RunRecord | null> {
+    const current = await this.repository.getRun(run.space_id, run.id);
+    if (current?.status !== "cancelling") return null;
+    return this.publishRunTerminalWithConversationRuntime({
+      run_id: run.id,
+      space_id: run.space_id,
+      status: "cancelled",
+      output_text: "",
+      output_json: canonicalRunOutput({
+        success: false,
+        outputText: "",
+        outputJson: { error_code: "run_cancelled" },
+      }),
+      error_json: {
+        error_code: "run_cancelled",
+        error_text: "Run cancellation won the terminal publication race.",
+      },
+      exit_code: 1,
+      completed_at: completedAt,
+    }, run, null, false);
   }
 
   private async publishRunTerminalWithConversationRuntime(

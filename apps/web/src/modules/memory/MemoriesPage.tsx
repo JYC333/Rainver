@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { Activity, ChevronRight, FileText, FolderKanban, Loader2, PackageCheck, Search, Wrench, X } from 'lucide-react'
@@ -87,13 +87,17 @@ export default function MemoriesPage() {
   const [claimPacketResult, setClaimPacketResult] = useState<ClaimCandidatePacketCreateResponse | null>(null)
   const [retrievalSettings, setRetrievalSettings] = useState<SpaceRetrievalSettings | null>(null)
 
+  // Filters change faster than the list answers; only the latest request's
+  // page is shown, so the rows always match the filter in the URL.
+  const listRequest = useRef(0)
   const load = useCallback(async () => {
+    const request = ++listRequest.current
     if (!activeSpaceId) {
       setMemories([])
       return
     }
     try {
-      setMemories((await memoryApi.list({
+      const page = await memoryApi.list({
         status: statusFilter,
         scope: scopeFilter || undefined,
         project_id: projectFilter || undefined,
@@ -102,9 +106,11 @@ export default function MemoriesPage() {
         since: sinceFilter || undefined,
         session: sessionFilter || undefined,
         run: runFilter || undefined,
-      })).items)
+      })
+      if (request !== listRequest.current) return
+      setMemories(page.items)
     }
-    catch (e) { toast.error(errMsg(e)) }
+    catch (e) { if (request === listRequest.current) toast.error(errMsg(e)) }
   }, [projectFilter, agentFilter, activeSpaceId, statusFilter, scopeFilter, writtenByFilter, sessionFilter, runFilter, sinceFilter])
 
   useEffect(() => { load() }, [load])

@@ -233,6 +233,19 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     }
   });
 
+  it("refuses at the contract what the store would refuse later", () => {
+    const byId = new Map(SYSTEM_ACTION_REGISTRY.map((definition) => [definition.id, definition]));
+    const conclusion = byId.get("inquiry.record_conclusion")!.input_schema;
+    // confidence is an integer percentage; the method label has 32 characters.
+    expect(conclusion.safeParse({ thread_id: "t", change_summary: "c", confidence: 72 }).success).toBe(true);
+    expect(conclusion.safeParse({ thread_id: "t", change_summary: "c", confidence: 0.75 }).success).toBe(false);
+    expect(conclusion.safeParse({ thread_id: "t", change_summary: "c", confidence_method: "x".repeat(33) }).success).toBe(false);
+    // since is a date the acquisition can act on, not free text failed in the background.
+    const acquisition = byId.get("research.start_acquisition")!.input_schema;
+    expect(acquisition.safeParse({ thread_id: "t", since: "2025-01-01" }).success).toBe(true);
+    expect(acquisition.safeParse({ thread_id: "t", since: "last year" }).success).toBe(false);
+  });
+
   it("keeps Inquiry's Project-internal writes direct", () => {
     // The two that flipped. A regression here is the six-cards-for-one-decision
     // failure returning, so it is asserted by id rather than left to review.

@@ -29,10 +29,11 @@ resources and keep their explicitly declared scope.
 - `Agent` ORM model and CRUD
 - `AgentVersion` model (immutable Agent behavior/constraint snapshot per Run)
 - `AgentRuntimeProfile` model (Agent-scoped runtime/backend/Host deployment)
-- `AgentTemplate` / `AgentTemplateVersion` — reusable factories (NOT runtime objects)
-- `AgentTemplateService` — author templates + copy-on-create `create_agent_from_template`
+- Agent templates — read-only file specs in `catalog/agent_templates/<key>/template.yaml`
+  (NOT runtime objects), served by `server/src/modules/agentTemplates/routes.ts` with
+  copy-on-create `POST /api/v1/agent-templates/{id}/agents`
 - `Run` rows created through `RunService` (queued work, lifecycle, delegation links)
-- System AgentTemplate seeding (factories; concrete system agents are provisioned on demand)
+- Built-in template catalog (factories; concrete system agents are provisioned on demand)
 - Agent seeding and product-level agent configuration
 
 ### Project Research execution defaults
@@ -51,8 +52,8 @@ keys never enter the runtime process.
 ## Agent Template Model (factory → instance)
 
 ```
-AgentTemplate            — reusable factory; scope=system|space|user; NOT a runtime object
-    → AgentTemplateVersion   — immutable config snapshot (published versions are immutable)
+Agent template           — reusable factory; a catalog file spec; NOT a runtime object
+    → template version       — the spec's config, exposed read-only as its single version
         ⇒ (copy-on-create)
 Agent                    — the runtime instance
     → AgentVersion           — immutable prompt/policy/base config snapshot
@@ -60,15 +61,15 @@ Agent                    — the runtime instance
 ```
 
 Rules (clean model — no old paths):
-- A **template is a factory**, never executed. No `Run` / model-call path reads an
-  `AgentTemplate` or `AgentTemplateVersion`.
+- A **template is a factory**, never executed. No `Run` / model-call path reads a
+  template spec.
 - **Agent behavior always comes from** `Agent.current_version_id` →
   `AgentVersion`; runtime deployment is independently selected from the Agent's
   `AgentRuntimeProfile` rows.
-- Creating an Agent from a template **copies** the selected `AgentTemplateVersion` into a
-  new `AgentVersion` (copy-on-create). `Agent.source_template_id` /
-  `source_template_version_id` are **provenance only** — never used to assemble runtime config.
-- **Template updates never mutate existing Agents.** Publishing a new template version has no
+- Creating an Agent from a template **copies** the template's config into a
+  new `AgentVersion` (copy-on-create). The `agents` table has no template
+  provenance columns; the template is never used to assemble runtime config.
+- **Template updates never mutate existing Agents.** Changing a catalog spec has no
   effect on already-created agents.
 - **Version objects are immutable runtime snapshots.**
 - No template inheritance, no runtime merging, no dynamic parent-template lookup.
@@ -449,8 +450,9 @@ Run:
 
 `parent_run_id` supports user-created lineage: follow-up runs, retries, manual continuations, and
 external run imports. `trigger_origin="parent_run"` is not a valid trigger origin — parent lineage
-is a structural link, not a trigger type. Valid trigger origins: `manual`, `automation`, `job`,
-`system`, `delegation`.
+is a structural link, not a trigger type. Valid trigger origins: `manual`, `automation`,
+`autonomous`, `job`, `system`, `delegation`; `user`, `api`, and `workflow` are read-side
+compatibility values only.
 
 Agent-to-agent child-run creation is represented by `run.spawn_child` inside
 `AgentRunGroup`. The backend route surface lets a human manager create rooms,
@@ -479,8 +481,9 @@ the worker is released, and the lifecycle projector requeues the same run with
 dependency summaries once all declared dependency runs are terminal. Delegation
 completion alone does not create an inferred follow-up run.
 
-The web Agent Rooms surface is space-scoped at `/agent-groups` under the Agents
-scene. It creates manager-led rooms, reads group timeline/trace, posts
+The web Agent Rooms surface is the Projects module's `rooms` route
+(`/projects/:projectId/rooms`, `apps/web/src/modules/agent_groups/AgentGroupsPage.tsx`).
+It creates manager-led rooms, reads group timeline/trace, posts
 natural-language room messages, and exposes room settings separately from the
 chat surface. The default recipient is the manager. Structured Tiptap `@`
 mentions route direct segments to selected room members, adjacent mentions fan
@@ -492,25 +495,18 @@ surfaces instead of creating a separate approval path.
 
 **Agent definition changes**
 
-There are two paths, by who is making the change:
+Both paths are owner direct edits, gated by `assertAgentOwner`; there is no
+public config-proposal route:
 
 1. **Owner direct edit (no proposal).** `PATCH /agents/{agent_id}` applies
    identity fields directly on the `Agent` row. Agent definition changes
    (system prompt, execution constraints, context/memory/tool/output policy,
-   schedule and output schema) append a new immutable `AgentVersion`, advance
-   `Agent.current_version_id`, and record a lightweight
-   `system_event` Activity** (`metadata_json.kind="agent_config_updated"`) instead of a
-   proposal. The owner is the authority and there is no second party to review, so a
+   schedule and output schema) append a new immutable `AgentVersion` and advance
+   `Agent.current_version_id`; no Activity row is written. The owner is the
+   authority and there is no second party to review, so a
    proposal would be pure ceremony. Runtime policy gates still apply at execution.
 
-2. **Proposed change (needs review) → proposal.**
-   `POST /api/v1/agents/{agent_id}/config-proposals` creates an `agent_config_update`
-   proposal for changes suggested by a non-owner actor (e.g. an agent learning loop or
-   automation). Accepting it validates Agent scope and base version,
-   rejects a stale `base_version_id`, creates a new immutable `AgentVersion`, records
-   proposal/activity provenance, and advances `Agent.current_version_id`.
-
-3. **Owner config UI edit → `POST /api/v1/agents/{agent_id}/config`.** This
+2. **Owner config UI edit → `POST /api/v1/agents/{agent_id}/config`.** This
    focused endpoint appends an immutable `AgentVersion` and accepts the prompt,
    context/memory/tool/output policy, schedule/output schema, and typed
    `execution_constraints` (`risk_level`, `max_run_time_seconds`). It does not
@@ -548,7 +544,7 @@ version creation via `POST /agents/{id}/versions` remains disabled.
 ## Frontend Agent Configuration Surfaces
 
 The React `agents` module (`apps/web/src/modules/agents/`) renders the product-level UI over
-the backend AgentTemplate → AgentVersion model. No mock/hardcoded template or agent data
+the backend template → AgentVersion model. No mock/hardcoded template or agent data
 remains; every card is backed by an API call.
 
 - **Template Library** (`TemplateLibraryPage.tsx`, `/agents/templates`) — lists real
@@ -583,8 +579,9 @@ remains; every card is backed by an API call.
 
 Not built on this surface: full scheduled reflection execution, marketplace /
 sharing / import / export, template inheritance, runtime use of templates,
-direct memory writes, or faked frontend data. Template create/publish
-endpoints exist; the Agents UI does not author custom templates.
+direct memory writes, or faked frontend data. There are no template
+create/publish endpoints; templates are catalog files and the Agents UI does
+not author custom templates.
 
 Unimplemented template authoring: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
@@ -598,8 +595,8 @@ creation is what lets a Project be created with its mainline Room without a
 Space's backend configuration being able to fail the Project
 ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision 4).
 
-Built-in **templates** (global factories, idempotent, seeded by the server agents module,
-seeded once in `bootstrap`). Five are **public** reusable specialized factories; the sixth,
+Built-in **templates** (global factories read from
+`catalog/agent_templates/<key>/template.yaml`; nothing is seeded into the database). Five are **public** reusable specialized factories; the sixth,
 `personal_assistant`, is an **internal seed spec** (`visibility=system_internal`) for the
 per-Project `system_assistant`-kind Agent — hidden from the public library and not
 user-instantiable.
@@ -696,10 +693,10 @@ by routing and the Host daemon.
 - `server/src/modules/runs/` and `policy/` — risk/sandbox mapping and file-access adapter validation
 - `server/src/modules/runtimeAdapters/specs.ts` — RuntimeAdapterSpec catalog
 - `server/src/modules/runs/remoteHostCliAdapter.ts` — the host daemon CLI adapter local CLI execution
-- `server/src/modules/agents/` — system AgentTemplate/AgentVersion behavior
+- `server/src/modules/agents/` — AgentVersion behavior
 - `server/src/modules/agents/routes.ts` — agent HTTP API incl. `/config`, `/current-version`,
   `/versions/{id}/restore`, `/proposals`
-- `server/src/modules/agents/` — template HTTP API when enabled
+- `server/src/modules/agentTemplates/routes.ts` — template HTTP API over `catalog/agent_templates/`
 - `apps/web/src/modules/agents/policyMap.ts` + `ConfigCards.tsx` — policy/config JSON → product cards
 - `apps/web/src/modules/agents/{TemplateLibraryPage,TemplateDetailPage,CreateFromTemplatePage,AgentDetailPage}.tsx`
 

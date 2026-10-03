@@ -126,7 +126,9 @@ function sequentialDb(
   const db: Queryable = {
     async query<Row>(sql: string, params: readonly unknown[] = []) {
       calls.push({ sql, params });
-      if (sql.includes("AS effective_access_level")) {
+      // A single-resource decision query; a list query also selects a level
+      // but takes its rows in sequence.
+      if (sql.includes("AS effective_access_level") && sql.includes("content_resource")) {
         const resourceId = String(params[1] ?? "");
         const userId = String(params[2] ?? "");
         const resource = rowSets.flat().find((row) => {
@@ -635,6 +637,33 @@ describe("PgAnnotationRepository.createAnnotation — document scope", () => {
     const insert = calls.find((call) => call.sql.includes("INSERT INTO reader_annotations"));
     expect(insert?.params).toContain("selected_users");
     expect(calls.some((call) => call.sql.includes("INSERT INTO content_access_grants"))).toBe(true);
+  });
+
+  it("refuses selected_users on a research report before writing anything, since no grants exist to inherit", async () => {
+    const { db, calls } = sequentialDb([
+      [{ project_id: "project-1" }],
+      [{ owner_user_id: USER }],
+      [{ type: "personal" }],
+      [{ normalized_text: "fox" }],
+    ]);
+    const repo = new PgAnnotationRepository(db);
+
+    await expect(repo.createAnnotation(identity, {
+      annotation_type: "excerpt",
+      quote_text: "fox",
+      anchor_json: {
+        schema_version: 1,
+        quote_text: "fox",
+        text_range: { start: 0, end: 3, unit: "utf16" },
+        before_context: "",
+        after_context: "",
+      },
+      document_type: "research_report",
+      document_id: "report-1",
+      visibility: "selected_users",
+    })).rejects.toMatchObject({ statusCode: 422 });
+
+    expect(calls.some((call) => call.sql.includes("INSERT INTO reader_annotations"))).toBe(false);
   });
 
   it("refuses to make an annotation wider than its document", async () => {

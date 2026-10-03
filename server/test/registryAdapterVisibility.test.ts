@@ -5,6 +5,8 @@ import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dy
 import { acpAgentRuntimeKey, acpAgentRuntimeAdapterSpec } from "../src/modules/acpAgents/service.js";
 import { getRuntimeAdapterSpec } from "../src/modules/runtimeAdapters/specs.js";
 import { acpRuntimeProbes } from "../src/modules/hosts/runtimeProbes.js";
+import { MAX_REGISTRY_ID_LENGTH, parseEntry } from "../src/modules/acpAgents/registry.js";
+import { RuntimeKeySchema } from "@rainver/protocol";
 
 /**
  * An ACP agent enabled from the registry is a runtime adapter like any other,
@@ -28,6 +30,20 @@ const CURSOR = {
 
 describe("a registry ACP agent is a runtime adapter everywhere", () => {
   afterEach(() => setDynamicRuntimeAdapterSpecs([]));
+
+  it("drops a registry entry whose id would not fit the wire's runtime_key", () => {
+    const entry = (id: string) => ({
+      id,
+      name: "Long",
+      version: "1.0.0",
+      distribution: { kind: "npx", package: "long@1", args: [], env: {} },
+    });
+    const longest = "a".repeat(MAX_REGISTRY_ID_LENGTH);
+    expect(parseEntry(entry(longest))?.id).toBe(longest);
+    expect(RuntimeKeySchema.safeParse(acpAgentRuntimeKey(longest)).success).toBe(true);
+    // One over, and every daemon would refuse the hello_ack carrying its probe.
+    expect(parseEntry(entry(`${longest}a`))).toBeNull();
+  });
 
   it("resolves through the accessor once published", () => {
     expect(getRuntimeAdapterSpec(acpAgentRuntimeKey("cursor"))).toBeNull();

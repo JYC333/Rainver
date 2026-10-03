@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, type ServerConfig } from "../src/config.js";
 import { migrate } from "../src/db/migrator.js";
 import { createBetterAuth } from "../src/modules/auth/betterAuth.js";
@@ -7,6 +8,7 @@ import { PgAuthRepository } from "../src/modules/auth/identity.js";
 import { authModule } from "../src/modules/auth/index.js";
 import { markGoogleReauthVerified } from "../src/modules/auth/googleReauth.js";
 import { RegistrationService } from "../src/modules/auth/registration.js";
+import { __setHibpTransportForTests } from "../src/modules/auth/routes.js";
 import { hashOpaqueToken } from "../src/modules/auth/securityPolicy.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { resetTables } from "./support/resetTables.js";
@@ -15,6 +17,9 @@ import { useTestDatabase } from "./support/testDatabase.js";
 const db = useTestDatabase(import.meta.filename, { empty: true });
 
 beforeAll(async () => { if (db.available) await migrate(db.pool, join(process.cwd(), "migrations")); });
+// Files share a worker: a HIBP fake left in the module seam would decide
+// passwords for whichever file runs next.
+afterAll(() => { __setHibpTransportForTests(null); });
 beforeEach(async () => {
   if (!db.available) return;
   await resetTables(db.pool, ["registration_intents", "space_invitations", "auth_accounts", "user_sessions", "spaces", "users"], { cascade: true });
@@ -30,6 +35,12 @@ function authConfig(instanceAdminEmail = "owner@example.test", google = false): 
   });
 }
 
+// Better Auth keeps one in-memory per-IP rate-limit store for the whole
+// process, and the server forwards it only the address Fastify resolved.
+// A direct `auth.handler` call therefore names its address in
+// `x-forwarded-for`, while a request through the facade names it in
+// `inject({ remoteAddress })` — a client-sent forwarded header never reaches
+// Better Auth.
 let signUpSourceCounter = 10;
 async function signUp(config: ServerConfig, email: string, name: string, sourceIp?: string) {
   const auth = createBetterAuth(config, db.pool);
@@ -108,7 +119,8 @@ describe("registration and Better Auth facade primitives", () => {
 
       const withoutGrant = await app.inject({
         method: "POST", url: "/api/v1/auth/google/link",
-        headers: { cookie: sessionCookie, origin: "http://localhost:5173", "x-forwarded-for": sourceIp },
+        remoteAddress: sourceIp,
+        headers: { cookie: sessionCookie, origin: "http://localhost:5173" },
         payload: {},
       });
       expect(withoutGrant.statusCode).toBe(403);
@@ -116,7 +128,8 @@ describe("registration and Better Auth facade primitives", () => {
 
       const reauth = await app.inject({
         method: "POST", url: "/api/v1/auth/reauth",
-        headers: { cookie: sessionCookie, origin: "http://localhost:5173", "content-type": "application/json", "x-forwarded-for": sourceIp },
+        remoteAddress: sourceIp,
+        headers: { cookie: sessionCookie, origin: "http://localhost:5173", "content-type": "application/json" },
         payload: JSON.stringify({ password: "a password with at least fifteen characters" }),
       });
       expect(reauth.statusCode).toBe(200);
@@ -132,7 +145,8 @@ describe("registration and Better Auth facade primitives", () => {
 
       const link = await app.inject({
         method: "POST", url: "/api/v1/auth/google/link",
-        headers: { cookie: `${sessionCookie}; ${grantCookie}`, origin: "http://localhost:5173", "x-forwarded-for": sourceIp },
+        remoteAddress: sourceIp,
+        headers: { cookie: `${sessionCookie}; ${grantCookie}`, origin: "http://localhost:5173" },
         payload: {},
       });
       expect(link.statusCode).toBe(200);
@@ -251,7 +265,8 @@ describe("registration and Better Auth facade primitives", () => {
     try {
       const signIn = await app.inject({
         method: "POST", url: "/api/v1/auth/sign-in/email",
-        headers: { origin: config.frontendUrl, "content-type": "application/json", "x-forwarded-for": "192.0.2.201" },
+        remoteAddress: "192.0.2.201",
+        headers: { origin: config.frontendUrl, "content-type": "application/json" },
         payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
       });
       expect(signIn.statusCode).toBe(200);
@@ -290,7 +305,8 @@ describe("registration and Better Auth facade primitives", () => {
       expect(setPassword.statusCode).toBe(200);
       const signIn = await app.inject({
         method: "POST", url: "/api/v1/auth/sign-in/email",
-        headers: { origin: "http://localhost:5173", "content-type": "application/json", "x-forwarded-for": "192.0.2.202" },
+        remoteAddress: "192.0.2.202",
+        headers: { origin: "http://localhost:5173", "content-type": "application/json" },
         payload: JSON.stringify({ email: "owner@example.test", password: "a new password with at least fifteen characters" }),
       });
       expect(signIn.statusCode).toBe(200);
@@ -337,21 +353,153 @@ describe("registration and Better Auth facade primitives", () => {
     try {
       const routeLogin = await app.inject({
         method: "POST", url: "/api/v1/auth/sign-in/email",
-        headers: { origin: "http://localhost:5173", "content-type": "application/json", "x-forwarded-for": "192.0.2.204" },
+        remoteAddress: "192.0.2.204",
+        headers: { origin: "http://localhost:5173", "content-type": "application/json" },
         payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters", rememberMe: true }),
       });
       expect(routeLogin.statusCode).toBe(200);
+      // The session credential travels only in the HttpOnly cookie.
+      expect(routeLogin.json()).not.toHaveProperty("token");
       const cookie = String(routeLogin.headers["set-cookie"]).split(";", 1)[0];
       expect(cookie).toMatch(/^better-auth\.session_token=/);
       const me = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie } });
       expect(me.statusCode).toBe(200);
       expect(me.json()).toMatchObject({ id: userId, email: "owner@example.test" });
+
+      // A cookie Better Auth cannot verify is not a session, even when the
+      // raw token in front of the signature names a live row.
+      const rawToken = decodeURIComponent(cookie.slice(cookie.indexOf("=") + 1)).split(".", 1)[0]!;
+      for (const forged of [rawToken, `${rawToken}.x`]) {
+        const rejected = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie: `better-auth.session_token=${encodeURIComponent(forged)}` } });
+        expect(rejected.statusCode).toBe(401);
+      }
     } finally {
       await app.close();
     }
 
     const duplicate = await registrations.issueIntent({ email: "owner@example.test" }).catch((error: Error) => error.message);
     expect(duplicate).toBe("registration_invitation_required");
+  });
+
+  it("records the client address Fastify resolved, not the forwarded header the client sent", async () => {
+    if (!db.available) return;
+    const config = authConfig();
+    const intent = await new RegistrationService(db.pool, config).issueIntent({ email: "owner@example.test" });
+    const { userId } = await signUp(config, "owner@example.test", "Owner");
+    await new RegistrationService(db.pool, config).complete({ intentId: intent.intentId, claimSecret: intent.claimSecret, userId });
+    const app = buildModuleServer(config, [authModule]);
+    try {
+      const signIn = await app.inject({
+        method: "POST", url: "/api/v1/auth/sign-in/email",
+        remoteAddress: "192.0.2.77",
+        headers: { origin: config.frontendUrl, "content-type": "application/json", "x-forwarded-for": "203.0.113.9" },
+        payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
+      });
+      expect(signIn.statusCode).toBe(200);
+      const session = await db.pool.query<{ ip_address: string | null }>(
+        "SELECT ip_address FROM user_sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+        [userId],
+      );
+      expect(session.rows[0]).toEqual({ ip_address: "192.0.2.77" });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("keeps the registration claim secret out of Better Auth's stored OAuth state", async () => {
+    if (!db.available) return;
+    const config = authConfig("owner@example.test", true);
+    const intent = await new RegistrationService(db.pool, config).issueIntent({ email: "owner@example.test" });
+    const app = buildModuleServer(config, [authModule]);
+    try {
+      const response = await app.inject({
+        method: "POST", url: "/api/v1/auth/register/google",
+        remoteAddress: "192.0.2.150",
+        headers: { origin: "http://localhost:5173", "content-type": "application/json" },
+        payload: JSON.stringify({ intent_id: intent.intentId, claim_secret: intent.claimSecret }),
+      });
+      expect(response.statusCode).toBe(200);
+      const stored = await db.pool.query<{ value: string }>("SELECT value FROM auth_verifications");
+      expect(stored.rows.length).toBeGreaterThan(0);
+      for (const row of stored.rows) expect(row.value).not.toContain(intent.claimSecret);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("refuses a compromised password or an over-long name before any identity is created", async () => {
+    if (!db.available) return;
+    const config = authConfig("owner@example.test");
+    const registrations = new RegistrationService(db.pool, config);
+    const app = buildModuleServer(config, [authModule]);
+    const password = "a password with at least fifteen characters";
+    const register = (name: string, intent: { intentId: string; claimSecret: string }, sourceIp: string) => app.inject({
+      method: "POST", url: "/api/v1/auth/register",
+      remoteAddress: sourceIp,
+      headers: { origin: "http://localhost:5173", "content-type": "application/json" },
+      payload: JSON.stringify({ intent_id: intent.intentId, claim_secret: intent.claimSecret, email: "owner@example.test", password, name }),
+    });
+    const userCount = async () => (await db.pool.query<{ count: number }>("SELECT count(*)::int AS count FROM users")).rows[0]!.count;
+    try {
+      const intent = await registrations.issueIntent({ email: "owner@example.test" });
+
+      // HIBP knows this password. Setting or changing a password refuses it;
+      // registering with it must not be the one way in.
+      const suffix = createHash("sha1").update(password).digest("hex").toUpperCase().slice(5);
+      __setHibpTransportForTests({ async fetchRange() { return `${suffix}:1234\r\n0000000000000000000000000000000000A:1\r\n`; } });
+      const compromised = await register("Owner", intent, "192.0.2.240");
+      expect(compromised.statusCode).toBe(400);
+      expect(compromised.json()).toMatchObject({ code: "invalid_registration" });
+      expect(await userCount()).toBe(0);
+
+      // A name that fits `users.display_name` but not `<name>'s Personal
+      // Space` used to pass the route, create the pending identity, and then
+      // fail provisioning on every retry until the intent expired.
+      __setHibpTransportForTests({ async fetchRange() { return ""; } });
+      const tooLong = await register("n".repeat(245), intent, "192.0.2.241");
+      expect(tooLong.statusCode).toBe(400);
+      expect(tooLong.json()).toMatchObject({ code: "invalid_registration" });
+      expect(await userCount()).toBe(0);
+    } finally {
+      __setHibpTransportForTests(null);
+      await app.close();
+    }
+  });
+
+  it("lets an administrator disable and enable admitted accounts only, never a pending identity", async () => {
+    if (!db.available) return;
+    const config = authConfig();
+    const registrations = new RegistrationService(db.pool, config);
+    const intent = await registrations.issueIntent({ email: "owner@example.test" });
+    const admin = await signUp(config, "owner@example.test", "Owner");
+    await registrations.complete({ intentId: intent.intentId, claimSecret: intent.claimSecret, userId: admin.userId });
+    // Signed up but never completed: the reconciler reclaims it only while it stays 'pending'.
+    const pending = await signUp(config, "pending@example.test", "Pending");
+    await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
+      .resolves.toMatchObject({ rows: [{ status: "pending" }] });
+    const app = buildModuleServer(config, [authModule]);
+    const headers = { cookie: `better-auth.session_token=${encodeURIComponent(admin.raw)}`, origin: "http://localhost:5173" };
+    try {
+      for (const action of ["enable", "disable"]) {
+        const response = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/${action}`, headers, payload: {} });
+        expect(response.statusCode).toBe(400);
+        await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
+          .resolves.toMatchObject({ rows: [{ status: "pending" }] });
+      }
+      // Once admitted (what RegistrationService.complete leaves behind), the
+      // account is the administrator's to disable and re-enable.
+      await db.pool.query("UPDATE users SET status = 'active' WHERE id = $1", [pending.userId]);
+      const disable = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/disable`, headers, payload: {} });
+      expect(disable.statusCode).toBe(200);
+      await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
+        .resolves.toMatchObject({ rows: [{ status: "disabled" }] });
+      const enable = await app.inject({ method: "POST", url: `/api/v1/auth/admin/users/${pending.userId}/enable`, headers, payload: {} });
+      expect(enable.statusCode).toBe(200);
+      await expect(db.pool.query("SELECT status FROM users WHERE id = $1", [pending.userId]))
+        .resolves.toMatchObject({ rows: [{ status: "active" }] });
+    } finally {
+      await app.close();
+    }
   });
 
   it("rotates the claim and resumes an immediately retried bootstrap registration", async () => {
@@ -457,6 +605,37 @@ describe("registration and Better Auth facade primitives", () => {
 
     const retry = await registrations.issueIntent({ email: "invitee@example.test", invitationToken });
     expect(retry.intentId).not.toBe(first.intentId);
+  });
+
+  it("reclaims a pending signup no registration intent ever bound, reopening bootstrap", async () => {
+    if (!db.available) return;
+    const config = authConfig();
+    const registrations = new RegistrationService(db.pool, config);
+    await registrations.issueIntent({ email: "owner@example.test" });
+    // The Google account chosen at the provider was not the intent's email.
+    await db.pool.query(
+      `INSERT INTO users (id, email, display_name, email_verified, registration_source, status, created_at, updated_at)
+       VALUES ('wrong-account', 'someone@gmail.test', 'Someone', true, 'system', 'pending', now() - interval '31 minutes', now() - interval '31 minutes'),
+              ('fresh-signup', 'fresh@gmail.test', 'Fresh', true, 'system', 'pending', now(), now())`,
+    );
+    await db.pool.query(
+      `INSERT INTO auth_accounts (id, account_id, provider_id, user_id, created_at, updated_at)
+       VALUES ('wrong-account-google', 'wrong-google-sub', 'google', 'wrong-account', now(), now())`,
+    );
+    await db.pool.query(
+      `INSERT INTO user_sessions (id, user_id, token_hash, created_at, updated_at, expires_at)
+       VALUES ('wrong-account-session', 'wrong-account', $1, now(), now(), now() + interval '1 day')`,
+      [hashOpaqueToken("wrong-account-session-token")],
+    );
+    await db.pool.query("UPDATE registration_intents SET expires_at = now() - interval '1 minute'");
+
+    await registrations.reapStale();
+
+    expect((await db.pool.query("SELECT id FROM users ORDER BY id")).rows).toEqual([{ id: "fresh-signup" }]);
+    expect((await db.pool.query("SELECT 1 FROM auth_accounts WHERE user_id = 'wrong-account'")).rowCount).toBe(0);
+    expect((await db.pool.query("SELECT 1 FROM user_sessions WHERE user_id = 'wrong-account'")).rowCount).toBe(0);
+    await db.pool.query("DELETE FROM users WHERE id = 'fresh-signup'");
+    await expect(registrations.isBootstrapAvailable()).resolves.toBe(true);
   });
 
   it("parses the gateway JSON body when issuing a bootstrap registration intent", async () => {

@@ -33,7 +33,13 @@ interface ReaderInspectorProps {
   commentInputRef: RefObject<HTMLTextAreaElement | null>
   onSelectAnnotation: (annotation: ReaderAnnotation) => void
   onAnnotationArchived: (annotationId: string) => void
-  onThreadsUpdated: (threads: ReaderCommentThread[]) => void
+  /**
+   * A change to the threads of `annotationId`, as an update over the current
+   * list: the request it answers may complete after another thread change,
+   * or after another annotation was selected, and the owner decides whether
+   * the annotation is still the one on screen.
+   */
+  onThreadsUpdated: (annotationId: string, update: (current: ReaderCommentThread[]) => ReaderCommentThread[]) => void
   onClose: () => void
 }
 
@@ -74,12 +80,15 @@ export function ReaderInspector({
 
   async function addComment() {
     if (!selectedAnnotation || !commentBody.trim()) return
+    const annotationId = selectedAnnotation.id
     setCommenting(true)
     try {
-      const result = await readerApi.createComment(selectedAnnotation.id, { body: commentBody.trim() })
-      const updated = threads.map((t) => t.id === result.thread.id ? result.thread : t)
-      if (!updated.find((t) => t.id === result.thread.id)) updated.push(result.thread)
-      onThreadsUpdated(updated)
+      const result = await readerApi.createComment(annotationId, { body: commentBody.trim() })
+      onThreadsUpdated(annotationId, (current) => {
+        const updated = current.map((t) => t.id === result.thread.id ? result.thread : t)
+        if (!updated.find((t) => t.id === result.thread.id)) updated.push(result.thread)
+        return updated
+      })
       setCommentBody('')
     } catch (e) {
       toast.error(errMsg(e))
@@ -89,9 +98,11 @@ export function ReaderInspector({
   }
 
   async function setThreadStatus(threadId: string, status: 'open' | 'resolved') {
+    if (!selectedAnnotation) return
+    const annotationId = selectedAnnotation.id
     try {
       const updated = await readerApi.updateThread(threadId, { status })
-      onThreadsUpdated(threads.map((t) => t.id === threadId ? updated : t))
+      onThreadsUpdated(annotationId, (current) => current.map((t) => t.id === threadId ? updated : t))
     } catch (e) {
       toast.error(errMsg(e))
     }

@@ -54,16 +54,25 @@ export function SearchableMultiSelect({
       const target = event.target as Node
       if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false)
     }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false)
-    }
     document.addEventListener('mousedown', handlePointerDown)
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-      document.removeEventListener('keydown', handleKeyDown)
-    }
+    return () => document.removeEventListener('mousedown', handlePointerDown)
   }, [])
+
+  // Escape closes the menu and nothing else. A Radix dialog around this
+  // control dismisses on Escape from a capturing listener on the document,
+  // which runs before anything on the elements; the window's capture phase
+  // is the one place that runs earlier, and an Escape marked handled there
+  // is one the dialog leaves alone.
+  useEffect(() => {
+    if (!open) return undefined
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setOpen(false)
+    }
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [open])
 
   useLayoutEffect(() => {
     if (!open) return undefined

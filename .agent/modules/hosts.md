@@ -209,7 +209,9 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
   authenticating. Also closes the host's live WebSocket connection
   immediately if it has one (`HostConnectionRegistry.closeConnection`) — so
   revoke cuts off an already-connected daemon right away, not just its next
-  reconnect attempt.
+  reconnect attempt. A hello that authenticated just before the revoke and
+  reaches `registerConnection` after it is refused and closed the same way
+  (`forgetRevokedHost`), so the host never shows online again.
 
 Unauthenticated (the pairing code itself is the one-time credential):
 
@@ -222,8 +224,10 @@ user session — the daemon has no session to present):
   token. This is the server half of `rainver-host unregister`; the token has
   no authority over another Host.
 - `POST /api/v1/hosts/me/workspaces` — `{ project_id, name, display_path? }`,
-  requires the host owner to hold Project write access
-  (`PgProjectFolderRepository.createRemoteWorkspace`); creates a logical
+  requires the host owner to be an active member of the Project's Space and
+  to hold Project write access there
+  (`PgProjectFolderRepository.createRemoteWorkspace`; the token names no
+  request Space, so the membership check stands in for it); creates a logical
   Folder plus a remote Location whose server `root_path` is NULL.
 - `GET /api/v1/hosts/me/workspaces` — every Location registered under this
   Host.
@@ -279,7 +283,7 @@ that same `orchestration.cancelRun`, not separate machinery.
 Hosts have no ModelProvider defaults, host×runtime binding table, or
 `runtime-provider-bindings` API. `AgentRuntimeProfile` is the only Agent
 backend authority: it pins `runtime_key`, `backend_mode`, and, when the
-selected runtime supports it, a same-Space ModelProvider and explicit model.
+selected runtime supports it, a ModelProvider granted to the Space and explicit model.
 Routing validates that Profile against the Agent Run's Space and the provider
 grant before the immutable Run snapshot is dispatched. A Host cannot choose a
 different provider or fall back to a Host-wide default.
@@ -318,8 +322,9 @@ boundary of). A Location thread's vendor session therefore lives in the
 profile of the Agent whose Run last used it, while the thread itself carries
 no Agent (`ck_host_threads_owner`). Task admission reads the latest Run's
 Agent beside its status: when the Agent dispatched now is a different one, the
-session is retired at admission (`retireLocationSessionForAgentChange`,
-recorded in `retired_vendor_session_ids`) and the Run starts a fresh session
+session is retired at admission (inline in `tasks/repository.ts`, which calls the
+thread repository's `resetLocationSession`; recorded in
+`retired_vendor_session_ids`) and the Run starts a fresh session
 in its own profile, rather than resuming into another Agent's profile and
 resetting mid-turn with "no such conversation". Switching a Task's Agent is
 thus a fresh session, by design.
@@ -467,7 +472,7 @@ logins by Agents × Rooms. So the login stays where it was:
   closed with `runtime_profile_isolation_unsupported` until its registry entry
   can name the credential file and state-root variable; the host adapter
   catalog therefore exposes such a copy for installation/management but marks
-  it `remote_eligible: false`, and the default-adapter endpoint refuses it;
+  it `remote_eligible: false`;
 - a link, never a copy and never a token in the environment. Passing the
   credential through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean
   Rainver read a credential and injected it into a subprocess, the shape
@@ -813,8 +818,8 @@ or a version behind would make routing guess at someone else's machine. The
 cost of that asymmetry is explicit — a Profile naming a `managed:x` copy the
 paired Host does not have passes admission and fails at launch, where the host
 itself answers.
-`GET /api/v1/hosts/runtime-adapters` also exposes each adapter's current
-registry version. The Host card compares it with the installed package and
+`GET /api/v1/hosts/runtime-definitions` also exposes each adapter's current
+registry version (`latest_managed_version`). The Host card compares it with the installed package and
 shows its compact CLI upgrade control only while they differ; neither internal
 package version is exposed in that UI.
 
@@ -824,7 +829,9 @@ read newer session formats.
 **Subscription quota.** `usage_probe { runtime_key, installation, login,
 timeout_seconds }` asks a host what one copy has left; the daemon reads that
 copy's own login and answers `usage_probe_result { quota }` — percentages,
-reset text, and a reason when it could not read one. Never the credential.
+reset text, and a reason when it could not read one. Never the credential, and
+never a path on the host: the reason passes `sanitizeFailure`, so vendor stderr
+or a spawn error names neither the copy nor its login file.
 Claude's is an OAuth call against `api.anthropic.com/api/oauth/usage`; Codex's
 runs `codex -s read-only -a untrusted app-server` and asks
 `account/rateLimits/read`, recovering the numbers from the refusal an
@@ -861,7 +868,7 @@ against the host's `installations`, and stamps it into the Run's
 managed copy from its manifest with `HOME` set to that copy's home.
 
 **Login** follows the runtime's declared mechanism: `GET
-/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream`
+/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/login/stream`
 (host owner, SSE) opens `login_open` on the daemon. Built-ins with an explicit
 login spec continue to run that command. Otherwise every method returned by
 ACP `initialize.authMethods` is exposed without a vendor allowlist: missing
@@ -1028,18 +1035,6 @@ The allowlist is the same shape the deleted server-host path used.
 A run on the machine's own login is governed by the other rule instead: it
 keeps the machine's environment apart from `clearStateRootEnv`'s two sets, and
 carries a runtime profile of its own — see "The runtime profile" above.
-
-- `GET /api/v1/hosts/runtime-adapters` (P3, C6) — catalog of remote-eligible
-  adapters (`implemented` + ACP protocol): the builtin specs plus dynamic
-  adapters for instance-enabled ACP registry entries, sourced from
-  `listRuntimeAdapterSpecs()`. Session-authenticated
-  only (`getCurrentUser`, no space scoping — the catalog carries no per-user
-  or per-space data). The single source of truth the frontend reads instead
-  of re-deriving the dispatch route's own ACP-only eligibility rule a third
-  time. Each entry's `capability_probe` is what a trusted host's capability
-  probe actually reports for that adapter when it differs from `command` (an
-  ACP adapter's own bundled executable, e.g. `codex-acp`, vs. the vendor CLI
-  binary a host reports, e.g. `codex`).
 
 ## WebSocket (`GET /internal/hosts/ws`, `@fastify/websocket`)
 
@@ -1250,7 +1245,11 @@ fixed before this landed. **Since the phase-2 event-pipeline work**, it is calle
 from `agentRunHandler.ts`'s `handleAgentRun` (via
 `server/src/modules/hosts/threadOutcome.ts`'s `recordHostThreadOutcome`)
 once the dispatched Run's `agent_run` job reaches terminal — not from the
-dispatch route itself, which no longer waits around for that. Every session id a thread moves on from — reset, close, or a degraded resume — is appended to `retired_vendor_session_ids`, and ambient session import excludes those alongside the live id; clearing the live id alone would let the Agent's old sessions come back as the owner's own history.
+dispatch route itself, which no longer waits around for that. A reset it
+concludes is said in the Room once per Run that proved it (the notice carries
+`host_thread_run_id`); the thread keeps its id across resets and the explicit
+reset writes the same `session_reset` event, so a thread-wide check would have
+silenced every reset after the first. Every session id a thread moves on from — reset, close, or a degraded resume — is appended to `retired_vendor_session_ids`, and ambient session import excludes those alongside the live id; clearing the live id alone would let the Agent's old sessions come back as the owner's own history.
 
 `recordRunOutcome` also keeps what the live vendor session holds.
 `identity_digest` / `identity_digest_run_id` name the standing context (identity
@@ -1323,8 +1322,10 @@ Command Center thread page that did was deleted with the rest of that surface;
 what a remote Run produced is read as a turn, from the normalized event log
 below, through `modules/conversation`.
 
-Removing a managed Room specialist or deleting an owner's direct session
-closes its thread and sets `pending_archive_at`. The server asks the connected
+Removing a managed Room specialist or deleting the owner's last active direct
+session of an Agent (the thread is the Agent × person's, shared by all of their
+direct sessions of it) closes its thread and sets `pending_archive_at`. The
+server asks the connected
 daemon to rename the live directory to its timestamped `.removed-*` archive;
 if the daemon is offline, the pending row is replayed on the next hello or
 heartbeat. Re-adding a Room or sending the first direct message can request an
@@ -2307,7 +2308,9 @@ therefore needs neither a source checkout nor pnpm. A channel-neutral
 `host-installer` bootstrap published from `master` is the single public install
 URL; it validates the selected channel's installer before executing it, with
 `stable` as the default. The installer keeps immutable build directories below
-`~/.local/share/rainver-host/releases/`, atomically moves `current`, installs a
+`~/.local/share/rainver-host/releases/` (each placed by a same-filesystem
+rename from a staging directory beside it, and replaced when an existing one
+is not a complete release), atomically moves `current`, installs a
 systemd user unit, and captures the installing user's PATH for CLI discovery.
 The daemon launcher loads the owner-only `service.env` itself before Node
 starts; the unit does not rely on systemd `EnvironmentFile` parsing, whose
@@ -2321,7 +2324,9 @@ process start; this also makes the fresh WebSocket `hello_ack` deliver the
 complete runtime-probe catalog before capability detection. `--auto-update`
 optionally installs a six-hour systemd timer;
 updates request a daemon restart only when no Run is launching, executing, or
-uploading. Each channel also publishes its checksummed `BUILD_ID` as a small
+uploading. An install keeps the new build and the one it replaced, and while
+an earlier restart request is still pending (the running daemon may be on an
+older build than either) it removes no release at all. Each channel also publishes its checksummed `BUILD_ID` as a small
 standalone asset. An update compares it with the active build before fetching
 Node, daemon, or adapter archives and returns immediately on a match; changing
 the timer setting still takes effect on that no-op path. The archive's own

@@ -9,6 +9,11 @@ import { knowledgeItemOut } from "../src/modules/knowledge/knowledgeRepositoryMa
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
 import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
+import { registerKnowledgeProposalAppliers } from "../src/modules/knowledge/proposalApplier.js";
+import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { resetTables } from "./support/resetTables.js";
@@ -73,6 +78,174 @@ describe("knowledgeNotePurgeDb", () => {
       );
       expect(remaining.rows.map((row) => row.id)).toEqual([recent.id]);
     });
+
+    it("purges a note another object still has a relation to", async () => {
+      if (!db.available) return;
+      const identity = { spaceId: SPACE, userId: USER };
+      const repository = new PgKnowledgeRepository(db.pool);
+      const stale = await repository.createNote(identity, { title: "Linked, then deleted" }) as { id: string };
+      const live = await repository.createNote(identity, { title: "Still here" }) as { id: string };
+      const other = await repository.createNote(identity, { title: "Also here" }) as { id: string };
+      const insertRelation = (from: string, to: string, source: string | null) => db.pool.query<{ id: string }>(
+        `INSERT INTO object_relations (id, space_id, from_object_id, to_object_id, link_type, status, source_object_id, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,'related_to','active',$5,now(),now()) RETURNING id`,
+        [randomUUID(), SPACE, from, to, source],
+      );
+      const toStale = (await insertRelation(live.id, stale.id, null)).rows[0]!.id;
+      const derived = (await insertRelation(live.id, other.id, stale.id)).rows[0]!.id;
+      await repository.deleteNote(identity, stale.id);
+      await db.pool.query(`UPDATE space_objects SET deleted_at = now() - interval '31 days' WHERE id = $1`, [stale.id]);
+
+      expect(await repository.purgeDeletedNotes(identity)).toMatchObject({ deleted: 1 });
+
+      const relations = await db.pool.query<{ id: string; source_object_id: string | null }>(
+        `SELECT id, source_object_id FROM object_relations WHERE space_id = $1`, [SPACE],
+      );
+      // An edge to the purged note goes with it; an edge between two live
+      // objects stays and only loses the provenance pointer.
+      expect(relations.rows).toEqual([{ id: derived, source_object_id: null }]);
+      expect(relations.rows.map((row) => row.id)).not.toContain(toStale);
+    });
+
+    it("never purges a note that was restored after being deleted", async () => {
+      if (!db.available) return;
+      const identity = { spaceId: SPACE, userId: USER };
+      const repository = new PgKnowledgeRepository(db.pool);
+      const restored = await repository.createNote(identity, { title: "Deleted, then restored" }) as { id: string };
+      await repository.deleteNote(identity, restored.id);
+      await db.pool.query(
+        `UPDATE space_objects SET deleted_at = now() - interval '31 days' WHERE id = $1`,
+        [restored.id],
+      );
+      await repository.updateNote(identity, restored.id, { status: "active" });
+
+      expect(await repository.purgeDeletedNotes(identity)).toMatchObject({ deleted: 0 });
+      const row = await db.pool.query<{ deleted_at: string | null }>(
+        `SELECT deleted_at FROM space_objects WHERE id = $1`, [restored.id],
+      );
+      expect(row.rows[0]).toEqual({ deleted_at: null });
+    });
+
+    it("does not let notes the caller cannot purge crowd out the ones they can", async () => {
+      if (!db.available) return;
+      const MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      const PROJECT = "22222222-2222-4222-8222-222222222222";
+      const now = new Date().toISOString();
+      await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Member','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [MEMBER, now]);
+      await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, MEMBER, now]);
+      await db.pool.query(`INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at) VALUES ($1,$2,'Owner project','active',$3,$4,$4)`, [PROJECT, SPACE, USER, now]);
+      await seedMainlineRoomsForAllProjects(db.pool);
+      // More long-deleted notes than one purge batch holds, all in a Project
+      // the member cannot write, then one of the member's own.
+      await db.pool.query(
+        `WITH objects AS (
+           INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, primary_project_id, created_by_user_id, created_at, updated_at, deleted_at)
+           SELECT gen_random_uuid()::varchar, $1, 'note', 'Old project note', 'space_shared', $2, $3, $2,
+                  now() - interval '40 days', now() - interval '31 days', now() - interval '31 days'
+             FROM generate_series(1, 501)
+           RETURNING id
+         )
+         INSERT INTO notes (object_id, space_id, content_json, content_format, content_schema_version, plain_text, version, content_hash, status)
+         SELECT id, $1, '{}'::jsonb, 'markdown', 1, '', 1, 'seed', 'deleted' FROM objects`,
+        [SPACE, USER, PROJECT],
+      );
+      const mine = randomUUID();
+      await db.pool.query(
+        `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_by_user_id, created_at, updated_at, deleted_at)
+         VALUES ($1, $2, 'note', 'My old note', 'private', $3, $3, now() - interval '40 days', now() - interval '31 days', now() - interval '31 days')`,
+        [mine, SPACE, MEMBER],
+      );
+      await db.pool.query(
+        `INSERT INTO notes (object_id, space_id, content_json, content_format, content_schema_version, plain_text, version, content_hash, status)
+         VALUES ($1, $2, '{}'::jsonb, 'markdown', 1, '', 1, 'seed', 'deleted')`,
+        [mine, SPACE],
+      );
+
+      const repository = new PgKnowledgeRepository(db.pool);
+      expect(await repository.purgeDeletedNotes({ spaceId: SPACE, userId: MEMBER })).toMatchObject({ deleted: 1 });
+      expect((await db.pool.query(`SELECT 1 FROM space_objects WHERE id = $1`, [mine])).rowCount).toBe(0);
+    });
+  });
+});
+
+describe("knowledgeUpdateApplyDb", () => {
+  const SPACE = "11111111-1111-4111-8111-111111111111";
+  const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+  const db = useTestDatabase(`${import.meta.filename}#knowledgeUpdateApplyDb`, { max: 3 });
+
+  beforeEach(async () => {
+    if (!db.available) return;
+    await resetTables(db.pool, ["knowledge_items", "space_objects", "proposals", "space_memberships", "users", "spaces"], { cascade: true });
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Owner','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]);
+  });
+
+  it("keeps one active version when two update proposals for one item are accepted at once", async () => {
+    if (!db.available) return;
+    const itemId = randomUUID();
+    await insertKnowledgeItem(db.pool, { id: itemId, spaceId: SPACE, title: "Alpha", content: "v1", ownerUserId: USER, createdByUserId: USER });
+    const registry = new ProposalApplierRegistry();
+    registerKnowledgeProposalAppliers(registry);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test-internal-token" });
+    // The new version points at the proposal that produced it, so each one is a real row.
+    const proposal = async (content: string): Promise<ApplyProposal> => {
+      const payload = { operation: "update", target_item_id: itemId, title: "Alpha", content };
+      const row = await insertProposalRow(db.pool, {
+        spaceId: SPACE,
+        proposalType: "knowledge_update",
+        title: "Update Alpha",
+        payload,
+        rationale: "Two reviewers, one item.",
+        createdByUserId: USER,
+        ownerUserId: USER,
+        visibility: "space_shared",
+      });
+      return {
+        id: row.id,
+        space_id: SPACE,
+        proposal_type: "knowledge_update",
+        title: "Update Alpha",
+        payload_json: payload,
+        project_folder_id: null,
+        visibility: "space_shared",
+        created_by_user_id: USER,
+        owner_user_id: USER,
+        project_id: null,
+      };
+    };
+
+    const first = await db.pool.connect();
+    const second = await db.pool.connect();
+    try {
+      await first.query("BEGIN");
+      await second.query("BEGIN");
+      const [firstProposal, secondProposal] = await Promise.all([
+        proposal("v2 from the first reviewer"),
+        proposal("v2 from the second reviewer"),
+      ]);
+      await registry.apply({ config, db: first, proposal: firstProposal, userId: USER });
+      // The second reviewer reads the item while the first version is still
+      // uncommitted. Without the row lock it sees the old active head and
+      // writes a second active version 2 beside the first.
+      const racing = registry.apply({ config, db: second, proposal: secondProposal, userId: USER });
+      await first.query("COMMIT");
+      try {
+        await expect(racing).rejects.toThrow(/not active/);
+      } finally {
+        await second.query("ROLLBACK").catch(() => undefined);
+      }
+    } finally {
+      first.release();
+      second.release();
+    }
+
+    expect((await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM knowledge_items WHERE space_id = $1 AND root_item_id = $2 AND status = 'active'`,
+      [SPACE, itemId],
+    )).rows[0]?.count).toBe("1");
   });
 });
 

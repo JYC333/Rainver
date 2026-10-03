@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import {
@@ -8,12 +8,15 @@ import {
   normalizeActions,
   normalizeInputConfig,
   normalizeTriggerConfig,
+  type SourcePostProcessingRunOut,
 } from "../src/modules/sources/postProcessing/repository.js";
 import { withQueryableTransaction } from "../src/modules/routeUtils/common.js";
 import type { SourceConnectionRow } from "../src/modules/sources/sourceRepositoryRows.js";
-import type { ServerConfig } from "../src/config.js";
+import { loadConfig, type ServerConfig } from "../src/config.js";
+import { SourcePostProcessingService } from "../src/modules/sources/postProcessing/service.js";
+import { enqueueDueSourcePostProcessingRules } from "../src/modules/sources/postProcessing/scheduler.js";
 import { ProjectResearchInitialIntakeCoordinator } from "../src/modules/projectResearch/pipeline/initialIntakeCoordinator.js";
-import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { seedMainlineRoomsForAllProjects, seedRun } from "./support/domainSeeds.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -277,6 +280,50 @@ describe("source post-processing repository (real Postgres)", () => {
       [SPACE, PROJECT, CONNECTION],
     );
     expect(Number(count.rows[0]!.count)).toBe(1);
+  });
+
+  it("brings a reused Auto Research rule up to the restarted intake's execution and question", async () => {
+    if (!db.available) return;
+    const threadScope = [{ thread_id: "12345678-1234-4123-8123-123456789abc", version: 2, kind: "question" as const, statement: "How should agents forget?" }];
+    const existing = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: PROJECT,
+      name: "Auto Research 12345678: Monitor",
+      triggerType: "items_materialized",
+      triggerConfig: normalizeTriggerConfig({ min_new_items: 1 }, "items_materialized"),
+      inputConfig: normalizeInputConfig({
+        item_limit: 10,
+        runtime_profile_id: "old-runtime-profile",
+        summary_goal: "How should agents remember?",
+        retrieval_context: { enabled: true, domains: ["project"], query: "How should agents remember?", max_results_per_domain: 10, mode: "hybrid" },
+      }),
+      actions: normalizeActions({ batch_digest: true }),
+      createdByUserId: OWNER,
+    });
+
+    const reused = await new ProjectResearchInitialIntakeCoordinator(db.pool, {} as ServerConfig).ensurePostProcessingRule(
+      { spaceId: SPACE, userId: OWNER },
+      PROJECT,
+      CONNECTION,
+      {
+        researchQuestion: "How should agents forget?",
+        threadScope,
+        agentId: AGENT,
+        runtimeProfileId: "new-runtime-profile",
+        researchScope: { sub_questions: [], in: [], out: [], must_have: [], nice_to_have: [] },
+      },
+      "Monitor",
+      "arxiv",
+    );
+
+    expect(reused.id).toBe(existing.id);
+    expect(reused.input_config_json).toMatchObject({
+      runtime_profile_id: "new-runtime-profile",
+      summary_goal: "How should agents forget?",
+      retrieval_context: { query: "How should agents forget?", max_results_per_domain: 10 },
+    });
   });
 
   it("joins a caller-owned transaction when creating a rule", async () => {
@@ -575,6 +622,93 @@ describe("source post-processing repository (real Postgres)", () => {
     });
     const drained = await repo().backlog(SPACE, CONNECTION);
     expect(drained.rules.find((row) => row.rule_id === rule.id)?.pending_item_count).toBe(0);
+
+    // A run over an empty batch has no last item; it keeps the watermark
+    // rather than sending the next run back to the oldest item.
+    await repo().advanceRuleCursor({ spaceId: SPACE, ruleId: rule.id, cursor: null });
+    const afterEmptyRun = await repo().backlog(SPACE, CONNECTION);
+    expect(afterEmptyRun.rules.find((row) => row.rule_id === rule.id)?.pending_item_count).toBe(0);
+  });
+
+  it("writes nothing from a run that fails part-way through its outputs", async () => {
+    if (!db.available) return;
+    const item = await seedItem("Relevant paper", "2026-07-01T00:00:00.000Z");
+    // Deep analysis needs extracted text, which this source's retention policy
+    // refuses, so queueing it fails after the digest has been written.
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: null,
+      name: "Digest with deep analysis",
+      triggerType: "manual",
+      triggerConfig: normalizeTriggerConfig(null, "manual"),
+      inputConfig: normalizeInputConfig({
+        deep_analysis: { enabled: true, content_source: "require_extracted_text", trigger_relevance: ["relevant"], min_confidence: 0 },
+      }),
+      actions: normalizeActions({ batch_digest: true }),
+      createdByUserId: OWNER,
+    });
+    const agentRunId = randomUUID();
+    await seedRun(db.pool, { id: agentRunId, space: SPACE, owner: OWNER, agent: randomUUID(), version: randomUUID() });
+    await db.pool.query(
+      `UPDATE runs SET status = 'succeeded', output_json = $2::jsonb WHERE id = $1`,
+      [agentRunId, JSON.stringify({
+        schema_version: "run_output.v1",
+        result: {
+          output_text: JSON.stringify({
+            schema: "source_post_processing.result.v1",
+            digest_markdown: "# Digest",
+            item_decisions: [{ source_item_id: item, relevance: "relevant", confidence: 0.9, reason: "Match.", matched_context_refs: [] }],
+          }),
+        },
+      })],
+    );
+    const agentRun = (await db.pool.query(`SELECT * FROM runs WHERE id = $1`, [agentRunId])).rows[0];
+    const execute = vi.spyOn(
+      SourcePostProcessingService.prototype as unknown as { createAndExecuteAgentRun: () => Promise<unknown> },
+      "createAndExecuteAgentRun",
+    ).mockImplementation(async () => agentRun);
+    try {
+      const service = new SourcePostProcessingService(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+      const run = await service.runRuleNow({ spaceId: SPACE, userId: OWNER }, CONNECTION, rule.id);
+      expect(run.status).toBe("failed");
+    } finally {
+      execute.mockRestore();
+    }
+
+    const digests = await db.pool.query(`SELECT id FROM artifacts WHERE run_id = $1`, [agentRunId]);
+    expect(digests.rows).toEqual([]);
+    expect((await repo().getRule(SPACE, rule.id))?.cursor_json ?? null).toBeNull();
+  });
+
+  it("runs a time-window rule once per drain, since its batch does not move", async () => {
+    if (!db.available) return;
+    const item = await seedItem("Today's paper", new Date().toISOString());
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: null,
+      name: "Daily digest",
+      triggerType: "manual",
+      triggerConfig: normalizeTriggerConfig(null, "manual"),
+      inputConfig: normalizeInputConfig({ window: "local_day", max_batches_per_event: 5 }),
+      actions: normalizeActions(null),
+      createdByUserId: OWNER,
+    });
+    const executeRule = vi.spyOn(
+      SourcePostProcessingService.prototype as unknown as { executeRule: () => Promise<SourcePostProcessingRunOut> },
+      "executeRule",
+    ).mockImplementation(async () => ({ status: "succeeded", input_item_ids: [item] }) as unknown as SourcePostProcessingRunOut);
+    try {
+      const service = new SourcePostProcessingService(db.pool, loadConfig({}));
+      const drained = await service.drainRuleNow({ spaceId: SPACE, userId: OWNER }, CONNECTION, rule.id);
+      expect(drained.runs).toHaveLength(1);
+      expect(executeRule).toHaveBeenCalledTimes(1);
+    } finally {
+      executeRule.mockRestore();
+    }
   });
 
   it("persists item decisions as a review read model", async () => {
@@ -838,6 +972,24 @@ describe("source post-processing repository (real Postgres)", () => {
     expect(detail!.item_decisions.find((d) => d.source_item_id === itemA)?.reason).toBe("Strong match.");
 
     expect(await repo().getBriefing({ spaceId: SPACE, userId: OWNER, connectionId: CONNECTION, date: "2099-01-01" })).toBeNull();
+
+    // A subscriber who cannot read the private digest sees the day, not its text.
+    const now = new Date().toISOString();
+    await db.pool.query(`UPDATE artifacts SET visibility = 'private', owner_user_id = $2 WHERE id = ANY($1::text[])`, [[digestArtifactId, summaryArtifactId], OWNER]);
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,$1,'active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [OTHER, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, OTHER, now]);
+    await db.pool.query(
+      `INSERT INTO source_channel_user_subscriptions (id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)`,
+      [randomUUID(), SPACE, CONNECTION, OTHER, now],
+    );
+    const theirList = await repo().listBriefings({ spaceId: SPACE, userId: OTHER, limit: 10, offset: 0 });
+    expect(theirList.items).toEqual([expect.objectContaining({ run_ids: [run.id], digest_preview: null })]);
+    await db.pool.query(`UPDATE source_items SET visibility = 'private', owner_user_id = $2 WHERE id = $1`, [itemB, OWNER]);
+    const theirDetail = await repo().getBriefing({ spaceId: SPACE, userId: OTHER, connectionId: CONNECTION, date: "2026-07-08" });
+    expect(theirDetail?.runs).toEqual([expect.objectContaining({ run_id: run.id, summary: null })]);
+    // A decision names its item, so one on an item the reader cannot read is left out.
+    expect(theirDetail!.item_decisions.map((d) => d.source_item_id)).not.toContain(itemB);
   });
 
   it("emits and re-surfaces one daily Activity Inbox briefing pointer per source local day", async () => {
@@ -1103,6 +1255,74 @@ describe("source post-processing repository (real Postgres)", () => {
     await repo().updateRule(SPACE, rule.id, { status: "paused" });
     const pausedDue = await repo().listDueRules("2026-07-01T09:00:02.000Z", 10);
     expect(pausedDue).toHaveLength(0);
+  });
+
+  it("enqueues a scheduled fire and advances its schedule together, so a failed advance is not fired twice", async () => {
+    if (!db.available) return;
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: null,
+      name: "Scheduled digest",
+      triggerType: "schedule",
+      triggerConfig: normalizeTriggerConfig({ cron: "0 9 * * *", timezone: "UTC" }, "schedule"),
+      inputConfig: normalizeInputConfig(null),
+      actions: normalizeActions(null),
+      createdByUserId: OWNER,
+    });
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET next_run_at = now() - interval '1 minute' WHERE task_type = $1 AND task_key = $2`,
+      [SOURCE_POST_PROCESSING_TASK_TYPE, rule.id],
+    );
+    const jobs = async () => (await db.pool.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM jobs WHERE job_type = 'source_post_processing_event' AND payload_json->>'rule_id' = $1`,
+      [rule.id],
+    )).rows[0]!.n;
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test" });
+
+    // The advance fails once (a transient database error): nothing was fired.
+    const failing = vi.spyOn(PgSourcePostProcessingRepository.prototype, "recordRuleFire").mockRejectedValueOnce(new Error("connection reset"));
+    try {
+      expect(await enqueueDueSourcePostProcessingRules(config)).toBe(0);
+    } finally {
+      failing.mockRestore();
+    }
+    expect(await jobs()).toBe("0");
+    // The next tick fires it exactly once.
+    expect(await enqueueDueSourcePostProcessingRules(config)).toBe(1);
+    expect(await jobs()).toBe("1");
+    expect(await enqueueDueSourcePostProcessingRules(config)).toBe(0);
+    expect(await jobs()).toBe("1");
+  });
+
+  it("settles a due task whose rule was paused behind the scheduler's back", async () => {
+    if (!db.available) return;
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: null,
+      name: "Scheduled digest",
+      triggerType: "schedule",
+      triggerConfig: normalizeTriggerConfig({ cron: "0 9 * * *", timezone: "UTC" }, "schedule"),
+      inputConfig: normalizeInputConfig(null),
+      actions: normalizeActions(null),
+      createdByUserId: OWNER,
+    });
+    // Archiving a Project pauses its rules with a direct UPDATE.
+    await db.pool.query(`UPDATE source_post_processing_rules SET status = 'paused' WHERE id = $1`, [rule.id]);
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET next_run_at = '2026-07-01T09:00:00.000Z' WHERE task_type = $1 AND task_key = $2`,
+      [SOURCE_POST_PROCESSING_TASK_TYPE, rule.id],
+    );
+
+    expect(await repo().listDueRules("2026-07-01T09:00:01.000Z", 10)).toHaveLength(0);
+    const task = await db.pool.query<{ status: string; next_run_at: string | null }>(
+      `SELECT status, next_run_at FROM scheduler_tasks WHERE task_type = $1 AND task_key = $2`,
+      [SOURCE_POST_PROCESSING_TASK_TYPE, rule.id],
+    );
+    expect(task.rows[0]).toEqual({ status: "paused", next_run_at: null });
   });
 });
 

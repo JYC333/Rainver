@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { isKnownDomain } from "../sourceAnnotation/index.js";
+import { contentReadSql } from "../access/contentAccessSql.js";
 import { topicKeyFor } from "./topicKey.js";
 import { DEFAULT_INTEREST_PROFILE_SETTINGS, type InterestProfileSettings } from "./settings.js";
 
@@ -144,8 +145,11 @@ export class PgInterestProfileRepository {
        ON CONFLICT (profile_id, topic_key) DO UPDATE
           SET label = EXCLUDED.label,
               domain_key = EXCLUDED.domain_key,
-              aliases_json = EXCLUDED.aliases_json,
-              weight = EXCLUDED.weight,
+              aliases_json = COALESCE(
+                (SELECT jsonb_agg(DISTINCT alias ORDER BY alias)
+                   FROM jsonb_array_elements(interest_topics.aliases_json || EXCLUDED.aliases_json) AS alias),
+                '[]'::jsonb),
+              weight = COALESCE($12::int, interest_topics.weight),
               status = 'active',
               updated_at = EXCLUDED.updated_at`,
       [
@@ -160,6 +164,9 @@ export class PgInterestProfileRepository {
         input.weight ?? 1,
         input.origin ?? "user",
         now,
+        // Only an explicit weight replaces the row's; a revival keeps what the
+        // reader set, as it keeps the aliases and history.
+        input.weight ?? null,
       ],
     );
     const topics = await this.db.query<InterestTopicRow & { aliases_json: unknown }>(
@@ -290,6 +297,8 @@ export class PgInterestProfileRepository {
               COALESCE(s.library_status, 'new') = 'ignored' AS was_ignored,
               o.id IS NOT NULL AS already_observed
          FROM source_item_annotations a
+         JOIN source_items si
+           ON si.id = a.source_item_id AND si.space_id = a.space_id
          LEFT JOIN source_item_user_states s
            ON s.space_id = a.space_id AND s.source_item_id = a.source_item_id AND s.user_id = $2
          LEFT JOIN interest_topic_observations o
@@ -297,6 +306,11 @@ export class PgInterestProfileRepository {
         WHERE a.space_id = $1
           AND a.status = 'succeeded'
           AND a.domain_key IS NOT NULL
+          -- Annotations are shared; the items are not. Another member's private
+          -- item (a discovery probe's result, say) is not this reader's material
+          -- and must not raise their candidates or name a phrase.
+          AND si.deleted_at IS NULL
+          AND ${contentReadSql("source_item", "si", "$2")}
           AND (
             o.id IS NULL
             OR (o.counted_as_read = FALSE AND COALESCE(s.read_status, 'unread') <> 'unread')

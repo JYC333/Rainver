@@ -122,6 +122,10 @@ export async function createProviderFromPreset(
   if (preset.mode === "embedding" || preset.mode === "rerank") {
     await assertCanConfigureRetrievalPreset(config, spaceId, userId);
   }
+  // Pure input validation belongs before the first write: a rejected
+  // dimension used to leave a disabled provider and its credential behind,
+  // and a cleared Space default with nothing in its place.
+  const dimensions = preset.mode === "embedding" ? embeddingDimensions(preset, input) : null;
 
   const provider = await store.createProvider(
     spaceId,
@@ -130,11 +134,11 @@ export async function createProviderFromPreset(
   );
   const providerId = providerIdFromCreated(provider);
   try {
-    if (preset.mode === "embedding") {
+    if (preset.mode === "embedding" && dimensions !== null) {
       await updateSpaceRetrievalSettings(
         providerDb(config),
         spaceId,
-        { embedding_dimensions: embeddingDimensions(preset, input) },
+        { embedding_dimensions: dimensions },
         { actorUserId: userId },
       );
       await store.putTaskPolicy(

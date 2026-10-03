@@ -169,7 +169,7 @@ function normalizeStance(entry: Record<string, unknown>): Pick<ParsedItemAnnotat
   return { stance_target: null, stance_target_key: null, stance_polarity: polarity as "mixed" | "neutral", stance_confidence: confidence };
 }
 
-export function stanceTargetKey(value: string): string {
+function stanceTargetKey(value: string): string {
   return value.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim().slice(0, 256);
 }
 

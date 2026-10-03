@@ -117,6 +117,13 @@ function AddAutomationForm({ agents, projects, workflowAssets, onAdded, canCreat
     if (next === 'workflow' && triggerType === 'schedule') setWorkflowResolution('pin')
   }
 
+  function handleTriggerChange(next: AutomationTriggerType) {
+    setTriggerType(next)
+    // A schedule disables the Resolution select, so it must not keep a
+    // "follow" that the submit check refuses for scheduled workflows.
+    if (next === 'schedule' && targetType === 'workflow') setWorkflowResolution('pin')
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!canCreate) { toast.error('Select an operational space first'); return }
@@ -228,7 +235,7 @@ function AddAutomationForm({ agents, projects, workflowAssets, onAdded, canCreat
 
       <div className="space-y-1.5">
         <label className={fieldLabel}>Trigger</label>
-        <select value={triggerType} onChange={e => setTriggerType(e.target.value as AutomationTriggerType)} className={selectCls}>
+        <select value={triggerType} onChange={e => handleTriggerChange(e.target.value as AutomationTriggerType)} className={selectCls}>
           <option value="schedule">Schedule (cron)</option>
           <option value="manual">Manual only</option>
         </select>

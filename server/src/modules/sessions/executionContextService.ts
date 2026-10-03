@@ -39,9 +39,9 @@ import {
   type RuntimeProfileRow,
 } from "./executionContextRepository.js";
 
-export interface ConversationExecutionContextIdentity extends SpaceUserIdentity {}
+interface ConversationExecutionContextIdentity extends SpaceUserIdentity {}
 
-export class ConversationExecutionContextError extends HttpError {
+class ConversationExecutionContextError extends HttpError {
   constructor(statusCode: number, message: string) {
     super(statusCode, message);
     this.name = "ConversationExecutionContextError";
@@ -187,6 +187,13 @@ export class ConversationExecutionContextService {
             ? profile
             : await this.resolveRuntime(repository, client, session, host, primary, selected, identity.userId));
           continue;
+        }
+        // Chosen for a participant nobody selected, so the same gate the
+        // explicit choice passes through (`resolveRuntime`) applies here:
+        // preflight hides this Agent's profiles from a person who cannot
+        // access it, and setup is blocked rather than pinned on their behalf.
+        if (!await repository.canAgentParticipate(session, agentId, identity.userId)) {
+          throw new ConversationExecutionContextError(403, "A participant Agent in this Conversation is not accessible to you");
         }
         const candidates = (await repository.listRuntimeProfiles(identity.spaceId, agentId)).filter((candidate) =>
           candidate.execution_host_id === host.id

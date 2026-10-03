@@ -19,12 +19,12 @@ import type { Queryable } from "../routeUtils/common.js";
  * directly. This is the one shared "review-scaling" packet entry point for
  * discovery, mirroring the Memory maintenance and Claim Candidate Packet flows.
  */
-export const RELATION_DISCOVERY_REPORT_ARTIFACT_TYPE = "relation_discovery_report";
+const RELATION_DISCOVERY_REPORT_ARTIFACT_TYPE = "relation_discovery_report";
 export const RELATION_DISCOVERY_PACKET_PROPOSAL_TYPE = "relation_discovery_packet";
 
 const MAX_CHILD_PROPOSALS = 40;
 
-export interface RelationDiscoveryReportContext {
+interface RelationDiscoveryReportContext {
   spaceId: string;
   ownerUserId: string;
   report: RelationDiscoveryReport;

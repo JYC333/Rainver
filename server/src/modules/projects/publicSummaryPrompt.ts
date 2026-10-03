@@ -8,7 +8,7 @@ import { shouldRedactMemoryContent } from "../memory/memoryReadAuth.js";
 import type { ContentAccessLevel } from "../access/contentAccessTypes.js";
 
 export const PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION = "project_public_summary.prompt.v1";
-export const PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION = "project_public_summary.v1";
+const PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION = "project_public_summary.v1";
 
 const CONTEXT_MAX_CHARS = 14_000;
 
@@ -64,7 +64,7 @@ export interface PublicSummaryPromptContext {
   allowedSourceRefs: Map<string, PublicSummarySourceRef>;
 }
 
-export interface GeneratedPublicSummary {
+interface GeneratedPublicSummary {
   summary_text: string;
   topics: string[];
   highlights: string[];

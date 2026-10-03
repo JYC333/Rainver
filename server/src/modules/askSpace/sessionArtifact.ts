@@ -6,9 +6,9 @@ import type {
 import type { Queryable } from "../routeUtils/common.js";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 
-export const ASK_SPACE_SESSION_ARTIFACT_TYPE = "ask_space_session";
+const ASK_SPACE_SESSION_ARTIFACT_TYPE = "ask_space_session";
 
-export interface AskSpaceSessionArtifactContext {
+interface AskSpaceSessionArtifactContext {
   spaceId: string;
   ownerUserId: string;
   query: string;

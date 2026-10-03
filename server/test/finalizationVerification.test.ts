@@ -62,6 +62,7 @@ class FinalizationRepository {
 
   async getRun(): Promise<RunRecord> { return this.currentRun; }
   async getRunFinalizationByVersion(): Promise<null> { return null; }
+  async getRunEvaluationForAttempt(): Promise<null> { return null; }
   async listRunSteps(): Promise<never[]> { return []; }
   async listRunEvents(): Promise<never[]> { return []; }
   async listVerificationResults(): Promise<VerificationResultRecord[]> { return this.verificationRows; }

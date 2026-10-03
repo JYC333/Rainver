@@ -42,9 +42,19 @@ in the Space — the same reachability rule manual Run creation already applies
 (Space membership plus `agent_id` existing in-Space; no extra per-Agent
 ownership check). It is a per-`(space_id, owner_user_id)` singleton: enabling
 twice reconfigures the same row rather than creating a second one. The
-`ruleAutomation` policy rule's `autonomous_tick`-and-`actor_is_owner` branch is
-the only place a non-admin/owner role is allowed to create, update, or fire an
-Automation, and it cannot reach another member's tick.
+`ruleAutomation` policy rule allows a non-admin/owner role in three branches
+only: a Project writer on an `agent_run` target in that Project, the
+`autonomous_tick`-and-`actor_is_owner` branch (`role >= member`), and the
+`information_digest`-and-`actor_is_owner` branch (`role >= member`; the
+Project form also needs Project writer). The tick branch cannot reach another
+member's tick.
+
+The generic reads (`GET .../automations`, `GET .../automations/:automationId`,
+`GET .../automations/:automationId/workflow-executions`) apply a read rule: a
+Project-bound Automation is visible only to a reader of its Project (its
+`project_id` is not a read grant), and an `autonomous_tick` only to its owner
+and Space owners/admins, who may manage it. Space-level Automations of other
+targets stay visible to every active member.
 
 ## Purpose
 
@@ -84,7 +94,17 @@ continue to require their own explicit pre-authorization.
   (`task_type='automation'`, `next_run_at`/`last_run_at`); the
   `automation_scheduler` heartbeat sweeps `listDue` and fires. There is no
   per-automation registration into the scheduler — it is a poll/sweep model.
+  A fire re-reads the Automation's status under its row lock in the
+  transaction that creates its work, so a pause or archive committed after
+  the sweep (or a manual fire) read the row stops it; schedule advancement
+  re-reads the row too and leaves a no-longer-active schedule as the pause or
+  archive wrote it.
 There is no external or webhook trigger kind.
+
+An update runs the target preflight only when the Automation will be active
+and its runnable shape changes (config, Project, or the status turning
+active). Pausing, archiving, or renaming never preflights, so an Automation
+whose target stopped being runnable can always be stopped.
 
 `trigger_type` is not the Run's `trigger_origin`. `fireResponsibility`
 (`targetSupport.ts`) decides the origin and the instructing person from what

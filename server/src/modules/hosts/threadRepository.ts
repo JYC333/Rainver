@@ -419,7 +419,9 @@ export class PgHostThreadRepository {
    * currently lives in. Matching only on the column would archive a
    * `location` profile and leave its thread resuming into nothing; matching
    * any Run ever would retire a session that now lives in another Agent's
-   * profile, which this reset does not touch.
+   * profile, which this reset does not touch. A Location thread also carries
+   * no `execution_host_id` of its own (`create` leaves it null); its host is
+   * the Location's.
    */
   async retireAgentSessionsOnHost(agentId: string, hostId: string): Promise<number> {
     const result = await this.db.query(
@@ -428,7 +430,9 @@ export class PgHostThreadRepository {
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
               updated_at = now()
-        WHERE thread.execution_host_id = $2
+        WHERE COALESCE(thread.execution_host_id, (
+                SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id = thread.workspace_location_id
+              )) = $2
           AND thread.status IN ('active', 'session_reset')
           AND (
             thread.agent_id = $1

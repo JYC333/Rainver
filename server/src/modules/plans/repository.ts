@@ -16,9 +16,10 @@ import { verifyIntegrationNode, verifyPlanIntegration } from "./integrationVerif
 import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler.js";
 import { InputBindingResolutionError, resolveNodeInputs } from "../execution/nodeInputResolver.js";
 import type { WorkflowNodeInputBinding } from "@rainver/protocol";
-import { runReadSql } from "../access/contentAccessSql.js";
+import { contentReadSql, runReadSql } from "../access/contentAccessSql.js";
+import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 
-export interface AgentPlanProposalInput {
+interface AgentPlanProposalInput {
   sourceTaskId: string;
   planId?: string | null;
   planningRunId: string;
@@ -107,6 +108,19 @@ interface PlanNodeRow {
   updated_at: string;
 }
 
+/**
+ * A Plan is read through its source Task: the graph, node descriptions and
+ * budget all derive from that Task's contract, so whoever cannot read the Task
+ * cannot read or operate its Plan.
+ */
+function planSourceTaskReadSql(alias: string, userParam: string): string {
+  return `EXISTS (
+    SELECT 1 FROM tasks t
+     WHERE t.space_id = ${alias}.space_id AND t.id = ${alias}.source_task_id AND t.deleted_at IS NULL
+       AND ${contentReadSql("task", "t", userParam)}
+  )`;
+}
+
 export class PgPlanRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -131,10 +145,11 @@ export class PgPlanRepository {
          LEFT JOIN plan_versions v ON v.id = p.current_plan_version_id AND v.space_id = p.space_id
          LEFT JOIN plan_nodes n ON n.plan_version_id = v.id AND n.space_id = p.space_id
         WHERE p.space_id = $1
+          AND ${planSourceTaskReadSql("p", "$4")}
         GROUP BY p.id, v.id
         ORDER BY p.updated_at DESC, p.id ASC
         LIMIT $2 OFFSET $3`,
-      [identity.spaceId, limit, offset],
+      [identity.spaceId, limit, offset, identity.userId],
     );
     return result.rows.map((row) => ({
       id: row.id,
@@ -168,8 +183,9 @@ export class PgPlanRepository {
       `SELECT id, space_id, project_folder_id, project_id, source_task_id, root_run_id,
               current_plan_version_id, name, description, status, created_by_user_id,
               created_by_agent_id, created_at, updated_at
-         FROM plans WHERE space_id = $1 AND id = $2`,
-      [identity.spaceId, planId],
+         FROM plans p WHERE space_id = $1 AND id = $2
+          AND ${planSourceTaskReadSql("p", "$3")}`,
+      [identity.spaceId, planId, identity.userId],
     );
     const plan = planResult.rows[0];
     if (!plan) return null;
@@ -384,11 +400,25 @@ export class PgPlanRepository {
       });
       await insertPlanNodes(client, identity.spaceId, versionId, graph, versionStatus, now);
       if (current?.current_plan_version_id) {
-        await client.query(
+        const superseded = await client.query<{ approval_proposal_id: string | null }>(
           `UPDATE plan_versions SET status = 'superseded', updated_at = $3
-             WHERE space_id = $1 AND plan_id = $2 AND id <> $4 AND status IN ('approved', 'active', 'pending_review')`,
+             WHERE space_id = $1 AND plan_id = $2 AND id <> $4 AND status IN ('approved', 'active', 'pending_review')
+             RETURNING approval_proposal_id`,
           [identity.spaceId, planId, now, versionId],
         );
+        // A review proposal for a version that is no longer awaiting review
+        // can never be applied (the applier answers 409); left pending it
+        // would sit in the inbox beside the new version's own.
+        const staleProposalIds = superseded.rows
+          .map((row) => row.approval_proposal_id)
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+        if (staleProposalIds.length > 0) {
+          await client.query(
+            `UPDATE proposals SET status = 'superseded', updated_at = $3
+               WHERE space_id = $1 AND id = ANY($2::varchar[]) AND proposal_type = 'plan_review' AND status = 'pending'`,
+            [identity.spaceId, staleProposalIds, now],
+          );
+        }
       }
       let proposalId: string | null = null;
       if (approval.mode === "proposal_required") {
@@ -419,11 +449,17 @@ export class PgPlanRepository {
                 v.id AS version_id, v.status AS version_status, v.budget_json AS version_budget_json,
                 p.created_by_agent_id AS root_agent_id
            FROM plans p JOIN plan_versions v ON v.id = p.current_plan_version_id AND v.space_id = p.space_id
-          WHERE p.space_id = $1 AND p.id = $2 FOR UPDATE OF p`,
-        [identity.spaceId, planId],
+          WHERE p.space_id = $1 AND p.id = $2
+            AND ${planSourceTaskReadSql("p", "$3")}
+          FOR UPDATE OF p`,
+        [identity.spaceId, planId, identity.userId],
       );
       const plan = result.rows[0];
       if (!plan) throw new HttpError(404, "Plan not found");
+      if (plan.project_id) {
+        await lockActiveProjectForMutation(client, identity.spaceId, plan.project_id);
+        await assertProjectWriterForMutation(client, identity.spaceId, plan.project_id, identity.userId);
+      }
       if (plan.version_status !== "approved") throw new HttpError(409, "Plan version must be approved before execution");
       const agentId = input.agentId ?? plan.root_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required to execute a Plan");
@@ -476,13 +512,20 @@ export class PgPlanRepository {
 
   async reconcilePlan(identity: SpaceUserIdentity, planId: string) {
     return withQueryableTransaction(this.db, async (client) => {
-      const result = await client.query<PlanRow & { version_id: string; version_status: string; version_budget_json: unknown; root_agent_id: string | null; root_prompt: string | null; root_runtime_profile_id: string | null }>(
+      // Later layers are scheduled as `executePlan` scheduled the first: on the
+      // Agent the coordinator runs on (not necessarily the planner), with the
+      // caller's workflow input, and with their prompt only if they gave one —
+      // the coordinator's prompt falls back to the Plan name, which is not a
+      // node's task.
+      const result = await client.query<PlanRow & { version_id: string; version_status: string; version_budget_json: unknown; root_agent_id: string | null; root_prompt: string | null; root_workflow_input_json: unknown; root_runtime_profile_id: string | null; root_status: string | null }>(
         `SELECT p.id, p.space_id, p.project_folder_id, p.project_id, p.source_task_id, p.root_run_id,
                 p.current_plan_version_id, p.name, p.description, p.status,
                 p.created_by_user_id, p.created_by_agent_id, p.created_at, p.updated_at,
                 v.id AS version_id, v.status AS version_status, v.budget_json AS version_budget_json,
-                p.created_by_agent_id AS root_agent_id, root.prompt AS root_prompt,
-                root.requested_runtime_profile_id AS root_runtime_profile_id
+                COALESCE(root.agent_id, p.created_by_agent_id) AS root_agent_id,
+                NULLIF(root.prompt, p.name) AS root_prompt,
+                root.contract_snapshot_json->'workflow_input_json' AS root_workflow_input_json,
+                root.requested_runtime_profile_id AS root_runtime_profile_id, root.status AS root_status
            FROM plans p JOIN plan_versions v ON v.id = p.current_plan_version_id AND v.space_id = p.space_id
            LEFT JOIN runs root ON root.id = p.root_run_id AND root.space_id = p.space_id
           WHERE p.space_id = $1 AND p.id = $2 FOR UPDATE OF p, v`,
@@ -492,6 +535,15 @@ export class PgPlanRepository {
       if (!plan) throw new HttpError(404, "Plan not found");
       if (!plan.root_run_id) throw new HttpError(409, "Plan has not been executed");
       if (plan.version_status !== "approved") throw new HttpError(409, "Plan version must be approved before reconciliation");
+      // A coordinator that has ended — cancelled by a person, or already
+      // finished — schedules nothing more; a child finishing late must not
+      // start the next layer under it.
+      if (plan.status !== "active" || (plan.root_status && TERMINAL_ROOT_STATUSES.has(plan.root_status))) {
+        if (plan.status === "active") {
+          await client.query(`UPDATE plans SET status = 'failed', updated_at = $3 WHERE space_id = $1 AND id = $2`, [identity.spaceId, planId, new Date().toISOString()]);
+        }
+        return { plan_id: planId, status: plan.status === "active" ? "failed" : plan.status, scheduled_node_ids: [] };
+      }
       await this.projectLatestNodeRuns(client, identity.spaceId, plan.version_id);
       const nodes = await client.query<{ id: string; node_kind: string; status: string; depends_on: string[] }>(
         `SELECT n.id, n.node_kind, n.status,
@@ -522,8 +574,34 @@ export class PgPlanRepository {
         runtimeProfileSelectionSource: plan.root_runtime_profile_id ? "explicit" : "default",
         budgetSources: budgetSourcesFromPlan(plan.version_budget_json),
         userPrompt: plan.root_prompt,
-        workflowInputJson: null,
+        workflowInputJson: plan.root_workflow_input_json && typeof plan.root_workflow_input_json === "object"
+          && !Array.isArray(plan.root_workflow_input_json)
+          ? plan.root_workflow_input_json as Record<string, unknown>
+          : null,
       });
+      // Integration nodes and nodes whose input binding failed move to
+      // done/failed without a Run, so no finalization will reconcile for
+      // them: a Plan that ends on one of them is finished now, not at the
+      // next recovery scan.
+      const after = await client.query<{ id: string; status: string; depends_on: string[] }>(
+        `SELECT n.id, n.status,
+                COALESCE(array_agg(d.depends_on_node_id) FILTER (WHERE d.depends_on_node_id IS NOT NULL), ARRAY[]::varchar[]) AS depends_on
+           FROM plan_nodes n LEFT JOIN plan_node_dependencies d ON d.node_id = n.id AND d.space_id = n.space_id
+          WHERE n.space_id = $1 AND n.plan_version_id = $2 GROUP BY n.id`,
+        [identity.spaceId, plan.version_id],
+      );
+      const settled = after.rows.map((node) => ({ id: node.id, status: node.status, dependsOn: node.depends_on }));
+      if (this.scheduler.hasFailedNode(settled)) {
+        const verification = await verifyPlanIntegration(client, identity.spaceId, plan.version_id);
+        await finishPlan(client, identity.spaceId, planId, plan.root_run_id, "failed", "A plan node failed or was cancelled", verification);
+        return { plan_id: planId, status: "failed", scheduled_node_ids: scheduled };
+      }
+      if (this.scheduler.isComplete(settled)) {
+        const verification = await verifyPlanIntegration(client, identity.spaceId, plan.version_id);
+        const status = verification.status === "passed" ? "succeeded" : "failed";
+        await finishPlan(client, identity.spaceId, planId, plan.root_run_id, status, status === "succeeded" ? "All plan nodes completed" : verification.summary, verification);
+        return { plan_id: planId, status: status === "succeeded" ? "completed" : "failed", scheduled_node_ids: scheduled };
+      }
       return { plan_id: planId, status: "active", scheduled_node_ids: scheduled };
     });
   }
@@ -615,18 +693,27 @@ export class PgPlanRepository {
     );
     const scheduled: string[] = [];
     const queue = new PgJobQueueRepository(client);
-    const statusResult = await client.query<{ id: string; status: string }>(
-      `SELECT id, status FROM plan_nodes WHERE space_id = $1 AND plan_version_id = $2`,
-      [identity.spaceId, input.planVersionId],
-    );
     const dependenciesById = new Map(result.rows.map((node) => [node.id, node.depends_on]));
-    const readyNodeIds = new Set(this.scheduler.readyNodes(statusResult.rows.map((node) => ({
-      id: node.id,
-      status: node.status,
-      dependsOn: dependenciesById.get(node.id) ?? [],
-    }))).map((node) => node.id));
+    const readyNodeIdsNow = async (): Promise<Set<string>> => {
+      const statusResult = await client.query<{ id: string; status: string }>(
+        `SELECT id, status FROM plan_nodes WHERE space_id = $1 AND plan_version_id = $2`,
+        [identity.spaceId, input.planVersionId],
+      );
+      return new Set(this.scheduler.readyNodes(statusResult.rows.map((node) => ({
+        id: node.id,
+        status: node.status,
+        dependsOn: dependenciesById.get(node.id) ?? [],
+      }))).map((node) => node.id));
+    };
+    // A node settled here without a Run (an integration verdict, a failed
+    // input binding) can ready the nodes behind it in this same pass; the
+    // loop re-reads readiness until a pass schedules nothing new.
+    let readyNodeIds = await readyNodeIdsNow();
+    let settledWithoutRun = false;
+    for (let pass = 0; pass < result.rows.length + 1; pass += 1) {
+    settledWithoutRun = false;
     for (const node of result.rows) {
-      if (!readyNodeIds.has(node.id)) continue;
+      if (!readyNodeIds.has(node.id) || scheduled.includes(node.id)) continue;
       if (node.node_kind === "approval_checkpoint") {
         if (node.approval_proposal_id) continue;
         const proposalId = randomUUID();
@@ -647,6 +734,7 @@ export class PgPlanRepository {
         const now = new Date().toISOString();
         await client.query(`UPDATE plan_nodes SET status = $3, blocked_reason = CASE WHEN $3::varchar = 'failed' THEN $4 ELSE NULL END, updated_at = $5 WHERE space_id = $1 AND id = $2`, [identity.spaceId, node.id, verification.status === "passed" ? "done" : "failed", verification.summary, now]);
         scheduled.push(node.id);
+        settledWithoutRun = true;
         continue;
       }
       const childAgentId = node.assigned_agent_id ?? input.agentId;
@@ -669,6 +757,7 @@ export class PgPlanRepository {
           [identity.spaceId, node.id, `input_binding_unresolved:${error.bindingName}:${error.reason}`, now],
         );
         scheduled.push(node.id);
+        settledWithoutRun = true;
         continue;
       }
       const nodeBudgetSources = budgetSourcesForNode(node, input.budgetSources, input.planId);
@@ -719,6 +808,9 @@ export class PgPlanRepository {
       await client.query(`UPDATE plan_nodes SET status = 'in_progress', updated_at = $3 WHERE space_id = $1 AND id = $2`, [identity.spaceId, node.id, now]);
       await queue.enqueue({ job_type: "agent_run", space_id: identity.spaceId, user_id: identity.userId, agent_id: childAgentId, project_folder_id: input.projectFolderId, payload: { run_id: child.id, plan_id: input.planId, plan_version_id: input.planVersionId, plan_node_id: node.id } });
       scheduled.push(node.id);
+    }
+    if (!settledWithoutRun) break;
+    readyNodeIds = await readyNodeIdsNow();
     }
     return scheduled;
   }
@@ -860,6 +952,8 @@ function nonNegativeNumberOrNull(value: unknown): number | null {
 function workflowInputSuffix(value: Record<string, unknown> | null): string {
   return value && Object.keys(value).length > 0 ? `\n\nInput (JSON): ${JSON.stringify(value)}` : "";
 }
+
+const TERMINAL_ROOT_STATUSES = new Set(["succeeded", "failed", "degraded", "cancelled", "orphaned"]);
 
 function finishPlan(client: Queryable, spaceId: string, planId: string, rootRunId: string, status: "succeeded" | "failed", summary: string, verification: unknown): Promise<void> {
   const now = new Date().toISOString();

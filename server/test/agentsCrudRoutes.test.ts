@@ -6,7 +6,8 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { agentTemplatesModule } from "../src/modules/agentTemplates/index.js";
 import { __setAgentChatIdentityForTests } from "../src/modules/agents/routes.js";
 import { agentsModule } from "../src/modules/agents/index.js";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { __setAuthIdentityForTests, __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
+import { fakeAuthRepository } from "./support/routeFakes.js";
 import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext.js";
 import { AgentRuntimeProfileCreateBodySchema } from "@rainver/protocol";
 
@@ -30,6 +31,7 @@ beforeEach(() => {
 afterEach(async () => {
   __setAgentChatIdentityForTests(null);
   __setAuthIdentityForTests(null);
+  __setAuthRepositoryForTests(null);
   __setContentCreationContextResolverForTests(null);
   await app?.close();
   app = undefined;
@@ -43,6 +45,18 @@ function config() {
 }
 
 describe("agents CRUD routes", () => {
+  it("answers an invalid Space runtime default as 422 with the failing field", async () => {
+    __setAuthRepositoryForTests(fakeAuthRepository("owner"));
+    app = buildModuleServer(config(), [agentsModule]);
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/v1/agents/runtime-default",
+      payload: { runtime_key: "opencode", backend_mode: "model_provider" },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ detail: expect.stringContaining("provider and model") });
+  });
+
   it("rejects the retired adapter_type alias at Profile API boundaries", () => {
     expect(AgentRuntimeProfileCreateBodySchema.safeParse({
       name: "Default",
@@ -430,6 +444,25 @@ describe("agents CRUD routes", () => {
       version_id: "prompt-version",
       content_hash: "prompt-hash",
     });
+  });
+
+  it("refuses an Agent PATCH with an invalid config field before writing its identity fields", async () => {
+    const query = vi.fn(async (sql: string) => {
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    vi.mocked(getDbPool).mockReturnValue({ query } as never);
+    app = buildModuleServer(config(), [agentsModule]);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/agents/agent-1",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ name: "Renamed", execution_constraints: { max_run_time_seconds: 0 } }),
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().detail).toContain("execution_constraints");
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("rejects runtime selection on Agent creation", async () => {

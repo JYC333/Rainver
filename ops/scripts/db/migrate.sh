@@ -226,22 +226,31 @@ ensure_pre_migration_backup() {
   dump_path="$dumps_dir/pre-migrate-$ts.dump"
 
   echo "[migrate] taking required pre-migration backup before server migrations (mode: $MODE)..."
+  local dump_status=0
   if [[ "$RUN_MODE" == "host" ]]; then
-    pre_migration_backup_host "$dump_path" || true
+    pre_migration_backup_host "$dump_path" || dump_status=$?
   else
-    pre_migration_backup_docker "$dump_path" || true
+    pre_migration_backup_docker "$dump_path" || dump_status=$?
   fi
 
+  # pg_dump's own status is the only signal for a dump that died mid-data:
+  # the custom format writes its header and table of contents before any
+  # table data, so such a file is non-empty and `pg_restore -l` reads it.
+  if [[ "$dump_status" -ne 0 ]]; then
+    echo "ERROR: pre-migration backup failed (pg_dump exited $dump_status)." >&2
+    echo "       Aborting BEFORE migrations run so the database is never migrated unprotected." >&2
+    rm -f "$dump_path"
+    exit 1
+  fi
   if [[ ! -s "$dump_path" ]]; then
     echo "ERROR: pre-migration backup failed or produced an empty dump." >&2
     echo "       Aborting BEFORE migrations run so the database is never migrated unprotected." >&2
     rm -f "$dump_path"
     exit 1
   fi
-  # Non-empty is not the same as restorable: a dump that streams and then dies
-  # (disk full, client disconnect) leaves a truncated custom-format file that
-  # only fails when someone needs it. `pg_restore -l` reads the archive's table
-  # of contents and is the cheapest thing that actually opens it.
+  # A further check, not the truncation check: `pg_restore -l` reads only the
+  # header and table of contents, so it catches a file that is not an archive
+  # at all (a stray error message, a damaged head), never missing table data.
   # No filename argument on the container form. Naming the stdin device path
   # makes pg_restore reopen it, which loses the pipe and reports "did not find
   # magic string in file header" for an archive that is perfectly good — the

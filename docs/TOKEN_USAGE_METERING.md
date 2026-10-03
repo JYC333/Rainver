@@ -15,8 +15,8 @@ is the only code that inserts `token_usage_events`.
 
 Attribution is resolved before normalization:
 
-- direct authenticated user calls and CLI history imports become owner-private
-  events;
+- direct authenticated user calls and ambient session imports become
+  owner-private events;
 - Run/Agent calls snapshot the source content owner, workspace/project scope,
   visibility, disclosure level, and active grants at call time;
 - active `selected_users` grants and `space_shared` disclosure-upgrade grants
@@ -30,8 +30,11 @@ Provider retries and provider fallback do not create events for failed
 attempts. A successful provider response creates one event with an idempotency
 key. Managed provider invocations record each observable call; provider-proxy
 leases record bounded usage metadata from compatible upstream responses without
-persisting request or response bodies. CLI history imports use stable
-transcript-derived idempotency keys and are marked as transcript lower bounds.
+persisting request or response bodies. Ambient session imports
+(`importedSessions/service.ts`) write `source_type = ambient_host_history`
+events marked `provider_reported`, keyed `ambient:<session id>:<usage
+fingerprint>` so re-syncing a session does not count it twice. The
+`cli_history_import` source type is declared but has no writer.
 
 ## Read Path
 
@@ -98,7 +101,8 @@ ingestion paths available today. Aggregations currently query the append-only
 ledger directly; there is no persisted daily/monthly rollup table.
 
 Current user-facing routes include summary, timeseries, event, dimension,
-subject, session, budget-preview, and managed CLI history import endpoints.
+subject, session, and budget-preview; historical usage arrives through ambient
+session import, not an import endpoint.
 Instance operations have only the de-identified totals route.
 
 ## Database Schema

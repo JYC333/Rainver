@@ -20,20 +20,16 @@ registered workspace
 
 ## Path policy
 
-Sandbox paths live under `sandboxes/` at the repo root. Agents must not
+Sandbox paths live under `$RAINVER_HOME/sandboxes/` (`SANDBOX_ROOT`, default
+`resolve(RAINVER_HOME, "sandboxes")`), outside the source repo. Agents must not
 write outside their assigned sandbox directory.
 
 ## Retention
 
-| State | Keep for |
-|-------|----------|
-| Completed | 72 hours (configurable) |
-| Failed | 7 days (configurable) |
-
-Always keep:
-- diff output
-- agent run log
-- context snapshot
+A Run's ephemeral sandbox directory is removed on every terminal path
+(success, failure, cancel; `runs/ephemeralSandbox.ts`). There is no time-based
+sandbox retention period and no setting for one; adapter output is materialized
+to artifacts before teardown.
 
 Do not keep the full workspace copy after a sandbox is cleaned.
 

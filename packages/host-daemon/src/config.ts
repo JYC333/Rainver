@@ -1,4 +1,5 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { isLoopbackAddress } from "@rainver/outbound-guard";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -95,7 +96,7 @@ export function normalizeServerUrl(raw: string): string {
  * true of `127.evil.com`, a hostname somebody else controls and can point
  * anywhere, which is exactly the thing plain HTTP must not be allowed for.
  */
-export function isLoopbackHostname(hostname: string): boolean {
+function isLoopbackHostname(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (host === "localhost" || host === "localhost.localdomain") return true;
   return isLoopbackAddress(host);
@@ -172,9 +173,39 @@ export async function requireConfig(): Promise<DaemonConfig> {
   return config;
 }
 
+let configUpdates: Promise<unknown> = Promise.resolve();
+
+/**
+ * Reads the current config, applies `mutate`, and writes the result, with
+ * concurrent updates applied one after another against the latest file.
+ * A caller that held its own earlier snapshot across a network round trip
+ * and wrote it back whole would drop whatever another update wrote meanwhile
+ * — two workspace registrations arriving together lost one path mapping.
+ */
+export function updateConfig(mutate: (current: DaemonConfig) => DaemonConfig | Promise<DaemonConfig>): Promise<DaemonConfig> {
+  const next = configUpdates.then(async () => {
+    const current = await loadConfig();
+    if (!current) throw new Error("Daemon config missing; run `rainver-host pair` first");
+    const updated = await mutate(current);
+    await saveConfig(updated);
+    return updated;
+  });
+  configUpdates = next.catch(() => undefined);
+  return next;
+}
+
 export async function saveConfig(config: DaemonConfig): Promise<void> {
   await mkdir(dirname(configPath()), { recursive: true, mode: 0o700 });
-  await writeFile(configPath(), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  // Written aside and renamed over: the heartbeat and request handlers read
+  // this file at any moment, and an in-place write lets them see it empty.
+  const staged = `${configPath()}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(staged, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+    await rename(staged, configPath());
+  } catch (error) {
+    await rm(staged, { force: true });
+    throw error;
+  }
 }
 
 /** Removes only the registration credential and workspace-path map, not installed tools or managed workspaces. */

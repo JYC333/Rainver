@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
@@ -499,6 +499,58 @@ describe("a person's own archive and restore (real Postgres)", () => {
     expect(row.rows[0]).toMatchObject({ status: "active" });
   });
 
+  it("keeps one active version when two restores on one chain race", async () => {
+    if (!db.available) return;
+    // A chain whose head was archived: v1 superseded by v2, v2 archived.
+    const first = await ownMemory(OWNER);
+    const second = await ownMemory(OWNER);
+    await db.pool.query(`UPDATE memory_entries SET status = 'superseded' WHERE id = $1`, [first]);
+    await db.pool.query(
+      `UPDATE memory_entries SET status = 'archived', root_memory_id = $1, supersedes_memory_id = $1, version = 2 WHERE id = $2`,
+      [first, second],
+    );
+
+    // Two tabs restore two versions at once. The second's check for an active
+    // head runs while the first's restore is still uncommitted; without
+    // serialization on the chain both pass and it has two live rows.
+    const a = await db.pool.connect();
+    const b = await db.pool.connect();
+    try {
+      await a.query("BEGIN");
+      await b.query("BEGIN");
+      await new PgMemoryApplyRepository(a).setOwnStatus(SPACE, OWNER, first, "active");
+      let settled = false;
+      // Its rejection is caught here, before the first restore's COMMIT
+      // triggers it; a handler attached a turn later reads as unhandled.
+      const racing = new PgMemoryApplyRepository(b).setOwnStatus(SPACE, OWNER, second, "active")
+        .then(() => null, (error: unknown) => error)
+        .finally(() => { settled = true; });
+      // The first restore commits only once the second has run its course
+      // against the uncommitted state: settled (through, with two live rows)
+      // or waiting on the chain lock. Observed in this file's own database.
+      await vi.waitUntil(async () => settled || ((await db.pool.query(
+        `SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+      )).rowCount ?? 0) > 0, { timeout: 10_000, interval: 20 });
+      await a.query("COMMIT");
+      try {
+        const outcome = await racing;
+        expect(outcome).toBeInstanceOf(Error);
+        expect((outcome as Error).message).toMatch(/newer version/);
+      } finally {
+        await b.query("ROLLBACK").catch(() => undefined);
+      }
+    } finally {
+      a.release();
+      b.release();
+    }
+    const active = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM memory_entries
+        WHERE space_id = $1 AND COALESCE(root_memory_id, id) = $2 AND status = 'active'`,
+      [SPACE, first],
+    );
+    expect(active.rows[0]?.count).toBe("1");
+  });
+
   it("restores the version a revision replaced, but only once the newer one is out of the way", async () => {
     if (!db.available) return;
     const dispatch = await dispatcher();
@@ -608,6 +660,21 @@ describe("memory version history for a Space member (real Postgres)", () => {
     const versions = await new PgMemoryReadRepository(db.pool).versions(SPACE, OTHER, memoryId);
     expect(versions.items).toEqual([
       expect.objectContaining({ memory: expect.objectContaining({ content: "SHARED MEMORY BODY" }) }),
+    ]);
+  });
+
+  it("does not serve another member's private memory through its history", async () => {
+    const memoryId = randomUUID();
+    await insertMemoryEntry(
+      db.pool,
+      SPACE,
+      { id: memoryId, owner_user_id: OWNER, content: "PRIVATE MEMORY BODY" },
+      { visibility: "private" },
+    );
+    const repository = new PgMemoryReadRepository(db.pool);
+    expect((await repository.versions(SPACE, OTHER, memoryId)).items).toEqual([]);
+    expect((await repository.versions(SPACE, OWNER, memoryId)).items).toEqual([
+      expect.objectContaining({ memory: expect.objectContaining({ content: "PRIVATE MEMORY BODY" }) }),
     ]);
   });
 });

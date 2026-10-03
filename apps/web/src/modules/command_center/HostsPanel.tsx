@@ -96,10 +96,15 @@ export default function HostsPanel() {
     return provisioningInFlight.current
   }, [])
 
+  // The 3s tick and a refresh after an action can overlap, and answers do not
+  // arrive in order; only the latest request's list is kept.
+  const hostsRequest = useRef(0)
   const load = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true)
+    const request = ++hostsRequest.current
     try {
       const result = await hostsApi.list()
+      if (request !== hostsRequest.current) return
       setHosts(result.items)
       await loadProvisioning(result.items.filter(host => host.kind === 'server'))
     } catch (error) {

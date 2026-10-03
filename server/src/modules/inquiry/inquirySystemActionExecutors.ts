@@ -130,7 +130,7 @@ export function registerInquirySystemActionExecutors(
   });
 }
 
-export interface ActiveThreadRef {
+interface ActiveThreadRef {
   thread_id: string;
   kind: string;
   statement: string;

@@ -26,12 +26,17 @@ import type {
   MeTimelineEntry,
   QueryParams,
 } from "./frontendSupportTypes.js";
-export type {
-  HomeSummaryOut,
-  MePendingProposalItem,
-  MeSummaryOut,
-  MeTimelineEntry,
-} from "./frontendSupportTypes.js";
+
+interface OperationInProgressRow {
+  id: string;
+  project_id: string;
+  project_name: string;
+  kind: string;
+  title: string;
+  status: string;
+  progress_json: Record<string, unknown> | null;
+  updated_at: unknown;
+}
 
 export class PgFrontendSupportService {
   constructor(private readonly db: Queryable) {}
@@ -71,7 +76,7 @@ export class PgFrontendSupportService {
       this.activeTasks(identity, activeTasksLimit),
       this.activitySummary(identity.spaceId),
       this.runStatsToday(identity.spaceId),
-      this.jobQueueStatus(identity.spaceId),
+      this.jobQueueStatus(identity),
       this.runtimeStatus(identity.spaceId),
       this.modelProviderStatus(identity.spaceId),
       this.sourceSummary(identity.spaceId),
@@ -100,7 +105,7 @@ export class PgFrontendSupportService {
     };
   }
 
-  private async operationsInProgress(identity:SpaceUserIdentity){const result=await this.db.query<any>(`SELECT po.id,po.project_id,p.name AS project_name,po.kind,po.title,po.status,po.progress_json,po.updated_at FROM project_operations po JOIN projects p ON p.id=po.project_id AND p.space_id=po.space_id AND p.deleted_at IS NULL WHERE po.space_id=$1 AND po.status IN ('draft','active','waiting_review') AND (p.owner_user_id=$2 OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=$1 AND s.type='personal') OR EXISTS(SELECT 1 FROM project_members pm WHERE pm.space_id=$1 AND pm.project_id=p.id AND pm.user_id=$2 AND pm.status='active')) ORDER BY po.updated_at DESC LIMIT 10`,[identity.spaceId,identity.userId]);return result.rows.map(row=>({...row,progress_json:row.progress_json&&typeof row.progress_json==='object'?row.progress_json:{},updated_at:iso(row.updated_at)}));}
+  private async operationsInProgress(identity:SpaceUserIdentity){const result=await this.db.query<OperationInProgressRow>(`SELECT po.id,po.project_id,p.name AS project_name,po.kind,po.title,po.status,po.progress_json,po.updated_at FROM project_operations po JOIN projects p ON p.id=po.project_id AND p.space_id=po.space_id AND p.deleted_at IS NULL WHERE po.space_id=$1 AND po.status IN ('draft','active','waiting_review') AND (p.owner_user_id=$2 OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=$1 AND s.type='personal') OR EXISTS(SELECT 1 FROM project_members pm WHERE pm.space_id=$1 AND pm.project_id=p.id AND pm.user_id=$2 AND pm.status='active')) ORDER BY po.updated_at DESC LIMIT 10`,[identity.spaceId,identity.userId]);return result.rows.map(row=>({...row,progress_json:row.progress_json&&typeof row.progress_json==='object'?row.progress_json:{},updated_at:iso(row.updated_at)}));}
 
   async meSummary(userId: string, query: QueryParams): Promise<MeSummaryOut> {
     const recentRunsLimit = boundedQueryInt(query.recent_runs_limit, 10, 1, 50);
@@ -503,7 +508,10 @@ export class PgFrontendSupportService {
     };
   }
 
-  private async jobQueueStatus(spaceId: string): Promise<HomeSummaryOut["job_queue_status"]> {
+  private async jobQueueStatus(identity: SpaceUserIdentity): Promise<HomeSummaryOut["job_queue_status"]> {
+    // The counts are Space-wide, an accepted oracle (SECURITY_AND_ACCESS_BOUNDARIES).
+    // The error text is not a count: a Job is its submitter's (`GET /jobs/:id`
+    // answers 404 to anyone else), so the preview shows only the viewer's own.
     const result = await this.db.query<{
       queued: string | number;
       running: string | number;
@@ -518,12 +526,12 @@ export class PgFrontendSupportService {
          count(*) FILTER (WHERE status = 'failed' AND attempts < max_attempts)::text AS retryable,
          (SELECT error
             FROM jobs
-           WHERE space_id = $1 AND status = 'failed' AND error IS NOT NULL
+           WHERE space_id = $1 AND user_id = $2 AND status = 'failed' AND error IS NOT NULL
            ORDER BY updated_at DESC, id DESC
            LIMIT 1) AS recent_error_preview
        FROM jobs
        WHERE space_id = $1`,
-      [spaceId],
+      [identity.spaceId, identity.userId],
     );
     const row = result.rows[0];
     return {
@@ -637,27 +645,35 @@ export class PgFrontendSupportService {
       assigned_tasks_count: string | number;
       recent_failed_runs_count: string | number;
     }>(
+      // One scalar count per Space and table. Joining proposals, tasks and
+      // runs side by side multiplies them into |P|x|T|x|R| rows per Space,
+      // each evaluating the read predicates, before DISTINCT folds them back.
       `SELECT s.id AS space_id,
               s.name,
               s.type,
-              count(DISTINCT p.id) FILTER (WHERE p.status = 'pending' AND ${proposalReadSql("$1")})::text AS pending_proposals_count,
-              count(DISTINCT t.id) FILTER (WHERE t.deleted_at IS NULL AND t.assigned_user_id = $1)::text AS assigned_tasks_count,
-              count(DISTINCT r.id) FILTER (
-                WHERE r.status = 'failed'
+              (SELECT count(*)
+                 FROM proposals p
+                 LEFT JOIN runs run_for_instructed
+                   ON run_for_instructed.id = p.created_by_run_id
+                  AND run_for_instructed.space_id = p.space_id
+                WHERE p.space_id = s.id
+                  AND p.status = 'pending'
+                  AND ${proposalReadSql("$1")})::text AS pending_proposals_count,
+              (SELECT count(*)
+                 FROM tasks t
+                WHERE t.space_id = s.id
+                  AND t.deleted_at IS NULL
+                  AND t.assigned_user_id = $1)::text AS assigned_tasks_count,
+              (SELECT count(*)
+                 FROM runs r
+                WHERE r.space_id = s.id
+                  AND r.status = 'failed'
                   AND r.created_at >= now() - interval '7 days'
-                  AND ${runReadSql("$1")}
-              )::text AS recent_failed_runs_count
+                  AND ${runReadSql("$1")})::text AS recent_failed_runs_count
          FROM space_memberships sm
          JOIN spaces s ON s.id = sm.space_id
-         LEFT JOIN proposals p ON p.space_id = sm.space_id
-         LEFT JOIN runs run_for_instructed
-           ON run_for_instructed.id = p.created_by_run_id
-          AND run_for_instructed.space_id = p.space_id
-         LEFT JOIN tasks t ON t.space_id = sm.space_id
-         LEFT JOIN runs r ON r.space_id = sm.space_id
         WHERE sm.user_id = $1
           AND sm.status = 'active'
-        GROUP BY s.id, s.name, s.type
         ORDER BY s.type ASC, s.name ASC, s.id ASC`,
       [userId],
     );

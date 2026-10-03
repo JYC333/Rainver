@@ -4,39 +4,8 @@ import {
   type ProjectAttentionAdapter,
   type ProjectAttentionItem,
 } from "../projects/attentionRegistry.js";
-import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
+import { readableCandidateIds } from "./signalService.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
-
-async function readableCandidateIds(
-  db: Queryable,
-  identity: SpaceUserIdentity,
-  projectId: string,
-  candidateIds: string[],
-): Promise<Set<string>> {
-  if (candidateIds.length === 0) return new Set();
-  const signals = await db.query<{ candidate_id: string; corpus_item_id: string }>(
-    `SELECT candidate_id, corpus_item_id FROM inquiry_evidence_signals
-      WHERE candidate_id=ANY($1::varchar[])`,
-    [candidateIds],
-  );
-  const readableCorpus = await new ProjectCorpusRepository(db).readableItemIds(
-    identity,
-    projectId,
-    signals.rows.map((signal) => signal.corpus_item_id),
-  );
-  const counts = new Map<string, { total: number; readable: number }>();
-  for (const signal of signals.rows) {
-    const count = counts.get(signal.candidate_id) ?? { total: 0, readable: 0 };
-    count.total += 1;
-    if (readableCorpus.has(signal.corpus_item_id)) count.readable += 1;
-    counts.set(signal.candidate_id, count);
-  }
-  return new Set(
-    [...counts.entries()]
-      .filter(([, count]) => count.total > 0 && count.total === count.readable)
-      .map(([candidateId]) => candidateId),
-  );
-}
 
 // Registers Inquiry into the Project Kernel's registries (ADR 0011 decision
 // 5): `modules/projects` aggregates through these contracts and never
@@ -117,7 +86,7 @@ const inquiryAttentionAdapter: ProjectAttentionAdapter = {
       [identity.spaceId, projectId],
     );
     const [readable, advice] = await Promise.all([
-      readableCandidateIds(db, identity, projectId, candidates.rows.map((candidate) => candidate.id)),
+      readableCandidateIds(db, identity, projectId, candidates.rows, "read"),
       nextStepAdviceItems(db, identity, projectId),
     ]);
     return [...advice, ...candidates.rows.filter((candidate) => readable.has(candidate.id)).map((c): ProjectAttentionItem => ({

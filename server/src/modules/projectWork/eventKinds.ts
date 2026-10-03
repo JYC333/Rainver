@@ -1,4 +1,4 @@
-import { PROJECT_WORK_EVENT_KINDS, type ProjectWorkEventKind } from "@rainver/protocol";
+import { type ProjectWorkEventKind } from "@rainver/protocol";
 
 /**
  * Which subjects each Project work event kind may be written about, and who
@@ -103,8 +103,4 @@ registerCoreWorkEventKinds();
  */
 export function hasWorkEventKindDeclaration(kind: string): boolean {
   return registry.has(kind as ProjectWorkEventKind);
-}
-
-export function coreWorkEventKindCount(): number {
-  return PROJECT_WORK_EVENT_KINDS.length;
 }

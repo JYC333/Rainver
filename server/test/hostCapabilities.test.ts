@@ -45,4 +45,43 @@ describe('host capability normalization', () => {
     ])
     expect(hostInstallationCliLoginAvailable(current, 'acp_dynamic', 'managed:1')).toBe(true)
   })
+
+  it('drops or shortens one over-long Agent option instead of refusing the whole report', () => {
+    const long = (n: number) => 'x'.repeat(n)
+    const current = normalizeHostCapabilities({
+      runtimes: [], versions: {}, installations: { acp_dynamic: [{
+        id: 'managed:1', version: '1', logged_in: true,
+        options: {
+          config_options: [
+            { id: long(300), name: 'Too long an id', type: 'boolean', current_value: true },
+            { id: 'verbose', name: 'Verbose', description: long(5000), category: long(200), type: 'boolean', current_value: false },
+          ],
+          auth_methods: [
+            { id: 'device', name: 'Device', type: 'terminal', args: [long(3000)], env: {} },
+            { id: 'browser', name: 'Browser', description: long(5000), type: 'agent', args: [], env: {} },
+          ],
+        },
+      }] },
+    })
+    expect(hostInstallationOptions(current, 'acp_dynamic', 'managed:1')).toEqual([
+      expect.objectContaining({ id: 'verbose', description: long(2000), category: null }),
+    ])
+    expect(hostInstallationAuthMethods(current, 'acp_dynamic', 'managed:1')).toEqual([
+      expect.objectContaining({ id: 'browser', description: long(2000) }),
+    ])
+  })
+
+  it('drops one over-long held account instead of refusing the whole report', () => {
+    const current = normalizeHostCapabilities({
+      runtimes: [], versions: {}, installations: { opencode: [{
+        id: 'own', version: '1', logged_in: true,
+        accounts: [
+          { id: 'x'.repeat(300), kind: 'api' },
+          { id: 'anthropic', kind: 'k'.repeat(100) },
+          { id: 'openai', kind: 'api' },
+        ],
+      }] },
+    })
+    expect(current.installations.opencode?.[0]?.accounts).toEqual([{ id: 'openai', kind: 'api' }])
+  })
 })

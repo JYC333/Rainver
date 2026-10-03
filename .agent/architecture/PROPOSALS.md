@@ -44,6 +44,8 @@ Proposals are the product review and application boundary for durable mutations.
   has not already been used, and every applied file still holds what the patch
   wrote (409 otherwise). It sets the proposal's status to `rolled_back` and writes a
   `proposal.code_patch.rolled_back` activity at the proposal's own visibility.
+  If a file write or the commit fails, the restored files get the applied content
+  back, so the proposal stays `accepted` and the rollback can be retried.
 - Accept, reject, rollback and egress approval share one reach rule,
   `authorizeProposalDecision`: same Space, the state the decision acts on,
   content-readable, and — for a Run's proposal — inside a Room the caller can
@@ -115,9 +117,10 @@ Proposals are the product review and application boundary for durable mutations.
   can only be rejected, and a follow-up naming a Project other than the Run's
   own is never applied automatically — it waits for a person, being the same
   input `task.create` refuses outright.
-- `policy_change`, `agent_config_update`, and other non-memory target
-  mutations are not currently registered server appliers. They fail closed
-  until their owning domain registers a server applier.
+- `policy_change` applies through a registered server applier that inserts a
+  new active `policies` row and marks a named `supersedes_policy_id` as
+  `superseded`. `agent_config_update` and other unregistered non-memory target
+  mutations fail closed until their owning domain registers a server applier.
 - Custom Source proposal apply validates the handler version/proposal binding,
   rejects stale active-pointer or envelope changes, and then activates the
   named handler version while superseding the previous active version.
@@ -143,9 +146,10 @@ Proposals are the product review and application boundary for durable mutations.
   controlled same-asset Bundle/Bundle and Bundle/ordinary-promotion cases; it
   must run against the shared Testcontainers database when that runtime is
   available.
-- Public post-create execution config changes for Agents must use
-  `POST /api/v1/agents/{agent_id}/config-proposals`; direct
-  `POST /agents/{agent_id}/versions` does not advance the current version.
+- Post-create execution config changes for Agents are owner-only and go
+  through `POST /api/v1/agents/{agent_id}/config`, which appends a new
+  immutable `AgentVersion`. No route creates `agent_config_update` proposals,
+  and there is no direct `POST /agents/{agent_id}/versions`.
 - Rejected, accepted, expired, or superseded proposals cannot be applied again.
 - Cross-space or unauthorized access must not reveal proposal details.
 

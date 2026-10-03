@@ -155,6 +155,19 @@ describe("cross-project note sharing (real Postgres)", () => {
     expect(owner.rows[0]?.primary_project_id).toBe(projectA);
   });
 
+  it("refuses a declared link type that note links do not store, as 422", async () => {
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const noteId = await noteInProjectA();
+    const other = await noteInProjectA();
+    // `cites` is in the registry, for other relation tables; note_links'
+    // check constraint would refuse it, which must surface as a 422 here.
+    await expect(repository.createNoteLink(alpha, noteId, { target_type: "note", target_id: other, link_type: "cites" }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    expect(await repository.createNoteLink(alpha, noteId, { target_type: "note", target_id: other, link_type: "supports" }))
+      .toMatchObject({ link_type: "supports" });
+  });
+
   it("keeps a shared note read-only for the receiving Project", async () => {
     if (!db.available) return;
     const repository = new PgKnowledgeRepository(db.pool);

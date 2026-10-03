@@ -17,7 +17,7 @@
  * policy does not have.
  */
 
-export interface PermissionOptionInput {
+interface PermissionOptionInput {
   option_id: string | null;
   kind: string | null;
 }
@@ -26,7 +26,7 @@ export type PermissionDecisionOutcome =
   | { outcome: "selected"; option_id: string }
   | { outcome: "cancelled" };
 
-export interface PermissionDecision {
+interface PermissionDecision {
   outcome: PermissionDecisionOutcome;
   preauthorized_by: "dispatch_approval_preset";
 }

@@ -9,8 +9,9 @@ credential secrecy, path safety, and current dogfooding readiness.
 
 ## 1. Authentication Boundary
 
-All durable-data API routes require authentication via `get_identity()` or
-`get_current_user()`. An unauthenticated request to any such route must return 401.
+All durable-data API routes require authentication via `resolveIdentity()`
+(`server/src/modules/routeUtils/common.ts`) or, for the cross-space `/me` routes,
+`resolveAnySpaceIdentity()`. An unauthenticated request to any such route must return 401.
 
 ### Intentional public endpoints
 
@@ -21,22 +22,25 @@ All durable-data API routes require authentication via `get_identity()` or
 | `GET /api/v1/auth/config` | OAuth, bootstrap-registration availability, and password policy (public booleans and numeric bounds only) |
 | `GET /api/v1/auth/google` | OAuth redirect initiation; Better Auth validates state/origin |
 | `GET /api/v1/auth/callback/google` | Explicit Better Auth callback adapter |
-| `POST /api/v1/auth/sign-in/email` | Generic email/password login with bounded IP/email throttling |
+| `POST /api/v1/auth/sign-in/email` | Generic email/password login with bounded IP/email throttling; the body never carries the session token, only the cookie does |
 | `POST /api/v1/auth/registration-intents` | Bootstrap or invitation admission; no open signup |
+| `POST /api/v1/auth/register`, `POST /api/v1/auth/register/google` | Registration completion for an issued intent; authorized by the intent's claim secret (stored hashed), not by a session |
 | `POST /api/v1/auth/recovery/request` | Generic reset request; never returns a raw link |
+| `POST /api/v1/auth/recovery/complete` | Password reset; authorized by the single-use Better Auth reset token |
 | `POST /api/v1/auth/logout` | Better Auth session termination |
+| `POST /api/v1/hosts/register` | Host pairing; authorized by the short-lived pairing code ([`modules/hosts.md`](../modules/hosts.md)) |
 
 All other routes, including system-metadata endpoints, are auth-gated:
 
 - `GET /api/v1/auth/reauth/status` — reports only whether the current user's signed recent-auth grant remains valid and when it expires; the browser uses it to gate Security-page controls, while each sensitive mutation still enforces the grant server-side.
 - `POST /api/v1/invitations/accept` — an active account may consume only an unexpired, available invitation addressed to its own normalized email; membership and token consumption commit together.
-- `GET /capabilities`, `GET /capabilities/{id}`, `POST /capabilities/reload`
+- `GET /api/v1/capability-definitions`, `GET /api/v1/capability-definitions/{id}`, `GET /api/v1/capability-packs`
 - `GET /api/v1/server/catalog`, `/catalog/capabilities`, `/catalog/agent-templates`
 - `GET /api/v1/server/notifications/webhooks/policy`, `POST .../webhooks/dispatch`
-- `GET /jobs/handlers`
+- `GET /api/v1/jobs/handlers`
 - `GET /api/v1/system/backups`, `POST /api/v1/system/backups/manual` — instance-admin gated
-- `POST /hosts/{hostId}/installations/{adapterType}`, `.../rollback`, `DELETE .../{installation}` — instance-admin gated for the built-in host, owner-gated for a paired machine
-- `GET /providers/vendors`, `/providers/presets`
+- `POST /api/v1/hosts/{hostId}/installations/{runtimeKey}`, `.../rollback`, `DELETE .../{installation}` — instance-admin gated for the built-in host, owner-gated for a paired machine
+- `GET /api/v1/providers/vendors`, `/api/v1/providers/presets`
 
 ---
 
@@ -49,7 +53,7 @@ the response does not reveal whether an object exists in another space.
 Rules:
 - Raw `Model.id == id` queries without a `space_id` filter are forbidden in authenticated
   service methods.
-- Space_id comes from `get_identity()`, not from a request body field or a fetched object.
+- Space_id comes from `resolveIdentity()`, not from a request body field or a fetched object.
 - User-space authority comes from `SpaceMembership`. `User.space_id`,
   `User.default_space_id`, and global `User.role` are not part of the backend
   schema.
@@ -143,14 +147,23 @@ A summary viewer is withheld, on these surfaces:
 - **Knowledge / Notes:** detail bodies, list previews, retrieval text, note
   `content_hash`, and note revision history (a summary reader gets 404 there).
 - **Knowledge sources:** `raw_text`, `content_ref` and metadata.
-- **Claims:** `claim_text`, `subject_text` and metadata, and the claim
-  evidence's quote and locator.
+- **Claims:** `claim_text`, `subject_text`, `normalized_claim_hash` (an
+  unsalted hash of the normalized text confirms a guess at it) and metadata,
+  and the claim evidence's quote and locator. The claim trajectory and the
+  contradiction scan (`knowledge/claimReviewLoop.ts`) read the same level: a
+  summary-level seed claim's subject text is not returned, and a
+  summary-level claim's body is neither compared nor sent to the LLM judge,
+  since a finding's reason quotes what two claims differ by and a
+  `space_ops` report is persisted for the whole Space.
 - **Item↔source links and item `source_refs`:** the link quote and note, and
   the evidence excerpt.
 - **Activity:** `content` and `metadata_json`.
 - **Artifacts:** inline bodies and export.
 - **Runs:**
   - `output_json`, and the turn / turn-stream body;
+  - in `contract_snapshot_json`, the inputs the Run was given (workflow
+    input, upstream node outputs, attachment manifest, definition of done,
+    acceptance criteria); budget, source and policy metadata stay;
   - on `/trace`, the step input/output summaries, event summaries, and
     error text and metadata;
   - the free-text and JSON detail of attempts, supervisor decisions,
@@ -193,7 +206,9 @@ retention scheduler prunes this shared table.
 Visibility demotion is forward-only. Narrowing a resource first requires an
 owner-only disclosure request that lists recorded readers, Runs whose immutable
 Invocation Snapshot source refs consumed the resource, and artifacts/proposals from those Runs
-that remain non-private, with UI links. The subsequent policy update must carry
+that remain non-private, with UI links. A listed Run, artifact, or proposal the
+owner cannot read appears by pointer only, never with its instruction or title.
+The subsequent policy update must carry
 the short-lived confirmation id. Confirmation locks the disclosure, recomputes
 the exposure inside the policy transaction, rejects any changed snapshot, and
 consumes the id atomically with the update. Admin policy-management authority
@@ -348,7 +363,8 @@ group does not leak PDR ids or delegation text from a private child Run. The dai
 reads (`dailyReports/`) carry no Room term either; in practice they are
 restricted to the viewer's own non-Room artifacts, but they have not been
 audited against this rule. Cross-space reads always fail regardless of oversight;
-targeted publications remain the only cross-space transfer path.
+targeted publications (8c) and capture relocation (8f) are the only cross-space transfer
+paths.
 
 ### Usage events
 
@@ -471,7 +487,7 @@ within a space. Room conversations are shared, Project-bound aggregates and
 are readable/writable only through `/rooms/{roomId}/conversations/*`.
 
 - `GET /sessions/{id}` requires authentication. `space_id` and `user_id` are extracted from
-  the request identity and forwarded to `SessionService.get_session()` as SQL filters.
+  the request identity and forwarded to `PgSessionRepository.getSession()` as SQL filters.
 - `GET /sessions/{id}/messages` follows the same pattern.
 - A cross-space request returns 404 (session not found in that space).
 - A same-space non-owner request returns 404 (session belongs to a different user).
@@ -529,15 +545,15 @@ the handler returns 404 before calling the consolidation service.
 
 Activity does not directly become active memory:
 
-1. `ActivityConsolidationService` creates **proposals** from activity records.
+1. `PgActivityConsolidationRepository` creates **proposals** from activity records.
 2. Proposals must be reviewed and accepted via `POST /proposals/{id}/accept`.
 3. `ProposalApplyService` handles the durable mutation — the only path through which
    activity-derived content becomes memory.
 
 Additional invariants:
 - Proposal apply is space-scoped: `accept(id, space_id=…)` returns None on space mismatch.
-- Unsupported proposal types (`task_create`, `plan_create`, and any unknown
-  type) raise `UnsupportedProposalTypeError` and leave the proposal in `pending` status.
+- Proposal types with no registered applier raise `UnknownProposalApplierError`
+  (422, `proposals/applierRegistry.ts`) and leave the proposal in `pending` status.
   The fail-closed behavior is tested.
 - Memory writes require policy/proposal gating: there is no public direct-write
   active-memory path accessible without policy enforcement.
@@ -564,7 +580,7 @@ Additional invariants:
   row attributed to the importer, with user-confirmation provenance. It does
   not insert `memory_entries` from the publications adapter, and it cannot
   import agent-scope types.
-- `MemoryProposalApplier.apply_create()` and `apply_update()` block grant-derived proposals
+- `PgMemoryApplyRepository.applyOnly()` (ahead of `applyCreate()` / `applyUpdate()`) blocks grant-derived proposals
   from applying to non-personal target spaces without prior egress approval.
 
 ### Project-level memory access (retrieval surfaces)
@@ -664,34 +680,38 @@ authority mechanism in place of space-scoped auth.
 
 ### 8a. Personal Memory Egress Approval
 
-**Route:** `POST /proposals/{proposal_id}/approvals/egress-granting-user`
+**Route:** `POST /api/v1/proposals/{proposal_id}/approvals/egress-granting-user`
 
-The proposal lives in the **target space** (the space where the run executed). The granting
-user authenticates from their **personal space**. These are structurally different spaces.
-Requiring `proposal.space_id == request_space_id` would make granting-user approval
-impossible in the standard case.
+The proposal lives in the **target space** (the space where the run executed), and the
+granting user approves it from that Space's context: the route resolves the request Space
+like every other proposal decision, and `authorizeProposalDecision`
+(`proposals/applyService.ts`) answers 404 when `proposal.space_id` is not the request
+Space. What makes this route an exception is **who** may approve — the person who made the
+grant, who need not be the proposal's owner or a reviewer in that Space — not which Space
+the request is made from.
 
-**Do not add `proposal.space_id == request_space_id` to this route.**
-
-Authority comes from the guard chain inside `record_egress_granting_user_approval()`:
+Authority comes from the guard chain in `validateGrantApproval`:
 
 | Guard | Invariant |
 |---|---|
+| `proposal.space_id == request space_id` | Same-Space fail-closed 404, as for every proposal decision |
 | `grant.granting_user_id == approver_user_id` | Only the exact user who created the grant may approve |
-| `proposal.space_id == grant.target_space_id` | Proposal must belong to the specific target space |
+| `grant.status` not revoked/expired/failed; payload `grant_id` / `personal_memory_grant_ids` name this grant | Proposal and grant refer to each other and the grant is live |
+| `proposal.space_id == grant.target_space_id` (and payload `target_space_id`, when present) | Proposal must belong to the specific target space |
 | `source_run_id == grant.target_run_id` | Proposal must trace back to the specific run the grant covered |
-| `run.space_id == grant.target_space_id` | Source run must be in the same target space as the grant |
-| `run.instructed_by_user_id == grant.granting_user_id` | Run must have been instructed by the granting user |
-| Deadline check (`egress_review_expires_at`, `proposal.expires_at`) | Approval window enforced |
-| Payload safety markers | `raw_private_memory_included`, `personal_summary_persisted`, public `target_visibility` all blocked |
+| Deadline check (`egress_review_expires_at`) | Approval window enforced |
+| Payload safety markers | `raw_private_memory_included` blocked; `personal_summary_persisted` recorded false |
 
-Request `space_id` is intentionally discarded (`_, user_id = ids`). Security authority is
-user-centered, not request-space-centered.
+The Run-level facts (`run.space_id`, `run.instructed_by_user_id`) are checked once, when
+the grant is created; this route trusts the grant row rather than re-reading the Run. A
+context-taint owner approval (payload `required_taint_owner_user_ids`) takes the same
+route with no grant and is authorized by membership in that list.
 
 ### 8b. PersonalView (`/me`) Cross-Space Aggregation
 
-`GET /me/summary`, `/me/timeline`, `/me/tasks`, `/me/pending` are intentionally cross-space.
-They aggregate across all spaces the user is a member of (`_member_space_ids(db, user_id)`).
+`GET /api/v1/me/summary`, `/api/v1/me/timeline`, `/api/v1/me/pending` are intentionally cross-space.
+They aggregate across all spaces the user has an active membership in (a `space_memberships`
+join in `server/src/modules/frontendSupport/`).
 Visibility filters are applied to tasks and proposals. No raw
 artifact payloads or full memory content is returned — pointer metadata only in timeline.
 
@@ -769,6 +789,24 @@ redisclosure. Enabled source Spaces broadcast the resulting pointer-only egress
 notification. `/me/notifications` returns only notifications for Spaces where
 the recipient remains an active member.
 
+### 8f. Capture relocation
+
+`GET`/`POST /api/v1/captures/{activityId}/relocation`
+([ADR 0013](../decisions/0013-personal-team-content-boundary.md) decision 9,
+`capture/relocationService.ts`). The capture is looked up by id across every Space the
+caller is an active member of, not only the request Space: `loadCapture` joins the
+caller's active `space_memberships` and applies `contentReadSql("activity")` **without
+oversight**, so the preview shows only blocks the caller could already read as a member,
+and never through an admin's audit reach. The request Space enters only on the write side:
+`resolveDestinationSpace` resolves the destination Project (or the caller's personal inbox)
+through `resolveContentCreationContext`, which requires Project write access there.
+Leaving the source Space (`destination space != capture.space_id`) is unrestricted for the
+caller's own content and gated by the source Space's `member_copy_out_enabled` for another
+member's; `move` additionally requires owning the capture or administering its Project.
+Only the blocks the preview offered may be carried. The relocated text is written as a new
+row in the destination Space; nothing in the source Space is read by the destination's
+authority afterwards.
+
 ---
 
 ## 9. Credential, Provider, and Runtime Secrecy
@@ -778,12 +816,14 @@ the recipient remains an active member.
   must not appear in a DTO, log, environment variable, or HTTP body,
   including `/internal/*`. There is no HTTP credential-resolve hatch, and no
   internal route that spends a key on a caller's say-so.
-- Structured request logs carry no headers at all: Fastify's default `req`
-  serializer emits method, url, host and remote address, and nothing else, and
-  no route logs a request or response body. The redact paths in
-  `gateway/logging.ts` are defense in depth for the day a serializer changes —
-  they are unreachable while the default one is in place, and are listed here
-  as belt-and-braces, not as the mechanism. pino matches a redact path exactly,
+- Structured request logs carry no headers and no query string: the server's
+  own `req` serializer (`gateway/logging.ts`) emits method, path, host and
+  remote address, and nothing else — Fastify's default logged `req.url` whole,
+  which put an OAuth callback's authorization code and state on every
+  "incoming request" line — and no route logs a request or response body. The
+  redact paths in the same file are defense in depth for the day a serializer
+  changes — they are unreachable while this one is in place, and are listed
+  here as belt-and-braces, not as the mechanism. pino matches a redact path exactly,
   with no substring rule, so each spelling is listed on its own:
   `authorization` **and** `proxy-authorization`, `cookie`, `x-api-key`,
   `api-key`, `x-goog-api-key`, `anthropic-auth-token`,
@@ -886,7 +926,8 @@ flow.
   `credentials`, `instance/secrets`, `config/secrets`, `.git/config`,
   `.env`, `.env.*` except template examples, private key filenames, and
   `*.pem` / `*.key`.
-- Full git diff output is bounded; secret-like diff paths are denied and
+- Full git diff output is bounded; secret-like diff paths are denied, a
+  whole-Folder diff is denied when any file it shows fails PathPolicy, and
   secret-like key/value lines are redacted.
 - Forbidden write suffixes: `.py`, `.sh`, `.bash`, `.zsh`, `.fish`.
 - Paths resolved to absolute before validation; no symlink race conditions.
@@ -1060,10 +1101,18 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   termination is a deployment concern. Mutating cookie-authenticated requests refuse
   any explicit `Origin` other than the configured frontend (`FRONTEND_URL`); there
   is no request-derived same-host fallback. Session cookies are always
-  `HttpOnly`, `SameSite=Lax`, and `Secure`. The server believes `X-Forwarded-*`
+  `HttpOnly` and `SameSite=Lax`, and carry `Secure` whenever `FRONTEND_URL` is
+  HTTPS; a loopback HTTP instance (the development default) issues them
+  without `Secure`, since production refuses any non-loopback HTTP
+  `FRONTEND_URL` ([`modules/auth.md`](../modules/auth.md)). The server believes `X-Forwarded-*`
   only from the frontend proxy (`SERVER_TRUSTED_PROXY_HOST`, resolved by name,
   one hop), so `request.ip` is the client that proxy saw; a direct peer such as
-  a Run on the built-in host cannot choose it. Pairing-code registration is
+  a Run on the built-in host cannot choose it. The request Rainver builds for
+  Better Auth carries that `request.ip` as its only `X-Forwarded-For`, so Better
+  Auth's per-IP rate limit and the recorded session address cannot be steered
+  by a client-sent header. Better Auth is the sole judge of a session cookie it
+  issued: a cookie whose signature it rejects is not a session, whatever raw
+  token precedes the signature. Pairing-code registration is
   rate-limited per client IP (10 attempts / 10 minutes, persisted under the
   instance cache) — IPv6 by /64, because a /64 is the smallest block an ISP
   hands out and counting whole addresses let one caller take the quota once per
@@ -1383,7 +1432,8 @@ plan is retired; git history holds it. Accepted leftovers from that sequence
 stay accepted: Dev Vite bind-all (token still required); Reader artifact
 omitting `roomRunReadAccessSql`; `code_patch` payload bytes that live remote
 browse would refuse; Learning Space-global `project_id IS NULL` visibility;
-Home summary counts as Space-wide oracles.
+Home summary counts as Space-wide oracles (the failed-Job error preview beside those
+counts is the viewer's own, as `GET /jobs/:id` is).
 
 The 2026-09-11 security remediation sequence fixed the findings of the three
 reviews above by mechanism rather than by patch: one summary-withholding type,

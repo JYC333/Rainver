@@ -87,7 +87,7 @@ export interface DaemonHelloInfo {
 }
 
 /** Safe default when a daemon does not (yet) report `environment_kind` explicitly. */
-export function environmentKindFromPlatform(platform: string | null): string {
+function environmentKindFromPlatform(platform: string | null): string {
   if (platform === "win32") return "windows_native";
   if (platform === "darwin") return "macos_native";
   return "linux_native";
@@ -103,7 +103,7 @@ function rawToken(): string {
 
 /** Crockford base32 without I/L/O/U — 13 characters is 65 bits, still retypeable. */
 const PAIRING_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-export const PAIRING_CODE_LENGTH = 13;
+const PAIRING_CODE_LENGTH = 13;
 
 function rawPairingCode(): string {
   // Short, easy to retype at a terminal prompt — this is a short-lived,
@@ -604,7 +604,7 @@ export class PgHostRepository {
   }
 }
 
-export interface RunForUpload {
+interface RunForUpload {
   id: string;
   space_id: string;
   owner_user_id: string | null;

@@ -3,7 +3,7 @@ import type { GraphData, GraphOptions } from '@antv/g6'
 import { bindGraphInteractions, type GraphEventLike, type GraphEventSource, type GraphInteractionCallbacks } from './graphInteractions'
 import type { GraphLabelVisibility, GraphLayoutConfig, GraphNodePosition, GraphRenderData, GraphRendererHandle, GraphRendererMode } from '../types'
 
-export interface CreateGraphRendererOptions extends GraphInteractionCallbacks {
+interface CreateGraphRendererOptions extends GraphInteractionCallbacks {
   container: HTMLElement
   data: GraphRenderData
   layout: GraphLayoutConfig

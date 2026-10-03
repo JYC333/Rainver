@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { extractRetrievalLinks } from "./linkExtractor.js";
 import { normalizeAlias, stripMarkdownForSearch } from "./normalize.js";
 import type { RetrievalDomainAdapter, RetrievalRegistry } from "./registry.js";
@@ -63,8 +63,24 @@ export class RetrievalProjectionService {
     );
   }
 
-  /** Rebuild the whole space across every registered domain. Returns per-type counts. */
+  /**
+   * Rebuild the whole space across every registered domain. Returns per-type counts.
+   *
+   * The rebuild clears the space's projection before it reinserts it, so it is
+   * one transaction: a failure part-way (a concurrent write projecting an
+   * object first, a bad row) leaves the previous index intact instead of a
+   * space whose search covers only the objects reached so far, and searches
+   * never see the emptied index. A second rebuild of the same space waits for
+   * the first rather than colliding with its rows.
+   */
   async reindexAll(spaceId: string): Promise<Record<string, number>> {
+    return withQueryableTransaction(this.db, async (db) => {
+      await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`retrieval-reindex-all:${spaceId}`]);
+      return new RetrievalProjectionService(db, this.registry).rebuildSpace(spaceId);
+    });
+  }
+
+  private async rebuildSpace(spaceId: string): Promise<Record<string, number>> {
     const counts: Record<string, number> = {};
     const objects: Array<{ object: CanonicalObject; adapter: RetrievalDomainAdapter }> = [];
     for (const adapter of this.registry.adapters()) {

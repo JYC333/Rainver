@@ -538,7 +538,11 @@ export class RuntimeContextContinuityService {
     active_micro_checkpoint_id: string | null;
     capture_status: "complete" | "recovered" | "partial";
   }> {
-    const result = await db.query<any>(
+    const result = await db.query<{
+      event_head_cursor: string | number; checkpoint_cursor: string | number;
+      cli_known_cursor: string | number | null; active_micro_checkpoint_id: string | null;
+      capture_status: "complete" | "recovered" | "partial";
+    }>(
       `SELECT event_head_cursor,checkpoint_cursor,cli_known_cursor,active_micro_checkpoint_id,capture_status
          FROM context_event_scopes WHERE space_id=$1 AND work_context_scope_id=$2`,
       [authority.space_id, authority.work_context_scope_id],

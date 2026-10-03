@@ -259,6 +259,36 @@ describe("proposal review routes", () => {
     });
   });
 
+  it("answers a malformed JSON body with 422 on accept and egress approval", async () => {
+    __setProposalIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    __setProposalServicesFactoryForTests(() => ({
+      repository: {
+        async listVisible() { throw new Error("should not run"); },
+        async getVisible() { throw new Error("should not run"); },
+      },
+      applyService: {
+        async accept() { throw new Error("accept should not run"); },
+        async reject() { throw new Error("reject should not run"); },
+        async approveEgressGrantingUser() { throw new Error("approval should not run"); },
+        async rollback() { throw new Error("rollback should not run"); },
+      },
+    }));
+    app = buildModuleServer(proposalsConfig(), [proposalsModule]);
+
+    // The gateway hands every body to the route as a Buffer, so the route is
+    // where a truncated body is first parsed; a client's bad input is not a
+    // server fault.
+    for (const url of ["/api/v1/proposals/proposal-1/accept", "/api/v1/proposals/proposal-1/approvals/egress-granting-user"]) {
+      const res = await app.inject({
+        method: "POST",
+        url,
+        headers: { "content-type": "application/json" },
+        payload: '{"confirm_incomplete_patch": true',
+      });
+      expect(res.statusCode, url).toBe(422);
+    }
+  });
+
   it("returns 422 when accept is called for an unregistered proposal type (fail-closed)", async () => {
     __setProposalIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProposalServicesFactoryForTests(() => ({

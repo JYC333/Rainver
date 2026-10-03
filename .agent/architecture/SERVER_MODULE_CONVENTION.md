@@ -18,11 +18,17 @@ server/src/
   server.ts                # composition root ONLY — no business route logic
   config.ts                # SERVER_* env parsing, fail-fast validation
   gateway/                 # PERMANENT HTTP entry layer
+    appShell.ts            #   Fastify instance + gateway conventions
     routeRegistry.ts       #   module convention + registration order
     requestContext.ts      #   request-id continuity, safe header access
     errorEnvelope.ts       #   error shape + app-wide error handler
     logging.ts             #   logger options + secret redaction paths
-  modules/                 # server-owned backend modules
+    cacheControl.ts        #   no-store response headers
+    csrfOrigin.ts          #   cookie-authenticated CSRF origin checks
+    internalAuth.ts        #   internal-token check
+    sse.ts                 #   server-sent event response headers
+    trustedProxy.ts        #   trusted frontend-proxy resolution
+  modules/                 # server-owned backend modules (examples below)
     system/                #   health + features descriptors
       routes.ts            #     route registration for this module
       service.ts           #     pure logic (no Fastify types)
@@ -37,10 +43,11 @@ server/src/
 - **`modules/` contains server-owned modules.** A new server module lives under
   `server/src/modules/<module_name>/` with `routes.ts` + `service.ts` +
   `index.ts`.
-- **`server.ts` is composition root only.** It builds Fastify (logger, body
-  passthrough) and delegates all route registration to
-  `gateway/routeRegistry.ts`. Tests enforce that it contains no direct route
-  registrations.
+- **`server.ts` is composition root only.** It builds the Fastify instance
+  through `gateway/appShell.ts` (`createServerApp`: logger, body passthrough,
+  multipart, trusted proxy, gateway conventions) and delegates all route
+  registration to `gateway/routeRegistry.ts`. By convention it contains no
+  direct route registrations; no test enforces this.
 
 ## Server-Owned Module Route Pattern
 
@@ -65,13 +72,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 }
 ```
 
-The module is then added to `SERVER_MODULES` in `gateway/routeRegistry.ts` and
-advertised in `GET /api/v1/server/features`. `ModuleContext` carries the
+The module is then added to `SERVER_MODULES` in `gateway/routeRegistry.ts`.
+`GET /api/v1/server/features` is a hand-written list in
+`modules/system/service.ts` (`computeFeatures`); a module that needs a feature
+id there adds it by hand. `ModuleContext` carries the
 validated config plus its immutable `ConfigSnapshot` (schema version + content
 hash + load timestamp); future shared deps go there — it is dependency passing,
 not a plugin system.
 
-**Registration order is binding:** the registry mounts modules first and then a
+**Registration order is binding:** the registry mounts `SERVER_MODULES` first,
+then plugin-contributed routes (`pluginHost.activate`), and then a
 final `/api/v1/*` catch-all that returns `404 { "detail": "Route not found" }`.
 A route becomes owned only by explicit registration, never by accident.
 

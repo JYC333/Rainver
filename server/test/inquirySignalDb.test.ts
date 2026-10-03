@@ -190,6 +190,9 @@ describe("Inquiry Signals, Candidates, Review, and Delta (real Postgres)", () =>
     }
     const packet = await signalSvc.openReviewPacket(identity(), PROJECT, 2);
     expect((packet.candidates as unknown[])).toHaveLength(2);
+    // Reading the packet back serves the same contract as opening it.
+    expect(await signalSvc.getReviewPacket(identity(), PROJECT, packet.id as string))
+      .toMatchObject({ id: packet.id, project_id: PROJECT, status: "open" });
     const remainingPending = await signalSvc.listCandidates(identity(), PROJECT, "pending");
     expect(remainingPending.filter((c) => c.review_packet_id === null)).toHaveLength(2);
 

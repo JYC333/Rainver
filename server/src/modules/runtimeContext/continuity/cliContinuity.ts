@@ -54,6 +54,8 @@ interface BindingRow {
   rotation_reason: CliRotationReason | null;
   execution_lease_id?: string | null;
   execution_lease_expires_at?: Date | string | null;
+  /** Whether a live execution lease is held on the binding. */
+  leased?: boolean;
 }
 
 interface BindingFingerprint {
@@ -104,6 +106,19 @@ export class RuntimeContextCliContinuityService {
     /** Present for HostThread dispatches; the context cursor must follow this exact ACP session. */
     expectedVendorSessionId?: string | null;
   }): Promise<PreparedCliBinding> {
+    // A binding another Run still executes on is not rotated under it: that
+    // Run's acknowledgements need it active, and the lease serializes the
+    // scope. The rotation waits for the lease like an acquisition does.
+    for (;;) {
+      const prepared = await this.prepareUnleasedBinding(input);
+      if (prepared) return prepared;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  private async prepareUnleasedBinding(
+    input: Parameters<RuntimeContextCliContinuityService["prepareBinding"]>[0],
+  ): Promise<PreparedCliBinding | null> {
     return withQueryableTransaction(this.db, async (db) => {
       await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
         `cli-binding:${input.spaceId}:${input.workContextScopeId}:${input.userId}:${input.agentId}`,
@@ -131,6 +146,7 @@ export class RuntimeContextCliContinuityService {
         && !vendorSessionMismatch) {
         return bindingOut(existing);
       }
+      if (existing?.leased) return null;
       const reason = existing
         ? vendorSessionMismatch
           ? "vendor_session_mismatch"
@@ -169,7 +185,7 @@ export class RuntimeContextCliContinuityService {
 
   async rotateMissingVendorState(bindingId: string): Promise<PreparedCliBinding> {
     return withQueryableTransaction(this.db, async (db) => {
-      const current = await db.query<any>(
+      const current = await db.query<{ id: string }>(
         `SELECT * FROM runtime_context_cli_bindings WHERE id=$1 AND status='active' FOR UPDATE`,
         [bindingId],
       );
@@ -239,12 +255,17 @@ export class RuntimeContextCliContinuityService {
     return bindingOut(result.rows[0]);
   }
 
-  async releaseExecutionLease(bindingId: string, leaseId: string): Promise<void> {
+  /**
+   * Released by the lease alone. An overflow rotation moves the lease onto a
+   * replacement binding mid-turn, so the binding the caller acquired it on may
+   * no longer hold it; the lease id is unique to one acquisition either way.
+   */
+  async releaseExecutionLease(leaseId: string): Promise<void> {
     await this.db.query(
       `UPDATE runtime_context_cli_bindings
           SET execution_lease_id=NULL,execution_lease_expires_at=NULL,updated_at=now()
-        WHERE id=$1 AND execution_lease_id=$2`,
-      [bindingId, leaseId],
+        WHERE execution_lease_id=$1`,
+      [leaseId],
     );
   }
 
@@ -342,6 +363,18 @@ export class RuntimeContextCliContinuityService {
         effectiveBinding = replacement.rows[0];
         mode = "full";
         checkpoint = await loadActiveCheckpointForCli(db, input.spaceId, input.workContextScopeId, targetCursor);
+        // The same source gate as a first full delivery: `authorizeCliDeltaItem`
+        // refuses a checkpoint this viewer may not read, and the rotation
+        // above has already committed by then, so the reconstruction must
+        // leave it out here rather than fail the Run on it.
+        if (checkpoint && !(await checkpointSourcesAuthorized(db, checkpoint.checkpoint_json, {
+          spaceId: input.spaceId,
+          workContextScopeId: input.workContextScopeId,
+          viewerUserId: input.ownerUserId,
+          authorizedRefs: input.authorizedSourceRefs,
+        }))) {
+          checkpoint = null;
+        }
         events = await loadCliReconstructionEvents(db, {
           spaceId: input.spaceId,
           workContextScopeId: input.workContextScopeId,
@@ -447,7 +480,8 @@ export class RuntimeContextCliContinuityService {
     const result = await db.query<BindingRow>(
       `SELECT id,runtime_state_key,vendor_session_id,authority_fingerprint,
               runtime_fingerprint,fingerprint_json,cli_known_cursor,
-              acknowledged_item_ids_json,generation,rotation_reason
+              acknowledged_item_ids_json,generation,rotation_reason,
+              (execution_lease_id IS NOT NULL AND execution_lease_expires_at > now()) AS leased
          FROM runtime_context_cli_bindings
         WHERE space_id=$1 AND work_context_scope_id=$2 AND user_id=$3 AND agent_id=$4
           AND status='active' FOR UPDATE`,

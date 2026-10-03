@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
 
-export interface GraphViewStateRecord {
+interface GraphViewStateRecord {
   scope_key: string;
   state_json: Record<string, unknown>;
   updated_at: string | null;
@@ -64,7 +64,7 @@ export class GraphViewStateRepository {
   }
 }
 
-export function validateScopeKey(scopeKey: string): void {
+function validateScopeKey(scopeKey: string): void {
   if (!scopeKey.trim()) throw new HttpError(422, "scope_key is required");
   if (scopeKey.length > 128) throw new HttpError(422, "scope_key must be 128 characters or fewer");
 }

@@ -282,7 +282,7 @@ export class PgSourcesRepository {
     const retention = body.queue_content === true ? "full_text" : "metadata_only";
     if (connection) enforceSourceRetentionPolicy(normalizeSourceConnectionReadGovernance(connection).policy, retention);
     const projectId = connection?.project_id ?? optionalString(body.project_id);
-    const existing = await this.db.query<SourceItemRow>(
+    const readableExisting = async () => (await this.db.query<SourceItemRow>(
       `SELECT ${itemColumnsWithCurrentUserState("si")}
          FROM source_items si
          LEFT JOIN source_item_user_states suis
@@ -296,9 +296,9 @@ export class PgSourcesRepository {
           AND ${sourceItemReadableClause("si", "$3", false)}
         LIMIT 1`,
       [identity.spaceId, canonical, identity.userId, projectId],
-    );
+    )).rows[0];
     const now = new Date().toISOString();
-    let row = existing.rows[0];
+    let row = await readableExisting();
     if (!row) {
       const inserted = await this.db.query<SourceItemRow>(
         `INSERT INTO source_items (
@@ -311,7 +311,9 @@ export class PgSourcesRepository {
            $8, $9, $10, $11,
            $12::jsonb, $13, $13, $13, $13,
            $14, $15, $16
-         ) RETURNING ${ITEM_COLUMNS}`,
+         )
+         ON CONFLICT DO NOTHING
+         RETURNING ${ITEM_COLUMNS}`,
         [
           randomUUID(),
           identity.spaceId,
@@ -331,8 +333,18 @@ export class PgSourcesRepository {
           connection?.access_level ?? "full",
         ],
       );
-      row = inserted.rows[0]!;
-      if (connection?.visibility === "selected_users") {
+      const created = inserted.rows[0];
+      if (!created) {
+        // The URL's slot is unique per Space (and Project), whoever owns the
+        // row. A concurrent save of our own lands on a row we can read; one
+        // we cannot read is a conflict, not a server error.
+        const raced = await readableExisting();
+        if (!raced) throw new HttpError(409, "This URL is already saved here as an item you cannot open");
+        row = raced;
+      } else {
+        row = created;
+      }
+      if (created && connection?.visibility === "selected_users") {
         await inheritContentAccessGrants(this.db, {
           spaceId: identity.spaceId,
           sourceResourceType: "source_connection",

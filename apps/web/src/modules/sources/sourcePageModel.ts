@@ -8,22 +8,6 @@ export const CAPTURE_POLICIES: Array<{ value: SourceCapturePolicy; label: string
   { value: 'archive_original', label: 'Archive original' },
 ]
 
-const CAPTURE_POLICY_VALUES = new Set(CAPTURE_POLICIES.map(policy => policy.value))
-
-export function sourceCapturePolicyValue(value: string, fallback: SourceCapturePolicy = 'reference_only'): SourceCapturePolicy {
-  return CAPTURE_POLICY_VALUES.has(value as SourceCapturePolicy) ? value as SourceCapturePolicy : fallback
-}
-
-const CAPTURE_POLICY_DESCRIPTIONS: Record<string, string> = {
-  reference_only: 'Save title, URL, source metadata, scan timestamps, and any feed/API excerpt without fetching the original page.',
-  extract_text: 'Fetch the source and store a reader document/plain text for reading, search, and evidence extraction.',
-  archive_original: 'Store the original HTML/PDF snapshot, then derive the reader document/plain text from that archived copy.',
-}
-
-export function capturePolicyDescription(capturePolicy: string) {
-  return CAPTURE_POLICY_DESCRIPTIONS[capturePolicy] ?? CAPTURE_POLICY_DESCRIPTIONS.reference_only
-}
-
 export const FREQUENCIES = [
   { value: 'manual', label: 'Manual' },
   { value: 'hourly', label: 'Hourly' },
@@ -47,15 +31,11 @@ export interface ScheduleFormValue {
   weekday: string
 }
 
-export function emptyScheduleFormValue(): ScheduleFormValue {
-  return { minute: '', hour: '', weekday: '' }
-}
-
 export function isScheduledFrequency(fetchFrequency: string) {
   return fetchFrequency === 'hourly' || fetchFrequency === 'daily' || fetchFrequency === 'weekly'
 }
 
-export function isScheduleFormComplete(fetchFrequency: string, value: ScheduleFormValue) {
+function isScheduleFormComplete(fetchFrequency: string, value: ScheduleFormValue) {
   if (fetchFrequency === 'manual') return true
   if (fetchFrequency === 'hourly') return validMinute(value.minute)
   if (fetchFrequency === 'daily') return validHour(value.hour) && validMinute(value.minute)
@@ -67,12 +47,23 @@ export function scheduleRuleFromForm(fetchFrequency: string, value: ScheduleForm
   if (!isScheduledFrequency(fetchFrequency)) return null
   if (!isScheduleFormComplete(fetchFrequency, value)) return undefined
   if (fetchFrequency === 'hourly') {
-    return { frequency: 'hourly', minute: Number(value.minute) }
+    // The server runs the rule at a UTC minute; the form holds the local
+    // one, which differs in a zone offset by a part of an hour.
+    const candidate = new Date(now)
+    candidate.setMinutes(Number(value.minute), 0, 0)
+    return { frequency: 'hourly', minute: candidate.getUTCMinutes() }
   }
   if (fetchFrequency === 'daily') {
     return utcRuleFromLocalCandidate('daily', nextDailyLocalOccurrence(Number(value.hour), Number(value.minute), now))
   }
   return utcRuleFromLocalCandidate('weekly', nextWeeklyLocalOccurrence(Number(value.weekday), Number(value.hour), Number(value.minute), now))
+}
+
+/** The local minute the form shows for an hourly rule's UTC minute. */
+export function hourlyFormMinuteFromRule(utcMinute: number, now = new Date()): string {
+  const candidate = new Date(now)
+  candidate.setUTCMinutes(utcMinute, 0, 0)
+  return String(candidate.getMinutes())
 }
 
 function nextDailyLocalOccurrence(hour: number, minute: number, now: Date) {
@@ -126,22 +117,6 @@ function isoUtcWeekday(date: Date) {
   return day === 0 ? 7 : day
 }
 
-export function minimumRetentionForCapturePolicy(capturePolicy: string) {
-  if (capturePolicy === 'archive_original') return 'full_snapshot'
-  if (capturePolicy === 'extract_text') return 'full_text'
-  return 'metadata_only'
-}
-
-const RETENTION_RANK = ['metadata_only', 'summary_only', 'full_text', 'full_snapshot', 'archived']
-
-export function retentionAtLeast(current: string, minimum: string) {
-  const currentRank = RETENTION_RANK.indexOf(current)
-  const minimumRank = RETENTION_RANK.indexOf(minimum)
-  if (currentRank < 0) return minimum
-  if (minimumRank < 0) return current
-  return currentRank < minimumRank ? minimum : current
-}
-
 const TEXT_EXTRACTION_READY_STATES = new Set(['metadata_only', 'excerpt_saved', 'content_saved', 'extraction_failed'])
 
 export function textExtractionDisabledReason(item: Pick<SourceItem, 'content_state' | 'source_uri'>) {
@@ -151,10 +126,6 @@ export function textExtractionDisabledReason(item: Pick<SourceItem, 'content_sta
   if (item.content_state === 'snapshot_queued') return 'Snapshot capture is already queued.'
   if (item.content_state === 'snapshot_saved') return 'A source snapshot is already saved.'
   return `Text extraction is not available for ${item.content_state}.`
-}
-
-export function canQueueTextExtraction(item: Pick<SourceItem, 'content_state' | 'source_uri'>) {
-  return textExtractionDisabledReason(item) === null
 }
 
 export function textExtractionActionLabel(item: Pick<SourceItem, 'content_state'>) {

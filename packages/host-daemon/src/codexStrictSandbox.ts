@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
  * downstream that reads it; Codex does not. This file is the runtime half:
  * the copy's `config.toml` is the switch that was measured to restore writes.
  */
-export const CODEX_STRICT_SANDBOX_MODE = "workspace-write";
+const CODEX_STRICT_SANDBOX_MODE = "workspace-write";
 export const CODEX_STRICT_SANDBOX_TOML = `sandbox_mode = "${CODEX_STRICT_SANDBOX_MODE}"`;
 
 /**

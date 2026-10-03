@@ -33,7 +33,7 @@ const RETRY_BASE_MS = 60_000;
 const RETRY_MAX_MS = 6 * 60 * 60_000;
 const RETRY_JITTER_RATIO = 0.2;
 
-export interface RoomConversationSummaryState {
+interface RoomConversationSummaryState {
   room_id: string;
   session_id: string;
   status: "idle" | "queued" | "running" | "waiting_provider" | "retry_wait" | "failed";
@@ -159,8 +159,37 @@ export async function requestRoomConversationSummary(
     // before the threshold; the provider path rechecks the exact batch. The
     // threshold is the raw tail a summary always leaves uncovered.
     const sourceTokens = Number(threshold.rows[0]?.source_token_estimate ?? 0);
-    if (sourceTokens < ROOM_RECENT_TOKEN_BUDGET) return;
     const now = new Date().toISOString();
+    if (sourceTokens < ROOM_RECENT_TOKEN_BUDGET) {
+      // Nothing to summarize yet, but the watermark is still recorded: the
+      // freshness sweep selects by it, and a short conversation that never
+      // moved it was re-selected on every tick forever, holding one of the
+      // sweep's places from the backlog behind it. The state stays as it is
+      // (`idle` when new), and no job is enqueued.
+      await client.query(
+        `INSERT INTO room_conversation_summary_states (
+           id, space_id, room_id, session_id, status,
+           requested_through_message_id, requested_through_created_at,
+           retry_count, updated_at
+         ) VALUES ($1,$2,$3,$4,'idle',$5,$6,0,$7)
+         ON CONFLICT (session_id) DO UPDATE SET
+           requested_through_message_id = CASE
+             WHEN room_conversation_summary_states.requested_through_message_id IS NULL
+               OR ${summaryWatermarkAdvancedSql}
+             THEN EXCLUDED.requested_through_message_id
+             ELSE room_conversation_summary_states.requested_through_message_id
+           END,
+           requested_through_created_at = CASE
+             WHEN room_conversation_summary_states.requested_through_message_id IS NULL
+               OR ${summaryWatermarkAdvancedSql}
+             THEN EXCLUDED.requested_through_created_at
+             ELSE room_conversation_summary_states.requested_through_created_at
+           END,
+           updated_at = EXCLUDED.updated_at`,
+        [randomUUID(), input.spaceId, input.roomId, input.sessionId, input.throughMessageId, input.throughCreatedAt, now],
+      );
+      return;
+    }
     const state = await client.query<{ status: string; retry_count: number }>(
       `INSERT INTO room_conversation_summary_states (
          id, space_id, room_id, session_id, status,
@@ -774,7 +803,7 @@ export class RoomConversationSummaryService {
   }
 }
 
-export function summaryOut(row: SummaryVersionRow, owner: boolean): Record<string, unknown> {
+function summaryOut(row: SummaryVersionRow, owner: boolean): Record<string, unknown> {
   return {
     id: row.id,
     version: row.version,
@@ -842,8 +871,8 @@ function isoDate(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
-export const ROOM_SUMMARY_SYSTEM_PROMPT_VERSION = "room-summary-prompt.v1";
-export const ROOM_SUMMARY_SCHEMA_VERSION = "room-summary-schema.v1";
+const ROOM_SUMMARY_SYSTEM_PROMPT_VERSION = "room-summary-prompt.v1";
+const ROOM_SUMMARY_SCHEMA_VERSION = "room-summary-schema.v1";
 const SUMMARY_SYSTEM = `You maintain a durable rolling summary for a shared Room conversation.
 Return only JSON: {"summary":"..."}. Preserve decisions, constraints, unresolved questions,
 tasks, important facts, and references needed to continue the conversation. Do not invent

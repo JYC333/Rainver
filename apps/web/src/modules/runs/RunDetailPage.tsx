@@ -5,7 +5,7 @@ import { ArrowLeft, ExternalLink, FileCode2, FlaskConical, Loader2, Save, Shield
 import { toast } from 'sonner'
 import { artifactsApi, authorizationRequestsApi, evolutionApi, runsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { ActivityRecord, Artifact, AuthorizationRequest, Proposal, Run, RunAttempt, RunEvaluation, RunFinalization, RunLogicalIO, RunSupervisorDecision, RunVerificationResult } from '../../types/api'
+import type { ActivityInboxRecord, Artifact, AuthorizationRequest, Proposal, Run, RunAttempt, RunEvaluation, RunFinalization, RunLogicalIO, RunSupervisorDecision, RunVerificationResult } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -97,7 +97,7 @@ export default function RunDetailPage() {
   const [abandonOpen, setAbandonOpen] = useState(false)
   const [abandonReason, setAbandonReason] = useState('')
   const { run: polled, loading, error } = useRun(runId && activeSpaceId ? runId : null, reloadKey)
-  const [activities, setActivities] = useState<ActivityRecord[]>([])
+  const [activities, setActivities] = useState<ActivityInboxRecord[]>([])
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
   const [authorizationRequests, setAuthorizationRequests] = useState<AuthorizationRequest[]>([])
@@ -414,7 +414,10 @@ export default function RunDetailPage() {
     polled && polled.id === runId && polled.space_id === activeSpaceId,
   )
 
-  if ((loading && !polled) || (polled !== null && !polledMatchesScope)) {
+  // A failure to load the Run named in the route is reported below even
+  // while the hook still holds the previous Run; otherwise a switch to a Run
+  // that cannot be loaded shows this skeleton for good.
+  if (!error && ((loading && !polled) || (polled !== null && !polledMatchesScope))) {
     return (
       <div className="p-6 space-y-4 max-w-4xl">
         <Skeleton className="h-10 w-64" />
@@ -728,11 +731,11 @@ export default function RunDetailPage() {
                     to={`/activity/${act.id}`}
                     className="text-sm font-medium text-accent-foreground hover:underline"
                   >
-                    {act.title ?? act.activity_type}
+                    {act.title ?? act.source_type}
                   </Link>
                   <span className="text-xs text-muted-foreground">{fmt(act.occurred_at)}</span>
                 </div>
-                <Badge variant="outline" className="mt-2">{act.activity_type}</Badge>
+                <Badge variant="outline" className="mt-2">{act.source_type}</Badge>
                 <ScopeBadge visibility={act.visibility} className="mt-2 ml-1" omitShared />
                 {act.content && <p className="text-xs text-muted-foreground mt-2 whitespace-pre-wrap">{act.content}</p>}
               </Card>

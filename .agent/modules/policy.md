@@ -23,7 +23,7 @@ RBAC/ABAC platform — it is a lightweight, code-owned permission layer that rou
 
 ## Owns
 
-- `PolicyEngine` — stateless built-in rule evaluation (per-request).
+- `engineCheck` (`server/src/modules/policy/decisionCore.ts`) — stateless built-in rule evaluation (per-request).
 - `PolicyActionDefinition` registry (`packages/protocol/src/policy.ts`) — canonical code-owned list of sensitive actions.
 - `UnknownPolicyActionError` — raised by `requireActionDefinition()` for unregistered actions. Unknown actions never silently fall through.
 - `PolicyDecision` — structured decision result with audit fields.
@@ -56,7 +56,7 @@ PolicyDecision: allow | deny | require_approval
   actor_type      — "user" | "run" | None
   actor_id, actor_ref, space_id, resource_type, resource_id
 
-PolicyContext (engine):
+Engine context (`PolicyCheckRequest` flattened for `engineCheck`):
   action, space_id, resource_space_id
   user_id, agent_id, agent_status
   agent_tool_permissions, tool_name
@@ -81,7 +81,7 @@ Every sensitive action is registered in `packages/protocol/src/policy.ts`. Unkno
 actions must raise through `requireActionDefinition()` — they do not silently fall
 through as allow.
 
-**The policy service is the production enforcement entry point.** `PolicyEngine`
+**The policy service is the production enforcement entry point.** `engineCheck`
 alone is not enforcement; it is the stateless rule evaluator inside the active
 authority. Sensitive business actions call `enforce()` or
 `enforceProposalApply()` through `server/src/modules/policy/service.ts`.
@@ -93,14 +93,20 @@ The registry has three lifecycle categories:
 **Proposal actions** (`lifecycle_status=WIRED_VIA_PROPOSAL`) are protected by `proposal.apply`.
 **Reserved actions** (`lifecycle_status=RESERVED`) are registered for registry completeness and
 fail-closed defence-in-depth. `current_enforcement_point="not_implemented"`. Not wired
-to any business code yet. `PolicyGateway` always denies reserved actions regardless of
-registry `default_decision`. Not full RBAC/ABAC — they express intent and default risk.
+to any business code yet. `computeDecision` (`gateway.ts`) always denies reserved actions
+(`policy_action_not_implemented`) regardless of registry `default_decision`. Not full RBAC/ABAC — they express intent and default risk.
 
 ### Wired actions
 
 | Action | Resource | Risk | Default Decision | Enforcement |
 |---|---|---|---|---|
 | `runtime.execute` | run | medium | allow | `server/src/modules/runs/orchestrationService.ts` |
+| `run.spawn_child` | run | medium | require_approval (decided by `ruleRunSpawnChild`) | `server/src/modules/agentGroups/service.ts` via `enforce()` |
+| `authorization.request.create` | authorization_request | medium | allow (audit_required) | `server/src/modules/policy/authorizationRequestService.ts` |
+| `policy.action_grant.create` | action_approval_grant | high | allow (audit_required) | `server/src/modules/policy/actionApprovalGrantService.ts` |
+| `policy.action_grant.revoke` | action_approval_grant | high | allow (audit_required) | `server/src/modules/policy/actionApprovalGrantService.ts` |
+| `runtime_context_policy.change` | runtime_context_policy | high | deny | `server/src/modules/policy/runtimeContextPolicyRepository.ts` |
+| `work_context_setup.change` | work_context_setup | medium | deny | `server/src/modules/runtimeContext/workContextService.ts` |
 | `runtime.use_credential` | credential | high | require_approval (never reached: the rule decides every origin) | `policy/credentialSpend.ts` (`authorizeCredentialSpend`) |
 | `context.inject_memory` | memory | low | allow | context/runs modules |
 | `context.render_for_runtime` | context | low | allow | runs module |
@@ -110,6 +116,8 @@ registry `default_decision`. Not full RBAC/ABAC — they express intent and defa
 | `proposal.create` | proposal | low | allow | proposals + target modules via `enforce()` |
 | `proposal.apply` | proposal | medium | require_approval | proposal apply service via `enforceProposalApply()` |
 | `project_folder.read` | project_folder | low | allow | projectFolders repository via `enforce()` |
+| `input_resource.read` | conversation_input_resource | low | allow (audit_required) | `server/src/modules/sessions/conversationInputResourceService.ts` |
+| `input_resource.search` | conversation_input_resource | low | allow (audit_required) | `server/src/modules/sessions/conversationInputResourceService.ts` |
 | `runtime_skill.render` | runtime_skill_binding | medium | require_approval | context module via `enforce()` |
 | `agent.config_update` | agent | high | allow (audit_required) | agents routes/repository before config proposal creation |
 | `source.connection.manage` | source_connection | medium | allow (audit_required) | sources routes via `enforce()` |
@@ -119,6 +127,10 @@ registry `default_decision`. Not full RBAC/ABAC — they express intent and defa
 | `evidence.update` | evidence | low | allow (audit_required) | sources routes via `enforce()` |
 | `evidence.link` | evidence | low | allow (audit_required) | sources routes via `enforce()` |
 | `project.source.bind` | project_source | medium | allow (audit_required) | projects routes via `enforce()` |
+| `project.operation.manage` | project_operation | low | allow (audit_required) | projects routes via `enforce()` |
+| `inquiry.thread.create` | project | low | allow (audit_required) | `server/src/modules/systemActions/systemActionDispatcher.ts` |
+| `research.acquisition.start` | inquiry_thread | medium | allow (audit_required) | `server/src/modules/projectResearch/pipeline/researchAcquisitionService.ts` |
+| `research.acquisition.cancel` | project_operation | low | allow (audit_required) | `server/src/modules/projectResearch/routes.ts` + system-action policy gate |
 | `source.custom.create` | source_connection | medium | allow (audit_required) | sources routes via `enforce()` |
 | `source.custom.generate` | source_connection | medium | allow (audit_required) | sources routes via `enforce()` |
 | `source.custom.test` | source_connection | low | allow (audit_required) | sources routes via `enforce()` |
@@ -130,13 +142,14 @@ registry `default_decision`. Not full RBAC/ABAC — they express intent and defa
 | `source.recipe.activate` | source_connection | medium | allow (audit_required) | source recipe routes via `enforce()` |
 | `source.recipe.dry_run` | source_connection | low | allow (audit_required) | source recipe routes via `enforce()` |
 | `source.custom.settings_update` | custom_source_settings | medium | allow (audit_required) | sources settings routes via `enforce()` |
-| `context.select_evidence` | evidence | low | allow | context module via `enforce()` |
 | `retrieval.search` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
 | `retrieval.brief` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
 | `memory.retrieval.search` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
 | `memory.retrieval.brief` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
 | `project.summary.search` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
 | `project.summary.brief` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
+| `source.retrieval.search` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
+| `source.retrieval.brief` | retrieval_tool | low | deny (allow only by rule) | managed retrieval tools via `enforce()` |
 | `memory.create` | memory | medium | require_approval | via `proposal.apply` |
 | `memory.update` | memory | medium | require_approval | via `proposal.apply` |
 | `memory.archive` | memory | medium | require_approval | via `proposal.apply` |
@@ -144,15 +157,17 @@ registry `default_decision`. Not full RBAC/ABAC — they express intent and defa
 | `knowledge.create` | knowledge | medium | require_approval | via `proposal.apply` |
 | `knowledge.update` | knowledge | medium | require_approval | via `proposal.apply` |
 | `knowledge.archive` | knowledge | medium | require_approval | via `proposal.apply` |
-| `knowledge.relation_create` | object_relation | medium | require_approval | via `proposal.apply` |
-| `knowledge.relation_delete` | object_relation | medium | require_approval | via `proposal.apply` |
 | `claim.create` | claim | medium | require_approval | via `proposal.apply` |
 | `claim.update` | claim | medium | require_approval | via `proposal.apply` |
 | `claim.archive` | claim | medium | require_approval | via `proposal.apply` |
-| `claim.relation_create` | object_relation | medium | require_approval | via `proposal.apply` |
-| `claim.relation_delete` | object_relation | medium | require_approval | via `proposal.apply` |
 | `object_relation.create` | object_relation | medium | require_approval | via `proposal.apply` |
 | `object_relation.delete` | object_relation | medium | require_approval | via `proposal.apply` |
+| `object_profile.create` | object_schema | high | require_approval | via `proposal.apply` |
+| `object_profile.update` | object_schema | high | require_approval | via `proposal.apply` |
+| `object_profile.deprecate` | object_schema | high | require_approval | via `proposal.apply` |
+| `object_profile.archive` | object_schema | high | require_approval | via `proposal.apply` |
+| `claim_candidate_packet` | proposal | medium | require_approval | via `proposal.apply` |
+| `relation_discovery_packet` | proposal | medium | require_approval | via `proposal.apply` |
 | `memory_maintenance_packet` | proposal | medium | require_approval | via `proposal.apply` |
 | `retrieval_maintenance_packet` | proposal | medium | require_approval | via `proposal.apply` |
 | `retrieval_diagnostics_packet` | proposal | medium | require_approval | via `proposal.apply` |
@@ -160,17 +175,18 @@ registry `default_decision`. Not full RBAC/ABAC — they express intent and defa
 | `skill.convert` | skill_package | high | require_approval | via `proposal.apply` |
 | `capability.enable` | capability | high | require_approval | via `proposal.apply` |
 | `capability.disable` | capability | medium | require_approval | via `proposal.apply` |
+| `capability.update` | capability | high | require_approval | via `proposal.apply` |
+| `runtime_skill.binding_update` | runtime_skill_binding | high | require_approval | via `proposal.apply` |
+| `source.connection.activate` | source_connection | high | require_approval | via `proposal.apply` (`source_connection_create`) |
+| `automation.create` | automation | high | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
+| `automation.update` | automation | high | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
+| `automation.fire` | automation | medium | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
 
 Memory/Retrieval review packet actions keep private packet creator-only
 authorization in their appliers. Space-wide review is a separate explicit path:
 only `visibility = space_shared` packets with payload
 `review_scope = space_ops` can be accepted by non-creators, and only when the
 Space `context_ops_review_mode` setting permits that reviewer role.
-| `capability.update` | capability | high | require_approval | via `proposal.apply` |
-| `runtime_skill.binding_update` | runtime_skill_binding | high | require_approval | via `proposal.apply` |
-| `automation.create` | automation | high | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
-| `automation.update` | automation | high | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
-| `automation.fire` | automation | medium | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
 
 `proposal.create` covers user-created memory proposals and system-created code_patch
 proposals from CLI runs. `agent.config_update` is the domain-specific creation gate
@@ -183,7 +199,7 @@ runtime-skill binding, and accepted config proposal application.
 
 Registered for registry completeness and fail-closed defence-in-depth.
 Except for the wired direct Save to Folder action listed above, these actions have
-`current_enforcement_point="not_implemented"`. `PolicyGateway` always denies
+`current_enforcement_point="not_implemented"`. `computeDecision` always denies
 reserved actions. The registry is **not** full RBAC/ABAC.
 
 | Action | Resource | Risk | Default Decision |
@@ -196,6 +212,7 @@ reserved actions. The registry is **not** full RBAC/ABAC.
 | `runtime_skill.execute` | runtime_skill_binding | high | require_approval |
 | `tool_binding.enable` | tool_binding | high | require_approval |
 | `evidence.export` | evidence | high | require_approval |
+| `note.link.create` | note | low | deny |
 | `deployment.propose` | deployment | high | require_approval |
 | `deployment.execute` | deployment | **critical** | require_approval |
 
@@ -207,7 +224,7 @@ reserved actions. The registry is **not** full RBAC/ABAC.
 child-run action `run.spawn_child` inside `AgentGroupRunService`. Public callers
 cannot directly spawn agent-origin child runs; the service proves same-space
 group membership, active statuses, parent-run agent identity, root lineage, and
-capacity before calling `PolicyGateway.enforce()`. `agent.wait_for_results` is
+capacity before calling `enforce()` for the registered `run.spawn_child` action. `agent.wait_for_results` is
 also not a registry action; it can only reference same-space, same-room runs
 from the currently executing room run and parks that run until dependencies are
 terminal. `runtime.execute` is separate from delegation/waiting and only
@@ -215,9 +232,13 @@ controls adapter execution.
 
 ## Approval Resolver
 
-`canApprovePolicyAction(...)` in `server/src/modules/policy/decisionCore.ts`.
+`roleMayApproveRisk(role, risk)` in `server/src/modules/policy/decisions.ts`, applied by
+`checkProposalApplyPolicy(...)` in `server/src/modules/policy/gateway.ts`.
 
-- Raises `UnknownPolicyActionError` for any action not in the canonical registry. Unknown actions never return True.
+- A proposal type without a registered applier and risk-table entry is denied
+  (`unsupported_proposal_type`) before any role check.
+- A proposal's `required_approver_role` must also be met
+  (`insufficient_required_approver_role`, rule `proposal_apply_required_role`).
 - Default approval rules:
   - **owner**: can approve all currently supported proposal.apply actions including critical.
   - **admin**: can approve low, medium, and high risk actions; NOT critical.
@@ -227,12 +248,14 @@ controls adapter execution.
 
 ## Proposal Apply Gate
 
-`enforceProposalApply(...)` in `server/src/modules/policy/gateway.ts`, called from
-`server/src/modules/proposals/applyService.ts`.
+`enforceProposalApply(...)` in `server/src/modules/policy/service.ts` (the pure
+decision is `checkProposalApplyPolicy` in `gateway.ts`), called from
+`server/src/modules/proposals/applyService.ts`. It returns an `EnforceResult`
+(`allow` / `blocked` / `error`) carrying the decision.
 
-Returns a full `PolicyDecision` with:
+The decision is a full `PolicyDecision` with:
 - `decision`: allow / require_approval / deny
-- `message`, `audit_code` (approved_owner, approved_admin, insufficient_role, no_membership, unsupported_proposal_type)
+- `message`, `audit_code` (approved_owner, approved_admin, approved_reviewer, insufficient_role, insufficient_required_approver_role, no_membership, unsupported_proposal_type)
 - `reason_code`: stable machine-readable code matching `audit_code` in all branches
 - `policy_rule_id`: stable rule identifier (e.g. `proposal_apply_owner_allow`, `proposal_type_not_supported`)
 - `actor_type="user"` on all branches
@@ -241,12 +264,19 @@ Returns a full `PolicyDecision` with:
 - `proposal_type`, `approval_capability`
 - `metadata_json`: proposal_type, membership_role, effective_risk, proposal_declared_risk, default_type_risk, supported_apply_type
 
-Effective risk computation:
-- `memory_create / memory_update / memory_archive / follow_up_task` → medium
-- Knowledge/claim/object-relation proposal types and Memory/Retrieval review
-  packet types (`memory_maintenance_packet`, `retrieval_maintenance_packet`,
-  `retrieval_diagnostics_packet`) → medium
-- `code_patch / policy_change / egress_review` → high
+Effective risk computation (`PROPOSAL_TYPE_RISK` in `gateway.ts` is the table):
+- `memory_create / memory_update / memory_archive / follow_up_task`,
+  `plan_review / plan_checkpoint / prompt_update` → medium
+- Knowledge/claim/object-relation proposal types and review packet types
+  (`claim_candidate_packet`, `imported_history_memory_packet`,
+  `memory_maintenance_packet`, `retrieval_maintenance_packet`,
+  `retrieval_diagnostics_packet`, `relation_discovery_packet`) → medium
+- `skill_import_approve`, `capability_disable`, `custom_source_policy_delta`,
+  `custom_source_repair_activation`, `source_recipe_activation` → medium
+- `code_patch / policy_change / egress_review / agent_config_update`,
+  `object_profile_*`, `capability_install / capability_update / capability_enable`,
+  `runtime_skill_binding_update`, `custom_source_credentialed_source`,
+  `evolution_bundle_rollback` → high
 - Unknown proposal type → high (conservative)
 - Effective risk = max(type default, explicit proposal.risk_level)
 - Invalid proposal.risk_level string raises `ProposalRiskLevelError` before any role check
@@ -257,8 +287,8 @@ Effective risk computation:
 - `false` for unsupported/unknown types — proposal.apply denies before dispatch
 
 At proposal accept time:
-- `allow` → proceed to `ProposalApplyService.apply()`
-- `require_approval` or `deny` → `enforceProposalApply()` raises `PolicyGateBlocked`; proposal stays pending
+- `allow` → `PgProposalApplyService` proceeds to the registered applier
+- `require_approval` or `deny` → `enforceProposalApply()` returns `blocked`; the service raises a 403 and the proposal stays pending
 
 ## Additional Enforcement Boundaries
 
@@ -268,7 +298,7 @@ calls `enforceProposalApply(...)` before applying accepted proposal side effects
 
 - Accepted proposals represent the human approval event.
 - The acting user must have approval authority for the proposal type and effective risk level.
-- `PolicyGateBlocked` is raised if denied or approval is required; the HTTP handler rolls back the request session, writes the blocking audit record independently, and returns 403.
+- A `blocked` result (denied or approval required) becomes a 403 after the blocking audit record is written best-effort; an `error` result (a fail-closed ALLOW whose audit could not be written) becomes a 500.
 - No durable write (MemoryEntry, Policy, Task, code patch) occurs on denial.
 - `ProposalRiskLevelError` is raised for invalid proposal.risk_level; HTTP callers return 422.
 
@@ -285,31 +315,33 @@ govern private memory access in run context.
 
 ### Policy Service / Policy Gateway (enforcement entry point)
 
-`enforce(PolicyCheckRequest(...))` and `enforceProposalApply(...)` are the
-preferred production entry points for sensitive policy decisions. Do not call
-`PolicyEngine` or hard-invariant helpers directly to authorize or perform
+`enforce(PolicyCheckRequest)` and `enforceProposalApply(...)` in
+`server/src/modules/policy/service.ts` are the preferred production entry
+points for sensitive policy decisions. Do not call `engineCheck`,
+`computeDecision`, or hard-invariant helpers directly to authorize or perform
 sensitive actions.
-The documented non-mutating simulation points may call `PolicyEngine`; they do
+The documented non-mutating simulation points may call `computeDecision`; they do
 not persist `PolicyDecisionRecord`, and actual runtime execution still uses
 the active policy service.
 
-`DurablePolicyAuditWriter` writes only `PolicyDecisionRecord` using an independent
-transaction. `PolicyGateBlocked` represents DENY and REQUIRE_APPROVAL. Local runtime
-blocked paths call `write_blocked_gate_audit()` once; `PolicyAuditPersistError`
-blocks a fail-closed action whose audit cannot be persisted. Business transactions
-are never committed just to commit audit or lock rows.
+`writePolicyAudit` (`auditWriter.ts`) writes only `PolicyDecisionRecord` using an
+independent connection. `enforce()` returns `blocked` for DENY and
+REQUIRE_APPROVAL and writes that audit once, best-effort; a fail-closed ALLOW
+whose audit cannot be persisted returns `error` (`policy_audit_persist_failed`)
+and the action does not proceed. Business transactions are never committed
+just to commit audit or lock rows.
 
 ### Wired enforcement points
 
-`PolicyPort` is the only production enforcement entry point. `PolicyEngine` is internal to
-the policy package except for the documented non-mutating simulation paths:
-run creation, agent run preflight, standalone preflight, and automation policy
-preflight.
+The policy service is the only production enforcement entry point. `computeDecision` is
+internal to the policy package except for the documented non-mutating
+simulation path: the automation policy preflight.
 
 | Action | File | When |
 |---|---|---|
 | `runtime.execute` | `server/src/modules/runs/orchestrationService.ts` | Before credentials, Runtime Context Delivery, and adapter execution |
 | `runtime.use_credential` | `server/src/modules/policy/credentialSpend.ts` | Before any ModelProvider key is resolved or proxy lease minted |
+| `run.spawn_child` | `server/src/modules/agentGroups/service.ts` (`AgentGroupRunService`) via `enforce()` | Before an Agent creates a delegated child Run; decided by `ruleRunSpawnChild` |
 | `context.inject_memory` | execution-control preflight + Runtime Context acquisition | Before Memory candidates may enter an accepted Delivery |
 | `context.render_for_runtime` | execution-control preflight + Runtime Context gateway | Before accepted Delivery reaches an adapter |
 | `artifact.persist` | `server/src/modules/runs/materializationService.ts` via `enforce()` | Before filesystem/row persistence; fail-closed audit |
@@ -328,7 +360,7 @@ preflight.
 
 **runtime.execute context fields**: Rule-relevant fields (`agent_status`, `agent_tool_permissions`,
 `tool_name`, `runtime_key`, `trigger_origin`, `risk_level`, etc.) are passed in
-`PolicyCheckRequest.context` so `PolicyEngine` rules can read them. Safe copies are
+`PolicyCheckRequest.context` so the engine rules can read them. Safe copies are
 kept in `metadata_json` for audit only.
 
 **runtime.execute actor semantics**: For manual/user-origin runs where
@@ -380,26 +412,31 @@ REQUIRE_APPROVAL: nobody is present to approve it.
 and system-created code_patch proposals. The latter uses `force_record=True`;
 durable memory mutation still occurs only behind `proposal.apply`.
 
-### ProposalApplyService defense-in-depth
+### Memory apply accept context
 
-`ProposalApplyService.apply()` requires `accept_context` in `{"explicit_user_accept", "internal_seed"}`.
-Direct calls without a valid `accept_context` must pass `bypass_source_monitoring=True` (test/seed paths only).
+There is no `accept_context` parameter on `PgProposalApplyService`; the memory
+applier (`memory/memoryApplyRepository.ts`) records it fixed to
+`explicit_user_accept`.
 
 ### Stateless Engine Rules
 
-`PolicyEngine.check()` first calls `requireActionDefinition(action)`. Unknown actions
+`engineCheck()` (`decisionCore.ts`) first calls `requireActionDefinition(action)`. Unknown actions
 return DENY with `audit_code="unknown_policy_action"`. `BUILTIN_RULES` evaluated in order:
 
-1. `rule_space_boundary` — deny cross-space access
-2. `rule_agent_status` — deny `runtime.execute` and `memory.*` for non-active agents
-3. `rule_memory_scope` — `require_approval` for `memory.create/update/archive` to protected scopes
-4. `rule_use_credential` — cross-space DENY (CRITICAL); a setup authorization from its registered origin ALLOW; automation/autonomous ALLOW only with a standing grant, else DENY; `manual` ALLOW; every other or missing origin DENY
-5. `rule_tool_permission` — deny `runtime.execute` if tool/adapter not in agent allowlist
-6. `rule_project_folder_write_patch` — `require_approval` without proposal_id; `allow` with valid proposal
-7. `rule_automation` — allow automation.create/update/fire for admin/owner; deny lower roles
-8. `rule_runtime_execute_risk_level` — reflect context risk level on `runtime.execute`
-9. `rule_runtime_skill_render_enabled` — allow only runtime-skill render calls with an enabled binding proof
-10. `ruleRetrievalToolCall` — allow enabled retrieval-tool domains with an instructed viewer; deny disabled domains, missing viewers, source-policy denial, and egress-policy denial
+1. `ruleSpaceBoundary` — deny cross-space access
+2. `ruleAgentStatus` — deny `runtime.execute` and `memory.*` for non-active agents
+3. `ruleMemoryScope` — `require_approval` for `memory.create/update/archive` to protected scopes
+4. `ruleUseCredential` — cross-space DENY (CRITICAL); a setup authorization from its registered origin ALLOW; automation/autonomous ALLOW only with a standing grant, else DENY; `manual` ALLOW; every other or missing origin DENY
+5. `ruleToolPermission` — deny `runtime.execute` if tool/adapter not in agent allowlist
+6. `ruleProjectFolderWritePatch` — `require_approval` without proposal_id; `allow` with valid proposal
+7. `ruleProjectFolderDirectApply` — allow `project_folder.apply_patch` for a direct user write
+8. `ruleAutomation` — allow automation.create/update/fire for admin/owner; deny lower roles
+9. `ruleRuntimeExecuteRiskLevel` — reflect context risk level on `runtime.execute`
+10. `ruleRunSpawnChild` — deny `run.spawn_child` with missing context, a self target, inactive group/agents/members, or exceeded depth/fanout/concurrency limits; otherwise allow
+11. `ruleRuntimeSkillRenderEnabled` — allow only runtime-skill render calls with an enabled binding proof
+12. `ruleRetrievalToolCall` — allow enabled retrieval-tool domains with an instructed viewer; deny disabled domains, missing viewers, source-policy denial, and egress-policy denial
+13. `ruleManagedSystemActionGrant` — on the managed-run system-action surface, allow requestable system actions only with a bounded Run grant
+14. `ruleUnattendedProjectWrite` — `require_approval` for origin-gated Project writes (`task.create`, `task.stage.advance`, `task.complete`, `proposal.decide`, `inquiry.thread.create`, `inquiry.iteration.record`, `inquiry.advice.adopt`, `research.acquisition.start`, `memory.write`) from an unattended origin
 
 Falls through to registry default only for **known** registered actions when no rule matches.
 

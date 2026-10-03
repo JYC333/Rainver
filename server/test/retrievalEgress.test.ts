@@ -90,6 +90,14 @@ describe("retrievalEgressAllowed", () => {
       }),
     ).toBe("local_provider");
     expect(retrievalProviderEgressDestination({ provider_type: "openai", base_url: null })).toBe("external_provider");
+    // Loopback is judged as an address: a hostname that merely starts with
+    // "127." is somebody else's machine, and an IPv6 literal keeps its brackets.
+    expect(
+      retrievalProviderEgressDestination({ provider_type: "openai_compatible", base_url: "https://127.evil.com/v1" }),
+    ).toBe("external_provider");
+    expect(
+      retrievalProviderEgressDestination({ provider_type: "openai_compatible", base_url: "http://[::1]:8080/v1" }),
+    ).toBe("local_provider");
   });
 
   it("fails closed when source-derived content lacks a source policy snapshot", () => {

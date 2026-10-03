@@ -16,7 +16,8 @@ import { rootTypeForAccountName } from "./accountName.js";
 import type { DirectiveStatus, FinanceAccountRow, FinanceCommodityRow } from "./directives.js";
 import { financeDirectiveRepository, type FinanceExportRow } from "./directiveRepository.js";
 import { Cost, CostSpec } from "./position.js";
-import { financeLedgerRepository, type InsertPostingRecord } from "./repository.js";
+import { financeLedgerRepository, isSequenceConflict, type InsertPostingRecord } from "./repository.js";
+import { attempt, withTransaction } from "./transaction.js";
 
 export interface ImportBeancountInput {
   text: string;
@@ -105,38 +106,44 @@ export async function importBeancountToDb(
     );
   }
 
-  const importSource = await financeDirectiveRepository.insertImportSource(db, {
-    spaceId,
-    bookId,
-    sourceType: input.sourceType ?? "upload",
-    sourceName: input.sourceName ?? filename,
-    contentHash,
-    importedByUserId: userId,
-    metadata: { error_count: errors.length },
+  // One transaction: the import source is what a retry of the same file is
+  // deduplicated against, so it must not be committed by an import that then
+  // failed. An entry that cannot be persisted is still skipped and reported,
+  // but whole, under its own savepoint, rather than with half its rows.
+  return withTransaction(db, async (tx) => {
+    const importSource = await financeDirectiveRepository.insertImportSource(tx, {
+      spaceId,
+      bookId,
+      sourceType: input.sourceType ?? "upload",
+      sourceName: input.sourceName ?? filename,
+      contentHash,
+      importedByUserId: userId,
+      metadata: { error_count: errors.length },
+    });
+
+    const persister = new ImportPersister(
+      tx,
+      spaceId,
+      bookId,
+      userId,
+      status,
+      contentHash,
+      importSource.id,
+      errors,
+    );
+    await persister.preload();
+    for (const entry of sortEntries(interpolateEntries(parsed.entries))) {
+      await persister.persistEntry(entry);
+    }
+
+    return {
+      importSourceId: importSource.id,
+      deduplicated: false,
+      createdDirectives: persister.createdDirectives,
+      errors,
+      options: parsed.options,
+    };
   });
-
-  const persister = new ImportPersister(
-    db,
-    spaceId,
-    bookId,
-    userId,
-    status,
-    contentHash,
-    importSource.id,
-    errors,
-  );
-  await persister.preload();
-  for (const entry of sortEntries(interpolateEntries(parsed.entries))) {
-    await persister.persistEntry(entry);
-  }
-
-  return {
-    importSourceId: importSource.id,
-    deduplicated: false,
-    createdDirectives: persister.createdDirectives,
-    errors,
-    options: parsed.options,
-  };
 }
 
 export async function exportBeancountFromDb(
@@ -193,13 +200,26 @@ class ImportPersister {
   }
 
   async persistEntry(entry: LedgerEntry): Promise<void> {
+    // What this entry adds to the caches is undone with its rows.
+    const saved = {
+      accounts: new Map(this.accounts),
+      commodities: new Map(this.commodities),
+      sequenceByDate: new Map(this.sequenceByDate),
+      configSortOrder: this.configSortOrder,
+      createdDirectives: this.createdDirectives,
+    };
     try {
-      if (!isDatedEntry(entry)) {
-        await this.persistConfigEntry(entry);
-        return;
-      }
-      await this.persistDatedEntry(entry);
+      await attempt(this.db, () =>
+        isDatedEntry(entry) ? this.persistDatedEntry(entry) : this.persistConfigEntry(entry));
     } catch (err) {
+      this.accounts.clear();
+      saved.accounts.forEach((value, key) => this.accounts.set(key, value));
+      this.commodities.clear();
+      saved.commodities.forEach((value, key) => this.commodities.set(key, value));
+      this.sequenceByDate.clear();
+      saved.sequenceByDate.forEach((value, key) => this.sequenceByDate.set(key, value));
+      this.configSortOrder = saved.configSortOrder;
+      this.createdDirectives = saved.createdDirectives;
       this.errors.push({
         code: "import_persist_error",
         message: err instanceof Error ? err.message : "Failed to persist entry",
@@ -527,22 +547,33 @@ class ImportPersister {
   }
 
   private async insertDirective(entry: DatedEntry) {
-    const directive = await financeLedgerRepository.insertDirective(this.db, {
-      spaceId: this.spaceId,
-      bookId: this.bookId,
-      directiveType: entry.type,
-      date: entry.date,
-      sequence: await this.nextSequence(entry.date),
-      status: this.status,
-      createdByUserId: this.userId,
-      importSourceId: this.importSourceId,
-      sourceFilename: entry.source?.filename,
-      sourceLineno: entry.source?.lineno,
-      sourceHash: this.contentHash,
-      metadata: entry.meta,
-    });
-    this.createdDirectives += 1;
-    return directive;
+    // The cached MAX+1 races with a directive another member creates on the
+    // same day; the unique sequence refuses one of the two, so re-read and
+    // retry rather than drop the entry.
+    for (let round = 0; ; round += 1) {
+      try {
+        const sequence = await this.nextSequence(entry.date);
+        const directive = await attempt(this.db, () => financeLedgerRepository.insertDirective(this.db, {
+          spaceId: this.spaceId,
+          bookId: this.bookId,
+          directiveType: entry.type,
+          date: entry.date,
+          sequence,
+          status: this.status,
+          createdByUserId: this.userId,
+          importSourceId: this.importSourceId,
+          sourceFilename: entry.source?.filename,
+          sourceLineno: entry.source?.lineno,
+          sourceHash: this.contentHash,
+          metadata: entry.meta,
+        }));
+        this.createdDirectives += 1;
+        return directive;
+      } catch (err) {
+        if (round >= 9 || !isSequenceConflict(err)) throw err;
+        this.sequenceByDate.delete(entry.date);
+      }
+    }
   }
 
   private async nextSequence(date: string): Promise<number> {

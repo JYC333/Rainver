@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LOGIN_INPUT_BURST_CHARS, LOGIN_INPUT_SESSION_MAX_CHARS, createLoginInputGovernor, openLoginSession, resolveLoginCommand } from "../src/login.js";
 import { LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { managedToolHome, toolsDir } from "../src/tools.js";
+import { withRuntimeKeyDrained } from "../src/execution.js";
 
 let configDir: string;
 const LOGIN = { command: ["goose", "login"], home_subdir: ".goose", credential_file: "auth.json" };
@@ -132,6 +133,32 @@ describe("login sessions", () => {
     expect(frames).toContainEqual({ type: "login_exit", session_id: "agent", exit_code: 0, logged_in: true });
   });
 
+
+  it("holds the runtime copy while an Agent Auth is waiting, so a replacement does not pull it away", async () => {
+    const frames: Record<string, unknown>[] = [];
+    const dir = join(toolsDir(), "registry_agent", "4.0.0");
+    const home = managedToolHome("registry_agent");
+    await mkdir(dir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    const initialized = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { authMethods: [{ id: "browser", name: "Browser login" }] } });
+    // Advertises the method, then waits on the browser for as long as it is left.
+    await writeFile(join(dir, "manifest.json"), JSON.stringify({
+      runtime_key: "registry_agent", version: "4.0.0", command: "/bin/sh",
+      args: ["-c", `printf '%s\n' '${initialized}'; exec sleep 30`], env: {}, home,
+      login_command: null, login: null, installed_at: "",
+    }));
+    const session = openLoginSession({
+      session_id: "agent-held", runtime_key: "registry_agent", installation: "managed:4.0.0", login: null,
+      auth_method: { id: "browser", name: "Browser login", description: null, type: "agent", args: [], env: {} },
+    }, frame => frames.push(frame), () => {});
+    try {
+      await expect(withRuntimeKeyDrained("registry_agent", 0, async () => "replaced")).rejects.toThrow(/still using registry_agent/);
+    } finally {
+      session.close();
+    }
+    await waitFor(() => frames.some(frame => frame.type === "login_exit"));
+    await expect(withRuntimeKeyDrained("registry_agent", 0, async () => "replaced")).resolves.toBe("replaced");
+  });
 
   it.skipIf(!hasScript)("runs the login on a PTY, relays typed input, and reports the login state on exit", async () => {
     const frames: Record<string, unknown>[] = [];

@@ -118,32 +118,38 @@ function Drilldown({
   label,
   onPacket,
   packetBusy,
+  summaryVersion,
 }: {
   section: ContextOpsDrilldownSection
   label: string
   onPacket?: (artifactIds: string | string[], reviewScope?: 'private' | 'space_ops', promotePrivate?: boolean) => void
   packetBusy?: string | null
+  /** Bumped by the page on each summary load so an open list follows a scan or packet. */
+  summaryVersion: number
 }) {
   const [open, setOpen] = useState(false)
   const [data, setData] = useState<ContextOpsDrilldown | null>(null)
   const [loading, setLoading] = useState(false)
   const [selectedArtifactIds, setSelectedArtifactIds] = useState<string[]>([])
 
-  const toggle = useCallback(async () => {
-    const next = !open
-    setOpen(next)
-    if (next && !data) {
-      setLoading(true)
-      try {
-        setData(await contextOpsApi.drilldown(section, { limit: 25 }))
-      } catch (error) {
+  // Fetched while expanded, and again whenever the summary reloads: the
+  // reports a scan or packet just created are what this list is for.
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setLoading(true)
+    contextOpsApi.drilldown(section, { limit: 25 })
+      .then(next => { if (!cancelled) setData(next) })
+      .catch(error => {
+        if (cancelled) return
         toast.error(errMsg(error))
         setOpen(false)
-      } finally {
-        setLoading(false)
-      }
-    }
-  }, [open, data, section])
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [open, section, summaryVersion])
+
+  const toggle = () => setOpen(current => !current)
 
   const isArtifactSection = ARTIFACT_SECTIONS.includes(section)
   const toggleArtifact = (artifactId: string) => {
@@ -163,7 +169,7 @@ function Drilldown({
       </button>
       {open && (
         <div className="mt-2 space-y-1">
-          {loading ? (
+          {loading && !data ? (
             <Skeleton className="h-16" />
           ) : !data ? null : isArtifactSection ? (
             data.artifacts.length === 0 && data.packets.length === 0 ? (
@@ -296,6 +302,7 @@ export default function ContextOpsPage() {
   const waitingForSpace = Boolean(activeSpaceId && !activeSpace && spaces.length === 0)
   const [windowDays, setWindowDays] = useState(14)
   const [summary, setSummary] = useState<ContextOpsSummary | null>(null)
+  const [summaryVersion, setSummaryVersion] = useState(0)
   const [loading, setLoading] = useState(true)
   const [permissionDenied, setPermissionDenied] = useState(false)
   const [scanBusy, setScanBusy] = useState<null | 'maintenance' | 'diagnostics' | 'review' | 'contradictions' | 'discovery' | 'shape'>(null)
@@ -337,6 +344,7 @@ export default function ContextOpsPage() {
     setPermissionDenied(false)
     try {
       setSummary(await contextOpsApi.summary({ window_days: windowDays, limit: 10 }))
+      setSummaryVersion(version => version + 1)
     } catch (error) {
       const message = errMsg(error)
       if (message.includes('403') || message.toLowerCase().includes('permission') || message.toLowerCase().includes('admin')) {
@@ -664,7 +672,7 @@ export default function ContextOpsPage() {
               </div>
               <CountList counts={summary.index_freshness.object_counts} />
               {summary.index_freshness.stale_projection_count > 0 && (
-                <Drilldown section="index_freshness" label="View stale projections" />
+                <Drilldown section="index_freshness" label="View stale projections" summaryVersion={summaryVersion} />
               )}
             </Panel>
 
@@ -677,7 +685,7 @@ export default function ContextOpsPage() {
               </div>
               <CountList counts={summary.embedding_backlog.missing_by_object_type} />
               {summary.embedding_backlog.missing_embedding_chunks > 0 && (
-                <Drilldown section="embedding_backlog" label="View objects awaiting embeddings" />
+                <Drilldown section="embedding_backlog" label="View objects awaiting embeddings" summaryVersion={summaryVersion} />
               )}
             </Panel>
 
@@ -690,7 +698,7 @@ export default function ContextOpsPage() {
               </div>
               <CountList counts={summary.source_policy_warnings.warning_counts} />
               {summary.source_policy_warnings.active_source_connections > 0 && (
-                <Drilldown section="source_warnings" label="View source connections" />
+                <Drilldown section="source_warnings" label="View source connections" summaryVersion={summaryVersion} />
               )}
             </Panel>
 
@@ -705,7 +713,7 @@ export default function ContextOpsPage() {
                 <Link to="/artifacts?artifact_type=memory_maintenance_report"><Button variant="outline" size="sm">Artifacts</Button></Link>
               </div>
               <CountList counts={summary.maintenance.finding_counts} />
-              <Drilldown section="maintenance_reports" label="Triage maintenance reports & packets" onPacket={createClaimPacket} packetBusy={packetBusy} />
+              <Drilldown section="maintenance_reports" label="Triage maintenance reports & packets" onPacket={createClaimPacket} packetBusy={packetBusy} summaryVersion={summaryVersion} />
               {summary.maintenance.recent_packets.length > 0 && (
                 <div className="mt-3 space-y-2">
                   {summary.maintenance.recent_packets.slice(0, 4).map(packet => (
@@ -765,7 +773,7 @@ export default function ContextOpsPage() {
                   ))}
                 </div>
               )}
-              <Drilldown section="diagnostics_reports" label="Triage diagnostics reports" onPacket={createClaimPacket} packetBusy={packetBusy} />
+              <Drilldown section="diagnostics_reports" label="Triage diagnostics reports" onPacket={createClaimPacket} packetBusy={packetBusy} summaryVersion={summaryVersion} />
             </Panel>
 
             <Panel icon={FileSearch} title="Search Explain">
@@ -850,7 +858,7 @@ export default function ContextOpsPage() {
                   ))}
                 </div>
               )}
-              <Drilldown section="explain_reports" label="View saved explain reports" />
+              <Drilldown section="explain_reports" label="View saved explain reports" summaryVersion={summaryVersion} />
             </Panel>
 
             <Panel icon={FileText} title="Recent Context Briefs">
@@ -890,7 +898,7 @@ export default function ContextOpsPage() {
                   ))}
                 </div>
               )}
-              <Drilldown section="recent_briefs" label="View more briefs" onPacket={createClaimPacket} packetBusy={packetBusy} />
+              <Drilldown section="recent_briefs" label="View more briefs" onPacket={createClaimPacket} packetBusy={packetBusy} summaryVersion={summaryVersion} />
             </Panel>
 
             <Panel icon={Activity} title="Retrieval Feedback">

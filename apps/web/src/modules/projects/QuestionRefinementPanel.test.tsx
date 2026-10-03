@@ -515,6 +515,36 @@ describe('QuestionRefinementPanel', () => {
     expect(projectResearchApi.saveInitialIntakeDraft).not.toHaveBeenCalled()
   })
 
+  it('does not rewrite the Thread wording again when a failed confirmation is retried', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.spyOn(projectResearchApi, 'refineQuestion').mockResolvedValue(result())
+    vi.spyOn(inquiryApi, 'reviseDefinition').mockResolvedValue({} as never)
+    vi.mocked(projectResearchApi.confirmQuestionAssessment).mockRejectedValueOnce(new Error('offline'))
+    render(
+      <QuestionRefinementPanel
+        projectId="project-1"
+        thread={makeThread()}
+        linkedDraftWorkflow={null}
+        modelProviders={providers}
+        providerVendors={providerVendors}
+        assessmentSession={null}
+        canAct
+        onChanged={vi.fn().mockResolvedValue(undefined)}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Start assessment' }))
+    await screen.findByText('Ready to confirm')
+    await user.click(screen.getByRole('button', { name: 'Confirm research question' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Could not confirm this assessment')))
+    expect(inquiryApi.reviseDefinition).toHaveBeenCalledTimes(1)
+
+    // The wording was written the first time; the retry only has to confirm.
+    await user.click(screen.getByRole('button', { name: 'Confirm research question' }))
+    await waitFor(() => expect(projectResearchApi.confirmQuestionAssessment).toHaveBeenCalledTimes(2))
+    expect(inquiryApi.reviseDefinition).toHaveBeenCalledTimes(1)
+  })
+
   it('confirms the framework wording back to the Inquiry Thread', async () => {
     const user = userEvent.setup({ delay: null })
     vi.spyOn(projectResearchApi, 'refineQuestion').mockResolvedValue(result())

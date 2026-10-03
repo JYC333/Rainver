@@ -19,7 +19,11 @@ OAuth/session writer. Rainver-owned cookies add
 `Secure` whenever `FRONTEND_URL` is HTTPS and remain usable on loopback HTTP.
 The auth facade forwards Better Auth's `Set-Cookie` headers from every Google
 OAuth start response, including login, registration, reauthentication and account
-linking. Its OAuth errors return to `/login?error=...` rather than an unmounted
+linking. Sign-in and password-change responses carry the session only in the
+cookie: the facade answers `{ ok, user }` and drops Better Auth's `token` body
+field. Better Auth is the sole judge of its own cookie — one whose signature it
+rejects is not a session — and the request it receives names the client only by
+the `request.ip` Fastify resolved. Its OAuth errors return to `/login?error=...` rather than an unmounted
 Better Auth error endpoint.
 
 ## Admission and registration
@@ -29,7 +33,10 @@ The first intent is admitted only when its normalized email matches
 requires an unexpired `available` invitation to a non-Personal Space; Space
 owners/admins may create one for a specific email, and it expires after seven
 days. Email normalization is trim plus lowercase only, without provider-specific
-alias rules. Display name is optional and defaults to the part before `@`.
+alias rules. Display name is optional and defaults to the part before `@`;
+it is bounded (`REGISTRATION_DISPLAY_NAME_MAX`) so that both
+`users.display_name` and the derived `<name>'s Personal Space` fit their
+columns, and a longer name is refused at the route before any identity exists.
 An invitation admits
 registration but does not verify ownership of that email address. Intent claim
 secrets and invitation tokens are stored only as SHA-256 digests. A pending
@@ -44,7 +51,9 @@ timestamp alone does not extend that deadline. The five-minute reconciliation
 job and a new admission attempt expire stale intents and release invitation
 reservations. Cleanup revokes incomplete sessions and accounts and deletes the
 now-unreferenced pending identity so the email can retry while the invitation
-remains valid.
+remains valid. The same cleanup deletes a pending identity that no active intent
+binds or names once it is 30 minutes old, such as one created when a different
+Google account was chosen, so it cannot hold the bootstrap user slot.
 
 Invitation links are `/invitations/claim#token=...`. The web page removes the
 fragment with `history.replaceState` before any network request, so the token is
@@ -70,9 +79,10 @@ Email/password uses an 8–128 Unicode-code-point policy in explicit
 `dev`/`test` instances and a 15–128 policy everywhere else. The public auth
 configuration endpoint exposes the active bounds. Spaces are allowed, with no
 character-class composition or periodic-rotation rule. Passwords are hashed
-with Argon2id. Candidate passwords use the guarded HIBP range check, which sends
-only a SHA-1 prefix; an unavailable check allows the operation and records a
-degraded security event. Login errors are generic and combine Better Auth
+with Argon2id. Candidate passwords — on registration sign-up as on set, change
+and recovery — use the guarded HIBP range check, which sends only a SHA-1
+prefix; an unavailable check allows the operation and records a degraded
+security event. Login errors are generic and combine Better Auth
 path/IP limits with a bounded normalized-email/IP progressive limiter. Safe
 success/failure/throttled and degraded HIBP events use the allowlisted
 `auth_security_events` details.
@@ -84,7 +94,9 @@ A Google reauthentication nonce is one-time and bound to the user and session
 that initiated it. Successful reauthentication replaces the browser's session;
 Rainver records the session issued by a successful Google callback, then revokes
 only the prior session after the browser presents that exact new session and
-issues the recent-auth grant.
+issues the recent-auth grant. It is issued only after Better Auth accepts the
+flow, and the pending table is bounded (oldest dropped past 2048) like the login
+limiter's.
 
 `/settings/security` wraps recent password or Google reauthentication, password setup/change,
 Google link/unlink and safe session list/revoke operations. Session responses
@@ -102,8 +114,10 @@ auth:recovery` is the sole-admin local CLI path.
 
 ## Administration and future delivery
 
-Instance admins can list users, disable/enable accounts (which invalidates
-sessions), issue a one-time reset link and inspect pending intents. No
+Instance admins can list users, disable/enable admitted accounts (disable
+invalidates sessions; a `pending` identity belongs to `RegistrationService`
+and both routes answer 400 for it), issue a one-time reset link and inspect
+pending intents. No
 impersonation, arbitrary email editing, Space-admin recovery or open signup is
 implemented. The recovery and registration lifecycles expose stable link
 boundaries so a future mail adapter can deliver the same links without adding a

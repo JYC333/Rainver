@@ -84,6 +84,7 @@ export const TiptapEditorAdapter = forwardRef<RichTextEditorHandle, RichTextEdit
       applyingExternal.current = true
       editor.commands.setContent(initialContent)
       applyingExternal.current = false
+      // initialContentKey stands in for initialContent: an equal document in a new object must not reset the cursor.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [editor, initialContentKey])
 

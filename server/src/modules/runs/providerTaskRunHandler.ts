@@ -39,7 +39,7 @@ export const PROVIDER_TASK_RUN_JOB_TYPE = "provider_task_run";
  * its frozen contract and asks the owning domain, through this registry, to
  * rebuild the bounded request from them.
  */
-export interface ProviderTaskRunContext {
+interface ProviderTaskRunContext {
   db: Queryable;
   config: ServerConfig;
   run: RunRecord;
@@ -52,7 +52,7 @@ export interface ProviderTaskRunContext {
  * payload carries the Run id and nothing else, so a replayed or reclaimed job
  * cannot change what the task does.
  */
-export type ProviderTaskRunPreparer = (
+type ProviderTaskRunPreparer = (
   context: ProviderTaskRunContext,
 ) => Promise<Omit<BoundedProviderTaskInput, "runId" | "failRunOnError">>;
 

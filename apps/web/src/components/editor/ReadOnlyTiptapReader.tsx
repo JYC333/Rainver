@@ -11,7 +11,7 @@ import { isSameOriginImage } from '../ai-elements/safeMarkdown'
 import { cn } from '../../lib/utils'
 import type { ReaderAnnotation } from '../../types/api'
 
-export interface AnchorBlockRef {
+interface AnchorBlockRef {
   index: number
   node_type: string
   from: number
@@ -270,8 +270,13 @@ function boundedSpan(value: unknown): number {
   return Number.isFinite(n) ? Math.min(20, Math.max(1, Math.floor(n))) : 1
 }
 
+// A stored color is written by any Space member and lands in an inline style,
+// so only a hex color or a bare color name is used; anything else could add
+// declarations (a background:url() is a zero-click external request).
+const SAFE_ANNOTATION_COLOR = /^(?:#[0-9a-f]{3,8}|[a-z]{3,20})$/i
+
 function annotationColor(ann: ReaderAnnotation): string {
-  if (ann.color) return ann.color
+  if (ann.color && SAFE_ANNOTATION_COLOR.test(ann.color)) return ann.color
   const colors: Record<string, string> = {
     highlight: '#fde047',
     comment: '#86efac',
@@ -442,6 +447,7 @@ export const ReadOnlyTiptapReader = forwardRef<ReadOnlyTiptapReaderHandle, ReadO
     useEffect(() => {
       if (!editor) return
       editor.commands.setContent(contentJson)
+      // contentKey stands in for contentJson: an equal document in a new object must not reset the reader.
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [editor, contentKey])
 

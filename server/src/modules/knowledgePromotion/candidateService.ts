@@ -18,7 +18,7 @@ import type { PinnedSourceRef } from "./outbox.js";
 const CANDIDATE_KINDS = new Set(["concept", "lesson", "procedure", "decision", "summary"]);
 const DECISIONS = new Set(["promote", "dismiss", "defer"]);
 
-export interface CandidateProposalActor {
+interface CandidateProposalActor {
   agentId?: string | null;
   runId?: string | null;
   idempotencyKey?: string | null;
@@ -222,6 +222,14 @@ export class KnowledgePromotionCandidateService {
           [identity.spaceId, projectId, actor.runId, actor.idempotencyKey],
         );
         if (existing.rows[0]) {
+          // The Candidate this call committed before losing has no Proposal
+          // and nobody drafted it on purpose; left pending it would sit in
+          // Knowledge Review as a duplicate of the winner's.
+          await this.db.query(
+            `DELETE FROM knowledge_promotion_candidates
+              WHERE id=$1 AND space_id=$2 AND status='pending' AND created_proposal_id IS NULL`,
+            [requiredString(candidate.id, "candidate.id"), identity.spaceId],
+          );
           const resolved = await this.getCandidate(identity, projectId, existing.rows[0].id);
           return { candidate: resolved, proposal_id: existing.rows[0].created_proposal_id };
         }
@@ -402,7 +410,14 @@ export class KnowledgePromotionCandidateService {
       // Attribute the action to the Agent while retaining the instructing user
       // as owner. The owner is material when a private Run drafts a Proposal.
       const createdByUserId = actor.agentId ? null : identity.userId;
-      const proposalVisibility = actor.visibility ?? "space_shared";
+      // Never wider than its source: a private Note or Thread must not reach
+      // the Space through its promotion Proposal's title and payload. A Room
+      // Run's selected-users audience is the exception by design — its draft
+      // Candidate is private only as an intermediate, and the Proposal goes to
+      // the Room roster the Run already spoke to.
+      const proposalVisibility = actor.visibility === "selected_users"
+        ? "selected_users"
+        : candidate.visibility === "space_shared" ? actor.visibility ?? "space_shared" : "private";
       await db.query(
         `INSERT INTO proposals (
            id, space_id, proposal_type, status, risk_level, urgency, title, summary,
@@ -443,7 +458,7 @@ export class KnowledgePromotionCandidateService {
     const now = new Date().toISOString();
     const row = await this.db.query<CandidateRow>(
       `UPDATE knowledge_promotion_candidates
-          SET status='pending', decided_by_user_id=NULL, decided_at=NULL, updated_at=$4
+          SET status='pending', review_packet_id=NULL, decided_by_user_id=NULL, decided_at=NULL, updated_at=$4
         WHERE id=$1 AND space_id=$2 AND project_id=$3 AND status='deferred'
           AND (visibility='space_shared' OR owner_user_id=$5)
       RETURNING *`,

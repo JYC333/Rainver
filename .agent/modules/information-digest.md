@@ -18,17 +18,20 @@ interest-profile fact model remain separate support packages.
 - `/api/v1/spaces/:spaceId/interest-profile*` is the authenticated owner-only
   surface for the profile snapshot, settings, topic candidate decisions,
   direct topic create/edit/archive, optional starter packs, and explicit
-  bounded history backfill.
-- Digest-item routes own explicit serendipity feedback and the one-way action
-  that files an item into an active Project Corpus through the Project writer
-  gate.
+  bounded history backfill (the most recent subscribed items first).
+- The digest-item route owns explicit serendipity feedback. Filing an item into
+  an active Project Corpus is not a digest route: the Library page calls the
+  existing Project corpus-add route (`metadata_json.origin =
+  'information_digest'`), so the Project writer gate applies.
 
 ## Personal pipeline
 
 The daily transaction takes a scope/day advisory lock, rechecks the snapshot,
 and runs the deterministic interest-profile fact layer before selecting. The
-fact layer consumes successful shared annotations joined to this reader's
-private state. Read material contributes recency-weighted domain coverage and
+fact layer consumes successful shared annotations of the items this reader
+may read (the Source item content gate; another member's private item never
+counts toward this reader's candidates) joined to this reader's private state.
+Read material contributes recency-weighted domain coverage and
 recurring topic phrases; items explicitly marked `ignored` contribute neither
 coverage nor topic candidates. An observation ledger makes repeated passes
 idempotent.

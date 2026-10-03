@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import stat
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import deployer
@@ -62,6 +66,34 @@ class PollLoopSupervisionTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(SystemExit):
             await self.run_main(finish)
+
+
+class ScriptTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    """
+    A socket job that runs past its budget is reported as failed. The script
+    — and the `docker compose` it started — must stop with it, or the
+    instance goes on being changed by work nothing is reporting, beside
+    whatever the operator runs next.
+    """
+
+    async def test_a_timed_out_script_is_killed_with_its_process_group(self) -> None:
+        killed: list[int] = []
+        real_killpg = os.killpg
+
+        def spy_killpg(pgid: int, sig: int) -> None:
+            killed.append(pgid)
+            real_killpg(pgid, sig)
+
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "slow.sh"
+            script.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+            script.chmod(script.stat().st_mode | stat.S_IXUSR)
+            with patch.object(os, "killpg", spy_killpg):
+                exit_code, _stdout, stderr = await deployer._run_script(script, timeout=1)
+
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("timed out", stderr)
+        self.assertEqual(len(killed), 1)
 
 
 class DeployerProtocolTests(unittest.IsolatedAsyncioTestCase):

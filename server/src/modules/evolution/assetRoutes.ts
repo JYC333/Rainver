@@ -10,6 +10,7 @@ import {
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
+import { assertCanResolveForScopes } from "./assetAccess.js";
 import { EvolvableAssetRepository } from "./assetRepository.js";
 import { EvolvableAssetEvaluationRepository } from "./assetEvaluationRepository.js";
 import { resolveEvolvableAssetVersion } from "./assetResolutionService.js";
@@ -190,14 +191,17 @@ export function registerEvolvableAssetRoutes(app: FastifyInstance, context: Modu
     try {
       const asset = await repository(context).getAsset(identity, requireParam(request, "assetId"));
       const body = jsonBody(request);
+      const projectId = optionalString(body.project_id);
+      const agentId = optionalString(body.agent_id);
+      await assertCanResolveForScopes(dbPool(context.config), identity, { projectId, agentId });
       const result = await resolveEvolvableAssetVersion(dbPool(context.config), {
         assetId: asset.id as string,
         spaceId: identity.spaceId,
         assetKey: asset.asset_key as string,
         assetType: asset.asset_type as string,
-        projectId: optionalString(body.project_id),
+        projectId,
         userId: identity.userId,
-        agentId: optionalString(body.agent_id),
+        agentId,
         explicitVersionId: optionalString(body.explicit_version_id),
         allowUserPin: body.allow_user_pin === true,
       });

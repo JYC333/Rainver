@@ -32,6 +32,7 @@ import { PgJobQueueRepository } from "../jobs/repository.js";
 import {
   HttpError,
   dbPool,
+  parseBody,
   parsePage,
   query as routeQuery,
   sendRouteError,
@@ -344,7 +345,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireSpaceOwnerOrAdmin(context.config, identity, reply, "Only space owners or admins may change defaults for future Agent Profiles"))) return reply;
     try {
-      const body = protocol.SpaceAgentRuntimeDefaultWriteSchema.parse(jsonBody(request));
+      const body = parseBody(protocol.SpaceAgentRuntimeDefaultWriteSchema, jsonBody(request));
       const value = await agentRepository().setSpaceAgentRuntimeDefault(identity.spaceId, {
         runtimeKey: body.runtime_key,
         backendMode: body.backend_mode,
@@ -401,9 +402,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const body = jsonBody(request);
       const repo = agentRepository();
       const agentId = params(request).agentId ?? "";
+      // Parse the whole body before the first write: the identity and the
+      // config land in two statements, so a config field refused after the
+      // identity was written would answer 422 for a request half applied.
+      const parsedConfigPatch = hasConfigPatch(body) ? configPatch(body, identity.userId) : null;
       let agent = await applyAgentIdentityPatch(repo, identity.spaceId, identity.userId, agentId, body);
-      if (hasConfigPatch(body)) {
-        agent = await repo.updateConfig(identity.spaceId, agentId, configPatch(body, identity.userId));
+      if (parsedConfigPatch) {
+        agent = await repo.updateConfig(identity.spaceId, agentId, parsedConfigPatch);
       }
       if (!agent) {
         agent = await repo.getVisible(identity.spaceId, identity.userId, agentId);
@@ -828,7 +833,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                        AND r.status <> ALL($3::text[])
                   ) AS run_in_flight
              FROM host_threads thread
-            WHERE thread.execution_host_id = $2
+            WHERE COALESCE(thread.execution_host_id, (
+                    SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id = thread.workspace_location_id
+                  )) = $2
               AND thread.status IN ('active', 'session_reset')
               AND (
                 thread.agent_id = $1

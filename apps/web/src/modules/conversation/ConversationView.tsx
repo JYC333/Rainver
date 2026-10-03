@@ -20,7 +20,7 @@ import { ConversationInputPartsView, useConversationInputSendGuard, type Convers
  * passes it; one reading persisted messages back does not, and the reply
  * renders as prose.
  */
-export interface ConversationEntry {
+interface ConversationEntry {
   id: string
   role: 'user' | 'assistant'
   content: string

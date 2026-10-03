@@ -16,7 +16,7 @@ import {
 import { resolveNotebookNote } from "./notebookNotes.js";
 
 export const STANDING_COMPARISON_DAILY_RUN_LIMIT = 20;
-export const STANDING_COMPARISON_WINDOW_MINUTES = 15;
+const STANDING_COMPARISON_WINDOW_MINUTES = 15;
 export const STANDING_COMPARISON_JOB_TYPE = "project_research_standing_dispatch";
 export const STANDING_COMPARISON_RECONCILE_JOB_TYPE = "project_research_standing_reconcile";
 
@@ -35,11 +35,19 @@ type StandingBatchRow = {
   completed_at: unknown;
 };
 
+/** Pending past its window: the only dispatch it had is no longer coming. */
+function isOverdue(batch: { ready_at: unknown }, now: Date): boolean {
+  const readyAt = batch.ready_at instanceof Date ? batch.ready_at : new Date(String(batch.ready_at));
+  return !Number.isNaN(readyAt.getTime()) && readyAt.getTime() + STANDING_COMPARISON_WINDOW_MINUTES * 60_000 < now.getTime();
+}
+
 function stringIds(value: unknown): string[] {
   return Array.isArray(value)
     ? [...new Set(value.filter((item): item is string => typeof item === "string" && item.length > 0))]
     : [];
 }
+
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "degraded", "failed", "cancelled", "orphaned"]);
 
 /** Project-level, workflow-free standing comparison lifecycle. */
 export class ProjectResearchStandingComparisonService {
@@ -67,6 +75,9 @@ export class ProjectResearchStandingComparisonService {
           WHERE id=$1 AND space_id=$2 AND project_id=$3`,
         [row.id, input.spaceId, input.projectId, JSON.stringify(ids), now.toISOString()],
       );
+      // A batch still pending after its window is one whose dispatch job gave
+      // up. New material re-arms it; dispatch is idempotent under its lock.
+      if (isOverdue(row, now)) await this.enqueueDispatch(input.spaceId, input.projectId, row.id, null, now);
       return row.id;
     }
 
@@ -78,14 +89,26 @@ export class ProjectResearchStandingComparisonService {
        ) VALUES ($1,$2,$3,'pending',$4::jsonb,$5,$6,$5,$5)`,
       [batchId, input.spaceId, input.projectId, JSON.stringify([input.sourceItemId]), now.toISOString(), readyAt.toISOString()],
     );
-    await new PgJobQueueRepository(this.db).enqueue({
-      job_type: STANDING_COMPARISON_JOB_TYPE,
-      space_id: input.spaceId,
-      user_id: null,
-      scheduled_at: readyAt,
-      payload: { batch_id: batchId, project_id: input.projectId },
-    }, now);
+    await this.enqueueDispatch(input.spaceId, input.projectId, batchId, null, now, readyAt);
     return batchId;
+  }
+
+  private async enqueueDispatch(
+    spaceId: string,
+    projectId: string,
+    batchId: string,
+    userId: string | null,
+    now: Date,
+    scheduledAt: Date = now,
+    db: Queryable = this.db,
+  ): Promise<void> {
+    await new PgJobQueueRepository(db).enqueue({
+      job_type: STANDING_COMPARISON_JOB_TYPE,
+      space_id: spaceId,
+      user_id: userId,
+      scheduled_at: scheduledAt,
+      payload: { batch_id: batchId, project_id: projectId },
+    }, now);
   }
 
   async dispatchBatch(spaceId: string, batchId: string, now = new Date()): Promise<Record<string, unknown>> {
@@ -149,8 +172,11 @@ export class ProjectResearchStandingComparisonService {
         await markBatch(db, row, "blocked_baseline", now, { missingBaselineRole: queued.role });
         return { batch_id: row.id, status: "blocked_baseline", missing_baseline_role: queued.role };
       }
+      const remaining = allIds.filter((id) => !selectedIds.includes(id));
       if (queued.outcome === "no_eligible_material") {
         await markBatch(db, row, "completed", now);
+        // Only this slice had nothing to compare; the rest still gets its turn.
+        if (remaining.length > 0) await this.createFollowupBatch(db, spaceId, row.project_id, remaining, now);
         return { batch_id: row.id, status: "completed", compared: 0 };
       }
       await db.query(
@@ -159,7 +185,6 @@ export class ProjectResearchStandingComparisonService {
           WHERE id=$1 AND space_id=$2`,
         [row.id, spaceId, JSON.stringify(queued.sourceItemIds), queued.runId, now.toISOString()],
       );
-      const remaining = allIds.filter((id) => !selectedIds.includes(id));
       if (remaining.length > 0) await this.createFollowupBatch(db, spaceId, row.project_id, remaining, now);
       return {
         batch_id: row.id,
@@ -182,22 +207,27 @@ export class ProjectResearchStandingComparisonService {
       const batch = batchResult.rows[0];
       if (!batch) return { run_id: runId, status: "not_standing" };
       if (batch.status !== "running") return { batch_id: batch.id, status: batch.status };
-      const run = await db.query<{ status: string; output_json: unknown }>(
-        `SELECT status,output_json FROM runs WHERE id=$1 AND space_id=$2`,
-        [runId, spaceId],
-      );
-      const terminal = run.rows[0];
-      if (!terminal) throw new Error("Standing comparison run not found");
-      if (!['succeeded', 'degraded'].includes(terminal.status)) {
-        await markBatch(db, batch, "failed", now, { error: `Standing comparison run ${terminal.status}` });
-        return { batch_id: batch.id, status: "failed" };
-      }
-      const expected = stringIds(batch.source_item_ids_json);
-      const comparisons = parseMonitorComparisons(terminal.output_json, expected);
-      await this.persistResults(db, batch, runId, comparisons, now);
-      await markBatch(db, batch, "completed", now);
-      return { batch_id: batch.id, status: "completed", comparison_count: comparisons.length };
+      return this.settleRunningBatch(db, batch, runId, now);
     });
+  }
+
+  /** The running batch's Run is terminal: the batch follows it, within the caller's transaction and locks. */
+  private async settleRunningBatch(db: Queryable, batch: StandingBatchRow, runId: string, now: Date): Promise<Record<string, unknown>> {
+    const run = await db.query<{ status: string; output_json: unknown }>(
+      `SELECT status,output_json FROM runs WHERE id=$1 AND space_id=$2`,
+      [runId, batch.space_id],
+    );
+    const terminal = run.rows[0];
+    if (!terminal) throw new Error("Standing comparison run not found");
+    if (!['succeeded', 'degraded'].includes(terminal.status)) {
+      await markBatch(db, batch, "failed", now, { error: `Standing comparison run ${terminal.status}` });
+      return { batch_id: batch.id, status: "failed" };
+    }
+    const expected = stringIds(batch.source_item_ids_json);
+    const comparisons = parseMonitorComparisons(terminal.output_json, expected);
+    await this.persistResults(db, batch, runId, comparisons, now);
+    await markBatch(db, batch, "completed", now);
+    return { batch_id: batch.id, status: "completed", comparison_count: comparisons.length };
   }
 
   async status(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>> {
@@ -263,11 +293,40 @@ export class ProjectResearchStandingComparisonService {
           WHERE id=$1 AND space_id=$2 AND project_id=$3 FOR UPDATE`,
         [batchId, identity.spaceId, projectId],
       );
-      const batch = result.rows[0];
+      let batch = result.rows[0];
       if (!batch) throw new HttpError(404, "Standing comparison batch not found");
+      if (batch.status === "pending" && isOverdue(batch, now)) {
+        // Its dispatch job ran out of retries; retrying is how it runs again.
+        await this.enqueueDispatch(identity.spaceId, projectId, batchId, identity.userId, now, now, db);
+        return batchOut(batch);
+      }
+      if (batch.status === "running" && batch.run_id) {
+        // Its Run ended without the reconcile that follows a Run (a job that
+        // exhausted its attempts, a Run recovered as orphaned): the batch
+        // follows the Run here, so it can be retried instead of showing
+        // running forever.
+        const run = await db.query<{ status: string }>(`SELECT status FROM runs WHERE id=$1 AND space_id=$2`, [batch.run_id, identity.spaceId]);
+        if (run.rows[0] && TERMINAL_RUN_STATUSES.has(run.rows[0].status)) {
+          await this.settleRunningBatch(db, batch, batch.run_id, now);
+          batch = (await db.query<StandingBatchRow>(
+            `SELECT * FROM project_research_standing_batches WHERE id=$1 AND space_id=$2`, [batchId, identity.spaceId],
+          )).rows[0]!;
+          if (batch.status === "completed") return batchOut(batch);
+        }
+      }
       if (batch.status === "pending" || batch.status === "running") return batchOut(batch);
       if (!["blocked_baseline", "failed", "budget_exhausted"].includes(batch.status)) {
         throw new HttpError(409, "Standing comparison batch cannot be retried");
+      }
+      // One pending batch per Project (`uq_project_research_standing_batches_open_project`):
+      // material that arrived since opened its own, which runs first.
+      const pending = await db.query<{ id: string }>(
+        `SELECT id FROM project_research_standing_batches
+          WHERE space_id=$1 AND project_id=$2 AND status='pending' AND id<>$3 LIMIT 1`,
+        [identity.spaceId, projectId, batchId],
+      );
+      if (pending.rows[0]) {
+        throw new HttpError(409, "Another standing comparison batch is already pending for this Project; retry once it has been dispatched");
       }
       await db.query(
         `UPDATE project_research_standing_batches

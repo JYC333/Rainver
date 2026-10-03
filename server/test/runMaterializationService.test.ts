@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadConfig } from "../src/config.js";
@@ -885,6 +885,54 @@ describe("RunMaterializationService", () => {
       },
     ]);
     expect(db.artifacts).toHaveLength(0);
+  });
+
+  it("leaves no file in artifact storage when artifact.persist refuses a produced file", async () => {
+    const artifactRoot = await mkdtemp(join(tmpdir(), "rainver-artifacts-"));
+    const sandboxRoot = await mkdtemp(join(tmpdir(), "rainver-sandbox-"));
+    tempRoots.push(artifactRoot, sandboxRoot);
+    await mkdir(join(sandboxRoot, "logs"), { recursive: true });
+    await writeFile(join(sandboxRoot, "logs", "out.txt"), "file artifact", "utf8");
+    const db = new FakeDb();
+    const service = new RunMaterializationService(
+      loadConfig({
+        SERVER_DATABASE_URL: "postgresql://server@localhost:5432/rainver",
+        ARTIFACT_STORAGE_ROOT: artifactRoot,
+      }),
+      db,
+      undefined,
+      async (request) => request.action === "artifact.persist"
+        ? { status: "blocked", error_code: "policy_denied", message: "Artifact denied" }
+        : { status: "allow" },
+    );
+
+    const result = await service.materializeAdapterResult({
+      run: run(),
+      sandbox_cwd: sandboxRoot,
+      adapterResult: {
+        runtime_key: "opencode",
+        adapter_kind: "managed_api",
+        success: true,
+        output_text: "",
+        output_json: {},
+        produced_artifact_paths: ["logs/out.txt"],
+        exit_code: 0,
+        error_code: null,
+        error_message: null,
+        started_at: "2026-06-12T10:00:00.000Z",
+        completed_at: "2026-06-12T10:00:01.000Z",
+        usage: null,
+      },
+    });
+
+    expect(result.items.filter((item) => item.kind === "artifact")).toMatchObject([
+      { status: "failed", error_code: "output_artifact_materialization_error", error_message: "Artifact denied" },
+    ]);
+    expect(db.artifacts).toHaveLength(0);
+    // Content the policy refused to persist must not sit in artifact storage
+    // under a name no row points at, where nothing can ever find or reclaim it.
+    const stored = await readdir(artifactRoot, { recursive: true, withFileTypes: true });
+    expect(stored.filter((entry) => entry.isFile())).toEqual([]);
   });
 
   it("materializes claim/object packets only from structured proposal payloads", async () => {

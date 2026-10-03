@@ -38,7 +38,7 @@ const NOTE_BUDGET_CHARS = 3000;
  */
 const PERSONA_BUDGET_CHARS = 2000;
 
-export interface AgentIdentityPromptInput {
+interface AgentIdentityPromptInput {
   spaceId: string;
   agentId: string;
   /** The Room this turn speaks in, or null for a direct chat. */

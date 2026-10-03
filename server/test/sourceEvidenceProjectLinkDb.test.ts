@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import { fixtureServerGuard } from "./support/outboundGuard.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import {
@@ -15,6 +22,9 @@ import { ProjectResearchArtifactService } from "../src/modules/projectResearch/a
 import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
 import { PgActivityRepository } from "../src/modules/activity/repository.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ProjectSourceBindingRepository } from "../src/modules/projects/projectSourceBindingRepository.js";
+import { PgAnnotationRepository, PgCommentRepository, PgReaderActionRepository } from "../src/modules/reader/repository.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 
 // Real-PostgreSQL tests for evidence→project auto-linking on materialization:
 // bound sources produce active `context_candidate` project links, re-runs are
@@ -628,6 +638,22 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     expect(again.evidence_links).toBe(0);
   });
 
+  it("archives a binding's evidence links for an item its new filters exclude", async () => {
+    if (!db.available) return;
+    const { evidenceId } = await seedItemWithEvidence();
+    const bindingId = await seedBinding(PROJECT);
+    await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
+    await db.pool.query(
+      `UPDATE project_source_bindings SET filters_json = '{"exclude_keywords":["new paper"]}'::jsonb WHERE id = $1`,
+      [bindingId],
+    );
+
+    await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
+
+    const links = await db.pool.query(`SELECT status FROM evidence_links WHERE evidence_id = $1`, [evidenceId]);
+    expect(links.rows).toEqual([{ status: "archived" }]);
+  });
+
   it("two bindings to the same project produce one link; distinct projects each get one", async () => {
     if (!db.available) return;
     await seedBinding(PROJECT, "active", "default");
@@ -672,4 +698,203 @@ describe("Evidence→project auto-link (real Postgres)", () => {
     expect(links.rows).toEqual([{ target_id: PROJECT, reason: `project_source_binding:${bindingId}` }]);
   });
 
+
+  it("archives the corpus rows a deleted binding backed, as routing does when a link goes", async () => {
+    if (!db.available) return;
+    const { itemId } = await seedItemWithEvidence();
+    const bindingId = await seedBinding(PROJECT);
+    await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
+    const corpus = () => db.pool.query<{ status: string }>(
+      `SELECT status FROM project_corpus_items WHERE project_id = $1 AND source_item_id = $2 AND object_id IS NULL`,
+      [PROJECT, itemId],
+    );
+    expect((await corpus()).rows).toEqual([{ status: "active" }]);
+
+    await new ProjectSourceBindingRepository(db.pool).deleteProjectSourceBinding({ spaceId: SPACE, userId: OWNER }, bindingId);
+
+    expect((await corpus()).rows).toEqual([{ status: "archived" }]);
+  });
+
+  it("keeps a handled collection notification handled when a known item is routed again", async () => {
+    if (!db.available) return;
+    await seedItemWithEvidence();
+    const bindingId = await seedBinding(PROJECT);
+    await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
+    const notification = () => db.pool.query<{ status: string; processed_at: string | null }>(
+      `SELECT status, processed_at FROM activity_records
+        WHERE space_id = $1 AND project_id = $2 AND activity_type = 'project_source_collection'`,
+      [SPACE, PROJECT],
+    );
+    expect((await notification()).rows).toMatchObject([{ status: "raw" }]);
+    await db.pool.query(
+      `UPDATE activity_records SET status = 'processed', processed_at = now()
+        WHERE space_id = $1 AND project_id = $2 AND activity_type = 'project_source_collection'`,
+      [SPACE, PROJECT],
+    );
+
+    const again = await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId });
+
+    expect(again.created_links).toBe(0);
+    expect((await notification()).rows).toMatchObject([{ status: "processed" }]);
+    expect((await notification()).rows[0]?.processed_at).not.toBeNull();
+  });
+});
+
+describe("Project annotations over bound Sources (real Postgres)", () => {
+  const owner = { spaceId: SPACE, userId: OWNER };
+  const anchor = { schema_version: 1, quote_text: "New", text_range: { start: 0, end: 3, unit: "utf16" }, before_context: "", after_context: "" };
+
+  it("lists an annotation once however many bindings link its item, with its Project, to a channel subscriber", async () => {
+    if (!db.available) return;
+    const { itemId } = await seedItemWithEvidence();
+    for (const key of ["default", "auto-research"]) {
+      await recomputeProjectSourceBindingLinks(db.pool, { spaceId: SPACE, bindingId: await seedBinding(PROJECT, "active", key) });
+    }
+    await new PgAnnotationRepository(db.pool).createAnnotation(owner, {
+      annotation_type: "excerpt", quote_text: "New", anchor_json: anchor,
+      document_type: "source_item", document_id: itemId, visibility: "space_shared",
+    });
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'member', 'active', $5, $5)`,
+      [randomUUID(), SPACE, PROJECT, OTHER_USER, now],
+    );
+    // Not the owner, not an allowed reader, not an admin: a subscriber of the
+    // connection's channel, whom the single-document gate lets read.
+    await db.pool.query(
+      `INSERT INTO source_channel_user_subscriptions (id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)`,
+      [randomUUID(), SPACE, CONNECTION, OTHER_USER, now],
+    );
+
+    const forOwner = await new PgReaderActionRepository(db.pool).listProjectAnnotations(owner, PROJECT, 10);
+    expect(forOwner).toHaveLength(1);
+    expect(forOwner[0]!.project_id).toBeNull();
+    const forSubscriber = await new PgReaderActionRepository(db.pool).listProjectAnnotations({ spaceId: SPACE, userId: OTHER_USER }, PROJECT, 10);
+    expect(forSubscriber.map((row) => row.id)).toEqual(forOwner.map((row) => row.id));
+  });
+
+  it("keeps one open comment thread per annotation when two first comments arrive together", async () => {
+    if (!db.available) return;
+    const { itemId } = await seedItemWithEvidence();
+    const annotation = await new PgAnnotationRepository(db.pool).createAnnotation(owner, {
+      annotation_type: "excerpt", quote_text: "New", anchor_json: anchor,
+      document_type: "source_item", document_id: itemId, visibility: "space_shared",
+    });
+    const first = await db.pool.connect();
+    try {
+      await first.query("BEGIN");
+      await new PgCommentRepository(first).createComment(owner, annotation.id, { body: "first" });
+      let settled = false;
+      const second = new PgCommentRepository(db.pool).createComment(owner, annotation.id, { body: "second" }).finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      await first.query("COMMIT");
+      await second;
+    } finally {
+      await first.query("ROLLBACK").catch(() => undefined);
+      first.release();
+    }
+    const threads = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM reader_comment_threads WHERE annotation_id = $1 AND status = 'open'`,
+      [annotation.id],
+    );
+    expect(threads.rows[0]?.count).toBe("1");
+  });
+});
+
+describe("Source extraction inside a Project", () => {
+  it("keeps the extracted Evidence and its artifacts in the item's Project", async () => {
+    if (!db.available) return;
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<html><head><title>Project page</title></head><body><article><p>Project-only full text.</p></article></body></html>");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const artifactStorageRoot = await mkdtemp(join(tmpdir(), "source-project-extraction-"));
+    try {
+      await db.pool.query(
+        `UPDATE source_connections SET policy_json = policy_json || '{"retention_policy":"full_snapshot"}'::jsonb WHERE id = $1`,
+        [CONNECTION],
+      );
+      const itemId = randomUUID();
+      const now = new Date().toISOString();
+      await db.pool.query(
+        `INSERT INTO source_items (
+           id, space_id, project_id, owner_user_id, visibility, connection_id, item_type, title, source_uri,
+           first_seen_at, last_seen_at, content_state, retention_policy, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,'space_shared',$5,'external_url','Project page',$6,$7,$7,'content_queued','full_snapshot',$7,$7)`,
+        [itemId, SPACE, PROJECT, OWNER, CONNECTION, `http://127.0.0.1:${port}/page`, now],
+      );
+      const worker = new SourceExtractionWorker(db.pool, { ...loadConfig({}), artifactStorageRoot }, fixtureServerGuard);
+      for (const jobType of ["extract_text", "snapshot"]) {
+        const jobId = randomUUID();
+        await db.pool.query(
+          `INSERT INTO extraction_jobs (id, space_id, connection_id, source_item_id, job_type, status, metadata_json, created_at)
+           VALUES ($1,$2,$3,$4,$5,'pending','{}'::jsonb,$6)`,
+          [jobId, SPACE, CONNECTION, itemId, jobType, now],
+        );
+        await expect(worker.runPendingJob(jobId, SPACE)).resolves.toMatchObject({ status: "succeeded" });
+      }
+
+      const evidence = await db.pool.query<{ project_id: string | null }>(
+        `SELECT project_id FROM extracted_evidence WHERE source_item_id = $1`,
+        [itemId],
+      );
+      expect(evidence.rows.length).toBeGreaterThan(0);
+      expect(evidence.rows.map((row) => row.project_id)).toEqual(evidence.rows.map(() => PROJECT));
+      const artifacts = await db.pool.query<{ artifact_type: string; project_id: string | null }>(
+        `SELECT artifact_type, project_id FROM artifacts
+          WHERE id IN (SELECT artifact_id FROM source_snapshots WHERE source_item_id = $1)
+          ORDER BY artifact_type`,
+        [itemId],
+      );
+      expect(artifacts.rows.map((row) => row.artifact_type)).toEqual(
+        expect.arrayContaining(["source_raw_snapshot", "source_reader_document"]),
+      );
+      expect(artifacts.rows.every((row) => row.project_id === PROJECT)).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(artifactStorageRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a pause made while the connection scan was running", async () => {
+    if (!db.available) return;
+    let paused = false;
+    const server = createServer((_req, res) => {
+      // The person pauses the channel while the feed is being fetched.
+      void db.pool.query(`UPDATE source_channels SET status = 'paused' WHERE id = $1`, [CONNECTION]).then(() => {
+        paused = true;
+        res.writeHead(200, { "content-type": "application/rss+xml" });
+        res.end(`<?xml version="1.0"?><rss version="2.0"><channel><item><title>Feed item</title><link>https://example.test/item-1</link><guid>guid-1</guid><pubDate>Tue, 30 Jun 2026 09:00:00 GMT</pubDate><description>Feed excerpt.</description></item></channel></rss>`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      await db.pool.query(`UPDATE source_channels SET endpoint_url = $2 WHERE id = $1`, [CONNECTION, `http://127.0.0.1:${port}/feed`]);
+      const jobId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO extraction_jobs (id, space_id, connection_id, job_type, status, metadata_json, created_at)
+         VALUES ($1,$2,$3,'connection_scan','pending',$4::jsonb,$5)`,
+        [jobId, SPACE, CONNECTION, JSON.stringify({ source_channel_id: CONNECTION }), new Date().toISOString()],
+      );
+      const worker = new SourceExtractionWorker(db.pool, loadConfig({}), fixtureServerGuard);
+      await expect(worker.runPendingJob(jobId, SPACE)).resolves.toMatchObject({ status: "succeeded" });
+      expect(paused).toBe(true);
+
+      const task = await db.pool.query<{ status: string; next_run_at: string | null; last_run_at: string | null }>(
+        `SELECT status, next_run_at, last_run_at FROM scheduler_tasks WHERE task_type = 'source_channel_scan' AND task_key = $1`,
+        [CONNECTION],
+      );
+      expect(task.rows[0]).toMatchObject({ status: "paused", next_run_at: null });
+      expect(task.rows[0]?.last_run_at).not.toBeNull();
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });

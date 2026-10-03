@@ -268,7 +268,9 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
   const monitoring = monitoringActive(input.workflow)
   const latestTodaySummary = todaySummary(input.scanSummaries)
   const noReportOutcome = completedWithoutReport(latestOperation)
-  const deferredSources = input.operations.flatMap(operation => {
+  // Only an operation that is still going retries anything: a cancelled or
+  // finished one keeps its last progress as it was, retries included.
+  const deferredSources = runningOperations.flatMap(operation => {
     const stage = operation.progress_json.current_stage
     if (stage !== 'backfill' && stage !== 'screening') return []
     const backfill = objectValue(operation.progress_json.backfill_progress)

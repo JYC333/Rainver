@@ -7,6 +7,7 @@ import {
   type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
+import { assertSourceConnectionReadable } from "./sourceConnectionAccess.js";
 
 interface SourceRunProjectionRow {
   id: string;
@@ -50,14 +51,16 @@ export async function listSourceRuns(
 }
 
 async function requireChannel(db: Queryable, identity: SpaceUserIdentity, channelId: string): Promise<void> {
-  const result = await db.query<{ id: string }>(
-    `SELECT ch.id
+  const result = await db.query<{ source_connection_id: string }>(
+    `SELECT ch.source_connection_id
        FROM source_channels ch
        JOIN source_connections sc ON sc.id = ch.source_connection_id
       WHERE ch.space_id = $1 AND ch.id = $2 AND ch.status <> 'archived' AND sc.deleted_at IS NULL`,
     [identity.spaceId, channelId],
   );
-  if (!result.rows[0]) throw new HttpError(404, "Source channel not found");
+  const channel = result.rows[0];
+  if (!channel) throw new HttpError(404, "Source channel not found");
+  await assertSourceConnectionReadable(db, identity, channel.source_connection_id);
 }
 
 function sourceRunOut(row: SourceRunProjectionRow): SourceRunSummaryDTO {

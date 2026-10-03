@@ -102,9 +102,11 @@ Two clients need a settled turn from a saved reply, and both go through
   actually saved and leaves the work above it. The caller passes the state,
   because only the caller knows what settled — a reply row is not proof a turn
   is over, since the server writes one at the pause too.
-- `readBackTurnState(state)` settles a `working` turn read from history to
-  `done`, since the message is written before `chat_completed` lands and a
-  read is not a stream: nothing else would ever correct it.
+- `readBackTurnState(state, blockedOn)` settles a `working` turn read from
+  history to `done`, since the message is written before `chat_completed` lands
+  and a read is not a stream: nothing else would ever correct it. A `blocked`
+  turn with `blocked_on === 'workspace'` (queued behind another writer of the
+  directory) also reads back as `done`; any other `blocked` is kept.
 
 ## The turn stream
 

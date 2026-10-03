@@ -90,6 +90,32 @@ describe("skill local overlays", () => {
     expect(JSON.stringify(item)).not.toContain("sk-live-secret");
   });
 
+  it("rejects a credential secret nested inside an array in the overlay", async () => {
+    __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    const repo = fakeOverlayRepository();
+    __setCapabilitiesRepositoryFactoryForTests(() => repo);
+    app = buildModuleServer(config(), [capabilitiesModule]);
+
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/v1/capabilities/skills/pkg-1/local-overlay",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({
+        scope_type: "space",
+        overlay_json: {
+          endpoint_defaults: {
+            headers: [{ name: "x-auth", api_key: "sk-live-secret" }],
+          },
+        },
+      }),
+    });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.json()).toEqual({
+      detail: "skill overlay must reference credentials instead of embedding secrets",
+    });
+  });
+
   it("rejects embedded credential secrets in overlay defaults", async () => {
     __setCapabilitiesIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     const repo = fakeOverlayRepository();

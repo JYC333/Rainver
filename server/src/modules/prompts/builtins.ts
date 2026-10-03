@@ -141,8 +141,16 @@ async function ensureBuiltinVersion(db: Queryable, manifest: PromptManifest): Pr
   const asset = await assetForKey(db, manifest.assetKey);
   if (!asset) throw new HttpError(500, `Prompt asset '${manifest.assetKey}' was not created before version sync`);
 
+  // Only the catalog's own versions count as "this content already exists".
+  // A Space can add versions to a built-in asset, and its content_hash can
+  // match a manifest; adopting one would make a Space's draft the baseline
+  // every Space resolves through.
   const existing = await db.query<{ id: string }>(
-    `SELECT id FROM evolvable_asset_versions WHERE asset_id = $1 AND content_hash = $2 LIMIT 1`,
+    `SELECT id FROM evolvable_asset_versions
+      WHERE asset_id = $1 AND content_hash = $2
+        AND space_id IS NULL AND scope_type = 'system' AND source = 'built_in'
+      ORDER BY version DESC
+      LIMIT 1`,
     [asset.id, manifest.contentHash],
   );
   const existingVersionId = existing.rows[0]?.id ?? null;

@@ -70,6 +70,7 @@ describe("knowledge claim/object relation contracts", () => {
       updated_at: "2026-06-24T10:00:00.000Z",
     });
     expect(summary.claim_kind).toBe("fact");
+    expect(ClaimSummaryOutSchema.parse({ ...summary, claim_text: null }).claim_text).toBeNull();
 
     expect(
       ClaimOutSchema.parse({

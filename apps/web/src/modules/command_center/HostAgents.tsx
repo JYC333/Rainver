@@ -12,9 +12,9 @@ import RuntimeLoginTerminal from './RuntimeLoginTerminal'
 
 /** The copies of an adapter a host reports (the server has already normalized older daemons' reports). */
 /** How long a finished, successful login stays on screen before the panel closes itself. */
-export const LOGIN_PANEL_AUTO_CLOSE_MS = 3_000
+const LOGIN_PANEL_AUTO_CLOSE_MS = 3_000
 
-export function installationsOn(host: Host, adapter: HostRuntimeDefinitionOption): RuntimeInstallation[] {
+function installationsOn(host: Host, adapter: HostRuntimeDefinitionOption): RuntimeInstallation[] {
   return host.capabilities_json?.installations?.[adapter.runtime_key] ?? []
 }
 
@@ -34,7 +34,7 @@ function usageFor(usage: ReadonlyMap<string, HostRuntimeUsage>, runtimeKey: stri
  * provisioning panel rather than to this card. Module-level so a `useMemo`
  * that reads it has a stable dependency instead of a suppressed lint rule.
  */
-export function isRainverPinned(hostKind: Host['kind'], runtimeKey: string): boolean {
+function isRainverPinned(hostKind: Host['kind'], runtimeKey: string): boolean {
   return hostKind === 'server' && runtimeKey === 'opencode'
 }
 

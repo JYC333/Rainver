@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -90,6 +90,19 @@ function setup(overrides: {
   vi.mocked(projectsApi.updates).mockResolvedValue({ items: [], next_cursor: null, viewer_can_write: true } as never)
   vi.mocked(projectsApi.listBriefVersions).mockResolvedValue([])
   vi.mocked(projectsApi.listInstructionVersions).mockResolvedValue([])
+}
+
+/** Every read parses a new response body, as `fetch` does: same content, new objects. */
+function freshReadEachTime() {
+  const projectRead = vi.mocked(projectsApi.get).getMockImplementation()
+  const overviewRead = vi.mocked(projectsApi.getOverview).getMockImplementation()
+  vi.mocked(projectsApi.get).mockImplementation(async (...args) => structuredClone(await projectRead!(...args)))
+  vi.mocked(projectsApi.getOverview).mockImplementation(async (...args) => structuredClone(await overviewRead!(...args)))
+}
+
+/** Lets a background read that already started resolve and render. */
+async function settle() {
+  for (let i = 0; i < 3; i += 1) await act(() => new Promise(resolve => setTimeout(resolve, 0)))
 }
 
 function renderPage() {
@@ -237,6 +250,50 @@ describe('ProjectDetailPage (Pulse)', () => {
       description: null,
       current_focus: null,
     }))
+  })
+
+  it('keeps unsaved settings while Pulse refreshes the Project in the background', async () => {
+    setup()
+    freshReadEachTime()
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    fireEvent.change(screen.getByLabelText('Current focus'), { target: { value: 'Half-typed focus' } })
+    const reads = vi.mocked(projectsApi.get).mock.calls.length
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(() => expect(vi.mocked(projectsApi.get).mock.calls.length).toBeGreaterThan(reads))
+
+    await settle()
+    expect(screen.getByLabelText('Current focus')).toHaveValue('Half-typed focus')
+  })
+
+  it('keeps an unsaved goal and a correction in progress while Pulse refreshes the overview', async () => {
+    const draft = {
+      id: 'brief-2', space_id: 'space-1', project_id: 'project-1', version: 'v2',
+      goal: 'Unsent draft goal', scope_included: null, scope_excluded: null,
+      success_definition: null, constraints: null, assumptions: null,
+      ...BRIEF_AGGREGATE,
+      status: 'draft' as const, reviewed_by_user_id: null, reviewed_at: null,
+      published_by_user_id: null, published_at: null, created_by_user_id: 'user-1',
+      created_at: '2026-06-30T00:00:00.000Z',
+    }
+    setup()
+    freshReadEachTime()
+    vi.mocked(projectsApi.listBriefVersions).mockResolvedValue([draft])
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit goal' }))
+    expect(await screen.findByDisplayValue('Unsent draft goal')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Create corrected version' }))
+    fireEvent.change(screen.getByLabelText('Goal'), { target: { value: 'Half-typed correction' } })
+    const reads = vi.mocked(projectsApi.getOverview).mock.calls.length
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(() => expect(vi.mocked(projectsApi.getOverview).mock.calls.length).toBeGreaterThan(reads))
+
+    await settle()
+    expect(screen.getByLabelText('Goal')).toHaveValue('Half-typed correction')
+    expect(screen.getByLabelText('Goal')).toBeEnabled()
+    expect(projectsApi.listBriefVersions).toHaveBeenCalledTimes(1)
   })
 
   it('edits the Brief goal from the Overview by creating a new version without clearing hidden Brief fields', async () => {

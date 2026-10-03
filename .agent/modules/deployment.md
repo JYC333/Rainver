@@ -97,7 +97,9 @@ service names through the socket protocol.
 - An operator with control of the deployer container may submit an allowlisted job to its
   private Unix socket.
 - The instance administrator creates a deployment job through the admin routes below.
-- No production server code instantiates or calls `DeployerSocketClient`.
+- The server has no client for the socket and no socket path in its
+  configuration (`deploymentGroup.test.ts` checks that neither reappears), so
+  nothing in the server can submit a socket job (B41, B42).
 - Evolution, code-patch, capability, agent, automation, job, and scheduler paths have no
   route to deployer input.
 
@@ -325,7 +327,7 @@ when the container resolved the same directories the host daemon did.
 - `deployer/poll.py` — the instance-update pull loop, observation, and stage reporting
 - `deployer/protocol.py` — the socket allowlist and, separately, the pull job types
 - `deployer/scripts/` — operator/deployer scripts
-- `server/src/modules/deployment/` — job authority, admin and internal routes, dormant socket-client type
+- `server/src/modules/deployment/` — job authority, admin and internal routes
 - `server/src/db/schema/deployment.ts` — the three tables
 - `ops/compose/docker-compose.<mode>.yml` — privileged mounts and private socket setting
 - `ops/scripts/lib/local-compose.sh` — host-path resolution and the `.env` write guard

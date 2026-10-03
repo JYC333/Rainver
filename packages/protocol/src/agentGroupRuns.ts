@@ -111,6 +111,8 @@ export const AgentRunGroupSchema = z
     room_id: IdSchema.nullish(),
     session_id: IdSchema.nullish(),
     trigger_message_id: IdSchema.nullish(),
+    /** The Room discussion this group serves, when it was opened for one. */
+    discussion_id: IdSchema.nullish(),
     project_id: IdSchema.nullish(),
     project_folder_id: IdSchema.nullish(),
     title: z.string().min(1),
@@ -181,6 +183,8 @@ export const RunDelegationSchema = z
     budget_json: TraceSafeObjectSchema.nullish(),
     context_policy_json: TraceSafeObjectSchema.nullish(),
     result_summary: z.string().nullish(),
+    /** The parent Run's tool call that requested this delegation, when one did. */
+    tool_call_id: z.string().nullish(),
     created_at: ISODateTimeSchema,
     updated_at: ISODateTimeSchema,
     completed_at: ISODateTimeSchema.nullish(),

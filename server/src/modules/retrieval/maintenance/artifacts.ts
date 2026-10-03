@@ -53,8 +53,9 @@ export async function createRetrievalMaintenanceProposalPacket(
   const lineageKey = maintenanceLineageKey(input.spaceId, input.source);
   const existing = await lookupExistingPendingPacket(
     db, input.spaceId, RETRIEVAL_MAINTENANCE_PACKET_PROPOSAL_TYPE, lineageKey,
+    { createdByUserId: ownerUserId, visibility: visibilityForReviewScope(input.reviewScope) },
   );
-  if (existing) return existing;
+  if (existing) return existing.id;
   const payload = packetPayload(input, ownerUserId, lineageKey);
   return (await insertProposalRow(db, {
     spaceId: input.spaceId,

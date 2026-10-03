@@ -4,6 +4,10 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository.js";
 import { ANNOTATION_ENQUEUE_WINDOW_MS } from "../src/modules/sourceAnnotation/eventEmitter.js";
+import { ensureSourceAnnotatorAgent } from "../src/modules/sourceAnnotation/agent.js";
+import { SOURCE_ANNOTATION_SCHEMA_ID } from "../src/modules/sourceAnnotation/resultParser.js";
+import { SourceAnnotationService } from "../src/modules/sourceAnnotation/service.js";
+import { loadConfig } from "../src/config.js";
 
 // Real-Postgres coverage for the system annotation queue: what gets enqueued,
 // what the queue guarantees about not paying twice, how failures terminate, and
@@ -333,5 +337,58 @@ describe("annotation outcomes", () => {
       `UPDATE source_item_annotations SET status = 'maybe' WHERE space_id = $1 AND source_item_id = $2`,
       [SPACE, itemId],
     )).rejects.toThrow(/ck_source_item_annotations_status/);
+  });
+});
+
+describe("annotation service", () => {
+  function service(): SourceAnnotationService {
+    return new SourceAnnotationService(db.pool, { ...loadConfig({}), databaseUrl: db.connectionUri });
+  }
+
+  it("tells the annotator the schema version its output is parsed against", async () => {
+    if (!db.available) return;
+    const agent = await ensureSourceAnnotatorAgent(db.pool, SPACE);
+    const prompt = await db.pool.query<{ system_prompt: string }>(
+      `SELECT v.system_prompt FROM agents a JOIN agent_versions v ON v.id = a.current_version_id
+        WHERE a.space_id = $1 AND a.id = $2`,
+      [SPACE, agent.id],
+    );
+    expect(prompt.rows[0]?.system_prompt).toContain(`matching schema ${SOURCE_ANNOTATION_SCHEMA_ID}.`);
+  });
+
+  it("moves on past a batch every source of which refused egress, instead of stopping the space", async () => {
+    if (!db.available) return;
+    const itemId = await seedItem();
+    await repo().enqueueItems(SPACE, [itemId], CHANNEL);
+    await ensureSourceAnnotatorAgent(db.pool, SPACE);
+    await db.pool.query(
+      `UPDATE source_connections
+          SET consent_json = consent_json || '{"allow_local_provider_egress": false, "allow_external_model_egress": false}'::jsonb
+        WHERE id = $1`,
+      [CONNECTION],
+    );
+
+    const result = await service().annotatePendingBatch(SPACE);
+
+    // The refused items left the queue as skipped, so this batch made progress
+    // and the job may take the next one; `blocked` is for a space that cannot.
+    expect(result).toMatchObject({ status: "ok", skipped: 1, annotated: 0, failed: 0, reason: "source_egress_denied" });
+    expect(await repo().getByItemId(SPACE, itemId)).toMatchObject({ status: "skipped" });
+  });
+
+  it("keeps items queued when the egress check fails for a reason other than a denial", async () => {
+    if (!db.available) return;
+    const itemId = await seedItem();
+    await repo().enqueueItems(SPACE, [itemId], CHANNEL);
+    const agent = await ensureSourceAnnotatorAgent(db.pool, SPACE);
+    // An Agent with no enabled runtime profile cannot be resolved to an egress
+    // destination: a configuration gap of the annotator, not the source's refusal.
+    await db.pool.query(`UPDATE agent_runtime_profiles SET enabled = FALSE, is_default = FALSE WHERE space_id = $1 AND agent_id = $2`, [SPACE, agent.id]);
+
+    const result = await service().annotatePendingBatch(SPACE);
+
+    expect(result).toMatchObject({ status: "blocked", skipped: 0, failed: 0 });
+    const row = await repo().getByItemId(SPACE, itemId);
+    expect(row).toMatchObject({ status: "pending", attempt_count: 0 });
   });
 });

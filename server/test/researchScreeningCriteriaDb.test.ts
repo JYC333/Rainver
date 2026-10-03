@@ -170,6 +170,42 @@ describe("research screening criteria (real Postgres)", () => {
     });
   });
 
+  it("saves criteria and the rules' snapshot together, or neither", async () => {
+    if (!db.available) return;
+    const channelId = await seedChannel();
+    const agentId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO agents (id, space_id, owner_user_id, name, status, agent_kind, visibility, access_level, created_at, updated_at)
+       VALUES ($1,$2,$3,'Research screener','active','standard','private','full',now(),now())`,
+      [agentId, SPACE, USER],
+    );
+    await db.pool.query(
+      `INSERT INTO source_post_processing_rules (
+         id, space_id, source_channel_id, agent_id, project_id, name, status, trigger_type, trigger_config_json,
+         input_config_json, actions_json, created_by_user_id, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,$5,'Automated screening','active','items_materialized','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$6,now(),now())`,
+      [randomUUID(), SPACE, channelId, agentId, projectId, USER],
+    );
+    const repository = new ProjectResearchRepository(db.pool);
+    await repository.upsertScreeningCriteria(identity, projectId, { include_keywords: ["latency"] });
+    // The rules' snapshot is what screening actually reads, so a save whose
+    // rule sync fails must not leave the criteria row ahead of it.
+    await db.pool.query(
+      `CREATE FUNCTION refuse_rule_sync() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'rule sync refused'; END; $$ LANGUAGE plpgsql`,
+    );
+    await db.pool.query(
+      `CREATE TRIGGER refuse_rule_sync BEFORE UPDATE ON source_post_processing_rules FOR EACH ROW EXECUTE FUNCTION refuse_rule_sync()`,
+    );
+    try {
+      await expect(repository.upsertScreeningCriteria(identity, projectId, { include_keywords: ["throughput"] }))
+        .rejects.toThrow(/rule sync refused/);
+    } finally {
+      await db.pool.query(`DROP TRIGGER refuse_rule_sync ON source_post_processing_rules`);
+      await db.pool.query(`DROP FUNCTION refuse_rule_sync()`);
+    }
+    expect((await repository.getScreeningCriteria(identity, projectId) as { include_keywords: string[] }).include_keywords).toEqual(["latency"]);
+  });
+
   it("accepts a domain criterion the Project's bound profile declares", async () => {
     if (!db.available) return;
     await bindProfile("academic_paper_v1");

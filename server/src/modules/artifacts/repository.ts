@@ -68,7 +68,7 @@ interface ArtifactRow {
   project_folder_id: string | null;
 }
 
-export interface ArtifactListFilters {
+interface ArtifactListFilters {
   artifactType?: string | null;
   runId?: string | null;
   projectId?: string | null;
@@ -78,7 +78,7 @@ export interface ArtifactListFilters {
   offset: number;
 }
 
-export interface ArtifactExport {
+interface ArtifactExport {
   artifact: ArtifactOut;
   filename: string;
   mediaType: string;

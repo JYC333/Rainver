@@ -11,8 +11,12 @@ function formatDate(iso: string): string {
   })
 }
 
+// The person's own calendar day: a UTC date is yesterday or tomorrow for
+// hours of every day away from UTC, and the header shows the local date.
 function todayDate(): string {
-  return new Date().toISOString().slice(0, 10)
+  const now = new Date()
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
 }
 
 // ── Entry Editor ──────────────────────────────────────────────────────────────
@@ -33,6 +37,7 @@ function EntryEditor({
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const latestRef = useRef(initial)
 
   const save = useCallback(async (text: string) => {
     setSaving(true)
@@ -51,12 +56,19 @@ function EntryEditor({
 
   const handleChange = (text: string) => {
     setContent(text)
+    latestRef.current = text
     setSaved(false)
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => void save(text), 1500)
   }
 
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+  // Leaving the day (another date, or back to today) unmounts the editor; a
+  // pending autosave is sent rather than dropped with its timer.
+  useEffect(() => () => {
+    if (!timerRef.current) return
+    clearTimeout(timerRef.current)
+    void api.saveEntry(date, latestRef.current).catch(() => {/* the editor is gone */})
+  }, [api, date])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -201,15 +213,21 @@ function DiaryPage({ host }: { host: DiaryWebHost }) {
   const [entry, setEntry] = useState<DiaryEntry | null>(null)
   const [loadingEntry, setLoadingEntry] = useState(true)
 
-  const loadEntry = useCallback((date: string) => {
+  // Read by date for today too: the server's "today" is its UTC day. A read
+  // for a day no longer selected is dropped, or the editor would open on the
+  // wrong day's text and save it over the selected one.
+  useEffect(() => {
+    let current = true
     setLoadingEntry(true)
-    const p = date === todayDate()
-      ? api.today().then((r) => r.entry)
-      : api.onThisDay(date).then((r) => r.entries.find((e) => e.entry_date === date) ?? null)
-    p.then((e) => { setEntry(e); setLoadingEntry(false) }).catch(() => setLoadingEntry(false))
-  }, [api])
-
-  useEffect(() => { loadEntry(selectedDate) }, [selectedDate, loadEntry])
+    api.onThisDay(selectedDate)
+      .then((r) => {
+        if (!current) return
+        setEntry(r.entries.find((e) => e.entry_date === selectedDate) ?? null)
+        setLoadingEntry(false)
+      })
+      .catch(() => { if (current) setLoadingEntry(false) })
+    return () => { current = false }
+  }, [api, selectedDate])
 
   const handleSelect = (date: string) => { setSelectedDate(date); setEntry(null) }
 

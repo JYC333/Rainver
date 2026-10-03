@@ -44,7 +44,7 @@ export interface MarginaliaInput {
  * write scope, and binding them to the repository's outer handle would put
  * them outside the transaction whenever that handle is a pool.
  */
-export interface MarginaliaDeps {
+interface MarginaliaDeps {
   /** Read-gated object lookup, so an invisible target leaves no note behind. */
   requireVisibleSpaceObject(
     db: Queryable,

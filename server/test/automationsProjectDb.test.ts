@@ -280,6 +280,31 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     expect(rebound.project_id).toBe(PROJECT);
   });
 
+  it("does not let a member pull someone else's Automation into their own Project", async () => {
+    if (!db.available) return;
+    const personal = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: { name: "Owner's own", agent_id: AGENT, trigger_type: "manual", config_json: { target_type: "agent_run" } },
+    });
+    const theirProject = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+       VALUES ($1,$2,$3,'Member project','active',$4,$4)`,
+      [theirProject, SPACE, MEMBER, now],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+
+    await expect(service().update({
+      spaceId: SPACE,
+      automationId: personal.id,
+      actorUserId: MEMBER,
+      body: { project_id: theirProject, config_json: { target_type: "agent_run", prompt: "Do my bidding." } },
+    })).rejects.toMatchObject({ statusCode: 403 });
+    expect((await new PgAutomationRepository(db.pool).get(SPACE, personal.id))?.project_id).toBeNull();
+  });
+
   it("lists automations filtered by project_id", async () => {
     if (!db.available) return;
     const bound = await createAutomation({
@@ -311,6 +336,48 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     await expect(repo.list(SPACE, { projectId: null })).resolves.toMatchObject([
       { id: unbound.id, project_id: null },
     ]);
+  });
+
+  it("reads an Automation only where its Project and owner allow", async () => {
+    if (!db.available) return;
+    // A team Space, so Project membership decides who reads the Project.
+    await db.pool.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
+    const bound = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Project digest",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        trigger_type: "manual",
+        config_json: { target_type: "agent_run", prompt: "Summarize the Project's private notes" },
+      },
+    });
+    const unbound = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: { name: "General digest", agent_id: AGENT, trigger_type: "manual", config_json: { target_type: "agent_run" } },
+    });
+    const tick = await new PgAutomationRepository(db.pool).upsertAutonomyAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      agentId: AGENT,
+      name: "Always-on",
+      configJson: { target_type: "autonomous_tick", project_ids: [PROJECT], cron: "0 * * * *", timezone: "UTC" },
+      preflightSnapshot: {},
+    });
+
+    const repo = new PgAutomationRepository(db.pool);
+    const ids = async (userId: string) =>
+      (await repo.list(SPACE, { readableBy: userId })).map((row) => row.id).sort();
+    // Not in the Project, not the tick's owner: only the Space-level Automation.
+    expect(await ids(MEMBER)).toEqual([unbound.id]);
+    await expect(repo.get(SPACE, bound.id, { readableBy: MEMBER })).resolves.toBeNull();
+    await expect(repo.get(SPACE, tick.id, { readableBy: MEMBER })).resolves.toBeNull();
+    await expect(repo.listWorkflowExecutions(SPACE, bound.id, { readableBy: MEMBER })).rejects.toMatchObject({ statusCode: 404 });
+    // A Space admin manages ticks, but is not a Project reader by role alone.
+    expect(await ids(ADMIN)).toEqual([unbound.id, tick.id].sort());
+    expect(await ids(OWNER)).toEqual([bound.id, unbound.id, tick.id].sort());
   });
 
   it("rejects project binding for non-agent_run targets with 422", async () => {
@@ -424,6 +491,47 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     expect(run.rows[0]?.project_id).toBe(PROJECT);
     expect(run.rows[0]?.trigger_origin).toBe("manual");
     expect(run.rows[0]?.instructed_by_user_id).toBe(OWNER);
+  });
+
+  it("does not fire, or re-arm, a scheduled Automation paused after the scan read it", async () => {
+    if (!db.available) return;
+    const created = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Nightly digest",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        trigger_type: "schedule",
+        config_json: { target_type: "agent_run", prompt: "Digest", cron: "0 9 * * *", timezone: "UTC" },
+      },
+    });
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET next_run_at = now() - interval '1 minute'
+        WHERE task_type = 'automation' AND task_key = $1`,
+      [created.id],
+    );
+    const repo = new PgAutomationRepository(db.pool);
+    const scanner = new AutomationService(config, repo);
+    // The scan holds the row it read while it works through the batch; the
+    // person pauses it in that window.
+    const listDue = repo.listDue.bind(repo);
+    vi.spyOn(repo, "listDue").mockImplementation(async (nowIso) => {
+      const due = await listDue(nowIso);
+      await service().update({
+        spaceId: SPACE, automationId: created.id, actorUserId: OWNER, body: { status: "paused" },
+      });
+      return due;
+    });
+
+    await expect(scanner.scanAndFire()).resolves.toBe(0);
+    const runs = await db.pool.query(`SELECT id FROM automation_runs WHERE automation_id = $1`, [created.id]);
+    expect(runs.rows).toEqual([]);
+    const task = await db.pool.query<{ status: string; next_run_at: Date | null }>(
+      `SELECT status, next_run_at FROM scheduler_tasks WHERE task_type = 'automation' AND task_key = $1`,
+      [created.id],
+    );
+    expect(task.rows[0]).toEqual({ status: "paused", next_run_at: null });
   });
 
   it("runs the configured prompt as the automation's own work, whoever pressed fire", async () => {

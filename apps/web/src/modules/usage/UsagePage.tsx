@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3,
   CheckCircle2,
@@ -57,6 +57,8 @@ interface DashboardData {
   dimensions: UsageDimensionsResponse | null
   subjects: UsageSubjectSummary[]
   sessions: UsageSessionSummary[]
+  /** Sessions matched by the filters; the list above holds at most one page. */
+  sessionTotal: number
   events: UsageEventDTO[]
   dimensionSummary: UsageSummaryResponse | null
   budgetPreview: UsageBudgetPreviewResponse | null
@@ -378,12 +380,16 @@ export default function UsagePage() {
     dimensions: null,
     subjects: [],
     sessions: [],
+    sessionTotal: 0,
     events: [],
     dimensionSummary: null,
     budgetPreview: null,
   })
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  // Every filter change starts eight requests; only the latest set may
+  // become the dashboard, or a slow earlier window answers over a fast one.
+  const dashboardRequest = useRef(0)
 
   const resolvedGroupBy = groupBy === 'custom_dimension'
     ? (customDimensionKey ? `dimension:${customDimensionKey}` : 'provider')
@@ -441,6 +447,7 @@ export default function UsagePage() {
         dimensions: null,
         subjects: [],
         sessions: [],
+        sessionTotal: 0,
         events: [],
         dimensionSummary: null,
         budgetPreview: null,
@@ -448,6 +455,7 @@ export default function UsagePage() {
       setLoading(false)
       return
     }
+    const request = ++dashboardRequest.current
     setRefreshing(true)
     if (!data.summary) setLoading(true)
     try {
@@ -464,26 +472,32 @@ export default function UsagePage() {
         dimensionSummaryQuery,
         usageApi.budgetPreview({ ...nextQuery, projection_window_days: 30, limit: 8 }),
       ])
+      if (request !== dashboardRequest.current) return
       setData({
         summary,
         timeseries,
         dimensions,
         subjects: safeItems(subjects.items),
         sessions: safeItems(sessions.items),
+        sessionTotal: sessions.total,
         events: safeItems(events.items),
         dimensionSummary,
         budgetPreview,
       })
     } catch (error) {
+      if (request !== dashboardRequest.current) return
       toast.error(errMsg(error))
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (request === dashboardRequest.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }
 
   useEffect(() => {
     void loadDashboard(query)
+    // queryKey stands in for query, so an equal query in a new object does not reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSpaceId, queryKey, customDimensionKey])
 
@@ -900,7 +914,7 @@ export default function UsagePage() {
                     {[
                       { label: 'Request', divisor: selectedTotals.request_count },
                       { label: 'Event', divisor: selectedTotals.event_count },
-                      { label: 'Session', divisor: data.sessions.length },
+                      { label: 'Session', divisor: data.sessionTotal },
                       { label: labelForGroupBy(data.summary?.group_by ?? 'Group'), divisor: data.summary?.items.length ?? 0 },
                     ].map(row => {
                       const divisor = Math.max(0, row.divisor)

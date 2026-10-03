@@ -188,7 +188,9 @@ export const InquiryEvidenceSignalSchema = z.object({
   space_id: z.string(),
   project_id: z.string(),
   thread_id: z.string(),
-  corpus_item_id: z.string(),
+  /** Exactly one source: a Corpus item or a reviewed Experiment Interpretation. */
+  corpus_item_id: z.string().nullable(),
+  experiment_interpretation_id: z.string().nullable(),
   classification: z.string(),
   is_material: z.boolean(),
   confidence: z.number().nullable(),
@@ -325,6 +327,21 @@ export const InquiryCandidateDecisionRequestSchema = z.object({
   reason: z.string().optional(),
   defer_until: z.string().optional(),
   gap_statement: z.string().optional(),
+}).superRefine((body, ctx) => {
+  // What the server requires per decision, so a request the schema accepts
+  // is one the server accepts.
+  const required: Array<[keyof typeof body, boolean]> = body.decision === "merge"
+    ? [["target_candidate_id", true]]
+    : body.decision === "defer"
+      ? [["reason", true], ["defer_until", true]]
+      : body.decision === "gap"
+        ? [["gap_statement", true]]
+        : [];
+  for (const [field] of required) {
+    if (typeof body[field] !== "string" || (body[field] as string).trim() === "") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is required for ${body.decision}` });
+    }
+  }
 });
 
 export const InquiryLifecycleTransitionRequestSchema = z.object({

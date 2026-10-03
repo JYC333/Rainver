@@ -114,7 +114,7 @@ export class InquiryGraphService {
       edges,
       view: {
         mode: "local",
-        limit: nodes.length,
+        limit: options.limit,
         generatedAt: new Date().toISOString(),
         truncated: (total.rows[0]?.count ?? 0) > nodes.length,
         totalNodeCount: total.rows[0]?.count ?? nodes.length,

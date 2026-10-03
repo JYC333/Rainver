@@ -16,13 +16,13 @@ import type { LinkType } from "@rainver/protocol";
  * "definitions in code" from meaning "only the core team can extend".
  */
 
-export type LinkGovernance =
+type LinkGovernance =
   /** Written directly by the owning domain service. */
   | "direct"
   /** Canonical write goes through the proposal flow. */
   | "proposal";
 
-export interface LinkTypeDefinition {
+interface LinkTypeDefinition {
   linkType: LinkType;
   /**
    * Object types allowed at each end. `"any"` means any registered entity —

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 
-export interface CanonicalEvidenceInput {
+interface CanonicalEvidenceInput {
   id?: string;
   spaceId: string;
   projectId: string | null;

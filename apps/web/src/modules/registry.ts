@@ -537,12 +537,12 @@ export const MODULE_REGISTRY: Module[] = [
   },
 ]
 
-export interface EffectivePluginOverlay {
+interface EffectivePluginOverlay {
   enabled: boolean
   visible: boolean
 }
 
-export type EffectivePluginOverlayMap = Record<string, EffectivePluginOverlay | undefined>
+type EffectivePluginOverlayMap = Record<string, EffectivePluginOverlay | undefined>
 
 export function modulesWithEffectivePlugins(
   modules: readonly Module[],

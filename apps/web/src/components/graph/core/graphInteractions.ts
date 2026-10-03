@@ -49,7 +49,7 @@ export function bindGraphInteractions(
   }
 }
 
-export function extractElementId(event: GraphEventLike): string | null {
+function extractElementId(event: GraphEventLike): string | null {
   const candidates = [event.id, readPath(event.target, ['id']), readPath(event.item, ['id'])]
   for (const candidate of candidates) {
     if (typeof candidate === 'string' && candidate.length > 0) return candidate
@@ -68,7 +68,7 @@ export function nativePointerEvent(
   return null
 }
 
-export function extractCanvasPoint(event: GraphEventLike): { x: number; y: number } | null {
+function extractCanvasPoint(event: GraphEventLike): { x: number; y: number } | null {
   const x = typeof event.x === 'number' ? event.x : readPath(event.canvas, ['x'])
   const y = typeof event.y === 'number' ? event.y : readPath(event.canvas, ['y'])
   if (typeof x === 'number' && typeof y === 'number') return { x, y }

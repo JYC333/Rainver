@@ -1,3 +1,4 @@
+import { assertSourceConnectionManageable } from "../sourceConnectionAccess.js";
 import type { CustomSourcePolicyEnvelope } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { HttpError, optionalString, withDbTransaction, type Pool, type SpaceUserIdentity } from "../../routeUtils/common.js";
@@ -173,7 +174,7 @@ export class CustomSourceRepairService {
     });
 
     if (evaluation.withinEnvelope && settings.space.same_envelope_repair_auto_apply) {
-      await activateCustomSourceHandlerVersion(this.pool, identity, connectionId, newVersion.id, activeVersion.id);
+      await activateCustomSourceHandlerVersion(this.pool, identity, connectionId, newVersion.id, activeVersion.id, "draft");
       const activated = await new PgCustomSourceHandlerRepository(this.pool, this.config).getHandlerVersion(
         identity,
         connectionId,
@@ -294,6 +295,7 @@ export class CustomSourceRepairService {
       connectionId,
       target.id,
       connection.active_handler_version_id,
+      "superseded",
     );
     const activated = await new PgCustomSourceHandlerRepository(this.pool, this.config).getHandlerVersion(
       identity,
@@ -327,6 +329,7 @@ export class CustomSourceRepairService {
     );
     const row = result.rows[0];
     if (!row) throw new HttpError(404, "Source connection not found");
+    await assertSourceConnectionManageable(this.pool, identity, row.id);
     if (row.handler_kind !== "generated_custom") throw new HttpError(422, "Source connection is not a Custom Source");
     if (!row.active_handler_version_id) {
       throw new HttpError(409, "Custom Source has no active handler version to repair or roll back");

@@ -194,7 +194,9 @@ Room conversation summaries:
 - Room prompts enforce write/report consistency: listing a decomposition in a
   reply does not count as creating Project objects. If an Agent says it split
   work into N Project research questions, it must invoke
-  `inquiry.create_thread` once per question — at most five in a turn — and
+  `inquiry.create_thread` once per question — the prompt allows at most three
+  in a turn (one when no decomposition was asked for), and the server refuses
+  a sixth (`THREAD_FAN_OUT_PER_TURN = 5`) — and
   report the actual created count or any failure in plain language. The
   questions exist immediately; the Agent is told not to ask for confirmation
   per question, because the person sees each one in the Project's updates and
@@ -440,9 +442,10 @@ delegated scratch it never reads or imports.
 The same owner-only gate permits a direct chat with a host-bound Agent. Direct
 chat has one `host_threads` container per Agent × owner, renders recent messages
 from that session (not a Room summary), and exposes
-`POST /api/v1/agents/:agentId/chat/reset-context`. Deleting the direct session
-closes and archives both the Agent's runtime profile and, when Rainver managed
-it, the workspace; the first later message may opt into restoring the newest
+`POST /api/v1/agents/:agentId/chat/reset-context`. Deleting the person's last
+active direct session of the Agent (several direct sessions share the one
+container) closes and archives both the Agent's runtime profile and, when
+Rainver managed it, the workspace; the first later message may opt into restoring the newest
 archive, but never restores the vendor session. Removing a Room specialist
 follows the same archive-not-delete rule, with offline archives replayed on the
 daemon's next heartbeat — with one distinction the shared Conversation cwd
@@ -465,7 +468,10 @@ Manager and is immutable through the roster API. Project-writer Room members
 may add visible existing Agents or instantiate one of the server-defined
 presets, and may remove specialists without deleting the Agent or historical
 messages. Preset creation is retry-safe when the caller supplies an
-`Idempotency-Key`.
+`Idempotency-Key`. A preset added without a chosen Host Profile copies the
+Manager's Host-bound runtime profiles, each on its own Host and admitted for the
+person adding it; a profile that person cannot run there is left out, and the new
+Agent keeps its own Server Runtime default.
 
 An Agent with `visibility=private` or `visibility=selected_users` remains
 restricted in all ordinary Agent surfaces. Adding it to a Room requires the
@@ -582,10 +588,10 @@ An Agent gets the Room's conversational actions because it was spoken to in a
 Room, not because of how that Agent was configured:
 `AgentGroupRunService.dispatchMessageInTransaction` passes
 `ROOM_CONVERSATION_TOOL_ALLOWANCE` as the Run's `scenario_tool_allowance`
-whenever the group has a `room_id`, independent of whether the Run executes on
+whenever the conversation has a `room_id` or a `project_id`, independent of whether the Run executes on
 the server Host or a remote trusted Host. Host kind changes how the same
 Run-scoped tool surface is delivered, not which Room-owned actions the Run may
-use. Non-Room groups receive `CONVERSATION_TOOL_ALLOWANCE`. See
+use. Conversations with neither receive `CONVERSATION_TOOL_ALLOWANCE`. See
 `architecture/SYSTEM_ACTIONS.md` for why the scope moved and what stayed
 fail-closed.
 
@@ -609,10 +615,7 @@ dates, blockers) and `inquiry.list_threads` (each Thread's recorded
 `next_step`) (`PLAN_ACTION_POLICY`). The Project-state block lists pending
 decisions (attention class `gate`) before anything else and carries each
 item’s summary, so an Inquiry next step arrives with its rationale and a
-pending proposal is never crowded out by a busy board. A conversation turn
-gets eight model turns in the managed loop (`CONVERSATION_MAX_MODEL_TURNS`),
-twice a dispatched Task's default, because the policies chain reads and
-writes before the reply.
+pending proposal is never crowded out by a busy board.
 
 The same policy tells the Agent that `task.create.required_outputs` is only for
 file Artifact types collected as deliverables. A reply, inspection, or edit to
@@ -756,10 +759,17 @@ marker. There is no product surface for `tool_permissions_json`, so Room
 scenario permissions remain a Room execution concern rather than silently
 depending on a specialist's private Agent configuration.
 
-The allowance holds four proposal-gated actions — propose a Project
-definition, create an Inquiry Thread, record a conclusion, and promote
-Knowledge — plus two directly-executed, idempotency-guarded actions:
-`agent.delegate` and `research.start_acquisition` (plan Phase 4). Delegation
+The allowance (`ROOM_PROJECT_TOOL_ALLOWANCE` plus the memory actions, in
+`systemActions/scenarioToolAllowance.ts`) holds the proposal-gated
+`project.propose_definition`, `inquiry.promote_knowledge`,
+`task.plan.propose`, `project.source.propose_bind`, and
+`source.backfill.propose_start`; the direct Project writes
+`inquiry.create_thread`, `inquiry.record_conclusion`,
+`inquiry.adopt_next_step`, and the `task.*` actions; the reads
+`inquiry.list_threads`, `task.list`, `research.list_operations`, and
+`proposal.list_pending`; `proposal.decide`; and the directly-executed,
+idempotency-guarded `agent.delegate` / `agent.wait_for_results` and
+`research.start_acquisition` / `research.cancel_acquisition`. Delegation
 is bounded to one level and two specialists per turn (`max_depth: 1`,
 `max_fanout: 2`, prospective counts — the third request is refused and
 recorded as refused, and a refused request does not consume the budget).
@@ -1214,7 +1224,10 @@ window's reset time has passed, and otherwise refreshes the marker (and says
 so again) when the window holding it or its reset time changed; and a delegated
 child's FIFO re-evaluating its head, which admits it the same way. Stopping a
 discussion does not cancel a held wave, which runs after admission and then
-closes it; the Agents it held are named in its "already ended" notice.
+closes it; the Agents it held are named in its "already ended" notice. A
+discussion stopped after an ordinary message took its last wave boundary has no
+wave left to end it, so the stop itself dispatches the closing turn and names the
+Agents held behind that message.
 Stopping a discussion held at its cap ends it for good: the rounds on offer
 are given up and a closing turn still waiting for the window is cancelled, so
 no conclusion arrives hours later; a person who wants one asks for it.
@@ -1279,14 +1292,21 @@ is slow to answer is decided on the cached reading.
 - `GET /api/v1/rooms/:roomId/agent-candidates` — visible existing Agents and
   separately typed preset factories
 - `POST /api/v1/rooms/:roomId/agents` — add/reactivate a specialist with
-  explicit private Room-share confirmation and optional `restore_workspace`
+  explicit private Room-share confirmation and optional `restore_workspace`;
+  the Agent is added either way, and the response's
+  `managed_workspace_restore` carries the Host's outcome, which the roster
+  panel reports when nothing was restored
 - `POST /api/v1/rooms/:roomId/agent-presets` — instantiate and add a preset
 - `DELETE /api/v1/rooms/:roomId/agents/:agentId` — remove a specialist and
-  revoke future Room grants
+  revoke future Room grants; `managed_workspace_archive` lists one Host
+  outcome per archived thread
 - `POST /api/v1/rooms/:roomId/agents/:agentId/reset-context` — reset a
   host-bound specialist's vendor session (Host owner and Project writer)
 - `GET/POST /api/v1/rooms/:roomId/invitations` — list or create human
-  invitations; pending invitations carry owner approvals
+  invitations; pending invitations carry owner approvals. The list answers the
+  Room-not-found 404 to a Project reader who is neither an active member nor
+  party to any of the Room's invitations (ADR 0018 decision 3); an invitee or
+  approval owner reads their own before joining
 - `POST /api/v1/rooms/:roomId/invitations/:invitationId/decision` — approve or
   reject one owned private-Agent share
 - `GET /api/v1/rooms/pending-approvals` — owner-scoped pending private-Agent
@@ -1295,7 +1315,8 @@ is slow to answer is decided on the cached reading.
 - `POST /api/v1/rooms/:roomId/owner-transfer` — transfer to an active Project
   writer Room member
 - `POST /api/v1/rooms/:roomId/owner-claim` — recover a suspended Room for a
-  Project owner or Space owner/admin
+  Project owner or Space owner/admin; a caller without that authority gets the
+  Room-not-found 404 unless they can already see the Room, in which case 403
 - `GET /api/v1/rooms/:roomId/conversations` — list conversations
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/messages` — paged history
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/summary` — active summary,

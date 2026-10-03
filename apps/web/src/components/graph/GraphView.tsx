@@ -449,7 +449,11 @@ export function GraphView({
     ].filter((warning): warning is string => Boolean(warning))
     return warnings.length ? warnings.join(' ') : null
   }, [projection?.view.truncated, layoutResolution.warning])
-  const toolbarLayout = state.currentLayout === 'preset' ? 'force' : state.currentLayout
+  // What the graph is actually laid out as: the projection's own mode until
+  // the person chooses one (a select whose value already matches the choice
+  // would not fire). Without data there is nothing resolved, so the choice.
+  const effectiveLayout = projection ? layoutResolution.mode : state.currentLayout
+  const toolbarLayout = effectiveLayout === 'preset' ? 'force' : effectiveLayout
 
   function focusNode(node: GraphProjectionNode) {
     applyAction({ type: 'focus-node', nodeId: node.id })

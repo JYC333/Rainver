@@ -30,7 +30,7 @@ interface ResearchOperationForPass {
   progress_json: unknown;
 }
 
-export type ResearchPassEvent =
+type ResearchPassEvent =
   | { kind: "reconcile" }
   | { kind: "run_terminal"; runId: string }
   | {

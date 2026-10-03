@@ -10,7 +10,8 @@ import type {
   DirectiveType,
   FinanceBookRow,
 } from "./domain/directives.js";
-import { AccountNotFoundError, financeLedgerService } from "./domain/service.js";
+import { AccountNotFoundError, FinanceRuleError, financeLedgerService } from "./domain/service.js";
+import { withTransaction } from "./domain/transaction.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DIRECTIVE_STATUSES: readonly DirectiveStatus[] = ["draft", "proposed", "posted", "voided"];
@@ -277,6 +278,7 @@ export function registerFinanceLedgerRoutes(
         // a missing account, and matching on the message meant rewording it
         // silently turned a deliberate 404 into a 500.
         if (err instanceof AccountNotFoundError) throw new RequestError(404, "Account not found");
+        if (err instanceof FinanceRuleError) throw new RequestError(422, err.message);
         throw err;
       });
       reply.send({ account });
@@ -298,15 +300,25 @@ export function registerFinanceLedgerRoutes(
       const book = await requireBook(request, identity);
       const body = ctx.http.parseJsonBody(request);
       const commodityType = optionalString(body, "commodity_type");
-      const commodity = await financeLedgerService.createCommodity(db, identity.spaceId, book.id, {
-        symbol: requireString(body, "symbol"),
-        commodityType:
-          commodityType === "currency" || commodityType === "security" || commodityType === "crypto"
-            ? commodityType
-            : "custom",
-        name: optionalString(body, "name"),
-      });
-      reply.code(201).send({ commodity });
+      try {
+        const commodity = await financeLedgerService.createCommodity(db, identity.spaceId, book.id, {
+          symbol: requireString(body, "symbol"),
+          commodityType:
+            commodityType === "currency" || commodityType === "security" || commodityType === "crypto"
+              ? commodityType
+              : "custom",
+          name: optionalString(body, "name"),
+        });
+        reply.code(201).send({ commodity });
+      } catch (err) {
+        if (err instanceof RequestError) throw err;
+        // (book_id, symbol) is unique: the book's own currency is registered
+        // when the book is made, so adding it again is the ordinary case.
+        if (isUniqueViolation(err)) {
+          throw new RequestError(409, "a commodity with that symbol already exists in this book");
+        }
+        throw new RequestError(422, err instanceof Error ? err.message : "invalid commodity");
+      }
     }),
   );
 
@@ -369,25 +381,28 @@ export function registerFinanceLedgerRoutes(
       });
 
       try {
-        const directive = await financeLedgerService.createTransactionDraft(
-          db,
-          identity.spaceId,
-          book.id,
-          identity.userId,
-          {
-            date: requireDate(body, "date"),
-            flag: optionalString(body, "flag") ?? "*",
-            payee: optionalString(body, "payee"),
-            narration: optionalString(body, "narration"),
-            tags: Array.isArray(body["tags"]) ? body["tags"].filter((tag): tag is string => typeof tag === "string") : [],
-            links: Array.isArray(body["links"]) ? body["links"].filter((link): link is string => typeof link === "string") : [],
-            postings,
-          },
-        );
-        const posted =
-          body["post"] === true
-            ? await financeLedgerService.postDirective(db, identity.spaceId, book.id, directive.id)
+        // One transaction: a posting refused part way, or a post that does
+        // not balance, used to leave a draft nobody could remove.
+        const posted = await withTransaction(db, async (tx) => {
+          const directive = await financeLedgerService.createTransactionDraft(
+            tx,
+            identity.spaceId,
+            book.id,
+            identity.userId,
+            {
+              date: requireDate(body, "date"),
+              flag: optionalString(body, "flag") ?? "*",
+              payee: optionalString(body, "payee"),
+              narration: optionalString(body, "narration"),
+              tags: Array.isArray(body["tags"]) ? body["tags"].filter((tag): tag is string => typeof tag === "string") : [],
+              links: Array.isArray(body["links"]) ? body["links"].filter((link): link is string => typeof link === "string") : [],
+              postings,
+            },
+          );
+          return body["post"] === true
+            ? financeLedgerService.postDirective(tx, identity.spaceId, book.id, directive.id)
             : directive;
+        });
         reply.code(201).send({ directive: posted });
       } catch (err) {
         if (err instanceof RequestError) throw err;

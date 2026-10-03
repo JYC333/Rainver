@@ -46,8 +46,10 @@ export default function LoginPage() {
   const [registrationCompleting, setRegistrationCompleting] = useState(false)
   const attemptedRegistration = useRef<string | null>(null)
 
-  // Redirect to the page the user was trying to reach (or home)
-  const from = (location.state as { from?: Location })?.from?.pathname ?? '/'
+  // Redirect to the page the user was trying to reach (or home). Query and
+  // hash go with it: a deep link names its target there.
+  const fromLocation = (location.state as { from?: Location })?.from
+  const from = fromLocation ? `${fromLocation.pathname}${fromLocation.search}${fromLocation.hash}` : '/'
 
   // If already logged in, go to original destination
   useEffect(() => {

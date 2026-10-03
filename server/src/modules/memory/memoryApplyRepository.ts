@@ -113,7 +113,7 @@ const GRANT_DERIVED_MARKERS = [
 /** The active entry a direct revision replaces, plus who wrote it. */
 export type DirectWriteTarget = AppliedMemoryRow & { created_by: string };
 
-export interface DirectWriteInput {
+interface DirectWriteInput {
   spaceId: string;
   actingUserId: string;
   agentId: string;
@@ -175,7 +175,7 @@ export const PERSONA_MEMORY_TYPE = "persona";
  * proposal; `apply` is the one case ADR 0003 §5 lets through — the Agent
  * owner's own unattended work.
  */
-export type PersonaDecision = "apply" | "proposal_in_turn" | "proposal_owner";
+type PersonaDecision = "apply" | "proposal_in_turn" | "proposal_owner";
 
 export function decidePersonaWrite(context: AgentWriteContext): PersonaDecision {
   // Whoever is responsible for this Run is not the person whose Agent this is,
@@ -213,7 +213,7 @@ export interface ApplyProposal {
   required_approver_role?: string | null;
 }
 
-export interface MemoryAcceptResult {
+interface MemoryAcceptResult {
   memoryId: string;
   supersededMemoryId: string | null;
   payloadJson: Record<string, unknown>;
@@ -245,7 +245,7 @@ export interface AppliedMemoryRow {
   origin_room_id: string | null;
 }
 
-export interface MemoryApplyResult {
+interface MemoryApplyResult {
   memory: AppliedMemoryRow;
   supersededMemoryId: string | null;
 }
@@ -998,13 +998,23 @@ export class PgMemoryApplyRepository {
     // rejected: those are exactly the entries other people read, so removing
     // one changes what a Space knows and belongs on the proposal path with
     // every other reach change. ADR 0003 §3 is about a person's own memory.
-    const owned = await db.query<{ id: string; status: string }>(
-      `SELECT id, status FROM memory_entries
-        WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL AND owner_user_id = $3`,
+    // Locked, and the chain with it: the status read decides what the write
+    // below may do, and two restores on one chain each saw no active head
+    // before the other committed. The row lock also orders an owner's archive
+    // after an Agent's in-flight revision of the same entry, which otherwise
+    // archived the superseded row and left the new head active.
+    const owned = await db.query<{ id: string; status: string; root_id: string }>(
+      `SELECT id, status, COALESCE(root_memory_id, id) AS root_id FROM memory_entries
+        WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL AND owner_user_id = $3
+        FOR UPDATE`,
       [memoryId, spaceId, userId],
     );
     const found = owned.rows[0];
     if (!found) return null;
+    await db.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`memory-chain:${spaceId}:${found.root_id}`],
+    );
     if (status === "archived") {
       if (found.status !== "active") {
         throw new MemoryApplyError(`this memory is ${found.status}, so it cannot be archived`);
@@ -1035,7 +1045,8 @@ export class PgMemoryApplyRepository {
         );
       }
     }
-    const updated = await this.markStatus(memoryId, spaceId, status, db);
+    const updated = await this.markStatus(memoryId, spaceId, status, db, found.status);
+    if (!updated) throw new MemoryApplyError(`this memory changed while it was being ${status}`);
     await reindexMemoryWithinApply(db, spaceId, [memoryId]);
     return updated;
   }
@@ -1208,7 +1219,8 @@ export class PgMemoryApplyRepository {
     const res = await this.db.query<AppliedMemoryRow>(
       `SELECT ${RETURNING_COLUMNS}
          FROM memory_entries
-        WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL`,
+        WHERE id = $1 AND space_id = $2 AND status = 'active' AND deleted_at IS NULL
+        FOR UPDATE`,
       [memoryId, spaceId],
     );
     return res.rows[0] ?? null;
@@ -1219,13 +1231,16 @@ export class PgMemoryApplyRepository {
     spaceId: string,
     status: string,
     db: Queryable = this.db,
+    /** The status the caller read and decided on; the write is refused if it moved. */
+    expectedStatus?: string,
   ): Promise<AppliedMemoryRow | null> {
     const res = await db.query<AppliedMemoryRow>(
       `UPDATE memory_entries
           SET status = $3, updated_at = $4
         WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL
+          AND ($5::text IS NULL OR status = $5)
         RETURNING ${RETURNING_COLUMNS}`,
-      [memoryId, spaceId, status, new Date().toISOString()],
+      [memoryId, spaceId, status, new Date().toISOString(), expectedStatus ?? null],
     );
     return res.rows[0] ?? null;
   }

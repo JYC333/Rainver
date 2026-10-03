@@ -12,7 +12,7 @@ export const ROOM_RECENT_TOKEN_BUDGET = 6_000;
 /** Keep each provider task bounded even when the uncaptured archive is large. */
 export const ROOM_SUMMARY_SOURCE_TOKEN_BUDGET = 12_000;
 
-export type RoomTokenEstimator = (text: string) => number;
+type RoomTokenEstimator = (text: string) => number;
 
 /** A Room turn's context budgets, derived from the pinned model's window. */
 export interface RoomContextBudgets {
@@ -61,7 +61,7 @@ export interface RoomSummaryCoverage {
   covered_through_created_at: string;
 }
 
-export interface RoomConversationContext {
+interface RoomConversationContext {
   summary: RoomSummaryCoverage | null;
   recent_messages: MessageOut[];
   recent_token_estimate: number;

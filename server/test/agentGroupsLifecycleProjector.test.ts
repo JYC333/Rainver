@@ -150,7 +150,7 @@ class FakeClient {
     sql: string,
     params: readonly unknown[] = [],
   ): Promise<{ rows: Row[]; rowCount: number }> {
-    if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+    if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK" || sql.includes("pg_advisory_xact_lock")) {
       return { rows: [], rowCount: 0 };
     }
     // The subscription quota gate (`rooms/quotaGate.ts`).

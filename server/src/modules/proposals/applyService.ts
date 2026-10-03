@@ -1,8 +1,8 @@
 import { isProjectOwnerLevel } from "../projects/access.js";
 import { createHash, randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
-import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { PoolClient } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -27,6 +27,7 @@ import { proposalActivityAudience } from "./decisionActivity.js";
 import { PgSnapshotStore } from "../projectFolders/snapshotStore.js";
 import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
+import { assertCodePatchTargetInsideRoot, CodePatchFileTransaction } from "../projectFolders/codePatch.js";
 import { validatePath } from "@rainver/folder-read";
 import { HttpError } from "../routeUtils/common.js";
 import type {
@@ -131,7 +132,7 @@ function appliedCodePatchFiles(payload: Record<string, unknown> | null): Array<{
   return parsed;
 }
 
-export interface ProposalAcceptOptions {
+interface ProposalAcceptOptions {
   confirmIncompletePatch?: boolean;
   /** Only the bundle coordinator may apply a proposal while it owns the member row. */
   allowBundleMemberDecision?: boolean;
@@ -534,6 +535,7 @@ export class PgProposalApplyService {
     identity: { spaceId: string; userId: string },
   ): Promise<{ rolled_back_paths: string[] } | null> {
     const client = await this.connect();
+    let restore: CodePatchFileTransaction | null = null;
     try {
       await client.query("BEGIN");
 
@@ -571,18 +573,22 @@ export class PgProposalApplyService {
         throw error instanceof HttpError ? new ProposalApplyHttpError(error.statusCode, error.message) : error;
       }
       const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
-      const target = (path: string) => validatePath({
-        path: resolve(root, path),
-        allowedRoot: root,
-        mode: "write",
-        protectedFolder: folder.protected,
-        forTrustedCodePatchApply: true,
-      });
+      const target = async (path: string) => {
+        const absolute = validatePath({
+          path: resolve(root, path),
+          allowedRoot: root,
+          mode: "write",
+          protectedFolder: folder.protected,
+          forTrustedCodePatchApply: true,
+        });
+        await assertCodePatchTargetInsideRoot(root, absolute, path);
+        return absolute;
+      };
       // Writing pre-apply content over a file someone has changed since would
       // silently discard that work, so every applied file must still hold
       // exactly what the patch wrote.
       for (const file of appliedCodePatchFiles(p.payload_json)) {
-        const current = await readFile(target(file.path)).catch((err: NodeJS.ErrnoException) => {
+        const current = await readFile(await target(file.path)).catch((err: NodeJS.ErrnoException) => {
           if (err.code === "ENOENT") return null;
           throw err;
         });
@@ -591,20 +597,11 @@ export class PgProposalApplyService {
         }
       }
 
-      // Restore files to pre-apply state
-      const restoredPaths: string[] = [];
-      for (const file of snapshot.files) {
-        const absPath = target(file.path);
-        if (file.existed && file.content !== null) {
-          await mkdir(dirname(absPath), { recursive: true });
-          await writeFile(absPath, file.content, "utf8");
-        } else {
-          await unlink(absPath).catch((err: NodeJS.ErrnoException) => {
-            if (err.code !== "ENOENT") throw err;
-          });
-        }
-        restoredPaths.push(file.path);
-      }
+      // Restore files to pre-apply state. Should a later write or the commit
+      // fail, the catch below puts the applied content back, so the patch
+      // still matches its recorded hashes and the rollback can be retried.
+      restore = new CodePatchFileTransaction(root, folder.protected);
+      const restoredPaths = await restore.restore(snapshot.files);
 
       await new PgSnapshotStore(client).markRolledBack(snapshot.id, identity.userId);
 
@@ -645,7 +642,7 @@ export class PgProposalApplyService {
       return { rolled_back_paths: restoredPaths };
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
-      if (error instanceof ProposalApplyHttpError) throw error;
+      if (restore) await restore.rollback().catch(() => undefined);
       throw error;
     } finally {
       client.release();
@@ -737,16 +734,7 @@ export class PgProposalApplyService {
     userId: string,
   ): Promise<void> {
     assertRequiredOwnerMayDecide(proposal, userId);
-    const spaceRole = await getMembershipRole(client, userId, proposal.space_id);
-    // `required_approver_role: "owner"` on a Project-scoped proposal means the
-    // Project's owner, which is what the applier's own authority check
-    // (`assertProjectOwnerLevel`) asks. Comparing the Space role alone let a
-    // Project owner who is a Space member be shown the Accept button and then
-    // refused by it.
-    const role = spaceRole !== "owner" && proposal.project_id
-      && await isProjectOwnerLevel(client, proposal.space_id, proposal.project_id, userId)
-      ? "owner"
-      : spaceRole;
+    const role = await effectiveApproverRole(client, proposal, userId);
     const result = await enforceProposalApply(
       this.config,
       {
@@ -962,14 +950,33 @@ async function releaseRejectedCustomSourceHandlerVersion(
   proposalId: string,
   spaceId: string,
 ): Promise<void> {
-  await client.query(
+  const released = await client.query<{ source_connection_id: string }>(
     `UPDATE source_handler_versions
         SET status = 'draft',
             proposal_id = NULL
       WHERE space_id = $1
         AND proposal_id = $2
-        AND status = 'pending_approval'`,
+        AND status = 'pending_approval'
+      RETURNING source_connection_id`,
     [spaceId, proposalId],
+  );
+  // A rejected repair proposal ends that repair attempt like any other failed
+  // one; left at repair_pending, the connection could never be repaired again.
+  const connectionIds = released.rows.map((row) => row.source_connection_id);
+  if (connectionIds.length === 0) return;
+  await client.query(
+    `UPDATE source_connections
+        SET repair_status = 'repair_required', updated_at = now()
+      WHERE space_id = $1
+        AND id = ANY($2::text[])
+        AND repair_status = 'repair_pending'
+        AND NOT EXISTS (
+          SELECT 1 FROM source_handler_versions v
+           WHERE v.space_id = source_connections.space_id
+             AND v.source_connection_id = source_connections.id
+             AND v.status = 'pending_approval'
+        )`,
+    [spaceId, connectionIds],
   );
 }
 
@@ -1031,7 +1038,7 @@ function recordValue(value: unknown): Record<string, unknown> {
  * no role elevation substitutes, and the Project-owner promotion below does
  * not apply either.
  */
-export function requiredOwnerUserId(proposal: { payload_json: Record<string, unknown> | null }): string | null {
+function requiredOwnerUserId(proposal: { payload_json: Record<string, unknown> | null }): string | null {
   const value = (proposal.payload_json ?? {}).required_owner_user_id;
   return typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -1076,8 +1083,27 @@ async function canRejectProposal(
   proposal: ApplyProposalRow,
   userId: string,
 ): Promise<boolean> {
-  const role = await getMembershipRole(client, userId, proposal.space_id);
-  return canRejectProposalWithRole(proposal, userId, role);
+  return canRejectProposalWithRole(proposal, userId, await effectiveApproverRole(client, proposal, userId));
+}
+
+/**
+ * The role a decision is judged by. `required_approver_role: "owner"` on a
+ * Project-scoped proposal means the Project's owner, which is what the
+ * applier's own authority check (`assertProjectOwnerLevel`) asks. Comparing
+ * the Space role alone let a Project owner who is a Space member be shown the
+ * Accept button and then refused by it — and, read by accept alone, let the
+ * same person accept a proposal they were answered 404 for declining.
+ */
+async function effectiveApproverRole(
+  client: PoolClient,
+  proposal: Pick<ApplyProposalRow, "space_id" | "project_id">,
+  userId: string,
+): Promise<string | null> {
+  const spaceRole = await getMembershipRole(client, userId, proposal.space_id);
+  return spaceRole !== "owner" && proposal.project_id
+    && await isProjectOwnerLevel(client, proposal.space_id, proposal.project_id, userId)
+    ? "owner"
+    : spaceRole;
 }
 
 function normalizeRequiredApproverRole(role: string | null | undefined): "owner" | "admin" | "reviewer" | null {

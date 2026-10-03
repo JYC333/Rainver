@@ -297,6 +297,62 @@ describe('AgentDetailPage — runtime profile Runtime select', () => {
     expect(updateRuntimeProfileMock).not.toHaveBeenCalled()
   })
 
+  it('saves the model typed into the Model field of a provider-bound Profile', async () => {
+    listRuntimeProfilesMock.mockResolvedValue([{
+      id: 'p1', agent_id: 'a1', name: 'Proxied', runtime_key: 'opencode', runtime_config_json: {}, runtime_policy_json: {},
+      backend_mode: 'model_provider', model: null,
+      provider_binding: { state: 'bound', provider_id: 'prov-1', model: 'gpt-4o' },
+      enabled: true, is_default: true, execution_host_id: 'host-server', workspace_location_id: null,
+      workspace_mode: 'managed', runtime_installation: 'managed:1.0.0',
+    }])
+    render(<AgentDetailPage />)
+    await userEvent.click(await screen.findByRole('tab', { name: 'Runtime' }))
+    const model = await screen.findByPlaceholderText('claude-sonnet-4-6')
+    expect(model).toHaveValue('gpt-4o')
+    await userEvent.clear(model)
+    await userEvent.type(model, 'gpt-4.1')
+    await userEvent.click(screen.getByRole('button', { name: 'Save runtime profile' }))
+    await waitFor(() => expect(updateRuntimeProfileMock).toHaveBeenCalledWith('a1', 'p1', expect.objectContaining({
+      model_provider_id: 'prov-1', model_name: 'gpt-4.1',
+    })))
+  })
+
+  it('edits the Profile it just created instead of creating it a second time', async () => {
+    const existing = {
+      id: 'p1', agent_id: 'a1', name: 'Server default', runtime_key: 'opencode', runtime_config_json: {}, runtime_policy_json: {},
+      backend_mode: 'runtime_native', model: null, provider_binding: null,
+      enabled: true, is_default: true, execution_host_id: 'host-server', workspace_location_id: null,
+      workspace_mode: 'managed', runtime_installation: 'managed:1.0.0',
+    }
+    const profiles = [existing]
+    listRuntimeProfilesMock.mockImplementation(async () => [...profiles])
+    createRuntimeProfileMock.mockImplementation(async () => {
+      const created = { ...existing, id: 'p2', name: 'New runtime profile', is_default: false }
+      profiles.push(created)
+      return created
+    })
+    render(<AgentDetailPage />)
+    await userEvent.click(await screen.findByRole('tab', { name: 'Runtime' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'New profile' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save runtime profile' }))
+    await waitFor(() => expect(createRuntimeProfileMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Profile' })).toHaveTextContent('New runtime profile'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Save runtime profile' }))
+    await waitFor(() => expect(updateRuntimeProfileMock).toHaveBeenCalledWith('a1', 'p2', expect.objectContaining({ name: 'New runtime profile' })))
+    expect(createRuntimeProfileMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops cancelled overview edits instead of carrying them into the next edit', async () => {
+    render(<AgentDetailPage />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    await userEvent.type(screen.getByPlaceholderText('System prompt (role/identity)'), 'abandoned draft')
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByPlaceholderText('System prompt (role/identity)')).toHaveValue('')
+    expect(screen.getByPlaceholderText('Name')).toHaveValue('My Agent')
+  })
+
   it('waits for the runtime catalog before saying a runtime refuses ModelProvider mode', async () => {
     // `cliAdapters` starts empty, and an empty catalog used to be read as
     // "this runtime does not support a Provider binding": every open of a

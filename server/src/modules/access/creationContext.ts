@@ -2,7 +2,7 @@ import type { Queryable } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
 import type { ContentVisibility } from "./contentAccessTypes.js";
 
-export interface ContentCreationContext {
+interface ContentCreationContext {
   spaceId: string;
   projectId: string | null;
   visibility: ContentVisibility;

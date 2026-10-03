@@ -2,9 +2,11 @@ import { HttpError, intQuery } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import type { HomeSummaryOut } from "./frontendSupportTypes.js";
 
-export const ACTIVE_RUN_STATUSES = ["queued", "running", "waiting_for_review"];
+/** The protocol's non-terminal Run statuses (RUN_STATUS_VALUES minus the terminal ones). */
+export const ACTIVE_RUN_STATUSES = ["queued", "running", "cancelling", "waiting_for_review", "waiting_for_dependency"];
 export const DONE_TASK_STATUSES = ["done", "completed", "cancelled", "archived"];
-export const REVIEW_TASK_STATUSES = ["needs_review", "review", "in_review"];
+/** The protocol's review Task status (TASK_STATUSES). */
+export const REVIEW_TASK_STATUSES = ["waiting_for_review"];
 
 export function boundedQueryInt(
   value: string | undefined,

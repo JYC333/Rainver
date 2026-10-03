@@ -74,7 +74,7 @@ function oversightContribution(mode: OversightMode | undefined): ContentAccessDe
 }
 
 /** Widest-wins merge across `deny < summary < full`. */
-export function widestAccessDecision(
+function widestAccessDecision(
   ...decisions: readonly ContentAccessDecision[]
 ): ContentAccessDecision {
   let widest: ContentAccessDecision = "deny";

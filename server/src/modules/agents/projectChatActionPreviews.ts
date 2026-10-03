@@ -1,6 +1,6 @@
 import type { Queryable } from "../routeUtils/common.js";
 
-export interface ProjectChatActionPreview {
+interface ProjectChatActionPreview {
   action_id: string;
   tool_call_id?: string | null;
   status: "proposed" | "auto_applied" | "completed" | "failed" | "rejected";

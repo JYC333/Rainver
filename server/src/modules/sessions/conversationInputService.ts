@@ -165,7 +165,7 @@ function inputResourceDescriptor(row: InputResourceDescriptorRow): ConversationI
   };
 }
 
-export interface ConversationInputMediaRecord extends ConversationInputMediaOut {
+interface ConversationInputMediaRecord extends ConversationInputMediaOut {
   space_id: string;
   owner_user_id: string;
   lifecycle: "pending" | "claimed" | "deleted";

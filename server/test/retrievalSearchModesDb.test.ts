@@ -155,6 +155,37 @@ async function searchTrace(
 }
 
 describe("Retrieval search modes (real Postgres + pgvector)", () => {
+  it("matches the characters typed, not LIKE wildcards, in the lexical arm", async () => {
+    if (!db.available) return;
+    for (const [id, content] of [
+      ["underscored", "the my_notes plan"],
+      ["lookalike", "the myXnotes plan"],
+    ]) {
+      await insertKnowledgeItem(db.pool, { id, spaceId: SPACE, title: `${id} page`, content, slug: id });
+    }
+    await new RetrievalProjectionService(db.pool, knowledgeRetrievalRegistry).reindexAll(SPACE);
+    const response = await service([], []).search({
+      spaceId: SPACE,
+      viewerUserId: VIEWER,
+      objectTypes: ["knowledge_item"],
+      query: "my_notes",
+      maxResults: 10,
+      mode: "lexical",
+    });
+    expect(response.items.map((item) => item.object_id)).toEqual(["underscored"]);
+    // A bare wildcard query matches nothing, instead of every chunk in the Space.
+    const wildcard = await service([], []).search({
+      spaceId: SPACE,
+      viewerUserId: VIEWER,
+      objectTypes: ["knowledge_item"],
+      query: "%",
+      maxResults: 10,
+      mode: "lexical",
+    });
+    expect(wildcard.items).toEqual([]);
+  });
+
+
   it("exact mode runs only the exact arm — no lexical/vector/graph, no rerank", async () => {
     if (!db.available) return;
     await seed();

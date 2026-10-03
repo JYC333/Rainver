@@ -39,6 +39,20 @@ describe("ambient record building", () => {
     expect(record.truncated).toBe(true);
   });
 
+  it("does not join anonymous message chunks across a tool call between them", () => {
+    const anonymous = (text: string) => ({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    const { records } = buildAmbientRecords([
+      anonymous("Let me look first."),
+      { sessionUpdate: "tool_call", toolCallId: "call-1", title: "Read", status: "completed", rawInput: { path: "a.ts" } },
+      anonymous("Fixed it."),
+    ]);
+    expect(records.map((record) => [record.kind, record.text ?? null])).toEqual([
+      ["agent_message", "Let me look first."],
+      ["tool_call", null],
+      ["agent_message", "Fixed it."],
+    ]);
+  });
+
   it("drops thoughts, which are reasoning rather than conclusion and the least stable part across runtimes", () => {
     const { records } = buildAmbientRecords([
       { sessionUpdate: "agent_thought_chunk", messageId: "t-1", content: { type: "text", text: "The user wants…" } },

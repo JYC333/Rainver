@@ -1,4 +1,4 @@
-export interface OptimisticTreeMutation {
+interface OptimisticTreeMutation {
   /** Stable domain key used to coalesce failed reconciliations. */
   key: string
   /** Runs synchronously so the tree reflects the mutation before any network wait. */
@@ -11,7 +11,7 @@ export interface OptimisticTreeMutation {
   afterSuccess?: () => void
 }
 
-export interface OptimisticTreeMutationQueue {
+interface OptimisticTreeMutationQueue {
   enqueue: (operation: OptimisticTreeMutation) => void
   /** Test/diagnostic boundary; product code does not need to await mutations. */
   whenIdle: () => Promise<void>

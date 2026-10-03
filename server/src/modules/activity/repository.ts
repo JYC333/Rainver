@@ -1,13 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   HttpError,
-  countFromRow,
   dateIso,
-  numberValue,
   objectValue,
   optionalObject,
   optionalString,
-  page,
   requiredString,
   stringArray,
   toDbDate,
@@ -90,7 +87,7 @@ interface SummarySourceRef {
   evidence_json?: Record<string, unknown>;
 }
 
-export interface ActivityListFilters {
+interface ActivityListFilters {
   userId?: string | null;
   projectFolderId?: string | null;
   sourceType?: string | null;
@@ -101,7 +98,7 @@ export interface ActivityListFilters {
   offset: number;
 }
 
-export interface SummaryRunInput {
+interface SummaryRunInput {
   activityIds: string[];
   evidenceIds: string[];
   sourceItemIds: string[];
@@ -132,7 +129,8 @@ const SOURCE_TYPE_ALIASES: Record<string, string> = {
   manual: "user_capture",
   imported_chat: "external_chat",
   agent_run: "run_event",
-  task_log: "workspace_event",
+  task_log: "project_folder_event",
+  workspace_event: "project_folder_event",
   file_capture: "file_import",
   voice_capture: "file_import",
 };
@@ -144,7 +142,7 @@ const SOURCE_TYPES = new Set([
   "file_import",
   "web_capture",
   "run_event",
-  "workspace_event",
+  "project_folder_event",
   "system_event",
   "external_source",
   "source",
@@ -157,11 +155,13 @@ export const TRUST_BY_SOURCE_TYPE: Record<string, string> = {
   file_import: "user_confirmed",
   web_capture: "untrusted_external",
   run_event: "internal_system",
-  workspace_event: "internal_system",
+  project_folder_event: "internal_system",
   system_event: "internal_system",
   external_source: "untrusted_external",
   source: "internal_system",
 };
+
+const CONSOLIDATABLE_STATUSES = new Set(["raw", "processed"]);
 
 export class PgActivityRepository {
   constructor(private readonly db: Queryable) {}
@@ -240,12 +240,21 @@ export class PgActivityRepository {
     return result.rows.map(activityToOut);
   }
 
-  async get(identity: SpaceUserIdentity, activityId: string): Promise<WithAccessLevel<ActivityRow> | null> {
+  /**
+   * `forChange` is the reach a person needs to act on a record: Space oversight
+   * lets an owner or admin read another member's private Activity, never
+   * archive, review or consolidate it.
+   */
+  async get(
+    identity: SpaceUserIdentity,
+    activityId: string,
+    options: { forChange?: boolean } = {},
+  ): Promise<WithAccessLevel<ActivityRow> | null> {
     const result = await this.db.query<WithAccessLevel<ActivityRow>>(
       `SELECT ${activitySelectSql("$3")}
          FROM activity_records ar
         WHERE id = $1 AND space_id = $2
-          AND ${contentReadSql("activity", "ar", "$3")}`,
+          AND ${contentReadSql("activity", "ar", "$3", { includeOversight: !options.forChange })}`,
       [activityId, identity.spaceId, identity.userId],
     );
     const row = result.rows[0];
@@ -269,7 +278,7 @@ export class PgActivityRepository {
     activityId: string,
     status: "processed" | "archived",
   ): Promise<Record<string, unknown>> {
-    const current = await this.get(identity, activityId);
+    const current = await this.get(identity, activityId, { forChange: true });
     if (!current) throw new HttpError(404, "Activity record not found");
     const now = new Date().toISOString();
     const result = await this.db.query<ActivityRow>(
@@ -289,10 +298,16 @@ export class PgActivityRepository {
   }
 
   async consolidate(identity: SpaceUserIdentity, activityId: string): Promise<ProposalOut[]> {
-    const activity = await this.get(identity, activityId);
+    const activity = await this.get(identity, activityId, { forChange: true });
     if (!activity || isSummaryOnly(activity)) throw new HttpError(404, "Activity record not found");
     if (activity.aggregate_key) {
       throw new HttpError(422, "Activity pointer records cannot be consolidated");
+    }
+    // Only unprocessed material is consolidated: a record that already has
+    // its proposals would get a second set, and an archived one would be
+    // pulled back into the inbox by the status write below.
+    if (!CONSOLIDATABLE_STATUSES.has(activity.status)) {
+      throw new HttpError(409, `Activity record is ${activity.status}; only raw or processed records can be consolidated`);
     }
     if (!activity.content || !activity.content.trim()) {
       throw new HttpError(422, "Activity record has no content to consolidate");
@@ -322,8 +337,8 @@ export class PgActivityRepository {
           SET status = 'proposals_generated',
               processed_at = $3,
               updated_at = $3
-        WHERE id = $1 AND space_id = $2`,
-      [activity.id, identity.spaceId, now],
+        WHERE id = $1 AND space_id = $2 AND status = ANY($4::text[])`,
+      [activity.id, identity.spaceId, now, [...CONSOLIDATABLE_STATUSES]],
     );
     return [proposal];
   }
@@ -640,7 +655,7 @@ function buildActivityWhere(
   return { where: `WHERE ${clauses.join(" AND ")}`, params };
 }
 
-export function activityToOut(row: WithAccessLevel<ActivityRow>): Record<string, unknown> {
+function activityToOut(row: WithAccessLevel<ActivityRow>): Record<string, unknown> {
   const summaryOnly = isSummaryOnly(row);
   return {
     id: row.id,
@@ -712,24 +727,4 @@ export function summaryInputFromBody(body: Record<string, unknown>): SummaryRunI
     createMemoryProposal: Boolean(body.create_memory_proposal),
     createKnowledgeProposal: Boolean(body.create_knowledge_proposal),
   };
-}
-
-export function listPageOut(
-  rows: Record<string, unknown>[],
-  total: number,
-  limit: number,
-  offset: number,
-): Record<string, unknown> {
-  return page(rows, total, limit, offset);
-}
-
-export function totalFromCount(rows: Array<{ total?: unknown }>): number {
-  return countFromRow(rows[0]);
-}
-
-export function confidenceOrNull(value: unknown): number | null {
-  const parsed = numberValue(value);
-  if (parsed === null) return null;
-  if (parsed < 0 || parsed > 1) throw new HttpError(422, "confidence must be between 0 and 1");
-  return parsed;
 }

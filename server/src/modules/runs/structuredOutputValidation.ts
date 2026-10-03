@@ -1,4 +1,4 @@
-export interface StructuredOutputDefinition {
+interface StructuredOutputDefinition {
   schema_id: string;
   schema: Record<string, unknown>;
 }

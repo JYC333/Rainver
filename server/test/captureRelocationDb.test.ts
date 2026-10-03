@@ -173,6 +173,30 @@ describe("promotion to team material (real Postgres)", () => {
     const blocks = await noteText(captured.note_id!, OWNER);
     expect(blocks.map(block => block.text)).toContain("Copy me.");
   });
+
+  it("does not let a Space admin's oversight promote a colleague's private marginalia", async () => {
+    if (!db.available) return;
+    await db.pool.query(`UPDATE spaces SET oversight_mode = 'content' WHERE id = $1`, [TEAM]);
+    await db.pool.query(
+      `UPDATE space_memberships SET role = 'admin' WHERE space_id = $1 AND user_id = $2`, [TEAM, OWNER],
+    );
+    const theirs = await marginalia(MATE, "Mate's private aside.");
+    const copy = () => relocation().relocate({
+      userId: OWNER, requestSpaceId: TEAM, activityId: theirs.activity_id,
+      destination: "project_raw", mode: "copy", blockIds: [theirs.block_id!], projectId: PROJECT,
+    });
+
+    await expect(copy()).rejects.toMatchObject({ statusCode: 404 });
+    // The capture shared, its note still private: the body is read by
+    // oversight alone, so the copy is still refused.
+    await db.pool.query(`UPDATE activity_records SET visibility = 'space_shared' WHERE id = $1`, [theirs.activity_id]);
+    await expect(copy()).rejects.toMatchObject({ statusCode: 404 });
+
+    const copies = await db.pool.query(
+      `SELECT id FROM activity_records WHERE content = $1 AND id <> $2`, ["Mate's private aside.", theirs.activity_id],
+    );
+    expect(copies.rows).toEqual([]);
+  });
 });
 
 describe("moving out of a Space (real Postgres)", () => {

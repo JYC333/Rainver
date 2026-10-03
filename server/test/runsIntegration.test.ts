@@ -648,6 +648,25 @@ describe("runs repositories against real PostgreSQL", () => {
     expect(e1.event_index).toBe(1);
   });
 
+  it("keeps every event when several writers append to one Run at once", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
+    const runId = await seedRun();
+
+    // The runtime event sink and a tool call's own HTTP request both append to
+    // the same Run from different connections; each computes the next index.
+    const events = await Promise.all(Array.from({ length: 24 }, (_, index) => repo.appendRunEvent({
+      run_id: runId,
+      space_id: "space-1",
+      event_type: index % 2 === 0 ? "tool_call_started" : "action_invoked",
+      status: "running",
+      summary: `event ${index}`,
+    })));
+
+    expect(events.map((event) => event.event_index).sort((a, b) => a - b))
+      .toEqual(Array.from({ length: 24 }, (_, index) => index));
+  });
+
   it("accepts delegation lifecycle run events", async (ctx) => {
     if (!db.available) return ctx.skip();
     const repo = new PgRunRepository(db.pool);

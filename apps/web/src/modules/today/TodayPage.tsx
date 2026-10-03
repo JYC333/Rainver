@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import { ChevronRight, FolderKanban, Plus } from 'lucide-react'
 import { toast } from 'sonner'
@@ -308,25 +308,31 @@ export default function TodayPage() {
   const [summary, setSummary] = useState<HomeSummaryOut | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
   const [projects, setProjects] = useState<Project[]>([])
+  // The switcher keeps this page mounted when it moves to another Space's
+  // Today, so only the latest summary request may fill the page.
+  const summaryRequest = useRef(0)
 
   const loadSummary = useCallback(async () => {
+    const request = ++summaryRequest.current
     if (!activeSpaceId) { setSummary(emptyHomeSummary()); setSessions([]); setProjects([]); return }
     try {
       const s = await homeApi.summary({ recent_runs_limit: '5', active_tasks_limit: '8', pending_preview_limit: '10' })
-      setSummary(s)
+      if (request === summaryRequest.current) setSummary(s)
     } catch {
-      setSummary(emptyHomeSummary())
+      if (request === summaryRequest.current) setSummary(emptyHomeSummary())
     }
   }, [activeSpaceId])
 
   useEffect(() => {
-    loadSummary()
-    if (activeSpaceId) {
-      sessionsApi.list().then(r => setSessions(r.items)).catch(() => {})
-      projectsApi.list({ status: 'active', limit: 5 }).then(r => setProjects(r.items)).catch(() => {})
-    } else {
-      setProjects([]); setSessions([])
-    }
+    // Nothing from the previous Space stays on screen while this one loads,
+    // or after one of its lists fails.
+    setSummary(null); setSessions([]); setProjects([])
+    void loadSummary()
+    if (!activeSpaceId) return
+    let active = true
+    sessionsApi.list().then(r => { if (active) setSessions(r.items) }).catch(() => {})
+    projectsApi.list({ status: 'active', limit: 5 }).then(r => { if (active) setProjects(r.items) }).catch(() => {})
+    return () => { active = false }
   }, [loadSummary, activeSpaceId])
 
   async function decide(proposal: HomePendingProposalItem, action: 'accept' | 'reject') {

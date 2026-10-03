@@ -16,14 +16,14 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
  * because the shell reads it, and B36 keeps module code out of the shell's
  * chunk.
  */
-export interface ProjectCaptureTarget {
+interface ProjectCaptureTarget {
   /** A `space_objects` row id. Anything else cannot be a `note_links` endpoint. */
   objectId: string
   /** Shown in the composer so the user can see what they are attaching to. */
   title: string
 }
 
-export interface ProjectCaptureContext {
+interface ProjectCaptureContext {
   projectId: string | null
   target: ProjectCaptureTarget | null
 }

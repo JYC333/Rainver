@@ -86,6 +86,54 @@ describe("SystemActionDispatcher ACP tool projection", () => {
     expect(dispatcher.researchDefinitions.map((tool) => tool.name)).toEqual(["research.start_acquisition"]);
   });
 
+  it("keys each agent.delegate call by its own call id, in the policy check and the delegation alike", async () => {
+    const delegate = protocol.SYSTEM_ACTION_REGISTRY.find((definition) => definition.id === "agent.delegate")!;
+    registryState.registry = new Map([[delegate.id as SystemActionId, delegate]]);
+    const run = {
+      ...testRun(),
+      run_group_id: "group-1",
+      root_run_id: "run-root",
+      capabilities_json: [],
+      permission_snapshot_json: { tool_grants: [{ action_id: "agent.delegate" }] },
+    } as AgentRunRecord;
+    const preflighted: Array<string | null | undefined> = [];
+    const spawned: Array<string | null | undefined> = [];
+    const dispatcher = await SystemActionDispatcher.create(loadConfig({}), run, {
+      actionEventSink: async () => {},
+      agentDelegationTools: {
+        targets: [{ agent_id: "agent-2", name: "Reviewer", role: "worker", capabilities_json: {} }],
+        service: {
+          async spawnChildRun() {
+            throw new Error("the gateway path spawns with its preflighted decision");
+          },
+          async preflightSpawnChildRunPolicy(_identity, input) {
+            preflighted.push(input.tool_call_id);
+            return { status: "allow", policy_decision_record_id: "decision-1" };
+          },
+          async spawnChildRunAuthorized(_identity, input) {
+            spawned.push(input.tool_call_id);
+            return {
+              delegation: { id: `delegation-${input.tool_call_id}`, status: "queued" },
+              child_run_id: `child-${input.tool_call_id}`,
+              policy_decision_record_id: "decision-1",
+            } as never;
+          },
+        },
+      },
+    });
+
+    for (const id of ["call-1", "call-2"]) {
+      await dispatcher.dispatch({
+        id,
+        name: "agent.delegate",
+        arguments_json: JSON.stringify({ target_agent_id: "agent-2", instruction: `Task for ${id}` }),
+      });
+    }
+
+    expect(preflighted).toEqual(["call-1", "call-2"]);
+    expect(spawned).toEqual(["call-1", "call-2"]);
+  });
+
   it("records a failed action_completed event when a Run calls a tool it was never granted", async () => {
     // Without this event `governedToolDegradation` sees nothing and a Run that
     // asked for a tool it never held finishes clean.

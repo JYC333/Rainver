@@ -176,6 +176,13 @@ collapsed it. Both are now placement-addressed:
 - `DELETE /knowledge/notes/{id}/placements/{collectionId}` removes one and
   **refuses the last** (422): losing a note is a different decision from taking
   it out of a folder, and has its own action.
+- Adding and dragging answer alike when the folder already holds the note:
+  409 `This note is already in that folder`. The reorder checks before its
+  `UPDATE`, because the unique `(collection_id, note_id)` row it would land on
+  is otherwise a 500; a batch that swaps two placements is not a collision.
+- A folder cannot be moved under itself or under any of its descendants
+  (422). Nothing in the database stops a cycle, and a folder in one has no
+  path to the root, so every note below it disappears from the tree.
 
 #### Cross-Project placement
 
@@ -216,7 +223,9 @@ The access semantics — scope only, never a grant — are in
 - **Without one** — `project_id` is required and the text appends to that
   Project's `inbox` note, created on first use in the Project's notes folder.
   The inbox is resolved by `project_role = 'inbox'`, never by title, so renaming
-  it does not silently start a second one.
+  it does not silently start a second one; a transaction-level advisory lock
+  on the Project serializes concurrent first captures, which otherwise each
+  create an inbox and displace the other's role.
 
 Neither always-append nor always-create is right on its own: one inbox would
 bury ten papers' annotations together, and a note per thought turns the tree
@@ -245,14 +254,14 @@ row when it passes triage (R3), so the absence is a state with a remedy rather
 than a missing button.
 
 ## Owns
-- `Note` model (working-knowledge layer; direct CRUD via `NoteService`)
+- `Note` model (working-knowledge layer; direct CRUD through `knowledge/noteWriter.ts` `withNoteWrites`)
 - `NoteCollection` / `NoteCollectionItem` models (space-scoped Notes folder tree)
 - `KnowledgeItem` model (canonical wiki layer)
 - `Source` model (independent provenance/evidence layer)
 - `KnowledgeItemSource` model (item↔source evidence links)
 - `ObjectRelation` model (proposal-gated canonical cross-object graph)
 - `NoteLink` model (`note_links`, direct working-note UI links)
-- `KnowledgeSummaryService` (Overview counts)
+- Overview counts (`PgKnowledgeRepository.summary`, `GET /api/v1/knowledge/summary`)
 - `/api/v1/knowledge` read and proposal API for wiki items; `/api/v1/knowledge/notes`
   + `/api/v1/knowledge/notes/{id}/links|backlinks` direct CRUD for notes;
   `/api/v1/notes/collections` direct CRUD for the Notes collection tree;
@@ -287,7 +296,7 @@ than a missing button.
 
 Backend source capability is ahead of the visible frontend: `knowledge` routes
 support source CRUD and item-source link CRUD, but `apps/web/src/api/client.ts`
-currently exposes `sourcesApi.list` only and `SourcesPage` is a list view. Treat
+currently exposes `knowledgeSourcesApi.list` only and `SourcesPage` is a list view. Treat
 this as current product scope, not as missing backend support.
 
 ## Does Not Own
@@ -364,7 +373,9 @@ does not silently block canonical writes.
 
 Full-space retrieval reindex is a maintenance operation exposed at
 `POST /api/v1/knowledge/retrieval/reindex`. It rebuilds derived projection rows
-for the caller's space and requires space owner/admin authority.
+for the caller's space and requires space owner/admin authority. The rebuild
+runs in one transaction, serialized per space: a failure part-way leaves the
+previous index and its embeddings intact.
 
 ## Activity-First Input Boundary
 
@@ -406,7 +417,10 @@ block the MVP persistence/API slice.
 ## Proposal Types
 
 - `knowledge_create` creates an active KnowledgeItem.
-- `knowledge_update` creates a new version, not an in-place overwrite.
+- `knowledge_update` creates a new version, not an in-place overwrite. The
+  applier locks the target item row (`FOR UPDATE`), so two accepted updates of
+  one item cannot both read it active and leave two active heads; the second
+  reads the first's supersession and is refused (422).
 - `knowledge_archive` archives an item.
 - `object_relation_create` creates a relation only within the same space.
 - `object_relation_delete` removes or archives a relation.
@@ -450,7 +464,7 @@ endpoints remain collaborative within the current scope.
 
 ## Source Monitoring
 
-Knowledge proposal apply relies on proposal approval and the `proposal.apply` policy gate. `ProposalApplyService._enforce_source_monitoring()` has an explicit Knowledge branch; a full evaluator for external or untrusted Activity/Artifact-derived Knowledge is not implemented
+Knowledge proposal apply relies on proposal approval and the `proposal.apply` policy gate (`PgProposalApplyService`). The Knowledge appliers run no source-monitoring evaluation (it exists only in `modules/memory/sourceMonitoring.ts`); a full evaluator for external or untrusted Activity/Artifact-derived Knowledge is not implemented
 ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9).
 
 ## Policy Actions
@@ -458,17 +472,13 @@ Knowledge proposal apply relies on proposal approval and the `proposal.apply` po
 - `knowledge.create`
 - `knowledge.update`
 - `knowledge.archive`
-- `knowledge.relation_create`
-- `knowledge.relation_delete`
 - `claim.create`
 - `claim.update`
 - `claim.archive`
-- `claim.relation_create`
-- `claim.relation_delete`
 - `object_relation.create`
 - `object_relation.delete`
 
-These actions are `WIRED_VIA_PROPOSAL`: durable mutation is protected by `proposal.apply` and `ProposalApplyService`, not direct `PolicyGateway.enforce()` call sites. Unknown or not-yet-implemented Knowledge actions must fail closed.
+These actions are `WIRED_VIA_PROPOSAL`: durable mutation is protected by `proposal.apply` and `PgProposalApplyService`, not direct per-action policy call sites. Unknown or not-yet-implemented Knowledge actions must fail closed.
 
 ## Project And Project Folder Association
 
@@ -698,7 +708,7 @@ not replaced by Source.
 **Enforced by tests:**
 - `server/test/leafDomainInvariants.test.ts` — knowledge proposals do not auto-promote into memory and server proposal appliers own accepted knowledge mutations.
 - `server/test/leafDomainRepositoryBehavior.test.ts` — repository behavior around leaf-domain proposal boundaries.
-- Payload validation is enforced at apply time in `KnowledgeProposalApplier`: `knowledge_kind`, `content_format`, `visibility`, `verification_status`, `reflection_status`, and `confidence` for items; `link_type`, `status`, and `confidence` for relations. `link_type` legality — vocabulary, endpoint types, and whether the write may be direct — is checked by `assertLinkTypeAllowed` against `modules/ontology/linkTypes.ts`, which every `object_relations` writer must call.
+- Payload validation is enforced at apply time by the `apply*Proposal` functions in `knowledge/proposalApplier.ts` (registered by `registerKnowledgeProposalAppliers`): `knowledge_kind`, `content_format`, `visibility`, `verification_status`, `reflection_status`, and `confidence` for items; `link_type`, `status`, and `confidence` for relations. `link_type` legality — vocabulary, endpoint types, and whether the write may be direct — is checked by `assertLinkTypeAllowed` against `modules/ontology/linkTypes.ts`, which every `object_relations` writer must call.
 
 ## Related Files
 - `server/src/modules/knowledge/` - API, service, schemas, read models, and proposal appliers
@@ -745,4 +755,11 @@ One read and one write check, and both are the module's own.
   only at `full` (`bodyMatchSql`). A search that matched a withheld body handed
   it back a character at a time.
 - **Purge:** `purgeDeletedNotes` deletes only notes its caller could have
-  deleted themselves. It used to be Space-wide.
+  deleted themselves. It used to be Space-wide. The candidate query, oldest
+  deletion first, prefilters on the same rule — owner or `space_shared`, and
+  Project write authority for a Project-bound note — because a batch of 500
+  refusals is not "the next call takes the rest": the refused notes fill the
+  next batch too and the caller's own never come up. In the same transaction it
+  deletes `object_relations` with a purged note as an endpoint and clears
+  `source_object_id` on edges that only cite one, since those foreign keys have
+  no `ON DELETE` and one surviving edge would fail every later purge.

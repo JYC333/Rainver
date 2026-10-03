@@ -22,15 +22,15 @@ import {
 } from "../scheduler/runtimeStatus.js";
 import type { ScheduledTaskStatus } from "../scheduler/registry.js";
 
-export type ComponentStatus = "ok" | "degraded" | "error";
+type ComponentStatus = "ok" | "degraded" | "error";
 
-export interface StatusComponent {
+interface StatusComponent {
   name: string;
   status: ComponentStatus;
   detail: string | null;
 }
 
-export interface StatusBody {
+interface StatusBody {
   overall: ComponentStatus;
   components: StatusComponent[];
   scheduler_tasks: ScheduledTaskStatus[];

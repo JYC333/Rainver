@@ -45,6 +45,7 @@ export default function DailyReportSettingsPage() {
   async function toggleEnabled() {
     if (!setting) return
     setSaving(true)
+    setError(null)
     try {
       const updated = await dailyReportApi.updateSettings({ enabled: !setting.enabled })
       setSetting(updated)
@@ -56,14 +57,18 @@ export default function DailyReportSettingsPage() {
     }
   }
 
-  async function saveSchedule(local_time: string, timezone: string) {
+  /** Resolves whether the server took the schedule, so the editor keeps unsaved input on failure. */
+  async function saveSchedule(local_time: string, timezone: string): Promise<boolean> {
     setSaving(true)
+    setError(null)
     try {
       const updated = await dailyReportApi.updateSettings({ local_time, timezone })
       setSetting(updated)
       showToast('Schedule saved.')
+      return true
     } catch (e) {
       setError(errMsg(e))
+      return false
     } finally {
       setSaving(false)
     }
@@ -72,6 +77,7 @@ export default function DailyReportSettingsPage() {
   async function toggleExperienceProposals() {
     if (!setting) return
     setSaving(true)
+    setError(null)
     try {
       const updated = await dailyReportApi.updateSettings({
         create_experience_proposals: !setting.create_experience_proposals,
@@ -87,6 +93,7 @@ export default function DailyReportSettingsPage() {
   async function toggleMemoryProposals() {
     if (!setting) return
     setSaving(true)
+    setError(null)
     try {
       const updated = await dailyReportApi.updateSettings({
         create_memory_proposals: !setting.create_memory_proposals,
@@ -101,6 +108,7 @@ export default function DailyReportSettingsPage() {
 
   async function runNow() {
     setRunning(true)
+    setError(null)
     try {
       const result = await dailyReportApi.run({ force: false })
       setLastRun(result)
@@ -290,7 +298,7 @@ function ScheduleEditor({
 }: {
   localTime: string
   timezone: string
-  onSave: (time: string, tz: string) => void
+  onSave: (time: string, tz: string) => Promise<boolean>
   disabled: boolean
 }) {
   const [time, setTime] = useState(localTime)
@@ -328,7 +336,7 @@ function ScheduleEditor({
         </div>
         {dirty && (
           <button
-            onClick={() => { onSave(time, tz); setDirty(false) }}
+            onClick={() => { void onSave(time, tz).then(saved => { if (saved) setDirty(false) }) }}
             disabled={disabled}
             className="px-2 py-1 text-xs bg-gray-100 border rounded hover:bg-gray-200 disabled:opacity-50"
           >

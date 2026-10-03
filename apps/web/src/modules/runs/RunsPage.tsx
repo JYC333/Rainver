@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { Play, FolderKanban, X } from 'lucide-react'
@@ -99,7 +99,11 @@ export default function RunsPage() {
   const [fAgent, setFAgent] = useState('')
   const [fWs, setFWs] = useState('')
 
+  // Filters change faster than the list answers; only the latest request's
+  // rows are shown, as loadSubs already does for its own reads.
+  const listRequest = useRef(0)
   const load = useCallback(async () => {
+    const request = ++listRequest.current
     if (!browsingSpaceId) {
       setRuns([])
       setLoading(false)
@@ -115,12 +119,14 @@ export default function RunsPage() {
         project_folder_id: fWs || undefined,
         project_id: projectFilter || undefined,
       })
+      if (request !== listRequest.current) return
       setRuns(data)
     } catch (e) {
+      if (request !== listRequest.current) return
       toast.error(errMsg(e))
       setRuns([])
     } finally {
-      setLoading(false)
+      if (request === listRequest.current) setLoading(false)
     }
   }, [fStatus, fMode, fAgent, fWs, projectFilter, browsingSpaceId])
 

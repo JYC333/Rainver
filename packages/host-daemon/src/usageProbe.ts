@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HostUsageQuota, RuntimeLoginSpec } from "@rainver/protocol";
 import { OWN_INSTALLATION, readToolManifestSync, type ToolManifest } from "./tools.js";
+import { sanitizeFailure } from "./ambientRedaction.js";
 
 /**
  * What one copy's subscription has left, read on the host that holds it.
@@ -32,8 +33,14 @@ function emptyQuota(): HostUsageQuota {
   return { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: null };
 }
 
+/**
+ * Every failure text leaves this host through here. Vendor stderr and spawn
+ * errors name this machine's paths (the managed copy, its `auth.json`), and
+ * ADR 0016 keeps a host's real paths on the host — the same `sanitizeFailure`
+ * the folder and ambient frames apply, bounded to 512 characters.
+ */
 function failed(error: string): HostUsageQuota {
-  return { ...emptyQuota(), error };
+  return { ...emptyQuota(), error: sanitizeFailure(error) };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -116,40 +123,46 @@ async function probeClaude(home: string, login: RuntimeLoginSpec | null, timeout
   // The control plane budgets its own wait on the host giving up first, so a
   // bare fetch — which would hang to the HTTP client's own multi-minute
   // default — would leave the daemon answering a request nobody is holding.
+  // The deadline covers the body as well as the headers: a response that
+  // starts and then stalls is the same wait, and the same held runtime key.
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), Math.max(1, timeoutSeconds) * 1000);
   timer.unref?.();
-  let response: Response;
   try {
-    response = await fetch(CLAUDE_OAUTH_USAGE_URL, {
-      // Not followed: this carries the owner's OAuth access token, and a
-      // redirect is the upstream asking for it to be sent somewhere else.
-      redirect: "error",
-      method: "GET",
-      signal: abort.signal,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-        "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
-        "User-Agent": "claude-code/2.1.0",
-      },
-    });
-  } catch (error) {
-    return failed(abort.signal.aborted
-      ? "Claude usage API did not answer in time."
-      : `Claude usage API was unreachable: ${error instanceof Error ? error.message : String(error)}`);
+    let response: Response;
+    try {
+      response = await fetch(CLAUDE_OAUTH_USAGE_URL, {
+        // Not followed: this carries the owner's OAuth access token, and a
+        // redirect is the upstream asking for it to be sent somewhere else.
+        redirect: "error",
+        method: "GET",
+        signal: abort.signal,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+          "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
+          "User-Agent": "claude-code/2.1.0",
+        },
+      });
+    } catch (error) {
+      return failed(abort.signal.aborted
+        ? "Claude usage API did not answer in time."
+        : `Claude usage API was unreachable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!response.ok) return failed(`Claude usage API returned HTTP ${response.status}.`);
+    let quota: HostUsageQuota;
+    try {
+      quota = parseClaudeOAuthUsage(await response.json());
+    } catch {
+      return failed(abort.signal.aborted
+        ? "Claude usage API did not answer in time."
+        : "Claude usage API returned a response this host could not read.");
+    }
+    return quota.available ? quota : failed("Claude usage API returned no quota windows.");
   } finally {
     clearTimeout(timer);
   }
-  if (!response.ok) return failed(`Claude usage API returned HTTP ${response.status}.`);
-  let quota: HostUsageQuota;
-  try {
-    quota = parseClaudeOAuthUsage(await response.json());
-  } catch {
-    return failed("Claude usage API returned a response this host could not read.");
-  }
-  return quota.available ? quota : failed("Claude usage API returned no quota windows.");
 }
 
 // --- Codex CLI -------------------------------------------------------------
@@ -408,7 +421,7 @@ function probeCodex(home: string, manifest: ToolManifest | null, timeoutSeconds:
 
 // --- Entry point -----------------------------------------------------------
 
-export type UsageProbeFrame = {
+type UsageProbeFrame = {
   runtime_key: string;
   installation: string;
   login: RuntimeLoginSpec | null;

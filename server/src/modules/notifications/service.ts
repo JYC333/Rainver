@@ -19,7 +19,7 @@ interface WebhookDispatchBody {
   payload: unknown;
 }
 
-export interface WebhookPolicyDecision {
+interface WebhookPolicyDecision {
   allowed: boolean;
   statusCode: number;
   error?: string;

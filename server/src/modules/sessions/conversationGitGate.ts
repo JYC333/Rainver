@@ -23,7 +23,7 @@ export function headMovedByConversationRun(
     && (current.branch ?? null) === (context.last_run_git_branch ?? null);
 }
 
-export interface GitPosition {
+interface GitPosition {
   branch: string | null;
   head: string;
 }

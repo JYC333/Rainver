@@ -18,11 +18,20 @@ export async function withDedicatedSessionAdvisoryLock<T>(
   if (!alreadyClient && !isPool) return fn(db);
 
   let client: PoolClient | Client;
+  // The dedicated connection sits idle while `fn` runs on the pool. If the
+  // server drops it (restart, failover, terminated backend), pg emits 'error'
+  // on the client; unheard, that is an uncaught exception that takes the whole
+  // process down. The session lock is gone with the session, so the only thing
+  // left to do is skip the unlock.
+  let lockConnectionLost = false;
   for (;;) {
     client = alreadyClient
       ? connectable as unknown as PoolClient
       : new Client(connectable.options);
-    if (!alreadyClient) await (client as Client).connect();
+    if (!alreadyClient) {
+      (client as Client).on("error", () => { lockConnectionLost = true; });
+      await (client as Client).connect();
+    }
     let acquired;
     try {
       acquired = await client.query<{ acquired: boolean }>(
@@ -41,20 +50,28 @@ export async function withDedicatedSessionAdvisoryLock<T>(
   try {
     return await fn(alreadyClient ? client : db);
   } finally {
-    let unlocked = false;
-    try {
-      const result = await client.query<{ unlocked: boolean }>(
-        "SELECT pg_advisory_unlock(hashtextextended($1::text, 0)) AS unlocked",
-        [lockKey],
+    if (lockConnectionLost) {
+      await (client as Client).end().catch(() => {});
+    } else {
+      await unlock(client, alreadyClient, lockKey);
+    }
+  }
+}
+
+async function unlock(client: PoolClient | Client, alreadyClient: boolean, lockKey: string): Promise<void> {
+  let unlocked = false;
+  try {
+    const result = await client.query<{ unlocked: boolean }>(
+      "SELECT pg_advisory_unlock(hashtextextended($1::text, 0)) AS unlocked",
+      [lockKey],
+    );
+    unlocked = result.rows[0]?.unlocked === true;
+  } finally {
+    if (!alreadyClient) await (client as Client).end().catch(() => {});
+    else if (!unlocked) {
+      (client as PoolClient).release(
+        new Error("Run finalization advisory unlock failed"),
       );
-      unlocked = result.rows[0]?.unlocked === true;
-    } finally {
-      if (!alreadyClient) await (client as Client).end().catch(() => {});
-      else if (!unlocked) {
-        (client as PoolClient).release(
-          new Error("Run finalization advisory unlock failed"),
-        );
-      }
     }
   }
 }

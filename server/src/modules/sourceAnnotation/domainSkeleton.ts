@@ -197,7 +197,7 @@ const BUILTIN_DOMAINS: readonly Omit<DomainDefinition, "owner">[] = [
   { key: "parenting_relationships", label: "Parenting and relationships", group: "practice", hint: "raising children, friendship, partnership, caregiving" },
 ];
 
-export function registerBuiltinDomains(): void {
+function registerBuiltinDomains(): void {
   for (const domain of BUILTIN_DOMAINS) registerDomain({ ...domain, owner: "sourceAnnotation" });
 }
 

@@ -167,6 +167,21 @@ describe("finance ledger routes", () => {
       expect.objectContaining({ symbol: "USD" }),
     ]);
 
+    // The book's own currency is registered when the book is made; adding it
+    // again from the commodities panel is a conflict, not a server error.
+    const duplicate = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/commodities`,
+      payload: { symbol: "USD", commodity_type: "currency" },
+    });
+    expect(duplicate.statusCode).toBe(409);
+    const invalid = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/commodities`,
+      payload: { symbol: "usd!", commodity_type: "currency" },
+    });
+    expect(invalid.statusCode).toBe(422);
+
     const close = await app!.inject({
       method: "POST",
       url: `/api/v1/finance/books/${bookId}/accounts/${checkingId}/close`,
@@ -250,6 +265,101 @@ describe("finance ledger routes", () => {
     });
     expect(response.statusCode).toBe(422);
     expect(response.json().detail).toContain("does not balance");
+  });
+
+  it("leaves nothing behind when a posted transaction is refused", async () => {
+    const bookId = await createBookViaApi();
+    const { checkingId, foodId } = await seedLedger(bookId);
+    const before = await db.pool.query("SELECT count(*)::int AS n FROM finance_directives");
+
+    const unbalanced = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+      payload: {
+        date: "2026-07-02",
+        post: true,
+        postings: [
+          { account_id: checkingId, amount: { number: "-12.50", commodity: "USD" } },
+          { account_id: foodId, amount: { number: "11.50", commodity: "USD" } },
+        ],
+      },
+    });
+    expect(unbalanced.statusCode).toBe(422);
+    // Refused on its second posting, after the first was resolved.
+    const notOpenYet = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+      payload: {
+        date: "2025-12-31",
+        postings: [
+          { account_id: foodId, amount: { number: "1.00", commodity: "USD" } },
+          { account_id: checkingId, amount: { number: "-1.00", commodity: "USD" } },
+        ],
+      },
+    });
+    expect(notOpenYet.statusCode).toBe(422);
+
+    const after = await db.pool.query("SELECT count(*)::int AS n FROM finance_directives");
+    expect(after.rows[0].n).toBe(before.rows[0].n);
+    const transactions = await app!.inject({ method: "GET", url: `/api/v1/finance/books/${bookId}/transactions` });
+    expect(transactions.json().transactions).toEqual([]);
+  });
+
+  it("fills in the one posting left without an amount", async () => {
+    const bookId = await createBookViaApi();
+    const { checkingId, foodId } = await seedLedger(bookId);
+
+    const created = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+      payload: {
+        date: "2026-07-02",
+        post: true,
+        postings: [
+          { account_id: foodId, amount: { number: "50.00", commodity: "USD" } },
+          { account_id: checkingId, amount: null },
+        ],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().directive.status).toBe("posted");
+    const balances = await app!.inject({ method: "GET", url: `/api/v1/finance/books/${bookId}/balances` });
+    expect(balances.json().balances).toEqual(expect.arrayContaining([
+      expect.objectContaining({ accountName: "Assets:Bank:Checking", positions: ["-50.00 USD"] }),
+    ]));
+  });
+
+  it("refuses a close date before the account opened or before its postings", async () => {
+    const bookId = await createBookViaApi();
+    const { checkingId, foodId } = await seedLedger(bookId);
+    await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/transactions`,
+      payload: {
+        date: "2026-05-10",
+        post: true,
+        postings: [
+          { account_id: checkingId, amount: { number: "-5.00", commodity: "USD" } },
+          { account_id: foodId, amount: { number: "5.00", commodity: "USD" } },
+        ],
+      },
+    });
+    const close = (date: string) => app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/accounts/${checkingId}/close`,
+      payload: { date },
+    });
+
+    expect((await close("2025-12-01")).statusCode).toBe(422);
+    expect((await close("2026-04-01")).statusCode).toBe(422);
+    const closed = await close("2026-06-01");
+    expect(closed.statusCode).toBe(200);
+    expect((await close("2026-07-01")).statusCode).toBe(422);
+
+    const accounts = await app!.inject({ method: "GET", url: `/api/v1/finance/books/${bookId}/accounts` });
+    expect(accounts.json().accounts.find((account: { id: string }) => account.id === checkingId).closed_at).toBe("2026-06-01");
+    const validate = await app!.inject({ method: "POST", url: `/api/v1/finance/books/${bookId}/validate` });
+    expect(validate.json().errors).toEqual([]);
   });
 
   it("composes account names from root_type, group, and leaf", async () => {

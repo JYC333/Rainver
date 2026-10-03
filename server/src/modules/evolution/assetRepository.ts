@@ -16,6 +16,7 @@ import {
   assertCanWriteAssetOwnerScope,
   canReadAssetOwnerScope,
   canViewScopedRef,
+  canViewVersionScope,
   normalizeAssetOwnerScopeForCreate,
   normalizeVersionScopeForWrite,
   type EvolvableAssetAccessRow,
@@ -519,16 +520,6 @@ export class EvolvableAssetRepository {
       [identity.spaceId, assetId, scopeType, scopeId, now],
     );
   }
-}
-
-async function canViewVersionScope(
-  db: Queryable,
-  identity: SpaceUserIdentity,
-  row: VersionRow,
-): Promise<boolean> {
-  if (row.space_id === null) return row.scope_type === "system";
-  if (row.space_id !== identity.spaceId) return false;
-  return canViewScopedRef(db, identity, row.scope_type, row.scope_id);
 }
 
 async function validateAssetVersionContent(

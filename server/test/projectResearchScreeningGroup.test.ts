@@ -389,5 +389,37 @@ describe("projectResearchScreeningProgressDb", () => {
       expect(decided.rows[0]!.status).toBe("approved");
       expect(decided.rows[0]!.total).toBe("20");
     });
+
+    it("keeps the snapshot a reviewer decided on when the decision lands between a tick's read and its write", async () => {
+      if (!db.available) return;
+      const operationId = randomUUID();
+      const input = {
+        spaceId: SPACE,
+        projectId: PROJECT,
+        workflowId: WORKFLOW,
+        operationId,
+        checkpointType: "screening_gate",
+        machineResult: { operation_id: operationId, total: 16 },
+      };
+      const first = await upsertPendingResearchCheckpoint(db.pool, input);
+      // The reviewer approves after the tick read the gate as pending and
+      // before it writes its refreshed counts.
+      const decidedBetween = {
+        query: async (sql: string, params?: readonly unknown[]) => {
+          if (/UPDATE project_research_checkpoints/.test(sql) && /machine_result_json=\$2/.test(sql)) {
+            await db.pool.query(
+              `UPDATE project_research_checkpoints SET status='approved', user_decision='approved', decided_at=now(), updated_at=now() WHERE id=$1`,
+              [first],
+            );
+          }
+          return db.pool.query(sql, params as unknown[] | undefined);
+        },
+      } as unknown as Queryable;
+      expect(await upsertPendingResearchCheckpoint(decidedBetween, { ...input, machineResult: { operation_id: operationId, total: 20 } })).toBe(first);
+      const row = await db.pool.query<{ status: string; machine_result_json: { total: number } }>(
+        `SELECT status, machine_result_json FROM project_research_checkpoints WHERE id=$1`, [first],
+      );
+      expect(row.rows[0]).toMatchObject({ status: "approved", machine_result_json: { total: 16 } });
+    });
   });
 });

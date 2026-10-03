@@ -7,7 +7,7 @@ export class BackupPolicyError extends Error {
   }
 }
 
-export interface BackupPolicyLogger {
+interface BackupPolicyLogger {
   warn(message: string): void;
 }
 

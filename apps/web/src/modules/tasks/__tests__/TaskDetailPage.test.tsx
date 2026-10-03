@@ -10,7 +10,9 @@ vi.mock('../../../contexts/SpaceContext', () => ({
 vi.mock('../../../core/spaceNav', () => ({
   SpaceLink: ({ to, children }: { to: string; children: React.ReactNode }) => <a href={typeof to === 'string' ? to : '#'}>{children}</a>,
 }))
-vi.mock('../TaskWorkTab', () => ({ default: () => <div data-testid="task-work-tab" /> }))
+vi.mock('../TaskWorkTab', () => ({
+  default: ({ refreshToken }: { refreshToken?: number }) => <div data-testid="task-work-tab">{refreshToken ?? ''}</div>,
+}))
 vi.mock('../../../components/ContentAccessControl', () => ({ ContentAccessControl: () => null }))
 vi.mock('react-router-dom', async orig => ({
   ...(await orig<typeof import('react-router-dom')>()),
@@ -125,5 +127,25 @@ describe('TaskDetailPage — runtime profile on the default path', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Runtime Profiles could not be loaded.')
     // The server still resolves the Agent's default, so the button stays live.
     expect(screen.getByRole('button', { name: 'Create queued run' })).toBeEnabled()
+  })
+
+  it('keeps the Task on screen when one of its side lists fails to load', async () => {
+    mocked.listRuntimeProfiles.mockResolvedValue([profile({})])
+    mocked.runs.mockRejectedValue(new Error('runs unavailable'))
+    renderPage()
+
+    expect(await screen.findByText('Ship it')).toBeInTheDocument()
+    expect(screen.queryByText('Task not found or not accessible')).not.toBeInTheDocument()
+  })
+
+  it('asks the Work view to reload after a Run is queued from the page', async () => {
+    mocked.listRuntimeProfiles.mockResolvedValue([profile({})])
+    renderPage()
+
+    const create = await screen.findByRole('button', { name: 'Create queued run' })
+    const before = screen.getByTestId('task-work-tab').textContent
+    fireEvent.click(create)
+    await waitFor(() => expect(mocked.createRun).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByTestId('task-work-tab').textContent).not.toBe(before))
   })
 })

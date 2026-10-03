@@ -6,8 +6,10 @@ import { PgActivityConsolidationRepository } from "../src/modules/activity/conso
 import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
 import { ContentAccessAuditService } from "../src/modules/contentAccess/audit.js";
 import { ContentDemotionService } from "../src/modules/contentAccess/demotion.js";
+import { insertMemoryEntry } from "./support/memoryFixtures.js";
 import { ContentAccessService } from "../src/modules/contentAccess/service.js";
 import { PgProposalRepository } from "../src/modules/proposals/repository.js";
+import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
 import { RunMaterializationService } from "../src/modules/runs/materializationService.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
@@ -24,9 +26,6 @@ describe("contentAccessDefencesDb", () => {
   const AGENT = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   const VERSION = "ffffffff-ffff-4fff-8fff-ffffffffffff";
   const RUN = "99999999-9999-4999-8999-999999999999";
-  const SNAPSHOT = "88888888-8888-4888-8888-888888888888";
-  const DELIVERY = "77777777-7777-4777-8777-777777777777";
-  const CONTROL = "66666666-6666-4666-8666-666666666666";
 
 
   const db = useTestDatabase(`${import.meta.filename}#contentAccessDefencesDb`);
@@ -65,6 +64,56 @@ describe("contentAccessDefencesDb", () => {
       [SOURCE, SPACE, OWNER],
     );
   });
+
+  async function seedAgent() {
+    await db.pool.query(
+      `INSERT INTO agents
+         (id, space_id, owner_user_id, name, status, visibility, access_level, created_at, updated_at)
+       VALUES ($1,$2,$3,'Agent','active','private','full',now(),now())`,
+      [AGENT, SPACE, OWNER],
+    );
+    await db.pool.query(
+      `INSERT INTO agent_versions
+         (id, agent_id, space_id, version_label, context_policy_json, memory_policy_json,
+          capabilities_json, tool_permissions_json, created_at)
+       VALUES ($1, $2, $3, 'v1', '{}', '{}', '[]', '[]', now())`,
+      [VERSION, AGENT, SPACE],
+    );
+    await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT, space: SPACE });
+  }
+
+  /** A private Run whose context snapshot consumed SOURCE. */
+  async function seedConsumingRun(
+    runId: string,
+    ownerUserId: string,
+    instruction: string | null,
+    sourceRef: { type: string; id: string } = { type: "artifact", id: SOURCE },
+  ) {
+    await db.pool.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json, instruction)
+       VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', now(), now(), $5, 'private', 'full', 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), $6)`,
+      [runId, SPACE, AGENT, VERSION, ownerUserId, instruction],
+    );
+    const control = randomUUID();
+    const delivery = randomUUID();
+    await db.pool.query(
+      `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at)
+       VALUES ($1,$2,$3,'{}'::jsonb,now())`,
+      [control, SPACE, runId],
+    );
+    await db.pool.query(
+      `INSERT INTO invocation_deliveries
+         (id,space_id,invocation_id,attempt,execution_control_snapshot_id,runtime_key,renderer_version,delivery_metadata_json,created_at)
+       VALUES ($1,$2,$3,1,$4,'opencode','test.v1','{}'::jsonb,now())`,
+      [delivery, SPACE, runId, control],
+    );
+    await db.pool.query(
+      `INSERT INTO invocation_snapshots
+         (id,space_id,invocation_id,delivery_id,attempt,safe_snapshot_json,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,1,$5::jsonb,'accepted',now(),now())`,
+      [randomUUID(), SPACE, runId, delivery, JSON.stringify({ source_refs: [sourceRef] })],
+    );
+  }
 
   describe("content after-the-fact defences (real PostgreSQL)", () => {
     it("writes no row for an owner read and exactly one row for a cross-person read", async () => {
@@ -116,53 +165,60 @@ describe("contentAccessDefencesDb", () => {
       ]);
     });
 
+    it("asks the contributing owner before a tainted record gains a reader, not only a wider tier", async () => {
+      if (!db.available) return;
+      const tainted = randomUUID();
+      const taint = {
+        schema_version: 1, narrowest_visibility: "private", input_owner_user_ids: [VIEWER],
+        non_instructing_owner_user_ids: [VIEWER], personal_memory_grant_ids: [],
+      };
+      await db.pool.query(
+        `INSERT INTO artifacts
+           (id, space_id, artifact_type, title, export_formats_json, visibility,
+            access_level, owner_user_id, metadata_json, created_at, updated_at)
+         VALUES ($1, $2, 'report', 'Tainted', '[]'::jsonb, 'selected_users', 'summary', $3, $4::jsonb, now(), now())`,
+        [tainted, SPACE, OWNER, JSON.stringify({ context_taint: taint })],
+      );
+      const access = new ContentAccessService(db.pool);
+      const owner = { spaceId: SPACE, userId: OWNER };
+      const policy = (accessLevel: "full" | "summary", grants: Array<{ user_id: string; access_level: "full" | "summary" }>) => ({
+        visibility: "selected_users" as const, access_level: accessLevel, project_id: null, grants,
+      });
+
+      await expect(access.updatePolicy(owner, "artifact", tainted, policy("summary", [{ user_id: VIEWER, access_level: "summary" }])))
+        .rejects.toMatchObject({ statusCode: 409 });
+      await expect(access.updatePolicy(owner, "artifact", tainted, policy("full", [])))
+        .rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it("asks the contributing owner before a tainted proposal is widened", async () => {
+      if (!db.available) return;
+      const taint = {
+        schema_version: 1, narrowest_visibility: "private", input_owner_user_ids: [VIEWER],
+        non_instructing_owner_user_ids: [VIEWER], personal_memory_grant_ids: [],
+      };
+      const proposal = await insertProposalRow(db.pool, {
+        spaceId: SPACE,
+        proposalType: "follow_up_task",
+        title: "Tainted proposal",
+        payload: { proposal_type: "follow_up_task", context_taint: taint },
+        rationale: "Derived from another member's content.",
+        createdByUserId: OWNER,
+        visibility: "selected_users",
+      });
+
+      await expect(new ContentAccessService(db.pool).updatePolicy(
+        { spaceId: SPACE, userId: OWNER },
+        "proposal",
+        proposal.id,
+        { visibility: "space_shared", access_level: "full", project_id: null, grants: [] },
+      )).rejects.toMatchObject({ statusCode: 409 });
+    });
+
     it("discloses consuming Runs and derived outputs that remain shared", async () => {
       if (!db.available) return;
-      await db.pool.query(
-        `INSERT INTO agents
-           (id, space_id, owner_user_id, name, status, visibility, access_level, created_at, updated_at)
-         VALUES ($1,$2,$3,'Agent','active','private','full',now(),now())`,
-        [AGENT, SPACE, OWNER],
-      );
-      await db.pool.query(
-        `INSERT INTO agent_versions
-           (
-       id,
-       agent_id,
-       space_id,
-       version_label,
-       context_policy_json,
-       memory_policy_json,
-       capabilities_json,
-       tool_permissions_json,
-       created_at
-     )
-         VALUES ($1, $2, $3, 'v1', '{}', '{}', '[]', '[]', now())`,
-        [VERSION, AGENT, SPACE],
-      );
-      await ensureDefaultRuntimeProfile(db.pool, { agent: AGENT, space: SPACE });
-      await db.pool.query(
-        `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, access_level, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
-         VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', now(), now(), $5, 'private', 'full', 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
-        [RUN, SPACE, AGENT, VERSION, OWNER],
-      );
-      await db.pool.query(
-        `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at)
-         VALUES ($1,$2,$3,'{}'::jsonb,now())`,
-        [CONTROL, SPACE, RUN],
-      );
-      await db.pool.query(
-        `INSERT INTO invocation_deliveries
-           (id,space_id,invocation_id,attempt,execution_control_snapshot_id,runtime_key,renderer_version,delivery_metadata_json,created_at)
-         VALUES ($1,$2,$3,1,$4,'opencode','test.v1','{}'::jsonb,now())`,
-        [DELIVERY, SPACE, RUN, CONTROL],
-      );
-      await db.pool.query(
-        `INSERT INTO invocation_snapshots
-           (id,space_id,invocation_id,delivery_id,attempt,safe_snapshot_json,status,created_at,updated_at)
-         VALUES ($1,$2,$3,$4,1,$5::jsonb,'accepted',now(),now())`,
-        [SNAPSHOT, SPACE, RUN, DELIVERY, JSON.stringify({ source_refs: [{ type: "artifact", id: SOURCE }] })],
-      );
+      await seedAgent();
+      await seedConsumingRun(RUN, OWNER, null);
       await db.pool.query(
         `INSERT INTO artifacts
            (id, space_id, run_id, artifact_type, title, export_formats_json,
@@ -202,6 +258,59 @@ describe("contentAccessDefencesDb", () => {
       });
       const source = await db.pool.query("SELECT visibility FROM artifacts WHERE id = $1", [SOURCE]);
       expect(source.rows[0]?.visibility).toBe("private");
+    });
+
+    it("discloses a colleague's consuming Run and outputs without their unreadable text", async () => {
+      if (!db.available) return;
+      const theirRun = randomUUID();
+      const theirOutput = randomUUID();
+      await seedAgent();
+      await seedConsumingRun(theirRun, VIEWER, "Viewer's private instruction");
+      await db.pool.query(
+        `INSERT INTO artifacts
+           (id, space_id, run_id, artifact_type, title, export_formats_json,
+            visibility, access_level, owner_user_id, created_at, updated_at)
+         VALUES ($1,$2,$3,'report','Viewer private title','[]'::jsonb,
+                 'selected_users','full',$4,now(),now())`,
+        [theirOutput, SPACE, theirRun, VIEWER],
+      );
+
+      const disclosure = await new ContentDemotionService(db.pool).disclose(
+        { spaceId: SPACE, userId: OWNER },
+        "artifact",
+        SOURCE,
+        "private",
+      );
+      expect(disclosure.exposure.consuming_runs).toEqual([
+        expect.objectContaining({ run_id: theirRun, link: `/runs/${theirRun}` }),
+      ]);
+      expect(disclosure.exposure.shared_derived_outputs).toEqual([
+        expect.objectContaining({ resource_type: "artifact", id: theirOutput }),
+      ]);
+      expect(JSON.stringify(disclosure.exposure)).not.toContain("Viewer's private instruction");
+      expect(JSON.stringify(disclosure.exposure)).not.toContain("Viewer private title");
+    });
+
+    it("discloses the Runs whose context retrieved a memory", async () => {
+      if (!db.available) return;
+      const memoryId = randomUUID();
+      const runId = randomUUID();
+      await insertMemoryEntry(db.pool, SPACE, {
+        id: memoryId, owner_user_id: OWNER, subject_user_id: OWNER,
+      }, { visibility: "space_shared" });
+      await seedAgent();
+      await seedConsumingRun(runId, OWNER, null, { type: "memory_entry", id: memoryId });
+
+      const disclosure = await new ContentDemotionService(db.pool).disclose(
+        { spaceId: SPACE, userId: OWNER },
+        "memory",
+        memoryId,
+        "private",
+      );
+
+      expect(disclosure.exposure.consuming_runs).toEqual([
+        expect.objectContaining({ run_id: runId, link: `/runs/${runId}` }),
+      ]);
     });
   });
 });
@@ -295,7 +404,9 @@ describe("contentCreationContextDb", () => {
       expect(personalTask).toMatchObject({
         space_id: personalSpaceId,
         project_id: null,
+        owner_user_id: userId,
         visibility: "private",
+        access_level: "full",
       });
       expect(projectTask).toMatchObject({
         space_id: teamSpaceId,

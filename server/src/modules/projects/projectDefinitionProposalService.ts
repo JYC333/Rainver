@@ -13,7 +13,7 @@ import {
 import { assertProjectWriter } from "./access.js";
 import { ProjectKernelService } from "./kernelService.js";
 
-export interface ProjectDefinitionProposalActor {
+interface ProjectDefinitionProposalActor {
   agentId?: string | null;
   runId?: string | null;
   idempotencyKey?: string | null;

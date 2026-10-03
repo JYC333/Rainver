@@ -38,22 +38,27 @@ export function ScreeningCriteriaCard({ projectId }: { projectId: string }) {
   const [criteria, setCriteria] = useState<ProjectResearchScreeningCriteria>(() => empty(projectId))
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  // The text each list field shows while it is being typed. Parsing on every
+  // key would trim the space or comma just typed before the next word.
+  const [listText, setListText] = useState<Record<string, string>>({})
 
   useEffect(() => {
     let current = true
     setLoading(true)
     projectResearchApi.screeningCriteria(projectId)
-      .then(result => { if (current) setCriteria(result) })
+      .then(result => { if (current) { setCriteria(result); setListText({}) } })
       .catch(error => { if (current) toast.error(errMsg(error)) })
       .finally(() => { if (current) setLoading(false) })
     return () => { current = false }
   }, [projectId])
 
   function setList(field: 'include_keywords' | 'exclude_keywords' | 'source_restrictions' | 'required_evidence_fields', text: string) {
+    setListText(current => ({ ...current, [field]: text }))
     setCriteria(current => ({ ...current, [field]: values(text) }))
   }
 
   function setDomain(key: string, text: string) {
+    setListText(current => ({ ...current, [`domain:${key}`]: text }))
     setCriteria(current => ({
       ...current,
       domain_criteria: { ...current.domain_criteria, [key]: values(text) },
@@ -75,6 +80,7 @@ export function ScreeningCriteriaCard({ projectId }: { projectId: string }) {
         required_evidence_fields: criteria.required_evidence_fields,
       })
       setCriteria(saved)
+      setListText({})
       toast.success('Screening criteria saved')
     } catch (error) {
       toast.error(errMsg(error))
@@ -98,7 +104,7 @@ export function ScreeningCriteriaCard({ projectId }: { projectId: string }) {
             <Label htmlFor="screening-include">Include keywords or concepts</Label>
             <Input
               id="screening-include"
-              value={csv(criteria.include_keywords)}
+              value={listText.include_keywords ?? csv(criteria.include_keywords)}
               onChange={event => setList('include_keywords', event.target.value)}
               placeholder="agent memory, retrieval evaluation"
               disabled={loading}
@@ -108,7 +114,7 @@ export function ScreeningCriteriaCard({ projectId }: { projectId: string }) {
             <Label htmlFor="screening-exclude">Exclude keywords or concepts</Label>
             <Input
               id="screening-exclude"
-              value={csv(criteria.exclude_keywords)}
+              value={listText.exclude_keywords ?? csv(criteria.exclude_keywords)}
               onChange={event => setList('exclude_keywords', event.target.value)}
               placeholder="survey, editorial"
               disabled={loading}
@@ -118,7 +124,7 @@ export function ScreeningCriteriaCard({ projectId }: { projectId: string }) {
             <Label htmlFor="screening-sources">Allowed journals, outlets, or sites</Label>
             <Input
               id="screening-sources"
-              value={csv(criteria.source_restrictions)}
+              value={listText.source_restrictions ?? csv(criteria.source_restrictions)}
               onChange={event => setList('source_restrictions', event.target.value)}
               placeholder="arxiv.org, Nature"
               disabled={loading}
@@ -128,7 +134,7 @@ export function ScreeningCriteriaCard({ projectId }: { projectId: string }) {
             <Label htmlFor="screening-evidence">Required evidence fields</Label>
             <Input
               id="screening-evidence"
-              value={csv(criteria.required_evidence_fields)}
+              value={listText.required_evidence_fields ?? csv(criteria.required_evidence_fields)}
               onChange={event => setList('required_evidence_fields', event.target.value)}
               placeholder="sample size, limitations"
               disabled={loading}
@@ -159,7 +165,7 @@ export function ScreeningCriteriaCard({ projectId }: { projectId: string }) {
               <Label htmlFor={`screening-domain-${key}`}>{key === 'methods' ? 'Methods' : key.replace(/_/g, ' ')}</Label>
               <Input
                 id={`screening-domain-${key}`}
-                value={csv(criteria.domain_criteria[key] ?? [])}
+                value={listText[`domain:${key}`] ?? csv(criteria.domain_criteria[key] ?? [])}
                 onChange={event => setDomain(key, event.target.value)}
                 placeholder={key === 'methods' ? 'randomized, observational' : 'Comma-separated values'}
                 disabled={loading}

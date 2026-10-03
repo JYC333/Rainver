@@ -1,6 +1,18 @@
 import { PgOntologyRepository } from "../ontology/repository.js";
 import { assertEvidenceableObjectType } from "../ontology/validation.js";
 import { hasDeclaration } from "../ontology/linkTypes.js";
+
+/**
+ * The link types `note_links` stores: its `ck_note_links_link_type` check
+ * (`db/schema/knowledge.ts`). The registry declares more — `cites`,
+ * `authored_by`, `proposes` — which belong to other relation tables, so a
+ * declared type outside this set is a 422 here rather than a constraint error.
+ */
+const NOTE_LINK_TYPES = new Set([
+  "related_to", "references", "depends_on", "part_of", "source_for", "derived_from",
+  "about", "supports", "contradicts", "supersedes", "refines", "same_as", "explains",
+  "prerequisite_of", "example_of", "applies_to", "summarizes", "updates",
+]);
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import {
   appendMarginalia,
@@ -1160,6 +1172,28 @@ export class PgKnowledgeRepository {
     return noteCollectionOut(result.rows[0]!);
   }
 
+  /**
+   * Whether `candidateId` sits at or below `ancestorId`, walking up from the
+   * candidate. Bounded, because a tree already in a cycle has no root to reach.
+   */
+  private async isDescendantNoteCollection(spaceId: string, candidateId: string, ancestorId: string): Promise<boolean> {
+    const result = await this.db.query<{ found: boolean }>(
+      `WITH RECURSIVE ancestry AS (
+         SELECT id, parent_id, 1 AS depth
+           FROM note_collections
+          WHERE id = $2 AND space_id = $1
+         UNION ALL
+         SELECT parent.id, parent.parent_id, ancestry.depth + 1
+           FROM note_collections parent
+           JOIN ancestry ON parent.id = ancestry.parent_id
+          WHERE parent.space_id = $1 AND ancestry.depth < 64
+       )
+       SELECT EXISTS (SELECT 1 FROM ancestry WHERE id = $3) AS found`,
+      [spaceId, candidateId, ancestorId],
+    );
+    return result.rows[0]?.found === true;
+  }
+
   async updateNoteCollection(
     identity: SpaceUserIdentity,
     collectionId: string,
@@ -1186,6 +1220,11 @@ export class PgKnowledgeRepository {
       : current.parent_id;
     if (parentId === collectionId) throw new HttpError(422, "parent_id cannot reference the same collection");
     if (parentId) await this.requireNoteCollection(identity, parentId);
+    // Nothing in the database stops a cycle, and a folder in one has no path
+    // to the root: every note below it disappears from the tree.
+    if (parentId && await this.isDescendantNoteCollection(identity.spaceId, parentId, collectionId)) {
+      throw new HttpError(422, "parent_id cannot reference a descendant of the collection");
+    }
     if (parentId !== current.parent_id) {
       const nextProjectId = current.project_id
         ?? (parentId ? await projectOwningCollection(this.db, identity.spaceId, parentId) : null);
@@ -1325,8 +1364,13 @@ export class PgKnowledgeRepository {
             SET title = COALESCE($3, title),
                 summary = CASE WHEN $6::boolean THEN $7 ELSE summary END,
                 primary_project_id = CASE WHEN $9::boolean THEN $10 ELSE primary_project_id END,
-                archived_at = CASE WHEN $8::varchar(32) = 'archived' THEN $11::timestamptz ELSE archived_at END,
-                deleted_at = CASE WHEN $8::varchar(32) = 'deleted' THEN $11::timestamptz ELSE deleted_at END,
+                -- A status change sets its own timestamp and clears the other:
+                -- restoring a note must clear deleted_at, or the purge, which
+                -- reads only that column, destroys a note in use.
+                archived_at = CASE WHEN $8::varchar(32) = 'archived' THEN $11::timestamptz
+                                   WHEN $8::varchar(32) IS NOT NULL THEN NULL ELSE archived_at END,
+                deleted_at = CASE WHEN $8::varchar(32) = 'deleted' THEN $11::timestamptz
+                                  WHEN $8::varchar(32) IS NOT NULL THEN NULL ELSE deleted_at END,
                 updated_at = $11
           WHERE id = $1 AND space_id = $2 AND object_type = 'note'
           RETURNING id
@@ -1461,6 +1505,13 @@ export class PgKnowledgeRepository {
     const projectId = requiredString(body.project_id, "project_id");
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const noteId = await withNoteWrites(this.db, async (scope) => {
+      // Two first captures for one Project both find no inbox and both create
+      // one; assigning the role then displaces the other's. Serialize on the
+      // Project, as the object-targeted jot does on its target.
+      await scope.db.query(
+        `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+        [`note-jot-inbox:${identity.spaceId}:${projectId}`],
+      );
       const existing = await scope.db.query<{ object_id: string }>(
         `SELECT n.object_id
            FROM notes n
@@ -1593,10 +1644,15 @@ export class PgKnowledgeRepository {
     return listNoteRevisionRows(this.db, { spaceId: identity.spaceId, noteId, limit });
   }
 
-  async rollbackNote(identity: SpaceUserIdentity, noteId: string, toVersion: number): Promise<Record<string, unknown>> {
+  async rollbackNote(
+    identity: SpaceUserIdentity,
+    noteId: string,
+    toVersion: number,
+    expectVersion?: number | null,
+  ): Promise<Record<string, unknown>> {
     await this.requireWritableNote(identity, noteId);
     await withNoteWrites(this.db, (scope) =>
-      scope.rollback({ spaceId: identity.spaceId, noteId, toVersion, userId: identity.userId }));
+      scope.rollback({ spaceId: identity.spaceId, noteId, toVersion, userId: identity.userId, expectVersion }));
     return (await this.getNote(identity, noteId))!;
   }
 
@@ -1739,6 +1795,35 @@ export class PgKnowledgeRepository {
           -- wastebasket does not make this route cost one round trip per note
           -- another member deleted, until it can no longer finish at all.
           AND (visibility = 'space_shared' OR owner_user_id = $3)
+          -- The Project half of the same rule. A batch of refusals is not
+          -- "the next call takes the rest": the refused notes stay, fill the
+          -- next batch too, and the caller's own notes never come up.
+          AND (primary_project_id IS NULL OR EXISTS (
+            SELECT 1
+              FROM projects project
+             WHERE project.id = space_objects.primary_project_id
+               AND project.space_id = space_objects.space_id
+               AND project.deleted_at IS NULL
+               AND (
+                 project.owner_user_id = $3
+                 OR EXISTS (
+                   SELECT 1 FROM space_memberships membership
+                    WHERE membership.space_id = space_objects.space_id
+                      AND membership.user_id = $3
+                      AND membership.status = 'active'
+                      AND membership.role IN ('owner', 'admin')
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM project_members project_member
+                    WHERE project_member.space_id = space_objects.space_id
+                      AND project_member.project_id = project.id
+                      AND project_member.user_id = $3
+                      AND project_member.status = 'active'
+                      AND project_member.role IN ('owner', 'member')
+                 )
+               )
+          ))
+        ORDER BY deleted_at ASC
         LIMIT ${NOTE_PURGE_BATCH}`,
       [identity.spaceId, String(NOTE_PURGE_RETENTION_DAYS), identity.userId],
     );
@@ -1756,18 +1841,42 @@ export class PgKnowledgeRepository {
       }
     }
     if (purgeable.length === 0) return { deleted: 0, retention_days: NOTE_PURGE_RETENTION_DAYS };
-    // The retention predicate stays in the DELETE: a note pulled back out of
-    // the wastebasket between the two statements must not be destroyed anyway.
-    const result = await this.db.query<{ id: string }>(
-      `DELETE FROM space_objects
-        WHERE space_id = $1 AND id = ANY($2::varchar[])
-          AND deleted_at IS NOT NULL
-          AND deleted_at < now() - ($3 || ' days')::interval
-        RETURNING id`,
-      [identity.spaceId, purgeable, String(NOTE_PURGE_RETENTION_DAYS)],
-    );
+    const deleted = await withQueryableTransaction(this.db, async (tx) => {
+      // The retention predicate is re-checked under the row lock: a note
+      // pulled back out of the wastebasket since the candidate read must not
+      // be destroyed anyway.
+      const doomed = await tx.query<{ id: string }>(
+        `SELECT id FROM space_objects
+          WHERE space_id = $1 AND id = ANY($2::varchar[])
+            AND deleted_at IS NOT NULL
+            AND deleted_at < now() - ($3 || ' days')::interval
+          FOR UPDATE`,
+        [identity.spaceId, purgeable, String(NOTE_PURGE_RETENTION_DAYS)],
+      );
+      const ids = doomed.rows.map((row) => row.id);
+      if (ids.length === 0) return 0;
+      // Relations reference space_objects without ON DELETE, so one edge to a
+      // purged note (a Thread's `references`, say) would fail the whole batch,
+      // and every later purge with it. An edge to the note goes with the note;
+      // an edge between two surviving objects only loses its provenance pointer.
+      await tx.query(
+        `DELETE FROM object_relations
+          WHERE space_id = $1 AND (from_object_id = ANY($2::varchar[]) OR to_object_id = ANY($2::varchar[]))`,
+        [identity.spaceId, ids],
+      );
+      await tx.query(
+        `UPDATE object_relations SET source_object_id = NULL, updated_at = now()
+          WHERE space_id = $1 AND source_object_id = ANY($2::varchar[])`,
+        [identity.spaceId, ids],
+      );
+      const result = await tx.query<{ id: string }>(
+        `DELETE FROM space_objects WHERE space_id = $1 AND id = ANY($2::varchar[]) RETURNING id`,
+        [identity.spaceId, ids],
+      );
+      return result.rowCount ?? result.rows.length;
+    });
     return {
-      deleted: result.rowCount ?? result.rows.length,
+      deleted,
       retention_days: NOTE_PURGE_RETENTION_DAYS,
     };
   }
@@ -1869,7 +1978,7 @@ export class PgKnowledgeRepository {
       throw new HttpError(404, "Note link endpoint not found");
     }
     const linkType = optionalString(body.link_type) ?? "related_to";
-    if (!hasDeclaration(linkType)) {
+    if (!hasDeclaration(linkType) || !NOTE_LINK_TYPES.has(linkType)) {
       throw new HttpError(422, "invalid link_type");
     }
     const now = new Date().toISOString();
@@ -1947,15 +2056,28 @@ export class PgKnowledgeRepository {
   }
 
   // Reindex is best-effort: the derived projection must never fail a canonical
-  // CRUD write. These repository methods run on a pool connection (no ambient
-  // transaction), so a thrown projection query is contained by this catch and
-  // logged rather than surfaced as a 500 on a write that already committed.
+  // CRUD write. On a pool connection a thrown projection query is contained by
+  // the catch and logged rather than surfaced as a 500 on a write that already
+  // committed. A repository built on a checked-out client (a jot, a marginalia
+  // capture) runs inside its caller's transaction, where a caught database
+  // error would still leave that transaction aborted and its COMMIT would
+  // silently roll the whole write back — so there the refresh runs behind a
+  // savepoint. A client with no open transaction cannot take one, and has
+  // nothing to abort either.
   private async safeReindex(
     run: (projection: RetrievalProjectionService) => Promise<void>,
   ): Promise<void> {
+    const db = this.db as Queryable & { release?: () => void; connect?: () => Promise<unknown> };
+    const onPool = typeof db.connect === "function" && typeof db.release !== "function";
+    const contained = !onPool && await this.db.query("SAVEPOINT knowledge_reindex").then(() => true, () => false);
     try {
       await run(new RetrievalProjectionService(this.db, knowledgeRetrievalRegistry));
+      if (contained) await this.db.query("RELEASE SAVEPOINT knowledge_reindex");
     } catch (error) {
+      if (contained) {
+        await this.db.query("ROLLBACK TO SAVEPOINT knowledge_reindex").catch(() => undefined);
+        await this.db.query("RELEASE SAVEPOINT knowledge_reindex").catch(() => undefined);
+      }
       process.stderr.write(
         `[knowledge.retrieval] reindex failed after canonical write: ${String((error as Error)?.message ?? error)}\n`,
       );

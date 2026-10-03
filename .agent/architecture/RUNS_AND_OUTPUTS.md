@@ -136,7 +136,10 @@ user grant cannot preserve a removed member's historical output. Artifacts and
 proposals materialized from those Runs remain `selected_users` and inherit the
 Run grants; adapter output cannot widen them to `space_shared`. Room members may
 read task evidence, but only the speaking task's `manager_user_id` may mutate,
-pause, cancel, or append directly to that task.
+pause, cancel, or append directly to that task — and only while they remain an
+active Room member: `manager_user_id` is provenance, not authority (B8A), so
+removal from the Room ends the manager's reads of and controls over the Room
+tasks they started, in the list as well as the detail.
 
 `GET /api/v1/agent-groups/{group_id}/trace` is the grouped-run companion read
 model. It returns the group, members, task messages, delegations, root run id,
@@ -289,7 +292,11 @@ only the manager. Natural-language requests such as
 their answers. If the current agent needs sibling or delegated results before it
 can answer, it calls `agent.wait_for_results`; the run moves to
 `waiting_for_dependency`, releases the worker, and is requeued as the same run
-after all declared dependency runs are terminal.
+after all declared dependency runs are terminal. A wait on runs that are
+themselves waiting, directly or through others, for the caller is refused
+(`dependency_cycle`) instead of parking both: a later recipient of the same
+message is parked behind the first at creation, so the first waiting on
+`current_turn` would otherwise never wake.
 
 Product UI room messages create one manager/root run for an initialized
 Conversation, not at Room creation. Conversation setup is an explicit draft
@@ -352,8 +359,9 @@ proposal-envelope fields.
 - Native capability execution is not active. System bookkeeping runs may
   carry `capability_id` / `capabilities_json` provenance, but they do not execute
   `runtime_key="capability"`; that runtime definition is disabled.
-- External capabilities default **disabled**; enable state persists in `$RAINVER_HOME/config/settings.yaml` (`capabilities.enabled_external_capabilities`) and survives registry reload.
-- Disabled external capabilities fail at adapter resolution with `capability_disabled` before execution.
+- There is no external-capability execution path: no enable switch or
+  `capability_disabled` resolution error exists, and the `capability` runtime
+  definition is `planned` and disabled by default.
 - `one_shot_docker` is the critical local-CLI executor mode. It provides a
   separate container with deny-by-default networking, read-only root, dropped
   capabilities, no-new-privileges, and fixed resource limits. Docker/image/path

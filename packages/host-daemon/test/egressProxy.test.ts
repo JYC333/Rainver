@@ -118,6 +118,8 @@ describe("host-owned upstream proxy routing", () => {
       targets.push(request.url ?? "");
       proxyAuthorizations.push(request.headers["proxy-authorization"]);
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\nhello-through-upstream");
+      // An upstream that drops an established tunnel with a reset.
+      if (request.url?.startsWith("reset.example")) setImmediate(() => (socket as import("node:net").Socket).resetAndDestroy());
     });
     await new Promise<void>((resolve) => upstreamProxy.listen(0, "127.0.0.1", resolve));
     const address = upstreamProxy.address();
@@ -181,6 +183,12 @@ describe("host-owned upstream proxy routing", () => {
     expect(proxy.log("proxied-run")).toEqual([
       expect.objectContaining({ allowed: true, host: "api.openai.com", port: 443 }),
     ]);
+  });
+
+  it("closes one tunnel the upstream resets and keeps serving the next", async () => {
+    await request("reset.example:443");
+    const next = await request("api.openai.com:443");
+    expect(next).toContain("hello-through-upstream");
   });
 
   it("never treats a literal synthetic address as a hostname for upstream resolution", async () => {

@@ -1,42 +1,9 @@
 import type {
-  CanonicalModelEvent,
   RuntimeSemanticEvent,
 } from "@rainver/protocol";
-import { redactEvidenceText } from "./evidenceRedaction.js";
 import { isAcpRuntimeAdapter } from "../runtimeAdapters/specs.js";
 import { createAcpToolCallLifecycle } from "../runtimeAdapters/acpToolCallLifecycle.js";
 import { normalizeToolName } from "../runtimeAdapters/toolName.js";
-
-export function normalizeManagedModelEvents(
-  events: CanonicalModelEvent[],
-  completedAt: string,
-): RuntimeSemanticEvent[] {
-  const normalized: RuntimeSemanticEvent[] = [];
-  for (const event of events) {
-    if (event.type === "model.message_stop") {
-      normalized.push({
-        schema_version: "runtime_event.v1",
-        type: "assistant_message_completed",
-        occurred_at: completedAt,
-        call_id: null,
-        summary: "Assistant message completed.",
-        metadata_json: { finish_reason: event.finish_reason ?? null },
-      });
-    } else if (event.type === "model.error") {
-      normalized.push({
-        schema_version: "runtime_event.v1",
-        type: "error",
-        occurred_at: completedAt,
-        call_id: null,
-        summary: redactEvidenceText(event.error.message),
-        metadata_json: { error_code: event.error.code },
-      });
-    }
-    // text/tool deltas and token usage are intentionally not persisted as
-    // semantic Run Events.
-  }
-  return normalized;
-}
 
 export function normalizeVendorEvents(
   runtimeKey: string,
@@ -132,30 +99,6 @@ function toolTerminalEvent(
     status === "failed" ? "Tool call failed." : "Tool call completed.",
     { runtime_key: runtimeKey, tool_name: toolName },
   );
-}
-
-export function terminalRuntimeEvents(input: {
-  runtimeKey: string;
-  success: boolean;
-  completedAt: string;
-  errorCode?: string | null;
-}): RuntimeSemanticEvent[] {
-  return [
-    runtimeEvent(
-      input.success ? "assistant_message_completed" : "error",
-      input.completedAt,
-      null,
-      input.success ? "Assistant message completed." : "Runtime adapter failed.",
-      {
-        runtime_key: input.runtimeKey,
-        error_code: input.errorCode ?? null,
-      },
-    ),
-    runtimeEvent("state_transition", input.completedAt, null, "Runtime adapter reached a terminal state.", {
-      runtime_key: input.runtimeKey,
-      state: input.success ? "succeeded" : "failed",
-    }),
-  ];
 }
 
 function runtimeEvent(

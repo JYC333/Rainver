@@ -25,7 +25,7 @@ export interface ScreeningOperationRow {
   created_at?: string;
 }
 
-export interface ScreeningCounts {
+interface ScreeningCounts {
   total: number;
   relevant: number;
   maybe: number;

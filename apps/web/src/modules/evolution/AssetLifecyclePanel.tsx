@@ -286,6 +286,7 @@ function PromotionDialog({
   asset,
   versions,
   evaluations,
+  initialVersionId,
   onOpenChange,
   onCreated,
 }: {
@@ -293,6 +294,8 @@ function PromotionDialog({
   asset: EvolvableAsset
   versions: EvolvableAssetVersion[]
   evaluations: EvolvableAssetEvaluationRun[]
+  /** The version whose own Promote button opened the dialog, if one did. */
+  initialVersionId: string | null
   onOpenChange: (open: boolean) => void
   onCreated: () => void
 }) {
@@ -312,14 +315,14 @@ function PromotionDialog({
 
   useEffect(() => {
     if (!open) return
-    setVersionId(promotableVersions[0]?.id ?? '')
+    setVersionId(promotableVersions.find(version => version.id === initialVersionId)?.id ?? promotableVersions[0]?.id ?? '')
     setScopeType('space')
     setScopeId(activeSpaceId ?? '')
     setSelectedEvaluationIds([])
     setPin(false)
     setDeprecate(false)
     setReason('')
-  }, [activeSpaceId, open, promotableVersions])
+  }, [activeSpaceId, initialVersionId, open, promotableVersions])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -381,6 +384,7 @@ export default function AssetLifecyclePanel({
   const [caseDialogOpen, setCaseDialogOpen] = useState(false)
   const [evaluationDialogOpen, setEvaluationDialogOpen] = useState(false)
   const [promotionDialogOpen, setPromotionDialogOpen] = useState(false)
+  const [promotionVersionId, setPromotionVersionId] = useState<string | null>(null)
   const [busyVersionId, setBusyVersionId] = useState<string | null>(null)
 
   const approvedVersions = useMemo(() => versions.filter(version => version.status === 'approved'), [versions])
@@ -398,15 +402,15 @@ export default function AssetLifecyclePanel({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => { setEditingVersion(null); setVersionDialogOpen(true) }}><Plus className="size-3.5" /> Create candidate version</Button><Button size="sm" variant="outline" onClick={() => setCaseDialogOpen(true)} disabled={approvedVersions.length === 0}><TestTube2 className="size-3.5" /> Create evaluation case</Button><Button size="sm" variant="outline" onClick={() => setEvaluationDialogOpen(true)} disabled={cases.length === 0}><Play className="size-3.5" /> Run evaluation</Button><Button size="sm" variant="outline" onClick={() => setPromotionDialogOpen(true)} disabled={versions.every(version => version.status !== 'candidate' && version.status !== 'testing')}><Send className="size-3.5" /> Promotion proposal</Button></div>
+      <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => { setEditingVersion(null); setVersionDialogOpen(true) }}><Plus className="size-3.5" /> Create candidate version</Button><Button size="sm" variant="outline" onClick={() => setCaseDialogOpen(true)} disabled={approvedVersions.length === 0}><TestTube2 className="size-3.5" /> Create evaluation case</Button><Button size="sm" variant="outline" onClick={() => setEvaluationDialogOpen(true)} disabled={cases.length === 0}><Play className="size-3.5" /> Run evaluation</Button><Button size="sm" variant="outline" onClick={() => { setPromotionVersionId(null); setPromotionDialogOpen(true) }} disabled={versions.every(version => version.status !== 'candidate' && version.status !== 'testing')}><Send className="size-3.5" /> Promotion proposal</Button></div>
       <p className="text-xs text-muted-foreground">Candidate execution is supplied by an existing successful Run. Promotion and pointer changes remain approval-gated.</p>
-      <Card className="mb-0 p-4"><CardTitle className="mb-3">Version lifecycle</CardTitle>{versions.length === 0 ? <EmptyState title="No versions" description="Create a candidate version to begin the lifecycle." /> : <div className="space-y-2">{versions.map(version => <div key={version.id} className="rounded-md border border-border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-1.5"><Badge variant="secondary">v{version.version}</Badge><EvolutionStatusBadge status={version.status} />{version.stale_parent && <Badge variant="warning">stale parent</Badge>}</div><div className="flex flex-wrap gap-1.5">{version.status === 'draft' && <Button size="sm" variant="ghost" onClick={() => { setEditingVersion(version); setVersionDialogOpen(true) }}><Pencil className="size-3.5" /> Edit</Button>}{version.status === 'draft' && <Button size="sm" variant="outline" onClick={() => void transition(version, 'candidate')} disabled={busyVersionId === version.id}>Candidate</Button>}{version.status === 'candidate' && <Button size="sm" variant="outline" onClick={() => void transition(version, 'testing')} disabled={busyVersionId === version.id}>Testing</Button>}{(version.status === 'candidate' || version.status === 'testing') && <Button size="sm" variant="ghost" onClick={() => { setPromotionDialogOpen(true) }}>Promote</Button>}</div></div><div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2"><span>source {version.source}</span><span>parent {version.parent_version_id?.slice(-8) ?? '-'}</span><span>scope {version.scope_type}{version.scope_id ? `:${version.scope_id.slice(-8)}` : ''}</span><span>content {version.content_ref ?? 'inline JSON'}</span></div></div>)}</div>}</Card>
+      <Card className="mb-0 p-4"><CardTitle className="mb-3">Version lifecycle</CardTitle>{versions.length === 0 ? <EmptyState title="No versions" description="Create a candidate version to begin the lifecycle." /> : <div className="space-y-2">{versions.map(version => <div key={version.id} className="rounded-md border border-border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="flex flex-wrap items-center gap-1.5"><Badge variant="secondary">v{version.version}</Badge><EvolutionStatusBadge status={version.status} />{version.stale_parent && <Badge variant="warning">stale parent</Badge>}</div><div className="flex flex-wrap gap-1.5">{version.status === 'draft' && <Button size="sm" variant="ghost" onClick={() => { setEditingVersion(version); setVersionDialogOpen(true) }}><Pencil className="size-3.5" /> Edit</Button>}{version.status === 'draft' && <Button size="sm" variant="outline" onClick={() => void transition(version, 'candidate')} disabled={busyVersionId === version.id}>Candidate</Button>}{version.status === 'candidate' && <Button size="sm" variant="outline" onClick={() => void transition(version, 'testing')} disabled={busyVersionId === version.id}>Testing</Button>}{(version.status === 'candidate' || version.status === 'testing') && <Button size="sm" variant="ghost" onClick={() => { setPromotionVersionId(version.id); setPromotionDialogOpen(true) }}>Promote</Button>}</div></div><div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2"><span>source {version.source}</span><span>parent {version.parent_version_id?.slice(-8) ?? '-'}</span><span>scope {version.scope_type}{version.scope_id ? `:${version.scope_id.slice(-8)}` : ''}</span><span>content {version.content_ref ?? 'inline JSON'}</span></div></div>)}</div>}</Card>
       <Card className="mb-0 p-4"><div className="flex items-center justify-between gap-2"><CardTitle className="mb-0">Evaluation cases</CardTitle><span className="text-xs text-muted-foreground">{casesLoading ? 'Loading…' : `${cases.length} cases`}</span></div>{cases.length === 0 ? <EmptyState className="mt-3" title="No evaluation cases" description="Create a case from an approved baseline or a passed source Run." /> : <div className="mt-3 space-y-2">{cases.map(item => <div key={item.id} className="rounded-md border border-border p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-medium">{item.name}</p><p className="text-xs text-muted-foreground">baseline {item.baseline_version_id.slice(-8)}{item.source_run_id ? ` · source run ${item.source_run_id.slice(-8)}` : ''}</p></div><EvolutionStatusBadge status={item.status} /></div><div className="mt-2 grid gap-2 md:grid-cols-3"><div><Label className="text-xs">Input</Label><JsonBlock value={item.input_json} /></div><div><Label className="text-xs">Expectation</Label><JsonBlock value={item.expectation_json} /></div><div><Label className="text-xs">Baseline output</Label><JsonBlock value={item.baseline_output_json} /></div></div></div>)}</div>}</Card>
       <Card className="mb-0 p-4"><div className="flex items-center justify-between gap-2"><CardTitle className="mb-0">Evaluation runs</CardTitle><Button size="sm" variant="ghost" onClick={() => void onReload()}><ExternalLink className="size-3.5" /> Refresh evidence</Button></div>{evaluations.length === 0 ? <EmptyState className="mt-3" title="No evaluation runs" description="Queue an evaluation after selecting a candidate Run." /> : <div className="mt-3 space-y-2">{evaluations.map(run => <div key={run.id} className="rounded-md border border-border p-3"><div className="flex flex-wrap items-center gap-1.5"><EvolutionStatusBadge status={run.status} /><Badge variant="outline">{run.evaluator_version}</Badge><span className="font-mono text-xs text-muted-foreground">{run.id.slice(0, 12)}</span></div><div className="mt-2 grid gap-2 md:grid-cols-2"><JsonBlock value={run.metrics} /><JsonBlock value={run.blockers} /></div></div>)}</div>}</Card>
       <VersionDialog open={versionDialogOpen} asset={asset} versions={versions} editing={editingVersion} onOpenChange={setVersionDialogOpen} onSaved={onReload} />
       <CaseDialog open={caseDialogOpen} asset={asset} approvedVersions={approvedVersions} onOpenChange={setCaseDialogOpen} onSaved={loadCases} />
       <EvaluationDialog open={evaluationDialogOpen} asset={asset} versions={versions} cases={cases} onOpenChange={setEvaluationDialogOpen} onSaved={onReload} />
-      <PromotionDialog open={promotionDialogOpen} asset={asset} versions={versions} evaluations={evaluations} onOpenChange={setPromotionDialogOpen} onCreated={() => { void onReload() }} />
+      <PromotionDialog open={promotionDialogOpen} asset={asset} versions={versions} evaluations={evaluations} initialVersionId={promotionVersionId} onOpenChange={setPromotionDialogOpen} onCreated={() => { void onReload() }} />
     </div>
   )
 }

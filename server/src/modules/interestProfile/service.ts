@@ -1,10 +1,11 @@
-import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { domainDefinitions, isKnownDomain } from "../sourceAnnotation/index.js";
 import {
   PgInterestProfileRepository,
   type CoverageEntry,
   type InterestTopicRow,
   type TopicCandidateRow,
+  type InterestProfileRow,
 } from "./repository.js";
 import { profileMaturity, explorationShare, gapsAreMeaningful, skeletonSize, type ProfileMaturity } from "./maturity.js";
 import { topicKeyFor } from "./topicKey.js";
@@ -49,7 +50,7 @@ export interface FactLayerResult {
 export class InterestProfileService {
   private readonly repo: PgInterestProfileRepository;
 
-  constructor(db: Queryable) {
+  constructor(private readonly db: Queryable) {
     this.repo = new PgInterestProfileRepository(db);
   }
 
@@ -98,11 +99,28 @@ export class InterestProfileService {
     limit = FACT_LAYER_BATCH_SIZE,
   ): Promise<FactLayerResult> {
     const profile = await this.repo.ensureProfile(spaceId, userId);
+    // One transaction under a per-profile lock: the ledger read, the counts and
+    // the ledger write commit together, so two passes that overlap (two open
+    // tabs, a scheduled digest beside a page load) cannot both count the same
+    // items, and a pass that fails after counting leaves no counts behind.
+    return withQueryableTransaction(this.db, async (tx) => {
+      await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`interest_profile_fact_layer:${profile.id}`]);
+      return this.runFactLayerLocked(new PgInterestProfileRepository(tx), spaceId, userId, profile, limit);
+    });
+  }
+
+  private async runFactLayerLocked(
+    repo: PgInterestProfileRepository,
+    spaceId: string,
+    userId: string,
+    profile: InterestProfileRow,
+    limit: number,
+  ): Promise<FactLayerResult> {
     const settings = resolveInterestProfileSettings(profile.settings_json);
-    const pending = await this.repo.loadPendingAnnotations(spaceId, userId, profile.id, limit);
+    const pending = await repo.loadPendingAnnotations(spaceId, userId, profile.id, limit);
     if (pending.length === 0) return { observed_items: 0, topic_hits: 0, candidate_phrases: 0 };
 
-    const topics = await this.repo.listTopics(profile.id);
+    const topics = await repo.listTopics(profile.id);
     const byKey = new Map<string, InterestTopicRow>();
     for (const topic of topics) {
       byKey.set(topic.topic_key, topic);
@@ -119,9 +137,14 @@ export class InterestProfileService {
     }[] = [];
     for (const item of pending) {
       if (item.was_ignored) continue;
+      // Spellings the annotator kept apart ("LLMs", "LLM") normalize to one
+      // key; an item counts once per key, or one item could drive a
+      // candidate's thresholds on its own.
+      const seenKeys = new Set<string>();
       for (const phrase of item.topic_candidates) {
         const key = topicKeyFor(phrase);
-        if (!key) continue;
+        if (!key || seenKeys.has(key)) continue;
+        seenKeys.add(key);
         if (byKey.has(key)) {
           topicHits += 1;
           continue;
@@ -143,14 +166,14 @@ export class InterestProfileService {
       }
     }
 
-    await this.repo.accumulateCandidates({
+    await repo.accumulateCandidates({
       spaceId,
       userId,
       profileId: profile.id,
       phrases: unresolved,
       settings,
     });
-    await this.repo.markObserved(
+    await repo.markObserved(
       spaceId,
       profile.id,
       pending.map((item) => ({ sourceItemId: item.source_item_id, countedAsRead: item.was_read })),

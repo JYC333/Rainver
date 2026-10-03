@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Copy as CopyIcon, GitBranch, Inbox as InboxIcon, Loader2, Pencil, Play, Plus, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { evolutionApi } from '../../api/client'
@@ -187,6 +187,14 @@ export default function EvolutionPage() {
   const [targetDialogOpen, setTargetDialogOpen] = useState(false)
   const [savingTarget, setSavingTarget] = useState(false)
   const [targetListTab, setTargetListTab] = useState<TargetListTab>('active')
+  // What is selected now, for loaders that finish later: an answer for a
+  // target or asset no longer on screen is dropped rather than shown under
+  // the heading of the one that is.
+  const selectedTargetIdRef = useRef(selectedTargetId)
+  selectedTargetIdRef.current = selectedTargetId
+  const selectedAssetIdRef = useRef(selectedAssetId)
+  selectedAssetIdRef.current = selectedAssetId
+  const loadSequence = useRef(0)
 
   const targets = useMemo(
     () => [...activeTargets, ...archivedTargets],
@@ -230,6 +238,7 @@ export default function EvolutionPage() {
   )
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current
     if (!viewSpaceId) {
       setSummary(EMPTY_SUMMARY)
       setActiveTargets([])
@@ -273,6 +282,7 @@ export default function EvolutionPage() {
         evolutionApi.validation(),
         evolutionApi.assets(),
       ])
+      if (sequence !== loadSequence.current) return
       const nextActiveTargets = nextTargets.filter(target => target.status !== 'archived')
       const nextArchivedTargets = nextTargets.filter(target => target.status === 'archived')
       setSummary(nextSummary)
@@ -296,6 +306,7 @@ export default function EvolutionPage() {
         return nextAssets[0].id
       })
     } catch (e) {
+      if (sequence !== loadSequence.current) return
       toast.error(errMsg(e))
       setSummary(EMPTY_SUMMARY)
       setActiveTargets([])
@@ -314,7 +325,7 @@ export default function EvolutionPage() {
       setSelectedTargetId(null)
       setSelectedAssetId(null)
     } finally {
-      setLoading(false)
+      if (sequence === loadSequence.current) setLoading(false)
     }
   }, [viewSpaceId])
 
@@ -335,14 +346,20 @@ export default function EvolutionPage() {
       setTargetSignals([])
       return
     }
+    // A reload for a target no longer selected (a Run that finished after a
+    // switch) is not started; one already in flight is dropped on arrival.
+    if (selectedTargetIdRef.current !== targetId) return
     setTargetLoading(true)
     try {
-      setTargetSignals(await evolutionApi.targetSignals(targetId, { limit: 50 }))
+      const signals = await evolutionApi.targetSignals(targetId, { limit: 50 })
+      if (selectedTargetIdRef.current !== targetId) return
+      setTargetSignals(signals)
     } catch (e) {
+      if (selectedTargetIdRef.current !== targetId) return
       toast.error(errMsg(e))
       setTargetSignals([])
     } finally {
-      setTargetLoading(false)
+      if (selectedTargetIdRef.current === targetId) setTargetLoading(false)
     }
   }, [viewSpaceId])
 
@@ -357,6 +374,7 @@ export default function EvolutionPage() {
       setAssetEvaluations([])
       return
     }
+    if (selectedAssetIdRef.current !== assetId) return
     setAssetLoading(true)
     try {
       const [versions, pins, evaluations] = await Promise.all([
@@ -364,16 +382,18 @@ export default function EvolutionPage() {
         evolutionApi.assetPins(assetId),
         evolutionApi.assetEvaluationRuns(assetId),
       ])
+      if (selectedAssetIdRef.current !== assetId) return
       setAssetVersions(versions)
       setAssetPins(pins)
       setAssetEvaluations(evaluations)
     } catch (e) {
+      if (selectedAssetIdRef.current !== assetId) return
       toast.error(errMsg(e))
       setAssetVersions([])
       setAssetPins([])
       setAssetEvaluations([])
     } finally {
-      setAssetLoading(false)
+      if (selectedAssetIdRef.current === assetId) setAssetLoading(false)
     }
   }, [viewSpaceId])
 
@@ -459,6 +479,9 @@ export default function EvolutionPage() {
         toast.success(t('evolution.target_created'))
         setTargetDialogOpen(false)
         await load()
+        // Shown on the list it belongs to; selecting it on the other list
+        // would be undone by the selection fallback a render later.
+        setTargetListTab(created.status === 'archived' ? 'archived' : 'active')
         setSelectedTargetId(created.id)
       }
     } catch (e) {

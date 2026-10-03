@@ -10,7 +10,7 @@ import { SYNTHESIS_SNIPPET_MAX_CHARS, SYNTHESIS_TOTAL_TEXT_MAX_CHARS } from "./c
  * returns a deterministic-only brief.
  */
 
-export interface SynthesisPrompt {
+interface SynthesisPrompt {
   system: string;
   user: string;
 }

@@ -12,7 +12,6 @@ import {
   MemoryMaintenanceReportSchema,
   MemoryMaintenanceScanRequestSchema,
   MemoryProposalCommandSchema,
-  MemoryProposalCreateResultSchema,
   MemoryReadRequestSchema,
   ContentReadTraceSchema,
   MessageCreateRequestSchema,
@@ -258,13 +257,6 @@ describe("memory + sessions contracts", () => {
         target_memory_id: "memory-1",
       }).operation,
     ).toBe("archive");
-    expect(
-      MemoryProposalCreateResultSchema.parse({
-        proposal_id: "proposal-1",
-        proposal_type: "memory_create",
-        status: "pending",
-      }).proposal_type,
-    ).toBe("memory_create");
   });
 
   it("parses memory read requests, pages, and access-log audit rows", () => {

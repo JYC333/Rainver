@@ -13,7 +13,7 @@ import { taskCompletionState } from "./completion.js";
  * is the authority for is worse than no stream.
  */
 
-export interface UserTaskEventContext {
+interface UserTaskEventContext {
   spaceId: string;
   userId: string;
   taskId: string;

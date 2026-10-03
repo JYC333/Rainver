@@ -21,7 +21,7 @@ export interface MemoryAuthFields {
   content_access_grants?: readonly ContentAccessGrant[] | null;
 }
 
-export interface MemoryReadContext {
+interface MemoryReadContext {
   userId: string;
   spaceId: string;
   activeSpaceMember?: boolean;

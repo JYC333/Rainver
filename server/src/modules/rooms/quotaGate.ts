@@ -43,7 +43,7 @@ import {
  */
 
 /** What is enqueued for a Run when it is admitted: the `agent_run` job as its admission built it. */
-export interface AgentRunJob {
+interface AgentRunJob {
   user_id: string | null;
   agent_id: string | null;
   project_folder_id: string | null;
@@ -63,7 +63,7 @@ interface WaitingForQuota {
   continued_by_user_id?: string;
 }
 
-export type QuotaVerdict = { hold: false } | { hold: true; window: SubscriptionQuotaWindow };
+type QuotaVerdict = { hold: false } | { hold: true; window: SubscriptionQuotaWindow };
 
 /**
  * Whether a turn on a login with this window waits. Nothing known, below the
@@ -527,7 +527,7 @@ async function admitHeldRun(client: PoolClient, spaceId: string, runId: string):
  * to any of those Agents must not wait behind Agents waiting for a window.
  * Admission claims each back (`reclaimDispatchLock`).
  */
-export async function releaseDispatchLock(db: Queryable, spaceId: string, runId: string): Promise<void> {
+async function releaseDispatchLock(db: Queryable, spaceId: string, runId: string): Promise<void> {
   await db.query(
     `UPDATE host_threads thread
         SET dispatch_lock_id = NULL, updated_at = now()

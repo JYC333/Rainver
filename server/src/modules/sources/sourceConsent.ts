@@ -50,7 +50,7 @@ interface SourceConnectionPolicy {
   };
 }
 
-export interface SourceConnectionGovernance {
+interface SourceConnectionGovernance {
   capturePolicy: CapturePolicy;
   trustLevel: TrustLevel;
   consent: SourceConnectionConsent;

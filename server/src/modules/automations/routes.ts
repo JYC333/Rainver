@@ -26,6 +26,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const q = query(request);
       const rows = await new PgAutomationRepository(dbPool(context.config)).list(spaceId, {
         projectId: optionalString(q.project_id),
+        readableBy: identity.userId,
       });
       return reply.send(rows.map(automationToOut));
     } catch (error) {
@@ -95,6 +96,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const row = await new PgAutomationRepository(dbPool(context.config)).get(
         spaceId,
         params(request).automationId ?? "",
+        { readableBy: identity.userId },
       );
       if (!row) return reply.code(404).send({ detail: "Automation not found" });
       return reply.send(automationToOut(row));
@@ -152,7 +154,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const spaceId = params(request).spaceId ?? identity.spaceId;
     if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
     try {
-      return reply.send(await new PgAutomationRepository(dbPool(context.config)).listWorkflowExecutions(spaceId, params(request).automationId ?? ""));
+      return reply.send(await new PgAutomationRepository(dbPool(context.config)).listWorkflowExecutions(
+        spaceId,
+        params(request).automationId ?? "",
+        { readableBy: identity.userId },
+      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }

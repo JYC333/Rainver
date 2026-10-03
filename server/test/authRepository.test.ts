@@ -107,4 +107,10 @@ describe("PgAuthRepository", () => {
     expect(space).toMatchObject({ id: "team-1", role: "admin" });
   });
 
+  it("reads a Space the user is not a member of as absent, the same as a Space that does not exist", async () => {
+    if (!db.available || !repo) return;
+    await expect(repo.getSpaceForUser("user-1", "other-1")).resolves.toBeNull();
+    await expect(repo.getSpaceForUser("user-1", "no-such-space")).resolves.toBeNull();
+  });
+
 });

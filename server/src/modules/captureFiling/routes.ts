@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
-import { jsonBody, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { jsonBody, parseBody, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { CaptureFilingService } from "./service.js";
 
 type RouteService = Pick<CaptureFilingService, "file">;
@@ -25,7 +25,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const body = protocol.CaptureFilingRequestSchema.parse(jsonBody(request));
+      const body = parseBody(protocol.CaptureFilingRequestSchema, jsonBody(request));
       const result = await service(context).file({
         userId: identity.userId,
         activityId: body.activity_id,

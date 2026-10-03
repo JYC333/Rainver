@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -197,6 +197,28 @@ describe('LibraryPage', () => {
     expect(screen.getByRole('link', { name: 'Gaussian Splatting Paper' })).toHaveAttribute('href', '/library/items/item-1')
     expect(sourcesApi.items).toHaveBeenCalledWith(expect.objectContaining({ limit: 30, offset: 0 }))
     expect(sourcesApi.briefings).not.toHaveBeenCalled()
+  })
+
+  it('keeps the latest search answer when an earlier query answers later', async () => {
+    let answerFirst: (value: unknown) => void = () => {}
+    vi.mocked(sourcesApi.items).mockImplementation(async params => {
+      if (params?.q === 'r') return new Promise(resolve => { answerFirst = resolve }) as never
+      if (params?.q === 'ru') return page([sourceItem({ id: 'item-ru', title: 'Rust Paper' })], 30)
+      return page([sourceItem()], 30)
+    })
+    renderLibrary('/library/items')
+    expect(await screen.findByText('Gaussian Splatting Paper')).toBeInTheDocument()
+
+    const search = screen.getByPlaceholderText('Search title, excerpt, URI, domain')
+    fireEvent.change(search, { target: { value: 'r' } })
+    fireEvent.change(search, { target: { value: 'ru' } })
+    expect(await screen.findByText('Rust Paper')).toBeInTheDocument()
+
+    expect(sourcesApi.items).toHaveBeenCalledWith(expect.objectContaining({ q: 'r' }))
+    await act(async () => { answerFirst(page([sourceItem({ id: 'item-r', title: 'Reinforcement Paper' })], 30)) })
+    expect(screen.queryByText('Reinforcement Paper')).not.toBeInTheDocument()
+    expect(screen.getByText('Rust Paper')).toBeInTheDocument()
+    expect(screen.getByText('1 items')).toBeInTheDocument()
   })
 
   it('uses item type routes as soft library-type filters', async () => {

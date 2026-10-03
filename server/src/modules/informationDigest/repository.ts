@@ -190,6 +190,8 @@ export class PgInformationDigestRepository {
     maturity: "cold" | "warming" | "warm" | null;
     automationRunId?: string | null;
     settings: Record<string, unknown>;
+    /** Existing item rows that stay, placed after `items` in their current order. */
+    keepItemIds?: readonly string[];
     items: Array<{
       candidate: DigestCandidate;
       section: "interest" | "serendipity";
@@ -211,6 +213,7 @@ export class PgInformationDigestRepository {
       [input.spaceId, input.type, input.date, scopeKey],
     );
     const digestId = existing.rows[0]?.id ?? randomUUID();
+    const keepItemIds = existing.rows[0] ? input.keepItemIds ?? [] : [];
     const now = new Date().toISOString();
     await this.db.query(
       `INSERT INTO information_digests
@@ -223,10 +226,25 @@ export class PgInformationDigestRepository {
          generated_by_automation_run_id = COALESCE(EXCLUDED.generated_by_automation_run_id, information_digests.generated_by_automation_run_id),
          settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at`,
       [digestId, input.spaceId, input.type, input.ownerUserId ?? null, input.projectId ?? null,
-        input.date, input.maturity, input.items.length ? "ready" : "empty", input.automationRunId ?? null,
+        input.date, input.maturity, input.items.length + keepItemIds.length ? "ready" : "empty", input.automationRunId ?? null,
         JSON.stringify(input.settings), now],
     );
-    await this.db.query(`DELETE FROM information_digest_items WHERE digest_id = $1`, [digestId]);
+    await this.db.query(
+      `DELETE FROM information_digest_items WHERE digest_id = $1 AND NOT (id = ANY($2::varchar[]))`,
+      [digestId, keepItemIds],
+    );
+    // Out of the way of the new rows' positions, then right after them.
+    await this.db.query(
+      `UPDATE information_digest_items SET position = position + 1000000 WHERE digest_id = $1 AND id = ANY($2::varchar[])`,
+      [digestId, keepItemIds],
+    );
+    await this.db.query(
+      `UPDATE information_digest_items item SET position = $3 + ordered.rank - 1
+         FROM (SELECT id, row_number() OVER (ORDER BY position) AS rank
+                 FROM information_digest_items WHERE digest_id = $1 AND id = ANY($2::varchar[])) ordered
+        WHERE item.id = ordered.id`,
+      [digestId, keepItemIds, input.items.length],
+    );
     for (const item of input.items) {
       await this.db.query(
         `INSERT INTO information_digest_items
@@ -345,6 +363,17 @@ export class PgInformationDigestRepository {
       [spaceId, projectId, readerUserId],
     );
     return { available: true, blindSpots: result.rows.map((row) => row.domain_key) };
+  }
+
+  /** The serendipity rows of a snapshot: each consumed a pool item and may carry the reader's feedback. */
+  async serendipityItems(spaceId: string, digestId: string): Promise<Array<{ id: string; source_item_id: string }>> {
+    const result = await this.db.query<{ id: string; source_item_id: string }>(
+      `SELECT id, source_item_id FROM information_digest_items
+        WHERE space_id = $1 AND digest_id = $2 AND section = 'serendipity'
+        ORDER BY position`,
+      [spaceId, digestId],
+    );
+    return result.rows;
   }
 
   async findByScope(spaceId: string, type: "personal" | "project", scopeId: string, date: string): Promise<{ id: string; generated_by_automation_run_id: string | null } | null> {

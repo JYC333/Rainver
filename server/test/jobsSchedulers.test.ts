@@ -1301,8 +1301,11 @@ class MaintenanceAutomationFakePool implements Queryable {
     if (sql.includes("FROM agent_versions")) {
       return { rowCount: 1, rows: [{ id: "agent-version-1" }] as Row[] };
     }
-    if (sql.includes("SELECT id FROM automations") && sql.includes("FOR UPDATE")) {
-      return { rowCount: 1, rows: [{ id: "auto-1" }] as Row[] };
+    if (sql.includes("FROM automations") && sql.includes("FOR UPDATE")) {
+      return {
+        rowCount: 1,
+        rows: [{ id: "auto-1", status: "active", config_json: { cron: "0 9 * * *", timezone: "UTC" } }] as Row[],
+      };
     }
     if (sql.includes("INSERT INTO automation_runs")) {
       return { rowCount: 1, rows: [] };
@@ -1400,8 +1403,11 @@ class AgentAutomationFireFakePool implements Queryable {
     if (sql.includes("FROM agent_versions")) {
       return { rowCount: 1, rows: [{ id: "agent-version-1" }] as Row[] };
     }
-    if (sql.includes("SELECT id FROM automations") && sql.includes("FOR UPDATE")) {
-      return { rowCount: 1, rows: [{ id: "auto-1" }] as Row[] };
+    if (sql.includes("FROM automations") && sql.includes("FOR UPDATE")) {
+      return {
+        rowCount: 1,
+        rows: [{ id: "auto-1", status: "active", config_json: { cron: "0 9 * * *", timezone: "UTC" } }] as Row[],
+      };
     }
     if (sql.includes("FROM agent_runtime_profiles")) {
       return {

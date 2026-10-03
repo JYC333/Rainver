@@ -1,6 +1,7 @@
 import { describe,expect,it } from "vitest";
 import { sourceConnectorRegistry } from "../src/modules/sources/catalog/sourceConnectorRegistry.js";
 import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService.js";
+import { backfillPageItemLimit, nextBackfillWindow } from "../src/modules/sources/sourceBackfillPageFetch.js";
 import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { vi } from "vitest";
 
@@ -40,6 +41,38 @@ describe("source backfill extraction windows",()=>{
     expect(build(25).searchParams.get("max_results")).toBe("25");
   });
 
+  // OpenAlex pages by page number, so the last page of a 250-item budget must
+  // still ask for page 3 at 100 rows (items 201-300) and keep the first 50,
+  // rather than page 3 at 50 rows, which is items 101-150 again.
+  it("keeps a page-numbered connector at its page width for the last page of a budget", () => {
+    const openAlex = sourceConnectorRegistry.get("openalex_api");
+    const narrowable = openAlex.getCapabilities().supports_page_size_narrowing;
+    let window: Record<string, unknown> = { from: "2026-01-01", to: "2026-02-01", max_items: 250, remaining_items: 250, page_size: 100 };
+    for (let page = 0; page < 2; page += 1) {
+      const next = nextBackfillWindow(window, { seen: 100, pageSize: 100, narrowable });
+      expect(next.outcome).toBe("continue");
+      window = next.window;
+    }
+    const url = new URL(openAlex.buildBackfillRequest({ endpoint_url: null, compiled_query: { search: "agent memory" } }, window, {}).url);
+    expect(url.searchParams.get("page")).toBe("3");
+    expect(url.searchParams.get("per-page")).toBe("100");
+    expect(backfillPageItemLimit(window)).toBe(50);
+    expect(nextBackfillWindow(window, { seen: 50, pageSize: 100, narrowable })).toMatchObject({
+      outcome: "partial",
+      window: { consumed_items: 250, partial: true, next_cursor: 2 },
+    });
+  });
+
+  it("shrinks an item-offset connector's last page to the remaining budget", () => {
+    const next = nextBackfillWindow(
+      { max_items: 250, remaining_items: 150, page_size: 100, consumed_items: 100, cursor: 1, offset: 100 },
+      { seen: 100, pageSize: 100, narrowable: true },
+    );
+    expect(next).toMatchObject({ outcome: "continue", window: { cursor: 2, offset: 200, remaining_items: 50, page_size: 50 } });
+    expect(nextBackfillWindow({ max_items: 100, remaining_items: 100, page_size: 100 }, { seen: 40, pageSize: 100, narrowable: true }))
+      .toMatchObject({ outcome: "exhausted", window: { exhausted: true, consumed_items: 40 } });
+  });
+
   it("uses lastUpdatedDate for historical windows when configured", () => {
     const url = sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest({ endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", compiled_query: { search_query: "cat:cs.AI", monitoring_field: "lastUpdatedDate" } }, {
         from: "2026-01-01T00:00:00.000Z",
@@ -66,7 +99,7 @@ describe("source backfill extraction windows",()=>{
     const query=vi.fn(async(sql:string)=>{
       if(sql.startsWith("SELECT p.project_operation_id"))return{rows:[{project_operation_id:null,project_operation_kind:null}],rowCount:1};
       if(sql.startsWith("SELECT p.*, o.kind AS project_operation_kind"))return{rows:[{status:"approved",source_channel_id:"channel-1",quota_policy_json:{window:"minute",limit_count:2},strategy_json:{max_items:25},items_ingested:0,project_operation_id:null,project_operation_kind:null,operation_max_items:null}],rowCount:1};
-      if(sql.startsWith("SELECT source_connection_id FROM source_channels"))return{rows:[{source_connection_id:"connection-1"}],rowCount:1};
+      if(sql.startsWith("SELECT ch.source_connection_id, c.connector_key"))return{rows:[{source_connection_id:"connection-1",connector_key:"arxiv_api"}],rowCount:1};
       if(sql.startsWith("SELECT * FROM source_backfill_segments"))return{rows:[{id:"segment-1",window_json:{cursor:0,max_items:25}}],rowCount:1};
       if(sql.startsWith("UPDATE source_quota_buckets SET used_count"))return{rows:[{reset_at:"2026-01-01T00:01:00.000Z"}],rowCount:1};
       return{rows:[],rowCount:0};
@@ -86,7 +119,7 @@ describe("source backfill extraction windows",()=>{
     const query=vi.fn(async(sql:string)=>{
       if(sql.startsWith("SELECT p.project_operation_id"))return{rows:[{project_operation_id:null,project_operation_kind:null}],rowCount:1};
       if(sql.startsWith("SELECT p.*, o.kind AS project_operation_kind"))return{rows:[{status:"running",source_channel_id:"channel-1",quota_policy_json:{window:"minute",limit_count:1},strategy_json:{max_items:25},items_ingested:0,project_operation_id:null,project_operation_kind:null,operation_max_items:null}],rowCount:1};
-      if(sql.startsWith("SELECT source_connection_id FROM source_channels"))return{rows:[{source_connection_id:"connection-1"}],rowCount:1};
+      if(sql.startsWith("SELECT ch.source_connection_id, c.connector_key"))return{rows:[{source_connection_id:"connection-1",connector_key:"arxiv_api"}],rowCount:1};
       if(sql.startsWith("SELECT * FROM source_backfill_segments"))return{rows:[{id:"segment-1",window_json:{cursor:1}}],rowCount:1};
       if(sql.startsWith("UPDATE source_quota_buckets SET used_count"))return{rows:[],rowCount:0};
       if(sql.startsWith("SELECT reset_at FROM source_quota_buckets"))return{rows:[{reset_at:reset}],rowCount:1};
@@ -185,7 +218,7 @@ describe("source backfill extraction windows",()=>{
           rowCount: 1,
         };
       }
-      if (sql.startsWith("SELECT source_connection_id FROM source_channels")) return { rows: [{ source_connection_id: "connection-shared" }], rowCount: 1 };
+      if (sql.startsWith("SELECT ch.source_connection_id, c.connector_key")) return { rows: [{ source_connection_id: "connection-shared", connector_key: "arxiv_api" }], rowCount: 1 };
       if (sql.startsWith("SELECT * FROM source_backfill_segments")) return { rows: [{ id: "segment-1", window_json: { cursor: 0, max_items: 25 } }], rowCount: 1 };
       if (sql.startsWith("UPDATE source_quota_buckets SET used_count")) return { rows: [{ reset_at: "2026-01-01T00:01:00.000Z" }], rowCount: 1 };
       return { rows: [], rowCount: 0 };
@@ -227,8 +260,8 @@ describe("source backfill extraction windows",()=>{
       if (sql.startsWith("SELECT * FROM source_backfill_segments")) {
         return { rows: [{ id: "segment-research", window_json: { cursor: 0, max_items: 25 } }], rowCount: 1 };
       }
-      if (sql.startsWith("SELECT source_connection_id FROM source_channels")) {
-        return { rows: [{ source_connection_id: "connection-research" }], rowCount: 1 };
+      if (sql.startsWith("SELECT ch.source_connection_id, c.connector_key")) {
+        return { rows: [{ source_connection_id: "connection-research", connector_key: "arxiv_api" }], rowCount: 1 };
       }
       if (sql.startsWith("SELECT COALESCE(SUM(items_ingested)")) {
         return { rows: [{ settled: "0" }], rowCount: 1 };

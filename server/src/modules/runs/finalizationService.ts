@@ -13,7 +13,7 @@ import {
 import type { VerificationResultRecord } from "./verification/index.js";
 import type { RunSupervisorPort } from "./supervisor.js";
 
-export const RUN_FINALIZER_VERSION = "post_run_finalization.v1";
+const RUN_FINALIZER_VERSION = "post_run_finalization.v1";
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "degraded", "cancelled", "orphaned"]);
 
@@ -88,20 +88,20 @@ const EXACT_ERROR_CODE_MAP: Record<string, { layer: string; reason: string }> = 
   },
 };
 
-export class RunNotFoundError extends Error {}
+class RunNotFoundError extends Error {}
 export class NonTerminalRunError extends Error {}
 
-export interface EvolutionRunEvaluationSolidifier {
+interface EvolutionRunEvaluationSolidifier {
   solidifyFromRunEvaluation(
     evaluation: EvolutionRunEvaluationForSolidifier,
   ): Promise<{ id: string } | null>;
 }
 
-export interface RunEstimatedCostReader {
+interface RunEstimatedCostReader {
   getRunEstimatedCost(spaceId: string, runId: string): Promise<number | null>;
 }
 
-export interface ExecutionGraphReconciler {
+interface ExecutionGraphReconciler {
   reconcileForRun(spaceId: string, runId: string, userId: string): Promise<void>;
 }
 
@@ -144,9 +144,10 @@ export class PostRunFinalizationService {
   }
 
   private async finalizeLocked(
-    run: RunRecord,
+    snapshot: RunRecord,
     attemptNumber: number,
   ): Promise<RunFinalizationRecord> {
+    const run = snapshot;
     const spaceId = run.space_id;
     const runId = run.id;
     const existing = await this.repository.getRunFinalizationByVersion(
@@ -156,6 +157,11 @@ export class PostRunFinalizationService {
       RUN_FINALIZER_VERSION,
     );
     if (existing) {
+      // `run` was read before the lock. The finalizer that wrote `existing`
+      // may have supervised this failure since — requeued the Run on its
+      // next attempt — so the question "is there a failure to supervise" is
+      // asked of the Run as it is now, not of that snapshot.
+      const run = await this.repository.getRun(spaceId, runId) ?? snapshot;
       const verificationResults = await this.repository.listVerificationResults(spaceId, runId);
       const repeatedEvaluation = {
         id: existing.run_evaluation_id,
@@ -186,7 +192,12 @@ export class PostRunFinalizationService {
       return existing;
     }
 
-    const evaluation = await this.evaluate(run, attemptNumber);
+    // Idempotency rests on the finalization row, written last. A pass that
+    // evaluated and then failed before writing it left its evaluation behind;
+    // the retry classifies the same attempt, so it takes that one rather than
+    // appending a second evaluation and a second task bridge row.
+    const evaluation = await this.repository.getRunEvaluationForAttempt(spaceId, runId, attemptNumber)
+      ?? await this.evaluate(run, attemptNumber);
     const now = new Date().toISOString();
     const taskBridge = await this.repository.bridgeTaskEvaluationForRunEvaluation(
       spaceId,

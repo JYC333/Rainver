@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { COMPARISON_BATCH_SIZE } from "../src/modules/projectResearch/monitorComparisonService.js";
 import {
   ProjectResearchStandingComparisonService,
   STANDING_COMPARISON_DAILY_RUN_LIMIT,
@@ -187,6 +189,21 @@ async function seedSourceChannel(kind: "rss" | "web_page"): Promise<string> {
 }
 
 describe("project research standing comparison (real Postgres)", () => {
+  it("names each bound channel and its connection in the Project's source health", async () => {
+    if (!db.available) return;
+    const rssChannelId = await seedSourceChannel("rss");
+    const bindings = new ProjectSourceBindingService(db.pool);
+    const binding = await bindings.createBinding(identity, { project_id: PROJECT, source_channel_id: rssChannelId }) as { id: string };
+    const channel = await db.pool.query<{ source_connection_id: string }>(
+      `SELECT source_connection_id FROM source_channels WHERE id = $1`, [rssChannelId],
+    );
+    expect(await bindings.health(identity, PROJECT)).toEqual([expect.objectContaining({
+      binding_id: binding.id,
+      source_channel_id: rssChannelId,
+      source_connection_id: channel.rows[0]!.source_connection_id,
+    })]);
+  });
+
   it("runs the non-academic source-to-standing-to-focus evidence workflow", async () => {
     if (!db.available) return;
     const rssChannelId = await seedSourceChannel("rss");
@@ -320,6 +337,91 @@ describe("project research standing comparison (real Postgres)", () => {
          FROM project_research_standing_batches b WHERE b.id=$1`,
       [batchId, STANDING_COMPARISON_JOB_TYPE],
     )).rows[0]).toEqual({ status: "pending", count: 2 });
+  });
+
+  it("refuses to retry a batch while another is already pending, instead of failing on the unique index", async () => {
+    if (!db.available) return;
+    const service = new ProjectResearchStandingComparisonService(db.pool);
+    const blocked = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: randomUUID() });
+    await expect(service.dispatchBatch(SPACE, blocked)).resolves.toMatchObject({ status: "blocked_baseline" });
+    // Material that arrived meanwhile opened the Project's one pending batch.
+    const pending = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: randomUUID() });
+    expect(pending).not.toBe(blocked);
+
+    await new ProjectResearchAreaService(db.pool).initializeArea(identity, PROJECT);
+    await expect(service.retryBatch(identity, PROJECT, blocked)).rejects.toMatchObject({ statusCode: 409 });
+    expect((await db.pool.query<{ status: string }>(`SELECT status FROM project_research_standing_batches WHERE id=$1`, [blocked])).rows[0])
+      .toEqual({ status: "blocked_baseline" });
+  });
+
+  it("lets a batch whose Run was orphaned be retried instead of showing running forever", async () => {
+    if (!db.available) return;
+    const service = new ProjectResearchStandingComparisonService(db.pool);
+    const batchId = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: randomUUID() });
+    // The job behind the Run exhausted its attempts: the Run is orphaned and
+    // no reconcile followed it.
+    const runId = await seedRun({ status: "orphaned" });
+    await db.pool.query(
+      `UPDATE project_research_standing_batches SET status='running', run_id=$2, updated_at=now() WHERE id=$1`,
+      [batchId, runId],
+    );
+
+    await expect(service.retryBatch(identity, PROJECT, batchId)).resolves.toMatchObject({ status: "pending" });
+    expect((await db.pool.query<{ status: string; run_id: string | null }>(
+      `SELECT status, run_id FROM project_research_standing_batches WHERE id=$1`, [batchId],
+    )).rows[0]).toEqual({ status: "pending", run_id: null });
+  });
+
+  it("re-arms a pending batch whose dispatch job gave up", async () => {
+    if (!db.available) return;
+    const service = new ProjectResearchStandingComparisonService(db.pool);
+    const start = new Date("2026-09-01T00:00:00.000Z");
+    const batchId = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: randomUUID() }, start);
+    const dispatchJobs = async () => (await db.pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM jobs WHERE job_type=$1 AND payload_json->>'batch_id'=$2`,
+      [STANDING_COMPARISON_JOB_TYPE, batchId],
+    )).rows[0]?.count;
+    expect(await dispatchJobs()).toBe(1);
+
+    // A day later the only job has failed for good and the batch is still pending.
+    const later = new Date(start.getTime() + 24 * 60 * 60_000);
+    await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: randomUUID() }, later);
+    expect(await dispatchJobs()).toBe(2);
+    await expect(service.retryBatch(identity, PROJECT, batchId, later)).resolves.toMatchObject({ status: "pending" });
+    expect(await dispatchJobs()).toBe(3);
+  });
+
+  it("passes the items past the first comparison slice on when that slice had nothing eligible", async () => {
+    if (!db.available) return;
+    await seedBaseline();
+    const now = new Date().toISOString();
+    const provider = randomUUID();
+    await db.pool.query(
+      `INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at)
+       VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`,
+      [provider, SPACE, USER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO model_provider_space_grants (id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$4,true,true,$5,$5)`,
+      [randomUUID(), provider, SPACE, USER, now],
+    );
+    const service = new ProjectResearchStandingComparisonService(db.pool, loadConfig({
+      SERVER_DATABASE_URL: db.connectionUri,
+      SERVER_INTERNAL_TOKEN: "test-internal-token",
+    }));
+    // The first slice is items that never reached the corpus; the eligible one comes after it.
+    const unscreened = Array.from({ length: COMPARISON_BATCH_SIZE }, () => randomUUID());
+    const eligible = await seedSourceInCorpus();
+    let batchId = "";
+    for (const id of [...unscreened, eligible]) batchId = await service.collect({ spaceId: SPACE, projectId: PROJECT, sourceItemId: id });
+
+    await expect(service.dispatchBatch(SPACE, batchId)).resolves.toMatchObject({ status: "completed", compared: 0 });
+    const followup = await db.pool.query<{ source_item_ids_json: string[] }>(
+      `SELECT source_item_ids_json FROM project_research_standing_batches WHERE project_id=$1 AND status='pending'`,
+      [PROJECT],
+    );
+    expect(followup.rows).toEqual([{ source_item_ids_json: [eligible] }]);
   });
 
   it("enforces the daily Project budget before attempting another execution", async () => {

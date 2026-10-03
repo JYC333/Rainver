@@ -1,7 +1,7 @@
 /** Browser-local notification for a conversation changing a Project Folder. */
-export const PROJECT_FOLDER_CONTENT_CHANGED_EVENT = 'rainver:project-folder-content-changed'
+const PROJECT_FOLDER_CONTENT_CHANGED_EVENT = 'rainver:project-folder-content-changed'
 
-export interface ProjectFolderContentChangedDetail {
+interface ProjectFolderContentChangedDetail {
   projectFolderIds: string[]
 }
 

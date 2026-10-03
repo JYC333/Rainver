@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CustomSourcePolicyEnvelopeSchema,
+  ProjectSourceBindingDTOSchema,
   SOURCE_RECIPE_CONTRACT_VERSION,
   SOURCE_RECIPE_PRIMARY_ENDPOINT_URL,
   SOURCE_RECIPE_PRIMITIVE_NAMES,
@@ -9,9 +10,46 @@ import {
   SourceRecipeDefinitionSchema,
   SourceRecipeDryRunResultSchema,
   SourceRecipePrimitiveDefinitionDTOSchema,
+  SourceHealthDTOSchema,
   SourceRecipeVersionDTOSchema,
   SourceRunSummaryDTOSchema,
 } from "../src/index";
+
+describe("project source binding contracts", () => {
+  it("names the bound channel the way the server returns it", () => {
+    const binding = ProjectSourceBindingDTOSchema.parse({
+      id: "binding-1",
+      space_id: "space-1",
+      project_id: "project-1",
+      source_channel_id: "channel-1",
+      binding_key: "channel-1",
+      status: "active",
+      priority: 0,
+      delivery_scope: "project_members",
+      collection_notifications_enabled: true,
+      standing_comparison_enabled: false,
+      filters_json: {},
+      routing_policy_json: {},
+      extraction_policy_json: {},
+      created_by_user_id: "user-1",
+      created_at: "2026-07-01T00:00:00.000Z",
+      updated_at: "2026-07-01T00:00:00.000Z",
+    });
+    expect(binding.source_channel_id).toBe("channel-1");
+    expect(SourceHealthDTOSchema.parse({
+      binding_id: "binding-1",
+      project_id: "project-1",
+      source_connection_id: "connection-1",
+      source_channel_id: "channel-1",
+      source_name: "Feed",
+      status: "healthy",
+      queued_jobs: 0,
+      running_jobs: 0,
+      recent_new_items: 0,
+      consecutive_failures: 0,
+    }).source_channel_id).toBe("channel-1");
+  });
+});
 
 const limits = {
   timeout_ms: 30000,

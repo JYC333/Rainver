@@ -1,16 +1,16 @@
 import { ARXIV_CATEGORY_GROUPS } from "./arxivCategoryTaxonomy.js";
 
-export interface SourceProviderCategoryOption {
+interface SourceProviderCategoryOption {
   value: string;
   label: string;
 }
 
-export interface SourceProviderCategoryGroup {
+interface SourceProviderCategoryGroup {
   group: string;
   options: readonly SourceProviderCategoryOption[];
 }
 
-export interface SourceProviderSetupSchema {
+interface SourceProviderSetupSchema {
   category_groups?: readonly SourceProviderCategoryGroup[];
 }
 

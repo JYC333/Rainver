@@ -12,7 +12,7 @@ import { publicAuthEn } from './publicAuth.en'
 import { publicAuthZhCN } from './publicAuth.zh-CN'
 
 export type Locale = 'en' | 'zh-CN'
-export const LOCALE_STORAGE_KEY = 'rainver:locale'
+const LOCALE_STORAGE_KEY = 'rainver:locale'
 
 function supportedLocale(value: string | null | undefined): Locale {
   return value === 'zh-CN' ? 'zh-CN' : 'en'

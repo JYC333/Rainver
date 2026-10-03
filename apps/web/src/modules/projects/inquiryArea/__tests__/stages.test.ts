@@ -33,7 +33,8 @@ const HYPOTHESIS: InquiryThreadDetail = {
 function signal(): InquiryEvidenceSignal {
   return {
     id: 'signal-1', space_id: 'space-1', project_id: 'project-1', thread_id: 'thread-1',
-    corpus_item_id: 'corpus-1', classification: 'supports', is_material: true, confidence: 0.8,
+    corpus_item_id: 'corpus-1',
+    experiment_interpretation_id: null, classification: 'supports', is_material: true, confidence: 0.8,
     model_version: 'v1', source_provenance: {}, dedupe_key: 'k', producer_idempotency_key: null,
     status: 'auto_attached', candidate_id: null, created_by_user_id: null, created_by_run_id: null,
     created_at: '2026-08-12T00:00:00.000Z',

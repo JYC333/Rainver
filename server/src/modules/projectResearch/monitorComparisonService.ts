@@ -13,7 +13,7 @@ import {
   resolveProjectResearchMonitorComparePrompt,
 } from "./promptRegistry.js";
 
-export const MONITOR_COMPARISON_OUTPUT_CONTRACT = {
+const MONITOR_COMPARISON_OUTPUT_CONTRACT = {
   type: "json_schema",
   schema_id: "project_research.monitor_compare.v1",
   strict: true,
@@ -66,7 +66,7 @@ export const COMPARISON_BATCH_SIZE = 6;
  * title-string binding fail in silence — the comparison ran with an empty
  * current understanding and every item looked like a new direction.
  */
-export type MonitorComparisonQueueResult =
+type MonitorComparisonQueueResult =
   | { readonly outcome: "queued"; readonly runId: string; readonly jobId: string; readonly sourceItemIds: string[] }
   | { readonly outcome: "no_eligible_material" }
   | { readonly outcome: "no_baseline"; readonly role: NoteProjectRole };
@@ -252,6 +252,8 @@ export class ProjectResearchMonitorComparisonService {
 
   private async eligibleMaterial(spaceId: string, projectId: string, sourceItemIds: string[]) {
     if (sourceItemIds.length === 0) return [];
+    // `relevance` keeps the AI's verdict after a person triages the item, so
+    // an exclusion has to be checked on its own or it would be compared anyway.
     const rows = await this.db.query<{
       source_item_id: string; title: string | null; excerpt: string | null;
       why_md: string | null; how_md: string | null; what_md: string | null;
@@ -263,7 +265,8 @@ export class ProjectResearchMonitorComparisonService {
          JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
          LEFT JOIN research_evidence_cards pc ON pc.space_id=pci.space_id AND pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
         WHERE pci.space_id=$1 AND pci.project_id=$2 AND pcis.source_item_id=ANY($3::text[])
-          AND pci.status='active' AND (pci.triage_status IN ('relevant','included','maybe') OR pci.relevance IN ('relevant','maybe'))
+          AND pci.status='active' AND pci.triage_status<>'excluded'
+          AND (pci.triage_status IN ('relevant','included','maybe') OR pci.relevance IN ('relevant','maybe'))
         ORDER BY pcis.source_item_id,pci.updated_at DESC`,
       [spaceId, projectId, sourceItemIds],
     );

@@ -44,6 +44,8 @@ filesystem directly.
 GET/POST   /api/v1/projects/{projectId}/folders
 GET/PATCH  /api/v1/projects/{projectId}/folders/{folderId}
 DELETE     /api/v1/projects/{projectId}/folders/{folderId}
+GET        /api/v1/projects/{projectId}/folders/{folderId}/locations
+POST       /api/v1/projects/{projectId}/folders/{folderId}/locations/{locationId}/activate
 POST       /api/v1/projects/{projectId}/folders/{folderId}/unregister
 POST       /api/v1/projects/{projectId}/folders/scan
 GET        /api/v1/projects/{projectId}/folders/{folderId}/tree?path=...
@@ -85,8 +87,11 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   stores the preimage in `project_file_revisions` and then removes only the exact
   saved draft version. There is no direct browser-content write or user-facing
   rollback route. History offers Restore as draft, which never mutates the
-  Project Folder; revision rows and historical status values remain readable for
-  compatibility.
+  Project Folder; it answers the draft store's refusals as Save does (409
+  `draft_version_conflict`, 413 `draft_quota_exceeded`), will not take the
+  person's one new-file draft slot while an unsaved new file holds it, and
+  refuses a revision larger than a draft may be; revision rows and historical
+  status values remain readable for compatibility.
 - Save to Folder requires the exact draft version and Host existence/hash observed
   by the editor, is atomic, rejects traversal/symlink escapes and secret-like
   paths, and is capped at 1 MiB, matching the File-page read limit.
@@ -169,11 +174,19 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - Git operations must be scoped to the Folder root; no `..` traversal allowed.
 - Full git diff output is bounded. Full diff, protected-Folder, external-root,
   protected/restricted, and secret-like read attempts force policy audit records.
-- Secret-like diff values are redacted. Diffs touching secret-like paths are denied.
+- Secret-like diff values are redacted. Diffs touching secret-like paths are denied;
+  a whole-Folder diff is denied when any file it shows would be refused by PathPolicy
+  as a single-file read.
+- A file revision preview returns the file's former body, so it is a `file` read of
+  the Location the revision came from: `project_folder.read` policy and audit, and
+  for a paired Host only that Host's owner.
 - `resource_space_id` for policy enforcement comes from the actual Project Folder row,
   not caller-supplied input.
 - Archiving a Folder disables new Folder-backed execution but never touches disk.
   Unregistering removes only the registration row; it also never touches disk.
+  A Folder that Runs, Activity, Proposals, Rooms or other records still reference
+  keeps its row: unregister answers 409 `project_folder_in_use`, and archiving is
+  the way to retire it.
 
 ## Related Files
 - `server/src/db/schema/projectFolders.ts` — Project Folder + execution-config schema; access derives from Space/Project authority

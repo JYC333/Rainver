@@ -30,7 +30,7 @@ export class RunBudgetSourceReferenceError extends Error {
   }
 }
 
-export interface RunBudgetCheckResult {
+interface RunBudgetCheckResult {
   allowed: boolean;
   error_code?: string;
   error_message?: string;

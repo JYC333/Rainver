@@ -24,12 +24,13 @@ never accepted directly. Connect existing and paired-host registration preserve
 the directory's existing Git state; they do not initialize an unrelated
 directory.
 
-**Project Folder path resolution** (`projectFolderAbsoluteRoot()` in
-`server/src/modules/projectFolders/repository.ts`):
+**Project Folder path resolution** (`locationAbsoluteRoot()` in
+`server/src/modules/projectFolders/workspaceLocations.ts`, over the Folder's
+Workspace Location):
 ```
-folder.root_path is absolute → use as-is
-folder.root_path is relative → WORKSPACE_ROOT / folder.root_path
-folder.root_path is None     → WORKSPACE_ROOT / folder.id
+location.root_path is absolute → use as-is
+location.root_path is relative → WORKSPACE_ROOT / location.root_path
+location.root_path is empty    → WORKSPACE_ROOT / location.id
 ```
 Server-managed Folder roots must stay under `WORKSPACE_ROOT`; attaching an
 existing external directory is available only on a paired trusted host.

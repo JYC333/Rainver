@@ -13,8 +13,8 @@ import {
  * in the web client and a fifth in the provider-task table — which is how the
  * copies drifted.
  */
-export const PROVIDER_TYPES = new Set(listProviderVendors().map((vendor) => vendor.id));
-export const CLOUD_PROVIDER_TYPES = new Set(
+const PROVIDER_TYPES = new Set(listProviderVendors().map((vendor) => vendor.id));
+const CLOUD_PROVIDER_TYPES = new Set(
   listProviderVendors().filter((vendor) => vendor.apiKeyRequired).map((vendor) => vendor.id),
 );
 export const ROTATION_STRATEGIES = new Set(["fill_first", "round_robin", "least_used", "random"]);
@@ -106,12 +106,12 @@ export function fallbackProviderIdsFromRow(row: ProviderRow): string[] {
   return value.filter((id): id is string => typeof id === "string");
 }
 
-export function claudeCompatibleBaseUrlFromRow(row: ProviderRow): string | null {
+function claudeCompatibleBaseUrlFromRow(row: ProviderRow): string | null {
   const value = configRecord(row).claude_compatible_base_url;
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-export function openAiCompatibleBaseUrlFromRow(row: ProviderRow): string | null {
+function openAiCompatibleBaseUrlFromRow(row: ProviderRow): string | null {
   const value = configRecord(row).openai_compatible_base_url;
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }

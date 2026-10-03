@@ -33,8 +33,11 @@ const ACCOUNT_ROOTS = ['Assets', 'Liabilities', 'Equity', 'Income', 'Expenses'] 
 
 const COMMODITY_TYPES = ['currency', 'security', 'crypto', 'custom'] as const
 
+/** Today in the user's own calendar, not UTC's: early morning east of Greenwich is not yesterday. */
 function todayDate(): string {
-  return new Date().toISOString().slice(0, 10)
+  const now = new Date()
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
 }
 
 // ── Shared styles (quiet operational UI) ─────────────────────────────────────
@@ -866,7 +869,11 @@ function FinanceLedgerView({ api, book, books, onSelectBook, onCreateBook }: {
   const [exportContent, setExportContent] = useState('')
   const [loadError, setLoadError] = useState<string | null>(null)
 
+  // Bumped by every reload so the open account ledger below is re-read with
+  // the rest of the book: a posting just made shows up in it.
+  const [ledgerVersion, setLedgerVersion] = useState(0)
   const reload = useCallback(() => {
+    setLedgerVersion((current) => current + 1)
     Promise.all([
       api.listAccounts(book.id),
       api.listCommodities(book.id),
@@ -893,10 +900,14 @@ function FinanceLedgerView({ api, book, books, onSelectBook, onCreateBook }: {
       setLedgerPostings([])
       return
     }
+    // A slower answer for an account selected earlier must not replace the
+    // rows of the one selected now.
+    let stale = false
     api.getAccountLedger(book.id, selectedAccountId)
-      .then((result) => setLedgerPostings(result.postings))
-      .catch(() => setLedgerPostings([]))
-  }, [api, book.id, selectedAccountId])
+      .then((result) => { if (!stale) setLedgerPostings(result.postings) })
+      .catch(() => { if (!stale) setLedgerPostings([]) })
+    return () => { stale = true }
+  }, [api, book.id, selectedAccountId, ledgerVersion])
 
   const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? null
 
@@ -1018,12 +1029,14 @@ function FinancePage({ host }: { host: FinanceWebHost }) {
   const { enabled, loading: pluginLoading } = usePluginState(PLUGIN_ID)
   const [books, setBooks] = useState<FinanceBook[]>([])
   const [booksLoaded, setBooksLoaded] = useState(false)
+  const [booksError, setBooksError] = useState<string | null>(null)
   const [activeBookId, setActiveBookId] = useState<string | null>(null)
 
   const loadBooks = useCallback(() => {
     api.listBooks()
       .then((result) => {
         setBooks(result.books)
+        setBooksError(null)
         setActiveBookId((current) =>
           current && result.books.some((book) => book.id === current)
             ? current
@@ -1031,7 +1044,12 @@ function FinancePage({ host }: { host: FinanceWebHost }) {
         )
         setBooksLoaded(true)
       })
-      .catch(() => setBooksLoaded(true))
+      .catch((err) => {
+        // Not "no books": a list that could not be read must not invite a
+        // second copy of a book that is there.
+        setBooksError(err instanceof Error ? err.message : 'Failed to load books')
+        setBooksLoaded(true)
+      })
   }, [api])
 
   useEffect(() => {
@@ -1080,9 +1098,13 @@ function FinancePage({ host }: { host: FinanceWebHost }) {
     return (
       <div style={{ maxWidth: 560, margin: '60px auto', padding: '0 24px' }}>
         <BookToolbar books={books} activeBookId={null} onSelect={setActiveBookId} onCreate={createBook} />
-        <p style={{ color: '#666', fontSize: 14, marginTop: 16 }}>
-          Create your first book to start recording accounts and transactions.
-        </p>
+        {booksError ? (
+          <div style={{ ...errorTextStyle, marginTop: 16 }}>{booksError}</div>
+        ) : (
+          <p style={{ color: '#666', fontSize: 14, marginTop: 16 }}>
+            Create your first book to start recording accounts and transactions.
+          </p>
+        )}
       </div>
     )
   }

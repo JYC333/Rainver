@@ -32,7 +32,7 @@ const PREVIEW_UNAVAILABLE_MESSAGE =
  * a redirect to another origin, `credentialHeaders` does not. Production passes
  * the real service.
  */
-export type PreviewCredentialResolver = (
+type PreviewCredentialResolver = (
   spaceId: string,
   credentialId: string,
 ) => Promise<{ header_name: string; header_value: string } | null>

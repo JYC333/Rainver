@@ -9,7 +9,7 @@ import {
   sanitizeEvidenceJson,
 } from "./evidenceRedaction.js";
 import { assertProjectInSpace } from "../projects/access.js";
-import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { artifactReadSql, contentAccessLevelSql, contentReadSql, projectReadAccessSql, proposalReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 
@@ -235,13 +235,27 @@ export class PgRunRepository {
     return result.rows;
   }
 
+  /**
+   * Orphaned Runs whose current attempt has no finalization yet. A Run the
+   * supervisor leaves orphaned keeps that status after it is finalized, so
+   * without the finalization filter a backlog of finished ones would fill
+   * every page and starve a newly orphaned Task Run of its only sweep.
+   */
   async listOrphanedRunIds(limit = 100): Promise<Array<{ id: string; space_id: string }>> {
     const result = await this.db.query<{ id: string; space_id: string }>(
-      `SELECT id, space_id
-         FROM runs
-        WHERE status = 'orphaned'
-          AND error_json->>'error_code' = 'orphaned'
-        ORDER BY updated_at ASC, id ASC
+      `SELECT r.id, r.space_id
+         FROM runs r
+        WHERE r.status = 'orphaned'
+          AND r.error_json->>'error_code' = 'orphaned'
+          AND NOT EXISTS (
+            SELECT 1 FROM run_finalizations f
+             WHERE f.space_id = r.space_id AND f.run_id = r.id
+               AND f.attempt_number = COALESCE((
+                 SELECT max(a.attempt_number) FROM run_attempts a
+                  WHERE a.space_id = r.space_id AND a.run_id = r.id
+               ), 1)
+          )
+        ORDER BY r.updated_at ASC, r.id ASC
         LIMIT $1`,
       [Math.max(1, Math.min(500, Math.trunc(limit)))],
     );
@@ -1214,24 +1228,29 @@ export class PgRunRepository {
     };
   }
 
+  /** The Artifacts a Run produced that this viewer can read; the rest are not listed. */
   async listArtifactSummaries(
     spaceId: string,
     runId: string,
+    viewerUserId: string,
   ): Promise<ArtifactSummaryRecord[]> {
     const result = await this.db.query<ArtifactSummaryRecord>(
-      `SELECT id, space_id, run_id, proposal_id, artifact_type, title,
-              mime_type, visibility, created_at
-         FROM artifacts
-        WHERE space_id = $1 AND run_id = $2
-        ORDER BY created_at ASC, id ASC`,
-      [spaceId, runId],
+      `SELECT a.id, a.space_id, a.run_id, a.proposal_id, a.artifact_type, a.title,
+              a.mime_type, a.visibility, a.created_at
+         FROM artifacts a
+        WHERE a.space_id = $1 AND a.run_id = $2
+          AND ${artifactReadSql("$3", "a")}
+        ORDER BY a.created_at ASC, a.id ASC`,
+      [spaceId, runId, viewerUserId],
     );
     return result.rows;
   }
 
+  /** The Proposals a finished Run created that this viewer can read. */
   async listProposalSummaries(
     spaceId: string,
     runId: string,
+    viewerUserId: string,
   ): Promise<ProposalSummaryRecord[]> {
     const result = await this.db.query<ProposalSummaryRecord>(
       `SELECT proposal.id, proposal.space_id, proposal.proposal_type,
@@ -1247,8 +1266,9 @@ export class PgRunRepository {
           AND proposal.created_by_run_id = $2
           AND proposal.status <> 'staged'
           AND run.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
+          AND ${proposalReadSql("$3", "proposal")}
         ORDER BY proposal.created_at ASC, proposal.id ASC`,
-      [spaceId, runId],
+      [spaceId, runId, viewerUserId],
     );
     return result.rows;
   }
@@ -1550,6 +1570,30 @@ export class PgRunRepository {
     const row = result.rows[0];
     if (!row) throw new Error("RunEvaluation insert returned no row");
     return row;
+  }
+
+  /** The harness evaluation already written for one attempt, if a finalization pass got that far. */
+  async getRunEvaluationForAttempt(
+    spaceId: string,
+    runId: string,
+    attemptNumber: number,
+    evaluatorVersion = "harness_eval.v1",
+  ): Promise<RunEvaluationRecord | null> {
+    const result = await this.db.query<RunEvaluationRecord>(
+      `SELECT id, space_id, run_id, evaluator_type, evaluator_version,
+              outcome_status, failure_layer, failure_reason_code,
+              trajectory_status, evidence_json, rule_trace_json, notes,
+              evaluated_at
+         FROM run_evaluations
+        WHERE space_id = $1
+          AND run_id = $2
+          AND evaluator_version = $3
+          AND evidence_json->>'attempt_number' = $4::text
+        ORDER BY evaluated_at DESC
+        LIMIT 1`,
+      [spaceId, runId, evaluatorVersion, String(attemptNumber)],
+    );
+    return result.rows[0] ?? null;
   }
 
   async insertRunFinalization(input: {
@@ -2245,7 +2289,9 @@ export class PgRunRepository {
          UPDATE run_attempts a
             SET status = 'waiting_for_review',
                 error_code = $6,
-                error_json = $3::jsonb,
+                -- The outcome this attempt had before the hold, so the resume
+                -- that opens the next attempt can give it back.
+                error_json = $3::jsonb || jsonb_build_object('held_from_status', a.status),
                 last_activity_at = $5,
                 updated_at = $5
            FROM updated u
@@ -2339,7 +2385,7 @@ export class PgRunRepository {
     depends_on_run_ids: string[];
     paused_at: string;
   }): Promise<{
-    status: "waiting" | "ready" | "run_not_running" | "dependencies_changed";
+    status: "waiting" | "ready" | "run_not_running" | "dependencies_changed" | "dependency_cycle";
     dependency_statuses: Array<{ id: string; status: string }>;
     current_status?: string;
   }> {
@@ -2386,6 +2432,31 @@ export class PgRunRepository {
       }
       if (lockedDependencies.rows.every((dependency) => isHardTerminalRunStatus(dependency.status))) {
         return { status: "ready", dependency_statuses: lockedDependencies.rows };
+      }
+      // A dependency already waiting, directly or through others, for this Run
+      // would never be woken: each waits for the other to end. A later
+      // recipient of the same message is parked behind the first at creation,
+      // so the first waiting on `current_turn` closes exactly that loop.
+      const cycle = await db.query<{ waits_on_waiter: boolean }>(
+        `WITH RECURSIVE waits(id) AS (
+           SELECT unnest($3::varchar[])
+           UNION
+           SELECT next.id
+             FROM waits
+             JOIN runs r ON r.space_id = $1 AND r.id = waits.id
+             CROSS JOIN LATERAL jsonb_array_elements_text(
+               CASE WHEN jsonb_typeof(r.output_json->'waiting_for_results'->'depends_on_run_ids') = 'array'
+                    THEN r.output_json->'waiting_for_results'->'depends_on_run_ids'
+                    ELSE '[]'::jsonb END
+             ) AS next(id)
+            WHERE r.status = 'waiting_for_dependency'
+              AND r.output_json->'waiting_for_results'->>'status' = 'waiting'
+         )
+         SELECT EXISTS (SELECT 1 FROM waits WHERE id = $2) AS waits_on_waiter`,
+        [input.space_id, input.run_id, dependsOnRunIds],
+      );
+      if (cycle.rows[0]?.waits_on_waiter) {
+        return { status: "dependency_cycle", dependency_statuses: lockedDependencies.rows };
       }
       const runningAttempt = await db.query<{ id: string }>(
         `SELECT id
@@ -2601,6 +2672,13 @@ export class PgRunRepository {
         WHERE space_id = $1
           AND id = $2
           AND status = 'waiting_for_review'
+          -- The pause is written while its executor still owns the Run. A job
+          -- queued before that lock goes would find it, end as a duplicate,
+          -- and leave the Run queued with nothing left to run it.
+          AND NOT EXISTS (
+            SELECT 1 FROM run_execution_locks execution_lock
+             WHERE execution_lock.run_id = runs.id
+          )
         RETURNING id, space_id, agent_id, agent_version_id, run_type, status, mode,
                   prompt, instruction, project_folder_id, session_id, project_id,
                   parent_run_id, root_run_id, run_group_id, delegation_id,
@@ -2674,6 +2752,11 @@ export class PgRunRepository {
           WHERE attempt.run_id = updated.id
             AND attempt.space_id = updated.space_id
             AND attempt.status = 'waiting_for_review'
+            AND attempt.attempt_number = (
+              SELECT max(candidate.attempt_number)
+                FROM run_attempts candidate
+               WHERE candidate.space_id = updated.space_id AND candidate.run_id = updated.id
+            )
        )
        SELECT * FROM updated`,
       [
@@ -2712,6 +2795,16 @@ export class PgRunRepository {
                     error_message, error_json, started_at, ended_at,
                     owner_user_id, visibility, access_level,
                     contract_snapshot_json, workflow_version_id
+       ), released_attempt AS (
+         -- The review is over; the held attempt returns to the terminal
+         -- outcome it had, so only the new attempt is open on this Run.
+         UPDATE run_attempts a
+            SET status = COALESCE(a.error_json->>'held_from_status', 'failed'),
+                updated_at = $4::timestamptz
+           FROM updated u
+          WHERE a.space_id = u.space_id
+            AND a.run_id = u.id
+            AND a.status = 'waiting_for_review'
        ), inserted_attempt AS (
          INSERT INTO run_attempts (
            id, space_id, run_id, attempt_number, status,
@@ -2778,11 +2871,21 @@ export class PgRunRepository {
   }
 
   async appendRunEvent(input: RunEventInput): Promise<RunEventRecord> {
+    // Two writers append to one Run at once — the runtime event sink and a
+    // tool call's own HTTP request — and MAX()+1 computed on two connections
+    // collides on `uq_run_events_space_run_event_index`, dropping one event.
+    // Serialize the index allocation per Run; inside a caller's transaction
+    // the lock is simply held to its commit.
+    return withQueryableTransaction(this.db, async (db) => {
+    await db.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended('run_events:' || $1::text, 0))`,
+      [input.run_id],
+    );
     // $1/$2 appear both as inserted values (deduced as the varchar column
     // type) and in the scalar subquery comparison (deduced as text via the
     // text equality operator). Without the explicit ::varchar casts PostgreSQL
     // fails with "inconsistent types deduced for parameter".
-    const result = await this.db.query<RunEventRecord>(
+    const result = await db.query<RunEventRecord>(
       `INSERT INTO run_events (
           id, space_id, run_id, attempt_number, event_index, step_id, actor_id, event_type,
           status, summary, error_code, error_message, project_folder_id,
@@ -2825,7 +2928,7 @@ export class PgRunRepository {
     const row = result.rows[0];
     if (row) return row;
     if (input.event_type === "chat_completed") {
-      const existing = await this.db.query<RunEventRecord>(
+      const existing = await db.query<RunEventRecord>(
         `SELECT id, space_id, run_id, event_index, event_type, status
            FROM run_events
           WHERE space_id = $1
@@ -2837,6 +2940,7 @@ export class PgRunRepository {
       if (existing.rows[0]) return existing.rows[0];
     }
     throw new Error("RunEvent append returned no row");
+    });
   }
 
   async createRunStep(input: RunStepInput): Promise<RunStepRecord> {

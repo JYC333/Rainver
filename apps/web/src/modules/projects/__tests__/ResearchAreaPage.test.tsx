@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -125,6 +125,33 @@ describe('ResearchAreaPage', () => {
     await userEvent.click(screen.getByRole('tab', { name: /Reports/ }))
     await userEvent.click(screen.getByRole('button', { name: /Generate new snapshot/ }))
     await waitFor(() => expect(projectResearchApi.generateReportSnapshot).toHaveBeenCalledWith('project-1'))
+  })
+
+  it('keeps both checklist items done when two toggles overlap', async () => {
+    const api = await import('../../../api/client')
+    const second = { ...area.checklist[0]!, id: 'task-2', text: 'Compare methods', sort_order: 1 }
+    const twoItems = { ...area, checklist: [area.checklist[0]!, second] } as ResearchArea
+    vi.mocked(api.projectResearchApi.area).mockResolvedValue(twoItems)
+    vi.mocked(api.projectResearchApi.initializeArea).mockResolvedValue(twoItems)
+    const answers: Array<() => void> = []
+    vi.mocked(projectResearchApi.updateChecklistItem).mockImplementation((_projectId, itemId, body) => new Promise(resolve => {
+      const item = twoItems.checklist.find(entry => entry.id === itemId)!
+      answers.push(() => resolve({ ...item, ...body }))
+    }))
+    renderPage()
+
+    await userEvent.click(await screen.findByRole('tab', { name: 'Checklist' }))
+    await screen.findByText('Check evidence')
+    const done = () => screen.getByRole('region', { name: 'Done checklist items' })
+    fireEvent.click(screen.getByRole('button', { name: 'Mark Check evidence done' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Mark Compare methods done' }))
+    await waitFor(() => expect(answers).toHaveLength(2))
+    answers.forEach(answer => answer())
+
+    // Each answer is applied to the list as it is then, not to the list each
+    // request started from: the first one stays done when the second lands.
+    await waitFor(() => expect(within(done()).getByText('Compare methods')).toBeInTheDocument())
+    expect(within(done()).getByText('Check evidence')).toBeInTheDocument()
   })
 
   it('shows the uninitialized empty state instead of loading forever for readers', async () => {

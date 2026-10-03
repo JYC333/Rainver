@@ -166,6 +166,15 @@ describe("Inquiry unified read plane (real Postgres)", () => {
     expect(combinedIds.has(hypothesis.id as string)).toBe(true);
   });
 
+  it("reports the requested node limit on an Inquiry graph, even with no Threads", async () => {
+    if (!db.available) return;
+    const graph = await new InquiryGraphService(db.pool).getInquiryGraph(identity(), PROJECT, { limit: 50 });
+    expect(graph.nodes).toHaveLength(0);
+    // `view.limit` is the request's bound, as every other producer reports it,
+    // and the protocol requires it positive.
+    expect(graph.view.limit).toBe(50);
+  });
+
   it("applies the requested node limit across the whole Combined graph", async () => {
     if (!db.available) return;
     const threadSvc = new InquiryThreadService(db.pool);

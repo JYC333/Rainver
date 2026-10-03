@@ -185,6 +185,35 @@ describe('HostsPanel', () => {
     }
   })
 
+  it('keeps the newer hosts list when an earlier poll answers later', async () => {
+    vi.useFakeTimers()
+    try {
+      const renamed = { ...REMOTE_HOST, name: 'Laptop renamed' }
+      let releaseSlow!: (value: { items: Array<typeof REMOTE_HOST | typeof SERVER_HOST> }) => void
+      vi.mocked(hostsApi.list)
+        .mockResolvedValueOnce({ items: [SERVER_HOST, REMOTE_HOST] })
+        .mockImplementationOnce(() => new Promise(resolve => { releaseSlow = resolve }) as never)
+        .mockResolvedValue({ items: [SERVER_HOST, renamed] })
+      render(<HostsPanel />)
+      await act(async () => { await Promise.resolve() })
+      expect(screen.getAllByText('Laptop').length).toBeGreaterThan(0)
+
+      // The slow poll starts, and the one after it answers first with the rename.
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+      expect(screen.getAllByText('Laptop renamed').length).toBeGreaterThan(0)
+
+      await act(async () => {
+        releaseSlow({ items: [SERVER_HOST, REMOTE_HOST] })
+        await Promise.resolve()
+      })
+      expect(screen.getAllByText('Laptop renamed').length).toBeGreaterThan(0)
+      expect(screen.queryByText('Laptop')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not stack provisioning reads while one is still in flight', async () => {
     // The 3s tick is shorter than a slow provisioning read. Without a guard
     // each tick opened another request and merged whatever came back last, so

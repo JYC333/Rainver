@@ -6,6 +6,7 @@ import { HttpError, withDbTransaction } from "../routeUtils/common.js";
 import {
   assertProjectReadable,
   assertProjectWriter,
+  canReadProject,
   canWriteProject,
 } from "../projects/access.js";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
@@ -159,7 +160,7 @@ export class RoomRosterService {
         include_workspace: restoreTarget.includeWorkspace,
       },
     );
-    return { ...result, managed_workspace_restore: restored };
+    return { ...result, managed_workspace_restore: { agent_id: restoreTarget.agentId, ...restored } };
   }
 
   async addPresetAgent(identity: RoomIdentity, roomId: string, input: {
@@ -224,16 +225,29 @@ export class RoomRosterService {
         toolPermissionsJson: {},
       };
       const agent = await agentRepository.createInTransaction(client, agentInput);
+      // Each copy keeps the Host it runs on, admitted for the person adding
+      // the preset; one they cannot run there is left out, and the new
+      // Agent keeps its own Server Runtime default.
       for (const profile of runtimeProfiles) {
-        await agentRepository.ensureRuntimeProfileInTransaction(client, identity.spaceId, agent.id, {
-          name: profile.name,
-          runtimeKey: profile.runtime_key,
-          modelProviderId: profile.model_provider_id,
-          modelName: profile.model_name,
-          runtimeConfigJson: profile.runtime_config_json,
-          runtimePolicyJson: profile.runtime_policy_json,
-          isDefault: profile.is_default,
-        });
+        try {
+          await agentRepository.ensureRuntimeProfileInTransaction(client, identity.spaceId, agent.id, {
+            name: profile.name,
+            runtimeKey: profile.runtime_key,
+            backendMode: profile.backend_mode,
+            modelProviderId: profile.model_provider_id,
+            modelName: profile.model_name,
+            executionHostId: profile.execution_host_id,
+            workspaceLocationId: profile.workspace_location_id,
+            workspaceMode: profile.workspace_mode,
+            runtimeInstallation: profile.runtime_installation,
+            runtimeConfigJson: profile.runtime_config_json,
+            runtimePolicyJson: profile.runtime_policy_json,
+            isDefault: profile.is_default,
+            actorUserId: identity.userId,
+          });
+        } catch (error) {
+          if (!(error instanceof HttpError) || ![403, 404, 422].includes(error.statusCode)) throw error;
+        }
       }
       if (input.execution) {
         await agentRepository.ensureRuntimeProfileInTransaction(client, identity.spaceId, agent.id, {
@@ -338,14 +352,14 @@ export class RoomRosterService {
           include_workspace: archiveTarget.includeWorkspace,
         },
       );
-      archived.push(response);
+      archived.push({ agent_id: archiveTarget.agentId, ...response });
       if (response.ok) {
         await new PgHostThreadRepository(this.pool)
           .acknowledgeManagedWorkspaceArchive(archiveTarget.threadId)
           .catch(() => undefined);
       }
     }
-    return { ...result, managed_workspace_archive: archived.length === 1 ? archived[0] : archived };
+    return { ...result, managed_workspace_archive: archived };
   }
 
   async resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string) {
@@ -493,11 +507,16 @@ export class RoomRosterService {
   }
 
   async listInvitations(identity: RoomIdentity, roomId: string, input: { limit: number; offset: number }) {
+    const notFound = () => new HttpError(404, "Room not found in this space");
     const room = await new PgRoomRepository(this.pool).getRoomById(identity.spaceId, roomId);
-    if (!room || room.status !== "active") throw new HttpError(404, "Room not found in this space");
+    if (!room || room.status !== "active") throw notFound();
     return withDbTransaction(this.pool, async (client) => {
       await assertActiveSpaceUser(client, identity.spaceId, identity.userId);
-      await assertProjectReadable(client, identity.spaceId, room.project_id, identity.userId);
+      // Not getVisibleRoom: an invitee or a private Agent's approval owner reads
+      // their own invitation before they are on the roster. Everyone else who
+      // is not a member gets the same 404 as for a Room that does not exist
+      // (ADR 0018 decision 3) — an empty page would say the Room is there.
+      if (!(await canReadProject(client, identity.spaceId, room.project_id, identity.userId))) throw notFound();
       const repository = new PgRoomRosterRepository(client);
       const page = await repository.listInvitations({
         space_id: identity.spaceId,
@@ -506,6 +525,12 @@ export class RoomRosterService {
         limit: input.limit,
         offset: input.offset,
       });
+      if (
+        page.total === 0
+        && !(await new PgRoomRepository(client).getVisibleRoom(identity.spaceId, identity.userId, roomId, false))
+      ) {
+        throw notFound();
+      }
       const items = [];
       for (const invitation of page.items) {
         items.push(await this.invitationResponse(client, identity, invitation));
@@ -737,6 +762,12 @@ export class RoomRosterService {
         && (authority.owner_user_id === identity.userId || isSpaceOwnerOrAdmin(authority.role)),
       );
       if (!authority || !canClaim) {
+        // A caller who cannot see the Room learns nothing from a 403 that a
+        // 404 would not say about a Room that does not exist (ADR 0018
+        // decision 3); only a member who can already see it is told why.
+        if (!(await rooms.getVisibleRoom(identity.spaceId, identity.userId, roomId, false))) {
+          throw new HttpError(404, "Room not found in this space");
+        }
         throw new HttpError(403, "Only the Project owner or Space owner/admin may claim a suspended Room");
       }
       const currentOwnerId = await this.currentOwner(client, room.id);
@@ -881,11 +912,22 @@ export class RoomRosterService {
     try {
       await withDbTransaction(this.pool, async (client) => {
         const roster = new PgRoomRosterRepository(client);
+        // The same order as every other invitation mutation — Room, then
+        // invitation, then its approvals — so a concurrent decision or
+        // re-invitation holding the Room and invitation locks never waits on
+        // an approval row this transaction holds while it waits on them.
+        const located = await roster.getInvitation({ space_id: identity.spaceId, invitation_id: invitationId });
+        if (!located) return;
+        await new PgRoomRepository(client).getRoomById(identity.spaceId, located.room_id, true);
+        const invitation = await roster.getInvitation({ space_id: identity.spaceId, invitation_id: invitationId, lock: true });
+        // Decided or expired meanwhile: that outcome stands.
+        if (invitation?.status !== "pending") return;
         await roster.invalidateApprovals(identity.spaceId, invitationId);
         await roster.updateInvitationStatus({
           space_id: identity.spaceId,
           invitation_id: invitationId,
           status: "invalidated",
+          only_from: "pending",
         });
       });
     } catch {
@@ -939,32 +981,19 @@ export class RoomRosterService {
     return result.rows[0]?.user_id ?? null;
   }
 
-  private async presetRuntimeProfiles(client: PoolClient, spaceId: string, roomId: string): Promise<Array<{
-    name: string;
-    runtime_key: string;
-    model_provider_id: string | null;
-    model_name: string | null;
-    runtime_config_json: Record<string, unknown>;
-    runtime_policy_json: Record<string, unknown>;
-    is_default: boolean;
-  }>> {
-    const result = await client.query<{
-      name: string;
-      runtime_key: string;
-      model_provider_id: string | null;
-      model_name: string | null;
-      runtime_config_json: Record<string, unknown>;
-      runtime_policy_json: Record<string, unknown>;
-      is_default: boolean;
-    }>(
-      `SELECT profile.name, profile.runtime_key, profile.model_provider_id,
-              profile.model_name, profile.runtime_config_json,
+  private async presetRuntimeProfiles(client: PoolClient, spaceId: string, roomId: string): Promise<PresetRuntimeProfile[]> {
+    const result = await client.query<PresetRuntimeProfile>(
+      `SELECT profile.name, profile.runtime_key, profile.backend_mode, profile.model_provider_id,
+              profile.model_name, profile.execution_host_id, profile.workspace_location_id,
+              profile.workspace_mode, profile.runtime_installation, profile.runtime_config_json,
               profile.runtime_policy_json, profile.is_default
          FROM room_agent_members member
          JOIN agent_runtime_profiles profile
            ON profile.space_id = member.space_id
           AND profile.agent_id = member.agent_id
           AND profile.enabled = true
+          -- A profile without a Host runs nowhere; it is not worth copying.
+          AND profile.execution_host_id IS NOT NULL
         WHERE member.space_id = $1
           AND member.room_id = $2
           AND member.role = 'manager'
@@ -1103,4 +1132,19 @@ async function assertActiveSpaceUser(db: PoolClient, spaceId: string, userId: st
     [spaceId, userId],
   );
   if (!result.rows[0]) throw new HttpError(404, "User is not an active member of this Space");
+}
+
+interface PresetRuntimeProfile {
+  name: string;
+  runtime_key: string;
+  backend_mode: "runtime_native" | "model_provider";
+  model_provider_id: string | null;
+  model_name: string | null;
+  execution_host_id: string | null;
+  workspace_location_id: string | null;
+  workspace_mode: "location" | "managed" | null;
+  runtime_installation: string | null;
+  runtime_config_json: Record<string, unknown>;
+  runtime_policy_json: Record<string, unknown>;
+  is_default: boolean;
 }

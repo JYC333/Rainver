@@ -28,7 +28,7 @@ export interface RetrievalEmbedder {
   ): Promise<{ vectors: number[][]; model: string }>;
 }
 
-export interface BackfillResult {
+interface BackfillResult {
   scanned: number;
   embedded: number;
   skipped: number;
@@ -45,7 +45,7 @@ export interface RetrievalEmbeddingAuditEvent {
   skipped: number;
 }
 
-export type RetrievalEmbeddingAudit = (event: RetrievalEmbeddingAuditEvent) => Promise<void>;
+type RetrievalEmbeddingAudit = (event: RetrievalEmbeddingAuditEvent) => Promise<void>;
 
 /**
  * Async embedding backfill over `retrieval_chunks`. Selects chunks with no
@@ -175,10 +175,13 @@ export class RetrievalEmbeddingBackfillService {
     const sourceIds = uniqueSourceConnectionIds(pending);
     if (sourceIds.length === 0) return base;
     const snapshots = await loadSourcePolicySnapshots(this.db, spaceId, sourceIds);
+    // No `payloadSourceConnectionIds`: this policy filters chunk by chunk, so
+    // each chunk is judged on its own sources. Naming the whole claimed batch
+    // as every chunk's payload would let one restricted source withhold all of
+    // them.
     return {
       ...base,
       sourcePolicies: sourceEgressPoliciesForSnapshots(snapshots),
-      payloadSourceConnectionIds: sourceIds,
     };
   }
 

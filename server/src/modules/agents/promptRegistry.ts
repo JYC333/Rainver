@@ -2,8 +2,6 @@ import type { PromptResolveResult } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { resolvePrompt } from "../prompts/resolver.js";
 
-export const AGENT_DEFAULT_ASSISTANT_SYSTEM_PROMPT_KEY = "agent.default_assistant.system";
-
 export function agentTemplateSystemPromptKey(templateKey: string): string {
   return `agent_template.${templateKey}.system`;
 }

@@ -374,11 +374,6 @@ integration gate.
   paths write it, and the remote one also mirrors it into the Run's
   `metadata_json`, but a sandboxed Run's Skill is only recoverable by direct
   SQL — which is the use the column was added for.
-- [ ] A paired daemon predating the `work_surface` launch-frame field ignores
-  it silently while the server has already issued the identity and told the
-  agent to use `$RAINVER_CLI`. `hosts.daemon_version` is recorded and never
-  read; either read it, or have the daemon declare the capability in its
-  `hello`.
 - [x] The work-surface wire shape is declared twice —
   `runs/runWorkSurface.ts`'s `RunWorkSurfaceFrame` and the daemon's
   `WorkSurfaceFrame` — with nothing pinning them together. **Resolved

@@ -168,6 +168,7 @@ export async function rollbackNote(db: Queryable, input: {
   noteId: string;
   toVersion: number;
   userId: string;
+  expectVersion?: number | null;
 }): Promise<NoteContentRow> {
   const revision = await db.query<{ content_json: Record<string, unknown>; refs_json: unknown }>(
     `SELECT content_json, refs_json FROM note_revisions WHERE note_id=$1 AND space_id=$2 AND version=$3`,
@@ -177,12 +178,18 @@ export async function rollbackNote(db: Queryable, input: {
   const result = await writeNote(db, {
     spaceId: input.spaceId,
     noteId: input.noteId,
+    expectVersion: input.expectVersion,
     content: { kind: "doc", doc: revision.rows[0].content_json },
     source: "rollback",
     userId: input.userId,
     refs: refStrings(revision.rows[0].refs_json),
     diff: { rolled_back_to_version: input.toVersion },
   });
+  // Undoing one edit restores the whole revision before it, so it is refused
+  // once anything else has been written on top: that later work would vanish.
+  if (result.outcome === "version_conflict") {
+    throw new HttpError(409, "The note changed after this edit; restore an earlier version from its history instead");
+  }
   if (result.outcome !== "written") throw new HttpError(409, "Note changed while rolling back; retry");
   return result.note;
 }

@@ -114,7 +114,9 @@ export function FloatingQuickCapture() {
         ...(destination === 'personal_inbox' ? {} : { project_id: projectId ?? undefined }),
         ...(destination === 'object_marginalia' && target ? { target_id: target.objectId } : {}),
       })
-      setText('')
+      // Only what was sent is cleared. The box keeps focus for the next
+      // thought, so text typed while the save ran is kept, not thrown away.
+      setText(current => current === text ? '' : current.startsWith(text) ? current.slice(text.length).trimStart() : current)
       reset()
       // A capture that landed in a note may have landed in a note the user is
       // looking at. Tell the surfaces once, here, instead of making them watch.

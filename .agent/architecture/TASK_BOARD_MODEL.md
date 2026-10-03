@@ -65,7 +65,7 @@ Boards and tasks are scoped by **space** (and optionally **Project Folder**). As
 - **Canonical:** `task_runs` (`TaskRun` ORM) — every product association between a `Task` and a `Run` that the task board should list or join on **must** go through this table. `GET /api/v1/tasks/{id}/runs` is implemented by querying `TaskRun`, then loading `Run` rows by id.
 - There is **no `runs.task_id` column** in the canonical schema. `task_runs` is the only Task ↔ Run linkage; do not reintroduce a denormalized shortcut column on `runs`.
 
-**Task is not Job.** Jobs (`jobs` table) are infrastructure queue rows with their own `attempts` counter; that counter is queue plumbing and is unrelated to `run_attempts`. The Supervisor enqueues retry jobs with `max_attempts: 1` so the queue layer never adds a second retry loop on top of Run attempts.
+**Task is not Job.** Jobs (`jobs` table) are infrastructure queue rows with their own `attempts` counter; that counter is queue plumbing and is unrelated to `run_attempts`. The Supervisor enqueues each retry job with `max_attempts: 3` (`runs/supervisor.ts`); that queue budget covers delivery of one job and is not counted as a Run attempt.
 
 ## Execution boundary
 

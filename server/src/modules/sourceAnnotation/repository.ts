@@ -115,8 +115,9 @@ export class PgSourceAnnotationRepository {
   async enqueueSubscriptionHistory(spaceId: string, userId: string, limit: number): Promise<number> {
     const now = new Date().toISOString();
     const result = await this.db.query(
-      `WITH candidates AS (
-         SELECT DISTINCT ON (i.id) i.id AS source_item_id, channel.id AS source_channel_id
+      `WITH per_item AS (
+         SELECT DISTINCT ON (i.id) i.id AS source_item_id, channel.id AS source_channel_id,
+                COALESCE(i.occurred_at,i.first_seen_at) AS recency
            FROM source_channel_user_subscriptions subscription
            JOIN source_channels channel
              ON channel.id=subscription.source_channel_id AND channel.space_id=subscription.space_id
@@ -130,7 +131,14 @@ export class PgSourceAnnotationRepository {
               SELECT 1 FROM source_item_annotations annotation
                WHERE annotation.space_id=i.space_id AND annotation.source_item_id=i.id
             )
-          ORDER BY i.id, COALESCE(i.occurred_at,i.first_seen_at) DESC
+          ORDER BY i.id, channel.id
+       ),
+       -- One channel per item first, then the most recent items: DISTINCT ON
+       -- forces the item id to lead its ORDER BY, so a LIMIT there picks by id.
+       candidates AS (
+         SELECT source_item_id, source_channel_id
+           FROM per_item
+          ORDER BY recency DESC NULLS LAST, source_item_id
           LIMIT $3
        )
        INSERT INTO source_item_annotations

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { emitDomainChangeEvent } from "../knowledgePromotion/outbox.js";
 
-export type ThreadChangeSignificance = "trivial" | "material";
+type ThreadChangeSignificance = "trivial" | "material";
 
 /**
  * Immutable full-content snapshot for one Thread version, written from

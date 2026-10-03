@@ -82,7 +82,7 @@ export function assertPersonStartedRunRequest(body: Record<string, unknown>): vo
  * A caller that genuinely wants a read-only run still asks for one; this is
  * the floor, not a ceiling.
  */
-export function requiredSandboxLevelForRun(
+function requiredSandboxLevelForRun(
   runtimeKey: string | null | undefined,
   projectFolderId: string | null | undefined,
 ): string {

@@ -34,7 +34,7 @@ export interface ProposalContinuation {
   context?: Record<string, unknown>;
 }
 
-export type ProposalContinuationHandler = (input: {
+type ProposalContinuationHandler = (input: {
   db: Queryable;
   proposal: ContinuationProposal;
 }) => Promise<ProposalContinuation> | ProposalContinuation;
@@ -47,7 +47,7 @@ export type ProposalContinuationHandler = (input: {
  * operation id) — the registry itself does not dedupe; the Room dispatch
  * layer does, the same way it already dedupes Proposal continuations.
  */
-export interface DomainCompletionEvent {
+interface DomainCompletionEvent {
   kind: string;
   key: string;
   space_id: string;
@@ -55,7 +55,7 @@ export interface DomainCompletionEvent {
   payload: Record<string, unknown>;
 }
 
-export type EventContinuationHandler = (input: {
+type EventContinuationHandler = (input: {
   db: Queryable;
   event: DomainCompletionEvent;
 }) => Promise<ProposalContinuation> | ProposalContinuation;

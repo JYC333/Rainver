@@ -17,6 +17,7 @@ import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 import { resolveOversightLevel } from "../access/oversightResolver.js";
 import { memoryAgentScopeReadSql, memorySensitivityReadSql } from "./memorySensitivitySql.js";
 import { ContentAccessAuditService } from "../contentAccess/audit.js";
+import { escapeLikePattern } from "../routeUtils/common.js";
 
 export interface QueryResult<Row> {
   rows: Row[];
@@ -30,7 +31,7 @@ export interface Queryable {
   ): Promise<QueryResult<Row>>;
 }
 
-export interface MemoryListFilters {
+interface MemoryListFilters {
   scope?: string | null;
   namespace?: string | null;
   memoryType?: string | null;
@@ -54,7 +55,7 @@ export interface MemoryListFilters {
   offset: number;
 }
 
-export interface MemorySearchFilters {
+interface MemorySearchFilters {
   query: string;
   scope?: string | null;
   namespace?: string | null;
@@ -270,9 +271,9 @@ export class PgMemoryReadRepository {
       `space_id = $1`,
       `status = 'active'`,
       `deleted_at IS NULL`,
-      `(title ILIKE $2 OR content ILIKE $2)`,
+      `(title ILIKE $2 ESCAPE '\\' OR content ILIKE $2 ESCAPE '\\')`,
     ];
-    const params: unknown[] = [spaceId, `%${filters.query}%`];
+    const params: unknown[] = [spaceId, `%${escapeLikePattern(filters.query)}%`];
     if (filters.scope) {
       params.push(filters.scope);
       where.push(`scope_type = $${params.length}`);
@@ -440,6 +441,9 @@ export class PgMemoryReadRepository {
          ) prov ON true
         WHERE me.space_id = $1 AND me.deleted_at IS NULL
           AND (me.id = $2 OR me.root_memory_id = $2)
+          AND ${contentReadSql("memory", "me", "$3")}
+          AND ${memorySensitivityReadSql("me", "$3")}
+          AND ${memoryAgentScopeReadSql("me", "$3")}
         ORDER BY me.created_at ASC`,
       [spaceId, rootId, userId],
     );

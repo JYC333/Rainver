@@ -171,6 +171,7 @@ export default function SourceChannelDetailPage() {
         categoryGroups={categoryGroups}
         sourceName={source.source_name}
         providerKey={source.provider.key ?? undefined}
+        sourceConnectionId={sourceId}
         onOpenChange={setAddMonitorOpen}
         onSaved={load}
       />

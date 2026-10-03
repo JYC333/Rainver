@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
+import { ProjectResearchPipelineService } from "../src/modules/projectResearch/pipeline/researchPipelineService.js";
 import type { Queryable, SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { reconcileProjectResearch } from "../src/modules/scheduler/backgroundServices.js";
 import { isRetryableSourcePostProcessingFailure, sourcePostProcessingFailureCode, SourcePostProcessingRecoveryService } from "../src/modules/sources/postProcessing/recoveryService.js";
 import { emitSourcePostProcessingDeepAnalysisEvent } from "../src/modules/sources/postProcessing/eventEmitter.js";
 import { normalizeActions, normalizeInputConfig, SOURCE_POST_PROCESSING_EVENT_JOB_TYPE, type SourcePostProcessingRunOut } from "../src/modules/sources/postProcessing/repository.js";
-import { promptBudgetCharsFor, sourcePostProcessingExecutionRequest, validateSourcePostProcessingInputContextBinding } from "../src/modules/sources/postProcessing/service.js";
+import { promptBudgetCharsFor, SourcePostProcessingService, sourcePostProcessingExecutionRequest, validateSourcePostProcessingInputContextBinding } from "../src/modules/sources/postProcessing/service.js";
+import { listSourceRuns } from "../src/modules/sources/sourceRunReadModel.js";
 import { seedAgentWithVersion, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { seedArxivSourceChain } from "./support/researchSeeds.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
@@ -285,6 +287,104 @@ describe("sourcePostProcessingRecoveryDb", () => {
       });
     });
 
+    it("ends an incremental Operation waiting for its scan when the run's items all fall outside the publication window", async () => {
+      if (!db.available) return;
+      const now = new Date().toISOString();
+      const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
+      const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, { kind: "question", statement: "Research" });
+      await insertResearchWorkflowFixture(db.pool, {
+        id: WORKFLOW, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+        currentStage: "monitoring", primaryThreadId: String(thread.id), state: {
+          channel_ids: [CHANNEL],
+          source_post_processing_rule_ids: [RULE],
+          monitoring: { active: true, field: "submittedDate", watermark_after: now },
+          research_question: "Research",
+          research_question_version: thread.version,
+          thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
+          report_depth: "full",
+          question_refine_skipped: false,
+          agent_id: AGENT,
+          runtime_profile_id: "profile-1",
+        }, now,
+      });
+      // "Run the update now" opened the Operation ahead of its scan.
+      await db.pool.query(
+        `INSERT INTO project_operations (
+           id,space_id,project_id,kind,title,status,created_by_user_id,progress_json,created_at,updated_at
+         ) VALUES ($1,$2,$3,'research','Incremental update','active',$4,$5::jsonb,$6,$6)`,
+        [OPERATION, SPACE, PROJECT, OWNER, JSON.stringify({
+          schema_version: "project_research_operation.v1", run_kind: "incremental", workflow_id: WORKFLOW,
+          agent_id: AGENT, research_question: "Research", research_question_version: thread.version,
+          channel_ids: [CHANNEL], source_item_ids: [], current_stage: "screening", stage_state: "running",
+          awaiting_source_scan: true, watermark: { before: null, after: now, overlap_hours: 48 },
+        }), now],
+      );
+      // The scan brought one item, but it was published long before the window.
+      await db.pool.query(`UPDATE source_items SET occurred_at = now() - interval '10 days' WHERE id = $1`, [ITEM_3]);
+      await db.pool.query(
+        `INSERT INTO source_post_processing_runs (
+           id, space_id, source_channel_id, agent_id, project_id, rule_id, trigger_type, status, input_item_ids_json, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,'manual','succeeded',$7::jsonb,$8)`,
+        [randomUUID(), SPACE, CHANNEL, AGENT, PROJECT, RULE, JSON.stringify([ITEM_3]), now],
+      );
+
+      await reconcileProjectResearch(db.pool, CONFIG);
+
+      // Nothing to screen, so the Operation ends instead of holding the
+      // Project's one active research slot until some later empty scan.
+      const operation = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(
+        `SELECT status, progress_json FROM project_operations WHERE id=$1`, [OPERATION],
+      );
+      expect(operation.rows[0]?.status).toBe("completed");
+      expect(operation.rows[0]?.progress_json).toMatchObject({ awaiting_source_scan: false, current_stage: "complete", stage_state: "skipped" });
+    });
+
+    it("reconciles a run into the workflow watching its channel, not only the newest one", async () => {
+      if (!db.available) return;
+      const now = new Date().toISOString();
+      const identity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
+      const workflowFor = async (id: string, statement: string, channelIds: string[]) => {
+        const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, { kind: "question", statement });
+        await insertResearchWorkflowFixture(db.pool, {
+          id, spaceId: SPACE, projectId: PROJECT, startedByUserId: OWNER,
+          currentStage: "monitoring", primaryThreadId: String(thread.id), state: {
+            channel_ids: channelIds,
+            source_post_processing_rule_ids: [RULE],
+            monitoring: { active: true, field: "submittedDate" },
+            research_question: statement,
+            research_question_version: thread.version,
+            thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
+            report_depth: "full",
+            question_refine_skipped: false,
+            agent_id: AGENT,
+            runtime_profile_id: "profile-1",
+          }, now,
+        });
+      };
+      await workflowFor(WORKFLOW, "Research", [CHANNEL]);
+      const newer = randomUUID();
+      await workflowFor(newer, "Another question", ["another-channel"]);
+      await db.pool.query(`UPDATE space_objects SET updated_at = now() + interval '1 hour' WHERE id = $1`, [newer]);
+      const runId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO source_post_processing_runs (
+           id, space_id, source_channel_id, agent_id, project_id, rule_id, trigger_type,
+           status, input_item_ids_json, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,'manual','succeeded',$7::jsonb,$8)`,
+        [runId, SPACE, CHANNEL, AGENT, PROJECT, RULE, JSON.stringify([ITEM_3]), now],
+      );
+
+      await reconcileProjectResearch(db.pool, CONFIG);
+
+      const operations = await db.pool.query<{ progress_json: { workflow_id?: string; source_item_ids?: string[] } }>(
+        `SELECT progress_json FROM project_operations WHERE project_id=$1 AND kind='research'`,
+        [PROJECT],
+      );
+      expect(operations.rows.map((row) => row.progress_json)).toEqual([
+        expect.objectContaining({ workflow_id: WORKFLOW, source_item_ids: [ITEM_3] }),
+      ]);
+    });
+
     it("marks recovery reconciled without mutating an archived Project", async () => {
       if (!db.available) return;
       const now = new Date().toISOString();
@@ -308,6 +408,42 @@ describe("sourcePostProcessingRecoveryDb", () => {
       expect((await db.pool.query<{ count: string }>(
         `SELECT count(*)::text AS count FROM project_corpus_items WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT],
       )).rows[0]?.count).toBe("0");
+    });
+
+    it("reconciles the rest of the backlog past a run that keeps failing", async () => {
+      if (!db.available) return;
+      const insertRun = async (createdAt: string) => {
+        const runId = randomUUID();
+        await db.pool.query(
+          `INSERT INTO source_post_processing_runs (
+             id,space_id,source_channel_id,agent_id,project_id,rule_id,trigger_type,status,input_item_ids_json,created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,'manual','succeeded',$7::jsonb,$8)`,
+          [runId, SPACE, CHANNEL, AGENT, PROJECT, RULE, JSON.stringify([ITEM_3]), createdAt],
+        );
+        return runId;
+      };
+      // The oldest run fails on every pass and rolls back its own mark, so it
+      // stays first in line; the scan must not stop there.
+      const stuck = await insertRun("2026-01-01T00:00:00.000Z");
+      const next = await insertRun("2026-01-02T00:00:00.000Z");
+      const original = ProjectResearchPipelineService.prototype.reconcilePostProcessingRun;
+      const spy = vi.spyOn(ProjectResearchPipelineService.prototype, "reconcilePostProcessingRun")
+        .mockImplementation(async function (this: ProjectResearchPipelineService, spaceId, runId) {
+          if (runId === stuck) throw new Error("stuck run");
+          return original.call(this, spaceId, runId);
+        });
+      try {
+        await expect(reconcileProjectResearch(db.pool, CONFIG)).rejects.toThrow(/stuck run/);
+      } finally {
+        spy.mockRestore();
+      }
+      const reconciled = await db.pool.query<{ id: string; research_reconciled_at: string | null }>(
+        `SELECT id, research_reconciled_at FROM source_post_processing_runs WHERE id = ANY($1::text[])`,
+        [[stuck, next]],
+      );
+      const byId = new Map(reconciled.rows.map((row) => [row.id, row.research_reconciled_at]));
+      expect(byId.get(stuck)).toBeNull();
+      expect(byId.get(next)).not.toBeNull();
     });
   });
 });
@@ -413,5 +549,77 @@ describe("sourcePostProcessingFollowUpDb", () => {
     if (!db.available) return;
     await followUp({});
     expect(await queuedTriggerTypes()).toEqual([]);
+  });
+});
+
+describe("sourcePostProcessingAuthorityDb", () => {
+  const SPACE = "e7e7e7e7-0000-4000-8000-000000000001";
+  const OWNER = "e7e7e7e7-0000-4000-8000-000000000002";
+  const MEMBER = "e7e7e7e7-0000-4000-8000-000000000003";
+  const CONNECTION = "e7e7e7e7-0000-4000-8000-000000000004";
+  const CHANNEL = "e7e7e7e7-0000-4000-8000-000000000005";
+  const MEMBERS_PROJECT = "e7e7e7e7-0000-4000-8000-000000000006";
+  const AGENT = "e7e7e7e7-0000-4000-8000-000000000007";
+  const MEMBERS_AGENT = "e7e7e7e7-0000-4000-8000-000000000008";
+  const db = useTestDatabase(`${import.meta.filename}#sourcePostProcessingAuthorityDb`);
+  const owner = { spaceId: SPACE, userId: OWNER };
+  const member = { spaceId: SPACE, userId: MEMBER };
+  const service = () => new SourcePostProcessingService(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+
+  beforeEach(async () => {
+    if (!db.available) return;
+    await resetTables(db.pool, ["source_post_processing_rules", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "agents", "projects", "space_memberships", "users", "spaces"], { cascade: true });
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Team', 'team', $2, $2)`, [SPACE, now]);
+    // Both plain members: OWNER owns the Source connection, and a Space
+    // owner/admin would be a writer of every Project by role.
+    for (const [userId, role] of [[OWNER, "member"], [MEMBER, "member"]] as const) {
+      await db.pool.query(
+        `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+         VALUES ($1, $1, 'active', $2, $2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+        [userId, now],
+      );
+      await db.pool.query(
+        `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $5, $5)`,
+        [randomUUID(), SPACE, userId, role, now],
+      );
+    }
+    await seedArxivSourceChain(db.pool, { connector: randomUUID(), connection: CONNECTION, channel: CHANNEL, space: SPACE, owner: OWNER, now });
+    await db.pool.query(
+      `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 'Member only', 'active', $4, $4)`,
+      [MEMBERS_PROJECT, SPACE, MEMBER, now],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+    await seedAgentWithVersion(db.pool, { agent: AGENT, version: randomUUID(), space: SPACE, owner: OWNER, now });
+    await seedAgentWithVersion(db.pool, { agent: MEMBERS_AGENT, version: randomUUID(), space: SPACE, owner: MEMBER, now });
+    await db.pool.query(`UPDATE agents SET visibility = 'private' WHERE id = $1`, [MEMBERS_AGENT]);
+  });
+
+  it("keeps another member's private Source channel's rules and runs out of reach", async () => {
+    if (!db.available) return;
+    await expect(service().listRules(member, CHANNEL)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(service().listRuns(member, CHANNEL, 10, 0)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(service().backlog(member, CHANNEL)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(listSourceRuns(db.pool, member, CHANNEL, { limit: 10, offset: 0 })).rejects.toMatchObject({ statusCode: 404 });
+    await expect(service().createRule(member, CHANNEL, { trigger_type: "manual", agent_id: AGENT }))
+      .rejects.toMatchObject({ statusCode: 404 });
+
+    // Shared with the Space: readable, but still not the member's to change.
+    await db.pool.query(`UPDATE source_connections SET visibility = 'space_shared' WHERE id = $1`, [CONNECTION]);
+    await expect(service().listRules(member, CHANNEL)).resolves.toEqual([]);
+    await expect(service().createRule(member, CHANNEL, { trigger_type: "manual", agent_id: AGENT }))
+      .rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it("binds a rule only to a Project and an Agent its author may use", async () => {
+    if (!db.available) return;
+    await expect(service().createRule(owner, CHANNEL, { trigger_type: "manual", agent_id: AGENT, project_id: MEMBERS_PROJECT }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    await expect(service().createRule(owner, CHANNEL, { trigger_type: "manual", agent_id: MEMBERS_AGENT }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    const rules = await db.pool.query(`SELECT id FROM source_post_processing_rules WHERE space_id = $1`, [SPACE]);
+    expect(rules.rows).toEqual([]);
   });
 });

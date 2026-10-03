@@ -28,7 +28,7 @@ import { roomConversationReadAccessSql } from "../access/contentAccessSql.js";
  * query rather than filtering afterwards, so an entry the audience must not
  * have never leaves the database.
  */
-export interface AgentMemoryEntry {
+interface AgentMemoryEntry {
   id: string;
   memory_type: string;
   title: string | null;
@@ -37,7 +37,7 @@ export interface AgentMemoryEntry {
   updated_at: string;
 }
 
-export interface AgentMemoryAudience {
+interface AgentMemoryAudience {
   spaceId: string;
   agentId: string;
   /** The Room this dispatch is speaking in, or null for a direct chat. */

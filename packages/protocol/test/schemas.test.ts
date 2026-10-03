@@ -37,6 +37,24 @@ describe("DTO schema validation", () => {
     expect(parsed.trigger_origin).toBe("autonomous");
   });
 
+  it("accepts a provider_task Run, which has no Agent", () => {
+    const parsed = RunDTOSchema.parse({
+      id: "run-provider-task",
+      space_id: "space-1",
+      agent_id: null,
+      agent_version_id: null,
+      run_role: "execution",
+      status: "queued",
+      run_type: "system",
+      trigger_origin: "system",
+      mode: "live",
+      required_sandbox_level: "none",
+      visibility: "private",
+      created_at: "2026-07-26T12:00:00.000Z",
+    });
+    expect(parsed.agent_id).toBeNull();
+  });
+
   it("parses a representative ActivityDTO (snake_case public API)", () => {
     const parsed = ActivityDTOSchema.parse({
       id: "a1",
@@ -145,6 +163,22 @@ describe("DTO schema validation", () => {
         updated_at: "2026-06-09T12:00:00+00:00",
       }).scope,
     ).toBe("user");
+    expect(
+      MemoryDTOSchema.parse({
+        id: "m2",
+        space_id: "s1",
+        scope: "agent",
+        type: "persona",
+        status: "active",
+        visibility: "private",
+        sensitivity_level: "normal",
+        confidence: 0.9,
+        importance: 0.5,
+        version: 1,
+        created_at: "2026-06-09T12:00:00+00:00",
+        updated_at: "2026-06-09T12:00:00+00:00",
+      }).scope,
+    ).toBe("agent");
 
     expect(
       KnowledgeItemDTOSchema.parse({

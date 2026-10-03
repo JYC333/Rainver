@@ -19,8 +19,8 @@ Work is pulled from [plans/backlog.md](plans/backlog.md) or
 - Runtime adapter specs; host-daemon CLI execution (ADR 0016)
 - Artifact persistence, export, and path safety under `$RAINVER_HOME/storage/artifacts`
 - Task board (`Task`, `Board`, `TaskRun`, `TaskArtifact`, `TaskProposal`)
-- Persisted policy classes including `memory.private_placement` and
-  `run.user_private_scope`
+- Persisted, versioned Space policies (`policies` rows created and superseded
+  through `policy_change` proposals)
 - Explicit server transaction helpers
 - `BackupService` full-system backup; `ops/scripts/system/backup.sh` +
   `restore.sh`; `ops/scripts/db/` DB-only tools

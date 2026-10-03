@@ -26,7 +26,7 @@ interface CalibrationEvidenceRow {
   visibility: string;
 }
 
-export interface RetrievalCalibrationDecisionArtifactContext {
+interface RetrievalCalibrationDecisionArtifactContext {
   spaceId: string;
   ownerUserId: string;
   request: RetrievalCalibrationDecisionRequest;

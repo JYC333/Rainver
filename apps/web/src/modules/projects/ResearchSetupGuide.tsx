@@ -3,9 +3,9 @@ import type { ReactNode } from 'react'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 
-export type ResearchSetupGuideStepId = 'research-question' | 'initial-intake'
+type ResearchSetupGuideStepId = 'research-question' | 'initial-intake'
 
-export interface ResearchSetupGuideStep {
+interface ResearchSetupGuideStep {
   id: ResearchSetupGuideStepId
   title: string
   description: string

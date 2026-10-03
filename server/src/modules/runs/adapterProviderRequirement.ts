@@ -2,9 +2,9 @@ import type { ProviderProxyRoute } from "../providers/proxy/lease.js";
 import { providerVendor } from "../providers/vendors.js";
 import { getRuntimeAdapterSpec, type RuntimeAdapterSpec } from "../runtimeAdapters/specs.js";
 
-export type AdapterProviderApi = NonNullable<RuntimeAdapterSpec["model"]["provider_api"]>;
+type AdapterProviderApi = NonNullable<RuntimeAdapterSpec["model"]["provider_api"]>;
 
-export interface AdapterProviderRequirement {
+interface AdapterProviderRequirement {
   /** The `ModelProvider` field the adapter's binding reads for its upstream. */
   base_url_field: "claude_compatible_base_url" | "openai_compatible_base_url";
   missing_base_url_code: string;

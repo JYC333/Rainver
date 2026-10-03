@@ -16,7 +16,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { resolveRequestId } from "./requestContext.js";
 
-export interface ErrorEnvelope {
+interface ErrorEnvelope {
   error: string;
   message: string;
   request_id?: string;

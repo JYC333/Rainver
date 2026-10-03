@@ -384,6 +384,40 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
     });
   });
 
+  it("shows every member the runtime pinned when the Conversation was initialized", async (ctx) => {
+    if (!db.available || !repository || !db.pool) return ctx.skip();
+    await repository.resolveBinding({
+      space_id: "space-1",
+      user_id: "user-1",
+      session_id: "session-1",
+      agent_id: "agent-1",
+      requested: { runtime_profile_id: "runtime-cli" },
+    });
+    await expect(repository.findBinding("space-1", "user-2", "session-1", "agent-1")).resolves.toBeNull();
+    await db.pool.query(
+      `INSERT INTO host_threads (
+         id, space_id, execution_host_id, workspace_mode, session_id, agent_id,
+         container_kind, runtime_key, runtime_installation, status,
+         created_by_user_id, created_at, updated_at
+       ) VALUES (
+         'thread-shared', 'space-1', 'host-1', 'managed', 'session-1', 'agent-1',
+         'conversation', 'claude_code', 'managed:1.0.0', 'active', 'user-1', now(), now()
+       )`,
+    );
+    await db.pool.query(
+      `INSERT INTO conversation_execution_contexts (
+         id, space_id, session_id, execution_host_id, primary_workspace_mode,
+         state, initialized_at, initialized_by_user_id, created_at, updated_at
+       ) VALUES ('context-shared', 'space-1', 'session-1', 'host-1', 'managed',
+         'initialized', now(), 'user-1', now(), now())`,
+    );
+
+    await expect(repository.findBinding("space-1", "user-2", "session-1", "agent-1")).resolves.toEqual({
+      runtime_profile_id: "runtime-cli",
+      runtime_key: "claude_code",
+    });
+  });
+
   it("records an opaque runtime session and rotates isolated state when context changes", async (ctx) => {
     if (!db.available || !repository || !db.pool) return ctx.skip();
     const runtimeSessions = new PgConversationRuntimeSessionRepository(db.pool);

@@ -27,7 +27,7 @@ const ACCESS_LEVELS = new Set(["full", "summary"]);
 
 export class SpaceObjectWriteError extends Error {}
 
-export interface SpaceObjectInsert {
+interface SpaceObjectInsert {
   id: string;
   spaceId: string;
   objectType: string;
@@ -48,7 +48,7 @@ export interface SpaceObjectInsert {
   deletedAt?: string | null;
 }
 
-export interface SqlFragment {
+interface SqlFragment {
   sql: string;
   params: unknown[];
 }

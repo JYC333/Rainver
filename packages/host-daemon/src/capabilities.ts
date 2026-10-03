@@ -208,7 +208,7 @@ async function runtimeOptions(
 
 /** Asks one copy for its options; the caller decides how (`api.ts`). */
 export type AskRuntimeOptions = (lookup: RuntimeLookup, installation: string) => Promise<RuntimeOptions | null>;
-export type EnsureOwnRuntime = (lookup: RuntimeLookup) => Promise<boolean>;
+type EnsureOwnRuntime = (lookup: RuntimeLookup) => Promise<boolean>;
 
 export async function detectCapabilities(
   askOptions?: AskRuntimeOptions,
@@ -225,8 +225,9 @@ export async function detectCapabilities(
     const found: RuntimeInstallation[] = [];
     if (lookup.runtime) {
       const version = await probeVersion(lookup.runtime);
-      if (version !== null) {
-        if (ensureOwnRuntime && !(await ensureOwnRuntime(lookup))) continue;
+      // A held-back own copy (its packaged adapter is missing) drops only
+      // itself; managed copies launch from their own manifest and stay listed.
+      if (version !== null && (!ensureOwnRuntime || await ensureOwnRuntime(lookup))) {
         runtimes.push(lookup.runtime);
         versions[lookup.runtime] = version;
         const asked = askOptions ? await runtimeOptions(`${lookup.runtime_key}@${OWN_INSTALLATION}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;

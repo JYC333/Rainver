@@ -12,6 +12,7 @@ import type {
   ProposalOut,
   ProposalPage,
 } from "@rainver/protocol";
+import { HttpError } from "../routeUtils/common.js";
 
 interface ProposalServices {
   repository: Pick<PgProposalRepository, "listVisible" | "getVisible">;
@@ -87,10 +88,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     const proposalId = params(request).proposalId ?? "";
-    const confirm = parseConfirmIncompletePatch(request);
-    if ("error" in confirm) return reply.code(422).send({ detail: confirm.error });
     const services = proposalServices(context);
     try {
+      const confirm = parseConfirmIncompletePatch(request);
+      if ("error" in confirm) return reply.code(422).send({ detail: confirm.error });
       const result = await services.applyService.accept(proposalId, identity, {
         confirmIncompletePatch: confirm.value,
       });
@@ -135,9 +136,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const identity = await resolveIdentity(context, request, reply);
       if (!identity) return reply;
       const proposalId = params(request).proposalId ?? "";
-      const body = jsonBody(request);
       const services = proposalServices(context);
       try {
+        const body = jsonBody(request);
         const result = await services.applyService.approveEgressGrantingUser(
           proposalId,
           identity,
@@ -261,7 +262,14 @@ function bodyText(request: FastifyRequest): string {
 function jsonBody(request: FastifyRequest): Record<string, unknown> {
   const text = bodyText(request);
   if (!text) return {};
-  const parsed = JSON.parse(text) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // The gateway hands every body over as a Buffer, so this is where a
+    // truncated body is first parsed; a client's bad input is not a 500.
+    throw new HttpError(422, "Request body must be valid JSON");
+  }
   return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
     ? (parsed as Record<string, unknown>)
     : {};

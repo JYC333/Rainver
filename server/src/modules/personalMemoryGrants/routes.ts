@@ -148,7 +148,10 @@ class GrantRepository {
     const now = new Date().toISOString();
     const readExpiresAt = new Date(Date.now() + clampSeconds(body.read_expires_in_seconds, 3600) * 1000).toISOString();
     const grantId = randomUUID();
-    const inserted = await this.db.query<GrantRow>(
+    await this.expireLapsedGrants(identity.userId);
+    let inserted;
+    try {
+      inserted = await this.db.query<GrantRow>(
       `INSERT INTO personal_memory_grants (
          id, granting_user_id, personal_space_id, target_space_id, target_run_id,
          target_agent_id, grant_scope, access_mode, status, memory_filter_json,
@@ -172,6 +175,12 @@ class GrantRepository {
         now,
       ],
     );
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new HttpError(409, "An active personal memory grant already exists for this run");
+      }
+      throw error;
+    }
     await this.insertEvent(grantId, "created", identity.userId, run.id, {
       target_space_id: targetSpaceId,
       max_items: maxItems(body.memory_filter),
@@ -183,6 +192,7 @@ class GrantRepository {
     identity: SpaceUserIdentity,
     filters: { status: string | null; targetSpaceId: string | null },
   ): Promise<Record<string, unknown>[]> {
+    await this.expireLapsedGrants(identity.userId);
     const params: unknown[] = [identity.userId];
     const clauses = ["granting_user_id = $1"];
     if (filters.status) {
@@ -208,15 +218,19 @@ class GrantRepository {
     if (!current) throw new HttpError(404, "Personal memory grant not found");
     if (!["active", "consuming"].includes(current.status)) return grantToOut(current);
     const now = new Date().toISOString();
+    // The state is re-checked by the write itself: a delivery that moved the
+    // grant to used between the read above and this update is not undone.
     const updated = await this.db.query<GrantRow>(
       `UPDATE personal_memory_grants
           SET status = 'revoked', revoked_at = $3, updated_at = $3
-        WHERE id = $1 AND granting_user_id = $2
+        WHERE id = $1 AND granting_user_id = $2 AND status IN ('active', 'consuming')
         RETURNING ${GRANT_COLUMNS}`,
       [grantId, identity.userId, now],
     );
+    const row = updated.rows[0];
+    if (!row) return grantToOut((await this.getOwned(identity, grantId)) ?? current);
     await this.insertEvent(grantId, "revoked", identity.userId, current.target_run_id, {});
-    return grantToOut(updated.rows[0]!);
+    return grantToOut(row);
   }
 
   async audit(identity: SpaceUserIdentity, grantId: string): Promise<Record<string, unknown>> {
@@ -232,7 +246,23 @@ class GrantRepository {
     return { grant: grantToOut(grant), events: events.rows.map(eventToOut) };
   }
 
+  /**
+   * Nothing moves an active grant to expired when its read window closes,
+   * so lists kept reporting it active and it kept the one active slot the
+   * unique index allows a Run. Settled here, on the owner's own reads and
+   * writes; consumers already require `read_expires_at > now()`.
+   */
+  private async expireLapsedGrants(userId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE personal_memory_grants
+          SET status = 'expired', updated_at = now()
+        WHERE granting_user_id = $1 AND status = 'active' AND read_expires_at <= now()`,
+      [userId],
+    );
+  }
+
   private async getOwned(identity: SpaceUserIdentity, grantId: string): Promise<GrantRow | null> {
+    await this.expireLapsedGrants(identity.userId);
     const result = await this.db.query<GrantRow>(
       `SELECT ${GRANT_COLUMNS}
          FROM personal_memory_grants
@@ -360,4 +390,8 @@ function maxItems(value: unknown): number | null {
   const parsed = typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
   if (!Number.isFinite(parsed)) return null;
   return Math.max(1, Math.min(50, Math.trunc(parsed)));
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: string }).code === "23505";
 }

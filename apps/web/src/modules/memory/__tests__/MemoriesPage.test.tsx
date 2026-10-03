@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
@@ -86,6 +86,21 @@ describe('MemoriesPage, memory an Agent wrote', () => {
     renderPage('/memory?status=archived')
     fireEvent.click(await screen.findByRole('button', { name: 'Restore' }))
     await waitFor(() => { expect(memoryApi.restore).toHaveBeenCalledWith('memory-1') })
+  })
+
+  it('ignores a slower answer for a filter that is no longer selected', async () => {
+    let finishFirst!: (page: Awaited<ReturnType<typeof memoryApi.list>>) => void
+    vi.mocked(memoryApi.list)
+      .mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve }))
+      .mockResolvedValueOnce({ items: [memoryRow({ id: 'memory-2', title: 'Agent note' })], limit: 50, offset: 0, total: 1 })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Written by an Agent' }))
+    expect(await screen.findByText('Agent note')).toBeInTheDocument()
+
+    await act(async () => { finishFirst({ items: [memoryRow({ title: 'Stale note' })], limit: 50, offset: 0, total: 1 }) })
+    expect(screen.queryByText('Stale note')).not.toBeInTheDocument()
+    expect(screen.getByText('Agent note')).toBeInTheDocument()
   })
 
   it('still says a proposal was submitted for someone else\'s entry', async () => {

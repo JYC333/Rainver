@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -82,5 +82,31 @@ describe('RunsPage', () => {
     expect(screen.getByText('provider task')).toBeInTheDocument()
     // An `agent` Run whose Agent really is missing still says so.
     expect(screen.getByText(/Agent unavailable/)).toBeInTheDocument()
+  })
+
+  it('ignores a slower answer for a filter that is no longer selected', async () => {
+    // Unfiltered reads hang until released; the filtered read answers at once.
+    const pendingUnfiltered: Array<(runs: Run[]) => void> = []
+    vi.mocked(runsApi.list).mockImplementation((params?: { status?: string }) => (params?.status === 'failed'
+      ? Promise.resolve([run({ id: 'run-failed', status: 'failed', agent_id: null, error_message: 'the filtered answer' })])
+      : new Promise<Run[]>(resolve => { pendingUnfiltered.push(resolve) })))
+    render(
+      <MemoryRouter future={routerFuture}>
+        <RunsPage />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(runsApi.list).toHaveBeenCalled())
+
+    // The status filter is the first "Any" select on the page.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Any' })[0]!)
+    fireEvent.click(await screen.findByRole('option', { name: 'failed' }))
+    await waitFor(() => expect(runsApi.list).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' })))
+    expect(await screen.findByText(/the filtered answer/)).toBeInTheDocument()
+
+    await act(async () => {
+      for (const finish of pendingUnfiltered) finish([run({ id: 'run-stale', status: 'failed', agent_id: null, error_message: 'the stale answer' })])
+    })
+    expect(screen.queryByText(/the stale answer/)).not.toBeInTheDocument()
+    expect(screen.getByText(/the filtered answer/)).toBeInTheDocument()
   })
 })

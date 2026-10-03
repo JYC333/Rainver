@@ -157,6 +157,34 @@ describe("Project Folder database invariants", () => {
     }
   });
 
+  it("refuses to unregister a Folder that history still references, with a reason", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = randomUUID();
+    const root = await mkdtemp(join(tmpdir(), "rainver-used-folder-"));
+    try {
+      await insertFolder(db.pool, { id: folderId, rootPath: root });
+      await db.pool.query(
+        `INSERT INTO activity_records (
+           id, space_id, user_id, project_folder_id, activity_type, title, content, payload_json,
+           occurred_at, created_at, status, updated_at, source_kind, source_trust, visibility, owner_user_id
+         ) VALUES ($1,$2,$3,$4,'note','Used','Used the Folder','{}'::jsonb,now(),now(),'processed',now(),
+                   'project_folder_event','internal_system','private',$3)`,
+        [randomUUID(), SPACE, USER, folderId],
+      );
+      const repo = new PgProjectFolderRepository(
+        db.pool,
+        loadConfig({ WORKSPACE_ROOT: root, SERVER_DATABASE_URL: db.connectionUri }),
+      );
+
+      await expect(repo.unregister({ spaceId: SPACE, userId: USER }, PROJECT, folderId, { confirm: true }))
+        .rejects.toMatchObject({ statusCode: 409, responseBody: { code: "project_folder_in_use" } });
+      await expect(db.pool.query(`SELECT id FROM project_folders WHERE id=$1`, [folderId]))
+        .resolves.toMatchObject({ rowCount: 1 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("treats expected_version null as an absent-draft precondition", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "14141414-1414-4414-8414-141414141414";
@@ -454,6 +482,42 @@ describe("Project Folder database invariants", () => {
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 
+  it("previews a file revision from someone else's paired Host only for that Host's owner", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const hostOwner = randomUUID();
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Host owner', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+      [hostOwner],
+    );
+    const issued = await new PgHostRepository(db.pool).issuePairingCode(hostOwner, "Their Laptop");
+    if ("statusCode" in issued) throw new Error("expected success");
+    const folderId = randomUUID();
+    const locationId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO project_folders (id, space_id, project_id, created_by_user_id, name, status, kind, is_primary, protected, system_managed, registered_from, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'Their Folder','active','code',false,false,false,'daemon_registered',now(),now())`,
+      [folderId, SPACE, PROJECT, USER],
+    );
+    await db.pool.query(
+      `INSERT INTO workspace_locations (id, space_id, project_folder_id, execution_host_id, execution_host_kind, root_path, execution_ready, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'remote',NULL,false,'active',now(),now())`,
+      [locationId, SPACE, folderId, issued.host_id],
+    );
+    const revision = await new PgProjectFileRevisionStore(db.pool).createInTransaction(db.pool, {
+      spaceId: SPACE, projectId: PROJECT, projectFolderId: folderId, workspaceLocationId: locationId,
+      path: "src/config.ts", beforeExists: true, beforeContent: "THEIR FORMER FILE", afterExists: true,
+      afterSha256: null, userId: hostOwner,
+    });
+    const repo = new PgProjectFolderRepository(
+      db.pool,
+      loadConfig({ WORKSPACE_ROOT: "/tmp/rainver-project-folders-test", SERVER_DATABASE_URL: db.connectionUri }),
+    );
+
+    await expect(repo.previewRevision({ spaceId: SPACE, userId: USER }, PROJECT, folderId, revision.id))
+      .rejects.toMatchObject({ statusCode: 403, responseBody: { code: "host_not_owned" } });
+  });
+
   it("rejects a remote-host Folder that carries a root_path at the database level", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = randomUUID();
@@ -551,6 +615,41 @@ describe("Project Folder database invariants", () => {
   /** A file that does not exist yet is how every new file starts. The local
    *  host reports that as `FolderReadError("not_found")`, which the save path
    *  turned into a 404 instead of "this draft creates the file". */
+  it("does not restore a deleted file over the unsaved new file the person is writing elsewhere", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const folderId = "17171717-1717-4717-8717-171717171717";
+    const { repo, cleanup } = await draftFolder(db.pool, folderId);
+    try {
+      const identity = { spaceId: SPACE, userId: USER };
+      const location = (await db.pool.query<{ id: string }>(
+        `SELECT id FROM workspace_locations WHERE project_folder_id = $1`, [folderId],
+      )).rows[0]!.id;
+      // The unsaved new file: the person's one new-file draft in this Location.
+      const todo = await repo.upsertDraft(identity, PROJECT, folderId, draftBody({ content: "- buy milk\n", relativePath: "notes/todo.md" }));
+      // A revision of another file that has since been deleted from disk.
+      const revision = await new PgProjectFileRevisionStore(db.pool).create({
+        spaceId: SPACE, projectId: PROJECT, projectFolderId: folderId, workspaceLocationId: location,
+        path: "a.txt", beforeExists: true, beforeContent: "old a\n", afterExists: true, afterSha256: null, userId: USER,
+      });
+
+      await expect(repo.restoreRevisionAsDraft(identity, PROJECT, folderId, { revision_id: revision.id }))
+        .rejects.toMatchObject({ statusCode: 409, responseBody: expect.objectContaining({ code: "draft_version_conflict" }) });
+      await expect(db.pool.query<{ relative_path: string; content: string }>(
+        `SELECT relative_path, content FROM project_file_drafts WHERE id = $1`, [todo.id],
+      )).resolves.toMatchObject({ rows: [{ relative_path: "notes/todo.md", content: "- buy milk\n" }] });
+
+      // Larger than a draft may be: refused, not stored past the limit.
+      const oversized = await new PgProjectFileRevisionStore(db.pool).create({
+        spaceId: SPACE, projectId: PROJECT, projectFolderId: folderId, workspaceLocationId: location,
+        path: "big.txt", beforeExists: true, beforeContent: "x".repeat(1_048_577), afterExists: true, afterSha256: null, userId: USER,
+      });
+      await expect(repo.restoreRevisionAsDraft(identity, PROJECT, folderId, { revision_id: oversized.id }))
+        .rejects.toMatchObject({ statusCode: 422 });
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("creates a file that is not on the local host yet", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const { folderRoot, repo, cleanup } = await draftFolder(db.pool, "16161616-1616-4616-8616-161616161616");

@@ -696,6 +696,7 @@ export class InquirySignalService {
     );
     return {
       id: packet.rows[0].id,
+      project_id: projectId,
       status: packet.rows[0].status,
       created_at: dateIso(packet.rows[0].created_at),
       closed_at: dateIso(packet.rows[0].closed_at),
@@ -913,30 +914,8 @@ export class InquirySignalService {
     purpose: ThreadAccessPurpose,
     db: Queryable = this.db,
   ): Promise<Record<string, unknown>[]> {
-    const readableThreads = await readableThreadIds(db, identity, rows.map((row) => row.thread_id), purpose);
-    const candidates = rows.filter((row) => readableThreads.has(row.thread_id));
-    if (candidates.length === 0) return [];
-    const signals = await db.query<SignalRow>(
-      `SELECT * FROM inquiry_evidence_signals WHERE candidate_id = ANY($1::varchar[])`,
-      [candidates.map((candidate) => candidate.id)],
-    );
-    const readable = await new ProjectCorpusRepository(db).readableItemIds(
-      identity,
-      projectId,
-      corpusItemIds(signals.rows),
-    );
-    const counts = new Map<string, { total: number; readable: number }>();
-    for (const signal of signals.rows) {
-      if (!signal.candidate_id) continue;
-      const count = counts.get(signal.candidate_id) ?? { total: 0, readable: 0 };
-      count.total += 1;
-      if (signalReadable(signal, readable)) count.readable += 1;
-      counts.set(signal.candidate_id, count);
-    }
-    const visibleCandidates = new Set(
-      [...counts.entries()].filter(([, count]) => count.total > 0 && count.total === count.readable).map(([id]) => id),
-    );
-    return candidates.filter((candidate) => visibleCandidates.has(candidate.id)).map(candidateToOut);
+    const visible = await readableCandidateIds(db, identity, projectId, rows, purpose);
+    return rows.filter((candidate) => visible.has(candidate.id)).map(candidateToOut);
   }
 
   private async assertCandidateReadable(
@@ -970,6 +949,44 @@ export class InquirySignalService {
     );
     if (!thread.rows[0]) throw new HttpError(409, "Candidate target Thread is not active");
   }
+}
+
+/**
+ * The Candidates among `rows` a person may see: its Thread is reachable for
+ * this purpose and every Signal behind it comes from Corpus the person can
+ * read. Every surface that lists Candidates — the Inquiry area and the Project
+ * attention list alike — answers through this one rule.
+ */
+export async function readableCandidateIds(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  projectId: string,
+  rows: ReadonlyArray<{ id: string; thread_id: string }>,
+  purpose: ThreadAccessPurpose,
+): Promise<Set<string>> {
+  const readableThreads = await readableThreadIds(db, identity, rows.map((row) => row.thread_id), purpose);
+  const candidates = rows.filter((row) => readableThreads.has(row.thread_id));
+  if (candidates.length === 0) return new Set();
+  const signals = await db.query<SignalRow>(
+    `SELECT * FROM inquiry_evidence_signals WHERE candidate_id = ANY($1::varchar[])`,
+    [candidates.map((candidate) => candidate.id)],
+  );
+  const readable = await new ProjectCorpusRepository(db).readableItemIds(
+    identity,
+    projectId,
+    corpusItemIds(signals.rows),
+  );
+  const counts = new Map<string, { total: number; readable: number }>();
+  for (const signal of signals.rows) {
+    if (!signal.candidate_id) continue;
+    const count = counts.get(signal.candidate_id) ?? { total: 0, readable: 0 };
+    count.total += 1;
+    if (signalReadable(signal, readable)) count.readable += 1;
+    counts.set(signal.candidate_id, count);
+  }
+  return new Set(
+    [...counts.entries()].filter(([, count]) => count.total > 0 && count.total === count.readable).map(([id]) => id),
+  );
 }
 
 function optionalNumber(value: unknown, label: string): number | null {

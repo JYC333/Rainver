@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { InformationDigestService } from "../src/modules/informationDigest/service.js";
 import { PgInformationDigestRepository } from "../src/modules/informationDigest/repository.js";
@@ -12,9 +12,15 @@ import { INTERESTING_COOLDOWN_DAYS, NEUTRAL_COOLDOWN_DAYS, SerendipityFeedbackSe
 import { InterestProfileService } from "../src/modules/interestProfile/service.js";
 import { InterestStarterPackService } from "../src/modules/informationDigest/starterPacks.js";
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository.js";
+import { materializeExternalDiscovery } from "../src/modules/sources/externalDiscoveryMaterializer.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { loadConfig } from "../src/config.js";
+import { informationDigestModule } from "../src/modules/informationDigest/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -32,6 +38,11 @@ const DATE = new Date().toISOString().slice(0, 10);
 
 
 const db = useTestDatabase(import.meta.filename);
+
+// The route test below sets the auth identity seam; files share a worker.
+afterEach(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -182,6 +193,36 @@ async function seedItem(input: {
   return id;
 }
 
+describe("external discovery materialization", () => {
+  it("reuses an item whose source_uri the sample names, instead of colliding with it", async () => {
+    if (!db.available) return;
+    // A Custom Source item whose URL drifted: `source_uri` moved on, its
+    // `canonical_uri` did not. The active-row unique index is on `source_uri`.
+    const id = randomUUID();
+    await db.pool.query(
+      `INSERT INTO source_items
+         (id,space_id,owner_user_id,visibility,connection_id,item_type,title,source_uri,canonical_uri,occurred_at,
+          first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+       VALUES ($1,$2,$3,'space_shared',$4,'feed_entry','Moved','https://example.test/new-path','https://example.test/old-path',now(),now(),now(),'excerpt_saved','summary_only',now(),now())`,
+      [id, SPACE, OWNER, CONNECTION],
+    );
+    const ids = await materializeExternalDiscovery(db.pool, {
+      spaceId: SPACE,
+      projectId: null,
+      userId: OWNER,
+      discoveryKey: "probe:1",
+      samples: [
+        { source_uri: "https://example.test/new-path", title: "Moved", excerpt: null, author: null, occurred_at: null },
+        { source_uri: "https://example.test/brand-new", title: "New", excerpt: null, author: null, occurred_at: null },
+      ],
+    });
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(id);
+    const rows = await db.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM source_items WHERE space_id = $1`, [SPACE]);
+    expect(rows.rows[0]!.n).toBe("2");
+  });
+});
+
 describe("information digest persistence", () => {
   it("uses the deterministic cold branch and persists complete slot attribution", async () => {
     if (!db.available) return;
@@ -265,6 +306,35 @@ describe("information digest persistence", () => {
     expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(1);
     expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(0);
     expect((await db.pool.query(`SELECT status FROM source_item_annotations WHERE source_item_id=$1`, [id])).rows).toEqual([{ status: "pending" }]);
+  });
+
+  it("backfills the most recent subscribed history first, whatever the item ids sort like", async () => {
+    if (!db.available) return;
+    // Ids sort the other way round from recency, so a LIMIT applied in id
+    // order would pick the older item.
+    const older = { id: "00000000-0000-4000-8000-00000000aaaa", at: `${DATE}T01:00:00.000Z` };
+    const newer = { id: "ffffffff-ffff-4fff-8fff-ffffffffffff", at: `${DATE}T05:00:00.000Z` };
+    for (const item of [older, newer]) {
+      await db.pool.query(
+        `INSERT INTO source_items
+           (id,space_id,owner_user_id,visibility,connection_id,item_type,title,source_uri,occurred_at,
+            first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+         VALUES ($1,$2,$3,'space_shared',$4,'feed_entry','Historical',$5,$6,$6,$6,'excerpt_saved','summary_only',$6,$6)`,
+        [item.id, SPACE, OWNER, CONNECTION, `https://example.test/history/${item.id}`, item.at],
+      );
+      await db.pool.query(
+        `INSERT INTO source_channel_item_links (id,space_id,source_channel_id,source_item_id,status,matched_at,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'active',$5,$5,$5)`,
+        [randomUUID(), SPACE, CHANNEL, item.id, item.at],
+      );
+    }
+
+    const repo = new PgSourceAnnotationRepository(db.pool);
+    expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(1);
+    expect((await db.pool.query(`SELECT source_item_id FROM source_item_annotations WHERE space_id=$1`, [SPACE])).rows)
+      .toEqual([{ source_item_id: newer.id }]);
+    expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(1);
+    expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(0);
   });
 
   it("selects personal and Project candidates by UTC day regardless of the database session timezone", async () => {
@@ -469,6 +539,45 @@ describe("information digest persistence", () => {
     expect(poolState.rows).toEqual([{ status: "consumed" }]);
   });
 
+  it("keeps an early snapshot's serendipity items and their feedback when the scheduled run replaces it", async () => {
+    if (!db.available) return;
+    await seedItem({ title: "Familiar", hour: 10 });
+    const serendipity = new PgSerendipityRepository(db.pool);
+    for (const [title, hour] of [["Seen early", 11], ["Still waiting", 12]] as const) {
+      await serendipity.addPoolItem({
+        spaceId: SPACE, userId: OWNER, sourceItemId: await seedItem({ title, hour, linked: false }),
+        targetDomainKey: "artificial_intelligence", origin: "weekly_probe", probePeriod: DATE,
+      });
+    }
+    await new InterestProfileService(db.pool).updateSettings(SPACE, OWNER, { serendipity_slots: 1 });
+    const service = new InformationDigestService(db.pool);
+    const early = await service.personal(SPACE, OWNER, DATE);
+    const seen = early.items.find((item) => item.section === "serendipity")!;
+    await new SerendipityFeedbackService(db.pool).record(SPACE, OWNER, seen.id, "interesting", new Date(`${DATE}T05:00:00Z`));
+
+    const automation = randomUUID();
+    const automationRun = randomUUID();
+    await db.pool.query(
+      `INSERT INTO automations (id, space_id, owner_user_id, agent_id, name, trigger_type, status, config_json, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'Digest','schedule','active','{}'::jsonb,now(),now())`,
+      [automation, SPACE, OWNER, AGENT],
+    );
+    await db.pool.query(
+      `INSERT INTO automation_runs (id, automation_id, target_type, triggered_by_user_id, trigger_type, native_status, native_started_at, created_at)
+       VALUES ($1,$2,'information_digest',$3,'schedule','running',now(),now())`,
+      [automationRun, automation, OWNER],
+    );
+    const scheduled = await service.personal(SPACE, OWNER, DATE, automationRun);
+
+    expect(scheduled.generated_by_automation_run_id).toBe(automationRun);
+    expect(scheduled.items.filter((item) => item.section === "serendipity"))
+      .toEqual([expect.objectContaining({ id: seen.id, title: seen.title, serendipity_feedback: "interesting" })]);
+    const pool = await db.pool.query<{ status: string }>(
+      `SELECT status FROM information_digest_serendipity_pool WHERE user_id=$1 ORDER BY status`, [OWNER],
+    );
+    expect(pool.rows).toEqual([{ status: "consumed" }, { status: "standby" }]);
+  });
+
   it("records explicit feedback in independent cooldown state without touching the interest profile", async () => {
     if (!db.available) return;
     const outside = await seedItem({ title: "Outside feedback", hour: 11, linked: false });
@@ -510,6 +619,73 @@ describe("information digest persistence", () => {
     expect(neutral.cooldown_until).toBe(new Date(at.getTime() + NEUTRAL_COOLDOWN_DAYS * 86_400_000).toISOString());
     expect((await db.pool.query(`SELECT id FROM interest_topics WHERE space_id=$1 AND user_id=$2`, [SPACE, OWNER])).rows).toEqual([]);
     await expect(new SerendipityFeedbackService(db.pool).record(SPACE, OTHER, item.id, "neutral", at)).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("keeps a permanent block when another item of the same domain gets interesting feedback at the same time", async () => {
+    if (!db.available) return;
+    const first = await seedItem({ title: "Sports one", hour: 11, linked: false, domain: "sports" });
+    const second = await seedItem({ title: "Sports two", hour: 12, linked: false, domain: "sports" });
+    const pool = new PgSerendipityRepository(db.pool);
+    for (const sourceItemId of [first, second]) {
+      await pool.addPoolItem({ spaceId: SPACE, userId: OWNER, sourceItemId, targetDomainKey: "sports", origin: "weekly_probe", probePeriod: DATE });
+    }
+    const digest = await new InformationDigestService(db.pool).personal(SPACE, OWNER, DATE);
+    const shown = digest.items.filter((row) => row.section === "serendipity");
+    const x = shown[0]!;
+    let y = shown[1];
+    if (!y) {
+      // Selection filled one slot; the second item of the domain is placed
+      // beside it the way a wider quota would have placed it.
+      const standby = await db.pool.query<{ id: string; source_item_id: string }>(
+        `SELECT id, source_item_id FROM information_digest_serendipity_pool WHERE space_id=$1 AND user_id=$2 AND status='standby'`,
+        [SPACE, OWNER],
+      );
+      const other = standby.rows[0]!;
+      const id = randomUUID();
+      await db.pool.query(
+        `INSERT INTO information_digest_items
+           (id, space_id, digest_id, source_item_id, section, position, quota_slot, serendipity_pool_item_id, score, component_scores_json, created_at)
+         SELECT $1, space_id, digest_id, $3, section, position + 100, quota_slot, $4, score, component_scores_json, created_at
+           FROM information_digest_items WHERE id=$2`,
+        [id, x.id, other.source_item_id, other.id],
+      );
+      y = { id } as typeof x;
+    }
+    const at = new Date(`${DATE}T21:00:00Z`);
+    const blocking = await db.pool.connect();
+    try {
+      await blocking.query("BEGIN");
+      await new SerendipityFeedbackService(blocking).record(SPACE, OWNER, x.id, "never", at);
+      let settled = false;
+      const liking = new SerendipityFeedbackService(db.pool).record(SPACE, OWNER, y.id, "interesting", at).finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      await blocking.query("COMMIT");
+      await expect(liking).rejects.toMatchObject({ statusCode: 409 });
+    } finally {
+      await blocking.query("ROLLBACK").catch(() => undefined);
+      blocking.release();
+    }
+    const state = await db.pool.query<{ blocked_at: string | null; last_feedback: string }>(
+      `SELECT blocked_at, last_feedback FROM information_digest_serendipity_domain_states WHERE space_id=$1 AND user_id=$2 AND domain_key='sports'`,
+      [SPACE, OWNER],
+    );
+    expect(state.rows[0]?.blocked_at).not.toBeNull();
+    expect(state.rows[0]?.last_feedback).toBe("never");
+  });
+
+  it("refuses to materialize a personal digest for a day that has not come", async () => {
+    if (!db.available) return;
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [informationDigestModule]);
+    try {
+      const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+      const response = await app.inject({ method: "GET", url: `/api/v1/spaces/${SPACE}/information-digests/personal?date=${tomorrow}` });
+      expect(response.statusCode).toBe(422);
+      expect((await db.pool.query(`SELECT id FROM information_digests WHERE space_id=$1 AND digest_date=$2`, [SPACE, tomorrow])).rows).toEqual([]);
+    } finally {
+      __setAuthIdentityForTests(null);
+      await app.close();
+    }
   });
 
   it("uses the reader's configured serendipity cooldown", async () => {
@@ -638,6 +814,21 @@ describe("bounded serendipity probe", () => {
     expect((await db.pool.query(`SELECT id FROM interest_profiles`)).rows).toEqual([]);
   });
 
+  it("records a probe whose every search failed as failed, not skipped", async () => {
+    if (!db.available) return;
+    const provider: SerendipityProbeProvider = {
+      available: async () => true,
+      search: async () => { throw new Error("quota exhausted"); },
+    };
+
+    const result = await new SerendipityProbeService(db.pool, provider).run(SPACE, OWNER, new Date(`${DATE}T12:00:00Z`));
+
+    expect(result.request_count).toBeGreaterThan(0);
+    expect(result.status).toBe("failed");
+    const ledger = await db.pool.query(`SELECT status FROM information_digest_probe_runs`);
+    expect(ledger.rows).toEqual([{ status: "failed" }]);
+  });
+
   it("respects the reader's configured weekly probe budget", async () => {
     if (!db.available) return;
     await new InterestProfileService(db.pool).updateSettings(SPACE, OWNER, { probe_domain_budget: 1 });
@@ -657,6 +848,25 @@ describe("bounded serendipity probe", () => {
     expect(result.domain_keys).toHaveLength(1);
     expect(result.request_count).toBe(1);
     expect(searched).toHaveLength(1);
+  });
+
+  it("keeps the weekly probe budget within what the probe ledger can record", async () => {
+    if (!db.available) return;
+    const profiles = new InterestProfileService(db.pool);
+    await expect(profiles.updateSettings(SPACE, OWNER, { probe_domain_budget: 5 })).rejects.toThrow(/probe_domain_budget/);
+    // A budget saved while the setting still allowed up to ten.
+    await db.pool.query(
+      `UPDATE interest_profiles SET settings_json = settings_json || '{"probe_domain_budget":10}'::jsonb
+        WHERE space_id=$1 AND user_id=$2`,
+      [SPACE, OWNER],
+    );
+    const provider: SerendipityProbeProvider = { available: async () => true, search: async () => [] };
+
+    const result = await new SerendipityProbeService(db.pool, provider).run(SPACE, OWNER, new Date(`${DATE}T12:00:00Z`));
+
+    expect(result.request_count).toBe(3);
+    const ledger = await db.pool.query(`SELECT request_count,status FROM information_digest_probe_runs`);
+    expect(ledger.rows).toEqual([{ request_count: 3, status: "succeeded" }]);
   });
 });
 

@@ -51,7 +51,7 @@ to be lost by treating "capability" as a single word:
 
 > **Skill** = a procedure a model should follow.
 > **System Action / Tool** = something the model can invoke that mutates
-> Rainver state, gated by `agentToolGateway` and policy.
+> Rainver state, gated by the System Action gateway and policy.
 
 The first is content and should be external. The second is Rainver's own
 API and must stay owned, versioned, and gated. Today both live under
@@ -209,7 +209,7 @@ rendering at all, the corresponding renderer is deleted rather than kept
 Delivery.** Clarified 2026-08-14. Skill content is model-visible durable
 context, so it reaches a run through Runtime Context Delivery on the same terms
 as everything else the model sees, including the per-turn hash binding that
-`deliveryAuthorizer.ts` verifies. What this plan deletes is Rainver's second
+`PgInvocationDeliveryAuthorizer` (`runtimeContext/gateway.ts`) verifies. What this plan deletes is Rainver's second
 description of the skill; the authorization path that makes the skill's presence
 in a prompt explicable afterwards is not part of the deletion.
 
@@ -222,7 +222,7 @@ this is the compatibility surface that matters most in this plan.
 
 ### 6. Separate System Actions from Skills in the API and UI
 
-`systemActions/agentToolGateway.ts` (590 lines) is already the right thing and
+`systemActions/gateway.ts` with `systemActionDispatcher.ts` is already the right thing and
 is not touched by this plan. What changes is that it stops being presented as a
 kind of capability. The user-visible surface becomes two things — **Skills**
 (imported, external content) and **Tools / System Actions** (Rainver's own
@@ -269,9 +269,9 @@ gated API) — rather than one "Capabilities" page covering both.
 
 ## Dependencies
 
-- Requires: completed managed execution architecture with the
-  `managedAgentLoop` port and Runtime Context Delivery boundary. Satisfied
-  2026-08-14; see
+- Requires: completed execution architecture with the ACP runtime path
+  (ADR 0022; the managed Agent loop is deleted) and Runtime Context Delivery
+  boundary. Satisfied; see
   [runtime-adapters.md](../modules/runtime-adapters.md) and
   [EXECUTION_MODEL.md](../architecture/EXECUTION_MODEL.md).
 - Note for future external runtimes: the "no ambient skill or plugin discovery"

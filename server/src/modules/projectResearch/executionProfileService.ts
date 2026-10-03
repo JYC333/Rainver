@@ -31,7 +31,7 @@ export interface ResearchExecutionSelection {
   modelName?: string | null;
 }
 
-export interface ResolvedResearchExecution {
+interface ResolvedResearchExecution {
   agentId: string;
   runtimeProfileId: string;
   runtimeKey: typeof RESEARCH_RUNTIME_KEY;
@@ -41,7 +41,7 @@ export interface ResolvedResearchExecution {
 
 /** What a bounded ProviderTask stage needs: a provider and a model, and no
  * Agent or Runtime Profile at all. */
-export interface ResolvedResearchProvider {
+interface ResolvedResearchProvider {
   modelProviderId: string;
   modelName: string | null;
 }

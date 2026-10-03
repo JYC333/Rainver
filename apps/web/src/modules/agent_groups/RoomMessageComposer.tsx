@@ -10,6 +10,7 @@ import {
   CONVERSATION_MAX_FILE_SNAPSHOT_BYTES,
   agentMentionSegments,
   normalizeMentionText,
+  parseAgentMentions,
   renderMentionTokens,
   type AgentMentionToken,
 } from '@rainver/protocol'
@@ -18,7 +19,7 @@ import type { FileNode } from '../../types/api'
 import { errMsg } from '../../lib/utils'
 import { useConversationInputSendGuard, type ConversationInputFileSource } from '../conversation/ConversationInputComposer'
 
-export interface RoomMessageComposerValue {
+interface RoomMessageComposerValue {
   text: string
   mentionIds: string[]
   routingSegments: RoomMessageRoutingSegment[]
@@ -39,7 +40,7 @@ type MentionSuggestion =
   | { type: 'agent'; agent: MentionAgent }
   | { type: 'file'; file: FileCandidate }
 
-export interface RoomMessageRoutingSegment {
+interface RoomMessageRoutingSegment {
   recipient_agent_ids: string[]
   content: string
 }
@@ -151,6 +152,7 @@ export function RoomMessageComposer({
   members,
   disabled,
   resetToken,
+  restore,
   onSubmit,
   embedded = false,
   projectId,
@@ -166,6 +168,8 @@ export function RoomMessageComposer({
   members: Array<{ agent_id: string; status: string }>
   disabled: boolean
   resetToken: number
+  /** A saved draft to put back in the editor; a new `token` applies it. */
+  restore?: { token: number; text: string } | null
   onSubmit: () => void
   /** The shared conversation frame owns the border and focus treatment. */
   embedded?: boolean
@@ -367,6 +371,20 @@ export function RoomMessageComposer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor, resetToken])
 
+  // A restored draft is text; `@Name` of a roster Agent comes back as a
+  // mention, so the message still reaches the Agent it was addressed to. Set
+  // without an update event, which would drop the draft's file references
+  // before the effect below draws them.
+  useEffect(() => {
+    if (!editor || !restore) return
+    const roster = mentionableAgents.map(agent => ({ agent_id: agent.id, label: agent.name }))
+    editor.commands.setContent(docFromText(restore.text, roster), { emitUpdate: false })
+    setHasEditorContent(!editor.isEmpty)
+    onChange(serializeComposerValue(editor.getJSON()))
+    // Applied once per restore; a roster change must not overwrite later typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor, restore?.token])
+
   useEffect(() => {
     if (!editor) return
     const existingKeys = new Set<string>()
@@ -442,7 +460,9 @@ export function RoomMessageComposer({
       const content = await projectFoldersApi.file(projectId, file.projectFolderId, file.path)
       const bytes = new TextEncoder().encode(content.content)
       if (bytes.byteLength > CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) throw new Error('file is too large to reference')
-      const sha256 = content.sha256 ?? await digestHex(bytes)
+      // The server admits the decoded body it freezes, so the digest is the
+      // body's: `content.sha256` hashes the bytes on disk, a BOM included.
+      const sha256 = await digestHex(bytes)
       const part: ConversationInputFileReferencePart = {
         kind: 'file_reference',
         project_folder_id: file.projectFolderId,
@@ -601,9 +621,10 @@ function fileReferenceKey(part: Pick<ConversationInputFileReferencePart, 'projec
 
 function flattenFileTree(root: FileNode | null, source: ConversationInputFileSource & { workspaceLocationId: string }): FileCandidate[] {
   if (!root) return []
+  // Every file the tree holds (the server bounds the tree itself): the query
+  // filters before the menu trims to what it shows, so no file is unreachable.
   const files: FileCandidate[] = []
   const visit = (node: FileNode) => {
-    if (files.length >= 200) return
     if (node.type === 'file' && node.path !== '.') files.push({
       projectFolderId: source.projectFolderId,
       workspaceLocationId: source.workspaceLocationId,
@@ -621,6 +642,17 @@ function flattenFileTree(root: FileNode | null, source: ConversationInputFileSou
 async function digestHex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer)
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function docFromText(text: string, roster: Array<{ agent_id: string; label: string }>): JSONContent {
+  const paragraphs = text.split('\n').map(line => {
+    const content = parseAgentMentions(line, roster).tokens.flatMap((token): JSONContent[] => {
+      if (token.type === 'mention') return [{ type: 'agentMention', attrs: { id: token.id, label: token.label } }]
+      return token.text ? [{ type: 'text', text: token.text }] : []
+    })
+    return content.length ? { type: 'paragraph', content } : { type: 'paragraph' }
+  })
+  return { type: 'doc', content: paragraphs }
 }
 
 function emptyDoc(): JSONContent {

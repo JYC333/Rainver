@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildTree,
@@ -43,6 +43,28 @@ describe("folder-read filesystem operations", () => {
       line_count: 3,
       sha256: createHash("sha256").update("one\ntwo\n").digest("hex"),
     });
+  });
+
+  // Root may stat anything, so a permission the test relies on does not apply to it.
+  it.skipIf(process.getuid?.() === 0)("leaves out an entry it cannot stat instead of failing the whole tree", async () => {
+    // readdir lists a directory's names with read permission alone; stat of a
+    // name inside it needs search permission. An entry that vanishes between
+    // the two calls (an editor's or a Run's temporary file) looks the same to
+    // the walk as this one does, and used to fail the whole tree request.
+    const root = await tempRoot();
+    await mkdir(join(root, "ok"));
+    await writeFile(join(root, "ok", "kept.txt"), "kept", "utf8");
+    await mkdir(join(root, "locked"));
+    await writeFile(join(root, "locked", "unreachable.txt"), "x", "utf8");
+    await chmod(join(root, "locked"), 0o400);
+    try {
+      const tree = await buildTree(root);
+      expect(tree.children?.map((child) => child.path)).toEqual(["locked", "ok"]);
+      expect(tree.children?.find((child) => child.path === "locked")?.children).toEqual([]);
+      expect(tree.children?.find((child) => child.path === "ok")?.children?.map((child) => child.path)).toEqual(["ok/kept.txt"]);
+    } finally {
+      await chmod(join(root, "locked"), 0o700);
+    }
   });
 
   it("maps missing, directory, forbidden, and oversized reads to bounded errors", async () => {
@@ -190,6 +212,46 @@ describe("folder-read filesystem operations", () => {
     expect(await readFile(join(root, "README.md"), "utf8")).toContain("raw-secret");
   });
 
+  it("refuses a whole-Folder diff that shows a file a direct read would refuse", async () => {
+    for (const blocked of ["credentials/service-account.json", ".gcp/key.json", "instance/secrets/app.yaml", "目录/.env"]) {
+      const root = await tempRoot();
+      await runGit(["init"], root);
+      await runGit(["config", "user.email", "test@example.invalid"], root);
+      await runGit(["config", "user.name", "Test"], root);
+      await mkdir(join(root, dirname(blocked)), { recursive: true });
+      await writeFile(join(root, blocked), "old\n", "utf8");
+      await writeFile(join(root, "README.md"), "before\n", "utf8");
+      await runGit(["add", "."], root);
+      await runGit(["commit", "-m", "initial"], root);
+      await writeFile(join(root, blocked), "private_key_id: 123\n", "utf8");
+      await writeFile(join(root, "README.md"), "after\n", "utf8");
+
+      await expect(folderGitDiff(root, null), blocked).rejects.toThrow(/blocked path/);
+      await expect(folderGitDiff(root, "README.md")).resolves.toMatchObject({ diff: expect.stringContaining("+after") });
+    }
+  });
+
+  it("does not let a single-path diff widen into files a direct read would refuse", async () => {
+    const root = await tempRoot();
+    await runGit(["init"], root);
+    await runGit(["config", "user.email", "test@example.invalid"], root);
+    await runGit(["config", "user.name", "Test"], root);
+    await mkdir(join(root, "instance", "secrets"), { recursive: true });
+    await writeFile(join(root, "instance", "secrets", "app.yaml"), "old\n", "utf8");
+    await writeFile(join(root, "instance", "notes.md"), "before\n", "utf8");
+    await runGit(["add", "."], root);
+    await runGit(["commit", "-m", "initial"], root);
+    await writeFile(join(root, "instance", "secrets", "app.yaml"), "private_key_id: 123\n", "utf8");
+    await writeFile(join(root, "instance", "notes.md"), "after\n", "utf8");
+
+    // A glob is a name, not a pattern: no file is called `*`.
+    const globbed = await folderGitDiff(root, "*").then((result) => result.diff, (error: unknown) => String(error));
+    expect(globbed).not.toContain("private_key_id");
+    // A directory covers its subtree, so every file in it is checked.
+    await expect(folderGitDiff(root, "instance")).rejects.toThrow(/blocked path/);
+    await expect(folderGitDiff(root, "instance/notes.md")).resolves.toMatchObject({ diff: expect.stringContaining("+after") });
+  });
+
   it("exposes typed folder read errors", () => {
     expect(new FolderReadError("too_large", "too big")).toBeInstanceOf(Error);
   });
@@ -225,6 +287,21 @@ describe("folder-read filesystem operations", () => {
       expectedExists: false,
       expectedSha256: null,
     })).rejects.toMatchObject({ code: "path_forbidden" });
+  });
+
+  it("creates a new file in directories that do not exist yet, and nowhere outside the root", async () => {
+    const root = await tempRoot();
+    await expect(writeFolderFile(root, "docs/notes/todo.md", "first", { expectedExists: false, expectedSha256: null }))
+      .resolves.toMatchObject({ path: "docs/notes/todo.md", content: "first" });
+    await expect(readFile(join(root, "docs", "notes", "todo.md"), "utf8")).resolves.toBe("first");
+
+    // A link out of the root still refuses, however deep the new part goes.
+    const outside = await tempRoot();
+    await symlink(outside, join(root, "linked"));
+    await expect(writeFolderFile(root, "linked/new/file.md", "x", { expectedExists: false, expectedSha256: null }))
+      .rejects.toMatchObject({ code: "path_forbidden" });
+    await expect(writeFolderFile(root, "new/.env", "x", { expectedExists: false, expectedSha256: null }))
+      .rejects.toMatchObject({ code: "path_forbidden" });
   });
 
   it("serializes concurrent writes that share the same preimage", async () => {

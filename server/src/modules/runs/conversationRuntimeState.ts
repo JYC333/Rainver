@@ -1,9 +1,9 @@
 import { lstat, mkdir, readdir, rm, utimes } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 
-export const CONVERSATION_RUNTIME_STATE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const CONVERSATION_RUNTIME_STATE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-export interface PreparedConversationRuntimeState {
+interface PreparedConversationRuntimeState {
   home_dir: string;
   cwd: string;
   resume: boolean;

@@ -12,6 +12,7 @@ import {
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
+import { canReadAgent } from "../agents/agentAccess.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { RunOrchestrationService } from "../runs/orchestrationService.js";
 import { RunMaterializationService } from "../runs/materializationService.js";
@@ -228,6 +229,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           422,
           "agent_id is required in the request or target metadata",
         );
+      }
+      if (!(await canReadAgent(dbPool(context.config), identity, agentId))) {
+        throw new HttpError(404, "Agent not found");
       }
 
       const setup = await repo.recordRunSetup(identity, targetId, agentId, body);

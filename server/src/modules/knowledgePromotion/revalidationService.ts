@@ -193,7 +193,7 @@ async function isMaterialChange(db: Queryable, event: OutboxEventRow, pinnedRef:
   if (!pinnedDoc.rows[0] || !newDoc.rows[0]) return true; // fail safe: missing revision data -> treat as material
   const pinnedBlocks = pmBlocksText(pinnedDoc.rows[0].content_json);
   const newBlocks = pmBlocksText(newDoc.rows[0].content_json);
-  const anchors = pinnedRef.block_anchors.length > 0 ? pinnedRef.block_anchors : pinnedBlocks.map((_, index) => index);
+  const anchors = (pinnedRef.block_anchors?.length ?? 0) > 0 ? pinnedRef.block_anchors! : pinnedBlocks.map((_, index) => index);
   return anchors.some((anchor) => (pinnedBlocks[anchor] ?? "") !== (newBlocks[anchor] ?? ""));
 }
 
@@ -215,7 +215,9 @@ async function createRevalidationCandidate(db: Queryable, event: OutboxEventRow,
        candidate_kind, proposed_title, proposed_content, visibility, owner_user_id,
        supersedes_knowledge_item_id, status, created_at, updated_at
      ) VALUES ($1, $2, $3, 'revalidation', $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, 'pending', $13, $13)`,
-    [id, event.space_id, projectId, event.source_kind, event.source_id, JSON.stringify(event.source_ref_json),
+    // The event names only the new revision; the blocks the item was pinned to
+    // carry over, or the next edit to the Note would revalidate the whole of it.
+    [id, event.space_id, projectId, event.source_kind, event.source_id, JSON.stringify(withPinnedAnchors(event.source_ref_json, item.pinned_source_ref_json)),
       candidateKind, item.title, proposedContent,
       item.visibility === "space_shared" ? "space_shared" : "private", item.owner_user_id,
       item.object_id, now],
@@ -236,7 +238,7 @@ async function contentFromNewSource(
     );
     if (!revision.rows[0]) throw new Error(`Note revision ${String(revisionId)} is missing`);
     const blocks = pmBlocksText(revision.rows[0].content_json);
-    const anchors = pinnedRef.block_anchors.length > 0 ? pinnedRef.block_anchors : blocks.map((_, index) => index);
+    const anchors = (pinnedRef.block_anchors?.length ?? 0) > 0 ? pinnedRef.block_anchors! : blocks.map((_, index) => index);
     return anchors.map((anchor) => blocks[anchor] ?? "").filter(Boolean).join("\n\n");
   }
   if (event.source_kind === "inquiry_thread") {
@@ -258,4 +260,11 @@ async function contentFromNewSource(
 
 function itemContentFallback(ref: PinnedSourceRef): string {
   throw new Error(`Unsupported revalidation source: ${ref.kind}`);
+}
+
+function withPinnedAnchors(sourceRef: unknown, pinnedRef: unknown): unknown {
+  const ref = objectValue(sourceRef);
+  if (ref.kind !== "note_revision") return sourceRef;
+  const anchors = objectValue(pinnedRef).block_anchors;
+  return { ...ref, block_anchors: Array.isArray(anchors) ? anchors : [] };
 }

@@ -90,6 +90,10 @@ export function buildAmbientRecords(
   for (const update of updates) {
     const kind = stringOrNull(update.sessionUpdate);
     if (!kind) continue;
+    // Anything that is not a message chunk — a tool call, a thought, a plan —
+    // interrupts a run of anonymous chunks, so the next one starts a new
+    // message rather than joining text from either side of it.
+    if (kind !== "user_message_chunk" && kind !== "agent_message_chunk") anonymous = null;
     switch (kind) {
       case "user_message_chunk":
       case "agent_message_chunk": {
@@ -158,9 +162,6 @@ export function buildAmbientRecords(
         break;
       }
       case "agent_thought_chunk":
-        // A thought interrupts a run of anonymous chunks the same way any
-        // other update does, so the next one starts a new message.
-        anonymous = null;
         break;
       case "available_commands_update":
       case "current_mode_update":

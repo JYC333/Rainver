@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { ExecutionControlSnapshot, RuntimeContextPolicyVersion } from "@rainver/protocol";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { runtimeContextModule } from "../src/modules/runtimeContext/index.js";
+import { buildModuleServer } from "./support/moduleServer.js";
 import { assertPolicyDoesNotWiden, assertPolicyPreferencesWithinConstraints, resolveRuntimeContextPolicies } from "../src/modules/policy/runtimeContextPolicyResolver.js";
 import { ContextWindowReconciliationRepository } from "../src/modules/runtimeContext/reconciliationRepository.js";
 import { InvocationSnapshotService } from "../src/modules/runtimeContext/invocationSnapshotService.js";
@@ -151,6 +155,69 @@ describe("runtimeContextCliContinuityDb", () => {
           JSON.stringify({ decisions: [{ text: "Bounded checkpoint" }] }),
           JSON.stringify({ type: "provider_task", id: randomUUID(), version: "test.v1" })],
       );
+      const lease = await cli.acquireExecutionLease(binding.id);
+      const delivery = await cli.prepareDelivery({
+        bindingId: binding.id,
+        spaceId: SPACE,
+        workContextScopeId: RUN,
+        invocationId: RUN,
+        currentMessageRef: { type: "message", id: currentMessage },
+        ownerUserId: USER,
+        authorizedSourceRefs: [{ type: "message", id: currentMessage }],
+      });
+      // The turn releases the lease it took on the old binding; the rotation
+      // carried it to the replacement, which must not stay held.
+      await cli.releaseExecutionLease(lease);
+      await expect(db.pool.query(
+        `SELECT execution_lease_id FROM runtime_context_cli_bindings WHERE id=$1`,
+        [delivery.id],
+      )).resolves.toMatchObject({ rows: [{ execution_lease_id: null }] });
+      expect(delivery.mode).toBe("full");
+      expect(delivery.id).not.toBe(binding.id);
+      expect(delivery.rotation_reason).toBe("overflow_reconstruction");
+      expect(delivery.delta_item?.payload.text).toContain("Bounded checkpoint");
+      await expect(db.pool.query<{ status: string }>(
+        `SELECT status FROM runtime_context_cli_bindings WHERE id=$1`,
+        [binding.id],
+      )).resolves.toMatchObject({ rows: [{ status: "rotated" }] });
+    });
+
+    it("leaves a checkpoint the viewer may not read out of an overflow reconstruction, as a first full delivery does", async () => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const continuity = new RuntimeContextContinuityService(db.pool);
+      const binding = await cli.prepareBinding(bindingInput(control()));
+      await cli.recordVendorSession({
+        bindingId: binding.id,
+        runtimeStateKey: binding.runtime_state_key,
+        vendorSessionId: "thread-overflow-unauthorized",
+      });
+      let currentMessage = "";
+      for (let index = 0; index < 8; index += 1) {
+        currentMessage = await message(`overflow-${index}`, "x".repeat(4_000), "user");
+        await continuity.ingest({
+          invocation_id: RUN,
+          event_type: "user_message_received",
+          canonical_ref: { type: "message", id: currentMessage },
+          semantic_role: "user_input",
+          token_estimate: 1_200,
+        });
+      }
+      const scope = await db.pool.query<{ event_head_cursor: number }>(
+        `SELECT event_head_cursor FROM context_event_scopes WHERE space_id=$1 AND work_context_scope_id=$2`,
+        [SPACE, RUN],
+      );
+      // A checkpoint drawn from a source this turn's envelope did not accept
+      // and that is not one of the always-authorized kinds.
+      await db.pool.query(
+        `INSERT INTO context_semantic_checkpoints (
+           id,space_id,work_context_scope_id,version,covered_cursor,status,
+           checkpoint_json,extractor_ref_json,created_at
+         ) VALUES ($1,$2,$3,1,$4,'active',$5::jsonb,$6::jsonb,now())`,
+        [randomUUID(), SPACE, RUN, Number(scope.rows[0]?.event_head_cursor ?? 0),
+          JSON.stringify({ decisions: [{ text: "Unauthorized checkpoint" }], source_refs: [{ type: "artifact", id: randomUUID() }] }),
+          JSON.stringify({ type: "provider_task", id: randomUUID(), version: "test.v1" })],
+      );
       const delivery = await cli.prepareDelivery({
         bindingId: binding.id,
         spaceId: SPACE,
@@ -161,13 +228,10 @@ describe("runtimeContextCliContinuityDb", () => {
         authorizedSourceRefs: [{ type: "message", id: currentMessage }],
       });
       expect(delivery.mode).toBe("full");
-      expect(delivery.id).not.toBe(binding.id);
       expect(delivery.rotation_reason).toBe("overflow_reconstruction");
-      expect(delivery.delta_item?.payload.text).toContain("Bounded checkpoint");
-      await expect(db.pool.query<{ status: string }>(
-        `SELECT status FROM runtime_context_cli_bindings WHERE id=$1`,
-        [binding.id],
-      )).resolves.toMatchObject({ rows: [{ status: "rotated" }] });
+      // Rendered without it, rather than persisted with it and refused at authorization.
+      expect(delivery.delta_item?.payload.text).not.toContain("Unauthorized checkpoint");
+      expect(delivery.delta_item?.payload.checkpoint_ref ?? null).toBeNull();
     });
 
     it("advances only accepted deltas and rotates hard authority or missing vendor state", async () => {
@@ -376,10 +440,10 @@ describe("runtimeContextCliContinuityDb", () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 75));
       expect(secondAcquired).toBe(false);
-      await cli.releaseExecutionLease(first.id, firstLease);
+      await cli.releaseExecutionLease(firstLease);
       const acquired = await secondLease;
       expect(secondAcquired).toBe(true);
-      await cli.releaseExecutionLease(first.id, acquired);
+      await cli.releaseExecutionLease(acquired);
 
       await db.pool.query(
         `UPDATE agent_runtime_profiles
@@ -442,6 +506,28 @@ describe("runtimeContextCliContinuityDb", () => {
         `SELECT status FROM runtime_context_cli_bindings WHERE id=$1`,
         [egressRotated.id],
       )).resolves.toMatchObject({ rows: [{ status: "rotated" }] });
+    });
+
+    it("waits for a Run's execution lease before rotating the binding under it", async () => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const first = await cli.prepareBinding(bindingInput(control()));
+      const lease = await cli.acquireExecutionLease(first.id);
+      let rotatedYet = false;
+      const rotation = cli.prepareBinding({ ...bindingInput(control()), expectedVendorSessionId: "another-thread" })
+        .then((binding) => {
+          rotatedYet = true;
+          return binding;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(rotatedYet).toBe(false);
+      await expect(db.pool.query(`SELECT status FROM runtime_context_cli_bindings WHERE id=$1`, [first.id]))
+        .resolves.toMatchObject({ rows: [{ status: "active" }] });
+
+      await cli.releaseExecutionLease(lease);
+      await expect(rotation).resolves.toMatchObject({ rotation_reason: "vendor_session_mismatch" });
+      await expect(db.pool.query(`SELECT status FROM runtime_context_cli_bindings WHERE id=$1`, [first.id]))
+        .resolves.toMatchObject({ rows: [{ status: "rotated" }] });
     });
 
     it("binds provider generations through the target Space grant", async () => {
@@ -1490,5 +1576,25 @@ describe("runtimeContextRetrievalAttributionDb", () => {
       items: [{ ownerUserId: authorization.ownerUserId, visibility: authorization.visibility }],
     });
     expect(taint.non_instructing_owner_user_ids).toEqual([OWNER_B]);
+  });
+});
+
+describe("runtimeContextRoutes", () => {
+  afterEach(() => __setAuthIdentityForTests(null));
+
+  it("answers an invalid Turn Context preview request in the shared error envelope", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    const app = buildModuleServer(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver" }),
+      [runtimeContextModule],
+    );
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/v1/runtime-context/preview", payload: {} });
+      expect(response.statusCode).toBe(422);
+      // `detail`, like every other route: clients read nothing else.
+      expect(response.json()).toEqual({ detail: "Invalid Turn Context Request" });
+    } finally {
+      await app.close();
+    }
   });
 });

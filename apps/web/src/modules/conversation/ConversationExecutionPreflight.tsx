@@ -22,7 +22,7 @@ import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
 import { ConversationGitContext } from './ConversationGitContext'
 
-export interface ConversationExecutionPreflightProps {
+interface ConversationExecutionPreflightProps {
   projectId: string
   roomId: string
   sessionId: string | null
@@ -115,6 +115,10 @@ export function ConversationExecutionPreflight({
       setPreflight(next)
       setProfiles(next.available_runtime_profiles ?? [])
       onSummaryChange?.(next.summary)
+      // Said again here, not only when `ready` changes: a failed refresh
+      // reported false while `ready` (from the kept preflight) stayed true, so
+      // the next good refresh changed nothing and sending stayed disabled.
+      onReadyChange?.(Boolean(next.summary.state === 'initialized' && next.summary.can_send))
     } catch (cause) {
       if (sequence !== requestSequence.current) return
       const message = errMsg(cause)
@@ -435,15 +439,14 @@ export function ConversationExecutionPreflight({
           <div className="rounded border border-border bg-muted/20 px-2 py-1.5 text-xs">
             <span className="font-medium">Agents</span>
             <div className="mt-1 space-y-1">
-              {participantChoices.map(({ member, options, selectedId }) => {
-                const usable = options.filter(profile => profile.usable).length
-                return <div key={member.agent_id} className="flex items-center justify-between gap-2">
+              {participantChoices.map(({ member, options, selected }) => (
+                <div key={member.agent_id} className="flex items-center justify-between gap-2">
                   <span className="min-w-0 flex-1">{member.agent_name}{member.role === 'manager' ? ' · manager' : ''}</span>
-                  <span className={usable === 1 && Boolean(selectedId) ? 'text-muted-foreground' : 'text-destructive'}>
-                    {usable === 1 && selectedId ? 'runtime ready' : usable === 0 ? 'runtime unavailable' : 'choose one runtime'}
+                  <span className={selected ? 'text-muted-foreground' : 'text-destructive'}>
+                    {selected ? 'runtime ready' : options.length === 0 ? 'runtime unavailable' : 'choose one runtime'}
                   </span>
                 </div>
-              })}
+              ))}
               {participantChoices.length === 0 && (
                 <span className="text-destructive">Project Agent setup is pending; configure a usable backend and retry.</span>
               )}

@@ -10,7 +10,6 @@ import type {
   ExtractionOutcome,
   ImportedSession,
   ImportedSessionRecord,
-  AcademicPaper,
   ProjectBoard,
   ProjectMainlineRoomResponse,
   ProjectReadersResponse,
@@ -18,19 +17,11 @@ import type {
   ProjectWorkUpdatesResponse,
   TaskWorkView,
   WorkLoopStageKey,
-  AcademicPaperAuthor,
-  AcademicPaperCitation,
-  AcademicPaperCreate,
-  AcademicPaperUpdate,
   ActivityInboxRecord,
-  ActivityRecord,
   ActivitySourceType,
   AgentConfigUpdateBody,
   AgentCreateBody,
   AgentOut,
-  AgentRunGroup,
-  AgentRunGroupTimeline,
-  AgentRunGroupTrace,
   AgentRuntimeProfileCreateBody,
   AgentRuntimeProfileOut,
   AgentRuntimeProfileUpdateBody,
@@ -91,8 +82,6 @@ import type {
   ConversationRetryResponse,
   ConversationExecutionSummary,
   CreateAgentFromTemplateBody,
-  CreateAgentRunGroupRequest,
-  CreateAgentRunGroupResponse,
   CreateRoomRequest,
   CreateRoomResponse,
   RoomAgentAddRequest,
@@ -150,7 +139,6 @@ import type {
   ExperimentVersion,
   ExtractedEvidence,
   ExtractionJob,
-  Feature,
   InstanceOperationsSettings,
   InstanceOperationsSettingsUpdate,
   FileContent,
@@ -247,8 +235,6 @@ import type {
   ProjectExtractionProfile,
   ProjectFolder,
   ProjectFolderCreateBody,
-  ProjectFolderExecutionConfig,
-  ProjectFolderExecutionConfigUpdate,
   ProjectFolderScanCandidate,
   ProjectFolderUpdateBody,
   ProjectInstructionVersion,
@@ -279,6 +265,7 @@ import type {
   PromptEvaluationRequest,
   PromptEvaluationResult,
   PromptPromotionRequestInput,
+  PromptPromotionResult,
   PromptRenderPreviewRequest,
   PromptRenderPreviewResult,
   PromptRollbackRequest,
@@ -363,8 +350,6 @@ import type {
   RunStatusOut,
   RunSupervisorDecision,
   RunVerificationResult,
-  SendAgentRunGroupMessageRequest,
-  SendAgentRunGroupMessageResponse,
   SendRoomMessageRequest,
   SerendipityFeedbackResult,
   Session,
@@ -434,8 +419,6 @@ import type {
   TaskProposal,
   TaskRunCreateBody,
   TaskRunListItem,
-  UpdateAgentRunGroupRequest,
-  UpdateAgentRunGroupResponse,
   WorkflowExecutionSummary,
 } from '../types/api'
 import type {
@@ -459,6 +442,7 @@ import type {
   ConversationInputMediaOut,
   ConversationInputPart,
   ConversationInputFileSearchResponse,
+  OfficialPluginEffectiveResponse,
 } from '@rainver/protocol'
 import { ConversationInputMediaOutSchema } from '@rainver/protocol'
 
@@ -534,10 +518,6 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
 
   const r = await fetch(url, opts)
 
-  if (r.status === 401) {
-    window.dispatchEvent(new CustomEvent('auth:required'))
-  }
-
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`
     let code: string | undefined
@@ -550,6 +530,12 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
     } catch {
       const text = await r.text().catch(() => '')
       if (text) msg = text
+    }
+    // A missing session signs the browser out. `operation_unavailable` is an
+    // authentication step that failed (a mistyped password at
+    // re-authentication) while the session stays valid.
+    if (r.status === 401 && code !== 'operation_unavailable') {
+      window.dispatchEvent(new CustomEvent('auth:required'))
     }
     throw new ApiRequestError(msg, r.status, code, payload)
   }
@@ -1033,7 +1019,7 @@ export interface GraphProjectionQuery {
   include_clusters?: boolean
 }
 
-export interface GraphViewStateRecord {
+interface GraphViewStateRecord {
   scope_key: string
   state_json: Record<string, unknown>
   updated_at: string | null
@@ -1169,8 +1155,12 @@ export const notesApi = {
     del<void>(`/knowledge/notes/${id}/links/${linkId}`),
   revisions: (id: string, limit?: number) =>
     get<NoteRevision[]>(`/knowledge/notes/${id}/revisions` + (limit ? `?limit=${limit}` : '')),
-  rollback: (id: string, toVersion: number) =>
-    post<Note>(`/knowledge/notes/${id}/rollback`, { to_version: toVersion }),
+  /** With `expectVersion`, refused (409) unless the note is still at that version. */
+  rollback: (id: string, toVersion: number, expectVersion?: number) =>
+    post<Note>(`/knowledge/notes/${id}/rollback`, {
+      to_version: toVersion,
+      ...(expectVersion === undefined ? {} : { expect_version: expectVersion }),
+    }),
   /**
    * Jot a note against an object and link it in one call (N7). Two calls would
    * strand a note whenever the link failed, and the round trip for a note id
@@ -1244,7 +1234,7 @@ export const promptsApi = {
   evaluate: (assetKey: string, body: PromptEvaluationRequest) =>
     post<PromptEvaluationResult>(`/prompts/assets/${encodeURIComponent(assetKey)}/evaluate`, body),
   promote: (assetKey: string, body: PromptPromotionRequestInput) =>
-    post<Proposal>(`/prompts/assets/${encodeURIComponent(assetKey)}/promote`, body),
+    post<PromptPromotionResult>(`/prompts/assets/${encodeURIComponent(assetKey)}/promote`, body),
   listDeployments: (assetKey: string, params: { include_history?: boolean } = {}) => {
     const q: Record<string, string> = {}
     if (params.include_history !== undefined) q.include_history = String(params.include_history)
@@ -1259,8 +1249,8 @@ export const promptsApi = {
 
 // ── Boards (task surfaces) ────────────────────────────────────────────────
 export const boardsApi = {
-  list:   (params: Record<string, string> = {}) =>
-    get<Page<Board>>('/boards?' + new URLSearchParams(params)),
+  list:   (params: Record<string, string> = {}, options: { spaceId?: string } = {}) =>
+    get<Page<Board>>('/boards?' + new URLSearchParams(params), { spaceId: options.spaceId }),
   create: (body: Partial<Board> & { name: string }) =>
     post<Board>('/boards', body),
   get:    (id: string) => get<Board>(`/boards/${id}`),
@@ -1371,7 +1361,7 @@ export const runsApi = {
   resume: (id: string) => post<{ id: string; status: string; resumed_at: string; resume_kind: string }>(`/runs/${id}/resume`, {}),
   abandon: (id: string, body: { reason?: string | null } = {}) => post<{ id: string; status: string; abandoned_at: string }>(`/runs/${id}/abandon`, body),
   activities: (id: string, params: Record<string, string> = {}) =>
-    get<Page<ActivityRecord>>(`/runs/${id}/activities?` + new URLSearchParams(params)),
+    get<Page<ActivityInboxRecord>>(`/runs/${id}/activities?` + new URLSearchParams(params)),
   artifacts: (id: string, params: Record<string, string> = {}) =>
     get<Page<Artifact>>(`/runs/${id}/artifacts?` + new URLSearchParams(params)),
   proposals: (id: string, params: Record<string, string> = {}) =>
@@ -1413,34 +1403,6 @@ export const plansApi = {
   execute: (id: string, body: PlanExecuteBody) =>
     post<PlanExecutionResult>(`/plans/${encodeURIComponent(id)}/execute`, body),
   reconcile: (id: string) => post<PlanExecutionResult>(`/plans/${encodeURIComponent(id)}/reconcile`, {}),
-}
-
-// ── Collaboration task groups (advanced audit/control) ────────────────────
-export const agentGroupsApi = {
-  list: (params: { status?: string; limit?: number; offset?: number } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.status !== undefined) q.status = params.status
-    if (params.limit !== undefined) q.limit = String(params.limit)
-    if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<Page<AgentRunGroup>>('/agent-groups?' + new URLSearchParams(q))
-  },
-  create: (body: CreateAgentRunGroupRequest) =>
-    post<CreateAgentRunGroupResponse>('/agent-groups', body),
-  update: (groupId: string, body: UpdateAgentRunGroupRequest) =>
-    patch<UpdateAgentRunGroupResponse>(`/agent-groups/${groupId}`, body),
-  timeline: (groupId: string, params: { limit?: number; offset?: number } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.limit !== undefined) q.limit = String(params.limit)
-    if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<AgentRunGroupTimeline>(`/agent-groups/${groupId}/timeline?` + new URLSearchParams(q))
-  },
-  trace: (groupId: string) =>
-    get<AgentRunGroupTrace>(`/agent-groups/${groupId}/trace`),
-  sendMessage: (groupId: string, body: SendAgentRunGroupMessageRequest) =>
-    post<SendAgentRunGroupMessageResponse>(`/agent-groups/${groupId}/messages`, body),
-  pause: (groupId: string) => post<AgentRunGroup>(`/agent-groups/${groupId}/pause`, {}),
-  resume: (groupId: string) => post<AgentRunGroup>(`/agent-groups/${groupId}/resume`, {}),
-  cancel: (groupId: string) => post<AgentRunGroup>(`/agent-groups/${groupId}/cancel`, {}),
 }
 
 export const roomsApi = {
@@ -1903,8 +1865,8 @@ export const evolutionApi = {
 
 // ── Agents ────────────────────────────────────────────────────────────────
 export const agentsApi = {
-  list: (params: Record<string, string> = {}) =>
-    get<AgentOut[]>('/agents?' + new URLSearchParams(params)),
+  list: (params: Record<string, string> = {}, options: { spaceId?: string } = {}) =>
+    get<AgentOut[]>('/agents?' + new URLSearchParams(params), { spaceId: options.spaceId }),
   get: (agentId: string) => get<AgentOut>(`/agents/${agentId}`),
   /** The managed Assistant instance for a scope: the Space's own, or a Project's (null before its first Room message). */
   getSystemAssistant: (projectId?: string | null) =>
@@ -2230,15 +2192,6 @@ export const hostsApi = {
     ),
 }
 
-export const projectFolderExecutionConfigsApi = {
-  get:    (projectId: string, folderId: string) =>
-    get<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`),
-  create: (projectId: string, folderId: string, data: ProjectFolderExecutionConfigUpdate) =>
-    post<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`, data),
-  update: (projectId: string, folderId: string, data: ProjectFolderExecutionConfigUpdate) =>
-    patch<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`, data),
-}
-
 export const capabilitiesFrameworkApi = {
   listCapabilityDefinitions: () =>
     get<CapabilityDefinition[]>('/capability-definitions'),
@@ -2398,7 +2351,7 @@ export type HostLoginTarget =
   | { kind: 'logout' }
 
 /** The daemon's report for one install/uninstall of a managed runtime copy. */
-export interface RuntimeInstallResult {
+interface RuntimeInstallResult {
   host_id: string
   runtime_key: string
   ok: boolean
@@ -2547,6 +2500,7 @@ export const sourcesApi = {
     fetch_frequency?: 'manual' | 'hourly' | 'daily' | 'weekly'
     schedule_rule?: Record<string, unknown>
     capture_policy?: SourceCapturePolicy
+    source_connection_id?: string
   }) => post<SourceChannel>('/sources/channels', body),
   previewQuery: (body: { provider_key: string; query: Record<string, unknown>; source_channel_id?: string }) =>
     post<SourceQueryPreview>('/sources/query-preview', body),
@@ -3270,7 +3224,7 @@ export const decisionCasesApi = {
   createDelivery: (projectId: string, caseId: string, commitmentId: string) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/commitments/${encodeURIComponent(commitmentId)}/deliver`, {}),
 }
 
-export interface LearningObjective {
+interface LearningObjective {
   id: string
   project_id: string | null
   title: string
@@ -3278,7 +3232,7 @@ export interface LearningObjective {
   status: string
 }
 
-export interface LearningItem {
+interface LearningItem {
   id: string
   project_id: string | null
   objective_id: string | null
@@ -3466,37 +3420,6 @@ export const researchDiscoveryApi = {
     post<{ strategy: ResearchQueryStrategy }>(`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/retry`, body),
 }
 
-export const academicApi = {
-  listPapers: (params: { q?: string; limit?: number; offset?: number } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.q !== undefined) q.q = params.q
-    if (params.limit !== undefined) q.limit = String(params.limit)
-    if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<Page<AcademicPaper>>('/academic/papers?' + new URLSearchParams(q))
-  },
-  createPaper: (body: AcademicPaperCreate) =>
-    post<AcademicPaper>('/academic/papers', body),
-  getPaper: (objectId: string) =>
-    get<AcademicPaper>(`/academic/papers/${encodeURIComponent(objectId)}`),
-  updatePaper: (objectId: string, body: AcademicPaperUpdate) =>
-    patch<AcademicPaper>(`/academic/papers/${encodeURIComponent(objectId)}`, body),
-  linkAuthor: (objectId: string, body: { person_object_id: string; author_position?: number | null; is_corresponding?: boolean }) =>
-    post<{ object_relation_id: string }>(`/academic/papers/${encodeURIComponent(objectId)}/authors`, body),
-  listAuthors: (objectId: string) =>
-    get<AcademicPaperAuthor[]>(`/academic/papers/${encodeURIComponent(objectId)}/authors`),
-  linkCitation: (objectId: string, body: { cited_paper_object_id: string }) =>
-    post<{ object_relation_id: string }>(`/academic/papers/${encodeURIComponent(objectId)}/citations`, body),
-  listCitations: (objectId: string) =>
-    get<AcademicPaperCitation[]>(`/academic/papers/${encodeURIComponent(objectId)}/citations`),
-  listCitedBy: (objectId: string) =>
-    get<AcademicPaperCitation[]>(`/academic/papers/${encodeURIComponent(objectId)}/cited-by`),
-}
-
-// ── Features ──────────────────────────────────────────────────────────────
-export const featuresApi = {
-  list: () => get<Feature[]>('/features'),
-}
-
 export const instanceOperationsApi = {
   get: () => get<InstanceOperationsSettings>('/system/instance-settings'),
   update: (body: InstanceOperationsSettingsUpdate) =>
@@ -3607,7 +3530,7 @@ export interface ModelProviderOut {
   updated_at: string
 }
 
-export interface ModelProviderModelsOut {
+interface ModelProviderModelsOut {
   models: string[]
   source: 'configured' | 'live'
 }
@@ -3632,7 +3555,7 @@ export interface ProviderPresetOut {
   task?: string | null
 }
 
-export interface ProviderFromPresetCreateRequest {
+interface ProviderFromPresetCreateRequest {
   preset_id: string
   api_key?: string | null
   name?: string
@@ -3643,7 +3566,7 @@ export interface ProviderFromPresetCreateRequest {
   is_default?: boolean
 }
 
-export interface ProviderFromPresetCreateResponse {
+interface ProviderFromPresetCreateResponse {
   provider: ModelProviderOut
 }
 
@@ -3659,7 +3582,7 @@ export interface ProviderTaskPolicyOut {
   updated_at: string
 }
 
-export interface ProviderTaskPolicyPutRequest {
+interface ProviderTaskPolicyPutRequest {
   chain: ProviderTaskChainEntry[]
   enabled?: boolean
 }
@@ -3682,7 +3605,7 @@ export interface ProviderVendorOut {
   subscription_only: boolean
 }
 
-export interface TestConnectionOut {
+interface TestConnectionOut {
   success: boolean
   message: string
   model?: string
@@ -3734,7 +3657,8 @@ export const providersApi = {
     name: string
     provider_type: ProviderType | string
     api_key: string
-    default_model: string
+    /** null clears the default; undefined leaves it. */
+    default_model: string | null
     available_models: string[]
     base_url: string
     network_profile_id: string | null
@@ -3764,28 +3688,39 @@ export const providersApi = {
   sendSubscriptionLoginInput: (type: ManagedSubscriptionType, input: string) =>
     post<{ status: string }>(`/providers/subscriptions/login/input?type=${encodeURIComponent(type)}`, { input }),
 
-  async *subscriptionLoginStream(type: ManagedSubscriptionType): AsyncGenerator<ManagedSubscriptionLoginEvent> {
+  // The server ends the login session only when this response closes, and
+  // allows one session per user and type: the caller aborts when it leaves,
+  // as hostsApi.loginStream's callers do.
+  async *subscriptionLoginStream(type: ManagedSubscriptionType, signal?: AbortSignal): AsyncGenerator<ManagedSubscriptionLoginEvent> {
     const url = `${BASE}/providers/subscriptions/login/stream?type=${encodeURIComponent(type)}`
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
     headers['X-Rainver-Space-Id'] = _spaceId
-    const response = await fetch(url, { headers })
+    const response = await fetch(url, { headers, signal })
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
     if (!response.body) throw new Error('No response body')
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const blocks = buffer.split('\n\n')
-      buffer = blocks.pop() ?? ''
-      for (const block of blocks) {
-        const line = block.trim()
-        if (!line.startsWith('data: ')) continue
-        try { yield JSON.parse(line.slice(6)) as ManagedSubscriptionLoginEvent } catch { /* ignore malformed SSE */ }
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split('\n\n')
+        buffer = blocks.pop() ?? ''
+        for (const block of blocks) {
+          const line = block.trim()
+          if (!line.startsWith('data: ')) continue
+          try { yield JSON.parse(line.slice(6)) as ManagedSubscriptionLoginEvent } catch { /* ignore malformed SSE */ }
+        }
       }
+    } catch (caught) {
+      // An abort is the caller leaving, not a failure to report.
+      if (!(caught instanceof DOMException && caught.name === 'AbortError')) throw caught
+    } finally {
+      // A consumer that stops iterating lands here too; release the connection.
+      void reader.cancel().catch(() => undefined)
     }
   },
 
@@ -3818,7 +3753,7 @@ export const providersApi = {
 // PATCH /api/v1/plugins/:id/settings — patch settings
 export const pluginsApi = {
   list: () => get<{ items: unknown[] }>('/plugins'),
-  effective: () => get<{ plugins: Record<string, unknown> }>('/plugins/effective'),
+  effective: () => get<OfficialPluginEffectiveResponse>('/plugins/effective'),
   get: (pluginId: string) => get<unknown>(`/plugins/${encodeURIComponent(pluginId)}`),
   install: (pluginId: string) =>
     post<unknown>(`/plugins/${encodeURIComponent(pluginId)}/install`, {}),

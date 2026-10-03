@@ -2,7 +2,7 @@ import type { Queryable } from "../routeUtils/common.js";
 import { objectValue } from "../routeUtils/common.js";
 import { defaultExtractionProfileRegistry } from "../extractionProfiles/registry.js";
 
-export interface ProjectScreeningCriteria {
+interface ProjectScreeningCriteria {
   include_keywords: string[];
   exclude_keywords: string[];
   domain_criteria: Record<string, string[]>;

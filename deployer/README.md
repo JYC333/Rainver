@@ -56,8 +56,10 @@ The loop is configured by the generated `.deployer.env` (`DEPLOYER_SERVER_URL`,
 `SERVER_INTERNAL_TOKEN`). Without both, it does not start and this container is
 exactly the operator-only deployer it was before.
 
-Each heartbeat names the deployer sending it — the container's own name, stable
-across a restart of this process inside it. The server records it on the job it
+Each heartbeat names the deployer sending it — the container's hostname
+(`HOSTNAME`, which is the container ID when Compose sets no hostname), stable
+across a restart of this process inside it and new when the container is
+recreated. The server records it on the job it
 hands out, and only a beat from that same deployer releases a job left `running`
 by a process that died. Running a second deployer (this container plus the
 host-run process below) is therefore safe from the server's side, though they
@@ -89,8 +91,6 @@ Useful for development or environments where Docker Compose is not running the d
 
 ```bash
 # Install Python deps (none beyond stdlib)
-# Create socket directory
-sudo mkdir -p /var/run/rainver
 
 # The jobs need the checkout, the mode root, and the host path of that mode root.
 # On the host the last two are the same directory.

@@ -22,7 +22,7 @@ import type {
 
 type AgentLabel = { id: string; name: string }
 
-export type DiscussionTimelineItem =
+type DiscussionTimelineItem =
   | { kind: 'message'; message: RoomMessage }
   | { kind: 'discussion'; discussionId: string; segment: number; messages: RoomMessage[] }
 
@@ -40,7 +40,7 @@ export function discussionNoticeOf(message: RoomMessage): RoomDiscussionNotice |
  * emergent discussion, the person's message that started it — the row names it
  * as its origin, and the replies to it are what carry the id.
  */
-export function messageDiscussionId(message: RoomMessage, originIds: ReadonlyMap<string, string>): string | null {
+function messageDiscussionId(message: RoomMessage, originIds: ReadonlyMap<string, string>): string | null {
   return message.discussion_id ?? discussionNoticeOf(message)?.discussion_id ?? originIds.get(message.id) ?? null
 }
 
@@ -83,7 +83,7 @@ export function referencedDiscussionIds(messages: readonly RoomMessage[]): strin
 }
 
 /** How many rounds one "add rounds" action asks for: a fresh discussion's default for its shape. */
-export function discussionExtensionRounds(discussion: Pick<RoomDiscussion, 'shape'>): number {
+function discussionExtensionRounds(discussion: Pick<RoomDiscussion, 'shape'>): number {
   return ROOM_DISCUSSION_DEFAULT_ROUND_CAP[discussion.shape]
 }
 
@@ -91,7 +91,7 @@ export function discussionExtensionRounds(discussion: Pick<RoomDiscussion, 'shap
  * What the extend action is called. On an emergent discussion held at its cap
  * the same call upgrades it into an explicit one, so it says that.
  */
-export function discussionExtendLabel(discussion: Pick<RoomDiscussion, 'kind' | 'shape'>): string {
+function discussionExtendLabel(discussion: Pick<RoomDiscussion, 'kind' | 'shape'>): string {
   if (discussion.kind === 'emergent') return 'Open a discussion'
   const rounds = discussionExtensionRounds(discussion)
   return `Add ${rounds} ${rounds === 1 ? 'round' : 'rounds'}`
@@ -112,19 +112,6 @@ export function resetLabel(iso: string | null | undefined, now: Date = new Date(
 export function quotaWindowText(window: SubscriptionQuotaWindow): string {
   const reset = resetLabel(window.resets_at)
   return `${Math.round(window.utilization)}% of its ${window.kind === 'week' ? 'weekly' : '5-hour'} window${reset ? ` (resets ${reset})` : ''}`
-}
-
-/**
- * What the discussion cost, one line per funding source:
- * money on priced Runs; per subscription its tokens here and the account's
- * window, which is account-wide and cannot be charged to the discussion.
- */
-export function discussionCostLines(
-  usage: RoomDiscussionDetail['usage'],
-  discussion?: Pick<RoomDiscussion, 'spend_cap_usd'>,
-): string[] {
-  const priced = pricedCostLine(usage, discussion)
-  return [...(priced ? [priced] : []), ...usage.subscription.map(subscriptionCostLine)]
 }
 
 function pricedCostLine(usage: RoomDiscussionDetail['usage'], discussion?: Pick<RoomDiscussion, 'spend_cap_usd'>): string | null {

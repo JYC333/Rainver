@@ -33,22 +33,27 @@ of any vendor's harness.
 Rainver is the governance and context layer over vendor CLIs. Runtime
 adapters are adapters to the core, never its foundation, and no core
 authority (canonical state, policy, memory, proposals, context) may depend on
-any one vendor CLI. Every adapter is independently disableable.
+any one vendor CLI. An adapter is available only where an execution host
+holds an installed, logged-in copy of it; there is no separate per-adapter
+enable switch, and a CLI nobody installs cannot run (`RUNTIME_ADAPTER_STANDARD.md`).
 
 ### 2. Three layers stay separate
 
 | Layer | What it is | Examples |
 |---|---|---|
 | Agent (product) | Configured actor with policy, memory, delegation rules | a Project's coding agent |
-| Runtime Adapter | Execution backend selected for a Run | `claude_code`, `codex_cli`, `opencode`, `model_api`, `ts_agent_host` |
+| Runtime Adapter | Execution backend selected for a Run | `claude_code`, `codex_cli`, `opencode`, `gemini_cli` |
 | Model Provider | LLM API credential the server holds | Anthropic, OpenAI, Google |
 
 `RuntimeAdapterSpec` (code) is the source of truth for how an adapter
-behaves. Per-Space `RuntimeAdapter` rows hold configuration only — enabled
-state, executable override, health. Credential profiles are user-owned and
-resolved per Run from the instructing user's enabled Space grants
-([ADR 0008](0008-credential-channel-isolation.md)); they are not adapter
-configuration. Adding a CLI normally means adding a spec, not a runtime class.
+behaves; there are no runtime-adapter database rows. A Space's runtime choice
+lives on `AgentRuntimeProfile` rows (`runtime_key`, backend mode, options —
+[ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)), and each host
+reports the installation and health of the copies it holds. Credential
+profiles are user-owned and resolved per Run from the instructing user's
+enabled Space grants ([ADR 0008](0008-credential-channel-isolation.md)); they
+are not adapter configuration. Adding a CLI normally means adding a spec, not
+a runtime class.
 
 ### 3. One protocol: the Agent Client Protocol
 
@@ -66,18 +71,19 @@ remote execution hosts ([ADR 0016](0016-control-plane-execution-hosts.md)).
 
 ### 4. Model selection is explicit per Run
 
-`runs.model_selection_mode`:
+The Run's `AgentRuntimeProfile` sets its `backend_mode`
+([ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)):
 
 | Mode | Meaning |
 |---|---|
-| `cli_default` (default) | the CLI uses its own configured model and account |
-| `cli_model_override` | Rainver forwards a model choice, only where the spec supports it |
-| `rainver_provider` | the Run resolves a configured ModelProvider |
+| `runtime_native` | the CLI uses its own configured model and account |
+| `model_provider` | the Run resolves a Space-selectable ModelProvider and model |
 
-`rainver_provider` works in both directions: managed adapters call the
-provider in process, and a local CLI receives a run-scoped provider binding
+Under `model_provider` the local CLI receives a run-scoped provider binding
 carrying only the provider-proxy URL and a short-lived lease token. The
-upstream key never leaves the server proxy boundary (ADR 0008).
+upstream key never leaves the server proxy boundary (ADR 0008). The legacy
+`runs.model_selection_mode` column keeps its `cli_default` default and is not
+read by dispatch.
 
 ### 5. Usage is accounted exactly where it can be, and labelled where it cannot
 
@@ -85,9 +91,10 @@ Token accounting lives in the canonical usage ledger, attributed to the Run.
 ACP reports exact per-turn usage with cache reads and writes separated;
 those events carry `usage_accuracy = provider_reported` and the `local_cli`
 execution channel. A provider-bound CLI Run is accounted at the provider
-proxy instead and emits no second CLI event. Usage reconstructed from
-historical transcripts is `transcript_lower_bound` — a recovery path for
-import that cannot attribute to a Run — and anything else is `unknown`. The
+proxy instead and emits no second CLI event. Usage read from an
+ambient session import is recorded as `provider_reported` with the vendor's
+own counts (`cli.history_usage`, attributed to the imported session rather
+than a Run), and anything else is `unknown`. The
 Run read model aggregates ledger events; `runs` carries no token columns.
 
 Subscription quota is separate from token accounting and cached per

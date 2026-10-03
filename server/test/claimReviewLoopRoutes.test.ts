@@ -78,6 +78,8 @@ function mockPool(handler: Handler): void {
 
 function claimRow(over: Record<string, unknown>) {
   return {
+    // The viewer these fakes model holds full access; the real SELECT carries the level.
+    effective_access_level: "full",
     id: "claim-x",
     space_id: "space-1",
     subject_object_id: "subject-1",

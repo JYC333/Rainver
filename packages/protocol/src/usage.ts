@@ -22,6 +22,7 @@ export const UsageSourceTypeSchema = z.enum([
   "local_run",
   "provider_proxy",
   "cli_history_import",
+  "ambient_host_history",
   "cross_instance_import",
   "manual_import",
 ]);

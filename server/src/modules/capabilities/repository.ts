@@ -299,18 +299,11 @@ export class PgCapabilitiesRepository {
       if (!archived.rows[0]) throw new HttpError(404, "Active skill overlay not found");
       return skillLocalOverlayOut(archived.rows[0]);
     }
-    const updated = await this.db.query<SkillLocalOverlayRow>(
-      `UPDATE skill_local_overlays
-          SET overlay_json = $5::jsonb,
-              updated_at = $6
-        WHERE space_id = $1 AND skill_package_id = $2 AND scope_type = $3
-          AND COALESCE(scope_id, '') = COALESCE($4::varchar, '')
-          AND status = 'active'
-        RETURNING ${SKILL_LOCAL_OVERLAY_COLUMNS}`,
-      [identity.spaceId, skillPackageId, scopeType, scopeId, JSON.stringify(body.overlay_json ?? {}), now],
-    );
-    if (updated.rows[0]) return skillLocalOverlayOut(updated.rows[0]);
-    const inserted = await this.db.query<SkillLocalOverlayRow>(
+    // One statement against the active-scope partial unique index: two first
+    // saves at once would both find no row to update and the second insert
+    // would fail on the index; the conflict clause lets the later writer
+    // update what the earlier one inserted instead.
+    const saved = await this.db.query<SkillLocalOverlayRow>(
       `INSERT INTO skill_local_overlays (
          id, space_id, skill_package_id, scope_type, scope_id, overlay_json,
          status, created_by_user_id, created_at, updated_at
@@ -318,6 +311,10 @@ export class PgCapabilitiesRepository {
          $1, $2, $3, $4, $5, $6::jsonb,
          'active', $7, $8, $8
        )
+       ON CONFLICT (space_id, skill_package_id, scope_type, COALESCE(scope_id, ''::character varying))
+         WHERE status = 'active'
+       DO UPDATE SET overlay_json = EXCLUDED.overlay_json,
+                     updated_at = EXCLUDED.updated_at
        RETURNING ${SKILL_LOCAL_OVERLAY_COLUMNS}`,
       [
         randomUUID(),
@@ -330,7 +327,7 @@ export class PgCapabilitiesRepository {
         now,
       ],
     );
-    return skillLocalOverlayOut(inserted.rows[0]!);
+    return skillLocalOverlayOut(saved.rows[0]!);
   }
 
   async saveImportedSkill(
@@ -653,7 +650,7 @@ export class PgCapabilitiesRepository {
   }
 }
 
-export interface SkillConversionApplyResult {
+interface SkillConversionApplyResult {
   skill_package: SkillPackage;
   capability_definition: CapabilityDefinition;
   capability_version_id: string;
@@ -673,8 +670,8 @@ export async function approveSkillImportInTransaction(input: {
   const rows = await input.db.query<SkillPackageRow>(
     `UPDATE skill_packages
         SET status = 'reviewed',
-            manifest_json = manifest_json || $5::jsonb,
-            updated_at = $4
+            manifest_json = manifest_json || $4::jsonb,
+            updated_at = $3
       WHERE id = $1
         AND space_id = $2
         AND status = 'imported'
@@ -682,7 +679,6 @@ export async function approveSkillImportInTransaction(input: {
     [
       input.skillPackageId,
       input.spaceId,
-      input.userId,
       now,
       JSON.stringify({
         review: {

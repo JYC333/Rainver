@@ -2,14 +2,14 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { ProviderProxyRoute } from "../providers/proxy/lease.js";
 
-export class OpenCodeProviderConfigError extends Error {
+class OpenCodeProviderConfigError extends Error {
   constructor(readonly code: string, message: string) {
     super(message);
     this.name = "OpenCodeProviderConfigError";
   }
 }
 
-export interface OpenCodeProviderConfigHandle {
+interface OpenCodeProviderConfigHandle {
   model: string;
   restore(): Promise<void>;
 }
@@ -151,8 +151,8 @@ async function parseJsonObject(text: string): Promise<Record<string, unknown>> {
   }
 }
 
-function recordValue(value: unknown): Record<string, any> {
+function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, any>
+    ? value as Record<string, unknown>
     : {};
 }

@@ -55,13 +55,17 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: E
   const [focus, setFocus] = useState(project.current_focus ?? '')
   const [saving, setSaving] = useState(false)
 
+  // Fill the fields when the dialog opens, not on every read: Pulse re-reads
+  // the Project every few seconds, and each read is a new object.
+  const projectRef = useRef(project)
+  projectRef.current = project
   useEffect(() => {
-    if (open) {
-      setName(project.name)
-      setDescription(project.description ?? '')
-      setFocus(project.current_focus ?? '')
-    }
-  }, [open, project])
+    if (!open) return
+    const current = projectRef.current
+    setName(current.name)
+    setDescription(current.description ?? '')
+    setFocus(current.current_focus ?? '')
+  }, [open, project.id])
 
   async function save() {
     if (!name.trim()) {

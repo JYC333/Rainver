@@ -222,4 +222,62 @@ describe('Sources page', () => {
     await waitFor(() => expect(sourcesApi.createChannel).toHaveBeenCalled())
     expect(projectsApi.createSourceBinding).not.toHaveBeenCalled()
   })
+
+  it('calls a source whose monitors are all stopped Paused, whatever order they come in', async () => {
+    vi.mocked(sourcesApi.channels).mockResolvedValue([
+      source({ id: 'source-1', name: 'Agent memory', status: 'paused' }),
+      source({ id: 'source-2', name: 'Agent planning', status: 'archived' }),
+    ])
+    renderPage()
+
+    await screen.findByText('Agent memory')
+    expect(screen.queryByText('Mixed')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Paused').length).toBeGreaterThan(0)
+  })
+
+  it('closes only the category list on Escape, keeping the dialog and what was typed', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: /add source/i }))
+    await user.click(screen.getByRole('button', { name: 'Search scope' }))
+    await user.click(screen.getByRole('option', { name: 'Category stream' }))
+    await user.click(screen.getByText('Select categories'))
+    const option = screen.getByRole('checkbox', { name: /cs\.AI/i })
+    fireEvent.keyDown(option, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('checkbox', { name: /cs\.AI/i })).not.toBeInTheDocument())
+    expect(screen.getByRole('heading', { name: 'Add source' })).toBeInTheDocument()
+  })
+
+  it('names a new source after the platform chosen, until the name is edited by hand', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: /add source/i }))
+    expect(screen.getByDisplayValue('arXiv')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Source platform' }))
+    await user.click(screen.getByRole('option', { name: 'RSS Feed' }))
+    expect(screen.getByDisplayValue('RSS Feed')).toBeInTheDocument()
+
+    await user.clear(screen.getByDisplayValue('RSS Feed'))
+    await user.type(screen.getByPlaceholderText('RSS Feed'), 'My feeds')
+    await user.click(screen.getByRole('button', { name: 'Source platform' }))
+    await user.click(screen.getByRole('option', { name: 'arXiv' }))
+    expect(screen.getByDisplayValue('My feeds')).toBeInTheDocument()
+  })
+
+  it('drops a query preview once the query it was for changes', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: /add source/i }))
+    fireEvent.change(screen.getByPlaceholderText('e.g. all:"agent memory"'), { target: { value: 'agent memory' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Test query' }))
+    expect(await screen.findByText('Approximately 42 matches')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Search scope' }))
+    await user.click(screen.getByRole('option', { name: 'All arXiv papers' }))
+    expect(screen.queryByText('Approximately 42 matches')).not.toBeInTheDocument()
+  })
 })

@@ -24,7 +24,7 @@ import { hasDeclaration } from "./linkTypes.js";
  * seams were originally cast through `as never`, which would have accepted a
  * transposed argument or a changed return silently.
  */
-export interface OntologyProposalInput {
+interface OntologyProposalInput {
   proposalType: string;
   title: string;
   payload: Record<string, unknown>;
@@ -41,7 +41,7 @@ function normalizedContentVisibility(value: string): "private" | "space_shared" 
 }
 
 /** The only fields this module reads off an endpoint object. */
-export interface OntologyObjectRef {
+interface OntologyObjectRef {
   object_type: string;
   title: string | null;
   project_folder_id: string | null;
@@ -49,7 +49,7 @@ export interface OntologyObjectRef {
   visibility: string;
 }
 
-export interface OntologyRepositorySeams {
+interface OntologyRepositorySeams {
   insertProposal: (identity: SpaceUserIdentity, input: OntologyProposalInput) => Promise<Record<string, unknown>>;
   /** Existence and visibility only — the row's shape belongs to its own module. */
   getVisibleClaimRow: (identity: SpaceUserIdentity, claimId: string) => Promise<object | null>;
@@ -60,7 +60,24 @@ export interface OntologyRepositorySeams {
   ) => Promise<OntologyObjectRef>;
 }
 
-export const OBJECT_PROFILE_COLUMNS = `
+/**
+ * A relation proposal names both endpoints — its title carries the target's
+ * title — so it must reach no one who cannot read the target. It takes the
+ * source endpoint's audience only when the target is shared at least that
+ * widely: `space_shared`, and in no other Project or Folder than the source.
+ * Otherwise it stays private to the person proposing it.
+ */
+function relationProposalVisibility(
+  from: OntologyObjectRef,
+  to: OntologyObjectRef,
+): ReturnType<typeof normalizedContentVisibility> {
+  const targetReachesSourceAudience = normalizedContentVisibility(to.visibility) === "space_shared"
+    && (!to.primary_project_id || to.primary_project_id === from.primary_project_id)
+    && (!to.project_folder_id || to.project_folder_id === from.project_folder_id);
+  return targetReachesSourceAudience ? normalizedContentVisibility(from.visibility) : "private";
+}
+
+const OBJECT_PROFILE_COLUMNS = `
   id, space_id, key, label, description, base_object_type, status, version,
   field_schema_json, extraction_policy_json, retrieval_policy_json, ui_config_json,
   created_by_user_id, created_from_proposal_id, updated_from_proposal_id,
@@ -529,7 +546,7 @@ export class PgOntologyRepository {
       rationale: optionalString(body.rationale) ?? "Object relation requested.",
       projectFolderId: fromObject.project_folder_id,
       projectId: fromObject.primary_project_id,
-      visibility: normalizedContentVisibility(fromObject.visibility),
+      visibility: relationProposalVisibility(fromObject, toObject),
     });
   }
 

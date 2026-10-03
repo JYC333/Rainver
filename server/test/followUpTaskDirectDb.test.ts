@@ -330,6 +330,30 @@ describe("follow-up Tasks from a Run's output (real Postgres)", () => {
     expect(await tasks()).toEqual([]);
   });
 
+  it("refuses a Folder that belongs to another Project than the one the Task lands in", async () => {
+    if (!db.available) return;
+    const other = await new PgProjectRepository(db.pool).create({ spaceId: SPACE, userId: OWNER }, { name: "Other Project" });
+    const folder = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO project_folders (
+         id, space_id, project_id, created_by_user_id, name, status, kind,
+         is_primary, protected, system_managed, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'repo', 'active', 'code', true, false, false, $5, $5)`,
+      [folder, SPACE, other.id, OWNER, now],
+    );
+
+    await expect(createFollowUpTask(db.pool, { spaceId: SPACE, userId: OWNER }, {
+      pool: db.pool,
+      fields: parseFollowUpTaskPayload({ task: { title: "Wrong Folder" } }),
+      projectId: PROJECT,
+      projectFolderId: folder,
+      origin: { runId: null },
+      source: "test",
+    })).rejects.toMatchObject({ statusCode: 422 });
+    expect(await tasks()).toEqual([]);
+  });
+
   it("refuses the accept once the Project has been archived", async () => {
     if (!db.available) return;
     const run = await runWithOrigin("autonomous");

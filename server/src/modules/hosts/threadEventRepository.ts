@@ -21,7 +21,7 @@ export type HostThreadEventType =
   | "diagnostic"
   | "plan_updated";
 
-export interface HostThreadEvent {
+interface HostThreadEvent {
   id: string;
   host_task_thread_id: string;
   run_id: string;
@@ -38,7 +38,7 @@ export interface HostThreadEvent {
   created_at: string;
 }
 
-export interface NewHostThreadEvent {
+interface NewHostThreadEvent {
   event_type: HostThreadEventType;
   text?: string | null;
   tool_call_id?: string | null;

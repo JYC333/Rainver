@@ -23,7 +23,7 @@ import {
   type StoredResearchQueryStrategy,
 } from "./repository.js";
 
-export interface AdaptiveResearchQueryInput {
+interface AdaptiveResearchQueryInput {
   projectId: string;
   researchContextVersionId: string;
   providers: ResearchProviderKey[];
@@ -33,7 +33,7 @@ export interface AdaptiveResearchQueryInput {
   operationId?: string | null;
 }
 
-export interface AdaptiveResearchQueryVersionInput {
+interface AdaptiveResearchQueryVersionInput {
   projectId: string;
   sourceStrategyId: string;
   direction: "broaden" | "narrow";
@@ -41,7 +41,7 @@ export interface AdaptiveResearchQueryVersionInput {
   credentials?: Partial<Record<ResearchProviderKey, string>>;
 }
 
-export interface AdaptiveResearchQueryProviderRetryInput {
+interface AdaptiveResearchQueryProviderRetryInput {
   projectId: string;
   strategyId: string;
   providerKey: ResearchProviderKey;
@@ -162,6 +162,18 @@ export class AdaptiveQueryOrchestrator {
       return attempt ? [{ provider: plan.provider_key, intent: attempt.semantic_query }] : [];
     });
     if (selected.length === 0) throw new HttpError(409, "The active query strategy has no selected provider query");
+    // Each provider steps from the exact query it monitors with. Re-deriving
+    // `ladder.initial()` from it truncated away earlier adjustments, so the
+    // "adapted" query came out identical to the monitored one, or moved the
+    // other way. The stored query is also the only vocabulary left, so a
+    // direction may have no step at all: then there is nothing to propose.
+    const startingSteps = new Map(selected.map((item) => [item.provider, {
+      sequence: 1, direction: "initial" as const, semanticQuery: item.intent,
+    }]));
+    const changes = selected.some((item) => JSON.stringify(
+      this.ladder.next(startingSteps.get(item.provider)!, item.intent, input.direction, item.provider).semanticQuery,
+    ) !== JSON.stringify(item.intent));
+    if (!changes) throw new HttpError(409, `The monitored queries cannot ${input.direction} any further from their stored terms`);
     const contextVersion = await this.contextRepository.get(identity.spaceId, input.projectId, source.research_context_version_id);
     if (!contextVersion) throw new HttpError(404, "Research context version not found");
     const providerBudget = Math.max(1, Math.ceil(input.candidateBudget / selected.length));
@@ -191,6 +203,8 @@ export class AdaptiveQueryOrchestrator {
       intents.get(plan.provider_key)!,
       providerBudget,
       input.direction,
+      0,
+      startingSteps.get(plan.provider_key),
     )));
     await this.repository.finalizeStrategy(identity.spaceId, strategy.id);
     return (await this.repository.getStrategy(identity.spaceId, input.projectId, strategy.id))!;
@@ -215,16 +229,24 @@ export class AdaptiveQueryOrchestrator {
 
     const { nextRound } = await this.repository.resetProviderPlan(identity.spaceId, plan.id);
 
-    const lastAttempt = plan.attempts[plan.attempts.length - 1];
-    const intent = lastAttempt
-      ? lastAttempt.semantic_query
+    // The retry starts from the combination the plan stood on: the selected
+    // attempt when one was selected (the last attempt may be a later,
+    // unverified step that failed its preview), otherwise the last attempt
+    // that was actually observed, otherwise the last attempt at all.
+    const baseAttempt = (plan.selected_attempt_id
+      ? plan.attempts.find((attempt) => attempt.id === plan.selected_attempt_id)
+      : undefined)
+      ?? [...plan.attempts].reverse().find((attempt) => attempt.observation !== null)
+      ?? plan.attempts[plan.attempts.length - 1];
+    const intent = baseAttempt
+      ? baseAttempt.semantic_query
       : await this.intentPlanner!.plan(identity, contextVersion.context, input.execution);
-    // Seed the new round with the last attempt's exact compiled combination
-    // (not ladder.initial(intent), which re-ranks and truncates core/
-    // expansions/qualifiers/exclusions from scratch and would silently
-    // discard adaptations a prior narrow()/broaden() step already made).
-    const startingStep: ResearchQueryLadderStep | undefined = lastAttempt
-      ? { sequence: 1, direction: "initial", semanticQuery: lastAttempt.semantic_query }
+    // Seed the new round with that attempt's exact compiled combination (not
+    // ladder.initial(intent), which re-ranks and truncates core/expansions/
+    // qualifiers/exclusions from scratch and would silently discard
+    // adaptations a prior narrow()/broaden() step already made).
+    const startingStep: ResearchQueryLadderStep | undefined = baseAttempt
+      ? { sequence: 1, direction: "initial", semanticQuery: baseAttempt.semantic_query }
       : undefined;
     const providerBudget = Math.max(1, Math.trunc(Number(strategy.execution_budget.provider_candidate_budget) || 1));
 

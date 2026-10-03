@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import type { z } from "zod";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
@@ -72,6 +73,19 @@ export async function resolveIdentity(
   return null;
 }
 
+/**
+ * Parse a request body with a protocol schema, answering a validation failure
+ * as 422 with the first issue. `schema.parse` alone throws a ZodError, which
+ * `sendRouteError` does not recognise and the global handler turns into 500.
+ */
+export function parseBody<T>(schema: { safeParse(value: unknown): z.SafeParseReturnType<unknown, T> }, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const path = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+  throw new HttpError(422, `${path}${issue?.message ?? "Invalid request body"}`);
+}
+
 export function sendRouteError(reply: FastifyReply, error: unknown): FastifyReply {
   logServerRouteError(reply, error);
   if (error instanceof HttpError) {
@@ -125,7 +139,15 @@ export function bodyText(request: FastifyRequest): string {
 export function jsonBody(request: FastifyRequest): Record<string, unknown> {
   const text = bodyText(request);
   if (!text) return {};
-  const parsed = JSON.parse(text) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    // The app shell hands every body over as a raw buffer, so a body that is
+    // not JSON reaches here rather than Fastify's own parser: it is the
+    // client's error, not a server fault.
+    throw new HttpError(422, "Invalid JSON body");
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new HttpError(422, "JSON object body is required");
   }
@@ -259,6 +281,33 @@ export async function withDbTransaction<T>(
 }
 
 /**
+ * Runs a step whose failure the caller handles in `onFailure` (by logging, or
+ * by rethrowing). On a transaction client a database error would otherwise
+ * leave the whole transaction aborted even when it is caught, so there the
+ * step runs behind a savepoint and a failure rolls back only the step.
+ */
+export async function bestEffortStep(
+  db: Queryable,
+  savepoint: string,
+  step: () => Promise<unknown>,
+  onFailure: (error: unknown) => void,
+): Promise<void> {
+  const handle = db as Queryable & { release?: () => void; connect?: () => Promise<unknown> };
+  const onPool = typeof handle.connect === "function" && typeof handle.release !== "function";
+  const contained = !onPool && await db.query(`SAVEPOINT ${savepoint}`).then(() => true, () => false);
+  try {
+    await step();
+    if (contained) await db.query(`RELEASE SAVEPOINT ${savepoint}`);
+  } catch (error) {
+    if (contained) {
+      await db.query(`ROLLBACK TO SAVEPOINT ${savepoint}`).catch(() => undefined);
+      await db.query(`RELEASE SAVEPOINT ${savepoint}`).catch(() => undefined);
+    }
+    onFailure(error);
+  }
+}
+
+/**
  * Same transaction semantics as `withDbTransaction`, but for application
  * services that are constructed with a `Queryable` that may already be a
  * transaction client (nested inside a caller's transaction). Opens a real
@@ -291,6 +340,14 @@ export async function withQueryableTransaction<T>(
   } finally {
     client.release();
   }
+}
+
+/**
+ * Escapes `\\`, `%` and `_` so a user's search text matches as the characters
+ * typed inside a `LIKE`/`ILIKE` pattern; pair it with `ESCAPE '\\'` in the SQL.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
 /**

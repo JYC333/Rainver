@@ -121,7 +121,7 @@ export function NotebookChatPanel({
 
   return (
     <div className="flex h-full min-h-[24rem] flex-col gap-2">
-      <p className="text-xs text-muted-foreground">Discuss and edit the project's notes. Edits apply immediately and can always be undone.</p>
+      <p className="text-xs text-muted-foreground">Discuss and edit the project's notes. Edits apply immediately and can be undone until the note changes again.</p>
       <Select value={provider} onChange={setProvider} ariaLabel="AI provider" options={providers.map((p) => ({ value: p.id, label: p.name }))} />
       <div className="min-h-0 flex-1">
         <ConversationView
@@ -159,7 +159,9 @@ function NotebookEditCard({ edit, title, onUndone }: { edit: NotebookEdit; title
   async function undo() {
     setUndoing(true)
     try {
-      await notesApi.rollback(edit.note_id, edit.version - 1)
+      // Undo restores the whole revision before this edit, so it is refused
+      // once the note moved on; that later work would otherwise vanish.
+      await notesApi.rollback(edit.note_id, edit.version - 1, edit.version)
       setUndone(true)
       toast.success('Change undone.')
       onUndone()

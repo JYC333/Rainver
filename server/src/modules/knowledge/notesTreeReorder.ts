@@ -24,7 +24,7 @@ import { contentReadSql } from "../access/contentAccessSql.js";
  * `fromCollectionId` is what identifies the row being moved. Rows that only
  * shift position within their folder repeat their own folder there.
  */
-export interface NotesTreeReorderNotePlan {
+interface NotesTreeReorderNotePlan {
   kind: "notes";
   updates: Array<{
     noteId: string;
@@ -34,7 +34,7 @@ export interface NotesTreeReorderNotePlan {
   }>;
 }
 
-export type NotesTreeReorderPlan =
+type NotesTreeReorderPlan =
   | NotesTreeReorderNotePlan
   | {
       kind: "collections";
@@ -219,6 +219,35 @@ async function reorderNoteItems(
     });
   }
 
+  // A placement dragged into a folder that already holds this note would land
+  // on the unique (collection, note) row. Say so, as the placement action
+  // does, rather than surface the index's error as a 500. A batch that swaps
+  // two placements is no collision: the row it would land on is leaving.
+  const occupied = await db.query<{ note_id: string }>(
+    `SELECT item.note_id
+       FROM unnest($2::varchar[], $3::varchar[], $4::varchar[])
+            AS moving(note_id, from_collection_id, to_collection_id)
+       JOIN note_collection_items item
+         ON item.space_id = $1
+        AND item.note_id = moving.note_id
+        AND item.collection_id = moving.to_collection_id
+      WHERE moving.from_collection_id <> moving.to_collection_id
+        AND NOT EXISTS (
+          SELECT 1
+            FROM unnest($2::varchar[], $3::varchar[]) AS leaving(note_id, from_collection_id)
+           WHERE leaving.note_id = item.note_id
+             AND leaving.from_collection_id = item.collection_id
+        )
+      LIMIT 1`,
+    [
+      identity.spaceId,
+      updates.map((update) => update.noteId),
+      updates.map((update) => update.fromCollectionId),
+      updates.map((update) => update.collectionId),
+    ],
+  );
+  if (occupied.rows.length > 0) throw new HttpError(409, "This note is already in that folder");
+
   const result = await db.query(
     `UPDATE note_collection_items AS item
         SET collection_id = ordering.to_collection_id,
@@ -262,6 +291,11 @@ async function reorderNoteCollections(
   );
   const collectionById = new Map(rows.rows.map((row) => [row.id, row]));
   const updateById = new Map(updates.map((update) => [update.id, update]));
+  // A folder this reorder moves to the root has a proposed parent of `null`,
+  // which is an answer, not a missing one: only a folder the reorder does not
+  // touch keeps its stored parent.
+  const proposedParentId = (collectionId: string, storedParentId: string | null): string | null =>
+    updateById.has(collectionId) ? updateById.get(collectionId)!.parentId : storedParentId;
 
   const owningProject = (collectionId: string, proposed: boolean): string | null => {
     const visited = new Set<string>();
@@ -272,9 +306,7 @@ async function reorderNoteCollections(
       const current = collectionById.get(currentId);
       if (!current) throw new HttpError(404, "Note collection not found");
       if (current.project_id) return current.project_id;
-      currentId = proposed
-        ? (updateById.get(currentId)?.parentId ?? current.parent_id)
-        : current.parent_id;
+      currentId = proposed ? proposedParentId(currentId, current.parent_id) : current.parent_id;
     }
     return null;
   };
@@ -300,7 +332,7 @@ async function reorderNoteCollections(
       visited.add(parentId);
       const parent = collectionById.get(parentId);
       if (!parent) throw new HttpError(404, "Parent note collection not found");
-      parentId = updateById.get(parentId)?.parentId ?? parent.parent_id;
+      parentId = proposedParentId(parentId, parent.parent_id);
     }
   }
 

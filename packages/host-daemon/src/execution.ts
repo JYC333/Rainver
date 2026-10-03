@@ -128,9 +128,9 @@ export function resolveInputResourcePaths(
 export type LaunchFrame = Omit<HostLaunchFrame, "type" | "workspace"> & { workspace?: LaunchWorkspace };
 export type WorkSurfaceFrame = HostLaunchWorkSurface;
 export type ProviderBindingFrame = HostLaunchProviderBinding;
-export type StdinFrame = Pick<HostServerFrameOf<"stdin">, "run_id" | "value">;
-export type StdinCloseFrame = Pick<HostServerFrameOf<"stdin_close">, "run_id">;
-export type TerminateFrame = Pick<HostServerFrameOf<"terminate">, "run_id"> & Partial<Pick<HostServerFrameOf<"terminate">, "launch_id">> & { force?: boolean };
+type StdinFrame = Pick<HostServerFrameOf<"stdin">, "run_id" | "value">;
+type StdinCloseFrame = Pick<HostServerFrameOf<"stdin_close">, "run_id">;
+type TerminateFrame = Pick<HostServerFrameOf<"terminate">, "run_id"> & Partial<Pick<HostServerFrameOf<"terminate">, "launch_id">> & { force?: boolean };
 
 interface ActiveRun {
   child: ChildProcess;
@@ -188,7 +188,7 @@ export function substituteCwd(value: string, cwd: string): string {
 }
 
 /** Every placeholder the control plane may have written, in argv, stdin, or a prompt. */
-export function substitutePlaceholders(value: string, placeholders: Record<string, string>): string {
+function substitutePlaceholders(value: string, placeholders: Record<string, string>): string {
   let result = value;
   for (const [placeholder, replacement] of Object.entries(placeholders)) {
     result = result.split(placeholder).join(replacement);
@@ -300,7 +300,7 @@ export function resolveAcpEntrypoint(command: string): string | null {
 }
 
 /** What actually gets spawned for an ACP argv: the vendor CLI as-is, or a bundled adapter through `node`. */
-export interface AcpLaunch {
+interface AcpLaunch {
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -518,6 +518,10 @@ export function stopAllRunsForRevocation(log: (line: string) => void = () => {})
   registrationRevoked = true;
   // A launch still queued for its Location has no process yet; it ends here.
   cancelAllLeaseWaits();
+  // One already past its lease but still preparing (capturing a large
+  // workspace) is not in `activeLaunches` yet; marking it stopped is what the
+  // last check before spawn reads, so it never starts.
+  for (const launchId of launchingRuns.keys()) stoppedLaunches.add(launchId);
   for (const { runId, active } of activeLaunches.values()) {
     log(`run ${runId}: terminating because this host was revoked`);
     // Like every other deliberate stop: without it, a strict run killed here
@@ -681,7 +685,7 @@ function rainverCliPath(): string {
  * unsandboxed on a machine the user owns, so the control plane is not trusted
  * to have sent a key that stays inside the config directory.
  */
-export function providerProfileDir(profileKey: string): string {
+function providerProfileDir(profileKey: string): string {
   const segments = profileKey.split("/");
   const [agents, agentId, containerKind, containerId, runtimeKey, providerId] = segments;
   if (segments.length !== 6 || agents !== "agents") {
@@ -754,7 +758,7 @@ export function setEgressProxy(handle: EgressProxyHandle | null, serverUrl: stri
 }
 
 /** What a Run reached, and what it was refused; empty when this host runs no proxy. */
-export function runEgressLog(runId: string) {
+function runEgressLog(runId: string) {
   return egressProxy?.log(runId) ?? [];
 }
 
@@ -864,7 +868,7 @@ export function strictBindsForRun(input: {
  * process receives, which HOME it writes into, and what is bound — and none of
  * that is reachable by a test that has to spawn `bwrap` to observe it.
  */
-export interface StrictLaunch {
+interface StrictLaunch {
   command: string;
   args: string[];
   home: string;
@@ -1514,6 +1518,10 @@ async function launchRun(
   });
   // From here the close handler below releases the leases.
   hold.spawned = true;
+  // A `stdin` frame that lands as the agent exits fails asynchronously (EPIPE)
+  // on the stream's own 'error' event; unheard, it ends the daemon and every
+  // Run it supervises. The exit that follows is the report.
+  child.stdin?.on("error", (error) => log(`run ${frame.run_id}: stdin write failed: ${error.message}`));
   if (strict) {
     // "The namespace could not be built" and "the runtime exited immediately"
     // are the same exit code; this handshake is what tells them apart, and it
@@ -1559,15 +1567,18 @@ async function launchRun(
   }
   if (!frame.keep_stdin_open) child.stdin?.end();
 
-  child.stdout?.on("data", (chunk: Buffer) => {
-    send({ type: "output", run_id: frame.run_id, launch_id: frame.launch_id, chunk: chunk.toString("utf8") });
+  // Decoded by the stream, not per chunk: a pipe splits output at arbitrary
+  // bytes, and a character cut in two decodes to U+FFFD on both sides.
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    send({ type: "output", run_id: frame.run_id, launch_id: frame.launch_id, chunk });
   });
   let stderrTail = "";
   child.on("error", (error) => {
     stderrTail = error.message.slice(-4000);
   });
-  child.stderr?.on("data", (chunk: Buffer) => {
-    const text = chunk.toString("utf8");
+  child.stderr?.on("data", (text: string) => {
     stderrTail = (stderrTail + text).slice(-4000);
     // control-center-phase2-plan.md P1 (C5): the full live stream, not just
     // the failure tail the `complete` frame still carries below — normalized

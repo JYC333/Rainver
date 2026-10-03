@@ -13,7 +13,7 @@ import { memorySensitivityReadSql } from "./memorySensitivitySql.js";
 
 const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
 
-export interface MemoryMaintenanceScanInput {
+interface MemoryMaintenanceScanInput {
   spaceId: string;
   userId: string;
   limit: number;
@@ -30,7 +30,7 @@ export interface MemoryMaintenanceScanInput {
   excludePersonalVisibility?: boolean;
 }
 
-export interface MemoryMaintenanceScanResult {
+interface MemoryMaintenanceScanResult {
   report: MemoryMaintenanceReport;
   contributingMemoryIds: string[];
 }

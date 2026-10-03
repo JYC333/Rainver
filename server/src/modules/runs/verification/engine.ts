@@ -238,11 +238,17 @@ export function hasDeclaredVerificationChecks(
   const contract = recordValue(run.contract_snapshot_json);
   const acceptance = recordValue(contract.acceptance_criteria_json);
   const routeHints = recordValue(contract.route_hints_json);
-  return hasCheckList(contract.acceptance_criteria_json)
-    || hasCheckList(acceptance.checks ?? acceptance.verifiers ?? acceptance.validation)
-    || hasCheckList(routeHints.verification ?? routeHints.verifications)
+  // The same parse `buildVerificationDeclarations` runs on the contract, so
+  // "declared" means "would build a check": a list of prose criteria builds
+  // none, and a successful Run must not be recorded as missing a verification
+  // nothing could have run.
+  const declarations: VerificationDeclaration[] = [];
+  addCheckList(declarations, contract.acceptance_criteria_json);
+  addCheckList(declarations, acceptance.checks ?? acceptance.verifiers ?? acceptance.validation);
+  addCheckList(declarations, routeHints.verification ?? routeHints.verifications);
+  addCheckList(declarations, runRequiredOutputs(contract.required_outputs_json));
+  return declarations.length > 0
     || stringArray(routeHints.verification_recipe_refs).length > 0
-    || hasCheckList(runRequiredOutputs(contract.required_outputs_json))
     || hasCollectedPatchInOutput(run.output_json);
 }
 
@@ -480,13 +486,6 @@ function inferredCommandType(command: unknown): string {
   return "command";
 }
 
-function hasCheckList(value: unknown): boolean {
-  if (Array.isArray(value)) return value.length > 0;
-  if (!value || typeof value !== "object") return false;
-  const record = value as Record<string, unknown>;
-  return Array.isArray(record.checks) ? record.checks.length > 0 : Boolean(record.type || record.verifier_type);
-}
-
 function hasCollectedPatchInOutput(value: unknown): boolean {
   const output = recordValue(value);
   return arrayValue(output.materialization).some((item) => {
@@ -584,7 +583,7 @@ async function evaluateCommand(
   if (!target) return unavailable("An execution host workspace is required for command verification.");
   if (!executor) return unavailable("Host command verification is unavailable.");
   const command = commandArgv(declaration.config.command);
-  if (!command || command.length === 0) return unavailable("Validation command is missing.");
+  if (!command || command.length === 0) return unavailable("Validation command is missing or has an empty argument.");
   if (command.some((part) => /[;&|<>]/.test(part))) {
     return unavailable("Validation command contains unsupported shell syntax.");
   }
@@ -687,7 +686,10 @@ function evaluateDiffScope(
   if (changed.error) return unavailable(changed.error);
   const allowed = stringArray(config.allowed_paths ?? config.paths);
   if (allowed.length === 0) return unavailable("diff_scope requires allowed_paths.");
-  const outside = changed.paths.filter((path) => !allowed.some((pattern) => matchesPath(path, pattern)));
+  // Exact: an allowed `package.json` means the root one, not every file of
+  // that name. The same-name fallback stays in the forbidden direction, where
+  // matching more is the conservative error.
+  const outside = changed.paths.filter((path) => !allowed.some((pattern) => matchesPath(path, pattern, { sameName: false })));
   return {
     status: outside.length === 0 ? "passed" : "failed",
     summary: outside.length === 0 ? "All changes are within the declared diff scope." : "Changes escaped the declared diff scope.",
@@ -838,14 +840,28 @@ async function changedFiles(
   if (!executor) return { paths: [], error: "Git verification could not be run on the execution host." };
   const base = baseCommitSha && /^[0-9a-f]{7,64}$/i.test(baseCommitSha) ? baseCommitSha : "HEAD";
   try {
-    const diff = await executor.run({ runId, target, command: ["git", "diff", "--name-only", base], timeoutSeconds: 30 });
-    const status = await executor.run({ runId, target, command: ["git", "status", "--porcelain"], timeoutSeconds: 30 });
+    // NUL-separated, so no path is quoted or split; every untracked file is
+    // listed rather than its new directory; and a rename names both ends, so
+    // moving a forbidden file away still changes it.
+    const diff = await executor.run({
+      runId, target, command: ["git", "diff", "--name-only", "--no-renames", "-z", base], timeoutSeconds: 30,
+    });
+    const status = await executor.run({
+      runId, target, command: ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], timeoutSeconds: 30,
+    });
     if (diff.returncode !== 0 || status.returncode !== 0 || diff.failure_code || status.failure_code || diff.timed_out || status.timed_out) throw new Error("git failed or returned incomplete evidence");
     const paths = new Set<string>();
-    for (const value of diff.stdout.split(/\r?\n/)) if (value.trim()) paths.add(normalizeGitPath(value.trim()));
-    for (const value of status.stdout.split(/\r?\n/)) {
-      const path = value.slice(3).trim();
-      if (path) paths.add(normalizeGitPath(path));
+    for (const value of diff.stdout.split("\0")) if (value) paths.add(normalizeGitPath(value));
+    const entries = status.stdout.split("\0");
+    for (let index = 0; index < entries.length; index += 1) {
+      const entry = entries[index]!;
+      if (entry.length < 4) continue;
+      paths.add(normalizeGitPath(entry.slice(3)));
+      // `XY to\0from`: a rename's source is a change, a copy's is not.
+      if (/[RC]/.test(entry.slice(0, 2))) {
+        const source = entries[(index += 1)];
+        if (source && entry.slice(0, 2).includes("R")) paths.add(normalizeGitPath(source));
+      }
     }
     return { paths: [...paths].sort(), error: null };
   } catch {
@@ -915,6 +931,9 @@ function commandArgv(value: unknown): string[] | null {
   const parts: string[] = [];
   const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'|(\S+)/g;
   for (const match of value.matchAll(pattern)) parts.push(match[1] ?? match[2] ?? match[3] ?? "");
+  // `""` quotes an empty argument. The host wire refuses one, and a refused
+  // command_run frame gets no reply, so the Run would wait out the timeout.
+  if (parts.some((part) => part.length === 0)) return null;
   return parts.length > 0 ? parts : null;
 }
 
@@ -922,16 +941,24 @@ function safeRelativePath(value: string): boolean {
   return value.length > 0 && !value.includes("\0") && !isAbsolute(value) && !value.split(/[\\/]+/).includes("..");
 }
 
-function matchesPath(path: string, pattern: string): boolean {
+/** `sameName`: whether a bare file name also matches that name in any directory. */
+function matchesPath(path: string, pattern: string, options: { sameName: boolean } = { sameName: true }): boolean {
   const normalizedPath = normalizeGitPath(path);
   const normalizedPattern = normalizeGitPath(pattern);
   if (normalizedPattern === "*") return true;
-  const regex = new RegExp(`^${escapeRegex(normalizedPattern).replaceAll("\\*\\*", ".*").replaceAll("\\*", "[^/]*").replaceAll("\\?", "[^/]")}$`);
-  return regex.test(normalizedPath) || normalizedPath === normalizedPattern || basename(normalizedPath) === normalizedPattern;
+  const regex = new RegExp(`^${escapeRegex(normalizedPattern)
+    .replaceAll("\\*\\*/", "(?:.*/)?")
+    .replaceAll("\\*\\*", ".*")
+    .replaceAll("\\*", "[^/]*")
+    .replaceAll("\\?", "[^/]")}$`);
+  return regex.test(normalizedPath)
+    || normalizedPath === normalizedPattern
+    || (options.sameName && basename(normalizedPath) === normalizedPattern);
 }
 
+/** Escapes every regex metacharacter, `*` and `?` included, so the glob replacements above find them. */
 function escapeRegex(value: string): string {
-  return value.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return value.replace(/[.*?+^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeGitPath(value: string): string {

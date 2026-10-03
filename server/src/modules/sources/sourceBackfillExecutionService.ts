@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, objectValue, withQueryableTransaction } from "../routeUtils/common.js";
 import { consumeConnectionQuota } from "./sourceQuotaBucket.js";
+import { sourceConnectorRegistry } from "./catalog/sourceConnectorRegistry.js";
 import { nextBackfillRetryAt } from "./sourceBackfillRetry.js";
 
 interface PlanRow {
@@ -144,7 +145,10 @@ export class SourceBackfillExecutionService {
       return null;
     }
 
-    const remainingBudget = await this.remainingBudgetLocked(spaceId, plan, segment);
+    const { remaining: remainingBudget, unsettled } = await this.remainingBudgetLocked(spaceId, plan, segment);
+    // A sibling's in-flight page holds budget it may not use. Wait for it to
+    // settle rather than skipping this plan's remaining history for good.
+    if (remainingBudget <= 0 && unsettled > 0) return null;
     if (remainingBudget <= 0) {
       await this.db.query(
         `UPDATE source_backfill_segments SET status='skipped'
@@ -154,12 +158,22 @@ export class SourceBackfillExecutionService {
       await this.finishIfDone(spaceId, planId);
       return null;
     }
+    const channel = await this.db.query<{ source_connection_id: string; connector_key: string }>(
+      `SELECT ch.source_connection_id, c.connector_key
+         FROM source_channels ch
+         JOIN source_connections sc ON sc.id=ch.source_connection_id AND sc.space_id=ch.space_id
+         JOIN source_provider_connectors spc ON spc.id=sc.provider_connector_id
+         JOIN source_connectors c ON c.id=spc.connector_id
+        WHERE ch.id=$1 AND ch.space_id=$2 AND ch.status <> 'archived'`,
+      [plan.source_channel_id, spaceId],
+    );
+    if (!channel.rows[0]) throw new Error("Source channel not found for backfill plan");
     const window = objectValue(segment.window_json);
     const scheduledWindow = {
       ...window,
       max_items: remainingBudget,
       remaining_items: remainingBudget,
-      page_size: Math.min(100, remainingBudget),
+      page_size: resumedPageSize(window, channel.rows[0].connector_key) ?? Math.min(100, remainingBudget),
       partial: false,
       exhausted: false,
     };
@@ -169,11 +183,6 @@ export class SourceBackfillExecutionService {
     );
 
     const now = new Date().toISOString();
-    const channel = await this.db.query<{ source_connection_id: string }>(
-      `SELECT source_connection_id FROM source_channels WHERE id=$1 AND space_id=$2 AND status <> 'archived'`,
-      [plan.source_channel_id, spaceId],
-    );
-    if (!channel.rows[0]) throw new Error("Source channel not found for backfill plan");
     const quota = await consumeConnectionQuota(this.db, spaceId, channel.rows[0].source_connection_id, plan.quota_policy_json);
     if (!quota.allowed) {
       await this.db.query(
@@ -208,10 +217,14 @@ export class SourceBackfillExecutionService {
    * the in-flight reservation. Standalone Source plans keep their own budget
    * in strategy_json.
    */
-  private async remainingBudgetLocked(spaceId: string, plan: PlanRow, segment: SegmentRow): Promise<number> {
+  /**
+   * `remaining` is what may be dispatched now; `unsettled` is the part of the
+   * budget held only by in-flight reservations, which may yet come back.
+   */
+  private async remainingBudgetLocked(spaceId: string, plan: PlanRow, segment: SegmentRow): Promise<{ remaining: number; unsettled: number }> {
     if (plan.project_operation_kind !== "research") {
       const configuredMax = integerValue(objectValue(plan.strategy_json).max_items) ?? integerValue(objectValue(segment.window_json).max_items) ?? 100;
-      return configuredMax - Number(plan.items_ingested ?? 0);
+      return { remaining: configuredMax - Number(plan.items_ingested ?? 0), unsettled: 0 };
     }
     const total = integerValue(plan.operation_max_items);
     if (!total || total < 1) throw new HttpError(409, "Project Research operation has no valid item budget");
@@ -228,7 +241,12 @@ export class SourceBackfillExecutionService {
         WHERE p.project_operation_id=$1 AND p.space_id=$2 AND s.status='running'`,
       [plan.project_operation_id, spaceId],
     );
-    return total - Number(settled.rows[0]?.settled ?? 0) - Number(reserved.rows[0]?.reserved ?? 0);
+    const settledRemaining = total - Number(settled.rows[0]?.settled ?? 0);
+    const reservedItems = Number(reserved.rows[0]?.reserved ?? 0);
+    return {
+      remaining: settledRemaining - reservedItems,
+      unsettled: Math.max(0, Math.min(settledRemaining, reservedItems)),
+    };
   }
 
   private async reconcileLocked(spaceId: string, planId: string) {
@@ -348,15 +366,23 @@ export class SourceBackfillExecutionService {
     const window = segment.window_json && typeof segment.window_json === "object" && !Array.isArray(segment.window_json)
       ? segment.window_json as Record<string, unknown>
       : {};
+    // The partial window still describes the last page imported; resume at
+    // the page after it, which the worker recorded as `next_cursor`, from the
+    // item the segment reached.
+    const cursor = (window.next_cursor == null ? null : integerValue(window.next_cursor))
+      ?? (window.cursor == null ? 0 : integerValue(window.cursor) ?? 0) + 1;
+    const consumedItems = window.consumed_items == null ? null : integerValue(window.consumed_items);
     const nextWindow = {
       ...window,
+      cursor,
+      ...(consumedItems !== null ? { offset: consumedItems } : {}),
       max_items: additionalItems,
       remaining_items: additionalItems,
       page_size: Math.min(100, additionalItems),
       partial: false,
       exhausted: false,
       has_more: true,
-      next_cursor: window.cursor ?? null,
+      next_cursor: cursor,
     };
     const currentMax = integerValue(objectValue(plan.strategy_json).max_items) ?? Number(plan.items_ingested ?? 0);
     if (plan.project_operation_kind === "research") {
@@ -493,6 +519,24 @@ export class SourceBackfillExecutionService {
       [operationId, spaceId],
     );
   }
+}
+
+/**
+ * A page-numbered connector (OpenAlex) resuming a segment past its first page
+ * must keep the page width it started with: the same page number at another
+ * width is a different slice. The remaining budget then caps the items kept.
+ */
+function resumedPageSize(window: Record<string, unknown>, connectorKey: string): number | null {
+  const cursor = window.cursor == null ? 0 : integerValue(window.cursor) ?? 0;
+  const pageSize = window.page_size == null ? null : integerValue(window.page_size);
+  if (cursor < 1 || pageSize === null || pageSize < 1) return null;
+  let narrowable: boolean;
+  try {
+    narrowable = sourceConnectorRegistry.get(connectorKey).getCapabilities().supports_page_size_narrowing;
+  } catch {
+    return null;
+  }
+  return narrowable ? null : Math.min(100, pageSize);
 }
 
 function integerValue(value: unknown): number | null {

@@ -14,7 +14,7 @@ import type { Queryable } from "../routeUtils/common.js";
  * `content` is the already-rendered `content` column (callers decide pretty vs
  * compact); `metadata` is the object stored in `metadata_json`.
  */
-export interface InsertArtifactRowInput {
+interface InsertArtifactRowInput {
   id?: string;
   spaceId: string;
   ownerUserId: string;

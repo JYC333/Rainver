@@ -2,7 +2,7 @@ import { adjacentDomainKeys, distantDomainKeys, getDomain } from "../sourceAnnot
 import type { ProfileMaturity } from "../interestProfile/maturity.js";
 import type { ReadingShape, StandbyCandidate } from "./serendipityRepository.js";
 
-export interface SelectedSerendipity {
+interface SelectedSerendipity {
   candidate: StandbyCandidate;
   quotaSlot: string;
   score: number;

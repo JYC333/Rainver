@@ -16,7 +16,7 @@ import { Plugin, PluginKey } from '@tiptap/pm/state'
 export const BLOCK_ID_ATTR = 'blockId'
 
 /** Top-level block types. Ids identify what relocation can extract whole. */
-export const BLOCK_ID_TYPES = [
+const BLOCK_ID_TYPES = [
   'paragraph',
   'heading',
   'blockquote',

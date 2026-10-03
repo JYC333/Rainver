@@ -8,7 +8,7 @@ import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/wor
 import { settleTasksForRun } from "../src/modules/projectWork/settlement.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects, seedRun, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 
 describe("executionGraphRecoveryService", () => {
   const CONFIG = loadConfig({});
@@ -52,6 +52,65 @@ describe("executionGraphRecoveryService", () => {
       await expect(recovery.reconcileActive()).resolves.toEqual({ plans: 1, workflows: 0, failures: 0 });
       expect(plan).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+describe("executionGraphRecoveryDb", () => {
+  const CONFIG = loadConfig({});
+  const SPACE = "41414141-4141-4141-8141-414141414141";
+  const OWNER = "42424242-4242-4242-8242-424242424242";
+  const PROJECT = "43434343-4343-4343-8343-434343434343";
+  const AGENT = "44444444-4444-4444-8444-444444444441";
+  const VERSION = "45454545-4545-4545-8545-454545454545";
+  const db = useTestDatabase(`${import.meta.filename}#executionGraphRecoveryDb`);
+
+  it("reaches every waiting plan across scans when reconciling leaves them unchanged", async () => {
+    await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
+    const planIds: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const runId = randomUUID();
+      const taskId = randomUUID();
+      const planId = randomUUID();
+      if (index === 0) {
+        await seedRun(db.pool, { id: runId, space: SPACE, owner: OWNER, agent: AGENT, version: VERSION });
+      } else {
+        await db.pool.query(
+          `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+                             runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+                             owner_user_id, visibility, created_at, updated_at, execution_kind)
+           SELECT $1, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+                  runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json,
+                  owner_user_id, visibility, created_at, updated_at, execution_kind
+             FROM runs WHERE space_id = $2 LIMIT 1`,
+          [runId, SPACE],
+        );
+      }
+      await db.pool.query(`UPDATE runs SET status = 'waiting_for_dependency' WHERE id = $1`, [runId]);
+      await db.pool.query(
+        `INSERT INTO tasks (id, space_id, project_id, title, status, created_by_user_id, owner_user_id, created_at, updated_at)
+         VALUES ($1,$2,$3,'Plan task','ready',$4,$4,now(),now())`,
+        [taskId, SPACE, PROJECT, OWNER],
+      );
+      await db.pool.query(
+        `INSERT INTO plans (id, space_id, project_id, source_task_id, root_run_id, name, status, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,'Plan','active',now() - make_interval(mins => $6::int),now() - make_interval(mins => $6::int))`,
+        [planId, SPACE, PROJECT, taskId, runId, 10 - index],
+      );
+      planIds.push(planId);
+    }
+    // A reconcile that finds nothing to schedule writes nothing, so the scan's
+    // order is the same on every pass.
+    const reconciled: string[] = [];
+    const recovery = new ExecutionGraphRecoveryService(
+      db.pool, CONFIG, null, undefined,
+      async (_space, _user, planId) => { reconciled.push(planId); },
+      async () => undefined,
+    );
+
+    await recovery.reconcileActive(2);
+    await recovery.reconcileActive(2);
+
+    expect(new Set(reconciled)).toEqual(new Set(planIds));
   });
 });
 

@@ -30,7 +30,7 @@ import { redactSecretPatterns } from "../../runs/evidenceRedaction.js";
  * honesty requirement.
  */
 
-export type CustomSourceRunnerBlockReason =
+type CustomSourceRunnerBlockReason =
   | "runner_disabled"
   | "language_not_allowed"
   | "browser_automation_requested"
@@ -59,7 +59,7 @@ export interface CustomSourceRunnerCompletedResult {
 
 export type CustomSourceRunnerResult = CustomSourceRunnerBlockedResult | CustomSourceRunnerCompletedResult;
 
-export interface CustomSourceRunnerInput {
+interface CustomSourceRunnerInput {
   policyEnvelope: CustomSourcePolicyEnvelope;
   handlerInput: CustomSourceHandlerInput;
   /** Absolute path to the handler's entrypoint JS file, already materialized on disk by the caller. Code provisioning is out of this runner's scope. */

@@ -17,7 +17,7 @@ import type {
   ProposalApplyResult,
   ProposalApplierRegistry,
 } from "../proposals/applierRegistry.js";
-import { locationGitOutput, runLocationGit, validatePath } from "@rainver/folder-read";
+import { assertWriteStaysInsideRoot, FolderWriteError, locationGitOutput, runLocationGit, validatePath } from "@rainver/folder-read";
 import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "./workspaceLocations.js";
 import { PgProjectFolderRepository } from "./repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
@@ -60,7 +60,7 @@ interface CodePatchPayload {
   };
 }
 
-export interface CodePatchCollectionResult {
+interface CodePatchCollectionResult {
   item: RunMaterializationItemSummary;
   errors: string[];
 }
@@ -99,7 +99,7 @@ export function registerProjectFolderProposalAppliers(registry: ProposalApplierR
   registry.register("code_patch", applyCodePatchProposal);
 }
 
-export async function collectAndCreateCodePatchProposal(input: {
+async function collectAndCreateCodePatchProposal(input: {
   config: ServerConfig;
   db: Queryable;
   run: RunRecord;
@@ -430,7 +430,7 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
   };
 }
 
-class CodePatchFileTransaction {
+export class CodePatchFileTransaction {
   private readonly preimages: Array<{ path: string; absolutePath: string; existed: boolean; content: Buffer | null }> = [];
 
   constructor(
@@ -450,6 +450,7 @@ class CodePatchFileTransaction {
     const updated: Array<{ path: string; sha256: string }> = [];
     for (const operation of operations) {
       const target = this.validateOperation(operation);
+      await assertCodePatchTargetInsideRoot(this.root, target, operation.path);
       const existing = await readFile(target).catch((error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return null;
         throw error;
@@ -478,6 +479,39 @@ class CodePatchFileTransaction {
     return updated;
   }
 
+  /**
+   * Write a pre-apply snapshot back over the Folder, recording what each file
+   * held first so `rollback()` can put the applied content back if a later
+   * write or the database commit fails.
+   */
+  async restore(files: SnapshotFile[]): Promise<string[]> {
+    const restored: string[] = [];
+    for (const file of files) {
+      const target = this.targetPath(file.path);
+      await assertCodePatchTargetInsideRoot(this.root, target, file.path);
+      const existing = await readFile(target).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      this.preimages.push({
+        path: file.path,
+        absolutePath: target,
+        existed: existing !== null,
+        content: existing,
+      });
+      if (file.existed && file.content !== null) {
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, file.content, "utf8");
+      } else {
+        await unlink(target).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+      }
+      restored.push(file.path);
+    }
+    return restored;
+  }
+
   async rollback(): Promise<void> {
     for (const preimage of [...this.preimages].reverse()) {
       if (preimage.existed && preimage.content) {
@@ -504,13 +538,29 @@ class CodePatchFileTransaction {
     if (!operation.preimage_exists && operation.preimage_sha256 !== null) {
       throw new HttpError(422, `preimage_sha256 must be null for new file ${operation.path}`);
     }
+    return this.targetPath(operation.path);
+  }
+
+  private targetPath(path: string): string {
     return validatePath({
-      path: resolve(this.root, operation.path),
+      path: resolve(this.root, path),
       allowedRoot: this.root,
       mode: "write",
       protectedFolder: this.protectedFolder,
       forTrustedCodePatchApply: true,
     });
+  }
+}
+
+/** A symbolic link inside the checkout must not carry an approved patch out of it. */
+export async function assertCodePatchTargetInsideRoot(root: string, target: string, path: string): Promise<void> {
+  try {
+    await assertWriteStaysInsideRoot(root, target);
+  } catch (error) {
+    if (error instanceof FolderWriteError) {
+      throw new HttpError(422, `Unsafe code_patch path ${JSON.stringify(path)}: ${error.message}`);
+    }
+    throw error;
   }
 }
 

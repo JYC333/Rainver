@@ -47,6 +47,7 @@ import {
   type ProjectFileDraftMutation,
   type ProjectFileDraftRow,
 } from "./draftRepository.js";
+import { assertRemoteRepositoryUrl, CLONE_GIT_ALLOW_PROTOCOL } from "./repositoryUrl.js";
 
 const FOLDER_KINDS = new Set(["code", "data", "docs"]);
 
@@ -100,7 +101,7 @@ export interface ProjectFolderOut {
  * (`packages/host-daemon/src/api.ts`'s `WorkspaceOut`), predating the
  * Folder/Location split. `id` is the Location's id, not the Folder's — see
  * `createRemoteWorkspace`'s doc comment for why. */
-export interface RemoteWorkspaceOut {
+interface RemoteWorkspaceOut {
   id: string;
   project_id: string;
   name: string;
@@ -111,19 +112,19 @@ export interface RemoteWorkspaceOut {
   created_at: string;
 }
 
-export interface ProjectFolderPage {
+interface ProjectFolderPage {
   items: ProjectFolderOut[];
   total: number;
   limit: number;
   offset: number;
 }
 
-export interface ScanCandidate {
+interface ScanCandidate {
   name: string;
   path: string;
 }
 
-export interface ProjectFileDraftSaveOut {
+interface ProjectFileDraftSaveOut {
   file: FileContent;
   revision: ProjectFileRevisionOut;
   draft_deleted: boolean;
@@ -536,11 +537,23 @@ export class PgProjectFolderRepository {
         });
       }
       await new PgProjectFileDraftRepository(db).deleteForFolder(db, identity.spaceId, folderId);
-      const result = await db.query(
-        `DELETE FROM project_folders WHERE id = $1 AND space_id = $2 AND project_id = $3`,
-        [folderId, identity.spaceId, projectId],
-      );
-      return (result.rowCount ?? 0) > 0;
+      try {
+        const result = await db.query(
+          `DELETE FROM project_folders WHERE id = $1 AND space_id = $2 AND project_id = $3`,
+          [folderId, identity.spaceId, projectId],
+        );
+        return (result.rowCount ?? 0) > 0;
+      } catch (error) {
+        // Runs, Activity, Proposals and Rooms keep pointing at a Folder they
+        // used; its registration stays for them, and archiving is the way out.
+        if ((error as { code?: unknown }).code !== "23503") throw error;
+        const detail = "This Folder is referenced by existing Runs, Activity or other records; archive it instead";
+        throw new HttpError(409, detail, {
+          detail,
+          code: "project_folder_in_use",
+          constraint: (error as { constraint?: unknown }).constraint ?? null,
+        });
+      }
     });
   }
 
@@ -576,6 +589,14 @@ export class PgProjectFolderRepository {
     );
     const spaceId = project.rows[0]?.space_id;
     if (!spaceId) throw new HttpError(404, "Project not found");
+    // No request Space here — the host token names only its owner — so the
+    // Space the Project belongs to must still be one the owner is an active
+    // member of; Project ownership alone does not outlive Space membership.
+    const membership = await this.db.query(
+      `SELECT 1 FROM space_memberships WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [spaceId, userId],
+    );
+    if (!membership.rows[0]) throw new HttpError(404, "Project not found");
     await assertProjectWriter(this.db, spaceId, projectId, userId);
     const name = requiredText(input.name, "name");
     const duplicate = await this.db.query<{ id: string }>(
@@ -703,23 +724,7 @@ export class PgProjectFolderRepository {
         mutation,
       });
     } catch (error) {
-      if (error instanceof DraftVersionConflictError) {
-        throw new HttpError(409, error.message, {
-          detail: error.message,
-          code: "draft_version_conflict",
-          current: error.current,
-        });
-      }
-      if (error instanceof DraftQuotaError) {
-        throw new HttpError(413, error.message, {
-          detail: error.message,
-          code: "draft_quota_exceeded",
-          used_bytes: error.usedBytes,
-          requested_bytes: error.requestedBytes,
-          limit_bytes: PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES,
-        });
-      }
-      throw error;
+      throw draftWriteError(error);
     }
   }
 
@@ -885,7 +890,11 @@ export class PgProjectFolderRepository {
     const location = await resolveLocationWithHost(this.db, folder.space_id, folder.id, revision.workspace_location_id);
     const current = await this.readCurrentFileForDraft(folder, identity.userId, location, revision.path);
     const content = revision.before_exists ? revision.before_content ?? "" : "";
-    return new PgProjectFileDraftRepository(this.db).upsert({
+    if (Buffer.byteLength(content, "utf8") > PROJECT_FILE_DRAFT_MAX_BYTES) {
+      throw new HttpError(422, "The revision is larger than a draft may be");
+    }
+    try {
+      return await new PgProjectFileDraftRepository(this.db).upsert({
       spaceId: folder.space_id,
       projectId,
       projectFolderId: folder.id,
@@ -893,6 +902,11 @@ export class PgProjectFolderRepository {
       ownerUserId: identity.userId,
       mutation: {
         targetKind: current.exists ? "existing" : "new",
+        // A person has one new-file draft per Location, whatever its path:
+        // restoring a deleted file into that slot must not overwrite the
+        // unsaved file they were writing there. Absent is the precondition,
+        // as `upsertDraft` requires of an unversioned request.
+        ...(current.exists ? {} : { expectedVersion: null }),
         relativePath: revision.path,
         baseExists: current.exists,
         baseSha256: current.file?.sha256 ?? null,
@@ -903,7 +917,10 @@ export class PgProjectFolderRepository {
         preserveBom: content.startsWith("\uFEFF"),
         lineEndingMode: lineEndingMode(content),
       },
-    });
+      });
+    } catch (error) {
+      throw draftWriteError(error);
+    }
   }
 
   async previewRevision(
@@ -916,6 +933,7 @@ export class PgProjectFolderRepository {
     const id = requiredText(revisionId, "revision_id");
     const revision = await new PgProjectFileRevisionStore(this.db).getAvailable(folder.space_id, projectId, folder.id, id);
     if (!revision) throw new HttpError(404, "File revision not found or expired");
+    await this.enforceRevisionRead(folder, identity.userId, revision);
     return {
       revision,
       content: revision.before_exists ? revision.before_content ?? "" : null,
@@ -1085,8 +1103,11 @@ export class PgProjectFolderRepository {
   }
 
   private async cloneRepository(spaceId: string, name: string, repoUrl: string): Promise<string> {
+    assertRemoteRepositoryUrl(repoUrl);
     const target = await this.createManagedDir(spaceId, name);
-    const result = await runLocationGit(["clone", "--", repoUrl, target], resolve(this.config.workspaceRoot, spaceId), 120_000);
+    const result = await runLocationGit(["clone", "--", repoUrl, target], resolve(this.config.workspaceRoot, spaceId), 120_000, {
+      env: { GIT_ALLOW_PROTOCOL: CLONE_GIT_ALLOW_PROTOCOL },
+    });
     if (result.code !== 0) {
       throw new HttpError(422, `Failed to clone repository: ${result.stderr.slice(0, 400)}`);
     }
@@ -1234,6 +1255,31 @@ export class PgProjectFolderRepository {
     });
   }
 
+  /**
+   * A revision holds the file's former body, so previewing it is a file read
+   * of the Location it was saved on: the same policy and audit, and for a
+   * paired Host the same owner-only rule as browsing that machine.
+   */
+  private async enforceRevisionRead(folder: ProjectFolderRow, userId: string, revision: ProjectFileRevisionOut): Promise<void> {
+    const result = await this.db.query<{
+      execution_host_kind: string; execution_host_id: string; host_owner_user_id: string | null; host_name: string;
+    }>(
+      `SELECT wl.execution_host_kind, wl.execution_host_id, h.owner_user_id AS host_owner_user_id, h.name AS host_name
+         FROM workspace_locations wl
+         JOIN hosts h ON h.id = wl.execution_host_id
+        WHERE wl.id = $1 AND wl.space_id = $2 AND wl.project_folder_id = $3`,
+      [revision.workspace_location_id, folder.space_id, folder.id],
+    );
+    const location = result.rows[0];
+    if (!location) throw new HttpError(404, "File revision not found or expired");
+    if (location.execution_host_kind !== "remote") {
+      await this.enforceFolderRead(folder, userId, "file", revision.path);
+      return;
+    }
+    await this.enforceFolderRead(folder, userId, "file", revision.path, { forceRecord: true, hostId: location.execution_host_id });
+    if (location.host_owner_user_id !== userId) throw hostNotOwnedError(location.host_name);
+  }
+
   private async readRemote<K extends FolderReadKind>(
     folder: ProjectFolderRow,
     userId: string,
@@ -1248,13 +1294,7 @@ export class PgProjectFolderRepository {
       throw new HttpError(403, detail, { detail, code: "path_forbidden" });
     }
     await this.enforceFolderRead(folder, userId, kind, requestedPath ?? null, { forceRecord: true, hostId: location.execution_host_id });
-    if (location.host_owner_user_id !== userId) {
-      throw new HttpError(403, `This Folder is on ${location.host_name}'s machine; only its owner can browse it here.`, {
-        detail: `This Folder is on ${location.host_name}'s machine; only its owner can browse it here.`,
-        code: "host_not_owned",
-        host_name: location.host_name,
-      });
-    }
+    if (location.host_owner_user_id !== userId) throw hostNotOwnedError(location.host_name);
     if (!location.host_online) {
       const detail = `This Folder is on ${location.host_name}, which is offline.`;
       throw new HttpError(409, detail, {
@@ -1276,7 +1316,7 @@ export class PgProjectFolderRepository {
   }
 }
 
-export function folderToOut(row: ProjectFolderRow): ProjectFolderOut {
+function folderToOut(row: ProjectFolderRow): ProjectFolderOut {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -1408,6 +1448,27 @@ function mapRemoteFolderWriteError(
       return new HttpError(502, message, { detail: message, code: "write_failed", host_name: hostName });
   }
   return new HttpError(502, message, { detail: message, code: "write_failed", host_name: hostName });
+}
+
+/** The draft store's refusals as the route answers them; anything else passes through. */
+function draftWriteError(error: unknown): unknown {
+  if (error instanceof DraftVersionConflictError) {
+    return new HttpError(409, error.message, {
+      detail: error.message,
+      code: "draft_version_conflict",
+      current: error.current,
+    });
+  }
+  if (error instanceof DraftQuotaError) {
+    return new HttpError(413, error.message, {
+      detail: error.message,
+      code: "draft_quota_exceeded",
+      used_bytes: error.usedBytes,
+      requested_bytes: error.requestedBytes,
+      limit_bytes: PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES,
+    });
+  }
+  return error;
 }
 
 function parseDraftMutation(body: Record<string, unknown>): ProjectFileDraftMutation {
@@ -1598,4 +1659,9 @@ function dateIso(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string") return new Date(value).toISOString();
   return new Date(0).toISOString();
+}
+
+function hostNotOwnedError(hostName: string): HttpError {
+  const detail = `This Folder is on ${hostName}'s machine; only its owner can browse it here.`;
+  return new HttpError(403, detail, { detail, code: "host_not_owned", host_name: hostName });
 }

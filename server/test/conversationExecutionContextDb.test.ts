@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { seedServerHost, seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -10,6 +10,10 @@ import { loadConfig } from "../src/config.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { seedAgentWithVersion, seedRoomManager } from "./support/domainSeeds.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { sessionsModule } from "../src/modules/sessions/index.js";
+import { __setSessionIdentityForTests } from "../src/modules/sessions/routes.js";
+import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
 
 const SPACE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OWNER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -123,7 +127,121 @@ beforeEach(async () => {
   );
 });
 
+afterEach(() => {
+  __setSessionIdentityForTests(null);
+});
+
 describe("Conversation execution schema", () => {
+  it("blocks setup, as preflight promises, for a participant Agent the initializer cannot access", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const now = new Date().toISOString();
+    const room = await db.pool.query<{ id: string }>(`SELECT room_id AS id FROM sessions WHERE id = $1`, [SESSION]);
+    await db.pool.query(
+      `INSERT INTO users (id, email, display_name, status, created_at, updated_at, registration_source)
+       VALUES ($1, 'viewer@example.test', 'Viewer', 'active', $2, $2, 'system')`,
+      [VIEWER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1, $2, $3, 'member', 'active', $4, $4)`,
+      [randomUUID(), SPACE, VIEWER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'viewer', 'active', $5, $5)`,
+      [randomUUID(), SPACE, PROJECT, VIEWER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO room_user_members (id, space_id, room_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'member', 'active', $5, $5)`,
+      [randomUUID(), SPACE, room.rows[0]!.id, VIEWER, now],
+    );
+    // A second, shared participant the viewer selects explicitly; the Room's
+    // manager Agent is private to the owner and has exactly one usable runtime.
+    const sharedAgent = "44444444-4444-4444-8444-444444444445";
+    const sharedVersion = "55555555-5555-4555-8555-555555555556";
+    const sharedRuntime = "66666666-6666-4666-8666-666666666667";
+    await seedAgentWithVersion(db.pool, { agent: sharedAgent, version: sharedVersion, space: SPACE, owner: OWNER, seedDefaultRuntimeProfile: false, now, name: "Shared Agent" });
+    await db.pool.query(`UPDATE agent_versions SET risk_level = 'low' WHERE id = $1`, [sharedVersion]);
+    await db.pool.query(
+      `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'member', 'active', $5, $5)`,
+      [randomUUID(), SPACE, room.rows[0]!.id, sharedAgent, now],
+    );
+    await db.pool.query(
+      `INSERT INTO agent_runtime_profiles (
+         id, space_id, agent_id, name, runtime_key, backend_mode, execution_host_id, workspace_mode,
+         runtime_installation, runtime_config_json, runtime_policy_json, enabled, is_default, created_at, updated_at
+       ) VALUES ($1, $2, $3, 'Host CLI', 'claude_code', 'runtime_native', $4, 'managed', 'managed:1.0.0', '{}', '{}', true, true, $5, $5)`,
+      [sharedRuntime, SPACE, sharedAgent, HOST, now],
+    );
+    await db.pool.query(`UPDATE agents SET visibility = 'private' WHERE id = $1`, [AGENT]);
+
+    const service = new ConversationExecutionContextService(db.pool);
+    const request = {
+      selection: { execution_host_id: HOST, primary: { kind: "managed" as const } },
+      runtime: { agent_id: sharedAgent, runtime_profile_id: sharedRuntime, runtime_key: "claude_code", runtime_installation: "managed:1.0.0" },
+    };
+    await expect(service.initialize({ spaceId: SPACE, userId: VIEWER }, SESSION, request))
+      .rejects.toMatchObject({ statusCode: 403 });
+    const bindings = await db.pool.query(`SELECT 1 FROM session_conversation_backends WHERE session_id = $1`, [SESSION]);
+    expect(bindings.rowCount).toBe(0);
+
+    // The owner, who can access every participant, sets it up as before.
+    await service.initialize({ spaceId: SPACE, userId: OWNER }, SESSION, request);
+    const bound = await db.pool.query<{ agent_id: string }>(
+      `SELECT agent_id FROM session_conversation_backends WHERE session_id = $1 ORDER BY agent_id`, [SESSION],
+    );
+    expect(bound.rows.map((row) => row.agent_id)).toEqual([AGENT, sharedAgent]);
+  });
+
+  it("closes a direct thread and its workspace only with the person's last direct session of the Agent", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const now = new Date().toISOString();
+    const first = "33333333-3333-4333-8333-333333333334";
+    const second = "33333333-3333-4333-8333-333333333335";
+    for (const id of [first, second]) {
+      await db.pool.query(
+        `INSERT INTO sessions (id, space_id, user_id, project_id, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $5, $5)`,
+        [id, SPACE, OWNER, PROJECT, now],
+      );
+      await db.pool.query(
+        `INSERT INTO session_conversation_backends (
+           id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
+           runtime_key_snapshot, backend_mode_snapshot, runtime_config_snapshot_json, runtime_policy_snapshot_json,
+           runtime_state_key, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, 'claude_code', 'runtime_native', '{}', '{}', $7, $8, $8)`,
+        [randomUUID(), SPACE, id, OWNER, AGENT, RUNTIME, randomUUID(), now],
+      );
+    }
+    const threads = new PgHostThreadRepository(db.pool);
+    const thread = await threads.getOrCreateForDirect({
+      executionHostId: HOST, workspaceMode: "managed", userId: OWNER, agentId: AGENT, runtimeKey: "claude_code", createdByUserId: OWNER,
+    });
+    const threadStatus = async () => (await db.pool.query<{ status: string }>(
+      `SELECT status FROM host_threads WHERE id = $1`, [thread.id],
+    )).rows[0]?.status;
+
+    __setSessionIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test" }), [sessionsModule]);
+    try {
+      // The older chat goes; the one still in use keeps its CLI continuity.
+      const deleted = await app.inject({ method: "DELETE", url: `/api/v1/sessions/${first}` });
+      expect(deleted.statusCode).toBe(200);
+      expect(deleted.json()).toMatchObject({ deleted: true, managed_workspace_archive: [] });
+      expect(await threadStatus()).toBe("active");
+
+      const last = await app.inject({ method: "DELETE", url: `/api/v1/sessions/${second}` });
+      expect(last.statusCode).toBe(200);
+      expect(last.json().managed_workspace_archive).toEqual([expect.objectContaining({ agent_id: AGENT })]);
+      expect(await threadStatus()).toBe("closed");
+    } finally {
+      await app.close();
+    }
+  });
+
+
   it("rejects invalid Primary shapes and preserves one active Location", async (ctx) => {
     if (!db.available) return ctx.skip();
     await expect(db.pool.query(

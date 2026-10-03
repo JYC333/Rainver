@@ -337,7 +337,7 @@ export class ProjectOperationRepository {
   }
 }
 
-function isUniqueViolation(error: unknown, constraint: string): boolean {
+export function isUniqueViolation(error: unknown, constraint: string): boolean {
   if (!error || typeof error !== "object") return false;
   const value = error as { code?: unknown; constraint?: unknown };
   return value.code === "23505" && value.constraint === constraint;

@@ -82,8 +82,7 @@ TypeScript backend cutover failed:
 
 - DB-persisted API-key storage; the API-key routes return the canonical
   feature-gated response while the schema has no `api_keys` table;
-- Unregistered proposal types fail closed; `egress_review` has no registered
-  applier (approval rows are supported).
+- Unregistered proposal types fail closed.
 - Deployer host/sidecar process internals stay outside the server. Deployment
   job persistence is implemented (`deployment_jobs`, ADR 0020).
 

@@ -81,9 +81,10 @@ rollback proposal is persisted when policy or preflight rejects the request.
 Pending rollback requests are idempotently reused. The applier takes the bundle
 advisory lock, then sorted asset-level transaction advisory locks shared with
 promotion apply, verifies that each asset is unchanged since the recorded
-post-apply snapshot, restores approved members in reverse bundle order, and
-writes an `evolution.bundle.rolled_back` activity record in the same
-transaction. Snapshot capture itself takes the asset lock before reading any
+post-apply snapshot, restores approved members in reverse approval order (one
+decision request approves its members in bundle order), and writes an
+`evolution.bundle.rolled_back` activity record in the same transaction.
+Snapshot capture itself takes the asset lock before reading any
 asset/version/reference state, so the snapshot and promotion apply share one
 serialized critical section. A mismatch or unsupported proposal type aborts the
 transaction and leaves the bundle unchanged; no best-effort partial restore is
@@ -97,16 +98,21 @@ member states return `null`.
 
 Each rule carries a source type, source id, signal type, and dedup window. The
 payload stores a stable `dedup_key`. Insertion takes a PostgreSQL transaction
-advisory lock for that target/source tuple and checks the window atomically,
-so repeated finalization or worker delivery does not flood the stream without
-requiring a new migration or a second uniqueness table.
+advisory lock for that target/source tuple in a statement of its own, then
+checks the window and inserts in the same transaction (a lock and an
+existence check inside one statement would let the second writer wait and
+then act on a snapshot from before the first commit), so repeated
+finalization or worker delivery does not flood the stream without requiring a
+new migration or a second uniqueness table. Auto-provisioned targets are
+created the same way, one per target key.
 
 Signal writes are advisory telemetry. Finalization and proposal decisions
-remain authoritative if signal persistence fails; a signal failure is
-swallowed inside a savepoint. Supervisor decisions and their
+remain authoritative if signal persistence fails: finalization, proposal
+decisions (emitted post-commit) and autonomy recovery catch and swallow a
+signal failure outside any decision transaction. Supervisor decisions and their
 `supervisor_outcome` signal are attempted on the same transaction-bound
-`PoolClient`, so a signal cannot commit independently before a decision that
-later rolls back.
+`PoolClient`, where a signal failure is swallowed inside a savepoint, so a
+signal cannot commit independently before a decision that later rolls back.
 
 ## Current boundaries
 

@@ -18,7 +18,7 @@ import {
  * the same shared activation writes the inside-envelope path uses.
  */
 
-export class SourceRecipeProposalApplyError extends Error {
+class SourceRecipeProposalApplyError extends Error {
   constructor(
     readonly statusCode: number,
     message: string,
@@ -112,6 +112,7 @@ async function applySourceRecipeActivation(context: ProposalApplyContext): Promi
     connectionId,
     versionId,
     previousActiveVersionId: connection.active_recipe_version_id,
+    expectedStatus: "pending_approval",
     nextCheckAt: payload.next_check_at,
     scheduleRule: payload.schedule_rule,
   });

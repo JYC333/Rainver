@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it, vi } from 'vitest'
 import ProviderSelector from '../ProviderSelector'
@@ -60,5 +60,37 @@ describe('ProviderSelector', () => {
     expect(screen.getByRole('option', { name: /^anthropic-ok \(anthropic\)$/ })).toBeEnabled()
     expect(screen.getByRole('option', { name: /^openai-ok \(openai\)$/ })).toBeEnabled()
     expect(screen.getByRole('option', { name: /cohere .*protocol not supported/ })).toBeDisabled()
+  })
+
+  it('shows the model it will save, even one the provider does not list', async () => {
+    vi.mocked(providersApi.list).mockResolvedValueOnce([{
+      id: 'cohere-1', name: 'Cohere', provider_type: 'cohere', enabled: true, default_model: 'embed-v4.0',
+      available_models: ['embed-v4.0'], claude_compatible_base_url: null, openai_compatible_base_url: null,
+    }] as never)
+    vi.mocked(providersApi.models).mockResolvedValue({ models: ['embed-v4.0'] } as never)
+    render(
+      <MemoryRouter future={routerFuture}>
+        <ProviderSelector value={{ provider_id: 'cohere-1', model: 'rerank-v4.0-pro' }} onChange={() => {}} />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(screen.getByRole('option', { name: 'embed-v4.0' })).toBeInTheDocument())
+    expect(screen.getByDisplayValue('rerank-v4.0-pro')).toBeInTheDocument()
+  })
+
+  it('binds an unset model to the first one listed, the one on screen', async () => {
+    vi.mocked(providersApi.list).mockResolvedValueOnce([{
+      id: 'openai-1', name: 'OpenAI', provider_type: 'openai', enabled: true, default_model: null,
+      available_models: [], claude_compatible_base_url: null, openai_compatible_base_url: 'https://api.openai.com/v1',
+    }] as never)
+    vi.mocked(providersApi.models).mockResolvedValue({ models: ['gpt-live-1', 'gpt-live-2'] } as never)
+    const onChange = vi.fn()
+    render(
+      <MemoryRouter future={routerFuture}>
+        <ProviderSelector value={{ provider_id: 'openai-1', model: '' }} onChange={onChange} />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith({ provider_id: 'openai-1', model: 'gpt-live-1' }))
   })
 })

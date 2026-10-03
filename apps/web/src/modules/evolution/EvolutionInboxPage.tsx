@@ -43,6 +43,9 @@ export default function EvolutionInboxPage() {
         evolutionApi.signals({ limit: 100 }), evolutionApi.bundles({ limit: 100 }), evolutionApi.proposals({ limit: 100 }), evolutionApi.assets(),
       ])
       setSignals(nextSignals); setBundles(nextBundles); setProposals(nextProposals)
+      // A proposal bundled elsewhere since it was ticked cannot be unticked
+      // (its box is disabled), so it leaves the selection here.
+      setSelectedProposalIds(current => current.filter(id => nextProposals.some(proposal => proposal.id === id && proposal.status === 'pending' && !proposal.bundle_id)))
       const nextEvaluations = await Promise.all(nextAssets.slice(0, 20).map(async asset => ({ asset, runs: await evolutionApi.assetEvaluationRuns(asset.id).catch(() => []) })))
       setEvaluations(nextEvaluations.filter(item => item.runs.length > 0))
     } catch (error) {
@@ -68,7 +71,7 @@ export default function EvolutionInboxPage() {
   async function createBundle() {
     const eligibleProposalIds = selectedProposalIds.filter(id => {
       const proposal = pendingProposals.find(item => item.id === id)
-      return proposal !== undefined && !requiresSpecialProposalAction(proposal)
+      return proposal !== undefined && !proposal.bundle_id && !requiresSpecialProposalAction(proposal)
     })
     if (eligibleProposalIds.length === 0 || !bundleTitle.trim()) return
     setBusy('create-bundle')

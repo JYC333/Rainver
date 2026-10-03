@@ -53,7 +53,7 @@ const ALLOWED_TASK_FIELDS = new Set([
   "metadata_json",
 ]);
 
-export interface FollowUpTaskFields {
+interface FollowUpTaskFields {
   title: string;
   description: string | null;
   taskType: string;
@@ -170,7 +170,7 @@ export function parseFollowUpTaskPayload(value: unknown): FollowUpTaskFields {
   };
 }
 
-export interface FollowUpTaskOrigin {
+interface FollowUpTaskOrigin {
   /** The Run whose output asked for it. */
   runId: string | null;
   /** Set only when the write went through the proposal route. */
@@ -183,21 +183,32 @@ export interface FollowUpTaskOrigin {
   agentActorId?: string | undefined;
 }
 
-/** Verifies a Project Folder belongs to this Space before anything is written. */
+/**
+ * Verifies a Project Folder belongs to this Space — and, when the Task has a
+ * Project, to that Project — before anything is written. A Task whose Folder
+ * is another Project's is readable only by that other Project's members and
+ * can never be dispatched, so the model's folder id is checked against the
+ * Project the Task lands in, not only the Space.
+ */
 async function assertProjectFolderInSpace(
   db: Queryable,
   spaceId: string,
+  projectId: string | null,
   projectFolderId: string | null,
 ): Promise<void> {
   if (!projectFolderId) return;
   const folder = await db.query<{ id: string }>(
-    `SELECT id FROM project_folders WHERE id = $1 AND space_id = $2 LIMIT 1`,
-    [projectFolderId, spaceId],
+    `SELECT id FROM project_folders
+      WHERE id = $1 AND space_id = $2 AND ($3::varchar IS NULL OR project_id = $3)
+      LIMIT 1`,
+    [projectFolderId, spaceId, projectId],
   );
   if (!folder.rows[0]) {
     throw new HttpError(
       422,
-      `project_folder ${JSON.stringify(projectFolderId)} not found in space ${JSON.stringify(spaceId)}`,
+      projectId
+        ? `project_folder ${JSON.stringify(projectFolderId)} does not belong to project ${JSON.stringify(projectId)}`
+        : `project_folder ${JSON.stringify(projectFolderId)} not found in space ${JSON.stringify(spaceId)}`,
     );
   }
 }
@@ -220,7 +231,7 @@ export async function createFollowUpTask(
     source: string;
   },
 ): Promise<{ id: string; space_id: string; title: string; status: string }> {
-  await assertProjectFolderInSpace(db, identity.spaceId, input.projectFolderId);
+  await assertProjectFolderInSpace(db, identity.spaceId, input.projectId, input.projectFolderId);
   if (input.projectId) {
     // The same pairing every Project write uses, and it belongs here rather
     // than in either caller: accepting the proposal is a Project write too,

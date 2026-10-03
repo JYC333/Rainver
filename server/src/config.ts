@@ -69,8 +69,6 @@ export interface ServerConfig {
   sandboxRoot: string;
   /** Root for persisted artifact file storage. Artifact.storage_path is relative to this. */
   artifactStorageRoot: string;
-  /** Unix socket for the host deployer process. */
-  deployerSocketPath: string;
   /** Service-to-service token for internal providers/credentials ports. */
   internalToken: string | null;
   /** Secret used by Better Auth for signing/encrypting auth state. */
@@ -141,7 +139,7 @@ export interface ServerConfig {
   backupDatabaseUrl: string | null;
 }
 
-export interface RawEnv {
+interface RawEnv {
   [key: string]: string | undefined;
 }
 
@@ -175,7 +173,6 @@ const KNOWN_ENV_KEYS = new Set([
   "WORKSPACE_ROOT",
   "SANDBOX_ROOT",
   "ARTIFACT_STORAGE_ROOT",
-  "DEPLOYER_SOCKET_PATH",
   "SERVER_INTERNAL_TOKEN",
   "BETTER_AUTH_SECRET",
   "GOOGLE_CLIENT_ID",
@@ -197,6 +194,7 @@ const KNOWN_ENV_KEYS = new Set([
   "SERVER_MEMORY_MAINTENANCE_SCHEDULER_ENABLED",
   "SERVER_MEMORY_MAINTENANCE_SCHEDULER_INTERVAL_SECONDS",
   "SERVER_MEMORY_MAINTENANCE_SCHEDULER_BATCH_LIMIT",
+  "SERVER_MEMORY_DIRECT_WRITES_PER_SESSION",
   "SERVER_SOURCE_EXTRACTION_SCHEDULER_ENABLED",
   "SERVER_SOURCE_EXTRACTION_SCHEDULER_INTERVAL_SECONDS",
   "SERVER_CUSTOM_SOURCE_ALLOWED_LANGUAGES",
@@ -269,7 +267,16 @@ function parseBoundedInt(
   min: number,
   max: number,
 ): number {
-  const n = parseIntStrict(value, fallback, name);
+  if (value === undefined || value === "") return fallback;
+  const n = Number(value);
+  // A lower bound of 0 admits 0 (PROVIDER_PROXY_PORT=0 is the OS-assigned
+  // port); only a positive bound makes 0 a non-positive-integer failure.
+  if (!Number.isInteger(n) || (n <= 0 && min > 0)) {
+    throw new ConfigError(
+      `${name} must be a positive integer, got ${JSON.stringify(value)}`,
+      "invalid_positive_integer",
+    );
+  }
   if (n < min || n > max) {
     throw new ConfigError(
       `${name} must be between ${min} and ${max}, got ${JSON.stringify(n)}`,
@@ -546,9 +553,6 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   const artifactStorageRoot = resolve(
     env.ARTIFACT_STORAGE_ROOT?.trim() || resolve(rainverHome, "storage", "artifacts"),
   );
-  const deployerSocketPath = resolve(
-    env.DEPLOYER_SOCKET_PATH?.trim() || resolve(rainverHome, "run", "deployer.sock"),
-  );
   const internalToken = env.SERVER_INTERNAL_TOKEN?.trim() || null;
   const betterAuthSecret = env.BETTER_AUTH_SECRET?.trim() || null;
   const googleClientId = env.GOOGLE_CLIENT_ID?.trim() || "";
@@ -767,7 +771,6 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     workspaceRoot,
     sandboxRoot,
     artifactStorageRoot,
-    deployerSocketPath,
     internalToken,
     betterAuthSecret,
     googleClientId,
@@ -838,7 +841,6 @@ export function describeConfig(config: ServerConfig): string {
     `workspaceRoot=${config.workspaceRoot}`,
     `sandboxRoot=${config.sandboxRoot}`,
     `artifactStorageRoot=${config.artifactStorageRoot}`,
-    `deployerSocketPath=${config.deployerSocketPath}`,
     `internalTokenConfigured=${config.internalToken !== null}`,
     `betterAuthConfigured=${config.betterAuthSecret !== null}`,
     `googleOAuthConfigured=${Boolean(config.googleClientId && config.googleClientSecret)}`,
@@ -909,9 +911,9 @@ export function loadConfigSnapshot(env: RawEnv = process.env): ConfigSnapshot {
 // Startup diagnostics
 // ---------------------------------------------------------------------------
 
-export type ConfigDiagnosticSeverity = "info" | "warning" | "error" | "fatal";
+type ConfigDiagnosticSeverity = "info" | "warning" | "error" | "fatal";
 
-export interface ConfigDiagnostic {
+interface ConfigDiagnostic {
   severity: ConfigDiagnosticSeverity;
   /** Machine-readable code (e.g. `unknown_config_key`). */
   code: string;

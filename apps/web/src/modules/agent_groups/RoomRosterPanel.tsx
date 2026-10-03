@@ -48,6 +48,7 @@ export function RoomRosterPanel({
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(false)
   const [presetExecution, setPresetExecution] = useState<HostExecutionSelection | null>(null)
+  const presetIdempotencyKeys = useRef(new Map<string, string>())
   const [restoreChoice, setRestoreChoice] = useState(false)
   const restoreChoiceRef = useRef(false)
   /** One in-app confirmation at a time, replacing the browser's `window.confirm`. */
@@ -149,16 +150,30 @@ export function RoomRosterPanel({
       variant: 'default',
       restoreAvailable,
     })) return
-    await mutate(() => roomsApi.addAgent(detail.room.id, {
-      agent_id: candidate.agent_id,
-      share_private_with_member_ids: candidate.private ? privateShareIds() : [],
-      confirm_room_share: candidate.private,
-      restore_workspace: restoreAvailable && restoreChoiceRef.current,
-    }))
+    await mutate(async () => {
+      const result = await roomsApi.addAgent(detail.room.id, {
+        agent_id: candidate.agent_id,
+        share_private_with_member_ids: candidate.private ? privateShareIds() : [],
+        confirm_room_share: candidate.private,
+        restore_workspace: restoreAvailable && restoreChoiceRef.current,
+      })
+      // The Agent is in the Room either way; a restore that brought nothing
+      // back is the one outcome the person would otherwise never learn of.
+      const restore = result.managed_workspace_restore
+      if (restore && (!restore.ok || !restore.changed)) {
+        toast.error(restore.error === 'host_offline'
+          ? `${candidate.name} was added, but its host is offline, so its previous host state was not restored.`
+          : `${candidate.name} was added, but its previous host state could not be restored${restore.error ? ` (${restore.error})` : ''}.`)
+      }
+    })
   }
 
   async function addPreset(presetId: string) {
-    const idempotencyKey = newIdempotencyKey()
+    // One key per preset until the add is confirmed: a retry after a failed
+    // refresh (which reads as the add failing) is then deduplicated by the
+    // server instead of creating a second private Agent.
+    const idempotencyKey = presetIdempotencyKeys.current.get(presetId) ?? newIdempotencyKey()
+    presetIdempotencyKeys.current.set(presetId, idempotencyKey)
     const selectedExecution = presetExecution
       ? {
           host_id: presetExecution.host_id,
@@ -182,15 +197,21 @@ export function RoomRosterPanel({
           confirmLabel: 'Create and add',
           variant: 'default',
         })) return
-        await mutate(() => roomsApi.addAgentPreset(
-          detail.room.id,
-          { preset_id: presetId, confirm_room_share: true, ...(selectedExecution ? { execution: selectedExecution } : {}) },
-          idempotencyKey,
-        ))
+        try {
+          await mutate(() => roomsApi.addAgentPreset(
+            detail.room.id,
+            { preset_id: presetId, confirm_room_share: true, ...(selectedExecution ? { execution: selectedExecution } : {}) },
+            idempotencyKey,
+          ), { rethrow: true })
+        } catch {
+          return
+        }
       } else {
         toast.error(errMsg(error))
+        return
       }
     }
+    presetIdempotencyKeys.current.delete(presetId)
   }
 
   async function removeAgent(agentId: string, name: string) {

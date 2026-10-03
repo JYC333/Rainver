@@ -105,7 +105,7 @@ export function registerSourceRecipeRoutes(app: FastifyInstance, context: Module
     try {
       const { limit, offset } = parsePage(query(request));
       return reply.send(await recipeService().listVersions(
-        identity.spaceId,
+        identity,
         params(request).connectionId ?? "",
         { limit, offset },
       ));
@@ -122,7 +122,7 @@ export function registerSourceRecipeRoutes(app: FastifyInstance, context: Module
       try {
         const p = params(request);
         const version = await recipeService().getVersion(
-          identity.spaceId,
+          identity,
           p.connectionId ?? "",
           p.versionId ?? "",
         );

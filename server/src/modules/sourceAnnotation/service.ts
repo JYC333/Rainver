@@ -29,10 +29,10 @@ import {
  * context limit, where the model starts dropping entries from the tail
  * silently.
  */
-export const ANNOTATION_BATCH_SIZE = 10;
+const ANNOTATION_BATCH_SIZE = 10;
 
 /** Attempts before an item is parked as `failed` rather than retried forever. */
-export const ANNOTATION_MAX_ATTEMPTS = 3;
+const ANNOTATION_MAX_ATTEMPTS = 3;
 
 export interface AnnotationSweepResult {
   space_id: string;
@@ -93,9 +93,25 @@ export class SourceAnnotationService {
     // has to allow the destination. An item whose connection refuses is dropped
     // from the batch rather than failing it — one governed source must not stop
     // the rest of the space being annotated.
-    const allowedItemIds = await this.filterItemsByEgress(spaceId, itemIds, agentId, repo);
+    let allowedItemIds: string[];
+    try {
+      allowedItemIds = await this.filterItemsByEgress(spaceId, itemIds, agentId, repo);
+    } catch (error) {
+      // A 409 means the annotator itself cannot be resolved to a destination
+      // (no enabled runtime profile, provider not granted here). Like a missing
+      // agent, that is the space's setup, not the items, so they keep waiting
+      // with their retry budget intact.
+      if (error instanceof HttpError && error.statusCode === 409) {
+        return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: 0, failed: 0, run_id: null, status: "blocked", reason: "annotator_profile_unavailable" };
+      }
+      throw error;
+    }
     if (allowedItemIds.length === 0) {
-      return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: itemIds.length, failed: 0, run_id: null, status: "blocked", reason: "source_egress_denied" };
+      // Every item was parked as skipped, so the queue moved on: this is a
+      // batch that made progress, not a space that cannot proceed. Reporting it
+      // as blocked ended the job here and left the next batch — items from
+      // sources that do allow egress — to the next sweep.
+      return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: itemIds.length, failed: 0, run_id: null, status: "ok", reason: "source_egress_denied" };
     }
     const allowed = new Set(allowedItemIds);
     const promptItems: AnnotationPromptItem[] = batch
@@ -184,7 +200,11 @@ export class SourceAnnotationService {
         }
         try {
           await assertSourcePromptEgressAllowed(this.db, connection, agentId);
-        } catch {
+        } catch (error) {
+          // Only the gate's refusal parks items. Anything else — a profile
+          // that cannot be resolved, a failed query — is not a decision about
+          // this source and must not turn its items terminal.
+          if (!(error instanceof HttpError && error.statusCode === 403)) throw error;
           for (const id of connectionItemIds) denied.add(id);
         }
       }

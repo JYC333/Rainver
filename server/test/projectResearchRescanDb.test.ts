@@ -86,7 +86,7 @@ async function seedPlan(status: string, itemsIngested: number): Promise<void> {
   );
 }
 
-async function seedOperation(status: "active" | "waiting_review", currentStage: string, planIds: string[], partial = false, maxItems = 10): Promise<void> {
+async function seedOperation(status: "active" | "waiting_review" | "completed", currentStage: string, planIds: string[], partial = false, maxItems = 10): Promise<void> {
   const now = new Date().toISOString();
   const progress = {
     schema_version: "project_research_operation.v1",
@@ -207,6 +207,21 @@ describe("ProjectResearchOrchestrator.rescanEmptyBackfill (real Postgres)", () =
       [WORKFLOW],
     );
     expect(workflow.rows[0]!.state_json.initial_intake?.max_items).toBe(10);
+  });
+
+  it("does not send an operation that is past screening back to backfill", async () => {
+    if (!db.available) return;
+    await seedOperation("completed", "complete", [PLAN], false, 10);
+    await seedPlan("completed", 10);
+    const orchestrator = new ProjectResearchOrchestrator(db.pool, CONFIG);
+
+    await expect(orchestrator.updateItemLimit(identity, PROJECT, OPERATION, { max_items: 25 }))
+      .rejects.toMatchObject({ statusCode: 409 });
+    await expect(orchestrator.rescanEmptyBackfill(identity, PROJECT, OPERATION, {}))
+      .rejects.toMatchObject({ statusCode: 409 });
+    const operation = await db.pool.query<{ status: string; progress_json: { current_stage?: string } }>(
+      `SELECT status, progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
+    expect(operation.rows[0]).toMatchObject({ status: "completed", progress_json: { current_stage: "complete" } });
   });
 
   it("rescans from waiting_review (the state a zero-result screening_gate checkpoint leaves the operation in) and waives the stale checkpoint", async () => {
