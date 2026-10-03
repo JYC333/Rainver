@@ -3,6 +3,7 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import {
   dbPool,
   HttpError,
+  intQuery,
   jsonBody,
   optionalString,
   query,
@@ -90,7 +91,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const limit = Math.min(Number(query(request).limit ?? 10), 50);
+      const limit = intQuery(query(request).limit, 10);
+      if (limit === null || limit < 1 || limit > 50) {
+        throw new HttpError(422, "limit must be between 1 and 50");
+      }
       const db = dbPool(context.config);
       const result = await db.query(
         `SELECT a.id, a.run_id, a.title, a.content, a.metadata_json, a.created_at

@@ -110,7 +110,7 @@ class ScanDb implements Queryable {
     }
     if (sql.includes("FROM source_channels ch WHERE ch.id = $1")) {
       // The worker re-reads the channel as it is when the scan ends.
-      const connection = this.connection() as { status: string; fetch_frequency: string; schedule_rule_json: unknown };
+      const connection = this.connection() as unknown as { status: string; fetch_frequency: string; schedule_rule_json: unknown };
       return {
         rows: [{ status: connection.status, fetch_frequency: connection.fetch_frequency, schedule_rule_json: connection.schedule_rule_json }] as Row[],
         rowCount: 1,

@@ -295,7 +295,7 @@ export function startBackgroundServices(
       name: "daily_report_scheduler",
       intervalSeconds: config.dailyReportSchedulerIntervalSeconds,
       run: async () => {
-        const enqueued = await scanDailyReportsAndEnqueue(config, worker.queue);
+        const enqueued = await scanDailyReportsAndEnqueue(config);
         if (enqueued > 0) log?.info(`[scheduler] daily_report enqueued ${enqueued} job(s)`);
       },
       runOnStart: true,

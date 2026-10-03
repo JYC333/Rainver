@@ -45,10 +45,14 @@ DailyCaptureReportService.generateForDate()
   The report run and artifact are stored as `source_refs_metadata`, not as trust-bearing
   provenance entries.
 - **Idempotency.** For a given space/user/date, a second run without `force=True` returns the
-  existing artifact and does not create duplicate artifacts or proposals.
-- **Scheduler jobs are idempotent.** Each scheduler task's `next_run_at` is committed immediately
-  after a successful enqueue, not after all settings. A duplicate scan skips already-advanced
-  slots; a failed enqueue leaves `next_run_at` unchanged so the slot is retried next scan.
+  existing artifact and does not create duplicate artifacts or proposals. The persist
+  transaction takes an advisory lock on that key and looks again before writing, so two
+  generations that both passed the existence check while the first was still at the provider
+  still leave one report; the later one returns `skipped` with `existing_artifact_id`.
+- **Scheduler jobs are idempotent.** Each scheduler task's job enqueue and `next_run_at`
+  advance commit in one transaction per setting, not after all settings. A duplicate scan
+  skips already-advanced slots; a failed enqueue or advance leaves both unchanged so the slot
+  is retried next scan.
   Only the scheduler's slot advance and a schedule settings change move `next_run_at`; a
   finished report, manual or scheduled, records `last_run_at` and the report date only.
 - **No removed `/activity/{id}/process` endpoint.** That route was removed. Use `/review` for

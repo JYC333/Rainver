@@ -213,6 +213,7 @@ export class DailyCaptureReportService {
     // that succeeded on the second key left a failed Run beside it claiming
     // the same work.
     const persisted: { value: PersistedDailyReport | null } = { value: null };
+    const duplicateOf: { value: { id: string; run_id: string | null } | null } = { value: null };
     const task = await runBoundedProviderTask(this.db, this.config, {
       completion: "text",
       spaceId: input.spaceId,
@@ -258,6 +259,10 @@ export class DailyCaptureReportService {
             runId,
           });
         } catch (error) {
+          if (error instanceof DailyReportAlreadyExistsError) {
+            duplicateOf.value = error.existing;
+            throw new BoundedProviderTaskError("daily_report_already_exists", error.message);
+          }
           throw new BoundedProviderTaskError(
             "daily_report_persistence_failed",
             error instanceof Error ? error.message : String(error),
@@ -268,6 +273,20 @@ export class DailyCaptureReportService {
     });
 
     const report = persisted.value;
+    if (duplicateOf.value) {
+      return {
+        run_id: duplicateOf.value.run_id,
+        artifact_id: duplicateOf.value.id,
+        proposal_ids: [],
+        experience_proposal_ids: [],
+        memory_proposal_ids: [],
+        capture_count: captures.length,
+        status: "skipped",
+        summary_preview: "Report already exists for this date.",
+        skipped: true,
+        existing_artifact_id: duplicateOf.value.id,
+      };
+    }
     if (!task.ok || !report) {
       return {
         run_id: task.runId,
@@ -300,6 +319,7 @@ export class DailyCaptureReportService {
       userId: string;
       setting: SettingRow;
       localDate: string;
+      force?: boolean;
       createExperienceProposalsOverride?: boolean | null;
       createMemoryProposalsOverride?: boolean | null;
     };
@@ -327,6 +347,7 @@ export class DailyCaptureReportService {
         userId: string;
         setting: SettingRow;
         localDate: string;
+        force?: boolean;
         createExperienceProposalsOverride?: boolean | null;
         createMemoryProposalsOverride?: boolean | null;
       };
@@ -343,6 +364,18 @@ export class DailyCaptureReportService {
     summaryPreview: string;
   }> {
     const { input, report, captureIds, captureCount, runId } = args;
+    // The existence check before the provider call does not cover the call
+    // itself: a second generation for the same day (a manual run beside the
+    // scheduled one, or a re-enqueued slot) passes it while this one is still
+    // at the provider. One report per person and day is settled here, under
+    // a lock on that key, by looking again before writing.
+    await db.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+      `daily_capture_report:${input.spaceId}:${input.userId}:${input.localDate}`,
+    ]);
+    if (!input.force) {
+      const existing = await this.findExistingArtifact(input.spaceId, input.userId, input.localDate, db);
+      if (existing) throw new DailyReportAlreadyExistsError(existing);
+    }
     const markdown = renderMarkdown(report, input.localDate);
     const artifactId = randomUUID();
     const endedAt = new Date().toISOString();
@@ -386,10 +419,10 @@ export class DailyCaptureReportService {
     const createExperienceProposals =
       input.createExperienceProposalsOverride ?? input.setting.create_experience_proposals;
     if (createExperienceProposals) {
-      for (const candidate of report.experience_candidates.slice(
-        0,
-        input.setting.max_experience_proposals_per_day,
-      )) {
+      // The cap bounds what is created, so a candidate the threshold or
+      // source check refuses does not use up a slot.
+      for (const candidate of report.experience_candidates) {
+        if (experienceProposalIds.length >= input.setting.max_experience_proposals_per_day) break;
         const id = await this.insertExperienceProposal(
           db,
           input,
@@ -405,10 +438,8 @@ export class DailyCaptureReportService {
     const createMemoryProposals =
       input.createMemoryProposalsOverride ?? input.setting.create_memory_proposals;
     if (createMemoryProposals) {
-      for (const candidate of report.memory_candidates.slice(
-        0,
-        input.setting.max_memory_proposals_per_day,
-      )) {
+      for (const candidate of report.memory_candidates) {
+        if (memoryProposalIds.length >= input.setting.max_memory_proposals_per_day) break;
         const id = await this.insertMemoryProposal(
           db,
           input,
@@ -457,8 +488,9 @@ export class DailyCaptureReportService {
     spaceId: string,
     userId: string,
     localDate: string,
+    db: Queryable = this.db,
   ): Promise<{ id: string; run_id: string | null } | null> {
-    const result = await this.db.query<{ id: string; run_id: string | null }>(
+    const result = await db.query<{ id: string; run_id: string | null }>(
       `SELECT id, run_id
          FROM artifacts a
         WHERE a.space_id = $1
@@ -589,6 +621,13 @@ export class DailyCaptureReportService {
       riskLevel: "low",
     });
     return row.id;
+  }
+}
+
+/** Thrown inside the persist transaction when the day already has a report. */
+class DailyReportAlreadyExistsError extends Error {
+  constructor(readonly existing: { id: string; run_id: string | null }) {
+    super("Report already exists for this date.");
   }
 }
 
