@@ -18,7 +18,7 @@ interest-profile fact model remain separate support packages.
 - `/api/v1/spaces/:spaceId/interest-profile*` is the authenticated owner-only
   surface for the profile snapshot, settings, topic candidate decisions,
   direct topic create/edit/archive, optional starter packs, and explicit
-  bounded history backfill.
+  bounded history backfill (the most recent subscribed items first).
 - The digest-item route owns explicit serendipity feedback. Filing an item into
   an active Project Corpus is not a digest route: the Library page calls the
   existing Project corpus-add route (`metadata_json.origin =

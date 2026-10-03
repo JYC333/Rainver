@@ -155,7 +155,7 @@ uses `finance_ledger.post_directive`.
 Disabling a module preserves all its data. `disabled_at` and `disabled_by_user_id` are recorded in the enablement row. Uninstall/data deletion is out of scope.
 
 ### Settings persistence
-`settings_json` is stored in the enablement row. Settings are opaque JSON and can be patched even when a module is disabled (pre-configuration). There is no settings engine.
+`settings_json` is stored in the enablement row. Settings are opaque JSON and can be patched even when a module is disabled (pre-configuration): a patch for a scope with no row creates the row in the plugin's default enabled state, without enable/disable stamps, and records a `settings_updated` event. Patches merge in SQL (`settings_json || patch`) so concurrent patches of different keys both land. There is no settings engine.
 
 ---
 
