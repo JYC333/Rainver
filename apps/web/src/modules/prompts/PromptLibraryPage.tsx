@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { AlertTriangle, FileCode2, GitBranch, Loader2, RefreshCw, RotateCcw, Search, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
@@ -128,6 +128,10 @@ export default function PromptLibraryPage() {
   const requestedBundleId = searchParams.get('bundle')
   const selectedBundleId = requestedBundleId === AUTO_RESEARCH_BUNDLE_ID ? requestedBundleId : AUTO_RESEARCH_BUNDLE_ID
   const selectedAssetKey = searchParams.get('asset') ?? ''
+  // The list stays clickable while an action runs; the refresh that follows
+  // the action must not put the previous asset back into the detail panel.
+  const currentAssetKey = useRef(selectedAssetKey)
+  currentAssetKey.current = selectedAssetKey
 
   const loadAssets = useCallback(async () => {
     setLoadingAssets(true)
@@ -199,12 +203,14 @@ export default function PromptLibraryPage() {
   }, [activeView, selectedAssetKey])
 
   const refreshSelectedAssetDetail = useCallback(async () => {
-    if (!selectedAssetKey) return
+    const assetKey = selectedAssetKey
+    if (!assetKey) return
     const [asset, nextVersions, nextDeployments] = await Promise.all([
-      promptsApi.getAsset(selectedAssetKey),
-      promptsApi.listVersions(selectedAssetKey),
-      promptsApi.listDeployments(selectedAssetKey, { include_history: true }),
+      promptsApi.getAsset(assetKey),
+      promptsApi.listVersions(assetKey),
+      promptsApi.listDeployments(assetKey, { include_history: true }),
     ])
+    if (currentAssetKey.current !== assetKey) return
     const ordered = nextVersions.slice().sort((a, b) => b.version - a.version)
     setSelectedAsset(asset)
     setVersions(ordered)
