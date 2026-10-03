@@ -258,4 +258,26 @@ describe('HostAgents', () => {
     await waitFor(() => expect(screen.getAllByText('Installed')).toHaveLength(3))
     expect(onChanged).toHaveBeenCalled()
   })
+
+  it('offers no Log out for a registry agent whose only sign-in is its advertised Agent Auth', () => {
+    const host = {
+      ...HOST,
+      capabilities_json: {
+        runtimes: [],
+        installations: {
+          acp_browser_only: [{
+            id: 'managed:3.0.0', version: '3.0.0', logged_in: true,
+            options: { config_options: [], session_available: true, auth_methods: [
+              { id: 'device', name: 'Device login', description: null, type: 'terminal', args: ['login'], env: {} },
+            ] },
+          }],
+        },
+      },
+    } as unknown as Host
+    render(<HostAgents host={host} adapters={ADAPTERS} isInstanceAdmin={false} manageable onChanged={vi.fn()} />)
+    expect(screen.getByTestId('host-agent-h1-acp_browser_only').textContent).toContain('logged in')
+    // The server accepts a logout only through a CLI login or a logout
+    // command; neither exists here, so the button would always answer 422.
+    expect(screen.queryByRole('button', { name: /Log out managed:3\.0\.0 of Kite/ })).toBeNull()
+  })
 })
