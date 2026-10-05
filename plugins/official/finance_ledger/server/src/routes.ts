@@ -11,7 +11,7 @@ import type {
   FinanceBookRow,
 } from "./domain/directives.js";
 import { AccountNotFoundError, FinanceRuleError, financeLedgerService } from "./domain/service.js";
-import { withTransaction } from "./domain/transaction.js";
+import { withLockedBook } from "./domain/transaction.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DIRECTIVE_STATUSES: readonly DirectiveStatus[] = ["draft", "proposed", "posted", "voided"];
@@ -383,7 +383,9 @@ export function registerFinanceLedgerRoutes(
       try {
         // One transaction: a posting refused part way, or a post that does
         // not balance, used to leave a draft nobody could remove.
-        const posted = await withTransaction(db, async (tx) => {
+        // Lock before allocating a directive sequence. Waiting for the book
+        // only at posting can deadlock an import on an uncommitted sequence.
+        const posted = await withLockedBook(db, identity.spaceId, book.id, async (tx) => {
           const directive = await financeLedgerService.createTransactionDraft(
             tx,
             identity.spaceId,

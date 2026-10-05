@@ -1174,19 +1174,19 @@ export class PgKnowledgeRepository {
 
   /**
    * Whether `candidateId` sits at or below `ancestorId`, walking up from the
-   * candidate. Bounded, because a tree already in a cycle has no root to reach.
+   * candidate. UNION deduplicates visited rows even in an already cyclic tree.
    */
   private async isDescendantNoteCollection(spaceId: string, candidateId: string, ancestorId: string): Promise<boolean> {
     const result = await this.db.query<{ found: boolean }>(
       `WITH RECURSIVE ancestry AS (
-         SELECT id, parent_id, 1 AS depth
+         SELECT id, parent_id
            FROM note_collections
           WHERE id = $2 AND space_id = $1
-         UNION ALL
-         SELECT parent.id, parent.parent_id, ancestry.depth + 1
+         UNION
+         SELECT parent.id, parent.parent_id
            FROM note_collections parent
            JOIN ancestry ON parent.id = ancestry.parent_id
-          WHERE parent.space_id = $1 AND ancestry.depth < 64
+          WHERE parent.space_id = $1
        )
        SELECT EXISTS (SELECT 1 FROM ancestry WHERE id = $3) AS found`,
       [spaceId, candidateId, ancestorId],

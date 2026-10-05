@@ -18,6 +18,15 @@ export function inTransaction(db: Queryable): boolean {
   return (db as Partial<TransactionQueryable>)[IN_TRANSACTION] === true;
 }
 
+/** Close, post, and import share a book lock, including their validation reads. */
+export function withLockedBook<T>(db: Queryable, spaceId: string, bookId: string, work: (tx: Queryable) => Promise<T>): Promise<T> {
+  return withTransaction(db, async (tx) => {
+    // Compatible with FK KEY SHARE locks taken while creating draft rows.
+    await tx.query(`SELECT id FROM finance_books WHERE space_id=$1 AND id=$2 FOR NO KEY UPDATE`, [spaceId, bookId]);
+    return work(tx);
+  });
+}
+
 /**
  * Runs `work` as one database transaction, so a write that fails part way
  * leaves nothing behind. Given anything other than the host pool — a client

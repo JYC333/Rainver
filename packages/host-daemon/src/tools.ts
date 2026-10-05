@@ -258,15 +258,19 @@ export async function installTool(
   const inPlace = frame.distribution.kind === "uvx";
   const stagingDir = inPlace ? finalDir : `${finalDir}.installing`;
   const asideDir = inPlace ? `${finalDir}.replaced` : null;
-  if (asideDir) {
-    await rm(asideDir, { recursive: true, force: true });
-    await rename(finalDir, asideDir).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error;
-    });
-  }
-  await rm(stagingDir, { recursive: true, force: true });
-  await mkdir(stagingDir, { recursive: true, mode: 0o700 });
+  let movedAside = false;
+  let stagingStarted = false;
+  let manifest: ToolManifest;
   try {
+    if (asideDir) {
+      await rm(asideDir, { recursive: true, force: true });
+      await rename(finalDir, asideDir).then(() => { movedAside = true; }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    }
+    stagingStarted = true;
+    await rm(stagingDir, { recursive: true, force: true });
+    await mkdir(stagingDir, { recursive: true, mode: 0o700 });
     const launch = await materialize(frame.distribution, stagingDir, log, downloadDependencies, frame.egress_transport ?? { mode: "direct" });
     // User data is outside the version directory, so replacing or pruning
     // binaries cannot remove login, native history, settings, or Skills.
@@ -286,7 +290,7 @@ export async function installTool(
       );
       if (!healthy) throw new Error("The managed runtime failed its ACP initialize health check; the previous installation remains active.");
     }
-    const manifest: ToolManifest = {
+    manifest = {
       runtime_key: frame.runtime_key,
       version: frame.version,
       runtime_version: runtimeVersion,
@@ -302,17 +306,6 @@ export async function installTool(
       await rm(finalDir, { recursive: true, force: true });
       await rename(stagingDir, finalDir);
     }
-    if (asideDir) await rm(asideDir, { recursive: true, force: true });
-  // One current copy per runtime key, plus exactly one kept behind it so the
-    // upgrade has something to be undone to (ADR 0016 §9). User state is outside
-    // this tree.
-    const keep = new Set([frame.version, ...managedVersionsFor(frame.runtime_key)
-      .filter((manifest) => manifest.version !== frame.version)
-      .slice(0, 1)
-      .map((manifest) => manifest.version)]);
-    for (const sibling of await readdir(join(toolsDir(), frame.runtime_key)).catch(() => [] as string[])) {
-      if (!keep.has(sibling)) await rm(join(toolsDir(), frame.runtime_key, sibling), { recursive: true, force: true });
-    }
     // The launch was resolved against the staging path; rewrite every
     // string of it against the final one.
     const relocate = (value: string) => value.split(stagingDir).join(finalDir);
@@ -323,16 +316,33 @@ export async function installTool(
     manifest.home = relocate(manifest.home);
     manifest.login_command = manifest.login_command?.map(relocate) ?? null;
     await writeFile(join(finalDir, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
-    return manifest;
   } catch (error) {
-    await rm(stagingDir, { recursive: true, force: true });
-    if (asideDir) {
+    if (stagingStarted) await rm(stagingDir, { recursive: true, force: true });
+    if (asideDir && movedAside) {
       await rename(asideDir, finalDir).catch((restoreError: NodeJS.ErrnoException) => {
         if (restoreError.code !== "ENOENT") throw restoreError;
       });
     }
     throw error;
   }
+  // The installed manifest is committed. Cleanup cannot turn a usable runtime
+  // into a failed installation or delete it while trying to restore a backup.
+  try {
+    if (asideDir) await rm(asideDir, { recursive: true, force: true });
+    // One current copy per runtime key, plus exactly one kept behind it so the
+    // upgrade has something to be undone to (ADR 0016 §9). User state is outside
+    // this tree.
+    const keep = new Set([frame.version, ...managedVersionsFor(frame.runtime_key)
+      .filter((manifest) => manifest.version !== frame.version)
+      .slice(0, 1)
+      .map((manifest) => manifest.version)]);
+    for (const sibling of await readdir(join(toolsDir(), frame.runtime_key)).catch(() => [] as string[])) {
+      if (!keep.has(sibling)) await rm(join(toolsDir(), frame.runtime_key, sibling), { recursive: true, force: true });
+    }
+  } catch (error) {
+    log(`Runtime installed; old-version cleanup failed: ${String(error)}`);
+  }
+  return manifest;
 }
 
 /** A version label is useful metadata, but failure to print it must not abort a valid install. */

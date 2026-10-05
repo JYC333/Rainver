@@ -54,6 +54,9 @@ Project collection reads follow the Project ACL, including descendant folders,
 so the global Notes tree does not reveal private Project names or structure.
 Existing workspaces can be opened by Project viewers; creating the workspace or
 mutating its folders and note placements requires Project writer authority.
+Folder moves check the full ancestry for cycles; there is no 64-level cutoff.
+Project ownership also follows the full ancestry to the nearest Project folder,
+with visited-node tracking so corrupt historical cycles cannot loop forever.
 
 #### Hoisting
 

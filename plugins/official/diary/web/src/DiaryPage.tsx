@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, type ComponentType } from 'react'
 import type { DiaryApi, DiaryEntry, DiaryReflection, DiaryWebHost } from './host'
+import { saveDiaryEntry } from './saveQueue'
 
 export type { DiaryApi, DiaryEntry, DiaryReflection, DiaryWebHost } from './host'
 
@@ -38,19 +39,29 @@ function EntryEditor({
   const [error, setError] = useState<string | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const latestRef = useRef(initial)
+  const saveContextRef = useRef(api.saveContextKey?.() ?? '')
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   const save = useCallback(async (text: string) => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = null
     setSaving(true)
     setError(null)
     try {
-      const result = await api.saveEntry(date, text)
+      const result = await saveDiaryEntry(api, date, text, saveContextRef.current)
+      if (!mountedRef.current) return
       onSaved(result.entry)
-      setSaved(true)
+      setSaved(latestRef.current === text)
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Save failed')
+      if (mountedRef.current) setError(err instanceof Error ? err.message : 'Save failed')
     } finally {
-      setSaving(false)
+      if (mountedRef.current) setSaving(false)
     }
   }, [api, date, onSaved])
 
@@ -59,7 +70,10 @@ function EntryEditor({
     latestRef.current = text
     setSaved(false)
     if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => void save(text), 1500)
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null
+      void save(text)
+    }, 1500)
   }
 
   // Leaving the day (another date, or back to today) unmounts the editor; a
@@ -67,7 +81,8 @@ function EntryEditor({
   useEffect(() => () => {
     if (!timerRef.current) return
     clearTimeout(timerRef.current)
-    void api.saveEntry(date, latestRef.current).catch(() => {/* the editor is gone */})
+    timerRef.current = null
+    void saveDiaryEntry(api, date, latestRef.current, saveContextRef.current).catch(() => {/* the editor is gone */})
   }, [api, date])
 
   return (

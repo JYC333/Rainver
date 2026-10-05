@@ -1,6 +1,6 @@
 import { RetrievalSearchService } from "../retrieval/index.js";
 import { memoryRetrievalRegistry } from "../memory/retrievalAdapter.js";
-import type { Queryable } from "../routeUtils/common.js";
+import { bestEffortStep, type Queryable } from "../routeUtils/common.js";
 
 interface ActivityMemoryDedupResult {
   duplicate: boolean;
@@ -21,7 +21,8 @@ export async function assessActivityMemoryDuplicate(
   const title = dedupQuery(input.title, input.content);
   if (!title) return { duplicate: false, createSafety: "unknown", matchIds: [] };
 
-  try {
+  let result: ActivityMemoryDedupResult = { duplicate: false, createSafety: "unknown", matchIds: [] };
+  await bestEffortStep(db, "activity_memory_dedup", async () => {
     const search = new RetrievalSearchService(db, memoryRetrievalRegistry);
     const response = await search.assessCreateSafety({
       spaceId: input.spaceId,
@@ -31,18 +32,19 @@ export async function assessActivityMemoryDuplicate(
       maxResults: 3,
     });
     const matchIds = response.matches.map((match) => match.object_id);
-    return {
+    result = {
       duplicate: response.create_safety !== "unknown" && matchIds.length > 0,
       createSafety: response.create_safety,
       matchIds,
     };
-  } catch (error) {
+  }, (error) => {
     // The retrieval projection is a derived index. A pre-dedupe failure should
     // not block proposal creation; it degrades to no duplicate found.
     const message = String((error as Error)?.message ?? error);
     process.stderr.write(`[activity.consolidation] memory pre-dedupe failed: ${message}\n`);
-    return { duplicate: false, createSafety: "unknown", matchIds: [], error: message };
-  }
+    result = { duplicate: false, createSafety: "unknown", matchIds: [], error: message };
+  });
+  return result;
 }
 
 function dedupQuery(title: string | null, content: string | null): string | null {

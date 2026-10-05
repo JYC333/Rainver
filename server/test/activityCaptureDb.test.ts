@@ -7,6 +7,7 @@ import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { activityModule } from "../src/modules/activity/index.js";
 import { PgActivityRepository } from "../src/modules/activity/repository.js";
+import { PgActivityConsolidationRepository } from "../src/modules/activity/consolidationRepository.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
@@ -58,6 +59,38 @@ async function proposalCount(): Promise<number> {
 }
 
 describe("consolidating a capture (real Postgres)", () => {
+  it("still commits a proposal when the derived retrieval index cannot be queried", async () => {
+    const id = await capture();
+    await db.pool.query(`ALTER TABLE retrieval_aliases RENAME TO unavailable_retrieval_aliases`);
+    try {
+      expect(await new PgActivityRepository(db.pool).consolidate(owner, id)).toHaveLength(1);
+      expect(await proposalCount()).toBe(1);
+      const second = await capture();
+      const batch = await new PgActivityConsolidationRepository(db.pool).runPending({
+        spaceId: SPACE, actingUserId: OWNER, batchLimit: 10, activityIds: [second],
+      });
+      expect(batch.activities_processed).toEqual([second]);
+      expect(await proposalCount()).toBe(2);
+      const row = await db.pool.query(`SELECT status FROM activity_records WHERE id=$1`, [id]);
+      expect(row.rows[0]?.status).toBe("proposals_generated");
+    } finally {
+      await db.pool.query(`ALTER TABLE unavailable_retrieval_aliases RENAME TO retrieval_aliases`);
+    }
+  });
+  it("commits at most one proposal across simultaneous direct and batch consolidation", async () => {
+    if (!db.available) return;
+    const id = await capture();
+    const repository = new PgActivityRepository(db.pool);
+    const results = await Promise.allSettled([
+      repository.consolidate(owner, id),
+      repository.consolidate(owner, id),
+      new PgActivityConsolidationRepository(db.pool).runPending({ spaceId: SPACE, actingUserId: OWNER, batchLimit: 10, activityIds: [id] }),
+    ]);
+    for (const result of results) if (result.status === "rejected") expect(result.reason).toMatchObject({ statusCode: 409 });
+    expect(await proposalCount()).toBe(1);
+    const row = await db.pool.query(`SELECT status FROM activity_records WHERE id=$1`, [id]);
+    expect(row.rows[0]?.status).toBe("proposals_generated");
+  });
   it("generates one set of proposals however often consolidation is requested", async () => {
     if (!db.available) return;
     const activity = new PgActivityRepository(db.pool);

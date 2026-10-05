@@ -155,6 +155,11 @@ mounting drops it, since every row would repeat it.
   shortcut
 - Consolidation is idempotent: visible Memory duplicate checks run before proposal
   creation, and duplicate proposals are blocked by `proposal_dedupe_key`
+- Direct and batch consolidation lock the same Activity row and recheck its
+  eligibility inside a transaction. Proposal insertion and status change commit
+  together. A retrieval pre-dedupe failure is contained by the existing
+  `bestEffortStep` savepoint and still permits proposal creation; failure
+  reporting never overwrites a concurrent archive or successful consolidation.
 - The Inbox holds pointers, never content (BOUNDARIES B24A). A module that
   wants user attention delivers a clearable notification row here; the
   content itself lives in that module's own reading surface (e.g. the

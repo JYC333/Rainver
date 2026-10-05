@@ -990,6 +990,10 @@ describe("source post-processing repository (real Postgres)", () => {
     expect(theirDetail?.runs).toEqual([expect.objectContaining({ run_id: run.id, summary: null })]);
     // A decision names its item, so one on an item the reader cannot read is left out.
     expect(theirDetail!.item_decisions.map((d) => d.source_item_id)).not.toContain(itemB);
+    // A proposals-only run has no Artifact to establish summary read access.
+    await db.pool.query(`UPDATE source_post_processing_runs SET output_artifact_ids_json='[]'::jsonb,summary='Private model narrative' WHERE id=$1`, [run.id]);
+    const withoutOutputs = await repo().getBriefing({ spaceId: SPACE, userId: OTHER, connectionId: CONNECTION, date: "2026-07-08" });
+    expect(withoutOutputs?.runs).toEqual([expect.objectContaining({ run_id: run.id, summary: null })]);
   });
 
   it("emits and re-surfaces one daily Activity Inbox briefing pointer per source local day", async () => {

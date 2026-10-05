@@ -27,6 +27,20 @@ beforeEach(async () => {
 });
 
 describe("PgKnowledgeRepository note collections (real Postgres)", () => {
+  it("rejects a cycle whose ancestor is more than 64 levels away", async () => {
+    if (!db.available) return;
+    const ids = Array.from({ length: 70 }, () => randomUUID());
+    const rows = ids.map((id, index) => ({ id, parent: index ? ids[index - 1] : null }));
+    await db.pool.query(`INSERT INTO note_collections
+      (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
+      SELECT id,$1,parent,'Folder','normal',0,false,false,now(),now()
+      FROM jsonb_to_recordset($2::jsonb) AS items(id text,parent text)`, [SPACE, JSON.stringify(rows)]);
+    await expect(new PgKnowledgeRepository(db.pool).updateNoteCollection(
+      { spaceId: SPACE, userId: USER }, ids[0]!, { parent_id: ids.at(-1) },
+    )).rejects.toMatchObject({ statusCode: 422 });
+    const root = await db.pool.query(`SELECT parent_id FROM note_collections WHERE id=$1`, [ids[0]]);
+    expect(root.rows[0]?.parent_id).toBeNull();
+  });
   it("creates with a stable client id and appends after existing siblings", async () => {
     if (!db.available) return;
     const identity = { spaceId: SPACE, userId: USER };

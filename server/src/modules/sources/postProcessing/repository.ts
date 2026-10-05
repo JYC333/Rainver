@@ -897,7 +897,7 @@ export class PgSourcePostProcessingRepository {
         // A successful run's summary is the start of its digest, so it is
         // shown only to a reader who can read one of the run's outputs.
         const outputs = stringArray(row.output_artifact_ids_json);
-        const readable = outputs.length === 0 || outputs.some((id) => readableArtifactIds.has(id));
+        const readable = outputs.some((id) => readableArtifactIds.has(id));
         return {
           run_id: row.run_id,
           status: row.status,

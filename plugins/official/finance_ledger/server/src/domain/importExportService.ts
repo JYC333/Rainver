@@ -17,7 +17,7 @@ import type { DirectiveStatus, FinanceAccountRow, FinanceCommodityRow } from "./
 import { financeDirectiveRepository, type FinanceExportRow } from "./directiveRepository.js";
 import { Cost, CostSpec } from "./position.js";
 import { financeLedgerRepository, isSequenceConflict, type InsertPostingRecord } from "./repository.js";
-import { attempt, withTransaction } from "./transaction.js";
+import { attempt, withLockedBook } from "./transaction.js";
 
 export interface ImportBeancountInput {
   text: string;
@@ -60,57 +60,58 @@ export async function importBeancountToDb(
   const parsed = parseBeancountText(input.text, filename);
   const contentHash = createHash("sha256").update(input.text, "utf8").digest("hex");
 
-  const existing = await financeDirectiveRepository.findImportSourceByHash(
-    db,
-    spaceId,
-    bookId,
-    contentHash,
-  );
-  if (existing) {
-    return {
-      importSourceId: existing.id,
-      deduplicated: true,
-      createdDirectives: 0,
-      errors: [],
-      options: parsed.options,
-    };
-  }
-
-  // Validate the incoming file against the existing committed ledger so
-  // references to already-open accounts do not report as unknown.
-  // Validated against the ledger *this person* can see. Loading the whole book
-  // meant a balance assertion in the upload was checked against totals that
-  // included accounts they may not read, and the difference was reported back
-  // to them.
-  //
-  // The consequence, deliberately taken: a `balance` assertion over a subtree
-  // that contains another member's private account is now checked against the
-  // part of that subtree the importer can see, so it can fail for them where it
-  // held for the book — and a `pad` whose source account is hidden never
-  // discharges. That is the honest answer from where they stand: a total they
-  // cannot see is a total they cannot assert. An import that trips it is
-  // refused only with `post_directly`; otherwise the directives land as
-  // `proposed` with the error attached.
-  const dbLoaded = await financeLedgerEngine.loadFromDb(db, spaceId, bookId, userId);
-  const combined = transformEntries([...dbLoaded.entries, ...parsed.entries]);
-  const validationErrors = validateEntries(combined).filter(
-    (error) => error.source?.filename === filename,
-  );
-  const errors: LedgerError[] = [...parsed.errors, ...validationErrors];
-
-  if (status === "posted" && errors.length > 0) {
-    throw new Error(
-      `Cannot post import with validation errors: ${errors
-        .map((error) => `${error.code}: ${error.message}`)
-        .join("; ")}`,
+  return withLockedBook(db, spaceId, bookId, async (db) => {
+    const existing = await financeDirectiveRepository.findImportSourceByHash(
+      db,
+      spaceId,
+      bookId,
+      contentHash,
     );
-  }
+    if (existing) {
+      return {
+        importSourceId: existing.id,
+        deduplicated: true,
+        createdDirectives: 0,
+        errors: [],
+        options: parsed.options,
+      };
+    }
 
-  // One transaction: the import source is what a retry of the same file is
-  // deduplicated against, so it must not be committed by an import that then
-  // failed. An entry that cannot be persisted is still skipped and reported,
-  // but whole, under its own savepoint, rather than with half its rows.
-  return withTransaction(db, async (tx) => {
+    // Validate the incoming file against the existing committed ledger so
+    // references to already-open accounts do not report as unknown.
+    // Validated against the ledger *this person* can see. Loading the whole book
+    // meant a balance assertion in the upload was checked against totals that
+    // included accounts they may not read, and the difference was reported back
+    // to them.
+    //
+    // The consequence, deliberately taken: a `balance` assertion over a subtree
+    // that contains another member's private account is now checked against the
+    // part of that subtree the importer can see, so it can fail for them where it
+    // held for the book — and a `pad` whose source account is hidden never
+    // discharges. That is the honest answer from where they stand: a total they
+    // cannot see is a total they cannot assert. An import that trips it is
+    // refused only with `post_directly`; otherwise the directives land as
+    // `proposed` with the error attached.
+    const dbLoaded = await financeLedgerEngine.loadFromDb(db, spaceId, bookId, userId);
+    const combined = transformEntries([...dbLoaded.entries, ...parsed.entries]);
+    const validationErrors = validateEntries(combined).filter(
+      (error) => error.source?.filename === filename,
+    );
+    const errors: LedgerError[] = [...parsed.errors, ...validationErrors];
+
+    if (status === "posted" && errors.length > 0) {
+      throw new Error(
+        `Cannot post import with validation errors: ${errors
+          .map((error) => `${error.code}: ${error.message}`)
+          .join("; ")}`,
+      );
+    }
+
+    // One transaction: the import source is what a retry of the same file is
+    // deduplicated against, so it must not be committed by an import that then
+    // failed. An entry that cannot be persisted is still skipped and reported,
+    // but whole, under its own savepoint, rather than with half its rows.
+    const tx = db;
     const importSource = await financeDirectiveRepository.insertImportSource(tx, {
       spaceId,
       bookId,
@@ -189,12 +190,9 @@ class ImportPersister {
   ) {}
 
   async preload(): Promise<void> {
-    const [accounts, commodities] = await Promise.all([
-      // The importer's own view of the book. Preloading every account let an
-      // import resolve — and post into — a member's private account by name.
-      financeLedgerRepository.listAccounts(this.db, this.spaceId, this.bookId, this.userId),
-      financeLedgerRepository.listCommodities(this.db, this.spaceId, this.bookId),
-    ]);
+    // The importer's own view of the book, read on its locked transaction.
+    const accounts = await financeLedgerRepository.listAccounts(this.db, this.spaceId, this.bookId, this.userId);
+    const commodities = await financeLedgerRepository.listCommodities(this.db, this.spaceId, this.bookId);
     for (const account of accounts) this.accounts.set(account.name, account);
     for (const commodity of commodities) this.commodities.set(commodity.symbol, commodity);
   }
@@ -319,6 +317,12 @@ class ImportPersister {
       case "close": {
         const account = this.requireAccount(entry.account, entry);
         if (!account) return;
+        if (account.closed_at || entry.date < account.opened_at) {
+          throw new Error(`Invalid close date for ${account.name}`);
+        }
+        if (await financeLedgerRepository.hasPostedEntriesAfter(this.db, this.spaceId, this.bookId, account.id, entry.date)) {
+          throw new Error(`${account.name} has posted entries after ${entry.date}`);
+        }
         const closed = await financeLedgerRepository.closeAccount(
           this.db,
           this.spaceId,
@@ -594,6 +598,9 @@ class ImportPersister {
         source: entry.source,
       });
       return null;
+    }
+    if (entry.type !== "close" && (account.opened_at > entry.date || (account.closed_at && account.closed_at < entry.date))) {
+      throw new Error(`Account is not open on ${entry.date}: ${name}`);
     }
     return account;
   }

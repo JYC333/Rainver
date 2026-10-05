@@ -29,15 +29,16 @@ export async function projectOwningCollection(
 ): Promise<string | null> {
   const result = await db.query<{ project_id: string | null }>(
     `WITH RECURSIVE ancestry AS (
-       SELECT id, parent_id, project_id, 0 AS depth
+       SELECT id, parent_id, project_id, 0 AS depth, ARRAY[id::text] AS visited
          FROM note_collections
         WHERE space_id = $1 AND id = $2
        UNION ALL
-       SELECT parent.id, parent.parent_id, parent.project_id, ancestry.depth + 1
+       SELECT parent.id, parent.parent_id, parent.project_id, ancestry.depth + 1,
+              ancestry.visited || parent.id::text
          FROM note_collections parent
          JOIN ancestry ON ancestry.parent_id = parent.id
         WHERE parent.space_id = $1
-          AND ancestry.depth < 64
+          AND NOT parent.id::text = ANY(ancestry.visited)
      )
      SELECT project_id
        FROM ancestry

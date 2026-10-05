@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createDiaryPage } from '../../../../plugins/official/diary/web/src/DiaryPage'
+import { saveDiaryEntry } from '../../../../plugins/official/diary/web/src/saveQueue'
 import type { DiaryApi, DiaryEntry, DiaryWebHost } from '../../../../plugins/official/diary/web/src/host'
 
 function entry(date: string, content: string): DiaryEntry {
@@ -54,6 +55,71 @@ afterEach(() => {
 })
 
 describe('DiaryPage', () => {
+  it('sends the latest edit after the in-flight save, including when leaving and reopening the day', async () => {
+    const today = localToday()
+    const { api, release } = heldApi([])
+    const saved: string[] = []
+    const completions: Array<() => void> = []
+    api.saveEntry = vi.fn((date: string, content: string) => new Promise<{ entry: DiaryEntry }>(resolve => {
+      completions.push(() => { saved.push(content); resolve({ entry: entry(date, content) }) })
+    }))
+    const first = renderPage(api)
+    await release(today)
+    await release(new Date().toISOString().slice(0, 10))
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'A' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save now' }))
+    await waitFor(() => expect(api.saveEntry).toHaveBeenCalledTimes(1))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'B' } })
+    first.unmount()
+    renderPage(api)
+    await release(today)
+    await release(new Date().toISOString().slice(0, 10))
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'C' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save now' }))
+    expect(api.saveEntry).toHaveBeenCalledTimes(1)
+    await act(async () => completions.shift()!())
+    await waitFor(() => expect(api.saveEntry).toHaveBeenCalledTimes(2))
+    expect(api.saveEntry).toHaveBeenLastCalledWith(today, 'B')
+    await act(async () => completions.shift()!())
+    await waitFor(() => expect(api.saveEntry).toHaveBeenCalledTimes(3))
+    expect(api.saveEntry).toHaveBeenLastCalledWith(today, 'C')
+    await act(async () => completions.shift()!())
+    expect(saved).toEqual(['A', 'B', 'C'])
+  })
+
+  it('continues saving the latest text after an earlier save fails', async () => {
+    const { api } = heldApi([])
+    api.saveEntry = vi.fn()
+      .mockRejectedValueOnce(new Error('Temporary failure'))
+      .mockResolvedValueOnce({ entry: entry('2026-10-05', 'B') })
+    const first = saveDiaryEntry(api, '2026-10-05', 'A')
+    const second = saveDiaryEntry(api, '2026-10-05', 'B')
+    await expect(first).rejects.toThrow('Temporary failure')
+    await expect(second).resolves.toEqual({ entry: entry('2026-10-05', 'B') })
+    expect(api.saveEntry).toHaveBeenLastCalledWith('2026-10-05', 'B')
+  })
+
+  it('does not send a queued edit using a changed Space or authentication context', async () => {
+    const { api } = heldApi([])
+    let context = 'first'
+    api.saveContextKey = () => context
+    const queued = saveDiaryEntry(api, '2026-10-05', 'Private edit')
+    context = 'second'
+    await expect(queued).rejects.toThrow('Diary save context changed')
+    expect(api.saveEntry).not.toHaveBeenCalled()
+  })
+
+  it('does not flush the previous context\'s text when the editor unmounts after a context switch', async () => {
+    const { api, release } = heldApi([])
+    let context = 'first'
+    api.saveContextKey = () => context
+    const page = renderPage(api)
+    await release(localToday())
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'Private edit' } })
+    context = 'second'
+    await act(async () => page.unmount())
+    expect(api.saveEntry).not.toHaveBeenCalled()
+  })
   it('shows the day that was picked even when an earlier read answers last', async () => {
     const today = localToday()
     const { api, release } = heldApi([entry(today, 'Written today'), entry('2025-03-04', 'Written in March')])

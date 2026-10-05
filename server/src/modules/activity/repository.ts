@@ -8,6 +8,7 @@ import {
   requiredString,
   stringArray,
   toDbDate,
+  withQueryableTransaction,
   type SpaceUserIdentity,
   type Queryable,
 } from "../routeUtils/common.js";
@@ -298,6 +299,13 @@ export class PgActivityRepository {
   }
 
   async consolidate(identity: SpaceUserIdentity, activityId: string): Promise<ProposalOut[]> {
+    return withQueryableTransaction(this.db, (db) =>
+      new PgActivityRepository(db).consolidateLocked(identity, activityId));
+  }
+
+  private async consolidateLocked(identity: SpaceUserIdentity, activityId: string): Promise<ProposalOut[]> {
+    await this.db.query(`SELECT id FROM activity_records WHERE id=$1 AND space_id=$2 FOR UPDATE`,
+      [activityId, identity.spaceId]);
     const activity = await this.get(identity, activityId, { forChange: true });
     if (!activity || isSummaryOnly(activity)) throw new HttpError(404, "Activity record not found");
     if (activity.aggregate_key) {

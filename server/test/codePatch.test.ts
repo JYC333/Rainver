@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   __codePatchTestHooks,
   collectWorktreeChanges,
 } from "../src/modules/projectFolders/codePatch.js";
+import { withCodePatchTarget } from "../src/modules/projectFolders/codePatchTarget.js";
 
 const execFileAsync = promisify(execFile);
 const tmpRoots: string[] = [];
@@ -74,6 +75,55 @@ describe("code patch workspace collection", () => {
 });
 
 describe("code patch file transaction", () => {
+  it("preserves executable permissions through apply and rollback", async () => {
+    const root = await tmpRoot();
+    await writeFile(join(root, "script.sh"), "old");
+    await chmod(join(root, "script.sh"), 0o755);
+    const tx = new __codePatchTestHooks.CodePatchFileTransaction(root, false);
+    await tx.apply([{ type: "replace_file", path: "script.sh", content: "new", preimage_exists: true, preimage_sha256: sha256("old") }]);
+    expect((await stat(join(root, "script.sh"))).mode & 0o777).toBe(0o755);
+    await tx.rollback();
+    expect(await readFile(join(root, "script.sh"), "utf8")).toBe("old");
+    expect((await stat(join(root, "script.sh"))).mode & 0o777).toBe(0o755);
+  });
+  it("keeps file operations on the opened directory when its path is replaced by a link", async () => {
+    const root = await tmpRoot();
+    const outside = await tmpRoot();
+    await mkdir(join(root, "child"));
+    await writeFile(join(root, "child", "file.txt"), "old");
+    await writeFile(join(outside, "file.txt"), "outside");
+    await withCodePatchTarget(root, "child/file.txt", false, async (target) => {
+      await rename(join(root, "child"), join(root, "original"));
+      await symlink(outside, join(root, "child"));
+      expect((await target.read())?.toString()).toBe("old");
+      await target.write("new");
+    });
+    expect(await readFile(join(outside, "file.txt"), "utf8")).toBe("outside");
+    expect(await readFile(join(root, "original", "file.txt"), "utf8")).toBe("new");
+  });
+
+  it("refuses to roll back through a parent link planted after apply", async () => {
+    const root = await tmpRoot();
+    const outside = await tmpRoot();
+    await mkdir(join(root, "child"));
+    await writeFile(join(root, "child", "file.txt"), "old");
+    await writeFile(join(outside, "file.txt"), "outside");
+    const tx = new __codePatchTestHooks.CodePatchFileTransaction(root, false);
+    await tx.apply([{ type: "replace_file", path: "child/file.txt", content: "new", preimage_exists: true, preimage_sha256: sha256("old") }]);
+    await rename(join(root, "child"), join(root, "original"));
+    await symlink(outside, join(root, "child"));
+    await expect(tx.rollback()).rejects.toMatchObject({ statusCode: 422 });
+    expect(await readFile(join(outside, "file.txt"), "utf8")).toBe("outside");
+  });
+
+  it("refuses a final-component link without reading or overwriting its referent", async () => {
+    const root = await tmpRoot();
+    const outside = await tmpRoot();
+    await writeFile(join(outside, "file.txt"), "outside");
+    await symlink(join(outside, "file.txt"), join(root, "file.txt"));
+    await expect(withCodePatchTarget(root, "file.txt", false, (file) => file.read())).rejects.toMatchObject({ statusCode: 422 });
+    expect(await readFile(join(outside, "file.txt"), "utf8")).toBe("outside");
+  });
   it("rolls back already-written files when a later operation fails", async () => {
     const root = await tmpRoot();
     await writeFile(join(root, "a.txt"), "old a\n", "utf8");

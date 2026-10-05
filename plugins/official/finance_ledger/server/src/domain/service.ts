@@ -37,7 +37,7 @@ import {
 } from "./repository.js";
 import { Inventory } from "./inventory.js";
 import { Position } from "./position.js";
-import { attempt } from "./transaction.js";
+import { attempt, withLockedBook } from "./transaction.js";
 
 export interface CreateFinanceBookInput {
   name: string;
@@ -239,6 +239,13 @@ export class FinanceLedgerService {
     date: string,
     viewerUserId: string,
   ): Promise<FinanceAccountRow> {
+    return withLockedBook(db, spaceId, bookId, (tx) =>
+      this.closeAccountLocked(tx, spaceId, bookId, accountId, date, viewerUserId));
+  }
+
+  private async closeAccountLocked(
+    db: Queryable, spaceId: string, bookId: string, accountId: string, date: string, viewerUserId: string,
+  ): Promise<FinanceAccountRow> {
     // Refused where the ledger's own validator would call the result invalid:
     // closed before it opened, closed twice, or closed under later entries.
     const account = await this.repository.findAccountForViewer(
@@ -367,10 +374,18 @@ export class FinanceLedgerService {
     bookId: string,
     directiveId: string,
   ): Promise<FinanceDirectiveRow> {
+    return withLockedBook(db, spaceId, bookId, (tx) =>
+      this.postDirectiveLocked(tx, spaceId, bookId, directiveId));
+  }
+
+  private async postDirectiveLocked(
+    db: Queryable, spaceId: string, bookId: string, directiveId: string,
+  ): Promise<FinanceDirectiveRow> {
     const directive = await this.repository.findDirective(db, spaceId, bookId, directiveId);
     if (!directive) throw new Error("Directive not found");
     if (directive.status === "posted") return directive;
     if (directive.status === "voided") throw new Error("Cannot post a voided directive");
+    await this.validateDirectiveAccountDates(db, spaceId, bookId, directive);
     if (directive.directive_type === "transaction") {
       const errors = await this.validateTransactionBalance(db, spaceId, bookId, directiveId);
       if (errors.length > 0) {
@@ -378,6 +393,26 @@ export class FinanceLedgerService {
       }
     }
     return this.repository.updateDirectiveStatus(db, spaceId, bookId, directiveId, "posted");
+  }
+
+  private async validateDirectiveAccountDates(
+    db: Queryable, spaceId: string, bookId: string, directive: FinanceDirectiveRow,
+  ): Promise<void> {
+    const invalidAccount = await db.query(
+      `SELECT a.id FROM finance_accounts a
+        JOIN (
+          SELECT account_id FROM finance_postings WHERE transaction_directive_id=$3
+          UNION SELECT account_id FROM finance_balance_assertions WHERE directive_id=$3
+          UNION SELECT account_id FROM finance_pad_directives WHERE directive_id=$3
+          UNION SELECT source_account_id FROM finance_pad_directives WHERE directive_id=$3
+          UNION SELECT account_id FROM finance_notes WHERE directive_id=$3
+          UNION SELECT account_id FROM finance_documents WHERE directive_id=$3
+        ) used ON used.account_id=a.id
+       WHERE a.space_id=$1 AND a.book_id=$2
+         AND (a.opened_at > $4::date OR a.closed_at < $4::date)
+       LIMIT 1`, [spaceId, bookId, directive.id, directive.date],
+    );
+    if (invalidAccount.rows.length) throw new FinanceRuleError("Directive uses an account that is not open on its date");
   }
 
   async voidDirective(
@@ -561,6 +596,13 @@ export class FinanceLedgerService {
     importSourceId: string,
     proposalId?: string | null,
   ): Promise<{ posted: number }> {
+    return withLockedBook(db, spaceId, bookId, (tx) =>
+      this.postImportBatchLocked(tx, spaceId, bookId, importSourceId, proposalId));
+  }
+
+  private async postImportBatchLocked(
+    db: Queryable, spaceId: string, bookId: string, importSourceId: string, proposalId?: string | null,
+  ): Promise<{ posted: number }> {
     const directives = await this.repository.listDirectives(db, spaceId, bookId, {
       importSourceId,
     });
@@ -569,6 +611,7 @@ export class FinanceLedgerService {
     );
     const errors: FinanceValidationError[] = [];
     for (const directive of pending) {
+      await this.validateDirectiveAccountDates(db, spaceId, bookId, directive);
       if (directive.directive_type !== "transaction") continue;
       errors.push(...(await this.validateTransactionBalance(db, spaceId, bookId, directive.id)));
     }

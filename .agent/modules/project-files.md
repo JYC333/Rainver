@@ -92,6 +92,18 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   person's one new-file draft slot while an unsaved new file holds it, and
   refuses a revision larger than a draft may be; revision rows and historical
   status values remain readable for compatibility.
+- Server `code_patch` apply, snapshot restore and failure rollback open each
+  directory component without following symlinks and operate relative to its
+  Linux `/proc/self/fd` handle. Replacing a parent path with a link cannot
+  redirect the file operation. All symlink components are refused (422);
+  non-Linux server patching fails closed (503). Existing executable modes are
+  preserved. These operations do not turn the external filesystem into a
+  database transaction or prevent another writer from changing file content.
+  Reuse / Dependency Check: existing Folder realpath checks cannot pin a
+  directory across a write; Node filesystem handles supply this Linux boundary.
+  [fs-native-extensions](https://github.com/holepunchto/fs-native-extensions)
+  offers advisory locks but no directory-relative open API, so no native
+  dependency is added for this purpose-specific patch target.
 - Save to Folder requires the exact draft version and Host existence/hash observed
   by the editor, is atomic, rejects traversal/symlink escapes and secret-like
   paths, and is capped at 1 MiB, matching the File-page read limit.

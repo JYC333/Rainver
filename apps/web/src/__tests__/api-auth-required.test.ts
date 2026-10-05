@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiRequestError, authApi, notesApi } from '../api/client'
+import { ApiRequestError, authApi, diaryApi, notesApi, setAuth } from '../api/client'
 
 function jsonResponse(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -16,6 +16,12 @@ afterEach(() => {
 })
 
 describe('a 401 from the API', () => {
+  it('invalidates queued writes on cookie sign-out even when the bearer key remains null', () => {
+    setAuth(null)
+    const before = diaryApi.saveContextKey()
+    setAuth(null)
+    expect(diaryApi.saveContextKey()).not.toBe(before)
+  })
   it('signs the browser out when the session is missing', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ code: 'authentication_required', message: 'Authentication required' }, 401)))
     const { heard, stop } = listenForSignOut()

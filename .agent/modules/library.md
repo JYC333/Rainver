@@ -154,6 +154,10 @@ Activity Inbox points into Library through daily aggregate rows with
 Those rows contain only counts and a short preview; full digest and item
 content stay in the Library/Sources read model.
 
+Per-source Briefing run summaries require at least one output artifact readable
+by the viewer. A proposals-only or mark-only run with no output artifacts has
+its summary withheld too: that model narrative is not a public status message.
+
 Source recommendation inbox rows point back to Sources Pending. Reviewing or
 archiving the Activity row only clears the notification pointer; Follow,
 Dismiss, Mute, and Unsubscribe are stored in

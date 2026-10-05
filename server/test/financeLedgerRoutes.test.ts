@@ -1,8 +1,9 @@
-import { describe, expect, it, beforeAll, beforeEach } from "vitest";
+import { describe, expect, it, beforeAll, beforeEach, vi } from "vitest";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { resetTables } from "./support/resetTables.js";
 import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 
 const {
   plugin: { financeLedgerPlugin },
@@ -103,6 +104,50 @@ async function seedLedger(bookId: string): Promise<{ checkingId: string; foodId:
 }
 
 describe("finance ledger routes", () => {
+  it("commits a same-day import and direct transaction without reversing their lock order", async () => {
+    const bookId = await createBookViaApi();
+    const { checkingId, foodId } = await seedLedger(bookId);
+    const holder = await db.pool.connect();
+    let settled = false;
+    try {
+      await holder.query("BEGIN");
+      await holder.query(`SELECT id FROM finance_books WHERE id=$1 FOR NO KEY UPDATE`, [bookId]);
+      const importing = app!.inject({
+        method: "POST", url: `/api/v1/finance/books/${bookId}/import/beancount`,
+        payload: { post_directly: true, text: `2026-07-02 * "Import"
+  Assets:Bank:Checking -1 USD
+  Expenses:Food 1 USD
+` },
+      }).then((response) => response);
+      await waitForLockWaiter(db.pool);
+      const request = app!.inject({
+        method: "POST", url: `/api/v1/finance/books/${bookId}/transactions`,
+        payload: { date: "2026-07-02", post: true, postings: [
+          { account_id: checkingId, amount: { number: "-1", commodity: "USD" } },
+          { account_id: foodId, amount: { number: "1", commodity: "USD" } },
+        ] },
+      }).then((response) => { settled = true; return response; });
+      await vi.waitUntil(async () => {
+        const waiting = await db.pool.query(`SELECT 1 FROM pg_stat_activity
+          WHERE datname=current_database() AND wait_event_type='Lock'`);
+        return (waiting.rowCount ?? 0) >= 2;
+      }, { timeout: 10_000, interval: 20 });
+      expect(settled).toBe(false);
+      await holder.query("COMMIT");
+      const imported = await importing;
+      expect(imported.statusCode).toBe(200);
+      expect(imported.json()).toMatchObject({ created_directives: 1, errors: [] });
+      const response = await request;
+      expect(response.statusCode).toBe(201);
+      expect(response.json().directive.status).toBe("posted");
+      const persisted = await db.pool.query(`SELECT sequence,status FROM finance_directives
+        WHERE book_id=$1 ORDER BY sequence`, [bookId]);
+      expect(persisted.rows).toEqual([{ sequence: 0, status: "posted" }, { sequence: 1, status: "posted" }]);
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+    }
+  });
   it("fails closed when the plugin is disabled", async () => {
     guardState.enabled = false;
     const response = await app!.inject({ method: "GET", url: "/api/v1/finance/books" });

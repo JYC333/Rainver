@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Queryable } from "../routeUtils/common.js";
+import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import type { SpaceUserIdentity } from "../routeUtils/common.js";
 import { TRUST_BY_SOURCE_TYPE } from "./repository.js";
 import { assessActivityMemoryDuplicate } from "./memoryDedup.js";
@@ -79,36 +79,51 @@ export class PgActivityConsolidationRepository {
       userId: input.actingUserId,
     };
 
-    for (const activity of result.rows) {
+    for (const candidate of result.rows) {
       try {
-        const content = (activity.content ?? "").trim();
-        if (!content) {
-          await this.markActivityStatus(activity.id, input.spaceId, "processed");
-          activitiesSkipped.push(activity.id);
-          continue;
-        }
-        const duplicate = await assessActivityMemoryDuplicate(this.db, {
-          spaceId: input.spaceId,
-          viewerUserId: input.actingUserId,
-          title: activity.title,
-          content: activity.content,
-        });
-        if (duplicate.duplicate) {
-          await this.markActivityStatus(activity.id, input.spaceId, "processed");
-          activitiesDeduped.push({
-            activity_id: activity.id,
-            create_safety: duplicate.createSafety,
-            match_ids: duplicate.matchIds,
+        const outcome = await withQueryableTransaction(this.db, async (db) => {
+          // The direct capture endpoint takes the same row lock. Re-read both
+          // eligibility and permissions after waiting for a competing writer.
+          const locked = await db.query<ActivityRow>(
+            `SELECT ${ACTIVITY_COLUMNS} FROM activity_records ar
+              WHERE ar.id=$1 AND ar.space_id=$2 AND ar.status='raw'
+                AND ar.aggregate_key IS NULL
+                AND ${contentReadSql("activity", "ar", "$3")}
+                AND ${contentOwnerFilterSql("activity", "ar", "$3")}
+              FOR UPDATE`, [candidate.id, input.spaceId, input.actingUserId],
+          );
+          const activity = locked.rows[0];
+          if (!activity) return { kind: "skipped" as const };
+          const repository = new PgActivityConsolidationRepository(db);
+          if (!(activity.content ?? "").trim()) {
+            await repository.markActivityStatus(activity.id, input.spaceId, "processed");
+            return { kind: "skipped" as const };
+          }
+          const duplicate = await assessActivityMemoryDuplicate(db, {
+            spaceId: input.spaceId, viewerUserId: input.actingUserId,
+            title: activity.title, content: activity.content,
           });
-          continue;
+          if (duplicate.duplicate) {
+            await repository.markActivityStatus(activity.id, input.spaceId, "processed");
+            return { kind: "deduped" as const, duplicate };
+          }
+          const proposalId = await repository.insertMemoryProposal(identity, activity);
+          await repository.markActivityStatus(activity.id, input.spaceId, "proposals_generated");
+          return { kind: "processed" as const, proposalId };
+        });
+        if (outcome.kind === "processed") {
+          proposalsCreated.push(outcome.proposalId);
+          activitiesProcessed.push(candidate.id);
+        } else if (outcome.kind === "deduped") {
+          activitiesDeduped.push({ activity_id: candidate.id, create_safety: outcome.duplicate.createSafety, match_ids: outcome.duplicate.matchIds });
+        } else {
+          activitiesSkipped.push(candidate.id);
         }
-        const proposalId = await this.insertMemoryProposal(identity, activity);
-        await this.markActivityStatus(activity.id, input.spaceId, "proposals_generated");
-        proposalsCreated.push(proposalId);
-        activitiesProcessed.push(activity.id);
       } catch {
-        activitiesFailed.push(activity.id);
-        await this.markActivityStatus(activity.id, input.spaceId, "failed");
+        activitiesFailed.push(candidate.id);
+        // Do not overwrite an archive or a competing successful consolidation.
+        await this.db.query(`UPDATE activity_records SET status='failed',updated_at=now()
+          WHERE id=$1 AND space_id=$2 AND status='raw'`, [candidate.id, input.spaceId]);
       }
     }
 

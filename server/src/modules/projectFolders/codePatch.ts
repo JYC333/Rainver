@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { isAbsolute, dirname, resolve } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
 import {
   PgSnapshotStore,
   type SnapshotFile,
@@ -22,6 +22,8 @@ import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "./workspa
 import { PgProjectFolderRepository } from "./repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { proposalActivityAudience } from "../proposals/decisionActivity.js";
+
+import { withCodePatchTarget } from "./codePatchTarget.js";
 
 const MAX_PATCH_FILE_BYTES = 2 * 1024 * 1024;
 
@@ -431,7 +433,7 @@ async function applyCodePatchProposal(context: ProposalApplyContext): Promise<Pr
 }
 
 export class CodePatchFileTransaction {
-  private readonly preimages: Array<{ path: string; absolutePath: string; existed: boolean; content: Buffer | null }> = [];
+  private readonly preimages: Array<{ path: string; existed: boolean; content: Buffer | null }> = [];
 
   constructor(
     private readonly root: string,
@@ -451,29 +453,24 @@ export class CodePatchFileTransaction {
     for (const operation of operations) {
       const target = this.validateOperation(operation);
       await assertCodePatchTargetInsideRoot(this.root, target, operation.path);
-      const existing = await readFile(target).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return null;
-        throw error;
+      await withCodePatchTarget(this.root, operation.path, true, async (file) => {
+        const existing = await file.read();
+        if (operation.preimage_exists && existing === null) {
+          throw new HttpError(409, `stale_code_patch: ${operation.path} no longer exists`);
+        }
+        if (!operation.preimage_exists && existing !== null) {
+          throw new HttpError(409, `stale_code_patch: ${operation.path} already exists`);
+        }
+        if (operation.preimage_exists && sha256(existing ?? Buffer.alloc(0)) !== operation.preimage_sha256) {
+          throw new HttpError(409, `stale_code_patch: ${operation.path} preimage mismatch`);
+        }
+        this.preimages.push({
+          path: operation.path,
+          existed: existing !== null,
+          content: existing,
+        });
+        await file.write(operation.content);
       });
-      if (operation.preimage_exists && existing === null) {
-        throw new HttpError(409, `stale_code_patch: ${operation.path} no longer exists`);
-      }
-      if (!operation.preimage_exists && existing !== null) {
-        throw new HttpError(409, `stale_code_patch: ${operation.path} already exists`);
-      }
-      if (operation.preimage_exists && sha256(existing ?? Buffer.alloc(0)) !== operation.preimage_sha256) {
-        throw new HttpError(409, `stale_code_patch: ${operation.path} preimage mismatch`);
-      }
-      this.preimages.push({
-        path: operation.path,
-        absolutePath: target,
-        existed: existing !== null,
-        content: existing,
-      });
-      await mkdir(dirname(target), { recursive: true });
-      const tmp = `${target}.tmp-${randomUUID()}`;
-      await writeFile(tmp, operation.content, "utf8");
-      await rename(tmp, target);
       updated.push({ path: operation.path, sha256: sha256(Buffer.from(operation.content, "utf8")) });
     }
     return updated;
@@ -489,24 +486,12 @@ export class CodePatchFileTransaction {
     for (const file of files) {
       const target = this.targetPath(file.path);
       await assertCodePatchTargetInsideRoot(this.root, target, file.path);
-      const existing = await readFile(target).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return null;
-        throw error;
+      await withCodePatchTarget(this.root, file.path, true, async (targetFile) => {
+        const existing = await targetFile.read();
+        this.preimages.push({ path: file.path, existed: existing !== null, content: existing });
+        if (file.existed && file.content !== null) await targetFile.write(file.content);
+        else await targetFile.remove();
       });
-      this.preimages.push({
-        path: file.path,
-        absolutePath: target,
-        existed: existing !== null,
-        content: existing,
-      });
-      if (file.existed && file.content !== null) {
-        await mkdir(dirname(target), { recursive: true });
-        await writeFile(target, file.content, "utf8");
-      } else {
-        await unlink(target).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
-        });
-      }
       restored.push(file.path);
     }
     return restored;
@@ -514,14 +499,13 @@ export class CodePatchFileTransaction {
 
   async rollback(): Promise<void> {
     for (const preimage of [...this.preimages].reverse()) {
-      if (preimage.existed && preimage.content) {
-        await mkdir(dirname(preimage.absolutePath), { recursive: true });
-        await writeFile(preimage.absolutePath, preimage.content);
-      } else {
-        await unlink(preimage.absolutePath).catch((error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
-        });
-      }
+      await withCodePatchTarget(this.root, preimage.path, true, async (file) => {
+        if (preimage.existed && preimage.content !== null) {
+          await file.read(); // Preserve the existing file's mode and reject a swapped leaf link.
+          await file.write(preimage.content);
+        }
+        else await file.remove();
+      });
     }
   }
 

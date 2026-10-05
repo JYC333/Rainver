@@ -19,6 +19,8 @@ export interface DiaryReflection {
 }
 
 export interface DiaryApi {
+  /** Opaque identity for queued writes; changes when authentication or Space changes. */
+  saveContextKey?(): string
   today(): Promise<{ date: string; entry: DiaryEntry | null }>
   listEntries(params?: { limit?: number; before?: string }): Promise<{ entries: DiaryEntry[] }>
   saveEntry(date: string, content: string): Promise<{ entry: DiaryEntry }>

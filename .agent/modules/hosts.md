@@ -708,6 +708,13 @@ the rendered `login_command`), answers `tool_result { installation }` and
 heartbeats. `DELETE .../installations/:runtimeKey/:installation` sends
 `uninstall_tool`; only a managed copy can be removed.
 
+`uvx` tools install at the final path because their launchers contain absolute
+paths. A same-version reinstall keeps the previous tree in `.replaced` until
+initialization, probes and the final manifest write all succeed; failure before
+that point restores the previous tree. Old-version pruning happens after the
+manifest is committed. A cleanup failure is logged and preserves the usable
+new installation.
+
 An install of a *different* version is an upgrade, and an upgrade replaces the
 runtime every Run of that Agent is talking to. So the daemon drains that
 adapter's Runs first and, if the drain does not converge inside five minutes,

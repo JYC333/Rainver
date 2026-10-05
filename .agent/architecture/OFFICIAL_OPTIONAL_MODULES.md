@@ -141,6 +141,12 @@ Plugin-owned domain tables do not live in the core baseline. The `diary` plugin 
 ### Editor-owned content vs raw input
 Diary entries are editor-owned user documents, similar to Notes. Direct diary editing writes the diary plugin tables and does not create an `ActivityRecord`. If diary content is later extracted into Memory, Knowledge, Runtime Context acquisition, FlashCards, or agent-readable summaries, that extraction must go through the proposal/sources boundary and remain opt-in where the descriptor says context contribution is `opt_in`.
 
+The Diary editor serializes saves for the same API, user/Space context and day,
+including debounced, manual and unmount saves. The queue survives editor
+remounts, continues after a failed request and refuses queued text when the
+editing context no longer matches the host. This orders one browser's writes;
+it does not resolve conflicting edits from separate browser sessions.
+
 Finance ledger rows are space-owned business data. Direct ledger editing writes
 the finance plugin tables and does not create an `ActivityRecord`. Beancount text
 is an import/export compatibility format, not the source of truth; PostgreSQL
@@ -150,6 +156,14 @@ not receive that account, its postings, or transactions that touch it.
 Finance import writes are proposal-gated through
 `finance_ledger.post_import_batch`, and direct directive proposal application
 uses `finance_ledger.post_directive`.
+
+Account close, direct posting, import validation/persistence and batch import
+approval share a transaction-held `FOR NO KEY UPDATE` book lock. Posting checks
+account dates again after acquiring it, and closing refuses later posted
+entries. The lock is compatible with the book foreign keys' `KEY SHARE` locks
+held while creating drafts. A directive dated on the closing day remains valid.
+The transaction creation route acquires the book lock before allocating its
+sequence or inserting draft rows, keeping its lock order consistent with imports.
 
 ### Disable is not uninstall
 Disabling a module preserves all its data. `disabled_at` and `disabled_by_user_id` are recorded in the enablement row. Uninstall/data deletion is out of scope.

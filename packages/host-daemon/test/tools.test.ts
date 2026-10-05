@@ -1,8 +1,10 @@
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { detectCapabilities } from "../src/capabilities.js";
 import { resolveAcpLaunch } from "../src/execution.js";
 import {
@@ -46,6 +48,25 @@ async function writeManifest(runtimeKey: string, version: string, command: strin
 }
 
 describe("managed installations", () => {
+  it("restores the previous uv installation when its replacement directory cannot be initialized", async () => {
+    const dir = await writeManifest("acp_fake", "1.0.0", "/previous/runtime");
+    const original = fs.promises.mkdir;
+    const fail = vi.spyOn(fs.promises, "mkdir").mockImplementation(async (path, options) => {
+      if (path === dir) throw Object.assign(new Error("staging I/O failure"), { code: "EIO" });
+      return original(path, options as Parameters<typeof original>[1]);
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(installTool({ request_id: "replace", runtime_key: "acp_fake", version: "1.0.0",
+        distribution: { kind: "uvx", package: "fake-agent@1.0.0", args: [], env: {} }, login: null,
+      }, () => {})).rejects.toThrow("staging I/O failure");
+      expect(readToolManifestSync("acp_fake", "managed:1.0.0")?.command).toBe("/previous/runtime");
+      expect(await readdir(join(toolsDir(), "acp_fake"))).toEqual(["1.0.0"]);
+    } finally {
+      fail.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
   it("names installations and rejects anything that could leave the tools directory", () => {
     expect(managedInstallationId("1.2.3")).toBe("managed:1.2.3");
     expect(managedVersion("managed:1.2.3")).toBe("1.2.3");
@@ -179,6 +200,24 @@ describe("managed installations", () => {
         }, () => {});
         expect(manifest.command).toBe(join(toolsDir(), "acp_fake", "1.0.0", "bin", "fake-agent"));
         expect(execFileSync(manifest.command, { encoding: "utf8" }).trim()).toBe("fake-agent ok");
+      }
+      const manifestPath = join(toolsDir(), "acp_fake", "1.0.0", "manifest.json");
+      const originalWrite = fs.promises.writeFile;
+      let writes = 0;
+      const fail = vi.spyOn(fs.promises, "writeFile").mockImplementation(async (path, data, options) => {
+        if (path === manifestPath && ++writes === 2) throw new Error("final manifest I/O failure");
+        return originalWrite(path, data, options);
+      });
+      syncBuiltinESMExports();
+      try {
+        await expect(installTool({ request_id: "failed-reinstall", runtime_key: "acp_fake", version: "1.0.0",
+          distribution: { kind: "uvx", package: "fake-agent@1.0.0", args: [], env: {} }, login: null,
+        }, () => {})).rejects.toThrow("final manifest I/O failure");
+        const previous = readToolManifestSync("acp_fake", "managed:1.0.0")!;
+        expect(execFileSync(previous.command, { encoding: "utf8" }).trim()).toBe("fake-agent ok");
+      } finally {
+        fail.mockRestore();
+        syncBuiltinESMExports();
       }
       expect(await readdir(join(toolsDir(), "acp_fake"))).toEqual(["1.0.0"]);
     } finally {

@@ -450,12 +450,15 @@ const BASE = '/api/v1'
 
 let _spaceId = 'personal'
 let _apiKey: string | null = null
+let _authContextGeneration = 0
 
 export function setSpaceContext(spaceId: string): void {
   _spaceId = spaceId
 }
 
 export function setAuth(key: string | null): void {
+  // Cookie logout also calls setAuth(null) when no bearer key was present.
+  _authContextGeneration += 1
   _apiKey = key
 }
 
@@ -3964,6 +3967,7 @@ export const financeApi = {
 }
 
 export const diaryApi = {
+  saveContextKey: () => `${_authContextGeneration}:${_spaceId}`,
   today: () => get<{ date: string; entry: DiaryEntry | null }>('/diary/today'),
   listEntries: (params: { limit?: number; before?: string } = {}) => {
     const q = new URLSearchParams()

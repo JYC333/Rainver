@@ -1,7 +1,6 @@
 import { isProjectOwnerLevel } from "../projects/access.js";
 import { createHash, randomUUID } from "node:crypto";
 import * as protocol from "@rainver/protocol";
-import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { PoolClient } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
@@ -28,6 +27,7 @@ import { PgSnapshotStore } from "../projectFolders/snapshotStore.js";
 import { resolveActiveServerHostLocation, locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import { assertCodePatchTargetInsideRoot, CodePatchFileTransaction } from "../projectFolders/codePatch.js";
+import { withCodePatchTarget } from "../projectFolders/codePatchTarget.js";
 import { validatePath } from "@rainver/folder-read";
 import { HttpError } from "../routeUtils/common.js";
 import type {
@@ -588,7 +588,8 @@ export class PgProposalApplyService {
       // silently discard that work, so every applied file must still hold
       // exactly what the patch wrote.
       for (const file of appliedCodePatchFiles(p.payload_json)) {
-        const current = await readFile(await target(file.path)).catch((err: NodeJS.ErrnoException) => {
+        await target(file.path);
+        const current = await withCodePatchTarget(root, file.path, false, (targetFile) => targetFile.read()).catch((err: NodeJS.ErrnoException) => {
           if (err.code === "ENOENT") return null;
           throw err;
         });

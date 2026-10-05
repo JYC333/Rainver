@@ -108,6 +108,22 @@ describe("note project binding by placement (real Postgres)", () => {
     expect(await primaryProjectOf(note.id)).toBe(projectId);
   });
 
+  it("keeps Project ownership through more than 64 nested folders", async () => {
+    const repository = new PgKnowledgeRepository(db.pool);
+    const projectId = await makeProject("Study");
+    const projectFolder = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectId));
+    const ids = Array.from({ length: 70 }, () => randomUUID());
+    const rows = ids.map((id, index) => ({ id, parent: index ? ids[index - 1] : projectFolder }));
+    await db.pool.query(`INSERT INTO note_collections
+      (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
+      SELECT id,$1,parent,'Folder','normal',0,false,false,now(),now()
+      FROM jsonb_to_recordset($2::jsonb) AS items(id text,parent text)`, [SPACE, JSON.stringify(rows)]);
+    const loose = await makeFolder("Loose");
+    const note = await repository.createNote(identity, { title: "Unfiled", collection_id: loose }) as { id: string };
+    await repository.addNotePlacement(identity, note.id, ids.at(-1)!);
+    expect(await primaryProjectOf(note.id)).toBe(projectId);
+  });
+
   it("refuses an unconfirmed placement into a second Project's subtree", async () => {
     if (!db.available) return;
     const repository = new PgKnowledgeRepository(db.pool);

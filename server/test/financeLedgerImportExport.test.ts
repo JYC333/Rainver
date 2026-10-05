@@ -75,6 +75,47 @@ async function createBook(spaceId = SPACE_A) {
 }
 
 describe("finance ledger Beancount import", () => {
+  it("refuses to approve an import after its account closes before the transaction date", async () => {
+    const book = await createBook();
+    const imported = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
+      text: `2026-01-01 open Assets:Cash USD
+2026-01-01 open Expenses:Food USD
+2026-07-02 * "Later expense"
+  Assets:Cash -1 USD
+  Expenses:Food 1 USD
+`,
+    });
+    expect(imported.errors).toEqual([]);
+    const accounts = await financeLedgerService.listAccounts(db.pool, SPACE_A, book.id, USER_1);
+    const cash = accounts.find((account) => account.name === "Assets:Cash")!;
+    await financeLedgerService.closeAccount(db.pool, SPACE_A, book.id, cash.id as string, "2026-07-01", USER_1);
+    await expect(financeLedgerService.postImportBatch(db.pool, SPACE_A, book.id, imported.importSourceId!))
+      .rejects.toThrow("Directive uses an account that is not open on its date");
+    const directives = await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id);
+    expect(directives.every((directive) => directive.status === "proposed")).toBe(true);
+  });
+
+  it("does not import a close beneath a posted future transaction", async () => {
+    const book = await createBook();
+    await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
+      status: "posted", text: `2026-01-01 open Assets:Cash USD
+2026-01-01 open Expenses:Food USD
+2026-07-02 * "Later expense"
+  Assets:Cash -1 USD
+  Expenses:Food 1 USD
+`,
+    });
+    const closing = await financeLedgerService.importBeancount(db.pool, SPACE_A, book.id, USER_1, {
+      text: "2026-07-01 close Assets:Cash",
+    });
+    expect(closing.createdDirectives).toBe(0);
+    expect(closing.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "import_persist_error", message: "Assets:Cash has posted entries after 2026-07-01" }),
+    ]));
+    const accounts = await financeLedgerService.listAccounts(db.pool, SPACE_A, book.id, USER_1);
+    expect(accounts.find((account) => account.name === "Assets:Cash")?.closed_at).toBeNull();
+  });
+
   it("persists the full directive stream as proposed by default", async () => {
     const book = await createBook();
     const result = await financeLedgerService.importBeancount(
