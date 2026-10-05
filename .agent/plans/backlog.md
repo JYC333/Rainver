@@ -528,24 +528,9 @@ does not block it. (Sending the block on change is implemented; see
   is a different and smaller change, and the plan deferred it behind the
   two-prompt-assembly-paths audit in section 7 (H2).
 
-## 11. Reconcile inherited sweep follow-ups
+## 11. Authentication test verification follow-up
 
-2026-10-05 从退役的无人值守审计清单迁入。工作是重新核实并处理这些技术
-遗留，原描述和位置仅代表 2026-10-03 的审计快照，不代表本轮确认仍存在。
-产品待决定项、条件风险和清理候选已迁到
-[deferred register](../tasks/deferred-register.md#2026-10-03-sweep--inherited-decisions)。
-不得据此重置运行数据或擅自执行迁移／历史改写。
-
-**技术遗留**
-- 发生 overflow 轮换后，对旧 binding 调用 `rotateMissingVendorState` 会返回 409；守护进程续接时仍然使用旧会话（`server/src/modules/runtimeContext/continuity/`）。
-- 已有的多通道 Workflow 需要做一次数据修复，才能补全复数的 `workflowBindingIds/workflowRuleIds`（相关代码在 `server/src/modules/sources/monitoringCoordinator.ts`）。
-- `GitStatus` 协议没有 `truncated` 字段，所以被截断的 `git status` 无法告知调用方。diff 的截断已经修好。
-- Capabilities 导入时，服务端会重新抓取 URL；预览和导入之间上游包发生变化，目前检测不到，需要加 `package_hash` 校验。
-- Usage 的单会话平均值：token 总量来自 summary 接口，它也计入了 summary 级访问，而会话数只计完整访问，所以平均值略有偏差。summary 接口没有 `total` 字段，Group 行也因此会被截断。
-- `createTask` 没有检查归档状态。
-- POLICY_ENFORCEMENT_INVENTORY.md 里的 `memory.cross_space_read` 在代码中找不到同名的东西，还没核实。
-
-### Verification follow-up observed on 2026-10-05
+Observed on 2026-10-05.
 
 - `server/test/authRegistrationDb.test.ts:196` 的 Google reauthentication
   用例，整文件执行时 start 返回 400 而不是 200。修复后的全量和聚焦验证均复现；
