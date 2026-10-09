@@ -1,4 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 import { seedRun, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -265,6 +267,35 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     expect(out.memory.visibility).toBe("private");
     expect(out.memory.owner_user_id).toBe(creator);
     expect(out.memory.access_level).toBe("full");
+  });
+
+  it("does not apply a proposal that is no longer pending", async () => {
+    if (!db.available || !db.pool) return;
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES ('member-1', $1, $2, 'owner', 'active', now(), now())`,
+      [SPACE, USER],
+    );
+    const apply = PgProposalApplyService.fromConfig(loadConfig({
+      SERVER_DATABASE_URL: db.connectionUri,
+    }));
+    const pending = proposal({
+      id: "prop-pending-gate",
+      payload_json: { proposed_content: "from an open proposal", provenance_entries: [userConf] },
+    });
+    await seedProposal(pending);
+    const accepted = await apply.accept(pending.id, { spaceId: SPACE, userId: USER });
+    expect(accepted).not.toBeNull();
+
+    const closed = proposal({
+      id: "prop-rejected-gate",
+      payload_json: { proposed_content: "from a closed proposal", provenance_entries: [userConf] },
+    });
+    await seedProposal(closed);
+    await db.pool.query("UPDATE proposals SET status = 'rejected' WHERE id = $1", [closed.id]);
+    expect(await apply.accept(closed.id, { spaceId: SPACE, userId: USER })).toBeNull();
+    expect((await db.pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0]?.c).toBe(1);
+    expect((await db.pool.query("SELECT status FROM proposals WHERE id = $1", [closed.id])).rows[0]?.status).toBe("rejected");
   });
 
   it("keeps the no-visibility default private in a personal space", async () => {

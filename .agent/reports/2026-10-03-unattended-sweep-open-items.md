@@ -17,8 +17,10 @@
   快照，落实决定前需要重新核实当前代码。R1 的 code_patch 写入修复不等于
   D52 的 Folder 读取已修复；R2 的 Briefing run summary 不等于 D7 的 Activity
   预览；R8 的并发整合修复不等于 D85 的所有者／审批人取舍已解决。
-- 后端全量另有一项认证测试失败，修复前 HEAD 也能复现；已单独记录在
-  [backlog](../plans/backlog.md#11-authentication-test-verification-follow-up)。
+- 当时整文件执行 `authRegistrationDb.test.ts` 时，Google 重认证返回 400。
+  原因是 Better Auth 对 `/sign-in` 有进程级、每地址 10 秒 3 次的限额，而
+  用例把地址写在客户端 `x-forwarded-for` 里，门面实际按 Fastify 解析的
+  地址计数。产品代码没有缺陷；用例已改为各自指定 `remoteAddress`。
 - 本文末尾的提交数量、推送状态和署名说明均为原审计结束时的历史记录。
 
 ## 条件风险：R10 日记 reflection 的多 worker 写入

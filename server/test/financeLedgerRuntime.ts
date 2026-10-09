@@ -35,6 +35,7 @@ export interface FinanceLedgerRuntime {
   decimal: {
     parseDecimal(input: string): DecimalValueForTest;
     addDecimal(left: DecimalValueForTest, right: DecimalValueForTest): DecimalValueForTest;
+    multiplyDecimal(left: DecimalValueForTest, right: DecimalValueForTest): DecimalValueForTest;
     compareDecimal(left: DecimalValueForTest, right: DecimalValueForTest): number;
   };
   amount: {

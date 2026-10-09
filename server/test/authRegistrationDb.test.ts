@@ -36,11 +36,12 @@ function authConfig(instanceAdminEmail = "owner@example.test", google = false): 
 }
 
 // Better Auth keeps one in-memory per-IP rate-limit store for the whole
-// process, and the server forwards it only the address Fastify resolved.
-// A direct `auth.handler` call therefore names its address in
-// `x-forwarded-for`, while a request through the facade names it in
-// `inject({ remoteAddress })` — a client-sent forwarded header never reaches
-// Better Auth.
+// process. Its /sign-in paths allow 3 requests per 10 seconds, and the server
+// forwards only the address Fastify resolved. A direct `auth.handler` call
+// therefore names its address in `x-forwarded-for`, while a request through
+// the facade names it in `inject({ remoteAddress })` — a client-sent
+// forwarded header never reaches Better Auth. Each facade call below names
+// its own address so earlier cases in this file do not consume its bucket.
 let signUpSourceCounter = 10;
 async function signUp(config: ServerConfig, email: string, name: string, sourceIp?: string) {
   const auth = createBetterAuth(config, db.pool);
@@ -64,7 +65,7 @@ describe("registration and Better Auth facade primitives", () => {
     if (!db.available) return;
     const app = buildModuleServer(authConfig("owner@example.test", true), [authModule]);
     try {
-      const start = await app.inject({ method: "GET", url: "/api/v1/auth/google" });
+      const start = await app.inject({ method: "GET", url: "/api/v1/auth/google", remoteAddress: "192.0.2.221" });
       expect(start.statusCode).toBe(307);
       expect(start.headers.location).toContain("accounts.google.com");
       expect(String(start.headers["set-cookie"])).toMatch(/better-auth\.state=/);
@@ -84,6 +85,7 @@ describe("registration and Better Auth facade primitives", () => {
     try {
       const response = await app.inject({
         method: "POST", url: "/api/v1/auth/register/google",
+        remoteAddress: "192.0.2.222",
         headers: { origin: "http://localhost:5173", "content-type": "application/json" },
         payload: JSON.stringify({ intent_id: intent.intentId, claim_secret: intent.claimSecret }),
       });
@@ -155,6 +157,7 @@ describe("registration and Better Auth facade primitives", () => {
 
       const googleReauth = await app.inject({
         method: "POST", url: "/api/v1/auth/reauth/google",
+        remoteAddress: "192.0.2.124",
         headers: { cookie: sessionCookie, origin: "http://localhost:5173" },
         payload: {},
       });
@@ -181,7 +184,8 @@ describe("registration and Better Auth facade primitives", () => {
     try {
       const otherSignIn = await app.inject({
         method: "POST", url: "/api/v1/auth/sign-in/email",
-        headers: { origin: config.frontendUrl, "content-type": "application/json", "x-forwarded-for": "192.0.2.208" },
+        remoteAddress: "192.0.2.208",
+        headers: { origin: config.frontendUrl, "content-type": "application/json" },
         payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
       });
       expect(otherSignIn.statusCode).toBe(200);
@@ -190,7 +194,8 @@ describe("registration and Better Auth facade primitives", () => {
 
       const start = await app.inject({
         method: "POST", url: "/api/v1/auth/reauth/google",
-        headers: { cookie: oldCookie, origin: config.frontendUrl, "x-forwarded-for": "192.0.2.206" },
+        remoteAddress: "192.0.2.206",
+        headers: { cookie: oldCookie, origin: config.frontendUrl },
         payload: {},
       });
       expect(start.statusCode).toBe(200);
@@ -200,7 +205,8 @@ describe("registration and Better Auth facade primitives", () => {
 
       const signIn = await app.inject({
         method: "POST", url: "/api/v1/auth/sign-in/email",
-        headers: { origin: config.frontendUrl, "content-type": "application/json", "x-forwarded-for": "192.0.2.205" },
+        remoteAddress: "192.0.2.205",
+        headers: { origin: config.frontendUrl, "content-type": "application/json" },
         payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
       });
       expect(signIn.statusCode).toBe(200);
@@ -218,7 +224,8 @@ describe("registration and Better Auth facade primitives", () => {
 
       const retry = await app.inject({
         method: "POST", url: "/api/v1/auth/reauth/google",
-        headers: { cookie: oldCookie, origin: config.frontendUrl, "x-forwarded-for": "192.0.2.207" },
+        remoteAddress: "192.0.2.207",
+        headers: { cookie: oldCookie, origin: config.frontendUrl },
         payload: {},
       });
       expect(retry.statusCode).toBe(200);

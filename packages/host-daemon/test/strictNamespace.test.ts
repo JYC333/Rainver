@@ -211,6 +211,8 @@ describe("planning a strict launch", () => {
       // routes, from the very network this namespace shares.
       SANDBOX_RUNNER_TOKEN: "the-instance-internal-token",
       RAINVER_BUILTIN_HOST_CREDENTIAL: "/runner/builtin-host/registration.json",
+      ANTHROPIC_API_KEY: "sk-machine",
+      CLAUDE_CODE_OAUTH_TOKEN: "oauth-from-this-machine",
     },
     isolation: { sandbox_mode: "read_write", egress_profile: "default" },
     profileDir: "/profile",
@@ -228,7 +230,11 @@ describe("planning a strict launch", () => {
     // is the instance's.
     expect(env).not.toHaveProperty("SANDBOX_RUNNER_TOKEN");
     expect(env).not.toHaveProperty("RAINVER_BUILTIN_HOST_CREDENTIAL");
+    expect(env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
     expect(Object.values(env)).not.toContain("the-instance-internal-token");
+    expect(Object.values(env)).not.toContain("sk-machine");
+    expect(Object.values(env)).not.toContain("oauth-from-this-machine");
   });
 
   it("gives each Run its own HOME instead of one the whole instance shares", () => {

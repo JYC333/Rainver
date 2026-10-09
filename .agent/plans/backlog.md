@@ -528,18 +528,6 @@ does not block it. (Sending the block on change is implemented; see
   is a different and smaller change, and the plan deferred it behind the
   two-prompt-assembly-paths audit in section 7 (H2).
 
-## 11. Authentication test verification follow-up
-
-Observed on 2026-10-05.
-
-- `server/test/authRegistrationDb.test.ts:196` 的 Google reauthentication
-  用例，整文件执行时 start 返回 400 而不是 200。修复后的全量和聚焦验证均复现；
-  修复前 HEAD `67b5dadeb` 的干净源码副本执行同文件也复现（15 通过、1 失败），
-  而该 HEAD 单独执行这一用例通过。需要定位同文件前序状态的影响，范围尚未
-  确定是测试状态泄漏还是产品缺陷。本轮 7 项修复未改认证代码，也未放宽断言
-  或跳过此测试；不得把后端全量验证记为全部通过。
-
-
 ## Completion and retirement
 
 Remove an item once it is implemented and recorded in current-state
