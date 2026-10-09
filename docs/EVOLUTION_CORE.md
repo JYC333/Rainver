@@ -119,5 +119,5 @@ packets or review artifacts for memory health, but it does not directly write,
 archive, or supersede active `MemoryEntry` rows.
 
 Content read traces and retrieval quality signals can feed strategy selection
-and experience records. They do not bypass `ContentReadTrace`, cross-person
+and experience records. They do not bypass `content_access_logs`, cross-person
 content-access auditing, source monitoring, or proposal approval.

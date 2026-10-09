@@ -20,26 +20,27 @@ operate on the `.agent` context tree.
 
 **Domain decisions:** domain-specific matching is handled in the server policy services using the bounded policy row shape.
 
-**PolicyEngine** (`engineCheck` in `server/src/modules/policy/decisionCore.ts`) evaluates stateless built-in rules in priority order. When no rule matches, it uses the action registry's `default_decision` — not a permissive ALLOW. Unknown actions always fail closed with DENY (`audit_code="unknown_policy_action"`). Domain-specific persisted-policy enforcement lives in `server/src/modules/policy/`.
+**`engineCheck`** (`server/src/modules/policy/decisionCore.ts`) evaluates stateless built-in rules in priority order. When no rule matches, it uses the action registry's `default_decision` — not a permissive ALLOW. Unknown actions always fail closed with DENY (`audit_code="unknown_policy_action"`). It does not load `policies` rows.
 
 There is no `PolicyEffectCatalog`. `policy_change` requires `name` and `domain`,
 then inserts an active `policies` row for that domain. No server path reads the
 table, so the row does not change a decision.
 
-**Policy service / gateway** (`server/src/modules/policy/service.ts` and `gateway.ts`) is the enforcement entry point for sensitive actions. It composes hard invariants, PolicyEngine, and PolicyDecisionRecord persistence. Business enforcement code must call one of:
+**Policy service / gateway** (`server/src/modules/policy/service.ts` and `gateway.ts`) is the enforcement entry point for sensitive actions. It composes hard invariants, `engineCheck`, and PolicyDecisionRecord persistence. Business enforcement code must call one of:
 - **`enforce(req)`** — direct-action path. Returns blocked on DENY/REQUIRE_APPROVAL and writes durable audit on ALLOW when required. Used by runtime, context, Project Folder read/patch, artifact, proposal creation, and automation sensitive gates. Agent config routes do not call it.
 - **`enforceProposalApply(...)`** — proposal application path. Used by `PgProposalApplyService`.
 
-Direct use of `PolicyEngine` (`engineCheck`) or the hard-invariant helper (`checkHardInvariants`) outside documented non-mutating simulations is a boundary violation. No automated test detects it; it is held by review.
+Direct use of `engineCheck` or `checkHardInvariants` outside documented non-mutating simulations is a boundary violation. No automated test detects it; it is held by review.
 
 ### System actions and agent tools
 
 `SYSTEM_ACTION_REGISTRY` maps each invokable application capability to a
 canonical `PolicyActionId`; see [SYSTEM_ACTIONS.md](SYSTEM_ACTIONS.md).
-`SystemActionGateway` rejects unknown actions, actors, visibility surfaces,
-schemas, and missing idempotency before executor dispatch. `AgentToolGateway`
-then requires registry agent visibility, run/profile exposure, and a call-time
-policy adapter. An action with no canonical adapter is denied.
+`SystemActionGateway` (`server/src/modules/systemActions/gateway.ts`) rejects
+unknown actions, disallowed actors, visibility surfaces, schemas, and a missing
+idempotency key, then asks the policy enforcer. There is no second
+agent-tool gateway. A Run is offered an action only when `buildRunToolGrants`
+put it in the permission snapshot.
 
 Managed retrieval actions continue through their retrieval policy adapter;
 delegation uses `run.spawn_child` / `runtime.execute`. Generic managed source
@@ -61,7 +62,7 @@ not agent-visible.
 
 **Non-mutating simulation exceptions (no PolicyDecisionRecord):** preflight simulation may call pure decision helpers only — it must not persist `PolicyDecisionRecord` and must not perform the action. Current simulation call sites live in runs and automations services.
 
-**Hard invariant guard** (`checkHardInvariants` in `server/src/modules/policy/decisionCore.ts`) runs before PolicyEngine and enforces non-overridable security/privacy invariants.
+**Hard invariant guard** (`checkHardInvariants` in `server/src/modules/policy/decisionCore.ts`) runs before `engineCheck` and enforces non-overridable security/privacy invariants.
 
 **PolicyDecisionRecord** is an append-only durable audit table for sensitive policy decisions. Created for: audit_required actions, DENY, REQUIRE_APPROVAL, and forced records.
 
@@ -85,9 +86,9 @@ levels, admin=low/medium/high, reviewer=low/medium, member/guest=none.
 
 **Structured log traces:** the server logger emits JSON log lines for domain policy decisions. Memory content is never included.
 
-**Durable records:** `PolicyDecisionRecord` table persists sensitive policy decisions. `DurablePolicyAuditWriter` (`server/src/modules/policy/auditWriter.ts`) writes only a `PolicyDecisionRecord`.
+**Durable records:** `PolicyDecisionRecord` table persists sensitive policy decisions. `writePolicyAudit` (`server/src/modules/policy/auditWriter.ts`) writes only a `PolicyDecisionRecord`.
 
-Runtime-local blocked paths call `write_blocked_gate_audit(exc)` exactly once and fail the operation. No business object is committed merely to persist policy audit evidence.
+A blocking decision is audited by `writePolicyAudit` as one `PolicyDecisionRecord`. The operation fails, and no business row is committed merely to keep that audit.
 
 Metadata is sanitized before persistence — no credentials, prompts, patch bodies, stdout, stderr, raw memory, or `personal_context_block`.
 
@@ -109,7 +110,7 @@ What the code does instead:
   `PersonalMemoryGrant` is the exception the hard invariant recognizes; see
   `docs/PERSONAL_MEMORY_GRANT.md`.
 
-Retrieval hard-filter metadata remains in `retrieval_trace_json` on context packages; policy traces are separate log events.
+Policy traces are log lines and `PolicyDecisionRecord` rows. Context packages do not carry a `retrieval_trace_json` column.
 
 ---
 
@@ -167,9 +168,9 @@ and a reserved name is inserted the same way as any other domain.
 ## PolicyGateway enforcement points (wired)
 
 `PolicyGateway` is the **only enforcement** entry point for sensitive policy decisions.
-`PolicyEngine` is internal to the policy package — calling it directly is not
+`engineCheck` is internal to the policy package — calling it directly is not
 enforcement and must not be used to authorize sensitive actions outside the policy
-package. Business services must not call `PolicyEngine` (`engineCheck`) or the
+package. Business services must not call `engineCheck` or the
 hard invariant guard (`checkHardInvariants`) directly. The documented direct-call exceptions are non-mutating preflight
 simulations: they perform no action, mutate no state, and create no
 `PolicyDecisionRecord`.
@@ -242,16 +243,16 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   - CRITICAL risk level + non-ALLOW on non-audit-required actions.
 
 Actions completely absent from the registry (`agent.delegate`)
-fail closed via `unknown_policy_action` DENY if ever passed to `PolicyEngine` or
-`PolicyGateway`.
+fail closed via `unknown_policy_action` DENY if ever passed to `engineCheck` or
+`enforce`.
 
 ### context vs metadata_json semantics
 
 | Field | Where it belongs | Why |
 |-------|-----------------|-----|
-| `context` | Decision inputs consumed by `HardInvariantGuard` and `PolicyEngine` rules | Keys are flattened into the guard context. Fields such as `agent_status`, `tool_name`, `trigger_origin`, `derived_from_personal_memory_grant`, `raw_private_memory_included`, `target_visibility`, `target_space_id` must appear here. |
-| `metadata_json` | Sanitized audit-only metadata written to `PolicyDecisionRecord` | Never grants permission or satisfies approval. Forbidden sentinel fields in this audit bag may still trigger defensive hard-DENY behavior, such as `personal_context_block` or approval-proof flags. Dangerous fields are stripped by `sanitize_policy_metadata()`. |
-| `payload` | Proposal/policy payload | Only `HardInvariantGuard` inspects payload (approval-proof flag check for `proposal.apply` / `policy.change`). Not a decision input for any other action. |
+| `context` | Decision inputs consumed by `checkHardInvariants` and `engineCheck` | Keys are flattened into the guard context. Fields such as `agent_status`, `tool_name`, `trigger_origin`, `derived_from_personal_memory_grant`, `raw_private_memory_included`, `target_visibility`, `target_space_id` must appear here. |
+| `metadata_json` | Sanitized audit-only metadata written to `PolicyDecisionRecord` | Never grants permission or satisfies approval. Forbidden sentinel fields in this audit bag may still trigger defensive hard-DENY behavior, such as `personal_context_block` or approval-proof flags. Dangerous fields are stripped by `sanitizePolicyMetadata()` (`policy/sanitizer.ts`). |
+| `payload` | Proposal/policy payload | Only `checkHardInvariants` inspects payload (approval-proof flag check for `proposal.apply` / `policy.change`). Not a decision input for any other action. |
 
 ### WIRED_DIRECT action inventory
 
@@ -376,7 +377,7 @@ Knowledge must not automatically enter Memory or Runtime Context. Promotion to
 Memory requires a separate future proposal flow.
 
 Run creation, agent run preflight, standalone preflight, and automation policy
-preflight use `PolicyEngine` directly (non-mutating
+preflight use `engineCheck` directly (non-mutating
 simulation only — no `PolicyDecisionRecord`). They are absent from the wired
 action inventories because they are not enforcement and must not emit
 `PolicyDecisionRecord`.
@@ -425,7 +426,7 @@ No server path loads `policies` while making a decision, so a malformed effect o
 ## Space isolation
 
 **Status:** ✅ Enforced at data layer — `server/test/baselineSchema.test.ts` and
-`server/test/leafDomainInvariants.test.ts`
+`server/test/leafDomainRepositoryBehavior.test.ts`
 
 ---
 

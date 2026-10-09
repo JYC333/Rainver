@@ -709,7 +709,7 @@ not replaced by Source.
 - No historical data migration compatibility is required.
 
 **Enforced by tests:**
-- `server/test/leafDomainInvariants.test.ts` — knowledge proposals do not auto-promote into memory and server proposal appliers own accepted knowledge mutations.
+- `server/test/leafDomainRepositoryBehavior.test.ts` — a knowledge create from this path stays a pending `knowledge_create` proposal.
 - `server/test/leafDomainRepositoryBehavior.test.ts` — repository behavior around leaf-domain proposal boundaries.
 - Payload validation is enforced at apply time by the `apply*Proposal` functions in `knowledge/proposalApplier.ts` (registered by `registerKnowledgeProposalAppliers`): `knowledge_kind`, `content_format`, `visibility`, `verification_status`, `reflection_status`, and `confidence` for items; `link_type`, `status`, and `confidence` for relations. `link_type` legality — vocabulary, endpoint types, and whether the write may be direct — is checked by `assertLinkTypeAllowed` against `modules/ontology/linkTypes.ts`, which every `object_relations` writer must call.
 

@@ -91,8 +91,7 @@ over-permissive security UI.
 **Mitigations**:
 - New capability code must flow through review-gated workspace changes.
 - The read-only `catalog` module reads manifests only from `catalog/capabilities/` (not agent-writable at runtime).
-- `capability_versions.status` lifecycle: `draft → proposed → testing → available` (plus `disabled` / `archived`), with enablement in `capability_enablements` through proposal application; agents cannot jump to `available`.
-- `CapabilityVersion` + `CapabilityTest` require passing tests before promotion.
+- `capability_versions.status` includes `draft`, `proposed`, `testing`, `available`, `disabled`, and `archived`. Enablement goes through a proposal. Applying enable writes the chosen version to `available`. There is no `CapabilityTest` table and no test-pass gate before that write.
 - These controls govern Rainver capability installation, not files an ACP
   runtime writes directly. A runtime can create scripts in a read-write
   workspace; the built-in Host's namespace and the paired Host's machine-owner
@@ -218,7 +217,7 @@ over-permissive security UI.
 **Mitigations**:
 - `PathPolicy` prevents agents from reading `.env` files into prompts.
 - For production: apply column-level encryption or redaction before writes. *(Deferred.)*
-- Define `cleanup_after_days` per workspace in `instance/config/` for log retention.
+- There is no per-workspace `cleanup_after_days` setting. Log retention is not implemented that way.
 
 ---
 
@@ -244,6 +243,6 @@ over-permissive security UI.
 | Agent permissions | `tool_permissions_json` + `memory_policy_json` + policy engine rules |
 | Write gating | Proposals module + Proposal + approval/apply gate |
 | File access | `validatePath()` (`@rainver/folder-read`) |
-| Credential access | `credentials.secret_ref` + `CredentialAccessLog` |
+| Credential access | `credentials.secret_ref` (no `CredentialAccessLog` table) |
 | Capability evolution | `draft → proposed → testing → available` lifecycle |
-| Audit trail | `content_access_logs`, `ContentReadTrace`, `CredentialAccessLog`, `proposal_approvals`, `policy_decision_records`, Run tool-call events |
+| Audit trail | `content_access_logs`, `proposal_approvals`, `policy_decision_records`, Run tool-call events |

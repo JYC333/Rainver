@@ -62,7 +62,7 @@ the required cross-person privacy audit before content enters a Delivery. Owner
 reads do not produce privacy-audit rows.
 
 Canonical explicit cross-person reads (GET /memory/{id}, search hits) also
-append `ContentReadTrace` rows.
+append `content_access_logs` rows.
 
 Space oversight is read-only and is resolved inside that same predicate. It may
 therefore contribute an eligible member's otherwise-private memory to that

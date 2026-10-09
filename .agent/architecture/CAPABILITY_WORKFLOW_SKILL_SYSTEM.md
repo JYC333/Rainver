@@ -216,10 +216,12 @@ version never rewrites other scopes' pins. A null version pin is reserved for
 the matching built-in definition and never selects persisted imported runtime
 bindings; imported conversion also rejects ids that collide with built-in keys.
 
-### RuntimeSkillRenderer
+### Runtime skill render
 
-`RuntimeSkillRenderer` currently renders canonical capability data, normalized
-skill data, and profile configuration into runtime target content. This is
+`renderClaudeSkill` and `renderCodexSkill` (`capabilities/runtimeRenderers.ts`),
+reached through `renderRuntimeSkillCandidate`, render canonical capability
+data, normalized skill data, and profile configuration into runtime target
+content. This is
 transitional adapter glue. Its target input is the approved package snapshot
 plus binding/policy metadata, without a canonical content representation. The
 MVP renderers are pure functions that produce deterministic:
@@ -314,8 +316,8 @@ one.
   appliers.
 - Skill local overlays are configuration, not capability trust grants. They do
   not approve a skill, convert a skill, enable a capability, or bypass proposal
-  review. Capability conversion and enablement continue through existing
-  `capability_overlays` / proposal boundaries.
+  review. Capability conversion and enablement continue through
+  `capability_enablements` and proposal boundaries.
 - Conversion requests create a `capability_install` proposal. Applying it
   produces a disabled draft capability version plus disabled runtime bindings;
   requesting direct enablement during conversion (`enable_for_project_id`) fails

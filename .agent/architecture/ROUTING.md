@@ -147,7 +147,7 @@ router, decides whether a failed Run should be retried.
 `required_capabilities` checks the candidate's capability declarations, which
 come from the Agent's current `AgentVersion` and only from there. Registered
 System Action ids are filtered out of runtime requirements because those
-actions execute through the server-owned `AgentToolGateway`; their authority
+actions execute through the server-owned `SystemActionGateway`; their authority
 comes from the Run's immutable permission snapshot and call-time policy checks.
 
 The `required_tools` request/hint channel currently has an important limitation:

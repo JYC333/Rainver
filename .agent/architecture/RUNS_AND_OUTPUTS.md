@@ -283,7 +283,7 @@ authority-envelope, and `run.spawn_child` policy checks before queueing any
 child run.
 
 ACP Agent Runs inside an AgentRunGroup expose authorized room tools through the
-same `AgentToolGateway`: `agent.delegate` and `agent.wait_for_results`. The
+same `SystemActionGateway`: `agent.delegate` and `agent.wait_for_results`. The
 corresponding
 snapshotted Run tool grant. They are available to every active room agent, not
 only the manager. Natural-language requests such as

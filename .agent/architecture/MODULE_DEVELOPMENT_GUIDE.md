@@ -146,7 +146,7 @@ duplicated most often; the general rule behind them is
 
 ### Adding Settings
 
-- Use `server/src/modules/settings/ScopedSettingsStore`.
+- Use `ScopedSettingsStore` in `server/src/modules/settings/scopedSettings.ts`.
 - Define a typed scoped setting descriptor with a stable `settings_key`, exact
   scope (`instance`, `space`, `user`, or `space_user`), defaults, parser, and
   serializer.

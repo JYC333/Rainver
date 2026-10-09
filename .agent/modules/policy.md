@@ -357,8 +357,8 @@ simulation path: the automation policy preflight.
 | `retrieval.brief` | `server/src/modules/retrieval/tool/service.ts` via `enforce()` | Before managed-run Knowledge Context Brief execution |
 | `memory.retrieval.search` | `server/src/modules/retrieval/tool/service.ts` + `server/src/modules/runs/managedRetrievalTools.ts` via `enforce()` | Before explicitly opted-in managed-run Memory search execution; disabled-domain calls are denied/audited |
 | `memory.retrieval.brief` | `server/src/modules/retrieval/tool/service.ts` + `server/src/modules/runs/managedRetrievalTools.ts` via `enforce()` | Before explicitly opted-in managed-run Memory Context Brief execution; disabled-domain calls are denied/audited |
-| `project.summary.search` | `server/src/modules/retrieval/tool/service.ts` + `server/src/modules/systemActions/agentToolGateway.ts` via `enforce()` | Before explicitly opted-in managed-run Project public-summary search execution; disabled-domain calls are denied/audited |
-| `project.summary.brief` | `server/src/modules/retrieval/tool/service.ts` + `server/src/modules/systemActions/agentToolGateway.ts` via `enforce()` | Before explicitly opted-in managed-run Project public-summary Context Brief execution; disabled-domain calls are denied/audited |
+| `project.summary.search` | `server/src/modules/retrieval/tool/service.ts` + `server/src/modules/runs/managedRetrievalTools.ts` via `enforce()` | Before explicitly opted-in managed-run Project public-summary search execution; disabled-domain calls are denied/audited |
+| `project.summary.brief` | `server/src/modules/retrieval/tool/service.ts` + `server/src/modules/runs/managedRetrievalTools.ts` via `enforce()` | Before explicitly opted-in managed-run Project public-summary Context Brief execution; disabled-domain calls are denied/audited |
 
 **runtime.execute context fields**: Rule-relevant fields (`agent_status`, `agent_tool_permissions`,
 `tool_name`, `runtime_key`, `trigger_origin`, `risk_level`, etc.) are passed in

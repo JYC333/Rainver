@@ -158,7 +158,7 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
 |---|---|---|
 | HTTP routes | server `gateway/routeRegistry.ts` + `PluginHost` | `ServerModule` entries mounted under `/api/v1`, then PluginHost mounts official plugin routes, then the catch-all. |
 | Periodic tasks | server `modules/scheduler/SchedulerRegistry` | Server startup registers `ScheduledTask`; owning server modules keep tick behavior. |
-| Scoped settings | server `modules/settings/ScopedSettingsStore` | Owning modules define typed descriptors and product validation; the settings module owns generic persistence for instance/space/user/space-user settings. |
+| Scoped settings | server `modules/settings/scopedSettings.ts` (`ScopedSettingsStore`) | Owning modules define typed descriptors and product validation; the settings module owns generic persistence for instance/space/user/space-user settings. |
 | Durable job handlers | server `modules/jobs/JobHandlerRegistry` | server worker runtime registers allowlisted handlers, including `agent_run` and `authorization_request_reconcile`; unregistered types fail fast. |
 | Official plugin routes/jobs/scheduler/proposal appliers | server `modules/plugins/host` | Built-in official plugins register synchronously through `PluginHostContext`; host wraps job handlers and proposal appliers with enablement checks. |
 | Space-created initialization | server space hooks | server modules register space-created hooks; hook runs in caller transaction and must not commit. |

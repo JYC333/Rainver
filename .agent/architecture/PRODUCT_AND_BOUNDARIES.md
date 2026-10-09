@@ -106,9 +106,9 @@ capture / trigger
   restrictions remain separate deny gates.
 - Knowledge relations are database-backed and relation reads omit any row whose endpoints are not both readable by the viewer.
 
-### PolicyEngine evaluates built-in runtime rules; persisted policy enforcement is domain-specific
+### `engineCheck` evaluates built-in runtime rules; persisted policy rows are not read
 
-- `PolicyEngine` evaluates stateless built-in rules. It does not load persisted Policy rows.
+- `engineCheck` (`policy/decisionCore.ts`) evaluates stateless built-in rules. It does not load persisted Policy rows.
 - An accepted `policy_change` proposal inserts an active `policies` row for the payload's domain. No server path reads that table, so the row does not change a decision.
 - Cross-space memory denial is the hard invariant `hard_invariant_cross_space_memory` in `policy/decisionCore.ts`, not a persisted policy domain.
 

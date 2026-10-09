@@ -430,7 +430,7 @@ Low-frequency instance, space, user, and space-user settings use the
 generic `settings(scope_type, scope_id, settings_key, settings_json)` table.
 Business modules must not hand-write `settings` table CRUD. They define a typed
 descriptor with a stable key, scope type, defaults, parser, and serializer, then
-read/write through `server/src/modules/settings/ScopedSettingsStore`.
+read/write through `server/src/modules/settings/scopedSettings.ts`.
 Use the settings module helpers to encode composite `space_user` scope ids.
 
 The store owns row identity, create-if-missing, upsert, timestamp updates,
@@ -442,7 +442,7 @@ scheduler task store, not in scoped user setting rows.
 
 When adding a new setting:
 
-- Reuse `server/src/modules/settings/ScopedSettingsStore`; do not add
+- Reuse `server/src/modules/settings/scopedSettings.ts`; do not add
   feature-specific tables such as `space_<feature>_settings`,
   `user_<feature>_settings`, or `instance_<feature>_settings`.
 - Define a typed descriptor with a stable `settings_key`, exact scope
@@ -464,7 +464,7 @@ features define a stable task type and task key, while `scheduler_tasks` owns
 `state_json`.
 
 Business modules must not create one scheduler state table per feature. They
-read/write scheduler task rows through `server/src/modules/scheduler/PgSchedulerTaskStore`
+read/write scheduler task rows through `server/src/modules/scheduler/taskStore.ts`
 and keep product settings in scoped settings or domain tables. The durable
 `jobs` table remains the execution queue; `scheduler_tasks` is only scheduler
 cursor/state metadata used to decide when to enqueue or fire work.

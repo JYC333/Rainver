@@ -191,14 +191,14 @@ ADR 0009 已改成当前行为：`POST /api/v1/skill-sources/import` 把包存�
 **D32 会话 Cookie 的 Secure 属性**（`server/src/modules/auth/authCookie.ts:14-16`）
 安全边界文档和 `modules/auth.md` 已与代码一致：只在 `FRONTEND_URL` 为 https 时设置 `Secure`。
 
-**D38 Capability 晋升的测试门**（威胁模型 Threat 4）
-要求晋升前必须通过测试，但代码里既没有测试表，也没有这道门。
+**D38 Capability 晋升的测试门**
+威胁模型已改成当前行为：启用会把版本写成 `available`，没有 `CapabilityTest`，也没有测试通过门。
 
-**D39 日志保留**（威胁模型 Threat 11）
-按工作区配置 `cleanup_after_days` 的控制不存在。
+**D39 日志保留**
+没有按工作区的 `cleanup_after_days`。威胁模型已不再把它写成现有控制。
 
-**D40 审计表**（威胁模型 Threat 10）
-作为审计证据列出的 CredentialAccessLog、ContentReadTrace 两张表都不存在。
+**D40 审计表**
+没有 `CredentialAccessLog` 和 `ContentReadTrace`。现有读取审计是 `content_access_logs`。威胁模型的证据表已改成这些现有表。
 
 **D44 OpenCode 主机登录时的环境变量清洗**（`packages/host-daemon/src/providerBinding.ts:78-104`）
 注释和 B67 已经改成封闭前缀。OpenCode 登录丢掉 `ANTHROPIC_`、`CLAUDE_`、`CODEX_`、`OPENAI_`、`OPENCODE_`、`GEMINI_`、`GOOGLE_`。绑定运行仍走 `filterAmbientEnv` 白名单。
