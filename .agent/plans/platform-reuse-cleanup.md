@@ -1,89 +1,93 @@
 # Platform Reuse Cleanup
 
-Date: 2026-08-24
-Status: active checklist. Consolidates the build-vs-reuse audit (verified
-against code on 2026-08-24) so replacement decisions stop scattering across
-discussions. Completed replacements are NOT recorded here — git history and
-`.agent/architecture/` hold them. Remove a row once it lands.
+Date: 2026-08-24. Re-checked against the code on 2026-10-10.
+Status: active checklist. Consolidates the build-vs-reuse audit so replacement
+decisions stop scattering across discussions. Completed replacements are NOT
+recorded here — git history and `.agent/architecture/` hold them. Remove a row
+once it lands.
 
-Trigger-gated rows are deliberately kept in this file rather than
-`../tasks/deferred-register.md` so the whole reuse audit stays in one place.
+The split is the reuse policy's: Rainver keeps domain semantics, authority,
+governance, policy, the data model, and product behaviour. Generic engines
+(parsers, queues, retry, archives, HTML extraction, decimal math, observability)
+are what a mature implementation should own.
 
-Rows marked **unverified** carry a current-state claim that has not been
-checked against the code; verify before scheduling.
+Trigger-gated rows stay in this file rather than `../tasks/deferred-register.md`
+so the reuse audit stays in one place.
+
+## Withdrawn on the 2026-10-10 re-check
+
+These rows described code that is not there, or a replacement that would take
+over behaviour Rainver already owns. They are not work items.
+
+- **Finance decimal.** `plugins/official/financeLedger.ts` does not exist. The
+  ledger already does exact decimal arithmetic with an integer coefficient and
+  a scale in `plugins/official/finance_ledger/server/src/domain/decimal.ts`.
+  There is no float path to replace, and `decimal.js` is not needed.
+- **Eval harness.** `server/src/modules/evolution/evaluationHarnessService.ts`
+  exists. Promotion treats `verification_engine.v1` as the pass/fail authority.
+  Promptfoo does not become that authority.
 
 ## Replacement items
 
 | Item | Current | Target | Priority | Trigger | Status |
 | --- | --- | --- | --- | --- | --- |
-| Credential / CLI multi-account | Self-built login + usage probes (`packages/host-daemon/src/login.ts`, `usageProbe.ts`; server side `providers/managedOAuth.ts`, `subscriptionOAuth.ts`, `subscriptionQuota.ts`) | Official CLI login owns OAuth; Rainver owns a `CredentialBackend` abstraction, Profile, Run→Account binding, routing, audit. MIT references: CC Switch, clauth, codex-auth | P0 | None — next up after gateway consolidation | Not started |
-| Multipart upload parsing | Hand-written `parseMultipartUpload` (`activity/routes.ts`, single site); `@fastify/multipart` is already registered in `gateway/appShell.ts` and used by `sessions/routes.ts` | Move the activity route onto the registered `@fastify/multipart` and its shared limits | P1 | None — low-risk commodity cleanup | Not started |
-| HTML → article extraction | Self-built `stripHtml` / `htmlToReaderPmDoc` (`sources/contentParsing.ts`) | `@mozilla/readability` + DOM parser + sanitizer; Rainver keeps reading objects, highlights, Source, AI analysis | P1 | None | Not started |
-| Custom Source pseudo-sandbox | Child-process monkey-patch runner (`sources/customSources/customSourceRunner.ts`; its own header admits it is not OS-sandboxed) | Adapt the built-in Host's Bubblewrap namespace mechanism (`packages/host-daemon/src/strictNamespace.ts`) for Custom Source handler isolation where its process and mount contract fits | P1 | None | Not started |
-| Backup mechanics | Self-built tar.gz + pg_dump + retention (`backups/service.ts`) | restic owns archive/snapshot/storage/retention; Rainver keeps backup policy, manifest, restore flow, audit | P1/P2 | None | Not started |
-| Local retry/backoff | ~10+ independent implementations (`sources/sourceConnectionFetch.ts`, `runs/supervisor.ts`, `retrieval/embeddingStore.ts`, …) | `p-retry` for non-durable local calls only; durable retry stays with the job engine | P1/P2 | Opportunistic — adopt when touching a call site | Not started |
-| Job queue | Self-built Postgres queue (claim/heartbeat/reclaim/attempts in `jobs/repository.ts`, scheduler loops in `scheduler/registry.ts`) | pg-boss | P1/P2 | Before unattended execution scales up (Project Steward). Precondition: extract domain logic that mutates Run/Task from queue internals. **Explicitly NOT a prerequisite for first real-usage Project testing** — automation's `agent_run` enqueue rides the current queue, which already has the needed semantics | Not started |
-| Non-interactive subprocess | Raw `spawn` call sites across server + host-daemon | `execa` for non-interactive commands; PTY/TUI stays `node-pty` | P1/P2 | Opportunistic | Not started |
-| Throttle | Ad-hoc where present | `p-throttle` | P2 | Only when real duplicate implementations show up | Not started |
-| REST contract / typed client | Hand-written route DTOs + frontend API client (**unverified**: client size/duplication not audited) | Zod/Fastify schema → OpenAPI → generated typed client shared by web, future CLI, SDK | P2 | Not a Project blocker | Needs verification |
-| Spaced repetition | Naive `+1 day` interval scheduling (`learning/service.ts`) | `ts-fsrs`; learning objects, Project binding, mastery stay in Rainver | P2 | When Learning gets real usage | Not started |
-| Finance decimal arithmetic | **unverified**: actual float/decimal pain point in `plugins/official/financeLedger.ts` not confirmed | `decimal.js` for math primitives only | P2 | Verify pain point first | Needs verification |
-| Beancount text compat | DB-native ledger already treats Beancount text as import/export format only (matches target posture) | `tree-sitter-beancount` or mature parser as the compat adapter, if/when import parsing grows | P2 | Import/export fidelity demands it | Not started |
-| Eval harness | **unverified**: evolution module is asset/promotion machinery; no self-built evaluator harness located | Promptfoo as sandbox evaluator engine; Evolution Case, promotion authority, result normalization stay in Rainver | Conditional | Evolution evaluation work actually starts | Needs verification |
-| Operational telemetry | None dedicated | OpenTelemetry for operational telemetry only; never a substitute for the Run/Event/Usage durable ledger | P2 | Multi-instance / control-center operations need it | Not started |
-| Source crawling engine | Scheduled fetch + retry + recipe interpreter (`sources/`); **no Playwright or crawler engine exists** — earlier claims of one were wrong | Crawlee, if browser-rendered crawling becomes a need; SourceRecipe, consent, provenance, policy stay in Rainver | Conditional | A source genuinely requires browser rendering / large-scale crawl | Not started |
-| Declarative authorization | Hard invariants + Proposal + policy code | Cedar POC | Conditional | Declarative rule volume actually grows | Not started |
-| Durable workflow engine | Run/Job/Workflow via `automations/workflowExecutionService.ts` graph scheduler | Restate | Conditional | Only if timer/signal/human-pause/saga complexity outgrows the current spine | Not started |
-| External agent interop | None | A2A / official MCP SDK | Deferred | External interop demand exists | Not started |
-| Frontend event wire | Persisted Run events | AG-UI (POC only; never replaces persisted events) | Deferred | — | Not started |
+| Credential / CLI multi-account | One ambient CLI login per host. Login and usage probes: `packages/host-daemon/src/login.ts`, `usageProbe.ts`. Server: `providers/managedOAuth.ts`, `subscriptionOAuth.ts`, `subscriptionQuota.ts`. No `CredentialBackend`, and a Run does not bind an account | Official CLI login owns the OAuth handshake. Rainver owns profile, Run→account binding, routing, and audit. MIT references: CC Switch, clauth, codex-auth | P0 | A host needs more than one login per runtime. One ambient login is enough for current use; see the deferred register | Not started |
+| HTML → article extraction | Structured reader pipeline in `sources/contentParsing.ts`: chrome pruning, then a ProseMirror document (`extraction_method="structured_html_v1"`, remote image references). `stripHtml` is only the plain-text fallback | `@mozilla/readability` plus a DOM parser and a sanitizer choose the article. Rainver still stores the reader document, highlights, Source, and AI analysis. Scheduling this accepts that the chosen article can differ; the reader schema stays | P1 | When a change to article selection is explicitly in scope | Not started |
+| Custom Source isolation | Server-side child process plus API monkey-patch (`sources/customSources/customSourceRunner.ts`). The server fetches HTML and the handler has no network. The file states this is not OS isolation | The host bubblewrap namespace (`packages/host-daemon/src/strictNamespace.ts`) is a Run mount: cwd, home, and an explicit bind list. That contract does not match this server-side handler. A later isolation change needs its own mount and deployment contract; it is not a drop-in | P1 | A mount contract for the server-side handler is designed | Not started |
+| Backup mechanics | `tar.gz` plus `pg_dump` custom format, count-based retention, and `restore.sh` (`backups/service.ts`; `architecture/OPERATIONS_AND_SAFETY.md`) | restic owns archive, snapshot, storage, and retention. Rainver keeps backup policy, manifest, the decision to restore, and audit | P1/P2 | An operator-contract migration is scheduled. The archive format is the engine; policy and restore stay here | Not started |
+| Local retry/backoff | No pile of identical local backoff helpers. `sourceConnectionFetch.ts` leaves 429 to the coordinator. `runs/supervisor.ts` chooses same-route retry, fallback, human review, or budget. Handler and recipe loops retry a version-number conflict. Backup's loop is a file lock. `toolDownload.ts` retries a resumable download with a deadline and a checksum | `p-retry` only for a true local, non-durable call, with the same attempts, delay, and retry predicate. Durable and product retry stay with the job engine and the owning policy | P1/P2 | Opportunistic — when such a call is being edited | Not started |
+| Job queue | Postgres queue: claim, heartbeat, reclaim, and attempts in `jobs/repository.ts`. Scheduler loops in `scheduler/registry.ts`. Domain code that mutates Run/Task still sits beside the queue | pg-boss for the queue engine after that domain code has moved out. Run/Task behaviour stays | P1/P2 | Before unattended execution scales up. Not a prerequisite for current Project testing; swapping it immediately before acceptance testing would mix product failures with migration failures | Not started |
+| Non-interactive subprocess | `spawn` across server and host-daemon. Many sites are long-lived or interactive (login, PTY, agent execution, usage probe, custom-source runner). Env filtering is per spawn kind (`filterAmbientEnv` and the related helpers) | `execa` for a short non-interactive command, with env, stdio, and failure behaviour set explicitly. PTY/TUI stays `node-pty`. Not a sweep | P1/P2 | Opportunistic — when such a command is being edited | Not started |
+| Throttle | No second copy of a generic throttle. Existing limits are separate rules: arXiv spacing, host pairing, source quota, login rate | `p-throttle` only if a real duplicate appears | P2 | A duplicate generic throttle shows up | Not started |
+| REST contract / typed client | Protocol DTOs are already zod. System-action schemas can emit JSON Schema. HTTP route validation is still hand-written, and there is no generated web client. Client duplication was not measured | Generate a typed client from the existing contracts for web and any future CLI/SDK. Generating schemas must not tighten or loosen route validation | P2 | A measured client/server drift, and a generation path that preserves current validation | Not started |
+| Spaced repetition | `learning/service.ts`: a correct review schedules +1 day; the mastery streak schedules +7 days | `ts-fsrs` owns the interval. Learning objects, Project binding, and mastery state stay in Rainver. Due dates will change when this lands | P2 | Learning has real usage | Not started |
+| Beancount text compat | The ledger is DB-native. Beancount text is already import/export only, parsed by `plugins/official/finance_ledger/server/src/beancount/importer.ts` | A mature parser (`tree-sitter-beancount` or equivalent) replaces that importer when its fidelity is short. The ledger model stays | P2 | Import/export fidelity demands it | Not started |
+| Operational telemetry | No dedicated operational telemetry | OpenTelemetry for process and request metrics only. It never replaces the Run/Event/Usage ledger | P2 | Multi-instance or control-center operations need it | Not started |
+| Source crawling engine | Scheduled fetch, retry, and the recipe interpreter. No Playwright or crawler engine. Custom sources refuse browser automation | Crawlee when a source needs browser rendering or a large crawl. SourceRecipe, consent, provenance, and policy stay in Rainver | Conditional | A source genuinely requires browser rendering or a large-scale crawl | Not started |
+| Declarative authorization | Hard invariants, Proposal, and policy code | Cedar as a POC beside those invariants, not in place of them | Conditional | Declarative rule volume actually grows | Not started |
+| Durable workflow engine | Run/Job/Workflow through `automations/workflowExecutionService.ts` | Restate for the engine only if timer, signal, human-pause, or saga complexity outgrows this spine. Run semantics stay | Conditional | That complexity shows up | Not started |
+| External agent interop | None | A2A or the official MCP SDK | Deferred | External interop demand exists | Not started |
+| Frontend event wire | Persisted Run events | AG-UI as a POC only. It never replaces persisted events | Deferred | — | Not started |
 | Live plugin composition | ADR 0006 PluginHost | Cordis-style runtime composition | Deferred | No trigger observed | Not started |
-| LLM protocol translation | None needed — every target provider exposes an Anthropic/OpenAI-compatible endpoint; the provider proxy is pass-through by design | Portkey Gateway sidecar (TS, MIT, stateless data plane — caller supplies keys per request, fitting the server-holds-keys model; note the pending Palo Alto acquisition) downstream of the provider proxy, or embedded `@musistudio/llms`; verify streaming/tool-call fidelity on the Anthropic-ingress→non-Anthropic path before adopting | Conditional | A required provider lacks an Anthropic/OpenAI-compatible endpoint | Not started |
+| LLM protocol translation | Chat invocation is `@earendil-works/pi-ai`. The provider proxy (`providers/proxy/server.ts`) is an Anthropic/OpenAI pass-through | Portkey Gateway or embedded `@musistudio/llms` only downstream of that proxy, after streaming and tool-call fidelity is checked. Not while every required provider speaks one of those two protocols | Conditional | A required provider lacks an Anthropic/OpenAI-compatible endpoint | Not started |
 
 ## Reference implementations (not dependencies)
 
-Complete products reviewed and rejected as substrates (per the boundary: no
-full agent platform becomes an internal base; only protocols/SDKs/thin daemons
-enter the dependency tree). Kept here as design references for specific
-mechanisms.
+Complete products reviewed and rejected as substrates. No full agent platform
+becomes an internal base; only protocols, SDKs, and thin daemons enter the
+dependency tree.
 
 - **IM.codes** (`github.com/im4codes/imcodes`, MIT; reviewed 2026-08-24).
-  Messaging/control layer for terminal coding agents: Browser/Mobile → WS →
-  self-hosted Server (relay) ← outbound WS ← Daemon → tmux/ConPTY or SDK
-  transports. Same relay topology as Control Plane ← `rainver-host`; no
-  ACP-style runtime protocol layer (per-vendor SDK transports). Worth
-  borrowing when the need arrives, not now:
-  - **Agent-to-agent send semantics** — target resolution by label/session
-    name/agent type, `--reply`, broadcast, with circuit breakers (depth
-    limit, rate limit, broadcast cap). Reference for Room `@agent` routing if
-    agent-initiated cross-agent messaging is ever added.
-  - **Localhost preview tunnel** — daemon proxies local dev servers through
-    the existing WS connection (HTML rewrite + runtime URL patch, HMR
-    works). Candidate far-future `rainver-host` capability for viewing
-    agent-produced results from mobile. No trigger yet.
+  Messaging/control layer for terminal coding agents. Same relay topology as
+  Control Plane ← `rainver-host`. Worth borrowing when the need arrives, not now:
+  - **Agent-to-agent send semantics** — target resolution, reply, and broadcast
+    with circuit breakers. Reference for Room `@agent` routing if
+    agent-initiated cross-agent messaging is added.
+  - **Localhost preview tunnel** — the daemon proxies a local dev server
+    through the existing WebSocket. No trigger yet.
 
-## Do not replace (guardrails)
+## Do not replace
 
-- **Retrieval orchestration** — ACL, visibility, provenance, evidence are the
-  hard part; Postgres FTS + pgvector already underneath (`retrieval/`).
+- **Retrieval orchestration** — ACL, visibility, provenance, and evidence.
+  Postgres FTS and pgvector sit underneath (`retrieval/`).
 - **Runtime/model routing** — capability, host, sandbox, trust, credential,
-  cost, verification; no generic router fits.
-- **Verification authority** — external lint/test are callable, but "what
-  counts as passing" belongs to Rainver.
-- **Finance accounting core** — DB-native ledger; Beancount is a design source
-  and compat format only (already implemented this way).
+  cost, and verification. No generic router fits.
+- **Verification authority** — external lint and test are callable. What counts
+  as passing belongs to Rainver, including `verification_engine.v1`.
+- **Finance accounting core** — DB-native ledger and its exact decimal type.
+  Beancount is a design source and a compat format only.
 - **Action/Tool authority** — `SystemActionGateway` owns semantics, grants,
-  Policy, Proposal, Audit; third parties only ever supply transport/runtime.
+  Policy, Proposal, and Audit. Third parties supply transport or runtime only.
 
 ## Ordering
 
-1. **Credential/Profile multi-account (P0).** The only reuse item that
-   materially improves real-usage Project testing (multi-account Codex/Claude
-   + hosts). Nothing else in this file blocks that testing.
-2. **Commodity cleanups** — multipart, readability, custom-source sandbox.
-   Small, independent; interleave freely.
-3. **Project real-usage testing runs on the current job queue.** pg-boss comes
-   after the queue/domain boundary cleanup and before unattended execution
-   scales up — swapping queue infra immediately before first acceptance
-   testing would make every failure ambiguous (product bug vs migration bug).
-   Let real usage surface actual queue pain first.
-4. **restic, Crawlee, and the P2/conditional rows** follow their triggers.
+1. **Credential / multi-account** is a product capability, not a cleanup. It
+   waits until a host actually needs more than one login per runtime.
+2. **HTML extraction and Custom Source isolation** are engine swaps with a
+   precondition: article selection is allowed to change, and the handler has a
+   mount contract. Neither is a drop-in.
+3. **Project testing stays on the current job queue.** pg-boss comes after the
+   queue/domain split, and before unattended execution scales up.
+4. **restic, Crawlee, and the other P2 / conditional rows** follow their triggers.
+   `p-retry` and `execa` are adopted at the call site that is already being
+   edited, not as a repository sweep.

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -33,6 +33,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await rm(join(rainverHome, "storage", "uploads"), { recursive: true, force: true });
   if (!db.available) return;
   await resetTables(db.pool, ["proposals", "activity_records", "projects", "space_memberships", "users", "spaces"], { cascade: true });
   await seedSpaceOwnerProject(db.pool, { space: SPACE, owner: OWNER, project: PROJECT });
@@ -111,6 +112,30 @@ describe("consolidating a capture (real Postgres)", () => {
   });
 });
 
+function multipartBody(
+  boundary: string,
+  parts: Array<{ name: string; filename?: string; contentType?: string; body: Buffer | string }>,
+): Buffer {
+  const chunks: Buffer[] = [];
+  for (const part of parts) {
+    const disposition = part.filename === undefined
+      ? `Content-Disposition: form-data; name="${part.name}"`
+      : `Content-Disposition: form-data; name="${part.name}"; filename="${part.filename}"`;
+    const lines = [`--${boundary}`, disposition];
+    if (part.contentType) lines.push(`Content-Type: ${part.contentType}`);
+    chunks.push(Buffer.from(`${lines.join("\r\n")}\r\n\r\n`));
+    chunks.push(typeof part.body === "string" ? Buffer.from(part.body) : part.body);
+    chunks.push(Buffer.from("\r\n"));
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  return Buffer.concat(chunks);
+}
+
+async function storedUploadFiles(): Promise<string[]> {
+  const stored = await readdir(join(rainverHome, "storage", "uploads"), { recursive: true }).catch(() => [] as string[]);
+  return stored.filter((entry) => entry.includes("."));
+}
+
 describe("uploading a capture (real Postgres)", () => {
   it("writes nothing to disk for an upload it refuses", async () => {
     if (!db.available) return;
@@ -118,20 +143,111 @@ describe("uploading a capture (real Postgres)", () => {
     const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: rainverHome }), [activityModule]);
     try {
       const boundary = "----rainver-upload-test";
-      const body = [
-        `--${boundary}`, 'Content-Disposition: form-data; name="kind"', "", "photo",
-        `--${boundary}`, 'Content-Disposition: form-data; name="file"; filename="a.bin"', "Content-Type: application/octet-stream", "", "hello",
-        `--${boundary}--`, "",
-      ].join("\r\n");
       const response = await app.inject({
         method: "POST",
         url: "/api/v1/activity/upload",
         headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
-        payload: body,
+        payload: multipartBody(boundary, [
+          { name: "kind", body: "photo" },
+          { name: "file", filename: "a.bin", contentType: "application/octet-stream", body: "hello" },
+        ]),
       });
       expect(response.statusCode).toBe(422);
-      const stored = await readdir(join(rainverHome, "storage", "uploads"), { recursive: true }).catch(() => [] as string[]);
-      expect(stored.filter((entry) => entry.includes("."))).toEqual([]);
+      expect(response.json()).toMatchObject({ detail: "kind must be 'file' or 'voice'" });
+      expect(await storedUploadFiles()).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("stores a file capture with its own 25 MB budget, not the conversation image limit", async () => {
+    if (!db.available) return;
+    __setAuthIdentityForTests(owner);
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: rainverHome }), [activityModule]);
+    try {
+      const boundary = "----rainver-upload-ok";
+      const bytes = Buffer.from([0x00, 0xff, 0x10, 0x7f, 0x80]);
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/activity/upload",
+        headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+        payload: multipartBody(boundary, [
+          { name: "kind", body: "file" },
+          { name: "title", body: "Field notes" },
+          { name: "note", body: "Taken on the ridge" },
+          { name: "project_id", body: PROJECT },
+          { name: "marker", body: "extra-field" },
+          { name: "file", filename: "nested/../ridge.bin", contentType: "application/octet-stream", body: bytes },
+        ]),
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as { title: string; content: string; source_type: string; project_id: string; metadata_json: Record<string, unknown> };
+      expect(body.title).toBe("Field notes");
+      expect(body.content).toBe("Taken on the ridge");
+      expect(body.source_type).toBe("file_import");
+      expect(body.project_id).toBe(PROJECT);
+      expect(body.metadata_json).toMatchObject({
+        capture_kind: "file",
+        filename: "ridge.bin",
+        mime_type: "application/octet-stream",
+        size_bytes: bytes.length,
+      });
+      const stored = await storedUploadFiles();
+      expect(stored).toHaveLength(1);
+      expect(await readFile(join(rainverHome, "storage", "uploads", stored[0]!))).toEqual(bytes);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("accepts a capture larger than the conversation image limit and refuses one past 25 MB", async () => {
+    if (!db.available) return;
+    __setAuthIdentityForTests(owner);
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: rainverHome }), [activityModule]);
+    try {
+      const aboveImageLimit = Buffer.alloc(11 * 1024 * 1024, 7);
+      const accepted = await app.inject({
+        method: "POST",
+        url: "/api/v1/activity/upload",
+        headers: { "content-type": "multipart/form-data; boundary=----rainver-11mb" },
+        payload: multipartBody("----rainver-11mb", [
+          { name: "kind", body: "file" },
+          { name: "file", filename: "large.bin", contentType: "application/octet-stream", body: aboveImageLimit },
+        ]),
+      });
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.json()).toMatchObject({ metadata_json: { size_bytes: aboveImageLimit.length } });
+
+      const pastActivityLimit = Buffer.alloc(25 * 1024 * 1024 + 1, 9);
+      const refused = await app.inject({
+        method: "POST",
+        url: "/api/v1/activity/upload",
+        headers: { "content-type": "multipart/form-data; boundary=----rainver-25mb" },
+        payload: multipartBody("----rainver-25mb", [
+          { name: "kind", body: "file" },
+          { name: "file", filename: "too-big.bin", contentType: "application/octet-stream", body: pastActivityLimit },
+        ]),
+      });
+      expect(refused.statusCode).toBe(413);
+      expect(refused.json()).toMatchObject({ detail: "file exceeds 25 MB limit" });
+    } finally {
+      await app.close();
+    }
+  }, 30_000);
+
+  it("refuses a body that is not multipart", async () => {
+    if (!db.available) return;
+    __setAuthIdentityForTests(owner);
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: rainverHome }), [activityModule]);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/activity/upload",
+        headers: { "content-type": "application/json" },
+        payload: { kind: "file" },
+      });
+      expect(response.statusCode).toBe(415);
+      expect(await storedUploadFiles()).toEqual([]);
     } finally {
       await app.close();
     }

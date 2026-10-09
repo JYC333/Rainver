@@ -48,7 +48,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const upload = parseMultipartUpload(request);
+      const upload = await parseMultipartUpload(request);
       if (upload.file.length === 0) throw new HttpError(422, "uploaded file is empty");
       if (upload.file.length > MAX_UPLOAD_BYTES) {
         throw new HttpError(413, `file exceeds ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit`);
@@ -199,39 +199,71 @@ interface ParsedUpload {
   contentType: string | null;
 }
 
-function parseMultipartUpload(request: FastifyRequest): ParsedUpload {
-  if (!(request.body instanceof Buffer)) throw new HttpError(422, "multipart body is required");
-  const contentTypeHeader = request.headers["content-type"];
-  const contentType = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader;
-  const boundaryMatch = /boundary=([^;]+)/i.exec(contentType ?? "");
-  if (!boundaryMatch) throw new HttpError(415, "multipart/form-data is required");
-  const boundary = `--${boundaryMatch[1]}`;
-  const text = request.body.toString("binary");
-  const parts = text.split(boundary).slice(1, -1);
+const UPLOAD_FIELD_BYTES = 32 * 1024 * 1024;
+
+function errorCode(error: Error): string | undefined {
+  return "code" in error && typeof error.code === "string" ? error.code : undefined;
+}
+
+function uploadTooLarge(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return errorCode(error) === "FST_REQ_FILE_TOO_LARGE" || /file too large|file size limit/i.test(error.message);
+}
+
+function uploadFormLimited(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = errorCode(error);
+  return code === "FST_FIELDS_LIMIT" || code === "FST_FILES_LIMIT" || code === "FST_PARTS_LIMIT";
+}
+
+function multipartMediaType(request: FastifyRequest): boolean {
+  const header = request.headers["content-type"];
+  const value = Array.isArray(header) ? header[0] : header;
+  return typeof value === "string"
+    && /multipart\/form-data/i.test(value)
+    && /boundary=/i.test(value);
+}
+
+/**
+ * Activity capture keeps its own size and field budget. The gateway plugin's
+ * registration limits belong to conversation images (10 MB, four fields).
+ */
+async function parseMultipartUpload(request: FastifyRequest): Promise<ParsedUpload> {
+  if (!multipartMediaType(request)) throw new HttpError(415, "multipart/form-data is required");
   const fields: Record<string, string> = {};
   let file: Buffer | null = null;
   let filename: string | null = null;
   let fileContentType: string | null = null;
-
-  for (const rawPart of parts) {
-    const trimmed = rawPart.replace(/^\r\n/, "").replace(/\r\n$/, "");
-    const separator = trimmed.indexOf("\r\n\r\n");
-    if (separator < 0) continue;
-    const rawHeaders = trimmed.slice(0, separator);
-    let rawBody = trimmed.slice(separator + 4);
-    if (rawBody.endsWith("\r\n")) rawBody = rawBody.slice(0, -2);
-    const disposition = /content-disposition:\s*form-data;([^\r\n]+)/i.exec(rawHeaders)?.[1] ?? "";
-    const name = /name="([^"]+)"/i.exec(disposition)?.[1];
-    if (!name) continue;
-    const partContentType = /content-type:\s*([^\r\n]+)/i.exec(rawHeaders)?.[1]?.trim() ?? null;
-    const partFilename = /filename="([^"]*)"/i.exec(disposition)?.[1] ?? null;
-    if (name === "file") {
-      file = Buffer.from(rawBody, "binary");
-      filename = partFilename;
-      fileContentType = partContentType;
-    } else {
-      fields[name] = Buffer.from(rawBody, "binary").toString("utf8");
+  try {
+    const parts = request.parts({
+      limits: {
+        files: 1,
+        fields: 16,
+        fileSize: MAX_UPLOAD_BYTES,
+        fieldSize: UPLOAD_FIELD_BYTES,
+      },
+    });
+    for await (const part of parts) {
+      if (part.type === "file") {
+        if (part.fieldname !== "file") {
+          part.file.resume();
+          continue;
+        }
+        file = await part.toBuffer();
+        filename = part.filename || null;
+        fileContentType = part.mimetype || null;
+      } else if (typeof part.value === "string") {
+        if (part.valueTruncated) throw new HttpError(413, "field exceeds the upload limit");
+        fields[part.fieldname] = part.value;
+      }
     }
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (uploadTooLarge(error)) {
+      throw new HttpError(413, `file exceeds ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit`);
+    }
+    if (uploadFormLimited(error)) throw new HttpError(413, "upload exceeds the form limits");
+    throw new HttpError(415, "multipart/form-data is required");
   }
   if (!file) throw new HttpError(422, "file is required");
   return { fields, file, filename, contentType: fileContentType };
