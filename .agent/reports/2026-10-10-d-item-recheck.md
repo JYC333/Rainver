@@ -4,13 +4,14 @@
 [2026-10-03 待决清单](2026-10-03-unattended-sweep-open-items.md)。
 分类只描述当前代码做了什么，不代替产品决定。
 
-本轮覆盖清单第 2.1、2.2 节，以及优先项里的 D28/D36、D30、D43、D52。
+本轮覆盖清单第 2.1、2.2 节，以及优先项 D1–D4、D28/D36、D30、D43、D52、D85、D88。
 第 2.3–2.7 节和文末技术遗留还没逐条重读，不要把下面的表当成全量结论。
 
 ## 和快照不同的
 
 | 编号 | 现在的代码 |
 |---|---|
+| D4 能力提案 | Run 的 `proposed_changes` 只接受记忆、知识、主张、关系、后续任务和 code patch。`capability_*` 不在这组里，Run 产出不再生成能力提案。`server/src/modules/runs/materializationService.ts:53-67` |
 | D55 | 启用会把指定版本写成 `available`。`proposed` 和 `testing` 能通过 `status <> 'archived'` 的检查，然后进入只加载 `available` 的运行时。快照里「这两态从未生效」已经不成立。`server/src/modules/capabilities/proposalApplier.ts:164-173`、`300-312` |
 | D86 | 再次导入仍返回已有导入记录，但查看者不是导入者时 `imported_resource_id` 为 null。他人私有副本的 id 不再出现在响应里。`server/src/modules/publications/service.ts:257-258`、`436-446` |
 
@@ -20,10 +21,16 @@
 
 | 编号 | 当前行为 |
 |---|---|
-| D52 | `assertContainedPath` 先 `realpath`，`readFolderFile` 再按原路径 `readFile`。检查和读取不是同一次打开。`packages/folder-read/src/read.ts:48-55`、`320-338` |
+| D52 | `assertContainedPath` 先 `realpath`，`readFolderFile` 再按原路径 `readFile`。检查和读取不是同一次打开。`realpath` 失败时函数直接返回，不拒绝。`packages/folder-read/src/read.ts:48-55`、`320-338` |
 | D28 / D36 | `policy_change` 只要求 `name` 和 `domain`，然后把任意 domain 插成 `status='active'`。`server/src` 里没有 `FROM policies` 或 `JOIN policies`。`server/src/modules/proposals/applierRegistry.ts:188-231` |
 | D43 | 内容访问更新直接 `UPDATE` 目标表的 `visibility` 和 `access_level`，不生成记忆新版本。空间 owner 或 admin 可以改不是自己拥有的行；收紧时才要求所有者确认。agent 范围的记忆禁止放宽。`server/src/modules/contentAccess/service.ts:134-210`、`377-390` |
-| D30 | `one_shot_docker` 的工作目录范围就是 `worktree`。`server/src/modules/runs/ephemeralSandbox.ts:23-28` |
+| D30 | `one_shot_docker` 的工作目录范围就是 `worktree`。`server/src/modules/runs/ephemeralSandbox.ts:23-28`。`RUNS_AND_OUTPUTS.md` 365–370 行仍写每个 Run 一个容器 |
+| D1 | 空间 admin 可以更新任意 Automation，包括 `config_json` 里的 prompt。带项目的 `agent_run` 还允许项目写者更新。随后的运行仍记在 Automation 的 `owner_user_id` 名下。普通 member 改不了别人的个人 Automation。`policy/decisionCore.ts:501-519`，`automations/service.ts:281-287` |
+| D2 | 晋升到 system 会改全局 `current_system_version_id`，同一次更新不清除版本行上的 `space_id`。`evolution/assetPromotionProposalApplier.ts:117-140` |
+| D3 | 分组 Agent Run 的创建把 `trigger_origin` 写成 `manual`。已出席来源只有这一个值，无人值守写入门把它当成有人在场。`runs/repository.ts:592`，`policy/decisionCore.ts:347`。房间里的领域事件续跑从 `rooms/service.ts:1088` 进入 |
+| D4 persona | Run 物化出的 `memory_update` 不写 `required_owner_user_id`。审批只在这个字段存在时才限定为 Agent 所有者。`runs/materializationService.ts:613-623`，`proposals/applyService.ts:1042-1054`。带 `project_id` 的提案里，项目所有者在审批时被当成 owner。`applyService.ts:1098-1107` |
+| D85 | 能读共享 Activity 的人可以把它整理成记忆提案。提案由操作者创建，记忆的 `owner_user_id` 取 Activity 所有者，可见性是 private，风险级别写成 low。`activity/repository.ts:515-550`、`630-641`。带 `project_id` 的这条在应用时仍会因用户记忆不能带项目而失败，见 D21 |
+| D88 | 生产环境的 `rebuild_rainver` 只拉镜像并 `up -d --no-deps`，没有维护门、备份或迁移。`deployer/scripts/rebuild.sh:31-45` |
 
 ## 2.1 权限与可见性：仍然成立
 
@@ -56,4 +63,4 @@
 
 ## 本轮没有逐条重读
 
-D1–D4、D6、D8、D9、D12、D14–D17、D20、D23–D27、D31–D35、D37–D42、D44、D45、D48、D51、D58、D61–D73、D75–D83、D87–D93，以及清单第 4 节的技术遗留。快照里的描述在重读之前仍然只是 2026-10-03 的记录。
+D6、D8、D9、D12、D14–D17、D20、D23–D27、D31–D35、D37–D42、D44、D45、D48、D51、D58、D61–D73、D75–D83、D87–D93，以及清单第 4 节的技术遗留。快照里的描述在重读之前仍然只是 2026-10-03 的记录。
