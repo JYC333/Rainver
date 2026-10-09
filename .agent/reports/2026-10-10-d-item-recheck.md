@@ -4,8 +4,8 @@
 [2026-10-03 待决清单](2026-10-03-unattended-sweep-open-items.md)。
 分类只描述当前代码做了什么，不代替产品决定。
 
-本轮覆盖清单第 2.1、2.2 节，以及优先项 D1–D4、D28/D36、D30、D43、D52、D85、D88。
-第 2.3–2.7 节和文末技术遗留还没逐条重读，不要把下面的表当成全量结论。
+本轮覆盖清单第 2.1–2.7 节和文末技术遗留。和快照不同的条目又对过当前文件。
+其余条目的行号来自同一次阅读，决定前如果要改代码，先打开对应行。
 
 ## 和快照不同的
 
@@ -14,6 +14,11 @@
 | D4 能力提案 | Run 的 `proposed_changes` 只接受记忆、知识、主张、关系、后续任务和 code patch。`capability_*` 不在这组里，Run 产出不再生成能力提案。`server/src/modules/runs/materializationService.ts:53-67` |
 | D55 | 启用会把指定版本写成 `available`。`proposed` 和 `testing` 能通过 `status <> 'archived'` 的检查，然后进入只加载 `available` 的运行时。快照里「这两态从未生效」已经不成立。`server/src/modules/capabilities/proposalApplier.ts:164-173`、`300-312` |
 | D86 | 再次导入仍返回已有导入记录，但查看者不是导入者时 `imported_resource_id` 为 null。他人私有副本的 id 不再出现在响应里。`server/src/modules/publications/service.ts:257-258`、`436-446` |
+| D23 | 停用的 Provider 留在「Owned by me」里，并显示 Disabled。这份列表只排除 `manageable === false`。`apps/web/src/modules/providers/ModelProvidersPage.tsx:41`、`321-325`，`ProviderCard.tsx:143` |
+| D31 | 出口审批在提案空间和请求空间不一致时返回 404。`SECURITY_AND_ACCESS_BOUNDARIES.md` 8a 现在要求这次核对。同节开头仍写这些路由会忽略请求的 `space_id`。`proposals/applyService.ts:110`，文档 676–697 行 |
+| D32 | 会话 cookie 的 `Secure` 只在 `FRONTEND_URL` 为 https 时设置，安全边界文档与此一致。`auth/authCookie.ts:14-16`，文档 1103–1106 行 |
+| D42 | Codex 不读 `RAINVER_STRICT_SANDBOX`。守护进程把副本 `config.toml` 的 `sandbox_mode` 写成 `workspace-write`。延迟登记里已经没有这条未核对问题。`packages/host-daemon/src/codexStrictSandbox.ts:9-14` |
+| D44 | OpenCode 登录仍只丢掉 `ANTHROPIC_`、`CLAUDE_`、`CODEX_`、`OPENAI_`、`OPENCODE_`、`GEMINI_`、`GOOGLE_` 这 7 个前缀。注释和 B67 现在描述的就是这套封闭前缀加白名单，不再写「所有厂商密钥」。`packages/host-daemon/src/providerBinding.ts:78-104`，`.agent/BOUNDARIES.md` B67 |
 
 ## 仍然成立，决定前值得先看
 
@@ -61,6 +66,16 @@
 - **D84** 不带 `version_id` 的回滚在最近两个版本之间切换。`prompts/repository.ts:341-390`
 - **D94** Review 和 Convert 每次都新建提案，服务端不合并已有 pending。`apps/web/src/modules/capabilities/CapabilitiesPage.tsx:124-139`
 
-## 本轮没有逐条重读
+## 2.3–2.7 与技术遗留：仍然成立
 
-D6、D8、D9、D12、D14–D17、D20、D23–D27、D31–D35、D37–D42、D44、D45、D48、D51、D58、D61–D73、D75–D83、D87–D93，以及清单第 4 节的技术遗留。快照里的描述在重读之前仍然只是 2026-10-03 的记录。
+安全与运维：D6 私网 Git 地址可以通过（`projectFolders/repositoryUrl.ts:16-28`）。D38 能力晋升没有测试通过门（`docs/THREAT_MODEL.md:95`）。D39 没有按工作区的 `cleanup_after_days`。D40 没有 `CredentialAccessLog` 和 `ContentReadTrace`，现有表是 `content_access_logs`。D45 终态 Run 仍可上传 diff 和输出（`hosts/routes.ts:877-922`）。D48 重新认证 cookie 不绑定会话，登出不清除（`auth/reauth.ts:45`）。D58 `ollama` 一律算本地 Provider（`retrieval/egress/egressPolicy.ts:87`）。D61 调度器原始异常经 `/api/v1/status` 给到空间 owner 和 admin（`scheduler/registry.ts:290`）。D62 带 `statusCode` 的 5xx 把 `error.message` 当作 detail（`routeUtils/common.ts:89-102`）。D73 会话续期只改数据库，cookie 不重签（`auth/identity.ts:120-136`）。
+
+文档与代码：D27 非所有者读取产物时，传入的 Project Folder 上下文被忽略（`artifacts/repository.ts:142-166`，`ARTIFACTS.md:35-40`）。D34 任务派发的 Run 带有 `retrieval.brief` 和 `retrieval.search`（`tasks/repository.ts:1088-1111`）。D35 没有 worker 时 `jobs_worker` 和 `jobs_queue` 都是 degraded，状态文档与此一致。D37 `check_private_memory_placement()` 仍只出现在 `docs/POLICY_AND_PRIVACY_BOUNDARIES.md:373-375`。
+
+执行与数据：D8 审批后的节点 Run 记在审批人名下（`automations/workflowExecutionService.ts:230`）。D9 07:00 UTC 的摘要用这次触发的 UTC 日，日报用该档期的本地日历日。D12 执行图对账失败被吞掉，完成门仍提交（`runs/finalizationService.ts:277-285`）。D14 不能外发的 embedding 认领会占住队头（`retrieval/embedding/service.ts:95-96`）。D15 并发回填段可以一起超过 `max_items`（`sources/sourceBackfillExecutionService.ts:224-249`）。D16 超过 64KiB 的单行被截断（`sessions/conversationInputResourceService.ts:83-98`）。D17 CLI 租约过期时间是 2 小时（`runtimeContext/continuity/cliContinuity.ts:224-233`）。D20 标注重试耗尽后停在 failed，出口关闭时离开的条目不回队列。D26 提议状态的导入跳过 `unknown_account` 分录。D70 回合读模型包含上一次尝试的事件（`runs/turnReadModel.ts:160-172`）。D71 撤销跨项目分享可以删掉笔记在目标集合里的位置（`knowledge/spaceObjectProjectShares.ts:126-143`）。D72 全量维护扫描在截断后仍推进游标（`memory/maintenance.ts:73-74`）。D75 手工 drain 不与后台后处理互斥（`sources/postProcessing/service.ts:784`）。D76 重排预算按 2000 字，LLM 回退最多发 600 字。D78 `restore_workspace` 在发送事务内执行（`agents/routes.ts:1003-1028`）。D79 `kind=action` 的计划节点走普通 Agent Run（`plans/repository.ts:717-809`）。D80 evolution 的待处理计数只含 evolution 类提案，列表接口列出全部可见 pending。D81 研究重试沿用基础尝试的语义查询。D82 没有快照的历史日期会现场生成并消耗当天备用池。D87 协议把单计划 attempts 限在 200，服务端返回全部尝试（`packages/protocol/src/researchDiscovery.ts:132`）。D90 导入里的 open、close、commodity 立即生效。
+
+协议字段：D64 `inquiry_thread` 仍被服务端和数据库拒绝。D65–D69 与契约报告相同：`conversation_backend_required` 没有抛出点，`Run.task_id` / `prompt_*`、`source_template_id`、记忆的 `approved_by` 和 `last_accessed_at`、`CurrentUser.default_space_id` 都不返回。D83 插件提案包装器固定返回 `result_type: knowledge_item`（`plugins/host/context.ts:203`）。
+
+前端：D24 复制失败仍提示已复制。D25 注册表 Agent 的 Login 在安装未声明登录探测时返回 422。D51 TimePage 仍是开发中占位。D63 `information_digest` 和 `autonomous_tick` 显示为 agent run，后者保存项目绑定会 422。D89 隐藏最后一种可见边会让全部边重新出现（`GraphView.tsx:468-475`）。D91 新对话不发送页面上的逐 Agent 后端选择。D92 记忆页只有默认的前 50 条。D93 来源频道首次加载失败显示 “Source not found”。
+
+技术遗留：overflow 之后对旧 binding 调用 `rotateMissingVendorState` 仍返回 409，续接仍用旧会话（`runtimeContext/continuity/cliContinuity.ts:186-193`）。多通道 workflow 的复数 id 修复点已不在 `sources/monitoringCoordinator.ts`，而在 `projectResearch/orchestrator.ts:743-748`；只存了单数 id 的旧数据在增量触发时仍会 409。`GitStatus` 没有 `truncated`。能力导入不拿预览时的 `package_hash` 比对。Usage 的单会话平均值把 summary 级 token 除以完整访问的会话数。`createTask` 不检查归档。`probe_domain_budget` 上限是 3。`memory.cross_space_read` 仍只出现在 `POLICY_ENFORCEMENT_INVENTORY.md`。
