@@ -32,12 +32,16 @@ artifact's production context remains unchanged.
 - Artifact reads are scoped by space identity and artifact visibility.
   `access_level=summary` returns metadata without inline content; export
   requires effective `full` and 404s otherwise.
-- Project-Folder-scoped `space_shared` artifacts require `artifacts.project_folder_id`. Non-owner
-  list/read/export access must provide matching Project Folder context and pass the
-  Project-inherited Project Folder ACL: personal-space Project Folders are readable inside
-  the personal space; shared-space Project Folders are readable through linked
-  Projects where the user is the project owner or an active project member.
-  Project Folders with no readable linked Project fail closed for non-owner reads.
+- Project-Folder-scoped `space_shared` artifacts store `artifacts.project_folder_id`.
+  List accepts an optional `project_folder_id` query and, when present, filters
+  on that column. Detail and export authorize from the artifact row through the
+  content-read predicate and the room-run read check. A folder id supplied by
+  the caller is not required and is not compared to the row. The content-read
+  predicate still applies the artifact's own folder: personal-space Project
+  Folders are readable inside the personal space; shared-space Project Folders
+  are readable through linked Projects where the user is the project owner or
+  an active project member. Project Folders with no readable linked Project
+  fail closed for non-owner reads.
 - Export returns inline artifact content when present, or a file download from
   managed artifact storage when `storage_path` is present.
 - Artifact Detail exposes identity, scope, permissions, producing Run, storage

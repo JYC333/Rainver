@@ -119,7 +119,7 @@ to any business code yet. `computeDecision` (`gateway.ts`) always denies reserve
 | `input_resource.read` | conversation_input_resource | low | allow (audit_required) | `server/src/modules/sessions/conversationInputResourceService.ts` |
 | `input_resource.search` | conversation_input_resource | low | allow (audit_required) | `server/src/modules/sessions/conversationInputResourceService.ts` |
 | `runtime_skill.render` | runtime_skill_binding | medium | require_approval | context module via `enforce()` |
-| `agent.config_update` | agent | high | allow (audit_required) | agents routes/repository before config proposal creation |
+| `agent.config_update` | agent | high | allow (audit_required) | registered only; owner agent routes append `AgentVersion` and do not call `enforce()` |
 | `source.connection.manage` | source_connection | medium | allow (audit_required) | sources routes via `enforce()` |
 | `source.item_create` | source_item | low | allow (audit_required) | sources routes via `enforce()` |
 | `source.item_update` | source_item | low | allow (audit_required) | sources routes via `enforce()` |
@@ -189,11 +189,11 @@ only `visibility = space_shared` packets with payload
 Space `context_ops_review_mode` setting permits that reviewer role.
 
 `proposal.create` covers user-created memory proposals and system-created code_patch
-proposals from CLI runs. `agent.config_update` is the domain-specific creation gate
-for agent execution config proposals; accepted mutation still goes through
-`proposal.apply`. The `proposal.apply` gate is the durable enforcement point for
+proposals from CLI runs. Agent execution config is not one of those proposals:
+the owner routes append `AgentVersion` directly and do not call
+`agent.config_update`. The `proposal.apply` gate is the durable enforcement point for
 proposal-gated Memory, Knowledge, Claim/ObjectRelation, Skill, Capability,
-runtime-skill binding, and accepted config proposal application.
+and runtime-skill binding.
 
 ### Reserved actions — lifecycle_status=RESERVED
 
@@ -302,14 +302,16 @@ calls `enforceProposalApply(...)` before applying accepted proposal side effects
 - No durable write (MemoryEntry, Policy, Task, code patch) occurs on denial.
 - `ProposalRiskLevelError` is raised for invalid proposal.risk_level; HTTP callers return 422.
 
-### Memory placement invariant (wired)
-Policy hard invariant in `server/src/modules/policy/decisionCore.ts` plus memory
-proposal/apply validation — `visibility=private` only in personal spaces.
+### Memory placement
+Private memory is valid in any Space. Apply requires `owner_user_id` and
+rejects a private row that has none (`memory/memoryApplyRepository.ts`).
+`decisionCore.ts` has no personal-Space placement invariant.
 
-### Run user private scope (wired)
-Memory/context read checks in `server/src/modules/memory/`,
-`server/src/modules/runtimeContext/`, and `server/src/modules/policy/decisionCore.ts`
-govern private memory access in run context.
+### Cross-space memory reads
+`hard_invariant_cross_space_memory` in `decisionCore.ts` denies
+`context.inject_memory`, `context.use_personal_grant`, and
+`context.render_for_runtime` when the requesting space and the resource space
+differ, unless `has_personal_memory_grant` is set. It does not read `policies`.
 
 ## Active Enforcement Points
 

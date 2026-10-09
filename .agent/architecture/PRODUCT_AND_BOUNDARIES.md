@@ -73,8 +73,12 @@ capture / trigger
 
 - The control plane's Project Folder operations use `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`; ACP subprocesses access their mounted workspace directly. The built-in strict Host limits that access with a per-Run namespace, while a trusted paired Host runs natively under the owner's OS permissions. **Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):** the control plane holds no path to a remote Folder and `PathPolicy` is never invoked for that Location; see [SECURITY_AND_ACCESS_BOUNDARIES.md](SECURITY_AND_ACCESS_BOUNDARIES.md) §10.
 - Server-host file access for managed/code-patch paths still uses worktree
-  helpers. CLI Runs execute on a host daemon (ADR 0016). `one_shot_docker` is
-  not a product CLI path; high/critical-risk work that requires it fails closed.
+  helpers. CLI Runs execute on a host daemon (ADR 0016). A critical-risk vendor
+  CLI run is labeled `one_shot_docker`. That label does not start a container:
+  `workingDirScopeForLevel` maps it to `worktree`, and a daemon run carries the
+  level on its isolation policy. Only `read_only` changes what that daemon run
+  is given. An adapter spec that does not set `supports_one_shot_docker` fails
+  preparation with `docker_sandbox_not_supported`.
 - Server-side adapters must not resolve arbitrary host paths. ACP subprocesses
   access the workspace mounted by their execution Host, under that Host's
   trust-mode boundary.
@@ -105,8 +109,8 @@ capture / trigger
 ### PolicyEngine evaluates built-in runtime rules; persisted policy enforcement is domain-specific
 
 - `PolicyEngine` evaluates stateless built-in rules. It does not load persisted Policy rows.
-- Domain-specific persisted-policy enforcement (e.g. `memory.private_placement`, `run.user_private_scope`) lives in `server/src/modules/policy/`.
-- Accepted policy proposals create active `Policy` rows that affect real enforcement decisions.
+- An accepted `policy_change` proposal inserts an active `policies` row for the payload's domain. No server path reads that table, so the row does not change a decision.
+- Cross-space memory denial is the hard invariant `hard_invariant_cross_space_memory` in `policy/decisionCore.ts`, not a persisted policy domain.
 
 ### App runtime must not self-deploy with arbitrary host authority
 

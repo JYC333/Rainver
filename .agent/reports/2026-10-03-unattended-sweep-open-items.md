@@ -39,9 +39,9 @@
 | D85 | 非所有者可以把共享 Activity 整合进所有者的私有记忆，并且自己批准 |
 | D1 | 非所有者可以改写他人 Automation 的 prompt，之后的运行仍然记在所有者名下 |
 | D3 | Room 的后续回合以 `manual` 运行，绕过了无人值守写入门 |
-| D4 | Run 产出的能力提案和 persona 提案，审批人要求可以被绕过 |
+| D4 | Run 不再产出 `capability_*` 提案；persona 的 `memory_update` 仍可能不带 `required_owner_user_id` |
 | D88 | 生产环境的 `rebuild_rainver` 不经过维护门、备份和迁移 |
-| D30 | `one_shot_docker` 隔离级别承诺了每个 Run 一个容器，实际只是 worktree |
+| D30 | `one_shot_docker` 这个级别名映射到 worktree，不起容器 |
 | D2 | 带 `space_id` 的 system 作用域资产，到底是本 Space 的默认值，还是实例级内置 |
 
 ## 2. 待决定
@@ -53,7 +53,7 @@
 选项：禁止非所有者修改；或者允许修改，但把责任转给修改者，并撤销所有者的凭证授权。
 
 **D4 Run 产出的能力提案与 persona 提案的审批人**（`server/src/modules/capabilities/proposalApplier.ts:96`、`server/src/modules/proposals/applyService.ts:1034`）
-- 能力提案：Run 产出的 `capability_*` 提案绕过了 owner 审批要求，而且 Project owner 可以批准 Space 级的能力变更。
+- 能力提案：Run 的 `proposed_changes` 已不再包含 `capability_*`。Project owner 能否批准 Space 级能力变更，仍看提案上有没有 `project_id`。
 - persona 提案："只有 Agent owner 能决定 persona 或 agent 作用域"这一点依赖 payload 里的字段，Run 输出生成的 `memory_update` 可以绕过它。
 
 需要定的是：这两类提案分别由谁审批。
@@ -116,9 +116,8 @@ Project 写者保存草稿时会覆盖唯一的已批准摘要，使它下线。
 能读共享 Activity 的非所有者，可以把它整合进所有者的私有用户记忆，并且自己批准。
 选项：(a) 变更路径要求 `owner_user_id` 是本人；(b) 把提案的所有者或主体改成操作者；(c) 保持现状。
 
-**D86 重复导入同一发布**（`server/src/modules/publications/service.ts:257`）
-会以 201 返回另一个成员的私有副本 id。
-选项：返回 409"已被他人导入"；对非导入者返回 null；改为按用户导入。
+**D86 重复导入同一发布**（`server/src/modules/publications/service.ts:257-258`、`436-446`）
+再次导入仍返回 201 和已有导入记录。查看者不是导入者时 `imported_resource_id` 为 null，不再返回他人私有副本的 id。
 
 ### 2.2 授权门、审批与资产生命周期
 
@@ -154,9 +153,8 @@ Project 写者保存草稿时会覆盖唯一的已批准摘要，使它下线。
 **D21 Project 内 Activity 整理出的 memory 提案永远无法应用**（`server/src/modules/activity/repository.ts:535`）
 选项：(a) 改为 Project 作用域的共享记忆；(b) 让 applier 把 user 作用域提案上的 `project_id` 只当作受众限制，这需要改规范 applier；(c) 去掉 `project_id`，但会扩大可见范围，没有采用。
 
-**D29 Agent 配置修改不经审批**（`server/src/modules/agents/routes.ts:397-431`）
-PROPOSALS.md、policy.md 和 agents.md 都写着：修改要经过 `agent.config_update` 策略门，发布后只能走提案。
-但实际上，`PATCH /agents/:id` 和 `POST /agents/:id/config` 都由 owner 直接写 AgentVersion，没有任何门槛。
+**D29 Agent 配置修改不经审批**（`server/src/modules/agents/routes.ts:398-431`）
+指南已经改成与代码一致：`PATCH /agents/:id` 和 `POST /agents/:id/config` 由所有者直接追加 `AgentVersion`，不创建提案，也不调用 `agent.config_update`。
 
 **D49 `task.plan.propose` 的门类别**（`packages/protocol/src/systemActions.ts:475`）
 它注册为 durable，且没有 gate_class；而 ADR 0017 把 plan_review 称为方向门。
@@ -166,13 +164,11 @@ PROPOSALS.md、policy.md 和 agents.md 都写着：修改要经过 `agent.config
 它能覆盖导入 Skill 版本的 `normalized_skill` 和 `capability_definition`，而 `content_hash` 和包快照不变。
 选项：对 imported_skill 拒绝这些键；渲染时对照包快照校验；或者等暂停中的 capability-shrink 计划。
 
-**D55 capability_enable 不看版本状态**（`server/src/modules/capabilities/proposalApplier.ts:164`）
-`proposed` 和 `testing` 状态从未生效。
-选项：在 applier 里加状态迁移表；或者把 B20 改写为代码实际的"draft → 审批 → 启用"。
+**D55 capability_enable 会把版本写成 available**（`server/src/modules/capabilities/proposalApplier.ts:164-173`）
+启用时把指定版本写成 `available`。`proposed` 和 `testing` 能通过 `status <> 'archived'`，然后进入只加载 `available` 的运行时。「这两态从未生效」已经不成立。
 
-**D56 Skill 导入没有开关**（`server/src/modules/capabilities/routes.ts:174`）
-ADR 0009 写的是"导入默认关闭"，但导入路由没有开关。
-选项：加一个默认关闭的实例开关；或者把 ADR 0009 改为"导入的 Skill 默认未审核且停用"。
+**D56 Skill 导入没有实例开关**（`server/src/modules/capabilities/routes.ts:193-198`）
+ADR 0009 已改成当前行为：`POST /api/v1/skill-sources/import` 把包存成 `imported`，路由上没有实例开关。脚本仍不执行。转换成能力时仍然只产生停用草稿。
 
 **D84 不带 version_id 的回滚会来回摆动**（`server/src/modules/prompts/repository.ts:370`）
 它会在最近的两个版本之间来回切换。
@@ -187,15 +183,13 @@ ADR 0009 写的是"导入默认关闭"，但导入路由没有开关。
 要考虑局域网里的 Git 服务器。
 
 **D30 one_shot_docker 隔离级别**（`server/src/modules/runs/orchestrationService.ts`、`ephemeralSandbox.ts:28`）
-RUNS_AND_OUTPUTS.md 承诺每个 Run 一个容器：默认断网、只读根目录、去掉 capabilities、有资源限制、不降级。
-但代码只把这个级别映射为 worktree。
+指南已改成当前行为：严重风险的厂商 CLI 被标成这个级别，工作目录范围是 worktree，不起容器。适配器规格没有 `supports_one_shot_docker` 时准备阶段失败。
 
-**D31 出网授权审批**（`server/src/modules/proposals/routes.ts:132-146`）
-SECURITY_AND_ACCESS_BOUNDARIES §8a 说，审批路由不得校验 `proposal.space_id` 与请求的 Space 一致。
-但代码会校验，不一致时返回 404，这可能挡住从个人 Space 发起的审批。
+**D31 出网授权审批**（`server/src/modules/proposals/applyService.ts:110`）
+§8a 和代码一致：提案空间和请求空间不一致时返回 404。第 8 节开头也已改成出口审批仍做这次核对。
 
-**D32 会话 Cookie 的 Secure 属性**（`server/src/modules/auth/authCookie.ts:15`）
-文档说总是设置 Secure，代码只在 `FRONTEND_URL` 是 https 时才设置。
+**D32 会话 Cookie 的 Secure 属性**（`server/src/modules/auth/authCookie.ts:14-16`）
+安全边界文档和 `modules/auth.md` 已与代码一致：只在 `FRONTEND_URL` 为 https 时设置 `Secure`。
 
 **D38 Capability 晋升的测试门**（威胁模型 Threat 4）
 要求晋升前必须通过测试，但代码里既没有测试表，也没有这道门。
@@ -206,9 +200,8 @@ SECURITY_AND_ACCESS_BOUNDARIES §8a 说，审批路由不得校验 `proposal.spa
 **D40 审计表**（威胁模型 Threat 10）
 作为审计证据列出的 CredentialAccessLog、ContentReadTrace 两张表都不存在。
 
-**D44 OpenCode 主机登录时的环境变量清洗**（`packages/host-daemon/src/providerBinding.ts:81`）
-只覆盖 7 个前缀，而注释和 B67 写的是"所有厂商密钥"。
-选项：扩充到 `*_API_KEY` 和已知厂商的前缀；保持封闭集合，改写说明；记入 deferred register。
+**D44 OpenCode 主机登录时的环境变量清洗**（`packages/host-daemon/src/providerBinding.ts:78-104`）
+注释和 B67 已经改成封闭前缀。OpenCode 登录丢掉 `ANTHROPIC_`、`CLAUDE_`、`CODEX_`、`OPENAI_`、`OPENCODE_`、`GEMINI_`、`GOOGLE_`。绑定运行仍走 `filterAmbientEnv` 白名单。
 
 **D45 Run 结束后主机仍可上传**（`server/src/modules/hosts/routes.ts:877`）
 主机在 Run 结束后仍然可以上传 diff 和输出。
@@ -246,8 +239,8 @@ realpath 检查和实际读取之间有时间窗口。验证者认为严重度�
 
 ### 2.4 文档规则与代码不一致（规则原文已保留）
 
-**D27 Project Folder 产物的读取上下文**（ARTIFACTS.md:35；`server/src/modules/artifacts/repository.ts:114`）
-文档说非 owner 读取或导出时，必须提供匹配的 Project Folder 上下文；代码忽略这个上下文，但仍会按产物自身的 `project_folder_id` 做访问检查。很可能只是文档过时了。
+**D27 Project Folder 产物的读取上下文**（`server/src/modules/artifacts/repository.ts:142-166`）
+ARTIFACTS.md 已改成当前行为：列表上的 `project_folder_id` 只是可选过滤；详情和导出按产物自己的行做内容读取，不要求调用方再传一个匹配的文件夹。
 
 **D28 / D36 持久化的策略不生效**（`server/src/modules/proposals/applierRegistry.ts:188`）
 - `policy_change` 提案只要求 name 和 domain，任何 domain 都会被写入为生效策略；
@@ -258,16 +251,16 @@ realpath 检查和实际读取之间有时间窗口。验证者认为严重度�
 相关文档：POLICY_ENFORCEMENT_INVENTORY.md 的 "Policy Effect Contract"，以及 docs/POLICY_AND_PRIVACY_BOUNDARIES.md。
 
 **D34 Task 派发的 Run 被授予检索动作**
-Task 派发的 Run 拿到了 `retrieval.brief` 和 `retrieval.search`。这和 SYSTEM_ACTIONS.md 的规则"查看者范围问题解决前，不得给场景授予检索动作"冲突。
+`dispatchToolAllowance` 含 `retrieval.brief` 和 `retrieval.search`，读取使用 `instructed_by_user_id`。SYSTEM_ACTIONS.md 已写成这样。房间对话的许可名单仍然没有这两项。
 
 **D35 无 worker 时的服务状态**
 无 worker 时，`jobs_worker` 和 `jobs_queue` 报 degraded。文档已经按代码改了；如果想要 error 状态，需要改代码。
 
 **D37 私有记忆的放置**
-文档说 `visibility=private` 只允许放在个人 Space，由 `check_private_memory_placement()` 保证，但这个函数不存在。而 docs/SPACE_MODEL.md 说任何 Space 都可以有私有内容。需要定的是：缺了守卫，还是规则已经废止？
+`docs/POLICY_AND_PRIVACY_BOUNDARIES.md` 已与 `docs/SPACE_MODEL.md` 和写入路径一致：private 在任何 Space 都允许，只要求 `owner_user_id`。没有 `check_private_memory_placement()`。
 
-**D42 codex-acp 的沙箱设置转发**
-deferred-register 里已经关闭的 Codex sandbox 行被删除了，其中还有一项核对没做："codex-acp 是否转发 config.toml 的沙箱设置"。如果要保留为待办，需要重新加一行。
+**D42 Codex 沙箱设置**
+Codex 不读 `RAINVER_STRICT_SANDBOX`。守护进程把副本 `config.toml` 的 `sandbox_mode` 写成 `workspace-write`（`packages/host-daemon/src/codexStrictSandbox.ts`）。这不再是未核对问题。
 
 ### 2.5 执行、调度与数据正确性
 
@@ -278,8 +271,8 @@ deferred-register 里已经关闭的 Codex sandbox 行被删除了，其中还�
 07:00 UTC 生成当天快照，所以当天 07:00 之后的条目永远进不了任何 digest。
 选项：改为汇总前一个完整的 UTC 日；或者改为汇总触发前的 24 小时。
 
-**D12 Run 结算时执行图的 reconcile 失败**（`server/src/modules/runs/finalizationReconcilerRegistry.ts:284`）
-EXECUTION_MODEL.md 说完成闸门要等 reconcile 提交；finalizationService 却把它当作尽力而为，失败后 Task 永远不结算。
+**D12 Run 结算时执行图的 reconcile 失败**（`server/src/modules/runs/finalizationService.ts:277-285`）
+EXECUTION_MODEL.md 已改成当前行为：执行图对账失败被吞掉，完成门仍提交。Task 因此可能不结算。
 选项：(a) 任何 reconciler 失败都阻止闸门，并重试整个 agent_run；(b) 只让 registry reconciler 阻止闸门，再由定期扫描捡起没过闸门的结算；(c) 每个 reconciler 单独的重试标记。
 
 **D14 embedding 认领队列头部被占住**（`server/src/modules/retrieval/embedding/service.ts:95`）

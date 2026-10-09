@@ -157,8 +157,8 @@ Proposals are the product review and application boundary for durable mutations.
 
 - Proposal creation, acceptance, and rejection must be durable.
 - User-created memory proposals use the `proposal.create` policy gate.
-- Agent execution config proposals use the `agent.config_update` policy gate
-  at proposal creation and `proposal.apply` at acceptance.
+- Agent execution config is not a proposal. The owner routes append an
+  immutable `AgentVersion` directly and do not call `agent.config_update`.
 - Agent-generated Knowledge proposals use the same review boundary:
   Activity, Run, or Artifact source -> `knowledge_*` proposal -> human
   acceptance -> active Knowledge record. They must not auto-activate and must

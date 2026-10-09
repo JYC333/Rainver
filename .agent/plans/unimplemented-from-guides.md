@@ -259,8 +259,9 @@ Extracted from `CREDENTIAL_STORAGE.md`, `docs/FUTURE_ROADMAP.md`,
 **Current fact:** ModelProvider keys use AES-256-GCM + disk master key.
 CLI login lives on the execution host (ADR 0016); the control plane does
 not broker CLI credentials. Persisted API-key product storage is
-feature-gated (no `api_keys` table). Active persisted policy classes
-include `memory.private_placement` and `run.user_private_scope`.
+feature-gated (no `api_keys` table). `policy_change` inserts an active
+`policies` row, and no server path reads it. `memory.private_placement` and
+`run.user_private_scope` are not enforcement domains.
 
 **Extracted design**
 - KMS/HSM envelope encryption; per-space derived subkeys.
@@ -315,8 +316,9 @@ caps).
 
 Extracted from `ROADMAP_AND_FUTURE_RISKS.md` and ADR 0005.
 
-**Current fact:** `opencode` RuntimeAdapterSpec exists. `one_shot_docker`
-is not the product CLI path (host daemon is). Verification Engine
+**Current fact:** `opencode` RuntimeAdapterSpec exists. A critical vendor CLI
+run is labeled `one_shot_docker`; that label maps to a worktree scope and does
+not start a container. The host daemon is the CLI path. Verification Engine
 `manual_review` / `model_judge` return deferred (see backlog A2.1).
 
 **Extracted design**

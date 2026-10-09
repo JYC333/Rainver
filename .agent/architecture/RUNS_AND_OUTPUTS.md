@@ -362,12 +362,14 @@ proposal-envelope fields.
 - There is no external-capability execution path: no enable switch or
   `capability_disabled` resolution error exists, and the `capability` runtime
   definition is `planned` and disabled by default.
-- `one_shot_docker` is the critical local-CLI executor mode. It provides a
-  separate container with deny-by-default networking, read-only root, dropped
-  capabilities, no-new-privileges, and fixed resource limits. Docker/image/path
-  failures are terminal and never downgrade to worktree execution. Worktree
-  execution still scopes repository changes only and does not provide OS,
-  network, or resource isolation.
+- `one_shot_docker` is the sandbox level a critical-risk vendor CLI run receives
+  from `resolveSandboxLevelForRuntime`. File-access CLI specs set
+  `supports_one_shot_docker`; an adapter whose spec does not fails preparation
+  with `docker_sandbox_not_supported` and does not run. The level does not start
+  a container. `workingDirScopeForLevel` maps it to `worktree`. On a daemon run
+  the level is carried on the isolation policy; the workspace is the Location,
+  and only `read_only` changes what the run is given. Worktree execution scopes
+  repository changes and does not provide OS, network, or resource isolation.
 
 ## Validation status
 

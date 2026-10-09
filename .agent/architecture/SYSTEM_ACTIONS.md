@@ -99,8 +99,7 @@ the normal call-time PolicyGateway decision remains mandatory and authoritative.
 `authorization.request` is the sole built-in companion to capability
 intersection: a Run receives it only when that intersection exposes at least
 one other Agent tool, so an Agent can reference a denial from a tool it could
-actually call. Tool-free Runs remain tool-free (including network-isolated
-Docker CLI execution). The action does not grant authority; it can only create
+actually call. Tool-free Runs remain tool-free. The action does not grant authority; it can only create
 a bounded `authorization_requests` row.
 
 **Delivery carries no runtime name.** A Run is given a handful of environment
@@ -118,9 +117,7 @@ registered ACP agent needs nothing added.
 Side-effecting calls use the caller's `Idempotency-Key` header as the
 canonical tool-call/idempotency key; a caller that sends none gets a fresh one
 per request rather than a constant, so a second call of the same action in one
-attempt is not swallowed by the event writer. Network-isolated one-shot Docker
-execution fails closed when a Run requests tools because it cannot reach the
-server.
+attempt is not swallowed by the event writer.
 
 There are two delivery sites, one per execution host kind, and they differ
 only in where the files land: the daemon writes them into the Run's own
@@ -291,12 +288,12 @@ about:
 
 - `explicitRetrievalToolDomainsFromRun` (`runs/managedRetrievalTools.ts`)
   treats a retrieval action id in `capabilities_json` as the *enablement
-  switch* for that retrieval domain. **No retrieval action may be added to a
-  scenario allowance without solving viewer scope first**: retrieval runs
-  under `instructed_by_user_id` — the message sender, whose reads include
-  their own `private` content — while the Room reply is visible to every Room
-  member, so granting it would let one member's private material be surfaced
-  into a shared conversation by asking a question.
+  switch* for that retrieval domain. `dispatchToolAllowance` includes
+  `retrieval.brief` and `retrieval.search`. Those reads use
+  `instructed_by_user_id`, the person who dispatched the Task. The Room
+  conversation allowance does not include them: a Room reply is visible to
+  every Room member, and the sender's private reads would otherwise surface
+  in that shared reply.
 - `capabilityIdsForRun` selects runtime-skill bindings from the same field, so
   a Run carrying a scenario allowance selects bindings keyed on these action
   ids rather than the AgentVersion's own capability list. Inert today (nothing

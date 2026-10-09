@@ -22,15 +22,12 @@ operate on the `.agent` context tree.
 
 **PolicyEngine** (`engineCheck` in `server/src/modules/policy/decisionCore.ts`) evaluates stateless built-in rules in priority order. When no rule matches, it uses the action registry's `default_decision` — not a permissive ALLOW. Unknown actions always fail closed with DENY (`audit_code="unknown_policy_action"`). Domain-specific persisted-policy enforcement lives in `server/src/modules/policy/`.
 
-**PolicyEffectCatalog** (documented with `packages/protocol/src/policy.ts`) is the creation contract for active
-persisted `Policy` rows from `policy_change` proposals. It is not a full DSL:
-it only records whether a domain has a current enforcement effect, the allowed
-enforcement modes, and the small rule shape accepted for that domain. Only
-supported domains may create active `Policy` rows. Reserved domains are
-vocabulary only and fail closed until wired.
+There is no `PolicyEffectCatalog`. `policy_change` requires `name` and `domain`,
+then inserts an active `policies` row for that domain. No server path reads the
+table, so the row does not change a decision.
 
 **Policy service / gateway** (`server/src/modules/policy/service.ts` and `gateway.ts`) is the enforcement entry point for sensitive actions. It composes hard invariants, PolicyEngine, and PolicyDecisionRecord persistence. Business enforcement code must call one of:
-- **`enforce(req)`** — direct-action path. Returns blocked on DENY/REQUIRE_APPROVAL and writes durable audit on ALLOW when required. Used by runtime, context, Project Folder read/patch, artifact, proposal creation, agent config proposal creation, and automation sensitive gates.
+- **`enforce(req)`** — direct-action path. Returns blocked on DENY/REQUIRE_APPROVAL and writes durable audit on ALLOW when required. Used by runtime, context, Project Folder read/patch, artifact, proposal creation, and automation sensitive gates. Agent config routes do not call it.
 - **`enforceProposalApply(...)`** — proposal application path. Used by `PgProposalApplyService`.
 
 Direct use of `PolicyEngine` (`engineCheck`) or the hard-invariant helper (`checkHardInvariants`) outside documented non-mutating simulations is a boundary violation. No automated test detects it; it is held by review.
@@ -94,53 +91,25 @@ Runtime-local blocked paths call `write_blocked_gate_audit(exc)` exactly once an
 
 Metadata is sanitized before persistence — no credentials, prompts, patch bodies, stdout, stderr, raw memory, or `personal_context_block`.
 
-**Emitted at enforcement points when:**
+Persisted `policies` rows are not an enforcement input. `policy_change` inserts
+an active row for whatever `domain` the payload names, and no server path reads
+that table. The names `memory.private_placement`, `run.user_private_scope`, and
+`memory.cross_space_read` are not policy domains in `server/src`.
 
-| Domain | allow_with_log | deny |
-|--------|----------------|------|
-| `memory.private_placement` | Safe writes (incl. non-private with active row; private in personal) | Non-personal private (hard invariant + policy deny) |
-| `run.user_private_scope` | Same-space instructed-user private included in run retrieval | Same-space private excluded |
-| `memory.cross_space_read` | N/A (deferred) | Cross-space attempt blocked (even if policy says allow/allow_with_log) |
+What the code does instead:
+
+- Private memory requires `owner_user_id`. It is valid in any Space, matching
+  `docs/SPACE_MODEL.md`. The apply path rejects a private row with no owner
+  (`memory/memoryApplyRepository.ts`). There is no personal-Space placement check.
+- Cross-space memory reads on `context.inject_memory`, `context.use_personal_grant`,
+  and `context.render_for_runtime` are denied by `hard_invariant_cross_space_memory`
+  in `policy/decisionCore.ts` when the two space ids differ, unless
+  `has_personal_memory_grant` is set. That denial does not consult a `policies` row.
+- Targeted publication copies an immutable snapshot. It is not a cross-space memory read.
+  `PersonalMemoryGrant` is the exception the hard invariant recognizes; see
+  `docs/PERSONAL_MEMORY_GRANT.md`.
 
 Retrieval hard-filter metadata remains in `retrieval_trace_json` on context packages; policy traces are separate log events.
-
----
-
-## memory.private_placement
-
-**Status:** ✅ Enforced
-
-- Hard invariant: `visibility=private` only in `Space.type == personal`.
-- Enforcement: policy hard invariant + memory proposal/apply validation
-- Policy trace on allow_with_log / deny / hard-invariant denial.
-- Tests: `server/test/memoryApplyIntegration.test.ts`, `server/test/memoryProposalIntegration.test.ts`, `server/test/policyDecisionCore.test.ts`
-
----
-
-## run.user_private_scope
-
-**Status:** ✅ Enforced
-
-- Same-space private memory for `owner_user_id == instructed user_id`.
-- Active deny excludes same-space private; trace on deny/allow_with_log.
-- Cross-space personal private in shared runs: requires `PersonalMemoryGrant`.
-- Enforcement: `MemoryRetriever` → `can_read_memory_in_run_context()`
-- Tests: `server/test/memoryReadAuthMatrix.test.ts`, `server/test/memoryReadIntegration.test.ts`, `server/test/contextPrepareService.test.ts`
-
----
-
-## memory.cross_space_read
-
-**Status:** 📄 Deferred — deny by default
-
-- Structural `space_id` filter; allow/allow_with_log rows do not enable reads.
-- Cross-space block traced when an allow-looking policy exists.
-- **Targeted publication** copies an immutable snapshot and does **not** activate this domain.
-- **PersonalMemoryGrant** is the explicit exception path; see `docs/PERSONAL_MEMORY_GRANT.md`.
-- Future: explicit grants + federation + policy (see `docs/FEDERATED_ACCESS_MODEL.md`).
-- Tests: `server/test/policyDecisionCore.test.ts`,
-  `server/test/memoryReadAuthMatrix.test.ts`,
-  `server/test/memoryReadIntegration.test.ts`
 
 ---
 
@@ -170,20 +139,10 @@ Retrieval hard-filter metadata remains in `retrieval_trace_json` on context pack
 
 ## Policy Effect Contract
 
-**Supported active Policy domains:**
-
-| Domain | Enforcement point |
-|--------|-------------------|
-| `memory.private_placement` | `server/src/modules/policy/decisionCore.ts` |
-| `run.user_private_scope` | `server/src/modules/policy/decisionCore.ts` |
-
-**Reserved / unsupported active Policy row domains:** `runtime.execute`,
-`project_folder.read`, `agent.config_update`, `automation.fire`,
-`capability.enable`, `tool_binding.enable`, `deployment.execute`.
-
-`policy_change` proposal application validates the domain, enforcement mode,
-`rule_json`, `applies_to_json`, and approval-proof flags before creating any
-active `Policy` row. Unsupported and reserved domains do not create active rows.
+No domain on an active `policies` row is consulted at decision time.
+`applyPolicyChangeProposal` requires `name` and `domain`, then inserts
+`status='active'` for that domain. It does not keep a supported-domain catalog,
+and a reserved name is inserted the same way as any other domain.
 
 ---
 
@@ -219,7 +178,7 @@ simulations: they perform no action, mutate no state, and create no
 permission manifest that routes risk and enables unknown-action fail-closed behaviour.
 
 **Registry structure**: The registry has three lifecycle states, distinguished by `lifecycle_status`:
-- **wired_direct** (74): `lifecycle_status=wired_direct` — have a preferred `PolicyGateway.enforce()` or `enforceProposalApply()` call site.
+- **wired_direct** (74): `lifecycle_status=wired_direct` — have a preferred `PolicyGateway.enforce()` or `enforceProposalApply()` call site. `agent.config_update` is registered in this state and has no call site; owner agent routes append `AgentVersion` directly.
   Actions: `authorization.request.create`, `runtime.execute`, `run.spawn_child`,
   `runtime.use_credential`, `runtime_context_policy.change`, `work_context_setup.change`,
   `context.inject_memory`, `context.render_for_runtime`, `project_folder.write_patch`,
@@ -309,7 +268,7 @@ fail closed via `unknown_policy_action` DENY if ever passed to `PolicyEngine` or
 | `proposal.create` | `server/src/modules/proposals/` and target modules | Uses `enforce()` for user-created proposals. |
 | `proposal.create` | `server/src/modules/projectFolders/codePatch.ts` | Uses `enforce()` with `force_record=True` for system-created code_patch proposals. |
 | `proposal.apply` | `server/src/modules/proposals/applyService.ts` | Uses `enforceProposalApply()` on accept and `code_patch` rollback; unsupported types deny first. **fail_closed**. |
-| `agent.config_update` | `server/src/modules/agents/service.ts` | Uses `enforce()` before creating `agent_config_update` proposals. This is the domain-specific proposal creation audit; accepted mutation still goes through `proposal.apply`. Metadata includes changed field names and safe IDs only, not raw system prompt or policy blobs. |
+| `agent.config_update` | registered in `packages/protocol/src/policy.ts`; not called from `server/src/modules/agents/` | Owner `PATCH /api/v1/agents/:agentId` and `POST /api/v1/agents/:agentId/config` append an `AgentVersion` directly. There is no `agents/service.ts` and no `agent_config_update` proposal. |
 | `automation.create` | `server/src/modules/automations/service.ts` | **Uses server `enforce()`**. Runtime preflight and policy preflight simulation must pass before the Automation row is written. `membership_role`, `agent_id`, `trigger_type` in `context`. **fail_closed** — persistence failure blocks creation. |
 | `automation.update` | `server/src/modules/automations/service.ts` | **Uses server `enforce()`**. `membership_role`, `agent_id` in `context`. **fail_closed**. |
 | `automation.fire` | `server/src/modules/automations/service.ts` | **Uses server `enforce()`**. Runtime preflight and policy preflight simulation rerun. `membership_role`, `agent_id`, `trigger_origin="automation"` in `context`. Creates a queued Run, an `agent_run` job, and an AutomationRun record; scheduled fire advances the schedule in the same transaction as the Run/Job/AutomationRun writes. **fail_closed**. |
@@ -445,9 +404,6 @@ enabled default Profile (`AutomationsService.runPreflight` in
 
 | Domain | Runtime wired | Tracing |
 |--------|---------------|---------|
-| `memory.private_placement` | `server/src/modules/policy/decisionCore.ts` | Structured log |
-| `run.user_private_scope` | `server/src/modules/policy/decisionCore.ts` | Structured log |
-| `memory.cross_space_read` | Structural deny only | Structured log on blocked cross-space with allow-looking row |
 | `runtime.execute` | `server/src/modules/runs/orchestrationService.ts` PolicyGateway (decision fields in `context`; audit duplicates in `metadata_json`) | PolicyDecisionRecord |
 | `runtime.use_credential` | `authorizeCredentialSpend` for every ModelProvider spend (root Run origin, live Automation grant, or re-read setup in `context`) | PolicyDecisionRecord on every decision |
 | `context.inject_memory` | context/runs PolicyGateway (`trigger_origin` in `context`) | PolicyDecisionRecord on DENY |
@@ -457,12 +413,12 @@ enabled default Profile (`AutomationsService.runPreflight` in
 | `proposal.create` | proposals + target modules (`target_visibility`, `target_scope` in `context` for memory proposals) | PolicyDecisionRecord (force_record=True for code_patch) |
 | `proposal.apply` | proposal apply service PolicyGateway | PolicyDecisionRecord (audit_required=True). Unsupported proposal types deny at gate (`audit_code="unsupported_proposal_type"`) before any role check. Role matrix: owner=all, admin=low/medium/high, reviewer=low/medium. |
 | `knowledge.*` | proposals + knowledge proposal appliers via `proposal.apply` | No direct write gate. Accepted `knowledge_*` proposals create/version/archive KnowledgeItem or create/archive ObjectRelation rows. |
-| `agent.config_update` | `server/src/modules/agents/service.ts` PolicyGateway before `agent_config_update` proposal creation | PolicyDecisionRecord (audit_required=True, safe metadata only) |
+| `agent.config_update` | Registry entry only. Agent config routes do not call it | No proposal and no PolicyDecisionRecord on the owner write |
 | `automation.create` | `server/src/modules/automations/service.ts` PolicyGateway | PolicyDecisionRecord (audit_required=True, fail_closed). `membership_role` in context; requires admin/owner. Runtime preflight + policy preflight snapshots are stored in `preflight_snapshot_json`. |
 | `automation.update` | `server/src/modules/automations/service.ts` PolicyGateway | PolicyDecisionRecord (audit_required=True, fail_closed). `membership_role` in context; requires admin/owner. |
 | `automation.fire` | `server/src/modules/automations/service.ts` PolicyGateway | PolicyDecisionRecord (audit_required=True, fail_closed). `membership_role`, `trigger_origin="automation"` in context. Runtime preflight + policy preflight snapshots are stored in `AutomationRun.preflight_snapshot_json`. |
 
-Malformed effects on security-sensitive domains fail safe → **deny** (`get_active_policy_match`).
+No server path loads `policies` while making a decision, so a malformed effect on a stored row is not a deny input.
 
 ---
 
@@ -494,7 +450,7 @@ Malformed effects on security-sensitive domains fail safe → **deny** (`get_act
 ### Grant API (`server/src/modules/personalMemoryGrants/`)
 
 - Preview, create, list, revoke, and audit endpoints are active.
-- `memory.cross_space_read` remains deny-by-default for the normal retrieval path; the grant is the explicit exception.
+- Cross-space memory reads covered by `hard_invariant_cross_space_memory` stay denied unless the grant flag is set. The grant is that exception. It is not a `policies` domain.
 
 ### Resolver and ephemeral context (`server/src/modules/personalMemoryGrants/`)
 

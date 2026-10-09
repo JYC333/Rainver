@@ -62,7 +62,8 @@ the responsible user may not dispatch to, unavailable credentials, explicit
 runtime/profile mismatches, retry exclusions, missing required capabilities or
 tools, unsupported execution mode, insufficient isolation, missing required
 workspace/file access, and trust below the effective minimum. A critical local
-CLI candidate additionally needs explicit one-shot Docker support. Risk and
+CLI candidate additionally needs `supports_one_shot_docker`. That flag admits
+the candidate; it does not start a container. Risk and
 hints can increase sandbox and trust requirements; hints cannot weaken the
 Run's requirements. File/code execution shapes require a runtime that declares
 file access. Low/medium-risk CLI work may use an ephemeral run directory where

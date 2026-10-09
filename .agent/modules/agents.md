@@ -674,10 +674,10 @@ by routing and the Host daemon.
 - `agent_version_id` on `Run` is immutable per row — historical runs stay reproducible after edits to `Agent`
 - `runtime_profile_snapshot_json` on `Run` is immutable per row — historical runs keep the selected runtime binding after profile edits
 - `AgentVersion` is append-only — prior rows are not rewritten in place
-- Public post-create execution config mutation is proposal-only. Direct public
-  AgentVersion creation must not advance `Agent.current_version_id`.
-- Accepted config proposals leave provenance from the new AgentVersion to the
-  accepted Proposal and ActivityRecord.
+- Public post-create execution config mutation is owner-direct. `PATCH
+  /agents/{agent_id}` and `POST /agents/{agent_id}/config` append an
+  `AgentVersion` and may advance `Agent.current_version_id`. There is no
+  config-proposal route, and these writes do not record proposal provenance.
 - Agent configuration is loaded from the immutable AgentVersion path; it is not
   represented by a Memory row or Runtime Context checkpoint.
 - The owner config UI (`POST /agents/{id}/config`) and create-from-template overrides

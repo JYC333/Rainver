@@ -665,7 +665,8 @@ continue instruction (`modules/rooms.md`).
 **Finalized** means the canonical materializer has reconciled durable
 runtime-output delegation, `PostRunFinalizationService` has performed
 deterministic evaluation and Supervisor handling, and the completion gate is
-committed.
+committed. Execution-graph reconciliation runs after that and is best-effort:
+a failure is swallowed, and the completion gate is still marked committed.
 
 Before finalization, the A2 Verification Engine evaluates declared
 deterministic checks in the live run sandbox and persists attempt-scoped
@@ -728,7 +729,7 @@ The finalize endpoint is the single write surface.
 2. Creates one `RunEvaluation`.
 3. Dispatches the run-finalized hooks through the server finalization service. The tasks-owned `task_evaluation_bridge` hook creates one `TaskEvaluation` bridge row when a `TaskRun` link exists (`runs` never imports `tasks`; `tasks` registers the hook through the module registry).
 4. Creates one `RunFinalization` row with `status=completed`.
-5. Commits the Supervisor/execution-graph work and the monotonic completion gate.
+5. Awaits Supervisor handling, attempts execution-graph reconciliation, and commits the monotonic completion gate. Reconciliation failure does not block the gate.
 6. Appends one `run_finalized` `RunEvent`.
 
 When a Run has declared checks, finalization also includes the verification

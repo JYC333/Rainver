@@ -247,9 +247,11 @@ exception in the Enforcement section above for the allowed preflight-only site.
 
 The core actions are below; `POLICY_ACTION_REGISTRY` lists every `wired_direct`
 action with its `current_enforcement_point`, including `run.spawn_child`,
-`project_folder.read`, `agent.config_update`, `input_resource.*`, the
+`project_folder.read`, `input_resource.*`, the
 `source.*` / `evidence.*` route actions, the retrieval actions, and the
 System Actions dispatched through `systemActions/systemActionDispatcher.ts`.
+`agent.config_update` is registered and has no call site: owner agent routes
+append an `AgentVersion` directly.
 
 | Action | Enforcement Point | Decision inputs (context) | Behavior |
 |--------|------------------|-----------------------------|----------|
@@ -267,24 +269,12 @@ System Actions dispatched through `systemActions/systemActionDispatcher.ts`.
 
 ### Persisted Policy Effect Contract
 
-`PolicyEffectCatalog` (documented with the policy registry in
-`packages/protocol/src/policy.ts`) is a lightweight effect contract,
-not a full policy DSL and not an external policy engine. The engine remains
-stateless; persisted `Policy` rows are only read by domain-specific enforcement
-helpers that are already wired.
-
-Only supported domains may create active `Policy` rows through `policy_change`
-proposal application:
-
-| Domain | Enforcement point |
-|--------|-------------------|
-| `memory.private_placement` | `server/src/modules/policy/decisionCore.ts` |
-| `run.user_private_scope` | `server/src/modules/policy/decisionCore.ts` |
-
-Reserved domains (`runtime.execute`, `automation.fire`, `capability.enable`,
-`tool_binding.enable`, `deployment.execute`) are vocabulary only. They cannot
-create active `Policy` rows and fail closed until a real enforcement point is
-wired.
+There is no `PolicyEffectCatalog`. The engine stays stateless and does not load
+`policies`. `policy_change` requires `name` and `domain`, then inserts an
+active row for that domain, including names that have no enforcement point.
+No server path reads the table, so the row does not change a decision.
+Cross-space memory denial is `hard_invariant_cross_space_memory` in
+`decisionCore.ts`.
 
 ### Automation Policy Preflight
 
@@ -370,12 +360,12 @@ closed via `unknown_policy_action` DENY if passed to policy evaluation.
 
 ### Memory private placement
 
-`visibility=private` is only permitted in personal spaces. Any attempt to
-write a private-visibility memory in a non-personal space is denied by
-`check_private_memory_placement()`.
-
-Enforcement: `server/src/modules/policy/decisionCore.ts` and the
-memory proposal/apply services.
+`visibility=private` is valid in any Space. The memory apply path requires
+`owner_user_id` and rejects a private row that has none
+(`server/src/modules/memory/memoryApplyRepository.ts`). There is no
+personal-Space placement check. Private content in a shared Space is the
+case `docs/SPACE_MODEL.md` describes: owner-only, with oversight only when
+that Space's creation-time mode grants it.
 
 ### Run context isolation
 

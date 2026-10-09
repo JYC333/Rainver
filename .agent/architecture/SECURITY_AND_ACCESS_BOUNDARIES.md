@@ -675,8 +675,10 @@ cross-Space Memory retrieval is not implemented.
 
 ## 8. Intentional Cross-Space Exceptions
 
-These routes intentionally ignore or discard the request `space_id`. Each has its own
-authority mechanism in place of space-scoped auth.
+These routes are the cross-space exceptions. Egress approval (8a) still resolves
+the request Space and returns 404 when `proposal.space_id` is not that Space.
+The routes below either aggregate across the caller's memberships or discard
+the request `space_id`, and each names its own authority.
 
 ### 8a. Personal Memory Egress Approval
 

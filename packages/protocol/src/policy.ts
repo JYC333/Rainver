@@ -265,7 +265,7 @@ export const POLICY_ACTION_REGISTRY = [
     current_enforcement_point:
       "server/src/modules/agents/routes.ts",
     description:
-      "Create an agent_config_update proposal for post-create execution configuration changes. The durable mutation is still protected by proposal.apply.",
+      "Registered policy action. Owner routes append an immutable AgentVersion directly and do not call this action or create an agent_config_update proposal.",
     lifecycle_status: "wired_direct",
     record_failure_mode: "best_effort",
   },
