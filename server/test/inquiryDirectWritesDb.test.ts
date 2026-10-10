@@ -18,8 +18,8 @@ import { getProjectUpdates } from "../src/modules/projectWork/updatesReadModel.j
 import { THREAD_FAN_OUT_PER_TURN } from "../src/modules/inquiry/threadFanOut.js";
 import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
 
-// Real-Postgres coverage for the two Inquiry writes that stopped being
-// proposals (ADR 0017 §2), and the one that did not. A person asking in the
+// Real-Postgres coverage for the two Inquiry writes that are not proposals
+// (ADR 0017 §2), and the one that is. A person asking in the
 // turn is the authorization: opening a question and recording a conclusion
 // happen immediately, bounded per turn, deduped, and undoable from the
 // Project's updates. `project.propose_definition` is still a proposal — the

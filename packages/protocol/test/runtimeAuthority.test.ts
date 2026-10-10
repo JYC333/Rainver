@@ -67,10 +67,9 @@ describe("runtime authority contracts", () => {
     }
   });
 
-  // The Profile body schemas are the API boundary for runtime identity, and
-  // nothing in this package parsed them: the server's route tests covered the
-  // alias rejection, so a widened body shape would have been caught only
-  // there — one package away from the contract it changes.
+  // The Profile body schemas are the API boundary for runtime identity.
+  // Parse them in this package. A widened body shape caught only in the
+  // server's route tests is one package away from the contract it changes.
   it("requires a runtime key and a name on a created Runtime Profile", () => {
     expect(AgentRuntimeProfileCreateBodySchema.safeParse({
       name: "Default", runtime_key: "opencode",

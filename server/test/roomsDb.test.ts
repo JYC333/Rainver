@@ -6665,11 +6665,11 @@ describe("Room workflow (real Postgres)", () => {
     const shared = await service.sendMessage(owner, mainline.room.id, sharedConversation.id, { content: "Everyone can see this." });
     // Mainline membership follows Project membership but is written on first
     // open rather than synced, so open the Project as user-2 — which is what
-    // the Project page does. Exempting the mainline from needing that row was
-    // tried and reverted: `roomRunReadAccessSql` also gates Proposal accept
-    // and reject, so the exemption widened a write authority nobody asked to
-    // change. Not seeing a mainline Run until you have opened the Project once
-    // is stricter, self-healing, and keeps this rule identical everywhere.
+    // the Project page does. Do not exempt the mainline from needing that row.
+    // `roomRunReadAccessSql` also gates Proposal accept and reject, so the
+    // exemption would widen a write authority. Not seeing a mainline Run until
+    // you have opened the Project once is stricter, self-healing, and keeps
+    // this rule identical everywhere.
     await service.getProjectMainline({ spaceId: "space-1", userId: "user-2" }, "project-1");
 
     const runs = new PgRunRepository(db.pool);

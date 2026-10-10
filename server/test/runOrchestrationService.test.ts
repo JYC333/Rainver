@@ -1831,8 +1831,8 @@ describe("RunOrchestrationService", () => {
       }),
     ).resolves.toMatchObject({ status: "succeeded" });
     // The argv is rendered from the adapter spec, and the daemon resolves the
-    // executable from the copy it installed — so a caller-supplied path is not
-    // merely ignored, there is no longer a place for it to take effect.
+    // executable from the copy it installed — so a caller-supplied path has
+    // no place to take effect.
     expect(adapterConfigs[0].command).toEqual(["codex-acp"]);
   });
 
