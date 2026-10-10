@@ -8,7 +8,7 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * The four capture destinations behind one entry (D1/D2).
+ * The four capture destinations behind one entry.
  *
  * Ownership and pipeline are separate. Do not bind them: Project does not
  * imply shared, and personal does not imply reviewed. Material pasted into a

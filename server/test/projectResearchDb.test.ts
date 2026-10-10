@@ -479,10 +479,10 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     const saved = await repo().upsertScreeningCriteria(identity, PROJECT, {
       include_keywords: ["transformer", "attention"],
       exclude_keywords: ["survey"],
-      // `venues` generalized to a source restriction (R4/D12) — journals,
-      // outlets and sites are one concept. `methods` moved into the
-      // profile-declared bag, which this Project binds no source for, so it is
-      // covered by researchScreeningCriteriaDb rather than here.
+      // `venues` is a source restriction: journals, outlets and sites are one
+      // concept. `methods` lives in the profile-declared bag, which this
+      // Project binds no source for, so it is covered by
+      // researchScreeningCriteriaDb rather than here.
       source_restrictions: ["NeurIPS"],
       date_range_start: "2020-01-01T00:00:00.000Z",
       date_range_end: "2024-01-01T00:00:00.000Z",

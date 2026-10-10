@@ -467,7 +467,7 @@ export function resolveDeclaredResourceId(
 
 function toolCallFailureResult(call: CanonicalToolCall, error: unknown): SystemActionDispatchResult {
   // A disabled retrieval domain and an unknown-retrieval-tool-call failure
-  // both normalize through here now: the gateway's own decision (D6/D7) is
+  // both normalize through here. The gateway's own decision is
   // the single enforcement point, so a disabled domain is an ordinary
   // `system_action_policy_denied`, and no other retrieval-specific error
   // code is fabricated by name-matching — every action gets the same

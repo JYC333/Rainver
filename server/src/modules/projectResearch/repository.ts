@@ -1449,7 +1449,7 @@ export class ProjectResearchRepository {
 
   /**
    * `domain_criteria` accepts exactly the keys the Project's bound extraction
-   * profiles declare (R4/D12).
+   * profiles declare.
    *
    * This is the difference between a domain criterion and free-form JSON: the
    * profile that understands the domain says which axes exist, so a criterion

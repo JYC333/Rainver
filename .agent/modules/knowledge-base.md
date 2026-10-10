@@ -518,7 +518,7 @@ Note:                                 # working-knowledge layer (direct CRUD)
   status                          # active|archived|deleted (domain-owned)
   version, content_hash           # optimistic version + revision history
   created_from_activity_id        # optional capture provenance (FK activity_records)
-  project_role, role_project_id   # system-reserved Project notebook role (N2/N3):
+  project_role, role_project_id   # system-reserved Project notebook role:
                                   #   understanding|questions|ideas|experiments,
                                   #   one per role per project (partial unique index).
                                   #   Membership is owned by

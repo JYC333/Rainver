@@ -45,7 +45,7 @@ export interface NoteWriteScope {
   write(input: NoteContentInput): Promise<NoteWriteResult>;
   applyOps(input: NoteOpsInput): Promise<{ note: NoteContentRow; conflict: boolean } | null>;
   rollback(input: NoteRollbackInput): Promise<NoteContentRow>;
-  /** Assign or clear the note's Project notebook role (N2/N3). */
+  /** Assign or clear the note's Project notebook role. */
   setProjectRole(input: NoteProjectRoleInput): Promise<void>;
   /**
    * Marks a note as changed without writing its content — a rename, an
