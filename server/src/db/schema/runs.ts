@@ -37,11 +37,11 @@ export const runs = pgTable("runs", {
 	// queries); read `workspace_location_id` when the physical execution
 	// site matters.
 	projectFolderId: varchar("project_folder_id", { length: 36 }),
-	// D3: where this Run actually executed. Null when the Run was never bound
+	// Where this Run actually executed. Null when the Run was never bound
 	// to a specific Location. No `host_id` column —
 	// fully determined by the Location, which never changes host.
 	workspaceLocationId: varchar("workspace_location_id", { length: 36 }),
-	// D5: `sandboxed` (server host, full isolation) or `trusted_host`
+	// `sandboxed` (server host, full isolation) or `trusted_host`
 	// (personal machine, ADR 0016's trusted-host mode) — surfaced in the UI
 	// so a merged dispatch endpoint never leaves the trust model implicit.
 	trustMode: varchar("trust_mode", { length: 16 }),
@@ -213,7 +213,7 @@ export const runs = pgTable("runs", {
 			foreignColumns: [projectFolders.id, projectFolders.spaceId],
 			name: "runs_project_folder_id_fkey"
 		}),
-	// D3: enforced at the database level, not just by convention — a Run's
+	// Enforced at the database level, not just by convention — a Run's
 	// write-once `project_folder_id` must name the same Folder its
 	// `workspace_location_id` actually belongs to. Postgres skips a
 	// composite FK check when any column is NULL (MATCH SIMPLE), so this is
@@ -308,7 +308,7 @@ export const runs = pgTable("runs", {
 	check("ck_runs_status", sql`(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text, ('cancelling'::character varying)::text, ('succeeded'::character varying)::text, ('degraded'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('orphaned'::character varying)::text, ('waiting_for_review'::character varying)::text, ('waiting_for_dependency'::character varying)::text])`),
 	check("ck_runs_trigger_origin", sql`(trigger_origin)::text = ANY (ARRAY[('manual'::character varying)::text, ('automation'::character varying)::text, ('autonomous'::character varying)::text, ('job'::character varying)::text, ('system'::character varying)::text, ('delegation'::character varying)::text])`),
 	check("ck_runs_trust_level", sql`(trust_level IS NULL) OR ((trust_level)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text, ('unknown'::character varying)::text]))`),
-	// D5: distinct from `trust_level` above (a data/provenance trust rating) —
+	// Distinct from `trust_level` above (a data/provenance trust rating) —
 	// `trust_mode` names which ADR 0016 execution/isolation model this Run
 	// ran under.
 	check("ck_runs_trust_mode", sql`trust_mode IS NULL OR trust_mode IN ('sandboxed', 'trusted_host')`),

@@ -24,7 +24,7 @@ import { isNoteProjectRole, type NoteProjectRole } from "../knowledge/noteProjec
 export { SECTION_LABELS };
 
 /**
- * D6: ad-hoc analysis has its own small budget lane, independent of the
+ * Ad-hoc analysis has its own small budget lane, independent of the
  * project research operation budget. Enforced per project per UTC day.
  */
 export const RESEARCH_ADHOC_DAILY_RUN_LIMIT = 20;

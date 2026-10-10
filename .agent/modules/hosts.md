@@ -222,7 +222,7 @@ user session — the daemon has no session to present):
   (never touches the daemon's disk; the daemon owns that).
 - `POST /api/v1/hosts/me/runs/:runId/diff` / `.../outputs` — daemon uploads a
   completed run's git diff and `RAINVER_OUTPUT_DIR` contents as read-only
-  artifacts (D7: never fed into code-patch proposal apply). Scoped by
+  artifacts (never fed into code-patch proposal apply). Scoped by
   `runOwnedByHost` — a host can only upload for a Run bound to its own
   Location.
   Size-capped server-side (`MAX_DIFF_BYTES`, `MAX_OUTPUT_FILE_BYTES`,

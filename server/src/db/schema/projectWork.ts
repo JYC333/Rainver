@@ -52,11 +52,10 @@ export const projectWorkEvents = pgTable("project_work_events", {
 	// descending columns is load-bearing: `ORDER BY ... DESC` is NULLS FIRST in
 	// Postgres, `DESC NULLS LAST` is a different ordering the planner cannot
 	// match to it, and Drizzle writes NULLS LAST unless told otherwise. With
-	// the mismatch the planner sorted the whole filtered set on every page
-	// (measured on 200k rows: Bitmap Index Scan + Sort; a plain Index Scan
-	// under the LIMIT once the nulls ordering matches). A separate
-	// `(space_id, subject_type, subject_id, seq)` index served no query — no
-	// reader orders by `seq` alone — and is not replaced.
+	// the mismatch the planner sorts the whole filtered set on every page
+	// instead of an Index Scan under the LIMIT. Do not add a separate
+	// `(space_id, subject_type, subject_id, seq)` index. No reader orders by
+	// `seq` alone.
 	index("ix_project_work_events_project_occurred").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.occurredAt.desc().nullsFirst(), table.seq.desc().nullsFirst()),
 	index("ix_project_work_events_subject").using("btree", table.spaceId.asc().nullsLast(), table.subjectType.asc().nullsLast(), table.subjectId.asc().nullsLast(), table.occurredAt.desc().nullsFirst(), table.seq.desc().nullsFirst()),
 	index("ix_project_work_events_kind").using("btree", table.spaceId.asc().nullsLast(), table.eventKind.asc().nullsLast(), table.occurredAt.desc().nullsLast()),

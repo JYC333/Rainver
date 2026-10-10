@@ -426,7 +426,7 @@ export class PgHostRepository {
   }
 
   /**
-   * D7: a remote diff is a read-only run artifact, never a code-patch
+   * A remote diff is a read-only run artifact, never a code-patch
    * proposal. Visibility is `space_shared` (project-scoped, since the row
    * also carries `project_id`/`project_folder_id` — see the `artifact`
    * ontology entity's `contentAccessible` declaration), not `private`: a
