@@ -91,11 +91,9 @@ describe("ResearchQueryLadderBuilder", () => {
     expect(builder.next(narrowPrevious, intent, "narrow", "openalex").semanticQuery.core).toHaveLength(2);
   });
 
-  // plainQuery (openalex, semantic_scholar) has no boolean operators at all —
-  // every field gets flattened into one space-joined keyword string, so an
-  // "expansion" is exactly as narrowing as a qualifier and never broadens.
-  // Verified in production: three consecutive "broaden" steps for openalex
-  // kept adding words and hits kept dropping (1094 -> 360 -> 24 -> 24).
+  // plainQuery (openalex, semantic_scholar) has no boolean operators at all.
+  // Every field is flattened into one space-joined keyword string. Do not
+  // treat an expansion as a broaden. It narrows the same way a qualifier does.
   it("openalex/semantic_scholar broaden by dropping the qualifier instead of adding a useless expansion", () => {
     const builder = new ResearchQueryLadderBuilder();
     const intent = semanticIntent();

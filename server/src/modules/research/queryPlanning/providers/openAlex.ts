@@ -2,11 +2,8 @@ import type { ResearchSemanticQuery } from "@rainver/protocol";
 import { boundedPageSize, plainQuery, type QueryAdaptationStrategy } from "./shared.js";
 
 // plainQuery has no boolean operators at all — core, qualifiers, and
-// expansions all get flattened into one space-joined keyword string, so
-// adding any of them (including an "expansion") only ever narrows the
-// match, never broadens it. Verified in production: three consecutive
-// "broaden" steps for openalex kept adding words and hits kept dropping
-// (1094 -> 360 -> 24 -> 24).
+// expansions all get flattened into one space-joined keyword string. Do not
+// treat an added word as a broaden. It only narrows the match.
 export const OPENALEX_LADDER_STRATEGY: QueryAdaptationStrategy = {
   coreIsUnion: false,
   expansionsBroaden: false,
