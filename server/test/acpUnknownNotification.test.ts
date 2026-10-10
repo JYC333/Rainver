@@ -81,9 +81,9 @@ describe("structured conversation prompt content", () => {
 /**
  * Which options a session has depends on the ones already set. Codex offers
  * `fast-mode` at `session/new` and withdraws it once the model is one that
- * does not support it — and `model` is deliberately set first, so the composer
- * sending back every option it was shown made a withdrawn one fatal. Two Room
- * turns died on `fast-mode: false`, a value that asks for nothing.
+ * does not support it, and `model` is set first. Do not send back every
+ * option the composer was shown. A withdrawn one would be fatal.
+ * `fast-mode: false` asks for nothing.
  */
 describe("a session option that disappears once the model is chosen", () => {
   const withConfig = (config: Parameters<typeof createCliConversationController>[0]["session_config"]) =>

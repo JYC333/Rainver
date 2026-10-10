@@ -38,10 +38,10 @@ export async function taskCompletionState(
   taskId: string,
   requiredOutputsJson: unknown,
   /**
-   * Whose view the gate is computed in. Required: an optional viewer meant a
-   * caller that forgot it judged the Task against the whole ledger, so a close
-   * that succeeded — or a `missing` list that came back shorter — told the
-   * person that an evaluation or an output they cannot see exists. The system
+   * Whose view the gate is computed in. Required. Do not make the viewer
+   * optional. A caller that forgot it would judge the Task against the whole
+   * ledger, so a close that succeeded — or a shorter `missing` list — would
+   * tell the person that an evaluation or an output they cannot see exists. The system
    * settlement worker, which genuinely must judge the Task's real state, says
    * so by name (`missingRequiredOutputsForSettlement`).
    */

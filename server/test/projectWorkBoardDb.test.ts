@@ -947,8 +947,8 @@ describe("project updates", () => {
     if (!db.available) return ctx.skip();
     const actorId = await resolveUserActorId(db.pool!, SPACE, OWNER);
     // More than one page, with ids deliberately unrelated to the ordering —
-    // which is what `randomUUID()` gives us, and what broke a cursor keyed on
-    // the id alone: half of each page came back and the rest became
+    // which is what `randomUUID()` gives us. Do not key the cursor on the id
+    // alone. Half of each page would come back and the rest would be
     // unreachable.
     const total = 34;
     for (let index = 0; index < total; index += 1) {

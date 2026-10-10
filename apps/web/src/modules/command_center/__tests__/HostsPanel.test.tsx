@@ -215,9 +215,9 @@ describe('HostsPanel', () => {
   })
 
   it('does not stack provisioning reads while one is still in flight', async () => {
-    // The 3s tick is shorter than a slow provisioning read. Without a guard
-    // each tick opened another request and merged whatever came back last, so
-    // an older answer could overwrite a newer one.
+    // The 3s tick is shorter than a slow provisioning read. Do not open
+    // another request while one is in flight. An older answer could overwrite
+    // a newer one.
     vi.useFakeTimers()
     try {
       type ProvisioningStatus = Awaited<ReturnType<typeof hostsApi.serverRuntimeProvisioning>>

@@ -1011,9 +1011,8 @@ export class ProjectResearchOrchestrator {
       // re-enter it, stomp current_stage back to "screening", and — since
       // createCheckpoint only recognizes a still-*pending* checkpoint as
       // "already exists" — mint a brand-new pending screening_gate checkpoint
-      // even after the user already approved it and synthesis started. That is
-      // exactly what "I approved the checkpoint but it came back after
-      // refresh" looks like from the outside.
+      // even after the user already approved it and synthesis started. The
+      // approved checkpoint would come back after a refresh.
       // The stage alone is not enough: approving the gate does not move
       // `current_stage` out of "screening" until the next tick advances it, so
       // a reconcile racing that approval (the approval itself enqueues one)

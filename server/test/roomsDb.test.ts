@@ -7089,8 +7089,8 @@ describe("Room workflow (real Postgres)", () => {
       .rejects.toMatchObject({ statusCode: 404 });
 
     // The gateway validates every agent action's output as `{ modelResult,
-    // summary }`; a flat object here made a decision that *was* applied read
-    // back to the model as a failure.
+    // summary }`. Do not return a flat object. A decision that was applied
+    // would be read back to the model as a failure.
     await expect(decide({ proposal_id: alsoMine, decision: "reject" }, dispatch))
       .resolves.toMatchObject({
         modelResult: { ok: true, status: "rejected", decided_by: "user-1" },
