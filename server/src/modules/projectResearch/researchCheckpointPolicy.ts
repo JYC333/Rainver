@@ -42,12 +42,12 @@ export function screeningExceedsAutoBudget(counts: { relevant: number; maybe: nu
 
 /**
  * Whether a checkpoint type blocks *unconditionally*. This deliberately does
- * not answer the screening question: `screening_gate` blocks on corpus size,
- * and an earlier signature that took the counts as an optional context bag
- * failed open — a caller that forgot to thread the counts through got "does
- * not block" and disabled the budget guard silently. The screening call site
- * must combine this with `screeningExceedsAutoBudget(counts)` explicitly, so
- * forgetting the counts is a visible omission rather than a quiet false.
+ * not answer the screening question: `screening_gate` blocks on corpus size.
+ * Do not take the counts as an optional context bag. A caller that forgot to
+ * thread the counts through would get "does not block" and disable the budget
+ * guard silently. The screening call site must combine this with
+ * `screeningExceedsAutoBudget(counts)` explicitly, so forgetting the counts
+ * is a visible omission rather than a quiet false.
  */
 export function checkpointBlocks(checkpointType: string): boolean {
   return BLOCKING_CHECKPOINT_TYPES.has(checkpointType);

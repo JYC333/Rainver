@@ -42,10 +42,10 @@ describe("researchCheckpointPolicy", () => {
       expect(screeningExceedsAutoBudget(under)).toBe(false);
       expect(screeningExceedsAutoBudget(at)).toBe(false);
       expect(screeningExceedsAutoBudget(over)).toBe(true);
-      // `checkpointBlocks` deliberately answers only the unconditional half:
-      // an earlier signature that took the counts as an optional context bag
-      // failed open when a caller forgot them. The screening site must combine
-      // both predicates explicitly.
+      // `checkpointBlocks` answers only the unconditional half. Do not take
+      // the counts as an optional context bag. A caller that forgot them
+      // would fail open. The screening site must combine both predicates
+      // explicitly.
       expect(checkpointBlocks("screening_gate")).toBe(false);
     });
 

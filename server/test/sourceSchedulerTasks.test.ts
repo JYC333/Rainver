@@ -14,7 +14,7 @@ describe("buildSourceSchedulerTasks", () => {
   it("registers each source domain as its own task", () => {
     const names = buildSourceSchedulerTasks(config, { queue: fakeQueue }).map((t) => t.name);
     // Each source domain is its own task. Do not fold them into one `run()`:
-    // a throw in an earlier domain then starves every later one. The registry
+    // a throw in an earlier domain would starve every later one. The registry
     // isolates their failures, alerts, and liveness.
     expect(names).toEqual([
       "source_extraction_scheduler",
