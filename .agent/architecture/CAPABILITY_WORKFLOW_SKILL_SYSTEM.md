@@ -188,11 +188,8 @@ grant approval directly.
 
 ### RuntimeSkillBinding
 
-`RuntimeSkillBinding` names the governed selection of skill content for a
-runtime. It binds an approved, pinned `SkillPackage` to an allowed scope or
-Agent and records runtime compatibility. It does not own or regenerate that
-package's content. Rows map capability versions to these runtime-specific
-forms:
+`RuntimeSkillBinding` selects skill content for a runtime. Rows map
+capability versions to these runtime-specific forms:
 
 - Claude Code skill layout
 - Codex skill layout
@@ -214,8 +211,7 @@ bindings; imported conversion also rejects ids that collide with built-in keys.
 `renderClaudeSkill` and `renderCodexSkill` (`capabilities/runtimeRenderers.ts`),
 reached through `renderRuntimeSkillCandidate`, render canonical capability
 data, normalized skill data, and profile configuration into runtime target
-content. The input is the approved package snapshot plus binding and policy
-metadata, and it is not a canonical content representation. The
+content. That input is not a canonical content representation. The
 renderers are pure functions that produce deterministic:
 
 - Claude Code generated skill directory suggestions with `SKILL.md`
