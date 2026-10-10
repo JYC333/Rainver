@@ -67,9 +67,8 @@ export function workLoopStageLabel(stage: WorkLoopStageKey): string {
  * Stages are ordered but movement is not: verification that fails because the
  * method was wrong belongs back at `plan`, and one that fails because the goal
  * was misunderstood belongs back at `frame`. A simple ordered index therefore
- * classifies the move rather than restricting it — `allowed_next` matrices
- * were considered and rejected, because every legal matrix for these five
- * ended up allowing everything.
+ * classifies the move rather than restricting it. Do not add an
+ * `allowed_next` matrix. Every legal matrix for these five allows everything.
  */
 export const STAGE_TRANSITION_KINDS = ["advance", "regress", "skip", "reopen"] as const;
 export const StageTransitionKindSchema = z.enum(STAGE_TRANSITION_KINDS);

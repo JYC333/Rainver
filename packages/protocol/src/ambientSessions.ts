@@ -35,10 +35,9 @@ export type AmbientRecordKind = (typeof AMBIENT_RECORD_KINDS)[number];
 /**
  * Trim limits, applied on the daemon before anything leaves the machine.
  *
- * Measured on a real machine: conversation text is 2.6–4.5 % of a session's
- * bytes and tool output is 13–41 %, so trimming output is what makes import
- * viable at all. It is also the usual home of a leaked key, which is why the
- * cap is small enough to be a label rather than a copy of the result.
+ * Trim output, not conversation text. Output is most of a session's bytes.
+ * It is also the usual home of a leaked key, so the cap is small enough to
+ * be a label rather than a copy of the result.
  */
 export const AMBIENT_TEXT_MAX_BYTES = 64_000;
 export const AMBIENT_TOOL_INPUT_MAX_BYTES = 512;

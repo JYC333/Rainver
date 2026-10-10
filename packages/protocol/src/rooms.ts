@@ -465,10 +465,10 @@ export type RoomBackendRequiredError = z.infer<typeof RoomBackendRequiredErrorSc
  * without the person restating which Task they mean.
  */
 export const RoomMessageFocusRefSchema = z.object({
-  // Task only. The Room is already bound to one Project, so a `project` focus
-  // said nothing the turn did not already carry — it was accepted here and
-  // then silently discarded on the way in, which is worse than not offering
-  // it. Widen the enum when a second subject can actually be focused.
+  // Task only. The Room is already bound to one Project. Do not accept a
+  // `project` focus. It says nothing the turn does not already carry, and
+  // discarding it on the way in is worse than not offering it. Widen the
+  // enum when a second subject can actually be focused.
   type: z.literal("task"),
   id: IdSchema,
 }).strict();

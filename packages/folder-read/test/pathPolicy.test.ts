@@ -93,8 +93,8 @@ describe("folder-read path policy", () => {
   });
 
   it("agrees with the server's rule on a placeholder value and a bare query key", () => {
-    // The two implementations say "change both together"; these are the two
-    // places they had silently drifted apart. A value that says a credential is
+    // The two implementations say "change both together". Do not let them
+    // drift. A value that says a credential is
     // *absent* is left alone — redacting `password: none` hides the answer and
     // protects nothing — and a hard-coded `?key=` has neither a credential word
     // in front of it nor a recognisable shape.

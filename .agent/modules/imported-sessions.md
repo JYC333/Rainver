@@ -46,9 +46,8 @@ and redaction must happen before anything crosses the network:
 | `agent_thought_chunk` | dropped |
 | `usage_update` | forwarded to the usage ledger, not stored as a record |
 
-Measured on a real machine: conversation text is 2.6–4.5 % of a session's
-on-disk bytes and tool output is 13–41 %. Trimming output is what makes import
-viable at all, and it is also where a printed key would be.
+Trim output, not conversation text. Output is most of a session's on-disk
+bytes. It is also where a printed key would be.
 
 Daemon-side modules: `ambientSessions.ts` (ACP client, enumeration, replay),
 `ambientRecords.ts` (updates → records), `ambientRedaction.ts` (secret patterns

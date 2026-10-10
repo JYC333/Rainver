@@ -1150,13 +1150,11 @@ export const POLICY_ACTION_REGISTRY = [
     lifecycle_status: "wired_direct",
     record_failure_mode: "best_effort",
   },
-  // NE registered these two so its Note actions would have a policy action to
-  // name. Both are `reserved`, not `wired_direct`, and the distinction is the
-  // honest one: no code path evaluates either, so nothing is gated by them and
-  // no audit record carries their name.
+  // Both are `reserved`, not `wired_direct`. No code path evaluates either,
+  // so nothing is gated by them and no audit record carries their name.
   //
-  // They were first written as `wired_direct` on the grounds that they made
-  // the action auditable. They do not: the enforcement is the route's own
+  // Do not mark them `wired_direct` to make the action auditable. They are
+  // not: the enforcement is the route's own
   // Project ACL, and who did it is already on the domain row
   // (`space_objects.created_by_user_id` for a Thread,
   // `note_links.created_by_user_id` for a link), so a policy audit record

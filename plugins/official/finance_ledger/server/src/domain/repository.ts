@@ -642,9 +642,9 @@ export const financeLedgerRepository = {
     if (filters?.viewerUserId) {
       params.push(filters.viewerUserId);
       const viewer = `$${params.length}`;
-      // A transaction is hidden when any leg touches a hidden account; every
-      // other directive type names its account by name in a child table, and
-      // returning one of those was returning the private account's *name*.
+      // A transaction is hidden when any leg touches a hidden account. Every
+      // other directive type names its account by name in a child table. Do
+      // not return that name. It is the private account's name.
       conditions.push(`(
         CASE WHEN directive_type = 'transaction'
           THEN NOT ${transactionTouchesHiddenAccountSql("finance_directives.id", "finance_directives.space_id", viewer)}
