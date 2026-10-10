@@ -160,10 +160,10 @@ describe("shared note writer (real Postgres)", () => {
 });
 
 /**
- * Notes written before block ids existed. Absence is legal: nothing migrates
+ * Notes without block ids. Absence is legal: nothing migrates
  * them, nothing rewrites their revisions, and they must keep loading.
  */
-describe("block ids on notes written before they existed (real Postgres)", () => {
+describe("block ids on notes that have none (real Postgres)", () => {
   it("loads an id-less note and stamps it on the next write, leaving its history alone", async () => {
     if (!db.available) return;
     const repository = new PgKnowledgeRepository(db.pool);
@@ -200,8 +200,7 @@ describe("block ids on notes written before they existed (real Postgres)", () =>
     const repository = new PgKnowledgeRepository(db.pool);
     const note = await repository.createNote(identity, { title: "Pre-block-id note" }) as { id: string };
 
-    // Exactly the shape every note written before block ids has — and the shape
-    // of every marginalia note P1 already created in production.
+    // The shape of a note that has no block ids.
     const legacy = {
       type: "doc",
       content: [

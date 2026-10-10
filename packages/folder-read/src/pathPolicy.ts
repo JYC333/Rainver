@@ -130,11 +130,10 @@ export function looksSecretLikePath(path: string | null | undefined): boolean {
  * like in free text everywhere else. This runs inside `@rainver/folder-read`,
  * which ships in the host daemon as well as the server, and the daemon cannot
  * import server code — so the rule is shared and the code is not. **Change both
- * together.** They diverged once already: this copy kept `\b(token|secret)\b`
- * after the server's was fixed, and `\b` does not fire between `_` and a
- * letter, so a diff line reading `access_token = "ghp_…"` or
- * `client_secret = "GOCSPX-…"` went to the reader and into the persisted
- * `remote_diff` in the clear.
+ * together.** Do not let them diverge. Do not keep `\b(token|secret)\b`
+ * here. `\b` does not fire between `_` and a letter, so a diff line reading
+ * `access_token = "ghp_…"` or `client_secret = "GOCSPX-…"` would go to the
+ * reader and into the persisted `remote_diff` in the clear.
  *
  * Two passes, because a diff needs both. The name pass catches
  * `access_token = "…"` whatever the value looks like; the shape pass catches a

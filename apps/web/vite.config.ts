@@ -146,11 +146,10 @@ export default defineConfig({
       // origin as the REST registration flow, and explicitly enable WS
       // upgrade forwarding.
       //
-      // This one path, not all of `/internal`: production nginx forwards
-      // `/api/` and this endpoint and nothing else, and a dev proxy that
-      // forwarded the whole prefix meant a path only reachable in dev looked
-      // like it worked everywhere. The Run tool surface moved under `/api/v1`
-      // for exactly that reason.
+      // This one path, not all of `/internal`. Production nginx forwards
+      // `/api/` and this endpoint and nothing else. Do not forward the whole
+      // prefix. A path only reachable in dev would look like it works
+      // everywhere. The Run tool surface is under `/api/v1`.
       '/internal/hosts/ws': {
         target: apiProxyTarget,
         changeOrigin: true,

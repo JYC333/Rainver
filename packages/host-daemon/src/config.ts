@@ -133,8 +133,7 @@ export async function loadConfig(): Promise<DaemonConfig | null> {
     if (typeof parsed.server_url !== "string" || typeof parsed.host_id !== "string" || typeof parsed.token !== "string") {
       throw new Error(`Malformed daemon config at ${configPath()}`);
     }
-    // A config written before strict mode existed is a paired machine — the
-    // only thing this daemon could have been then.
+    // A config with no `trust: "strict"` is a paired machine.
     const trust = parsed.trust === "strict" ? "strict" : "trusted";
     return {
       // The same rule pairing applied, re-applied on read: a config file is an

@@ -126,8 +126,7 @@ export const BlockIds = Extension.create({
          * together with the split it answered; ProseMirror folds it into the
          * same history event, so one undo still reverts one user gesture.
          *
-         * One accepted consequence: undoing on a note written before ids
-         * existed hands the block a *different* fresh id rather than restoring
+         * One accepted consequence: undoing on a note that has no ids hands the block a *different* fresh id rather than restoring
          * the `null` it had. Nothing anchors on those blocks yet, which is the
          * only reason it is acceptable.
          */

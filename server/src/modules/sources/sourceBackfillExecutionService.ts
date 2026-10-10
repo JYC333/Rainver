@@ -418,8 +418,8 @@ export class SourceBackfillExecutionService {
   }
 
   /**
-   * Raises a plan's item budget (e.g. after a Source Monitor's search query
-   * was fixed following a zero-result run), independent of the
+   * Raises a plan's item budget (for example after a Source Monitor search
+   * query is corrected following a zero-result run), independent of the
    * budget-exhaustion recovery `continuePartial` handles. For a plan that's
    * still in progress ('approved'/'running'), this only raises the stored
    * budget — the plan's own dispatch loop picks up the new number next time

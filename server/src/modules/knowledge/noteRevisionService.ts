@@ -67,8 +67,8 @@ export async function writeNote(db: Queryable, input: {
   //
   // The stamping happens on the *current* document first, and that is
   // load-bearing rather than tidy. Diffing against the raw stored document
-  // would report every id-less block as "added" — a note written before ids
-  // existed has none — so a capture appended to one would anchor on the
+  // would report every id-less block as "added" — a note without ids
+  // has none — so a capture appended to one would anchor on the
   // document's first paragraph instead of its own. Stamping `current` first
   // means the diff sees only blocks that are genuinely new.
   const stamped = withBlockIds(current.content_json ?? {});
