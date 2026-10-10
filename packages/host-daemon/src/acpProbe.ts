@@ -240,8 +240,9 @@ export function probeAcpOptions(
   timeoutMs = 20_000,
   /**
    * Told why a probe yielded nothing. The null result is deliberate (a probe
-   * must never cost the heartbeat), but silent null left a copy with no login
-   * button and no explanation anywhere; the reason goes to the daemon log.
+   * must never cost the heartbeat). Do not return a silent null. The copy
+   * would have no login button and no explanation anywhere; the reason goes
+   * to the daemon log.
    */
   onFailure?: (reason: string) => void,
   runtimeKey?: string,

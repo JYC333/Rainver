@@ -384,9 +384,9 @@ function probeCodex(home: string, manifest: ToolManifest | null, timeoutSeconds:
           continue;
         }
         // A JSON-RPC error for an unparseable or unrecognised request carries
-        // `id: null`, so filtering on the ids we sent threw away the one
-        // message that said what was wrong and left the probe to time out
-        // naming nothing. Errors are read whatever id they carry.
+        // `id: null`. Do not filter on the ids we sent. That throws away the
+        // message that said what was wrong, and the probe times out naming
+        // nothing. Errors are read whatever id they carry.
         if (!message) continue;
         const error = asRecord(message.error);
         if (!error && message.id !== 1 && message.id !== 2) continue;

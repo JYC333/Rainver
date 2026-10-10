@@ -158,10 +158,10 @@ export function redactSecretLikeDiff(diff: string): { diff: string; redacted: bo
   for (let match = keyPattern.exec(diff); match; match = keyPattern.exec(diff)) {
     const valueStart = keyPattern.lastIndex;
     // A list or an object is redacted whole, not scanned for a scalar inside
-    // it. Taking the first element out left the rest dangling —
-    // `credentials: []` came out as `credentials:[REDACTED]]` and
-    // `secrets: [1,2]` as `secrets:[REDACTED],2]`, which is a mangled diff
-    // rather than a redacted one. Whole, because the alternative is deciding
+    // it. Do not take the first element out. The rest would dangle —
+    // `credentials: []` would come out as `credentials:[REDACTED]]` and
+    // `secrets: [1,2]` as `secrets:[REDACTED],2]`, a mangled diff rather
+    // than a redacted one. Whole, because the alternative is deciding
     // which elements of `api_key: ["…"]` are the credential, and over-redacting
     // a list somebody named `credentials` costs a reader nothing they cannot
     // get from the file itself. An empty one has nothing to redact.

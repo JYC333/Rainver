@@ -495,11 +495,11 @@ export function ConversationSurface({
       }).catch(error => {
         if (controller.signal.aborted) return
         toast.error(errMsg(error))
-        // A stream that died before the turn settled left a turn on screen
-        // saying the Agent is still working. Nothing else would ever correct
-        // it — the stream is gone, and the read-once effect skips any run a
-        // turn is already held for — so the hold is released and that effect
-        // reads the settled turn back once the Run is terminal.
+        // A stream that dies before the turn settles must not leave a turn on
+        // screen saying the Agent is still working. Nothing else would ever
+        // correct it — the stream is gone, and the read-once effect skips any
+        // run a turn is already held for — so the hold is released and that
+        // effect reads the settled turn back once the Run is terminal.
         setLiveTurns(current => {
           const held = current[runId]
           // Only a turn stranded mid-work — which includes one blocked on the

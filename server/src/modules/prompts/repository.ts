@@ -338,8 +338,8 @@ export class PromptRepository {
     );
     if (existing.rows[0]) return deploymentRefOut(existing.rows[0]);
 
-    // Archive and insert together: an insert refused after the archive had
-    // committed left the label with no active ref at all.
+    // Archive and insert together. Do not insert after the archive has
+    // committed on its own. The label would have no active ref at all.
     const id = randomUUID();
     await withQueryableTransaction(this.db, async (db) => {
       await db.query(

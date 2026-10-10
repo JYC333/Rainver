@@ -120,8 +120,8 @@ export class RoomReferenceService {
     //
     // `new Date(...)`, not `Date.parse(...)`: pg decodes `timestamptz` to a
     // JS Date, and `Date.parse` on one round-trips through `toString()` and
-    // drops the milliseconds — which floored the value to the whole second
-    // and left the guard never engaging.
+    // drops the milliseconds. Do not floor the value to the whole second.
+    // The guard would never engage.
     const raw = latest.rows[0]?.created_at;
     const existing = raw ? new Date(raw as string | Date).getTime() : 0;
     const base = Math.max(Date.now(), existing + 1);

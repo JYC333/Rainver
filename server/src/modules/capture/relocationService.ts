@@ -95,10 +95,10 @@ export class RelocationService {
         throw new HttpError(409, "This capture was not projected into a note, so there is nothing to relocate");
       }
       // Locked before its text is read, and held for the rest of the
-      // transaction. Reading the blocks unlocked left a window in which a
-      // concurrent editor could rewrite the paragraph between the read and the
-      // removal: the relocation would carry the *pre-edit* text while deleting
-      // the post-edit block, silently losing the other person's edit.
+      // transaction. Do not read the blocks unlocked. A concurrent editor could
+      // rewrite the paragraph between the read and the removal: the relocation
+      // would carry the pre-edit text while deleting the post-edit block, and
+      // the other person's edit would be lost.
       await lockNote(client, capture);
       const { blocks, otherAnchors } = await noteState(client, input.userId, capture);
       const offered = new Set(

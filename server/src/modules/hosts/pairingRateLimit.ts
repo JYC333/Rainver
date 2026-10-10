@@ -130,12 +130,12 @@ function prune(now: number): void {
     else attempts.set(key, recent);
   }
   if (attempts.size <= maxTrackedSources) return;
-  // Down to a fraction of the cap, not to the cap. Evicting only the excess
-  // left the map pinned one over the cap, so the size term in
-  // `hostRegisterRateLimited` was true on *every* subsequent request and this
-  // sweep ran on every one of them — the O(buckets) cost on an unauthenticated
-  // path that `PRUNE_INTERVAL_MS` exists to avoid, and reachable by one
-  // already-throttled caller once the map is full.
+  // Down to a fraction of the cap, not to the cap. Do not evict only the
+  // excess. The map would stay pinned one over the cap, the size term in
+  // `hostRegisterRateLimited` would be true on every subsequent request, and
+  // this sweep would run on every one of them — the O(buckets) cost on an
+  // unauthenticated path that `PRUNE_INTERVAL_MS` avoids, and reachable by
+  // one already-throttled caller once the map is full.
   //
   // Map iteration is insertion-ordered and `hostRegisterRateLimited` re-inserts
   // on every touch, so this drops the least recently *used* buckets first.

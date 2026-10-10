@@ -11,8 +11,9 @@ class FakeObjectSchemaSuggestionDb implements Queryable {
     if (/\b(?:content|plain_text|raw_text|claim_text|summary)\b/.test(sqlWithoutStringLiterals)) {
       throw new Error("object schema suggestion scan must not select raw content columns");
     }
-    // Inverted by ADR 0012: domain status left the root, so a reader that
-    // knows its object type must read the extension table's own column.
+    // Domain status lives on the extension table (ADR 0012). Do not read it
+    // from the root. A reader that knows its object type reads the extension
+    // table's own column.
     if (/so\.status/.test(sql)) throw new Error("status must be read from the owning extension table, not space_objects");
     if (/FROM sources s/.test(sql) && /so\.status = 'active'/.test(sql)) {
       throw new Error("source space_object status must use the source lifecycle, not active");

@@ -107,8 +107,8 @@ describe("folder-read path policy", () => {
   });
 
   it("redacts a structured value whole, and an empty one not at all", () => {
-    // Scanning a scalar out of a list left the rest dangling:
-    // `secrets: [1,2]` came out as `secrets:[REDACTED],2]`, which is a mangled
+    // Do not scan a scalar out of a list. The rest would dangle:
+    // `secrets: [1,2]` would come out as `secrets:[REDACTED],2]`, a mangled
     // diff rather than a redacted one. Whole, because the alternative is
     // deciding which element of `api_key: ["…"]` is the credential.
     for (const [input, expected] of [

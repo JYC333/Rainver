@@ -54,7 +54,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         throw new HttpError(413, `file exceeds ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB limit`);
       }
       // Everything the request can be refused for comes before the file
-      // reaches disk; a refused upload left a file no record pointed at.
+      // reaches disk. Do not write a file a refused upload has no record for.
       const kind = (upload.fields.kind || "file").toLowerCase();
       if (kind !== "file" && kind !== "voice") throw new HttpError(422, "kind must be 'file' or 'voice'");
       const originalName = basename(upload.filename || "");

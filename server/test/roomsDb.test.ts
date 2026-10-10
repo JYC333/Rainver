@@ -1939,8 +1939,8 @@ describe("Room workflow (real Postgres)", () => {
 
   /** A retry re-runs the persisted message, and the retried Run hydrates that
    *  message's frozen resources — so it must keep the tools that read them.
-   *  A retry dispatches no new input parts, and deciding the allowance from
-   *  those left the Run holding a prompt that named tools it did not have. */
+   *  A retry dispatches no new input parts. Do not decide the allowance from
+   *  those. The Run would hold a prompt that named tools it did not have. */
   it("keeps the lazy resource tools when a turn with an attached file is retried", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };

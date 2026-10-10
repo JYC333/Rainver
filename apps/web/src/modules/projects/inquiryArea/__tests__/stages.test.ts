@@ -131,10 +131,11 @@ describe('deriveStages', () => {
   })
 
   it('starts the next round over instead of opening it pinned at Land', () => {
-    // Every stage but Clarify is measured against this round. Reading all-time
-    // state left a Thread that had ever concluded showing Conclude complete
-    // forever, so round two opened at Land recommending Knowledge promotion
-    // before any new evidence existed — the spiral never came round.
+    // Every stage but Clarify is measured against this round. Do not read
+    // all-time state. A Thread that had ever concluded would show Conclude
+    // complete forever, so round two would open at Land recommending
+    // Knowledge promotion before any new evidence existed — the spiral never
+    // comes round.
     const roundTwo: StageInput = {
       ...base,
       questionRefined: true,
@@ -234,8 +235,8 @@ describe('deriveStages', () => {
   })
 
   it('takes a stage back when the user backs out of it', () => {
-    // An abandoned step stays in the round, so counting it left a stage the
-    // user had merely glanced at marked finished with no way to undo it.
+    // An abandoned step stays in the round. Do not count it. A stage the user
+    // had merely glanced at would be marked finished with no way to undo it.
     const input = {
       ...base,
       roundSteps: [step({ kind: 'clarify_or_decompose', status: 'abandoned' as const, completed_at: '2026-08-13T01:00:00.000Z' })],

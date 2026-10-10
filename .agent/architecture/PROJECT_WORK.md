@@ -235,8 +235,8 @@ would otherwise wait for review while interrupting nobody.
 `waiting_for_review` and `blocked` — `PERSON_ONLY_TASK_STATUSES`, shared from
 the protocol so the chain, the Board badge and the Board filter cannot drift —
 it steps past the Agent to the person behind it. Those two states are *defined*
-as needing a person, so stopping at an Agent left the Task with nobody to
-interrupt and it waited forever: no attention item, no Board `needs me`, and a
+as needing a person. Do not stop at an Agent. The Task would have nobody to
+interrupt and it would wait forever: no attention item, no Board `needs me`, and a
 Pulse that listed it as "In progress". There is no separate release step,
 because `waiting_for_review` has six producers and `blocked` has no Agent
 writer at all, so a release would have to be remembered in seven places instead
