@@ -1366,8 +1366,8 @@ is slow to answer is decided on the cached reading.
 - Room navigation stays inside the Project Shell. A Room is reached from the
   Project's Conversations list — a conversation row, a limited group's ⚙, or
   the chat panel's "Full Room" link — never from top-level navigation. There is
-  no global `/rooms` route: it was a picker in front of a layer that should be
-  invisible, and every Room already belongs to exactly one Project.
+  no global `/rooms` route. A Room is a Project conversation, not a top-level
+  picker, and every Room belongs to exactly one Project.
 - A Room does not turn `agent_run_groups` into a conversation container; each
   message is its own collaboration task.
 - The vendor CLI runtime session, when resumed, is permitted runtime state and

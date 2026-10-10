@@ -72,12 +72,12 @@ const SECRET_VALUE_PATTERNS = [
   // count spellings: `token_count` and Gemini's `totalTokenCount` are still
   // redacted, which is over-redaction of a diagnostic, not a leak.
   //
-  // The lookbehind is load-bearing, not style. Written as a leading `[\w.-]*`
-  // this was quadratic: at every start position the engine consumed to the end
-  // of the line and backtracked one character at a time, so 64 KiB of one line
-  // — which a Custom Source handler can print, and which `customSourceRunner`
-  // passes here whole — took 8.6 seconds on the single event loop. Anchored,
-  // the same input is unmeasurable.
+  // The lookbehind is load-bearing, not style. Do not write it as a leading
+  // `[\w.-]*`. That form is quadratic: at every start position the engine
+  // consumes to the end of the line and backtracks one character at a time,
+  // so 64 KiB of one line — which a Custom Source handler can print, and
+  // which `customSourceRunner` passes here whole — takes seconds on the
+  // single event loop. Anchored, the same input is unmeasurable.
   //
   // A value that is exactly one of the words a process uses to say a credential
   // is *not* there is left alone: redacting `secret: absent` hides the answer

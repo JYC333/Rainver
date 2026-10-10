@@ -884,11 +884,10 @@ const ruleManagedSystemActionGrant: Rule = (ctx) => {
  * they are append-only or self-limiting — they can record, give work away, or
  * stop, never take ground.
  *
- * ADR 0017 §2 widened this from Tasks to every Project-internal write that
- * stopped being a proposal: opening a question, recording a conclusion,
- * adopting a recorded next step, starting a bounded acquisition. The gate they
- * lost was on authorship; this one is on whether anybody asked, which is the
- * question that was worth asking all along.
+ * ADR 0017 §2 covers every Project-internal write that is not a proposal:
+ * opening a question, recording a conclusion, adopting a recorded next step,
+ * starting a bounded acquisition. The gate is whether anybody asked, not who
+ * authored the write.
  */
 // `proposal.decide` is the sharpest of these: a decision is a person's, and
 // the only origin on which the Agent can be carrying one is the person's own

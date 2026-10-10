@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
  *
  * `RAINVER_STRICT_SANDBOX=1` is exported into the namespace for anything
  * downstream that reads it; Codex does not. This file is the runtime half:
- * the copy's `config.toml` is the switch that was measured to restore writes.
+ * the copy's `config.toml` is what restores writes.
  */
 const CODEX_STRICT_SANDBOX_MODE = "workspace-write";
 export const CODEX_STRICT_SANDBOX_TOML = `sandbox_mode = "${CODEX_STRICT_SANDBOX_MODE}"`;
@@ -26,13 +26,14 @@ export const CODEX_STRICT_SANDBOX_TOML = `sandbox_mode = "${CODEX_STRICT_SANDBOX
 export function applyCodexStrictSandboxToml(contents: string): string {
   const lines = contents.split("\n");
   // A *table header* is a bracketed name alone on its line, on a line that is
-  // not inside an open array. `/^\s*\[/` also matched a continuation line of a
-  // multi-line array (`notify = [` … `  ["a"],`), so the scan stopped early,
-  // the insert went above a key that was still top-level, and the file ended
-  // with two top-level `sandbox_mode` keys — a TOML duplicate-key error, which
-  // stops Codex from starting at all. Requiring the line to be alone is not
-  // enough on its own: a final array element carries no trailing comma, so
-  // `  ["a"]` before a closing `]` reads exactly like a header.
+  // not inside an open array. Do not match `/^\s*\[/` against a continuation
+  // line of a multi-line array (`notify = [` … `  ["a"],`). The scan would
+  // stop early, the insert would land above a key that is still top-level,
+  // and the file would end with two top-level `sandbox_mode` keys — a TOML
+  // duplicate-key error, which stops Codex from starting at all. Requiring
+  // the line to be alone is not enough on its own: a final array element
+  // carries no trailing comma, so `  ["a"]` before a closing `]` reads
+  // exactly like a header.
   const topLevelEnd = findFirstTableHeader(lines);
   // The same string-awareness the header scan has. Do not treat a
   // `sandbox_mode = …` line inside a multi-line string as the top-level key.

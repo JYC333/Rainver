@@ -153,7 +153,7 @@ describe("capture destinations (real Postgres)", () => {
     });
     // A URL is captured as a link, so the pipeline downstream knows to fetch it.
     expect(await activityRow(result.activity_id)).toMatchObject({ source_kind: "web_capture" });
-    // The teammate can read it: this is the case that was being privatised.
+    // The teammate can read a space-shared capture. Do not record it as private.
     const seen = await db.pool.query(
       `SELECT id FROM activity_records WHERE id = $1 AND visibility = 'space_shared' AND space_id = $2`,
       [result.activity_id, TEAM],
