@@ -303,9 +303,9 @@ callable or execution authority.
 ACP runtimes are generated artifacts, not a second content authority.
 Rainver owns package provenance and snapshot identity, trust and policy,
 scope/Agent binding, pinned-version selection, runtime compatibility, Runtime
-Context Delivery authorization, and audit. The current normalized conversion,
-CapabilityDefinition, profile, binding, and rendering paths are transitional
-implementation state and must not be extended as the target skill model.
+Context Delivery authorization, and audit. The normalized conversion,
+CapabilityDefinition, profile, binding, and rendering paths are not the skill
+model. Do not extend them as one.
 
 ---
 

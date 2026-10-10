@@ -23,13 +23,12 @@ gateway. A package's tool, hook, script, dependency, or MCP declaration is a
 request only and grants no callable or execution authority. A Workflow is a
 third concept: an enforced process definition, not a soft instruction package.
 
-The current implementation is transitional: it still contains canonical
-capability definitions, packs, `NormalizedSkill`, imported skill conversion,
-capability runtime bindings, and renderers built from the normalized
-representation. Those paths remain subject to all existing
-proposal, policy, Delivery, and audit checks until the plan's remaining items
-replace them; this document does not treat them as the target authority model or invite
-new callers to extend them. The native `capability` runtime remains disabled.
+The current paths are canonical capability definitions, packs,
+`NormalizedSkill`, imported skill conversion, capability runtime bindings,
+and renderers built from the normalized representation. They stay under the
+existing proposal, policy, Delivery, and audit checks. Do not treat them as
+the authority model, and do not add callers that extend them. The native
+`capability` runtime remains disabled.
 
 Terminology for runtime binaries, adapters, extensions, tool bindings, skill
 bindings, and product plugins is defined in
@@ -87,8 +86,8 @@ whether and where the content may be delivered, not whether Rainver owns it.
 
 ### NormalizedSkill
 
-`NormalizedSkill` is a transitional internal intermediate representation still
-used by the current importer and conversion path. It captures:
+`NormalizedSkill` is an internal representation used by the importer and the
+conversion path. Do not extend it. It captures:
 
 - instructions
 - package-root-relative resource inventory
@@ -146,8 +145,8 @@ proposal policy, supported execution modes, runtime support, and lifecycle
 status.
 
 Definitions may currently be built in, official, generated, or converted from
-an imported skill. Imported-skill conversion is transitional and must not be
-extended: an external Skill remains a `SkillPackage`, while rainver-owned
+an imported skill. Do not extend imported-skill conversion: an external Skill
+remains a `SkillPackage`, while rainver-owned
 System Actions retain their own registry and gateway. Users do not directly
 mutate definitions.
 
@@ -189,16 +188,14 @@ grant approval directly.
 
 ### RuntimeSkillBinding
 
-`RuntimeSkillBinding` is the transitional implementation name for the governed
-selection of skill content for a runtime. Its target responsibility is to bind
-an approved, pinned `SkillPackage` to an allowed scope/Agent and record runtime
-compatibility, not to own or regenerate that package's content. Current rows
-still map capability versions to these runtime-specific forms:
+`RuntimeSkillBinding` names the governed selection of skill content for a
+runtime. It binds an approved, pinned `SkillPackage` to an allowed scope or
+Agent and records runtime compatibility. It does not own or regenerate that
+package's content. Rows map capability versions to these runtime-specific
+forms:
 
 - Claude Code skill layout
 - Codex skill layout
-- future ACP runtime projections
-- future MCP tool binding
 
 Runtime skill files are generated adapter files. They are not source of truth.
 Built-in capabilities can use their default runtime bindings after an enabled
@@ -217,10 +214,9 @@ bindings; imported conversion also rejects ids that collide with built-in keys.
 `renderClaudeSkill` and `renderCodexSkill` (`capabilities/runtimeRenderers.ts`),
 reached through `renderRuntimeSkillCandidate`, render canonical capability
 data, normalized skill data, and profile configuration into runtime target
-content. This is
-transitional adapter glue. Its target input is the approved package snapshot
-plus binding/policy metadata, without a canonical content representation. The
-The renderers are pure functions that produce deterministic:
+content. The input is the approved package snapshot plus binding and policy
+metadata, and it is not a canonical content representation. The
+renderers are pure functions that produce deterministic:
 
 - Claude Code generated skill directory suggestions with `SKILL.md`
 - Codex generated skill directory suggestions with `SKILL.md` and optional
