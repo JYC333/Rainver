@@ -805,19 +805,17 @@ the cancellation job and becomes the Run's terminal cancellation reason.
 ## Research checkpoint policy
 
 `researchCheckpointPolicy.ts` is the single authority for which checkpoints
-still stop a workflow. Dogfooding (2026-08-20) found the gates were
-rubber-stamp approved every time, so they interrupted without changing any
-decision; the reform keeps the checkpoint row as the durable record of what
-the machine concluded and lets the workflow continue.
+still stop a workflow. Checkpoints are informational by default. The row
+stays as the durable record of what the machine concluded, and the workflow
+continues. Do not make them blocking gates.
 
-`manuscript_gate` still blocks, because its output is external-facing and
+`manuscript_gate` blocks, because its output is external-facing and
 nothing downstream can un-send it. `screening_gate` blocks conditionally, on
-corpus size (`SCREENING_AUTO_CONTINUE_CORPUS_LIMIT`): removing it removed the
-only place a user saw "N papers matched" before paying for a synthesis over
-all of them, so the budget protection moved from a prompt to a limit. Under
-it the operation continues unattended; over it the operation pauses and tells
-the Room why, which is a report the user acts on rather than a question they
-answer on every ordinary run. `idea_review`, `integrity_gate`, and
+corpus size (`SCREENING_AUTO_CONTINUE_CORPUS_LIMIT`). That is where the user
+sees how many items matched before a synthesis over all of them. Do not drop
+the gate. Under the limit the operation continues unattended; over it the
+operation pauses and tells the Room why. That is a report the user acts on,
+not a question they answer on every ordinary run. `idea_review`, `integrity_gate`, and
 `review_gate` are records only.
 
 An automatic pass writes `status='waived'` with `user_decision` and

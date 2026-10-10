@@ -6,10 +6,8 @@ import { toast } from 'sonner'
 import { ReadingListView } from '../ReadingListView'
 import type { ResearchReadingList } from '../../../../types/api'
 
-// NC/N7: the jot affordance is the evidence-side half of "notes and evidence
-// connect both ways". What matters here is that one click records the link —
-// the two-step version (leave for Notes, create, come back for the id) is why
-// the connection was never made in practice.
+// One click records the link. Do not send the reader to Notes to create a
+// note and come back for the id.
 
 const { jot, linkingTo, askAi, listProviders } = vi.hoisted(() => ({
   jot: vi.fn(), linkingTo: vi.fn(), askAi: vi.fn(), listProviders: vi.fn(),

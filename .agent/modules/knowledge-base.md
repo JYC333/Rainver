@@ -169,7 +169,7 @@ collapsed it. Both are now placement-addressed:
   Selection, the context menu and reordering all address that row.
 - `PATCH /knowledge/notes/tree/reorder` note updates carry
   `{ note_id, from_collection_id, collection_id, sort_order }`. `from_collection_id`
-  is what identifies the row; matching on `note_id` alone rewrote every placement
+  is what identifies the row. Do not match on `note_id` alone: that moves every placement
   of a note to one folder, destroying the others.
 - Adding a placement is a **separate action** from moving one:
   `POST /knowledge/notes/{id}/placements` (Alt-drop in the tree) versus the

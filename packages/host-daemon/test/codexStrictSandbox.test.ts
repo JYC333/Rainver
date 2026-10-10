@@ -12,9 +12,10 @@ describe("applyCodexStrictSandboxToml", () => {
   });
 
   /**
-   * TOML scopes a key to the table above it. Matching `sandbox_mode` anywhere
-   * rewrote a named profile's key and left the top-level default alone, so the
-   * Run still could not write — and somebody's profile quietly changed.
+   * TOML scopes a key to the table above it. Do not match `sandbox_mode`
+   * anywhere it appears. That rewrites a named profile's key and leaves the
+   * top-level default alone: the Run still cannot write, and a profile
+   * changes.
    */
   it("sets the top-level key, not a profile's", () => {
     const config = [

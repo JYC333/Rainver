@@ -1667,8 +1667,8 @@ export interface NotePromoteBody {
 
 /**
  * One note placement's new position. `from_collection_id` is what identifies
- * the row: a note may be placed in several folders, and addressing a move by
- * note id alone rewrote every placement of that note to one folder.
+ * the row: a note may be placed in several folders. Do not address a move by
+ * note id alone. That moves every placement of that note to one folder.
  */
 export interface NotesTreeNoteOrderUpdate {
   note_id: string

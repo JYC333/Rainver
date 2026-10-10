@@ -316,10 +316,9 @@ export const NOTE_FROM = `
  * Every folder a note is placed in, not just the first one.
  *
  * `note_collection_items` is unique on `(collection_id, note_id, space_id)`, so
- * the schema has always allowed a note to sit in several folders at once — the
- * reads collapsed it. A single `collection_id` column made a second placement
- * invisible, and the reorder path then rewrote both rows because it had no way
- * to say which one moved.
+ * a note may sit in several folders. Return every placement. Do not collapse
+ * the read to one `collection_id`, and do not reorder by `note_id` alone:
+ * that moves every placement.
  */
 export const NOTE_PLACEMENTS_JOIN = `
   LEFT JOIN LATERAL (

@@ -3,15 +3,12 @@ import type { Queryable } from "../routeUtils/common.js";
 /**
  * Which research checkpoints still stop the workflow, and why.
  *
- * User dogfooding verdict (2026-08-20): research checkpoints never changed a
- * decision — they were rubber-stamp approved every time — so as blocking gates
- * they only interrupted. The reform makes them informational by
- * default: the checkpoint row is still written, because it is the durable
- * record of what the machine concluded at that point, but the workflow
- * continues and the Room gets a report instead of a permission request.
+ * Checkpoints are informational by default. The checkpoint row is still
+ * written: it is the durable record of what the machine concluded. The
+ * workflow continues and the Room gets a report instead of a permission
+ * request. Do not make them blocking gates.
  *
- * Two exceptions survive, for reasons that are not "a human might want to
- * look":
+ * Two exceptions remain:
  *
  * - `manuscript_gate` blocks because its output is external-facing and
  *   high-stakes. Nothing downstream can un-send a manuscript.
