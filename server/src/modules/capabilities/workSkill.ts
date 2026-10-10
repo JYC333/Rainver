@@ -9,10 +9,10 @@ import {
 /**
  * The Rainver Work Skill: the harness contract a dispatched agent works under.
  *
- * It is a builtin skill in the sense `SkillSourceType`'s `"builtin"` already
- * means — content Rainver owns, versioned with the server rather than
- * imported, carrying no provenance, risk or approval state because there is no
- * third party to trust. It is not an enablement: a Run that has tool grants
+ * It is a builtin skill: `SkillSourceType` `"builtin"` is content Rainver
+ * owns, versioned with the server rather than imported, carrying no
+ * provenance, risk, or approval state because there is no third party to
+ * trust. It is not an enablement: a Run that has tool grants
  * gets it, with nothing to turn on and nothing that can turn it off, because a
  * Run that can act and cannot report is an error state. A Run with no grants
  * gets no Skill and no surface.

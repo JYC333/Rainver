@@ -42,9 +42,9 @@ permission grant.
 
 The Rainver Work Skill (`capabilities/workSkill.ts`) is the harness contract a
 dispatched agent works under: how to reach the tool surface, when to report,
-how to hand a decision back. It is builtin in the sense `SkillSourceType`'s
-`"builtin"` already means — content Rainver owns and versions with the server,
-with no provenance, risk or approval state, because there is no third party to
+how to hand a decision back. It is a builtin skill: `SkillSourceType`
+`"builtin"` is content Rainver owns and versions with the server,
+with no provenance, risk, or approval state, because there is no third party to
 trust. It is not an enablement: a Run that has tool grants gets it, with nothing to
 turn on and nothing that can turn it off, because a Run that can act and
 cannot report is an error state rather than a configuration. A Run with no

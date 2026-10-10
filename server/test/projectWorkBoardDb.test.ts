@@ -19,8 +19,7 @@ import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./
  * Real-Postgres coverage for the Board read model and the manual close gate.
  *
  * The read model exists so the Board and the write path answer "can this
- * close" identically; a test that stubbed either side would let them drift,
- * which is the failure it is meant to prevent.
+ * close" identically. Do not stub either side. They would drift.
  */
 
 const SPACE = "41111111-1111-4111-8111-111111111111";

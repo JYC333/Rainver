@@ -48,7 +48,7 @@ export async function countThreadsOpenedInTurn(
  *
  * Hashed rather than concatenated: the column is 128 characters and a provider
  * tool-call id has no length contract, so the raw pair could exceed it and
- * turn a retry into a 422 — which is the failure the key exists to prevent.
+ * turn a retry into a 422.
  */
 export function threadCallIdempotencyKey(runId: string, toolCallId: string | null | undefined): string {
   return createHash("sha256").update(`${runId}:${toolCallId ?? "no-key"}`).digest("hex");

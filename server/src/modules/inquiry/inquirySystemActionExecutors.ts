@@ -67,10 +67,10 @@ export function registerInquirySystemActionExecutors(
     if (!run.project_id) throw new Error("inquiry.create_thread requires a project-scoped run");
     const projectId = run.project_id;
     const provenance = { runId: run.id, agentId: run.agent_id };
-    // One transaction for the count and the write. Read-then-write on the pool
-    // let two tool calls in one turn both see four and both create — six
-    // questions past a bound of five, which is the failure the bound exists
-    // for. `createThread` takes `lockActiveProjectForMutation` inside, and
+    // One transaction for the count and the write. Do not read then write on
+    // the pool. Two tool calls in one turn would both see four and both
+    // create — six questions past a bound of five. `createThread` takes
+    // `lockActiveProjectForMutation` inside, and
     // that lock serialises the whole class, so counting under it is enough.
     const thread = await withQueryableTransaction(db, async (tx) => {
       await lockActiveProjectForMutation(tx, identity.spaceId, projectId);

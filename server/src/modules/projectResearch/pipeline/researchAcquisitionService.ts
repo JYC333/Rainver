@@ -67,11 +67,11 @@ export class ResearchAcquisitionService {
       if (!thread.rows[0]) {
         throw new HttpError(404, "Inquiry Thread not found or is not an active Question");
       }
-      // Serializes the "already starting" check against the enqueue below —
-      // without this, two near-simultaneous calls can both see no active job
-      // and both enqueue one, each burning a real LLM assessment/live-search
-      // pipeline run before either row is visible to the other. Same idiom as
-      // the Inquiry Thread creation path's coalesce lock.
+      // Serializes the "already starting" check against the enqueue below.
+      // Do not check without this lock. Two near-simultaneous calls would
+      // both see no active job and both enqueue one, each burning a real LLM
+      // assessment or live-search pipeline run before either row is visible
+      // to the other.
       await db.query(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
         [`research-start-acquisition:${identity.spaceId}:${input.threadId}`],
