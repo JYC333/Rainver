@@ -1771,10 +1771,10 @@ export class PgKnowledgeRepository {
   // a note deleted a minute ago is still recoverable by un-deleting it, and
   // only notes past the window are actually destroyed.
   //
-  // Scoped to notes this person could have deleted themselves. Space-wide it
-  // was an unauthenticated-by-object destruction: any member could empty every
-  // other member's private wastebasket, irreversibly, through one route with no
-  // object named in the request.
+  // Scoped to notes this person could have deleted themselves. Do not purge
+  // Space-wide. Any member could empty every other member's private
+  // wastebasket, irreversibly, through one route with no object named in
+  // the request.
   async purgeDeletedNotes(identity: SpaceUserIdentity): Promise<Record<string, unknown>> {
     const candidates = await this.db.query<{ id: string }>(
       `SELECT id

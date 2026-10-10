@@ -426,9 +426,9 @@ async function loadNote(db: Queryable, spaceId: string, objectId: string): Promi
     slug: null,
     projectFolderId: null,
     // The owner, not the creator. A note created by one person and owned by
-    // another — a capture filed for its subject, a promoted draft — was
-    // projected under the creator, so the retrieval ACL answered about the
-    // wrong person. `loadClaim` has always read `owner_user_id`.
+    // another — a capture filed for its subject, a promoted draft — must not
+    // be projected under the creator. The retrieval ACL would answer about
+    // the wrong person. `loadClaim` reads `owner_user_id`.
     ownerUserId: row.owner_user_id ?? row.created_by_user_id,
     visibility: row.visibility ?? "space_shared",
     status: row.status,
