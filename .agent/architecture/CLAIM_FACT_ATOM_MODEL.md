@@ -65,10 +65,7 @@ Knowledge is already a first-level product module:
 - Maintenance and Context Brief flows should create review packets/proposals,
   not direct canonical Knowledge or claim writes.
 
-Refactoring the internal object root was therefore a schema/API/protocol/backend
-coordination task. Since there is no production data requirement, the
-implementation is a clean coordinated baseline change, not a
-legacy-compatibility layer.
+There is no compatibility layer beside the current object root.
 
 ## Model Boundaries
 

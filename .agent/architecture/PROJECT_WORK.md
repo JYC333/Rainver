@@ -182,8 +182,9 @@ person's deliberate hold, never written by a Run and not erased by one. And a
 `waiting_for_review` one **for the Run that was in flight when it was parked**
 — an Agent that handed a decision back must not watch settlement close the
 Task under it. The guard is causal rather than by status: a Run started
-*after* the hold is the person's answer, and its result counts. (By status,
-a retry from `waiting_for_review` was discarded and the Task waited forever.)
+*after* the hold is the person's answer, and its result counts. Do not guard
+by status. A retry from `waiting_for_review` would be discarded and the Task
+would wait forever.
 
 Failure and cancellation produce nothing to verify, so they do not move the
 stage: claiming the work reached a phase it never reached would be a lie the
@@ -251,8 +252,8 @@ The Delivery attention adapter surfaces `waiting_for_review`, `blocked` and
 overdue Tasks, and a done Task's merge that stopped on something a person has
 to see (`source_type: task_merge`; [modules/hosts.md](../modules/hosts.md),
 "Merging a done Task"), **to the responsible person only**. Everyone else still sees the
-Task and can take it over; they are simply not told to. A shared inbox was the
-alternative and it fails in both directions at once — everyone assumes someone
+Task and can take it over; they are simply not told to. Do not use a shared
+inbox. It fails in both directions at once — everyone assumes someone
 else has it, or two people start the same work.
 
 ## 6. Entry point and transaction boundary

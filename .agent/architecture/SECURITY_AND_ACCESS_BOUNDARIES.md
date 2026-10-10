@@ -996,8 +996,8 @@ helper.** A list must not answer something the detail page refuses.
   update, rollback, delete, placement add and remove, share revoke, tree
   reorder, a notebook-chat edit, and the capture relocation that takes blocks
   out of someone's note. The deleted-note purge deletes only notes its caller
-  could have deleted; Space-wide it was one route that destroyed every member's
-  wastebasket with no object named in the request.
+  could have deleted. Do not purge Space-wide with no object named. That
+  destroys every member's wastebasket.
   Knowledge *items* and *claims* keep their own owner-only mutation rule
   (`canMutateKnowledge`), which is stricter than this one, not looser;
   unifying them would widen who may edit a shared item and is left alone
@@ -1156,8 +1156,8 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   refuses an explicit cross-site value and otherwise allows, including a
   request carrying neither header, because a non-browser caller — a host
   daemon, the Run CLI — sends neither and `SameSite=Lax` covers the browser.
-  The read check has no such fallback available, so it fails closed. Requiring `application/json`
-  on writes was considered and not adopted: the property it buys is what
+  The read check has no such fallback available, so it fails closed. Do not
+  require `application/json` on writes. The property it buys is what
   `Sec-Fetch-Site` already decides, and the activity import route takes a real
   `multipart/form-data` upload, so the rule would need an exception for the one
   route most worth guarding. General CSRF-token hardening is not implemented.
@@ -1211,7 +1211,7 @@ defences, because no one of them covers the whole surface:
 
 - its `img` component renders a cross-origin source as an ordinary link —
   domain visible, full URL on hover, new tab — instead of an `<img>`.
-  Click-to-load was rejected: the click sends the same URL, so it only turns
+  Click-to-load is not used. The click sends the same URL, so it only turns
   zero-click into one-click;
 - `urlTransform` blanks a `src` that is neither same-origin nor `http(s)`. It
   is called only for the keys in `html-url-attributes`, which is why it cannot
@@ -1227,8 +1227,8 @@ Streamdown's default pipeline *is* `rehype-raw` → `rehype-sanitize` →
 `rehype-harden`, so model-written HTML is parsed into real elements and a raw
 `<img>` arrives at the same component as a markdown one. `skipHtml` does **not**
 help: it visits `raw` nodes after the unified run and `rehype-raw` has already
-consumed them, so it finds none and silently does nothing — the prop was
-removed rather than trusted. What stands between model-written HTML and the DOM
+consumed them, so it finds none and silently does nothing. Do not trust
+`skipHtml`. What stands between model-written HTML and the DOM
 is the sanitize schema, which is why tightening it is the fix above and not a
 precaution. An image the instance serves itself still renders inline.
 
@@ -1310,8 +1310,7 @@ server-side. Avatar images accept `http(s)` and refuse `data:`.
   retries. A publisher that ignores Range causes a fresh download.
 - **The daemon's `server_url` is re-checked on read**, not only at pairing time
   — plain HTTP only for an address that is this machine. "This machine" is judged as an
-  address: `startsWith("127.")` was true
-  of `127.evil.com`. The built-in host is exempt, because it adopts a credential
+  address. Do not use `startsWith("127.")`. It matches `127.evil.com`. The built-in host is exempt, because it adopts a credential
   the instance published to it over the Compose network, where the control plane
   is `http://server:8010` and there is no pairing at all; the exemption is
   decided by an environment variable set only inside that container, not by the
@@ -1452,8 +1451,7 @@ module. **The Open Skill importer reads a response body with no ceiling**
 (`capabilities/skillImporter.ts`): `await response.text()` runs before the byte
 limit is checked, across up to 200 package files, so a member pointing it at
 large files in a repository they control can exhaust server memory. It is
-bounded by a host allowlist, which is why it was left outside the outbound guard
-— but the body half needs no redirect and no cooperation from the host. The finance plugin's transaction create is not atomic, which needs a
+bounded by a host allowlist and sits outside the outbound guard. The body half needs no redirect and no cooperation from the host. The finance plugin's transaction create is not atomic, which needs a
 transaction port on `PluginHostContext`. And `completeTask` judges completion in
 the asking person's view while settlement judges the same Task unscoped, so an
 Agent can be refused a close that settlement then accepts — each half is right

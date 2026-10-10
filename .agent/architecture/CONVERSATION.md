@@ -336,5 +336,4 @@ real status.
 A remote Task run is admitted like a server one: one Run, created
 synchronously, carrying the thread, the adapter, the installation and the
 vendor session to resume in `model_override_json.host_thread`. There is no
-message queue — see `modules/hosts.md` for why the one that existed was
-removed with the page it served.
+message queue. Do not add one for a remote Task run.

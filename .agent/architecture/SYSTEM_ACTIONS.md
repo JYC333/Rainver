@@ -692,9 +692,8 @@ reachable as a decision rather than a default. The `started` outcome carries
 `screening_cap` and `matched_estimate`, so the Room is told what this pass
 reads *before* it runs — the cap first, the match size second and labelled as
 an upper bound. `matched_estimate` is the *largest* single provider's recorded
-hit count, not the sum: providers overlap heavily, and summing them announced
-2,065 for a query whose corpus was 873, which read as the scope having grown
-when it had just been capped.
+hit count, not the sum. Do not sum them. Providers overlap, and the sum
+overstates the corpus.
 
 **Scope is the caller's.** `max_items` and `since` are inputs on
 `research.start_acquisition`, defaulting to the cap and to all available
@@ -821,8 +820,8 @@ An automatic pass writes `status='waived'` with `user_decision` and
 `decided_by_user_id` left NULL, so an audit can still tell whether anybody
 looked. Auto-continue additionally waits for classification to drain: on the
 incremental path the checkpoint opens before classification finishes and each
-reconcile tick refreshes its snapshot in place, so the gate was also serving
-as that sync point — waiving early would both freeze the snapshot (only
+reconcile tick refreshes its snapshot in place. The pending gate is that
+sync point. Do not waive early. That would both freeze the snapshot (only
 pending rows refresh) and send a partly-classified corpus to synthesis. A
 human approving the still-pending gate from the web UI remains the manual
 override for a classification that will never finish.

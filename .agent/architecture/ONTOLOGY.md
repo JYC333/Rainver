@@ -145,8 +145,8 @@ because adapters genuinely differ.
 `ContextIncludable` · `CardSourceable` · `ProvenanceSourceable` · `Governed`
 
 Two further per-type declarations exist for the same reason the interfaces do
-— a polymorphic mechanism needs to know something per type, and the
-alternative was another hardcoded list:
+— a polymorphic mechanism needs to know something per type. Do not replace
+them with another hardcoded list:
 
 - `requiresProjectScope` — the entity is Project-owned, so the writer enforces
   its Project scope instead of each caller remembering (see §7).

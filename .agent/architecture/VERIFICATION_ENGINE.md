@@ -43,9 +43,8 @@ The current engine supports:
   Overflow is an error, never successful partial evidence. On the built-in
   host the daemon wraps them in a bubblewrap namespace with no network; on a
   paired host they run natively with that machine's network access,
-  which is what makes verification available there at all — it was
-  server-host-only for as long as the executor spoke to a Runner beside the
-  server;
+  which is what makes verification available there.
+
 A recipe's argv is executed on that host, so a recipe is code rather than data
 (B13): on the built-in host inside the Run's namespace, on a paired host
 natively under its owner's trust. The engine refuses shell metacharacters, but
