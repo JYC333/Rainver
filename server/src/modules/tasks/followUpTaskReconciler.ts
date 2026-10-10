@@ -18,11 +18,12 @@ import type { Queryable, RunRecord } from "../runs/runRepositoryTypes.js";
  * It runs here, at finalization, rather than at materialization, because
  * everything that makes the output provisional is decided after the output is
  * read: a run's proposals are `staged` until it terminates, and a run that
- * fails verification has them rejected. Creating the Task earlier put work on
- * the Board that the system had already decided never happened. So the
- * proposal is always drafted — carrying the run's context taint, its egress
- * requirement and its preview flag — and this applies it once the run has
- * actually succeeded, through the same accept path a person's click uses.
+ * fails verification has them rejected. Do not create the Task before the
+ * run succeeds. That would put work on the Board for a run the system has
+ * already decided never happened. The proposal is always drafted — carrying
+ * the run's context taint, its egress requirement and its preview flag — and
+ * this applies it once the run has actually succeeded, through the same
+ * accept path a person's click uses.
  *
  * There is no cap on how many it applies for one Run. The sibling surface
  * bounds itself (`inquiry.create_thread`, five per turn) because a Thread is

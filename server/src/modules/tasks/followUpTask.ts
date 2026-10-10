@@ -23,9 +23,9 @@ const VALID_RISK_LEVELS = new Set(["low", "medium", "high", "critical"]);
  * silently makes a Task that is missing what the field asked for.
  *
  * The second group is the envelope the server itself adds on the way to a
- * proposal (`proposalPayload`, `insertProposal`). Rejecting those made every
- * materialized `follow_up_task` proposal unappliable — accept failed on the
- * first one, so the queue could only ever grow.
+ * proposal (`proposalPayload`, `insertProposal`). Do not reject those fields.
+ * Accept would fail on every `follow_up_task` proposal, and the queue would
+ * only grow.
  */
 const ALLOWED_TOPLEVEL = new Set([
   "task",

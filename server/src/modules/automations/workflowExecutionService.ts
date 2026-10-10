@@ -551,12 +551,12 @@ export class WorkflowExecutionService {
 
 // Unified minimal Node Retry: the same node gets a new Run Attempt (a new
 // `runs`/`workflow_execution_node_runs` row) up to `contract_json.max_attempts`
-// (default 1, i.e. today's no-retry behavior); only once attempts are
-// exhausted does the node — and, transitively, the execution — actually
-// fail. No backoff and no arbitrary cycles: a retry is just "go back to
-// 'ready' so the next scheduling pass spawns attempt N+1," bounded by a
-// fixed count. rescan/resume/input-change are NOT retries — they are a new
-// generation/WorkflowExecution (see project_operations.generation).
+// (default 1, so a node runs once unless the contract asks for more); only
+// once attempts are exhausted does the node — and, transitively, the
+// execution — actually fail. No backoff and no arbitrary cycles: a retry is
+// just "go back to 'ready' so the next scheduling pass spawns attempt N+1,"
+// bounded by a fixed count. rescan/resume/input-change are NOT retries — they
+// are a new generation/WorkflowExecution (see project_operations.generation).
 function nodeMaxAttempts(contractJson: Record<string, unknown>): number {
   const value = contractJson.max_attempts;
   return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : 1;
