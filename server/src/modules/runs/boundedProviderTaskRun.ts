@@ -192,11 +192,11 @@ export async function runBoundedProviderTask(
           });
           // Deliberately not published here: this runs inside the attempt's
           // transaction, and the ledger link UPDATEs that follow it can still
-          // roll the whole attempt back. Publishing the id here left the
-          // closure holding a Run that does not exist — `markRunTerminal`
-          // matched nothing, the failure settled nowhere, and the caller was
-          // handed a `run_id` pointing at no row. `onAttemptCompleted` runs
-          // after that transaction has committed, and carries the same id.
+          // roll the whole attempt back. Do not publish the id here. The
+          // closure would hold a Run that does not exist, the failure would
+          // settle nowhere, and the caller would be handed a `run_id` pointing
+          // at no row. `onAttemptCompleted` runs after that transaction has
+          // committed, and carries the same id.
           return run.id;
         },
         // A failed attempt is not a failed task while the pool still has

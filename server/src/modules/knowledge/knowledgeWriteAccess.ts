@@ -8,8 +8,8 @@ import { canWriteProject } from "../projects/access.js";
  * anything else that hangs off `space_objects`.
  *
  * Readable is not writable. A `selected_users` grant and the oversight branch
- * both hand out *reading*, so a repository that gated a mutation on the read
- * predicate alone let a grantee rewrite the owner's note and let an admin
+ * both hand out *reading*. Do not gate a mutation on the read predicate
+ * alone. A grantee could rewrite the owner's note, and an admin could
  * rewrite a member's. Two terms decide it:
  *
  * - anything but `space_shared` belongs to its owner, who is the only person

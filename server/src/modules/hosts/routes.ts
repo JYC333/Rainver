@@ -1091,7 +1091,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             case "output":
               sharedHostConnectionRegistry.receiveOutput(hostId, frame.run_id, frame.chunk, frame.launch_id);
               return;
-            // C5: the full stderr stream, not just the failure-tail the
+            // The full stderr stream, not just the failure tail the
             // `complete` frame already carries — diagnostic events for the UI.
             case "stderr":
               sharedHostConnectionRegistry.receiveStderr(hostId, frame.run_id, frame.chunk, frame.launch_id);

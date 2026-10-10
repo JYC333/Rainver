@@ -1112,9 +1112,9 @@ A Run that executed in its Task worktree also reports
 `complete.task_worktree { branch, start_commit }`. See "Location lease, Task
 worktrees and `git_after`".
 
-C5: the daemon also sends a live `stderr` frame per chunk (not only the
-`complete` frame's existing failure-tail), routed the same way as `output`
-through a new `HostConnectionRegistry.receiveStderr`/`onStderr` pair.
+The daemon also sends a live `stderr` frame per chunk, not only the
+`complete` frame's failure tail, routed the same way as `output` through
+`HostConnectionRegistry.receiveStderr` / `onStderr`.
 
 Workspace registration is reachable from the web UI through three owner-only
 frames the daemon answers: `list_dirs` (one level of subdirectory names for an
