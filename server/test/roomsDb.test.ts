@@ -4599,8 +4599,8 @@ describe("Room workflow (real Postgres)", () => {
     expect(secondRun.rows[0]!.prompt).not.toContain("You are now in");
     // A direct chat pins the same host_thread override but carries the chat
     // path's execution_mode; routing must admit the host-bound profile on the
-    // override itself, not on the surface's mode (the regression made every
-    // direct chat fail with an empty candidate set).
+    // override itself, not on the surface's mode. Otherwise every direct chat
+    // fails with an empty candidate set.
     await db.pool.query(
       `UPDATE runs SET model_override_json = jsonb_set(model_override_json, '{execution_mode}', '"conversation_lightweight.v1"') WHERE id = $1`,
       [second.run_ids[0]],

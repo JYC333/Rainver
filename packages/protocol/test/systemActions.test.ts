@@ -246,8 +246,8 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
   });
 
   it("keeps Inquiry's Project-internal writes direct", () => {
-    // The two that flipped. A regression here is the six-cards-for-one-decision
-    // failure returning, so it is asserted by id rather than left to review.
+    // Assert these two by id. A proposal-gated write here is the
+    // six-cards-for-one-decision failure.
     const byId = new Map(SYSTEM_ACTION_REGISTRY.map((definition) => [definition.id, definition]));
     for (const id of ["inquiry.create_thread", "inquiry.record_conclusion"] as const) {
       expect(byId.get(id)?.side_effects).toBe("durable");

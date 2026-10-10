@@ -658,16 +658,15 @@ describe("projectResearchSynthesisRetryDb", () => {
 });
 
 describe("projectResearchSynthesisStageGuardDb", () => {
-  // Real-Postgres coverage for a regression where reconcileOperation's
-  // backfill->screening transition block has no stage guard: once backfill
-  // plans are 'completed' and the pipeline is drained, it unconditionally
-  // re-runs on every periodic tick — including AFTER the user has already
-  // approved the screening_gate checkpoint and the workflow has advanced to
-  // synthesis. That clobbers current_stage back to "screening" and creates a
-  // brand-new pending screening_gate checkpoint (the approved one no longer
-  // matches createCheckpoint's "status='pending'" upsert lookup), which is
-  // exactly what an "Approve screening did nothing, the checkpoint came back
-  // after refresh" report looks like from the outside.
+  // The backfill-to-screening transition must have a stage guard. Once
+  // backfill plans are completed and the pipeline is drained, an unguarded
+  // block re-runs on every periodic tick, including after the screening_gate
+  // checkpoint is approved and the workflow has advanced to synthesis. That
+  // would clobber current_stage back to "screening" and create a new pending
+  // screening_gate checkpoint (the approved one no longer matches
+  // createCheckpoint's "status='pending'" upsert lookup), which is what an
+  // "Approve screening did nothing, the checkpoint came back after refresh"
+  // report looks like.
 
   const CONFIG = loadConfig({});
   const SPACE = "11111111-1111-4111-8111-111111111111";
