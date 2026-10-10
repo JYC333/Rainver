@@ -175,22 +175,17 @@ Current enforcement:
   in `writeProvenanceLinks` — the entrance — rather than at each caller, and an
   unknown value is an error rather than a dropped row.
 
-  The list existed **four** times before: that CHECK plus three separate `Set`s
-  (`knowledge/proposalApplier.ts`, `memory/sourceMonitoring.ts`, and
-  `proposals/repository.ts`), two of which *silently dropped* what they did not
-  recognize, so a divergence lost provenance without an error. Two of the three
-  disagreed with the other by five values.
+  Do not keep a second copy of the list. A Set that drops an unrecognized
+  value loses provenance without an error.
 
-  Auditing it on 2026-08-06 by asking what writes each member and what
-  `source_id` holds changed the vocabulary:
-
-  | value | outcome |
+  | value | rule |
   |---|---|
-  | `run_step` | renamed `run` — it was written from `payload.source_run_id` and read back as a run id |
-  | `user_confirmation` | kept as the stored token, now declared on a registered `user` entity |
-  | `run_event` | dropped: no writer, no reader, and a run's internal structure is not an entity (B12C) |
-  | `source_snapshot` | kept: no writer, but `retrieval/sourcePolicy.ts` resolves it |
-  | `external_source` | kept as the one provenance **sentinel** — outside material with no row; runtime context items, by contrast, must resolve to typed product objects |
+  | `run` | a run id. Do not record `run_step` |
+  | `user_confirmation` | the stored token, declared on a registered `user` entity |
+  | `source_snapshot` | `retrieval/sourcePolicy.ts` resolves it; it has no writer of its own |
+  | `external_source` | the one provenance sentinel — outside material with no row. Runtime context items must resolve to typed product objects |
+
+  `run_event` is not a provenance type. A run's internal structure is not an entity (B12C).
 
   `note` is a member: promoting a Note passage to a Knowledge Item records the
   originating Note here rather than widening `knowledge_item_sources.source_id`'s

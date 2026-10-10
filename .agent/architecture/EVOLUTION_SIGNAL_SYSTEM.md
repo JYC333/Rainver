@@ -1,12 +1,11 @@
 # Evolution Signal System
 
-This document describes the current rule-based signal path. It is the D1
-foundation for the later evaluation and supervisor consumers.
+This document describes the current rule-based signal path.
 
 ## Ownership and storage
 
 `evolution_signals` remains the single observation stream owned by the
-`evolution` module. D1 reuses the existing table and does not add a parallel
+`evolution` module. That table is the observation stream. Do not add a parallel
 metrics or telemetry store. `EvolutionSignalEmitter` lives at
 `server/src/modules/evolution/signalEmitters.ts`.
 
@@ -25,11 +24,11 @@ runs and unrelated proposals do not create orphan evolution signals.
 |---|---|---|
 | A run is finalized with a failed or partial outcome | `run_finalization_failed` | `PostRunFinalizationService` |
 | A completed finalization is requested again | `run_finalization_repeated` | `PostRunFinalizationService` |
-| Summed `token_usage_events.estimated_cost_usd` reaches 80% of the A1 contract maximum | `run_cost_threshold` | `PostRunFinalizationService` + `PgUsageRepository` |
-| Observed duration reaches 80% of the A1 contract maximum | `run_latency_threshold` | `PostRunFinalizationService` |
+| Summed `token_usage_events.estimated_cost_usd` reaches 80% of `contract_snapshot_json.max_cost` | `run_cost_threshold` | `PostRunFinalizationService` + `PgUsageRepository` |
+| Observed duration reaches 80% of `contract_snapshot_json.max_duration_seconds` | `run_latency_threshold` | `PostRunFinalizationService` |
 | A proposal is rejected | `proposal_rejected` | `PgProposalApplyService` post-commit callback (including Bundle reject) |
 | A future proposal status requests changes | `proposal_request_changes` | Emitter rule is ready; no such current status exists |
-| A deterministic verification check fails | `verification_failed` | Emitted from finalized RunEvaluation verification facts; A2 engine owns result production |
+| A deterministic verification check fails | `verification_failed` | Emitted from finalized RunEvaluation verification facts; the verification engine owns result production |
 | A supervisor records an outcome | `supervisor_outcome` | `PgRunSupervisor` emits after its durable decision |
 | An autonomous Run exceeds its review wait bound | `supervisor_outcome` | `AutonomyRecoveryService` emits after cancellation and operational alert persistence |
 
@@ -116,17 +115,17 @@ signal cannot commit independently before a decision that later rolls back.
 
 ## Current boundaries
 
-D1 does not claim that a successful run passed acceptance criteria. Verification
-facts are now owned by the A2 engine; finalized failed verification results
+A successful run is not claimed to have passed acceptance criteria. Verification
+facts are owned by the verification engine; finalized failed verification results
 produce a `verification_failed` signal through the same bounded target and
-deduplication path. Supervisor facts remain owned by A3 and emit through the
-same bounded target/deduplication path. The runtime-conformance emitter is
-gone with the C3 suite (2026-09-09). The D1 triage/dismiss surface is now present.
+deduplication path. Supervisor facts are owned by the run supervisor and emit
+through the same bounded target/deduplication path. There is no
+runtime-conformance emitter. Triage and dismiss are the signal routes above.
 The proposal lifecycle has no `request_changes` status.
 
-The D1.1 inventory is complete for current durable event classes. The manual
+The inventory covers the current durable event classes. The manual
 `review_requested` signal is an explicit user intent record, and the direct
 signal-create route is an explicit ingestion surface; neither represents a
-missing automatic performance emitter. Direct Artifact edit evidence remains
-D1.2 (see [../plans/backlog.md](../plans/backlog.md))
+missing automatic performance emitter. Direct Artifact edit evidence stays
+deferred (see [../plans/backlog.md](../plans/backlog.md))
 because there is not yet an authoritative Artifact revision event.

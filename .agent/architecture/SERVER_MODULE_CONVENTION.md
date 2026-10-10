@@ -1,6 +1,6 @@
 # Server Module Convention
 
-> **Status:** established 2026-06-11. Source of truth is the code under
+> **Status:** current repository fact. Source of truth is the code under
 > `server/src/`. Companions:
 > [`SERVER_FOUNDATION.md`](SERVER_FOUNDATION.md) (the service),
 > [`SERVER_OWNERSHIP.md`](SERVER_OWNERSHIP.md) (owned surfaces and fail-closed gaps).

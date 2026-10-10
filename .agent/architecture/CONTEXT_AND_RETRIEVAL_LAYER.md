@@ -558,7 +558,7 @@ See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9.
   (`retrievalSourcePolicyDb.test.ts`). There is no activity-record source
   linkage consumer and no chat-turn artifact or Evidence Pack attachment.
   See [`SOURCE_CONNECTOR_CONSENT.md`](SOURCE_CONNECTOR_CONSENT.md).
-- **Product UI first pass.** Sources exposes source consent/policy controls for
+- **Product UI.** Sources exposes source consent/policy controls for
   the normalized JSON fields, Source Detail exposes post-processing retrieval
   context controls, Agent create/detail exposes Memory, Project public-summary,
   and Sources retrieval tool opt-in, Ask Space exposes Sources as a non-default

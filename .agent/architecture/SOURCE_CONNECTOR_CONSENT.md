@@ -1,9 +1,6 @@
 # Source Connector Consent
 
-Status: implemented first pass (2026-06-25)
-
-This document defines the source / connector permission model used by source
-connections before broad ingestion-heavy context work expands. Code remains the
+This document defines the source / connector permission model. Code remains the
 source of truth; active enforcement points are
 `server/src/modules/sources/sourceConsent.ts`,
 `server/src/modules/retrieval/sourcePolicy.ts`, and

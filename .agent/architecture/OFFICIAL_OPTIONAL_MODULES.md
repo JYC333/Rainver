@@ -1,6 +1,6 @@
 # Official Optional Modules
 
-_Last updated: 2026-07-03. See also ADR 0006._
+_See also ADR 0006._
 
 This document defines the official optional module framework for rainver: a product-level control plane that lets maintainers ship optional features that can be enabled or disabled per space or per user, while keeping core `ServerModule` registration stable.
 

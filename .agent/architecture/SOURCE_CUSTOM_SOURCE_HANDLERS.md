@@ -17,13 +17,12 @@ Repair/rollback and credentialed source support are implemented backend-side
 not implemented. There is no Repair or credential-management UI — those routes exist as API/service only
 ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11).
 
-`typescript_node` remains the generated-code Level 3 fallback. Existing
-`declarative_pipeline_v1` handler versions remain readable/executable for
-compatibility and can be explicitly bridged into Level 2
-`source_recipe_versions`. See "Declarative pipeline model" below for the
-Level 1/2/3 split: new configurable source creation now goes through
-Level 2 Source Recipes first, while generated/template handler expansion stays
-frozen as the Level 3 advanced fallback.
+`typescript_node` is the generated-code Level 3 fallback. Existing
+`declarative_pipeline_v1` handler versions stay readable and executable and can
+be explicitly bridged into Level 2 `source_recipe_versions`. See "Declarative
+pipeline model" below for the Level 1/2/3 split: new configurable source
+creation goes through Level 2 Source Recipes, while generated/template handler
+expansion stays frozen as the Level 3 advanced fallback.
 
 ## Level 3 generated handlers
 

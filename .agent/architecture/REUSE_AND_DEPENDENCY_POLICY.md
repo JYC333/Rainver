@@ -1,7 +1,5 @@
 # Reuse and Dependency Policy
 
-Date: 2026-08-23
-
 This is the single source of truth for **what to reuse, what to install, and
 what to build** in this repository. It applies to every coding agent and every
 human change. Module structure rules live in

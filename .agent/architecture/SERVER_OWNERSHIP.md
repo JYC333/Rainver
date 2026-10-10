@@ -1,6 +1,6 @@
 # Server Ownership
 
-> **Status:** current repository fact, refreshed 2026-07-24. Code remains the
+> **Status:** current repository fact. Code remains the
 > source of truth. This document records only the active ownership split; it is
 > not a migration log.
 

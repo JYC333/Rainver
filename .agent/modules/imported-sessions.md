@@ -225,9 +225,9 @@ being present, and attended consent does not stand in for unattended spending
   a private session, and equally `selected_users` or a `summary`-level share:
   both name a narrower audience than the Project's readers, so landing them in
   the mainline would be a disclosure the server refuses without a confirmation
-  the UI cannot yet show. The button is no longer withheld from a private
-  session, because the destination now protects it by construction — which is
-  what withholding it was protecting.
+  the UI cannot yet show. A private session still gets the button. The
+  destination protects it by construction. Do not withhold the button to
+  protect it.
 
   What is held for the composer is the reference, keyed by Room and the
   explicitly opened Conversation draft, not seed text. The reference is
@@ -240,8 +240,8 @@ being present, and attended consent does not stand in for unattended spending
   ([`rooms.md`](rooms.md) §Thread References).
   A *whole* session can be too: that grain carries the session's
   `imported_history_summaries` row, written on demand if it has none. The 409
-  naming the records as the alternative is now reserved for a session that
-  cannot be summarized at all — no readable records — rather than one whose
+  naming the records as the alternative is for a session that cannot be
+  summarized at all — no readable records. Do not use it for a session whose
   turn has not come. Either way it is refused rather than silently shipping a
   truncated transcript under the name "the session".
 

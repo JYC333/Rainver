@@ -1,7 +1,5 @@
 # Runs And Outputs
 
-Date: 2026-05-14
-
 Runs are durable execution records. `execution_kind` distinguishes an ACP
 Agent Run from a bounded ProviderTask Run; `run_role` independently marks an
 execution or coordinator. A Run must be auditable: request metadata, selected

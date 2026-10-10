@@ -1,8 +1,7 @@
 # Verification Engine
 
-Status: current implementation after A2 (2026-07-11). The engine is the
-completion authority for deterministic checks declared by a Run contract or a
-Project Folder validation plan. `RunEvaluation` remains the post-run classifier;
+The engine is the completion authority for deterministic checks declared by a
+Run contract or a Project Folder validation plan. `RunEvaluation` remains the post-run classifier;
 it must consume verification facts rather than infer completion from exit code.
 
 ## Ownership and lifecycle

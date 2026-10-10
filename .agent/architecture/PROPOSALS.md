@@ -1,7 +1,5 @@
 # Proposals
 
-Date: 2026-06-19
-
 Proposals are the product review and application boundary for durable mutations.
 
 ## Product API

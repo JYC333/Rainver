@@ -500,8 +500,8 @@ export class InquiryThreadService {
     const statement = requiredString(body.statement, "statement");
     // One transaction across both writes. Separately they are each atomic, but
     // a failure between them would leave a Thread with no route back to the
-    // note — which is precisely the disconnection this action exists to fix,
-    // and worse than the action failing outright.
+    // note. Do not leave that disconnection. It is worse than the action
+    // failing outright.
     return withQueryableTransaction(this.db, async (db) => {
       const scoped = new InquiryThreadService(db);
       const thread = await scoped.createThread(identity, projectId, {

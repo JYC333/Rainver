@@ -1,7 +1,5 @@
 # Data Authority Matrix
 
-Date: 2026-07-24
-
 This matrix records the current canonical write/read authority. Code and the `server/migrations/` chain remain the
 source of truth when this document and implementation disagree.
 

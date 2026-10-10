@@ -1,7 +1,5 @@
 # Artifacts
 
-Date: 2026-06-16
-
 Artifacts are durable managed records for run output, operational intermediates,
 and system archives. They are an audit/export boundary, not the primary reading
 model for domain reports. User-facing structured documents such as Project

@@ -721,7 +721,7 @@ output, not a way to mutate core product state.
 Generated/template handler expansion (`typescript_node`) is frozen as the
 Level 3 advanced fallback — no new handler languages or arbitrary code
 execution features; bug/safety fixes only. See
-[Sources Custom Source Handlers](../architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md#level-3-freeze-2026-07-01)
+[Sources Custom Source Handlers](../architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md#level-3-generated-handlers)
 for the Level 1/2/3 split.
 
 Handler code may only read `input.json`, write `output.json`, write files under

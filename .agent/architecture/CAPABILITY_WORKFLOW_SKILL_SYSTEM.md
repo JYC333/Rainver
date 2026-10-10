@@ -1,7 +1,5 @@
 # Capability, Workflow, And Open Skill System
 
-Date: 2026-06-20
-
 This document defines the capability/workflow/open-skill control-plane model.
 It describes the framework, not a fully active capability executor.
 
@@ -169,8 +167,8 @@ profile surfaces are not implemented
 capabilities, docs/tests/examples, artifact types, and possibly artifact
 renderer mappings.
 
-The first version supports static built-in packs and imported skill-derived
-capability candidates. It is not a full marketplace.
+Packs are static built-in packs and imported skill-derived capability
+candidates. There is no marketplace.
 
 ### WorkflowDefinition v1
 

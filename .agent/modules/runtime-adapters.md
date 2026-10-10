@@ -70,7 +70,7 @@ reads the form). The Run succeeds; see CONVERSATION.md for the reply. The
 detector's `form_elicitation` also makes the controller advertise
 `clientCapabilities.elicitation.form`, which is what makes Claude Code offer
 AskUserQuestion and Codex's `request_user_input` reach the client at all
-(claude-agent-acp 0.70 and codex-acp 1.12, read 2026-09-24); OpenCode declares
+(claude-agent-acp 0.70 and codex-acp 1.12); OpenCode declares
 nothing and is not offered it. Room execution rules tell the Agent to ask by
 replying instead (`ASK_THE_PERSON_POLICY`). Per-runtime question shapes on a
 real host are an open acceptance item in `tasks/deferred-register.md`.

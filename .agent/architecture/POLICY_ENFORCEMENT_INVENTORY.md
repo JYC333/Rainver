@@ -284,7 +284,7 @@ These guards are policy-relevant but are not separate action-registry entries.
 Runtime Context live-revalidates every canonical direct/retrieval source before
 Delivery persistence; there is no manual context-artifact attachment guard.
 
-#### Shared authorizers (2026-09-11 security remediation)
+#### Shared authorizers
 
 One authorizer per kind of decision, so a new route inherits the rule instead of
 restating it. None of these is an action-registry entry; each is the single

@@ -1399,8 +1399,8 @@ upstream credentials — are untouched by it.
 path, so a control plane behind a path prefix is not truncated) and the
 in-network address for the built-in host. It is configuration: neither the
 daemon's report nor the request that carried it can move where a Run's bearer
-token is sent. `hosts.daemon_server_url` is no longer read or written; the
-column drop waits in the deferred register. Production nginx forwards `/api/`
+token is sent. `hosts.daemon_server_url` is not read or written. Dropping the
+column waits in the deferred register. Production nginx forwards `/api/`
 and `/internal/hosts/ws` and nothing else, which is why the tool surface a
 paired host's children call lives at `/api/v1/runs/:runId/tools…`: it is gated
 by the Run's own bearer token, not by the instance token `/internal` carries,
