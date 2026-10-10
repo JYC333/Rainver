@@ -3,9 +3,9 @@ import { applyCardMove, mergeBoard } from '../mergeBoard'
 import type { ProjectBoard, ProjectBoardCard } from '../../../../types/api'
 
 /**
- * The Board re-reads every few seconds. Replacing the state wholesale handed
- * React a new object for every card each time, so one card moving re-rendered
- * the entire grid — and so did a read where nothing had moved at all.
+ * The Board re-reads every few seconds. Do not replace the state wholesale.
+ * A new object for every card re-renders the entire grid when one card
+ * moves, and when nothing moved at all.
  */
 const card = (id: string, column: string, updated = '2026-09-08T00:00:00.000Z'): ProjectBoardCard => ({
   id,
