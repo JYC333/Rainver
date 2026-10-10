@@ -460,11 +460,9 @@ export type RoomBackendRequiredError = z.infer<typeof RoomBackendRequiredErrorSc
 /**
  * What the person is looking at while they type.
  *
- * A focus hint, never a boundary: retrieval keeps its Project scope and the
- * Agent can still reach anything it could before. It exists so "is this one
- * done?" resolves without the person restating which Task they mean — the
- * highest-frequency friction in talking to an Agent about work you are
- * already looking at.
+ * A focus hint, never a boundary: retrieval keeps its Project scope, and the
+ * hint does not narrow what the Agent can reach. "is this one done?" resolves
+ * without the person restating which Task they mean.
  */
 export const RoomMessageFocusRefSchema = z.object({
   // Task only. The Room is already bound to one Project, so a `project` focus

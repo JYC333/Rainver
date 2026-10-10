@@ -1097,8 +1097,8 @@ export const notesCollectionsApi = {
 }
 
 /**
- * Discuss and edit the Project's notes. Project-level, not research-level —
- * it moved off `.../research/` when the notes surface did.
+ * Discuss and edit the Project's notes. The routes are Project-level.
+ * Do not put them under `.../research/`.
  */
 export const projectNotebookChatApi = {
   send: (projectId: string, body: { message: string; session_id?: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) =>

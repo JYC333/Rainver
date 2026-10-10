@@ -203,9 +203,9 @@ export const knowledgeItems = pgTable("knowledge_items", {
 	rootItemId: varchar("root_item_id", { length: 36 }),
 	supersedesItemId: varchar("supersedes_item_id", { length: 36 }),
 	knowledgeKind: varchar("knowledge_kind", { length: 32 }).notNull(),
-	// Domain lifecycle state, moved off `space_objects` (B12D). The default
-	// matches what every writer already passes explicitly; it exists so a new
-	// caller cannot create a status-less row.
+	// Domain lifecycle state lives on this row (B12D), not on `space_objects`.
+	// The default matches what every writer passes; a new caller cannot
+	// create a status-less row.
 	status: varchar({ length: 32 }).default('active').notNull(),
 	slug: varchar({ length: 512 }),
 	aliasesJson: jsonb("aliases_json"),
@@ -595,8 +595,8 @@ export const claims = pgTable("claims", {
 	subjectObjectId: varchar("subject_object_id", { length: 36 }),
 	subjectText: text("subject_text"),
 	claimKind: varchar("claim_kind", { length: 32 }).notNull(),
-	// Domain lifecycle state, moved off `space_objects` (B12D). The claim
-	// status transition rules stay in `claimStatusRules.ts`.
+	// Domain lifecycle state lives on this row (B12D), not on `space_objects`.
+	// The claim status transition rules stay in `claimStatusRules.ts`.
 	status: varchar({ length: 32 }).default('active').notNull(),
 	claimText: text("claim_text").notNull(),
 	normalizedClaimHash: varchar("normalized_claim_hash", { length: 128 }).notNull(),

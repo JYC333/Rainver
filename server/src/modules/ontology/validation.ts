@@ -71,11 +71,9 @@ export function assertContextItemType(itemType: string): void {
 }
 
 /**
- * `CardSourceable` — replaces `ck_cards_source_type`.
- *
- * No caller yet: `cards` has no write path in `src/`, so demoting that CHECK
- * removed protection from nothing. This exists so the first writer has the
- * replacement already in place rather than inheriting a format-only column.
+ * `CardSourceable`. The column CHECK only checks the token shape.
+ * `cards` has no write path in `src/`. A writer must call this so a
+ * format-valid token outside the vocabulary is refused.
  */
 export function assertCardSourceType(sourceType: string | null | undefined): void {
   if (sourceType === null || sourceType === undefined) return;
