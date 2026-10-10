@@ -367,8 +367,8 @@ describe("Inquiry Core (real Postgres)", () => {
     const searching = await iterationSvc.updateWork(identity, PROJECT, threadId, {
       next_focus_kind: "search_acquisition",
     });
-    // The search is running, so the user's one attention slot is not spent on
-    // watching it — which is what `wait_for_monitoring` used to stand for.
+    // The search is running, so the user's one attention slot is not spent
+    // watching it. Do not offer `wait_for_monitoring` for that.
     expect(searching.next_focus_kind).toBeNull();
     const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
     expect(steps[0]).toMatchObject({ kind: "search_acquisition", slot: "background", status: "in_progress" });
@@ -999,10 +999,9 @@ describe("Inquiry Core (real Postgres)", () => {
       kind: "question",
       statement: "Second Project",
     });
-    // Thread edges are `object_relations` rows now, whose FK only guarantees
-    // Space isolation — the composite (thread, project, space) key that used to
-    // reject this is gone with the domain table. Project isolation for Thread
-    // structure is a service invariant, so that is what this asserts. A Thread
+    // Thread edges are `object_relations` rows. Their FK guarantees Space
+    // isolation only. Project isolation for Thread structure is a service
+    // invariant, so that is what this asserts. A Thread
     // outside the Project is unreachable from it, so it reads as not found.
     await expect(
       threads.addRelation(ownerIdentity(), PROJECT, {

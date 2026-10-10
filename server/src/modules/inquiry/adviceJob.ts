@@ -77,8 +77,9 @@ export async function queueAdviceForFocusedThread(
 
     // A relevant domain event makes the existing recommendation unsafe to keep
     // presenting immediately. This follows job locking to preserve the shared
-    // lock order with automatic generation. `dismissed` is the existing retired
-    // state; the row is the latest suggestion, not an advice audit log.
+    // lock order with automatic generation. `dismissed` is the stored state
+    // for a suggestion that must not be shown; the row is the latest
+    // suggestion, not an advice audit log.
     await tx.query(
       `UPDATE inquiry_thread_advice
           SET status = 'dismissed', updated_at = $4

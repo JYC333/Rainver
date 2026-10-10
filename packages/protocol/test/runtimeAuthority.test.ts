@@ -108,8 +108,8 @@ describe("runtime authority contracts", () => {
   it("gives every live Profile option key exactly one authoring bag", () => {
     // `tools` is read off runtime_config_json by the routing filter and
     // `allow_permission_bypass` off runtime_policy_json by the CLI renderer.
-    // Admission refuses the other bag so the silent `a ?? b` precedence the
-    // readers used to carry can never be reached.
+    // Admission refuses the other bag so the silent `a ?? b` precedence
+    // cannot be reached.
     expect(RuntimeProfileConfigJsonSchema.safeParse({ tools: ["fs.read"] }).success).toBe(true);
     expect(RuntimeProfileConfigJsonSchema.safeParse({ allow_permission_bypass: true }).success).toBe(false);
     expect(RuntimeProfilePolicyJsonSchema.safeParse({ allow_permission_bypass: true }).success).toBe(true);

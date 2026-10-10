@@ -197,9 +197,8 @@ describe("providerCommandStoreDb", () => {
 
   it("rejects an invalid embedding dimension before creating the provider", async () => {
     if (!db.available) return;
-    // Validation after the first write used to leave a disabled provider and
-    // its credential behind, with the Space default cleared and nothing in
-    // its place.
+    // Validation runs before the first write. Do not leave a disabled
+    // provider and its credential behind, with the Space default cleared.
     const config = { databaseUrl: db.connectionUri, rainverHome } as ServerConfig;
     await expect(createProviderFromPreset(config, store(), SPACE, USER, {
       preset_id: "cohere_embedding",
@@ -282,8 +281,8 @@ describe("providerVendorCapabilities", () => {
       //
       // What the registry does carry is everything rainver knows about a
       // vendor independently of who talks to it — including the published
-      // endpoint and what it can be asked to do, which the web client and the
-      // provider-task table used to keep their own copies of.
+      // endpoint and what it can be asked to do. The web client and the
+      // provider-task table read this registry. Do not keep a second copy.
       for (const vendor of listProviderVendors()) {
         expect(Object.keys(vendor).sort()).toEqual([
           "apiKeyRequired",
@@ -301,12 +300,11 @@ describe("providerVendorCapabilities", () => {
     });
 
     it("keeps the adapter's catalog map aligned with the vendors it must price", () => {
-      // The catalog name used to be a required field on every VendorDescriptor,
-      // so adding a vendor without deciding its catalog was a compile error. A
-      // map cannot enforce that: an omitted vendor silently resolves to no
-      // catalog, pi computes a zero cost from absent rates, and the call is
-      // recorded as unpriced with nothing failing. Name the deliberate omissions
-      // so a new one has to be added here on purpose.
+      // Adding a vendor without a catalog name must be visible. A map cannot
+      // enforce that: an omitted vendor silently resolves to no catalog, pi
+      // computes a zero cost from absent rates, and the call is recorded as
+      // unpriced with nothing failing. Name the deliberate omissions so a
+      // new one has to be added here on purpose.
       const uncatalogued = listProviderVendors()
         .filter((vendor) => piCatalogForVendor(vendor.id) === null)
         .map((vendor) => vendor.id)

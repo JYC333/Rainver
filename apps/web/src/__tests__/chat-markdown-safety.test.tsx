@@ -64,11 +64,9 @@ describe('chat markdown images', () => {
     // resolves to `/path` before this code sees it — same-origin, and safe for
     // a reason worth pinning rather than re-deriving.
     //
-    // Asserted on the rendered markup itself, not on elements that may not
-    // exist. Two earlier versions of this test were vacuous in the same way —
-    // first a `continue` past every case with no `<img>`, then an empty
-    // `querySelectorAll` — and both times the row that asserted nothing was
-    // the one aimed at `srcset`. The host name appearing anywhere in the DOM
+    // Asserted on the rendered markup itself. Do not assert on elements that
+    // may not exist: a `continue` past every case with no `<img>`, or an
+    // empty `querySelectorAll`, lets the `srcset` row assert nothing. The host name appearing anywhere in the DOM
     // is the thing that cannot be satisfied by rendering nothing.
     for (const source of [
       '![a](//evil.example/x.png)',

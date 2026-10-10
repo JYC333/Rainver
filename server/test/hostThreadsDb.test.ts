@@ -957,8 +957,8 @@ describe("admitting a Run onto a Task thread", () => {
 
     await dispatch(threadId);
     // `waiting_for_review` is terminal for this purpose: the Run stopped and
-    // is waiting on a person. A hand-rolled status list here once missed it
-    // and deadlocked the thread forever after any Run that landed in review.
+    // is waiting on a person. Do not keep a second status list: a Run that
+    // landed in review must not deadlock the thread.
     // A Run that reached review has started and carries the Profile snapshot
     // the router stamps on it; `ck_runs_execution_shape` refuses the state
     // without them, so the fixture writes what production would have.

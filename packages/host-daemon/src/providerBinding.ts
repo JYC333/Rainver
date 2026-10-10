@@ -71,8 +71,7 @@ const ALLOWED_AMBIENT_KEYS = new Set([
  *   ambient `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` would be
  *   preferred by the runtime over that login and bill an API account instead —
  *   B67's second named failure, "a subscription login converted into API
- *   billing by a leftover key", and the thing the ACP replatform was told to
- *   verify before shipping. None of these is anything git, ssh or a toolchain
+ *   billing by a leftover key". None of these is anything git, ssh or a toolchain
  *   needs, so dropping them costs nothing this rule is protecting.
  */
 const ALL_VENDOR_CREDENTIAL_PREFIXES = [
@@ -232,7 +231,7 @@ export function filterAmbientEnv(ambient: NodeJS.ProcessEnv): Record<string, str
  *   backend share this directory, so the second to start rewrites the first's
  *   config. Both name the same upstream, so a run can only end up using a
  *   *sibling* run's lease; usage then attributes to that run rather than to
- *   itself. Two Agents, or one Agent in two Rooms, no longer share it at all.
+ *   itself. Two Agents, or one Agent in two Rooms, do not share it.
  */
 export async function materializeProviderBinding(
   binding: ProviderBindingFrame,

@@ -236,9 +236,8 @@ describe("inquiry.create_thread, direct (real Postgres)", () => {
 
   it("reopens the same question when one tool call is retried", async () => {
     if (!db.available) return;
-    // The retired proposal path deduped on the run's idempotency key. Without
-    // a replacement a re-issued tool call — or a resumed Run — opened a second
-    // identical question and spent the bound on it.
+    // A re-issued tool call must not open a second identical question. Do not
+    // rely on a proposal-path idempotency key for that.
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
       (await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID))!

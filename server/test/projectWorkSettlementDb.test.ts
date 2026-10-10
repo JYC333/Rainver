@@ -179,12 +179,9 @@ describe("run settlement", () => {
 
   it("does not let one old failure block a Task forever", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The previous projection took `bool_or(failure)` over every Run the Task
-    // ever had, so a single failed attempt made the Task permanently
-    // unclosable: every later success still saw the old failure and wrote
-    // `blocked` again. Re-running a Task after a failure is the normal case,
-    // which is why this went unnoticed as a permanent state rather than a
-    // transient one.
+    // Settlement looks at the latest Run, not every Run the Task ever had.
+    // Do not take `bool_or(failure)` over the whole history: one failed
+    // attempt then makes the Task permanently unclosable.
     const task = randomUUID();
     const failed = randomUUID();
     const retried = randomUUID();
@@ -479,8 +476,7 @@ describe("run settlement", () => {
   it("does not let a planning Run close the Task it planned", async (ctx) => {
     if (!db.available) return ctx.skip();
     // "Ask Agent to plan" links a planning Run through task_runs. It does not
-    // advance the work, and a successful plan closing its Task as done was
-    // the most wrong answer the old projection could give.
+    // advance the work. A successful plan must not close its Task as done.
     const task = randomUUID();
     const planning = randomUUID();
     await makeTask(task);
@@ -510,9 +506,8 @@ describe("run settlement", () => {
 
   it("never writes blocked from a Run outcome", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // blocked now means held up by something else and is only ever set
-    // deliberately. Every Run outcome that used to write it goes to a person
-    // instead.
+    // `blocked` means held up by something else and is only ever set
+    // deliberately. A Run outcome does not write it. It goes to a person.
     const task = randomUUID();
     await makeTask(task);
     for (const [status, at] of [["failed", "00"], ["cancelled", "01"], ["degraded", "02"]] as const) {

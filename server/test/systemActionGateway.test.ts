@@ -143,8 +143,7 @@ describe("SystemActionGateway", () => {
   it("derives the source.channel.propose_activation schema as creation parameters, not a channel reference", async () => {
     // The service begins with `this.create(identity, { ...body, status: "paused" })` —
     // the body is Source Channel creation parameters. Only `provider_key` is
-    // required; the old hand-written schema and the pre-fix Zod disagreed with
-    // each other and both disagreed with the service (D5).
+    // required. Do not require `source_channel_id` (D5).
     const definition = SYSTEM_ACTION_REGISTRY.find((candidate) => candidate.id === "source.channel.propose_activation");
     if (!definition) throw new Error("Missing system action definition: source.channel.propose_activation");
     const schema = systemActionInputJsonSchema(definition);

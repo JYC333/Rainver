@@ -243,9 +243,9 @@ export class InquiryThreadService {
   async listThreads(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const rows = await this.db.query<ThreadRow>(
-      // Project membership is necessary but not sufficient now that a Thread is
-      // an ontology object: the root's visibility is what decides who sees it,
-      // and a `visibility` column nothing enforces is worse than none.
+      // Project membership is necessary but not sufficient. A Thread is an
+      // ontology object: the root's visibility is what decides who sees it.
+      // Do not add a `visibility` column nothing enforces.
       `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
         WHERE t.space_id = $1 AND t.project_id = $2
           AND ${contentReadSql("space_object", "so", "$3")}

@@ -83,8 +83,7 @@ describe("note link target guardrail", () => {
     expect(editor, "NoteEditor.tsx has moved; update this guard").toBeTruthy();
     const source = readFileSync(editor!, "utf8");
     expect(source).toContain("NOTE_LINK_TARGET_TYPE_VALUES");
-    // The two literals the old hand-maintained array was built from. Their
-    // presence as quoted option values would mean the array came back.
+    // Do not bring back a local array of `{ value: 'note', label: ... }`.
     expect(source).not.toMatch(/\{\s*value:\s*'note'\s*,\s*label:/);
     expect(source).not.toMatch(/\{\s*value:\s*'knowledge_item'\s*,\s*label:/);
   });

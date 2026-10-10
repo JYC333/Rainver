@@ -636,16 +636,16 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
 
   it("stops the comparison stage and names the missing role when the project has no baseline", async () => {
     if (!db.available) return;
-    // NA: the baseline used to be resolved by note title, so a project with no
-    // "Current understanding" compared every paper against an empty string and
-    // reported nothing. The stage must now stop and say what is missing, with
-    // the papers still queued for when a note is given the role.
+    // The baseline is `notes.project_role`, not the title. A project with no
+    // baseline note stops the stage and names the missing role. The papers
+    // stay queued until a note is given the role. Do not compare against an
+    // empty string and report nothing.
     const now = new Date().toISOString();
     const items = Array.from({ length: 2 }, () => randomUUID());
     await db.pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
     const understandingId = await seedUnderstandingNote(now);
-    // The note exists and still has its title — only the role is absent, which
-    // is exactly the state a rename used to produce silently.
+    // The note exists and still has its title. Only the role is absent.
+    // A rename must not drop the baseline without saying so.
     await db.pool.query(`UPDATE notes SET project_role=NULL, role_project_id=NULL WHERE object_id=$1`, [understandingId]);
     for (const item of items) {
       await db.pool.query(
@@ -711,9 +711,9 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
   it("compares a large paper set in multiple batches, accumulating results until the last batch completes", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();
-    // COMPARISON_BATCH_SIZE is 6 — 7 papers forces a second batch, which is
-    // exactly the case that used to fail as one 7-paper structured-output
-    // call (models drop/invent ids as the list grows).
+    // COMPARISON_BATCH_SIZE is 6 — 7 papers forces a second batch. Models
+    // drop or invent ids as the list grows. Do not send the whole set as one
+    // structured-output call.
     const items = Array.from({ length: 7 }, () => randomUUID());
     const [batch1, batch2] = [items.slice(0, 6), items.slice(6)];
     await db.pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);

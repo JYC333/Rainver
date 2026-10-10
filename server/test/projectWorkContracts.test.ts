@@ -202,8 +202,8 @@ describe("declared required outputs", () => {
   it("pins the person-only statuses to the ones the Task table allows", () => {
     // If `waiting_for_review` were renamed in the CHECK constraint, the
     // responsibility chain's `NOT IN (...)` would match nothing, an Agent-held
-    // Task would stop reaching a person again, and every test would stay
-    // green — the defect the chain exists to prevent, reintroduced silently.
+    // Task would stop reaching a person, and every test would stay green.
+    // Do not let the chain's status list drift from the CHECK constraint.
     const schema = readFileSync(join(import.meta.dirname, "../src/db/schema/tasks.ts"), "utf8");
     const check = /check\("ck_tasks_status", sql`status IN \(([^)]*)\)`\)/.exec(schema);
     expect(check).not.toBeNull();

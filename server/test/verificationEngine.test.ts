@@ -254,9 +254,9 @@ describe("verification engine", () => {
     });
 
     expect(results[0]).toMatchObject({ verifier_type: "command", status: "passed" });
-    // The workspace is named, never resolved here: the engine used to hand the
-    // executor a server path, which is why verification only ever worked for a
-    // Run the server itself had provisioned.
+    // The workspace is named, never resolved here. Do not hand the executor a
+    // server path: verification then only works for a Run the server itself
+    // provisioned.
     expect(calls).toContainEqual({
       command: ["pnpm", "test"],
       target: {
@@ -421,9 +421,9 @@ describe("verification engine", () => {
       materialization_items: [] as RunMaterializationItemSummary[],
     });
 
-    // It used to `stat` a server path, which meant a paired host's Run could
-    // not be checked at all and a Run on the built-in host will not have one
-    // either. One question, asked where the workspace actually is.
+    // Do not `stat` a server path. A paired host's Run cannot be checked that
+    // way, and a Run on the built-in host will not have that path either.
+    // One question, asked where the workspace actually is.
     expect(calls).toContainEqual(["test", "-e", "report.json"]);
     expect(results[0]).toMatchObject({ verifier_type: "file_exists", status: "failed" });
   });

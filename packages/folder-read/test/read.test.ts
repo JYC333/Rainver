@@ -50,7 +50,7 @@ describe("folder-read filesystem operations", () => {
     // readdir lists a directory's names with read permission alone; stat of a
     // name inside it needs search permission. An entry that vanishes between
     // the two calls (an editor's or a Run's temporary file) looks the same to
-    // the walk as this one does, and used to fail the whole tree request.
+    // the walk as this one does. Leave it out. Do not fail the whole tree.
     const root = await tempRoot();
     await mkdir(join(root, "ok"));
     await writeFile(join(root, "ok", "kept.txt"), "kept", "utf8");

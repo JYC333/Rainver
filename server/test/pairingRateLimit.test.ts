@@ -30,8 +30,8 @@ describe("hostRegisterRateLimited", () => {
       expect(hostRegisterRateLimited("203.0.113.9", 1_000 + i, dir)).toBe(false);
     }
     expect(hostRegisterRateLimited("203.0.113.9", 1_000 + HOST_REGISTER_MAX_ATTEMPTS, dir)).toBe(true);
-    // The write no longer happens on the request's own stack — it used to be a
-    // synchronous `writeFileSync` on the path an unauthenticated caller drives.
+    // The write is not on the request's own stack. Do not `writeFileSync` on
+    // the path an unauthenticated caller drives.
     await flushHostRegisterRateLimit();
     __resetHostRegisterRateLimitForTests();
     expect(hostRegisterRateLimited("203.0.113.9", 1_000 + HOST_REGISTER_MAX_ATTEMPTS + 1, dir)).toBe(true);
@@ -164,9 +164,8 @@ describe("hostRegisterRateLimited", () => {
       expect(hostRegisterRateLimited("203.0.113.10", 1_000 + i)).toBe(false);
     }
     expect(hostRegisterRateLimited("203.0.113.10", 1_100)).toBe(true);
-    // Eleven minutes later the window is empty. The old code filtered by window
-    // at read time and would also answer `false` here, so the assertion that
-    // separates the two is the *bucket* being gone rather than kept forever.
+    // Eleven minutes later the window is empty. The assertion that matters is
+    // the bucket being gone, not merely a `false` answer.
     expect(hostRegisterRateLimited("203.0.113.10", 1_000 + 11 * 60_000)).toBe(false);
     __resetHostRegisterRateLimitForTests();
     hostRegisterRateLimited("203.0.113.10", 1_000);

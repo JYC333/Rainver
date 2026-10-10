@@ -712,8 +712,7 @@ export type SourceSystemActionId = Extract<SystemActionId, `source.${string}`>;
  * than a hand-maintained literal that can drift from what actually validates.
  *
  * `$schema` is stripped — a meta-schema pointer is Draft-7 tooling noise on a
- * tool-call payload, and the hand-written schemas it replaces never carried
- * one either.
+ * tool-call payload. Do not send it.
  */
 export function systemActionInputJsonSchema(
   definition: Pick<SystemActionDefinition, "input_schema">,

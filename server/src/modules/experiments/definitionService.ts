@@ -159,7 +159,7 @@ export class ExperimentDefinitionService {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const rows = await this.db.query<DefinitionRow>(
       // Same reason as Decision Cases: the root's visibility is what decides
-      // who sees an Experiment now that it is an ontology object.
+      // who sees an Experiment. It is an ontology object.
       `SELECT ${DEFINITION_COLUMNS} FROM ${DEFINITION_FROM}
         WHERE d.space_id=$1 AND d.project_id=$2
           AND ${contentReadSql("space_object", "so", "$3")}

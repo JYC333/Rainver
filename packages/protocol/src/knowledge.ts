@@ -17,11 +17,10 @@ const DateLikeSchema = ISODateTimeSchema.nullish();
 /**
  * The system-reserved roles a Note can hold in its Project's notebook.
  *
- * Lives in the protocol because both ends need the same list and each had its
- * own before: the server resolved the research baseline by matching note
- * titles, so a rename silently emptied it, and the editor's target list was a
- * hand-maintained copy that drifted from the backend's. One vocabulary, two
- * consumers.
+ * Lives in the protocol because both ends need the same list. Do not resolve
+ * the research baseline by matching note titles: a rename then empties it
+ * without saying so. Do not keep a second list in the editor. One
+ * vocabulary, two consumers.
  *
  * The server registry (`modules/knowledge/noteProjectRoles.ts`) owns membership
  * for validation; `notes.project_role` carries only a format constraint (B12F).
@@ -57,9 +56,8 @@ export type NoteProjectRole = z.infer<typeof NoteProjectRoleSchema>;
  * not a vocabulary problem — NC's cross-type picker is where that belongs.
  *
  * The editor's dropdown is built from this list rather than its own literals.
- * A hand-maintained copy of a backend vocabulary is the defect gap 3 *was*, so
- * the server asserts this against its entity registry instead of trusting that
- * someone will remember to update both.
+ * Do not keep a second copy of this vocabulary. The server asserts it
+ * against its entity registry.
  */
 export const NOTE_LINK_TARGET_TYPE_VALUES = [
   "note",

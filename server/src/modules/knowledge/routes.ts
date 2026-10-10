@@ -1425,9 +1425,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   /**
    * The Project's notes folder, created on first use. The Project notes surface
-   * is hoisted to it, so it has to exist before the surface can show anything —
-   * and it is no longer the Research Area's to create, since notes are a
-   * Project-level surface reachable from every Area.
+   * is hoisted to it, so it has to exist before the surface can show anything.
+   * Notes are a Project-level surface reachable from every Area. Do not
+   * create this folder from the Research Area.
    */
   app.post("/api/v1/notes/collections/project/:projectId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

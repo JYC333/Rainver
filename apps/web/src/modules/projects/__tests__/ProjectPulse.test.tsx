@@ -102,7 +102,7 @@ describe('Project Pulse', () => {
   })
 
   it('asks for a goal until the Project has one, and then stops', async () => {
-    // Creation no longer asks for a goal and the shell no longer carries a
+    // Creation does not ask for a goal and the shell does not carry a
     // readiness checklist; this is the one place the question is put.
     renderPulse({ ...overview, definition_status: { status: 'needs_definition', basis: 'missing_published_brief_goal', goal_or_problem: null } } as unknown as ProjectOverview)
     expect(await screen.findByTestId('pulse-needs-goal')).toBeInTheDocument()

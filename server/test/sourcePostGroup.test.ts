@@ -17,11 +17,10 @@ import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("sourcePostProcessingPromptBudget", () => {
-  // A screening batch is trimmed to fit the prompt. The budget used to be a flat
-  // 48k characters — a figure from when every model was assumed to have a ~16k
-  // window — so a sixteen-item intake was cut to four items per run. The trim is
-  // silent, so the leftovers returned as fresh recovery batches and the reviewer
-  // was asked to approve the same intake again.
+  // A screening batch is trimmed to fit the prompt. The budget scales with the
+  // model's context window. Do not use a flat character cap: a sixteen-item
+  // intake is then cut short, and the leftovers come back as a fresh recovery
+  // batch the reviewer is asked to approve again.
   describe("promptBudgetCharsFor", () => {
     it("scales with the model's real context window", () => {
       // MiniMax-M3: 512k window, 131k output reserve → ~380k tokens for prompt.
@@ -93,12 +92,10 @@ describe("sourcePostProcessingRecovery", () => {
 
 describe("sourcePostProcessingRecoveryDb", () => {
   // Real-Postgres coverage for ensureItemsProcessed dispatching only the items
-  // that still lack a decision. Before this fix, any recovery pass with even
-  // one unclassified item (e.g. a Rescan that adds a single new paper) resent
-  // EVERY item in scope — including already-classified ones — to the
-  // processing rule; evidence extraction has no per-item idempotency guard, so
-  // re-sending an already-screened paper mints a second, duplicate
-  // extracted_evidence row for it.
+  // that still lack a decision. A recovery pass sends only those items.
+  // Do not resend already-classified items: evidence extraction has no
+  // per-item idempotency guard, so a second pass mints a duplicate
+  // extracted_evidence row.
 
   const CONFIG = loadConfig({});
   const SPACE = "11111111-1111-4111-8111-111111111111";

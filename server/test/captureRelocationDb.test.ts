@@ -500,9 +500,8 @@ describe("relocation selection (real Postgres)", () => {
 
 describe("the copy-out Space setting (real Postgres)", () => {
   /**
-   * The setting is useless without a way to change it. Before this route the
-   * only way to enable copy-out was raw SQL, so the capability shipped
-   * permanently off and no test noticed — they all reached around the app.
+   * The setting is changed through this route. Do not enable copy-out with
+   * raw SQL: the capability then stays off and tests never notice.
    */
   it("is off by default, readable by a member, and changed only by an owner or admin", async () => {
     if (!db.available) return;

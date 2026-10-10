@@ -6,10 +6,9 @@ import { users } from "./auth.js";
 /**
  * What an imported CLI session says, short enough to carry.
  *
- * Named for the module's own language — imported *history* — deliberately
- * avoiding the retired Runtime Context table name the absence check keeps out
- * of the tree. Reusing that name would send anyone grepping for the retired
- * concept to this table instead.
+ * Named for the module's own language — imported *history*. Do not reuse a
+ * Runtime Context table name. The absence check keeps that name out of the
+ * tree, and reusing it would send anyone grepping for it to this table.
  *
  * A session runs to thousands of records, so referencing one whole is only
  * possible as a summary — the same reason a Room conversation has one. It is

@@ -601,8 +601,8 @@ describe("finance ledger routes", () => {
 
   /**
    * Closing is a write to the account, and a personal account is its owner's.
-   * The route used to run the UPDATE unscoped and hand back the row, which
-   * both changed someone else's account and confirmed it existed.
+   * The route scopes the UPDATE and does not hand back someone else's row.
+   * Do not confirm that a personal account exists to a stranger.
    */
   it("refuses to close another member's personal account, as a not-found", async () => {
     const bookId = await createBookViaApi();

@@ -274,10 +274,9 @@ describe("deterministic route selector", () => {
         effective_trust_level: "low",
       }),
     ]);
-    // The CLI is selected now. It used to be rejected for having no passing
-    // conformance suite, which was the gate removed on 2026-09-09: a one-shot
-    // behaviour probe, cached against a version key and blind to the model,
-    // was not evidence to refuse work on.
+    // The CLI is selected. Do not reject it for having no passing conformance
+    // suite. A one-shot behaviour probe, cached against a version key and
+    // blind to the model, is not evidence to refuse work on.
     expect(result.selected?.candidate.runtime_profile_id).toBe("open");
     expect(result.rejected).toEqual(expect.arrayContaining([
       expect.objectContaining({

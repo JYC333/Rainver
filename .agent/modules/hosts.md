@@ -1030,10 +1030,9 @@ side and a field exists in exactly one place. The daemon depends on
 `@rainver/protocol` at runtime for this — it is wire contracts only, which is
 what the daemon is allowed to know. Objects are deliberately not strict, so a
 newer peer's extra field is dropped rather than fatal; what guards against a
-field being *lost* is that nothing names fields by hand any more. This is the
-repair for a class of defect that shipped three times — `provider_binding`,
-`server_url`, and `work_surface` each vanished at a hand-written mapping
-while the sender believed it delivered them. A frame that fails to parse is
+field being *lost* is that nothing names fields by hand. Do not map a frame
+field by field: `provider_binding`, `server_url`, and `work_surface` must
+leave the sender in the same change that drops them. A frame that fails to parse is
 answered with an `error` frame naming the path, never dropped silently; a
 `launch` that fails is answered with a `complete` so the run does not hang.
 

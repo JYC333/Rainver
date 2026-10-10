@@ -960,10 +960,9 @@ export class RunOrchestrationService {
       // rethrow's signal.
       // `serializeCalls` turns the `void`-path's crash-on-any-write-hiccup
       // behavior into a swallow too, uniformly — a deliberate call: one
-      // run's transient write failure no longer takes the whole process
+      // run's transient write failure must not take the whole process
       // (and every other concurrently executing run) down with it, and
-      // nothing that actually enforced anything is lost. Flagged explicitly
-      // per P1 discovery/closure review, not silently ridden through.
+      // nothing that actually enforced anything is lost.
       const serializedRuntimeEventSink = serializeCalls(
         (event: RuntimeSemanticEvent) => this.appendRuntimeSemanticEvent(effectiveRun, event),
       );

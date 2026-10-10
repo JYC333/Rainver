@@ -274,9 +274,8 @@ export class PgWorkspaceLocationRepository {
 
   /**
    * Everything the dispatch endpoint (and any authorization check keyed off
-   * "where does this Run execute") needs, in one query. Replaces
-   * `hosts/repository.ts`'s folder-keyed `resolveDispatchTarget` — a Folder
-   * no longer determines a single host, a Location does.
+   * "where does this Run execute") needs, in one query. A Location determines
+   * the host. Do not key this on a Folder.
    */
   async resolveDispatchTarget(locationId: string, options: { allowStale?: boolean } = {}): Promise<{
     location_id: string;

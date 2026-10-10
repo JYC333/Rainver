@@ -2,9 +2,8 @@
  * Reading an imported transcript, as one rule.
  *
  * Two callers need it — the module's own read and the thread-reference
- * resolver that copies a session's records into a conversation — and an
- * earlier version gave them a copy each. A transcript's gate is the kind that gets tightened
- * later; two copies means one of them silently keeps the old rule.
+ * resolver that copies a session's records into a conversation. Do not give
+ * them a copy each: a tightened gate then applies to only one of them.
  */
 
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";

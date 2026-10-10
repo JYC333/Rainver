@@ -151,8 +151,8 @@ export function nextBackfillWindow(
     window: {
       ...window,
       cursor,
-      // Item offset is the authority for where the next page starts. Page index
-      // times a fixed width was wrong for any page that was not full width.
+      // Item offset is the authority for where the next page starts. Do not
+      // multiply a page index by a fixed width.
       offset: consumedItems,
       remaining_items: nextRemaining,
       // Stay at the width the provider just proved it can serve. Returning to

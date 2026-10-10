@@ -439,8 +439,8 @@ function provenance(
  * Who can read this imported session's transcript.
  *
  * Asked of the same predicate the read itself uses, at the same `full` level
- * and with oversight off — not derived from `visibility`. Mapping "not
- * private" to "every Project reader" was wrong twice over: `selected_users`
+ * and with oversight off — not derived from `visibility`. Do not map "not
+ * private" to "every Project reader". `selected_users`
  * means the owner plus grantees, and a `space_shared` session whose
  * `access_level` is `summary` opens to nobody but its owner, because a
  * transcript needs `full`. Both overstate the source's audience, and

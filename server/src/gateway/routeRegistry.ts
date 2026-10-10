@@ -177,8 +177,8 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   pluginsModule,
   plansModule,
   routingModule,
-  // Note: official optional product modules (e.g. diary) are no longer in
-  // SERVER_MODULES. They are loaded and activated via the PluginHost after this list.
+  // Official optional product modules (for example diary) are not in
+  // SERVER_MODULES. They load and activate through the PluginHost after this list.
 ];
 
 export function registerServerRoutes(

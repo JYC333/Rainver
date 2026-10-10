@@ -13,8 +13,7 @@ import { workEventKindDefinition } from "./eventKinds.js";
  * summarise, and nothing afterwards can say which of the two was right — so
  * the event goes first, in the same transaction, through here.
  *
- * `spaceObjectWriter.ts` established the shape of this guard for
- * `space_objects` after eleven hand-written inserts had drifted apart. A test
+ * `spaceObjectWriter.ts` is the shape of this guard. A test
  * asserts no second writer appears here either, and it is asserted before any
  * of the rules below, because hardening a choke point is worthless if a domain
  * can hand-roll the insert next to it.

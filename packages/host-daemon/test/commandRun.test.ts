@@ -76,8 +76,8 @@ describe("running a server-defined command on this host", () => {
       scratch_workspace: true,
       runtime_key: "opencode",
       // An installation id the daemon can parse but has not installed. A bare
-      // version string used to arrive here from the conformance route and fail
-      // the same way, which made every C3 check fail to launch.
+      // version string must not arrive here. An uninstalled id fails the
+      // launch; a bare version string fails the same way.
       installation: "managed:9.9.9",
       command: ["--version"],
       timeout_seconds: 30,

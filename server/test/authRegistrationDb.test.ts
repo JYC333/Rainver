@@ -460,8 +460,8 @@ describe("registration and Better Auth facade primitives", () => {
       expect(await userCount()).toBe(0);
 
       // A name that fits `users.display_name` but not `<name>'s Personal
-      // Space` used to pass the route, create the pending identity, and then
-      // fail provisioning on every retry until the intent expired.
+      // Space` is refused. Do not create the pending identity and then fail
+      // provisioning on every retry until the intent expires.
       __setHibpTransportForTests({ async fetchRange() { return ""; } });
       const tooLong = await register("n".repeat(245), intent, "192.0.2.241");
       expect(tooLong.statusCode).toBe(400);

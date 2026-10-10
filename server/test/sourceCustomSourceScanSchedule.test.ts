@@ -65,10 +65,9 @@ beforeEach(async () => {
     ["jobs", "retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "source_handler_runs", "source_handler_versions", "source_recipe_versions", "source_channel_item_links", "source_channel_user_subscriptions", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "scheduler_tasks", "settings", "artifacts", "extraction_jobs", "source_items", "source_snapshots", "extracted_evidence", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
-  // The real schema enforces space_memberships -> spaces -> users. The
-  // hand-maintained schema copy this suite used to load carried neither the
-  // foreign keys nor several columns the code selects, so it passed while the
-  // production shape would have rejected the same rows.
+  // The real schema enforces space_memberships -> spaces -> users. Do not
+  // load a hand-maintained schema copy: it omits foreign keys and columns
+  // the code selects, and passes rows production would reject.
   await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
      VALUES ('user-1', 'User', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,

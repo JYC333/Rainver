@@ -296,8 +296,8 @@ describe("researchAcquisitionPipelineDb", () => {
 
       // No acquisition was started — and the attempt is still visible where a
       // person looks for it. A pipeline that stopped before startInitialIntake
-      // used to leave nothing but a jobs row, so every Project surface showed
-      // an empty list, which reads as "still running".
+      // still leaves a visible attempt. Do not leave only a jobs row: every
+      // Project surface then shows an empty list, which reads as still running.
       const operations = await db.pool.query<{ status: string; intent_text: string; progress_json: Record<string, unknown> }>(
         `SELECT status, intent_text, progress_json FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research'`,
         [SPACE, PROJECT],

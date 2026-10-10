@@ -24,10 +24,7 @@ import { canonicalRunOutput } from "./orchestrationResults.js";
  * states: *one bounded task is one Run however many provider attempts its key
  * pool makes*. Every attempt links itself to the same Run, and the Run's
  * terminal state is decided once, when the task itself succeeds or fails.
- * There were two hand-rolled copies of this wrapper with opposite semantics —
- * Project Research kept one Run across retries, Daily Reports created a new
- * Run per attempt and failed each one — which is how the same concept came to
- * mean two different things in the Run list. This is the only implementation.
+ * Do not create a new Run per attempt. This is the only implementation.
  */
 
 export class BoundedProviderTaskError extends Error {

@@ -37,9 +37,8 @@ grants, the executing side puts the `rainver` command (`packages/agent-cli`)
 in front of the Run as an absolute path in `RAINVER_CLI`, writes the Rainver
 Work Skill beside it, and appends a pointer to that Skill to the prompt the
 runtime is sent. Nothing in that path is keyed on `runtime_key` — an adapter
-newly registered from the ACP registry gets the surface with no code added,
-which the three per-vendor MCP configuration writers this replaced each
-needed. The surface is only a transport over
+newly registered from the ACP registry gets the surface with no code added.
+Do not add a per-vendor MCP configuration writer for it. The surface is only a transport over
 `SystemActionGateway` (`server/src/modules/systemActions/gateway.ts`): registry schemas, capability and
 immutable AgentVersion allowlists, policy, approval/proposal behavior,
 idempotency, domain executors, and audit remain server-owned.

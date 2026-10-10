@@ -34,8 +34,8 @@ describe("AdaptiveQueryOrchestrator", () => {
     await orchestrator.evaluate({ spaceId: "space", userId: "user" }, input(["arxiv", "openalex"]));
     // Evaluation previews, plus one final check per provider at the page size
     // history import actually requests — a query can pass the small preview and
-    // fail the large page, which is how a plan used to be "validated" and then
-    // import nothing.
+    // fail the large page. Do not treat a passing small preview as validation:
+    // the import then finds nothing.
     expect(calls).toEqual({ arxiv: 3, openalex: 2 });
     expect(store.selected.map((item) => item.providerKey).sort()).toEqual(["arxiv", "openalex"]);
     expect(store.finalized).toBe(true);
@@ -479,7 +479,7 @@ class FakeStore {
 
   /** Seeds a plan as already `selected` from a prior evaluation round, the
    * way an accepted-and-reviewed provider looks before a sibling provider's
-   * retry runs — used to assert a retry leaves it byte-for-byte alone. */
+   * retry runs. A retry leaves it byte-for-byte alone. */
   seedSelected(providerKey: ResearchProviderKey) {
     const plan = this.strategy.provider_plans.find((item) => item.provider_key === providerKey)!;
     const id = `seed-attempt-${providerKey}`;

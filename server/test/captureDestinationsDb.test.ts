@@ -339,7 +339,8 @@ describe("capture destinations (real Postgres)", () => {
   it("keeps a shared jot on the same object out of the private marginalia note", async () => {
     if (!db.available) return;
     const repository = new PgKnowledgeRepository(db.pool);
-    // Marginalia first: this is the order that used to make the jot land in it.
+    // Marginalia is first. That order would put the jot there if the
+    // destination were ignored.
     const marginalia = await capture().capture({
       userId: OWNER, requestSpaceId: TEAM, destination: "object_marginalia",
       text: "Private aside.", projectId: PROJECT, targetId,

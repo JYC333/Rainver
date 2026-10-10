@@ -17,10 +17,9 @@ import { ProjectAttentionService } from "../src/modules/projects/attentionServic
 import { registerMemoryProjectIntegration } from "../src/modules/memory/projectIntegration.js";
 
 // Real-Postgres coverage for the memory write an Agent makes on its own
-// (ADR 0003 §2). Before this existed the Agent had no memory write at all —
-// the proposal flow was the only route and nothing ever took it — so these
-// cases are as much about "it writes" as about where it stops: reach stays
-// with the person, and the write is visible and reversible afterwards.
+// (ADR 0003 §2). The Agent writes memory directly. Reach stays with the
+// person, and the write is visible and reversible afterwards. Do not make
+// the proposal flow the only route.
 
 const SPACE = "31111111-1111-4111-8111-111111111111";
 const OWNER = "3aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -459,8 +458,8 @@ describe("memory.remember / memory.revise, direct (real Postgres)", () => {
 });
 
 describe("a person's own archive and restore (real Postgres)", () => {
-  // ADR 0003 §3. The proposal that used to stand here was the person queueing
-  // a request to themselves; someone else's entry still goes through one.
+  // ADR 0003 §3. The owner archives and restores their own entry directly.
+  // Someone else's entry still goes through a proposal.
   async function ownMemory(owner: string) {
     const id = randomUUID();
     const now = new Date().toISOString();

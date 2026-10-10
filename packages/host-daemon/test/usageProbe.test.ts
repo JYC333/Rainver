@@ -6,10 +6,9 @@ import { managedCliEntry, parseClaudeOAuthUsage, probeUsage, quotaFromRateLimits
 import { managedToolHome } from "../src/tools.js";
 
 /**
- * Reading a subscription's remaining quota moved from the control plane to
- * the host in ADR 0016 §7, because the credential it needs no longer leaves
- * the copy. These pin the two shapes that arrive and the one thing that must
- * never happen: a token in the answer.
+ * A subscription's remaining quota is read on the host (ADR 0016 §7). The
+ * credential does not leave the copy. These pin the two shapes that arrive
+ * and the one thing that must never happen: a token in the answer.
  */
 describe("parsing what a vendor reports about a subscription", () => {
   it("reads Claude's five-hour and seven-day windows", () => {

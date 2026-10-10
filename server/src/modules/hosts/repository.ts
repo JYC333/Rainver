@@ -108,9 +108,9 @@ const PAIRING_CODE_LENGTH = 13;
 function rawPairingCode(): string {
   // Short, easy to retype at a terminal prompt — this is a short-lived,
   // one-time credential, not the long-lived bearer token. Each character is
-  // 5 uniform bits (the alphabet size divides 256), so case-folding and
-  // stripping no longer collapse the entropy the way a 10-char uppercase
-  // base64url slice did.
+  // 5 uniform bits (the alphabet size divides 256). Case-folding and
+  // stripping do not collapse the entropy. Do not switch to a short
+  // uppercase base64url slice.
   const bytes = randomBytes(PAIRING_CODE_LENGTH);
   let code = "";
   for (const byte of bytes) {

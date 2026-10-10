@@ -169,9 +169,9 @@ describe("repository agent hook invariants", () => {
   });
 
   it("keeps every document a hook points at real", () => {
-    // The docs-sync map previously named three deleted documents — one of them a
-    // "current focus" file INDEX.md forbids reintroducing — on nearly every edit.
-    // Stale hook output trains agents to ignore hook output, so this is a gate.
+    // The docs-sync map must name files that exist. A stale hook trains
+    // agents to ignore hook output, so this is a gate. Do not point it at a
+    // "current focus" file INDEX.md forbids.
     const script = readFileSync(join(repoRoot, ".claude", "hooks", "check-docs-sync.sh"), "utf8");
     const missing = [...script.matchAll(/relevant_docs="([^"]+)"/g)]
       .flatMap((match) => match[1]!.split(","))

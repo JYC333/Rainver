@@ -10,15 +10,11 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * The shared note writer, asserted through the three things that were wrong
- * before it existed.
+ * The shared note writer.
  *
- * Note creation had two implementations — the general one and the Project
- * research one — and they had drifted. Reindexing was the caller's job and
- * only the general one did it, so a note an agent maintained was invisible to
- * search until a human saved it by hand. And binding a note to a Project was
- * unchecked, which stopped being harmless once the Project role became the
- * research baseline: assigning a role displaces the previous holder by design.
+ * One create path. Every write reindexes, including an agent's. Binding a
+ * note to a Project is checked: assigning a role displaces the previous
+ * holder.
  */
 
 const SPACE = "44444444-4444-4444-8444-444444444444";

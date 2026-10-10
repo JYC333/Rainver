@@ -1625,8 +1625,8 @@ describe("Room workflow (real Postgres)", () => {
     expect(prompt).toContain("still needs a formal goal/core problem");
     expect(prompt).toContain("one to three short sentences");
     expect(prompt).not.toContain("Project initialization: incomplete");
-    // What the block carries now that the per-Mode projection is gone: the
-    // definition status and what needs attention — nothing invented.
+    // The block carries the definition status and what needs attention.
+    // Do not invent a per-Mode projection.
     expect(prompt).toContain("Items needing attention for internal reasoning:");
     expect(prompt).toContain("- Approve the screening batch");
     expect(prompt).not.toContain("Possible next actions");
@@ -1838,16 +1838,15 @@ describe("Room workflow (real Postgres)", () => {
     });
     const runPrompt = await db.pool.query<{ prompt: string }>("SELECT prompt FROM runs WHERE id=$1", [sent.run_ids[0]]);
     // The research-execution rule is standing prompt guidance present on
-    // every Room turn, not a server-side match on this turn's wording — a
-    // prior fixed-phrasing regex classifier that injected a per-turn
-    // override block was removed for exactly that brittleness.
+    // every Room turn. Do not match this turn's wording and inject a
+    // per-turn override block.
     expect(runPrompt.rows[0]?.prompt).toContain("treat that as an execution instruction");
     expect(runPrompt.rows[0]?.prompt).not.toContain("[Current turn execution mode]");
 
-    // Choosing whether to open another question is the model's own judgment;
-    // the server no longer blocks it by pattern-matching the triggering
-    // message text. The Thread service is reachable with no proposal in the
-    // way — the bound, not a gate, is what limits it (covered in
+    // Choosing whether to open another question is the model's own judgment.
+    // Do not block it by pattern-matching the triggering message text. The
+    // Thread service is reachable with no proposal in the way — the bound,
+    // not a gate, is what limits it (covered in
     // inquiryDirectWritesDb.test.ts).
     await expect(new InquiryThreadService(db.pool).createThread(
       owner,

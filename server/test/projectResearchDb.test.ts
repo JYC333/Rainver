@@ -218,7 +218,7 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     expect(updated.rows[0]?.state_json).toMatchObject({ monitoring: { active: true, channel_ids: [] } });
   });
 
-  it("reads a Workflow's monitor binding and rule from the singular keys intake used to write", async () => {
+  it("reads a Workflow's monitor binding and rule from the singular monitor keys", async () => {
     if (!db.available) return;
     const thread = await new InquiryThreadService(db.pool).createThread(
       identity, PROJECT, { kind: "question", statement: "Does X improve Y?" },

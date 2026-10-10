@@ -28,9 +28,8 @@ const AREA_SERVICE = join("src", "modules", "projectResearch", "areaService.ts")
 /**
  * The two methods in `areaService` that may legitimately name a note.
  *
- * `adoptStarterNotesByTitle` reconciles projects seeded before the role marker
- * existed — it reconstructs the binding the old resolver created rather than
- * being a binding of its own, and stops once every role is filled.
+ * `adoptStarterNotesByTitle` binds starter notes by title until every role
+ * is filled. It is not itself a role binding.
  * `resolveProjectNoteByExactTitle` serves the ad-hoc caller that names a note
  * instead of a role: the title there is the user's own input, so matching it is
  * what they asked for, and it creates the note when it finds none.

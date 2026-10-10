@@ -335,8 +335,8 @@ export class PgSessionRepository {
         userId,
       );
       const metadata = { ...(message.metadata_json ?? {}) } as MessageMetadata;
-      // Replace, do not merge. This also removes owner-only previews persisted
-      // by older builds before the shared-message boundary was fixed.
+      // Replace, do not merge. Owner-only previews must not remain on a
+      // shared message.
       if (visible.length > 0) metadata.action_previews = visible;
       else delete metadata.action_previews;
       return { ...message, metadata_json: metadata };
@@ -965,8 +965,8 @@ export class PgSessionRepository {
    * - **On a pool** this lock does nothing: each statement is its own
    *   transaction, so it is released before the insert runs. Nothing is
    *   poisoned there either, so `uq_messages_branch_position` plus
-   *   `withBranchPositionRetry` handle the collision, as they did before this
-   *   lock existed. The extra round trip buys nothing on that path and is
+   *   `withBranchPositionRetry` handle the collision. The extra round trip
+   *   buys nothing on that path and is
    *   kept only because the method cannot tell which kind of client it has.
    */
   private async lockConversationForAppend(spaceId: string, sessionId: string): Promise<boolean> {

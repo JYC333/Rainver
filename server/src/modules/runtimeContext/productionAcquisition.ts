@@ -128,7 +128,7 @@ class PgAuthorityProvider implements RuntimeContextAuthorityPort {
     const egressDestination = await revalidateExecutionDestination(this.db, control, run.runtime_key ?? null);
     const modelOverride = record(run.model_override_json);
     const profileSnapshot = record(run.runtime_profile_snapshot_json);
-    // The AgentVersion no longer carries a deployment model. A per-run model
+    // The AgentVersion does not carry a deployment model. A per-run model
     // override is honored only when present in the admitted Run; otherwise
     // the immutable Profile snapshot is authoritative. Native runtimes may
     // not expose their model before the ACP session starts.

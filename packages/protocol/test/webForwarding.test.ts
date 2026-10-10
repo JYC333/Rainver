@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 /**
- * `apps/web/src/types/api.ts` and `packages/protocol` once declared 204 wire
- * types twice, and 98 of those pairs had drifted apart before anyone noticed.
- * Forwarding fixed the existing pairs; this keeps new ones from appearing.
+ * `apps/web/src/types/api.ts` forwards wire types from this package and
+ * declares none of them itself. Do not redeclare a name this package
+ * exports.
  *
  * Only *local redeclaration* fails. Forwarding is the target state, so
  * `export type { Thing } from '@rainver/protocol'` — and the import-then-

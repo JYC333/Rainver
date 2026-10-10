@@ -70,9 +70,8 @@ describe("isLoopbackAddress", () => {
   });
 
   it("refuses a hostname that merely starts with 127.", () => {
-    // The defect this replaced: `startsWith("127.")` was true of a domain
-    // somebody else controls and can point anywhere, which is exactly what
-    // plain HTTP must not be allowed for.
+    // `startsWith("127.")` is true of a domain somebody else controls and can
+    // point anywhere. Plain HTTP must not be allowed for that.
     for (const value of ["127.evil.com", "127.0.0.1.evil.com", "localhost", "1270.0.0.1", "", null, undefined]) {
       expect(isLoopbackAddress(value as string | null | undefined), String(value)).toBe(false);
     }

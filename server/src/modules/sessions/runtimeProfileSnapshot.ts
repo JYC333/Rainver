@@ -73,8 +73,7 @@ export function projectRunRuntimeProfileSnapshot(
     // The installation is also inside the adapter config, because that is what
     // a Run's `adapter_config` is built from — the execution-control snapshot,
     // the CLI continuity fingerprint and the usage record all read the copy
-    // from there. The retired `credential_profile_id` was merged in exactly
-    // here, and nothing replaced the merge when it went.
+    // from there. Do not merge a second credential id into this object.
     runtime_config_json: projected.runtime_installation
       ? { ...projected.runtime_config_json, runtime_installation: projected.runtime_installation }
       : projected.runtime_config_json,

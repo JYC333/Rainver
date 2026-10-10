@@ -180,9 +180,9 @@ const wsUpgradeHosts = new WeakMap<FastifyRequest, string>();
  * What a daemon's hello/heartbeat frame contributes to its host row.
  *
  * The frame is already the contract's (`HostHelloFrameSchema`), so nothing is
- * read field by field here — which is how `server_url` once went missing:
- * every field of `DaemonHelloInfo` is optional, and a hand-written mapping
- * that forgot one compiled cleanly. The one transformation is the
+ * read field by field here. Every field of `DaemonHelloInfo` is optional, and
+ * a field-by-field mapping that forgot one would compile cleanly. Do not
+ * rebuild it that way. The one transformation is the
  * capabilities blob, normalized into the shape every reader uses; its wire
  * format and history are `capabilities.ts`'s concern alone.
  */

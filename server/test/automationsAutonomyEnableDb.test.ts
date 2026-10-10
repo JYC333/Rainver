@@ -8,12 +8,9 @@ import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 
 /**
- * Before this route existed, no code path anywhere could create an
- * `autonomous_tick` Automation: the generic create endpoint rejects it
- * (`user_selectable: false`), and nothing provisioned one automatically. The
- * Phase 3-5 autonomy lifecycle was fully implemented and covered by
- * `autonomyLaunchDb.test.ts`, but only reachable by inserting the Automation
- * row directly via SQL in a test — never by any real user or admin action.
+ * This route is how an `autonomous_tick` Automation is created. The generic
+ * create endpoint rejects it (`user_selectable: false`), and nothing
+ * provisions one automatically. Do not insert the row with SQL.
  * This suite proves the self-service activation path an ordinary Space
  * member (not owner/admin) actually reaches end to end.
  */

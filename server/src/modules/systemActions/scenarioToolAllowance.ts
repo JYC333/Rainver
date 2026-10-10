@@ -33,12 +33,11 @@ import type { SystemActionId } from "@rainver/protocol";
  * coordination actions — `agent.delegate` is independently constrained by
  * the Room's one-level/two-specialist delegation budget, and
  * `research.start_acquisition` is idempotency-guarded rather than
- * proposal-gated (the retired room-advancement-reliability plan, Phase 4: the Thread was
- * already human-accepted at creation). `research.cancel_acquisition` is its
- * stop lever, listed here so a Room notification about running research
- * always has a matching in-Room action — a report the user can
- * only act on by leaving for the web UI is the interruption the reform
- * removed, moved rather than deleted. The two are not mutually exclusive —
+ * proposal-gated: the Thread was already human-accepted at creation.
+ * `research.cancel_acquisition` is its stop lever, listed here so a Room
+ * notification about running research always has a matching in-Room action.
+ * Do not leave a report the user can only act on by leaving for the web UI.
+ * The two are not mutually exclusive —
  * an ad hoc delegated investigation and a tracked acquisition Workflow may
  * run on the same Thread at once; choosing between (or combining) them is
  * the Manager Agent's judgment, never a server-side gate.

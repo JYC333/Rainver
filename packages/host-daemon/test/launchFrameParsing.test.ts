@@ -3,13 +3,12 @@ import { describe, expect, it } from "vitest";
 import { parseServerFrame, requestFailureFrame, toLaunchFrame } from "../src/commands/run.js";
 import type { LaunchFrame } from "../src/execution.js";
 
-// The daemon used to rebuild the launch frame field by field from untyped
-// JSON, so a field the server sent and the rebuild forgot was invisible
-// everywhere else: `provider_binding` shipped inert that way once, and then
-// `work_surface` did. Now the frame is parsed against the shared contract and
-// handed over by spread. `Required<HostLaunchFrame>` is that contract: a
-// field added to it is missing from this fixture until it is written down,
-// and the round trip below then proves execution receives it.
+// The launch frame is parsed against the shared contract and handed over by
+// spread. Do not rebuild it field by field from untyped JSON: a field the
+// server sends and the rebuild forgets is invisible everywhere else.
+// `Required<HostLaunchFrame>` is that contract: a field added to it is
+// missing from this fixture until it is written down, and the round trip
+// below then proves execution receives it.
 describe("the launch frame across the wire", () => {
   const wire: Required<HostLaunchFrame> = {
     type: "launch",
@@ -98,8 +97,9 @@ describe("the launch frame across the wire", () => {
 
 describe("a request whose handler throws before answering", () => {
   // The handlers are fire-and-forget; a throw in one (a half-written config
-  // read under the Location lookup) used to be an unhandled rejection that
-  // ended the daemon and left the server waiting out its timeout.
+  // read under the Location lookup) must be answered. Do not let it become
+  // an unhandled rejection: that ends the daemon and leaves the server
+  // waiting out its timeout.
   it.each([
     ["command_run", "command_result"],
     ["task_run_settle", "task_run_settle_result"],

@@ -40,8 +40,8 @@ export function registerResearchOperationFailureNotifyHandler(registry: JobHandl
     const roomId = optionalString(job.payload.room_id);
     const sessionId = optionalString(job.payload.session_id);
     const reason = optionalString(job.payload.reason) ?? "The research operation failed.";
-    // Jobs enqueued before the checkpoint reform carry no status and were all
-    // failures, so an absent status still means `failed`.
+    // A job with no status is a failure. Do not treat an absent status as
+    // anything else.
     const status = optionalString(job.payload.status) ?? "failed";
     const episode = typeof job.payload.episode === "number" ? job.payload.episode : null;
     const originGroupId = optionalString(job.payload.origin_group_id);

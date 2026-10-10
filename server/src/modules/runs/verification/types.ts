@@ -77,7 +77,7 @@ export interface VerificationInput {
   base_commit_sha: string | null;
   output_json: unknown;
   materialization_items: RunMaterializationItemSummary[];
-  /** Which machine, for the record a verification result carries; it no longer decides how a verifier runs. */
+  /** Which machine, for the record a verification result carries. It does not decide how a verifier runs. */
   host_kind?: "server" | "remote";
 }
 

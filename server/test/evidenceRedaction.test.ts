@@ -55,10 +55,9 @@ describe("run evidence redaction", () => {
   });
 
   /**
-   * One negative case per shape that used to get through. Each of these was a
-   * real miss: `\b` does not fire between `_` and a letter, a quoted JSON key
-   * puts a `"` between the name and the colon, and a URL's `?key=` has no
-   * `api` in front of it.
+   * One negative case per shape the scanner must catch. `\b` does not fire
+   * between `_` and a letter, a quoted JSON key puts a `"` between the name
+   * and the colon, and a URL's `?key=` has no `api` in front of it.
    */
   it.each([
     ["an underscore-prefixed name", "access_token=abcdefghijklmnop"],

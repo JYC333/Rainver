@@ -3,11 +3,9 @@ import { semanticRunFailure } from "../src/modules/runs/orchestrationResults.js"
 import type { RunAdapterResultEnvelope } from "@rainver/protocol";
 
 /**
- * A verification failure used to reach the person as "Run output did not
- * satisfy its deterministic acceptance checks" — a sentence equally true of a
- * failing test, a workspace the host could not resolve, and a machine that was
- * offline. Those need different actions, and the one thing that distinguishes
- * them, what the host said, was dropped on the way out.
+ * A verification failure names what the host said. A failing test, a
+ * workspace the host could not resolve, and an offline machine need
+ * different actions. Do not collapse them into one sentence.
  */
 const succeeded = { success: true, output_json: {} } as unknown as RunAdapterResultEnvelope;
 

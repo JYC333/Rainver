@@ -567,8 +567,8 @@ describe("handleLaunch with a provider binding", () => {
       expect(output).toContain("http://control-plane:8021/anthropic/l1|lease-token|none|none");
       // The placeholder is resolved against the real profile directory, which
       // is keyed by Agent × container × adapter × backend rather than by this
-      // run — and never by adapter and provider alone, which is what two
-      // Agents on one machine used to share.
+      // run — and never by adapter and provider alone. Two Agents on one
+      // machine do not share a profile.
       expect(output).toMatch(
         new RegExp(`catalog = ".*/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/profiles/location/cccccccc-cccc-4ccc-8ccc-cccccccccccc/codex_cli/provider-1/x\\.json"`),
       );
@@ -579,10 +579,10 @@ describe("handleLaunch with a provider binding", () => {
   });
 
   it("moves an own-login run's state root into its profile without taking the machine away from it", async () => {
-    // Two rules meet here. The leak this profile key closes: a run on the
-    // machine's own login used to inherit the machine's `HOME`, so its CLI
-    // read `~/.claude` — one login, one session store and one pile of vendor
-    // auto-memory shared by every Agent on the machine. And B67's closing
+    // Two rules meet here. A run on the
+    // machine's own login must not inherit the machine's `HOME`. Its CLI
+    // would then read `~/.claude` — one login, one session store and one pile
+    // of vendor auto-memory shared by every Agent on the machine. And B67's closing
     // rule, which this must not break: such a run is "not affected", so the
     // machine's own environment — proxies, toolchains, the `~/.gitconfig` a
     // Task run commits with — is still there. Only the state root moves.
@@ -801,7 +801,7 @@ describe("a retry that reuses the run id", () => {
   it("leaves the run directory to the newer attempt and tags each frame with its own launch", async () => {
     // A supervisor retry lands within seconds of the first attempt's kill,
     // while that attempt is still uploading; both attempts share
-    // `<config>/runs/<run_id>/`. The first attempt's cleanup used to delete
+    // `<config>/runs/<run_id>/`. The first attempt's cleanup must not delete
     // the second attempt's Skill and launcher out from under a live child.
     // Read-only, because a writer's retry queues behind the first attempt's
     // Location lease and so never overlaps it; a Run that takes no lease still

@@ -61,10 +61,9 @@ describe("applyCodexStrictSandboxToml", () => {
   });
 
   it("does not mistake a bracket inside a string or a comment for an array", () => {
-    // One unbalanced `[` above the first header used to pin the bracket depth
-    // for the rest of the file, so no header was ever found and the scan fell
-    // back to matching `sandbox_mode` anywhere — the original bug, reinstated
-    // by the fix for the array one.
+    // One unbalanced `[` above the first header must not pin the bracket
+    // depth for the rest of the file. No header is then found, and the scan
+    // matches `sandbox_mode` anywhere.
     for (const first of ['notify = ["bash","-c","echo [done"]', "# see the [profiles docs", 'foo = "a\\"b[c"']) {
       const config = [first, "[profiles.x]", 'sandbox_mode = "read-only"', ""].join("\n");
       const out = applyCodexStrictSandboxToml(config);

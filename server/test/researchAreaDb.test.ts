@@ -413,9 +413,8 @@ describe("Research Area (real Postgres)", () => {
     );
     await seedCorpusSourceProvenance(corpusItemId, sourceItem, now);
     const understandingId = area.notes[0]!.id;
-    // Refs live on `note_revisions` now (N8), and the only writer is
-    // `writeNote` — so the fixture goes through it rather than reaching past
-    // it into a column, which is what let the old copy drift in the first place.
+    // Refs live on `note_revisions`. The only writer is `writeNote`. Do not
+    // write the column directly.
     await writeNote(db.pool, {
       spaceId: SPACE,
       noteId: understandingId,
@@ -555,10 +554,9 @@ describe("Research Area (real Postgres)", () => {
 
   it("keeps one Run for one bounded task however many provider attempts its key pool makes", async () => {
     if (!db.available || !config) return;
-    // The lifecycle rule in RUNS_AND_OUTPUTS.md, and the one the two
-    // hand-rolled wrappers disagreed on: Daily Reports used to create a new
-    // Run per attempt and fail each, so a task that succeeded on the second
-    // key left a failed Run beside it claiming the same work.
+    // One bounded task is one Run, however many provider attempts its key
+    // pool makes. Do not create a new Run per attempt: a task that succeeds
+    // on the second key then leaves a failed Run beside it.
     await resolveProviderCommandStore(config).addPoolCredential(SPACE, USER, PROVIDER, { api_key: "second-research-key" });
     let calls = 0;
     __setProviderHttpClientForTests({
@@ -731,7 +729,7 @@ describe("Research Area (real Postgres)", () => {
     });
     // The attempt links its ledger rows to the Run it just created, in the
     // same transaction. A failure there rolls the Run away with them, and the
-    // caller used to be handed the id of a row that no longer exists.
+    // caller must not be handed the id of a row that no longer exists.
     await db.pool.query(
       `CREATE FUNCTION refuse_provider_task_link() RETURNS trigger AS $$
          BEGIN RAISE EXCEPTION 'provider task link update refused'; END;

@@ -211,20 +211,17 @@ async function sweepArchivesIn(base: string, now: Date): Promise<number> {
 }
 
 /**
- * Moves the pre-Agent-keyed `<configDir>/profiles/<adapter>/<provider>` tree
- * aside. It held one login and one session store per adapter and provider,
- * shared by every Agent on the machine — the sharing the Agent-keyed profiles
- * ended — plus each bound run's dead lease token. Nothing reads it any more,
- * so it goes the way of every other retired directory here: archived under
- * the marker and swept after the retention window, never deleted outright.
- * False when there was nothing to move.
+ * Moves `<configDir>/profiles/<adapter>/<provider>` aside. Nothing reads it.
+ * Archive it under the marker and sweep it after the retention window. Do
+ * not delete it outright, and do not share one login across every Agent on
+ * the machine. False when there was nothing to move.
  */
 export async function archiveLegacyProfileTree(): Promise<boolean> {
   return archiveDirectory(join(configDir(), "profiles"));
 }
 
 export async function sweepManagedWorkspaceArchives(now = new Date()): Promise<number> {
-  // The archived legacy profile tree sits at the config root.
+  // The archived profile tree sits at the config root.
   let removed = await sweepArchivesIn(configDir(), now);
   const agentsRoot = join(configDir(), "agents");
   const agents = await readdir(agentsRoot, { withFileTypes: true }).catch(() => []);

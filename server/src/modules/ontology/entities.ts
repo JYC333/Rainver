@@ -191,8 +191,7 @@ export function retrievableEntityTypes(): readonly string[] {
  * resolved against `space_objects`, so an entity without a root row — a
  * `source_item`, an `extracted_evidence`, a `memory_entry` — cannot be linked
  * however wide the storage column's type is. The note editor's target list is
- * derived from this rather than hand-maintained, because the hand-maintained
- * version is precisely what drifted from the backend before.
+ * derived from this. Do not keep a second list: it drifts from the backend.
  */
 export function spaceObjectSubtypes(): readonly string[] {
   return entitiesImplementing((definition) => definition.rootEntity === "space_object");

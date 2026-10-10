@@ -116,11 +116,10 @@ describe('researchResultState', () => {
   })
 
   it('shows the newer running operation, not a stale failed one for the same workflow', () => {
-    // A retry (or an auto-created incremental scan) creates a fresh operation
-    // for the same workflow rather than reusing the old one — the old one
-    // stays "failed" forever in history. This must not be surfaced as the
-    // retriable failure once a newer operation for that same workflow is
-    // already running: the backend allows only one active operation per
+    // A retry creates a fresh operation for the same workflow. The superseded
+    // one stays "failed" in history. Do not surface it as the retriable
+    // failure once a newer operation for that workflow is already running:
+    // the backend allows only one active operation per
     // workflow, so a "Retry" pointed at the stale one would 409.
     const result = state({
       operations: [

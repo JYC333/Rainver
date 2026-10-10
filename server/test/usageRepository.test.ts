@@ -200,8 +200,8 @@ describe("usage repository", () => {
     // Usage doesn't reimplement oversight — it just reuses contentAccessSql /
     // contentAccessLevelSql (already exhaustively verified against real
     // Postgres in contentAccessEquivalence.test.ts). This only guards against
-    // usageRepository silently swapping in a hand-rolled predicate that drops
-    // the oversight branch.
+    // usageRepository swapping in a second predicate that drops the oversight
+    // branch.
     const db = new RecordingDb((sql) => {
       if (sql.includes("GROUP BY 1, 2")) return { rows: [], rowCount: 0 };
       if (sql.includes("'all' AS group_key")) return { rows: [], rowCount: 0 };

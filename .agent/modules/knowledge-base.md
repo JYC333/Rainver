@@ -670,13 +670,11 @@ not replaced by Source.
 - **Every note write goes through `knowledge/noteWriter.ts`.** `withNoteWrites`
   owns the transaction and hands out a scope; creating, writing, applying AI
   block ops, rolling back, and assigning a Project role are its methods, and
-  nothing else in `src/` writes a `notes` row. It exists because the three
-  things around a note write were each the caller's job and each was missed:
-  creation had drifted into two implementations (the Project one wrote no
-  `summary` and filed every note at `sort_order` 0), the retrieval reindex was
-  done by the user-facing path and by no agent path, and the Project role was
-  written from three places of which one knew the rules. Same argument as the
-  `space_objects` writer, one level up (B12H).
+  nothing else in `src/` writes a `notes` row. Do not add a second create
+  path, skip `summary` or file every note at `sort_order` 0, skip the
+  retrieval reindex on an agent write, or write the Project role from a
+  caller that does not know the rules. Same argument as the `space_objects`
+  writer, one level up (B12H).
 - **Binding a note to a Project is a write to that Project.** `primary_project_id`
   on create or update requires `assertProjectWriter`, enforced in the writer.
   This was unchecked and harmless while the field was a label; it stopped being

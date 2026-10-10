@@ -165,8 +165,8 @@ export default function ProjectPulse({
           as grid cells these sat closer to each other than to the goal card
           above them. */}
       {/* The one thing a Project has to decide about itself, said until it
-          has: creation no longer asks for a goal, and the shell no longer
-          carries a readiness checklist, so this is where it is asked. */}
+          has one. Creation does not ask for a goal, and the shell does not
+          carry a readiness checklist, so this is where it is asked. */}
       {needsGoal && (
         <Card className="flex items-start justify-between gap-3 p-4" data-testid="pulse-needs-goal">
           <div>

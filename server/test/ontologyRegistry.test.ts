@@ -150,7 +150,7 @@ describe("ontology registry", () => {
   });
 
   // The demoted CHECKs are only safely demoted if something asks the registry.
-  it("rejects values the demoted CHECK constraints used to reject", () => {
+  it("rejects values outside the registry", () => {
     expect(() => assertContextItemType("nonsense")).toThrow();
     expect(() => assertCardSourceType("nonsense")).toThrow();
     expect(() => assertCardSourceType(null)).not.toThrow();
@@ -160,7 +160,7 @@ describe("ontology registry", () => {
 
   it("routes an edge by its declared governance rather than by table", () => {
     // A structural edge proposed for review, or an assertion written directly,
-    // is a category error the registry can now catch.
+    // is a category error the registry catches.
     expect(() => assertLinkTypeAllowed({
       linkType: "decomposes_into", fromObjectType: "inquiry_thread", toObjectType: "inquiry_thread", via: "proposal",
     })).toThrow(/written directly/);
@@ -186,10 +186,10 @@ describe("ontology registry", () => {
   });
 
   // B12F/B12I claim modules — including plugins — register their own entities.
-  // The access list used to be snapshotted at module load, so a plugin
-  // registering later was silently invisible. Proving it recomputes does not
-  // require registering anything: these registries are module-level singletons,
-  // and a test that mutates them leaks into every other file sharing the worker.
+  // The access list is recomputed on each read. Do not snapshot it at module
+  // load: a plugin registering later is then invisible. These registries are
+  // module-level singletons, and a test that mutates them leaks into every
+  // other file sharing the worker.
   it("recomputes the access list on each read instead of snapshotting it", () => {
     const first = contentResourceDefinitions();
     const second = contentResourceDefinitions();

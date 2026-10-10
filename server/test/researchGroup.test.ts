@@ -97,10 +97,8 @@ describe("researchGeneralizationGuard", () => {
         source("server/src/modules/projectResearch/synthesisOnlyExecution.ts"),
       ].join("\n");
 
-      // The pack used to carry an empty `workflow_template_ids: []` to prove no
-      // label-only preset had crept back. The workflow template layer is gone
-      // entirely, so the absence of the field is the stronger form of the same
-      // guard: there is nothing left for a preset to be declared in.
+      // The pack does not declare `workflow_template_ids`. There is no preset
+      // field for a label-only workflow to be declared in.
       expect(pack).not.toContain("workflow_template_ids");
       for (const retired of [
         "research.academic_literature_review",
@@ -124,9 +122,8 @@ describe("researchGeneralizationGuard", () => {
         "apps/web/src/modules/projects/ResearchSetupSummary.tsx",
         "apps/web/src/modules/projects/researchArea/ResearchRunsTab.tsx",
         "apps/web/src/modules/projects/researchArea/ReadingListView.tsx",
-        // The Research Area page replaced the ProjectResearchWorkbench wrapper
-        // as the surface that composes standing and focus; useProjectResearch
-        // holds the copy that used to sit in the Project Overview.
+        // The Research Area page composes standing and focus. useProjectResearch
+        // holds the Research state. Do not mount it on the Project Overview.
         "apps/web/src/modules/projects/ResearchAreaPage.tsx",
         "apps/web/src/modules/projects/ResearchSettingsCard.tsx",
         "apps/web/src/modules/projects/useProjectResearch.ts",

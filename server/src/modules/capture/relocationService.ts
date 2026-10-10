@@ -114,9 +114,9 @@ export class RelocationService {
       // Where the content actually lands, resolved before anything is written
       // and before anything is authorised.
       //
-      // Gating on the requested *destination name* was wrong in a way that
-      // reads as fine: `personal_inbox` is not the only destination that can
-      // leave the Space. Every Project destination resolves its Space from the
+      // Do not gate on the requested destination name. `personal_inbox` is
+      // not the only destination that can leave the Space. Every Project
+      // destination resolves its Space from the
       // caller-supplied `project_id`, and a caller who belongs to two Spaces
       // could name a Project in the other one — carrying the content across
       // the boundary with the copy-out gate never consulted, because the

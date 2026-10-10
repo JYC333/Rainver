@@ -771,8 +771,8 @@ describe("the executor band", () => {
 
   it("answers an invented task_id with the ids that exist", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The failure a composed id used to produce said only "Task not found",
-    // which left the model no way to correct itself.
+    // An invented task_id answers with the ids that exist. Do not say only
+    // "Task not found": the model then has no way to correct itself.
     const real = randomUUID();
     await makeTask(real);
     const { executors } = executorsFor();

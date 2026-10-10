@@ -262,7 +262,7 @@ the container; and acting on a web page after its first render but before its
 start-up loads have run, which a later reset then undoes — wait for the request
 or the loaded element, not only for the first visible text.
 
-There are no hand-written subset schemas any more: every real-Postgres file
-clones the migrated baseline, so a test that seeds rows the real constraints
-refuse fails for a real reason. Request `{ empty: true }` only to test the
+Every real-Postgres file clones the migrated baseline. Do not load a
+hand-written subset schema: a test that seeds rows the real constraints
+refuse must fail for a real reason. Request `{ empty: true }` only to test the
 migration runner or a plugin's own migrations.

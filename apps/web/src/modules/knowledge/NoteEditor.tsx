@@ -57,11 +57,10 @@ const TARGET_KIND_LABELS: Record<NoteLinkTargetType, string> = {
 }
 
 /**
- * Derived from the shared vocabulary, not hand-written. The previous version
- * of this array listed `note` and `knowledge_item` only, while the backend
- * accepted more — so evidence, sources and open questions were reachable by
- * the API and offered by nothing, which is why notes and research never met.
- * `server/test/noteLinkTargetsGuard.test.ts` fails if the two diverge again.
+ * Derived from the shared vocabulary. Do not list a subset of the backend's
+ * types: evidence, sources, and open questions would be reachable by the API
+ * and offered by nothing. `server/test/noteLinkTargetsGuard.test.ts` fails
+ * if the two diverge.
  */
 const TARGET_KIND_OPTIONS = NOTE_LINK_TARGET_TYPE_VALUES.map(value => ({
   value,

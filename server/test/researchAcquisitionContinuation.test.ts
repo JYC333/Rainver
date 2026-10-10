@@ -97,16 +97,14 @@ describe("registerResearchAcquisitionContinuation", () => {
       payload: { status: "completed", operation_id: "op-1", reason: "The research operation finished." },
     });
     expect(result.directive).toBe("report_research_operation_completed");
-    // A Room told only "a job completed" is no better than the web UI the
-    // reform was moving work away from.
+    // A Room told only "a job completed" has nothing to summarize.
     expect(result.instruction).toContain("Summarize");
     expect(result.context).toMatchObject({ operation_id: "op-1" });
   });
 
   it("research_workflow_terminal: completed relays the system's own recorded next step", async () => {
-    // A finished search used to end with the Agent inventing a next question,
-    // while the advice the system had just written sat in the Inquiry Area
-    // and in the Project's attention list saying something else.
+    // A finished search relays the recorded next step. Do not let the Agent
+    // invent a different question while Inquiry and attention already show one.
     const withAdvice = {
       query: async () => ({
         rows: [{

@@ -315,7 +315,7 @@ describe("executionTopologyDb", () => {
 
       // A Run finishing is not the Task finishing. With no evaluation to say
       // the result is good, settlement holds the Task for a person rather than
-      // closing it — this used to write `done` straight from the adapter exit.
+      // closing it. Do not write `done` from the adapter exit.
       await settleTasksForRun(db.pool, SPACE, RUN);
       let task = await db.pool.query<{ status: string; blocked_reason: string | null }>(
         `SELECT status, blocked_reason FROM tasks WHERE id = $1`,

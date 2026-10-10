@@ -153,10 +153,10 @@ describe("managed workspaces", () => {
   });
 
   it("archives the pre-Agent-keyed profiles tree and sweeps it on the same clock", async () => {
-    // The old `profiles/<adapter>/<provider>` tree held one login and one
-    // session store shared by every Agent on the machine, plus dead lease
-    // tokens. Nothing reads it any more; it is retired the way every other
-    // directory here is — aside under the marker, never deleted outright.
+    // `<configDir>/profiles/<adapter>/<provider>` holds one login shared by
+    // every Agent on the machine, plus dead lease tokens. Nothing reads it.
+    // Archive it under the marker. Do not delete it outright, and do not
+    // share one login across every Agent.
     const legacy = join(stateDir, "profiles", "claude_code", "provider-1");
     await mkdir(legacy, { recursive: true });
     await writeFile(join(legacy, "config.toml"), "dead lease token");

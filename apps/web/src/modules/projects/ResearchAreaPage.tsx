@@ -121,8 +121,8 @@ export default function ResearchAreaPage() {
           <h1 className="truncate text-xl font-semibold">{research.project?.current_focus ?? research.project?.name ?? 'Research Area'}</h1>
           <p className="text-sm text-muted-foreground">Living research documents evolve independently from report snapshots.</p>
         </div>
-        {/* The notebook is no longer a tab here: notes are a Project-level
-            surface, reachable from every Area rather than only this one. */}
+        {/* Notes are a Project-level surface, reachable from every Area.
+            Do not put the notebook back as a tab of this page. */}
         <Link to={`/projects/${projectId}/notes`}>
           <Button size="sm" variant="outline"><NotebookPen className="size-3.5" />Notes</Button>
         </Link>

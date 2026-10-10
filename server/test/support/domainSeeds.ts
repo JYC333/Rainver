@@ -6,8 +6,8 @@ import type { RuntimeKey } from "../../src/modules/runtimeAdapters/specs.js";
 /**
  * The rows almost every Project-domain test needs before it can do anything:
  * a Space, its owner, the owner's membership, and one Project. Column lists
- * and literals match what the files used to inline, so assertions on names
- * and types are unchanged; pass the option when a test needs a different one.
+ * and literals are the names assertions check. Pass the option when a test
+ * needs a different one.
  */
 export async function seedSpaceOwnerProject(
   pool: Pool,

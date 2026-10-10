@@ -21,30 +21,16 @@ import {
 } from "./noteRevisionService.js";
 
 /**
- * The one way to create or change a note.
+ * The one way to create or change a note. Content still goes through
+ * `noteRevisionService`: every version gets a revision row, which is what
+ * makes rollback trustworthy.
  *
- * `noteRevisionService` already owned note *content* — every version gets a
- * revision row, which is what makes rollback trustworthy. What it did not own
- * was everything around a write, and each caller carried its own copy of that:
- *
- * - Creation existed twice. `PgKnowledgeRepository.createNote` and
- *   `projectResearch/areaService.createProjectNote` each assembled the root
- *   row, the extension row, the first revision, and collection membership by
- *   hand. They had drifted: the project one wrote no `summary` and filed every
- *   note at `sort_order` 0, so a Project's four starter notes were ordered by
- *   tie-break.
- * - Reindexing was the caller's job, and only one caller did it. User saves
- *   went through `createNote`/`updateNote` and refreshed the retrieval
- *   projection; every AI write went through `areaService` and did not. A
- *   "current understanding" note an agent had been maintaining for weeks was
- *   stale in search until a human happened to save it by hand.
- * - The Project role was written from three places, one of which knew about
- *   the registry and about displacing the previous holder, and two of which
- *   did not.
- *
- * This is the same argument the `space_objects` writer settles one level down
- * (B12H): a rule enforced at N call sites is missed at the N+1th, and the miss
- * is silent.
+ * Do not assemble the root row, the extension row, the first revision, and
+ * collection membership in a second caller. Do not skip `summary` or file
+ * every note at `sort_order` 0. Do not skip the retrieval projection on an
+ * AI write. Do not write the Project role from a caller that does not know
+ * the registry or displace the previous holder. A rule enforced at N call
+ * sites is missed at the N+1th, and the miss is silent.
  *
  * **Reindexing runs after the transaction commits, not inside it.** The
  * projection is a derived index that can be rebuilt, so a projection failure

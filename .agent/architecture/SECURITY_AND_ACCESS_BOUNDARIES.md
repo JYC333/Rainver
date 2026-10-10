@@ -1170,9 +1170,9 @@ must-revalidate, private` — from one `onSend` hook, and from
 `sseResponseHeaders` for the three event streams that write their own header
 block with `reply.raw.writeHead` — flushed to the socket before any hook could
 set a header, whether or not the route also hijacks the reply (one of the three
-does). Those had each hand-written `no-cache`, which forbids reuse without
-revalidation but permits a shared cache to *store* the body; one of them
-carries live conversation turns. They add `no-transform`, which matters only on
+does). `no-cache` alone forbids reuse without revalidation but permits a
+shared cache to *store* the body; one of them carries live conversation
+turns. Do not stop at `no-cache`. They add `no-transform`, which matters only on
 a stream: an intermediary that re-buffers the response holds every event until
 it ends — the surface is somebody's
 private content answered against their session cookie, and a route that forgot
@@ -1186,8 +1186,8 @@ The production frontend nginx sends `nosniff`, `X-Frame-Options: DENY`,
 `Permissions-Policy` that denies the device APIs the app does not use — with
 `microphone=(self)`, which voice capture on the Capture page needs and which
 denying would have broken in production only — and a same-origin CSP — defined **once** in `apps/web/security-headers.conf` and
-`include`d by every location that sets a header of its own, because five
-hand-maintained copies is how one of them came to disagree with the others.
+`include`d by every location that sets a header of its own. Do not keep a
+second copy: the copies disagree.
 `img-src` allows `https:`, and that is deliberate: the Library reader renders a
 captured article with the article's own remote images
 (`image_policy: "remote_reference"`), so this header cannot be the layer that

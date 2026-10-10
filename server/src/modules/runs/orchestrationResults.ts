@@ -303,8 +303,8 @@ export function isTerminalRunStatus(status: string): status is RunTerminalStatus
 
 /** Statuses a Run can never leave. Deliberately excludes `waiting_for_review`
  * and `cancelling` — both are cancellable/in-flight — so SQL that selects
- * "Runs still worth stopping" can be built from this list rather than a
- * hand-rolled copy that drifts. */
+ * "Runs still worth stopping" can be built from this list. Do not keep a
+ * second copy. */
 export const HARD_TERMINAL_RUN_STATUSES = ["succeeded", "failed", "degraded", "cancelled", "orphaned"] as const;
 
 export function isHardTerminalRunStatus(status: string): status is RunTerminalStatus {

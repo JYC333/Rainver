@@ -1,8 +1,8 @@
 import type { Pool } from "pg";
 
 /**
- * Empties the listed tables between tests — the job `TRUNCATE ... CASCADE`
- * used to do in `beforeEach`.
+ * Empties the listed tables between tests. Do not `TRUNCATE ... CASCADE`
+ * in `beforeEach`.
  *
  * TRUNCATE is the wrong tool for that job on this schema. `TRUNCATE spaces,
  * users CASCADE` reaches 281 of the ~300 tables through foreign keys, and for

@@ -16,9 +16,7 @@ instead of re-deriving API payloads in multiple places.
 ## Frontend Contract Boundary
 
 `apps/web/src/types/api.ts` forwards every wire type from this package and
-declares none of them itself. Until 2026-08-13 it hand-wrote 204 of them a
-second time, and 98 of those had drifted from their protocol counterparts before
-anyone noticed. `packages/protocol/test/webForwarding.test.ts` now fails
+declares none of them itself. `packages/protocol/test/webForwarding.test.ts` fails
 when a local declaration reuses a name this package exports; the forwarding form
 is what passes. Its local-redeclaration allowlist is empty and remains an
 explicit exception mechanism rather than a second contract surface.

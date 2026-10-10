@@ -57,10 +57,9 @@ describe("projectResearchScreeningCoordinator", () => {
 describe("projectResearchScreeningProgressDb", () => {
   // Real-Postgres coverage for reconcileOperation refreshing screening_progress
   // ("Papers classified" / "Batches" on the research operation card) on every
-  // tick, even while classification batches are still in flight. Before this
-  // fix, isSourcePipelineDrained gated the whole recompute, so the numbers
-  // stayed empty/stale until every batch finished and then jumped straight to
-  // their final value instead of updating incrementally.
+  // tick, even while classification batches are still in flight. Do not wait
+  // for the source pipeline to drain before recomputing: the numbers then stay
+  // empty until every batch finishes and jump to their final value.
 
   const CONFIG = loadConfig({});
   const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -344,9 +343,9 @@ describe("projectResearchScreeningProgressDb", () => {
   });
 
   // The reviewer approves the screening gate; the approval itself enqueues a
-  // reconcile, and that tick used to find no *pending* gate for the operation and
-  // mint a second one — the operation moved on to synthesis while the reviewer
-  // was handed the same intake to approve again.
+  // reconcile. That tick must not mint a second gate when the operation's
+  // gate is already decided: the operation would move on while the reviewer
+  // is handed the same intake again.
   describe("research checkpoints are one decision point per operation (real Postgres)", () => {
     it("does not open a second gate for an operation whose gate was already decided", async () => {
       if (!db.available) return;

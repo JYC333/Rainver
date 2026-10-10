@@ -896,16 +896,13 @@ export function planStrictLaunch(input: {
 }): StrictLaunch {
   // **The container contributes nothing.** A trusted host keeps the machine's
   // environment because it is the owner's machine; a strict host is not
-  // anyone's machine, and its environment is the instance's. Compose no longer
-  // hands this container the control plane's internal token — `.runner.env`
-  // and `SANDBOX_RUNNER_TOKEN` went with the Runner — so this filter is not
-  // what stops that token reaching a Run. It stops the next variable to land
-  // in the container's environment from doing so: this namespace shares the
-  // instance's network, every Space's Runs pass through it, and none of them
-  // has any claim on what the instance configured itself with. The Runner this
-  // replaces `--setenv`-ed a hand-written allowlist and nothing else; this is
-  // the same rule, reusing the allowlist the bound-run path already applies
-  // for B67.
+  // anyone's machine, and its environment is the instance's. This filter is
+  // not what stops a control-plane token reaching a Run. It stops the next
+  // variable to land in the container's environment from doing so: this
+  // namespace shares the instance's network, every Space's Runs pass through
+  // it, and none of them has any claim on what the instance configured itself
+  // with. The allowlist is the one the bound-run path already applies for
+  // B67. Do not pass the container environment through.
   const home = join(input.runDir, "home");
   const env: Record<string, string> = {
     ...filterAmbientEnv(input.ambient),

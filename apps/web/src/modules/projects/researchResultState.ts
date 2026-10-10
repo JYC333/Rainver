@@ -82,11 +82,10 @@ function workflowIdOf(operation: ProjectOperation): string {
 }
 
 /**
- * The backend allows at most one active operation per workflow — a retry (or
+ * The backend allows at most one active operation per workflow. A retry (or
  * an auto-created incremental scan) creates a fresh operation for the same
- * workflow rather than reusing the old one, leaving the superseded operation
- * permanently "failed" in history. Without this, `failedOperations` still
- * counted that stale operation as retriable — the panel showed "failed,
+ * workflow. Do not count the superseded operation as retriable: it stays
+ * "failed" in history, and the panel would otherwise show "failed,
  * Retry" pointing at it while a newer operation for the same workflow was
  * actually running, and clicking Retry 409'd ("another operation is already
  * active for this workflow") with no way to see or act on the real one. Only

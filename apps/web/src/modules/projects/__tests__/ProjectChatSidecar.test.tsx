@@ -185,9 +185,8 @@ describe('focus refs', () => {
   })
 
   it('reads back exactly the path the Board sends a card to', () => {
-    // Guards the defect this replaced: the focus regex matched a shape no link
-    // in the app produced, so the feature was inert while its test passed.
-    // Tying the two helpers together means a change to either is caught here.
+    // The focus regex must match a path the app actually produces. The two
+    // helpers stay tied, so a change to either is caught here.
     expect(focusRefsFor(`/spaces/space-1${projectTaskHref(PROJECT, TASK)}`))
       .toEqual([{ type: 'task', id: TASK }])
   })
@@ -443,9 +442,8 @@ describe('Project chat sidecar', () => {
   })
 
   it('decides a proposal the turn produced, right here, and lets the Agent continue', async () => {
-    // Before this the panel showed the Agent saying "I proposed a research
-    // question" and the decision lived on the Space-level Review page: leave
-    // the Project, find it, come back. The card is the decision.
+    // The card is the decision. Do not send the person to the Space-level
+    // Review page to decide a proposal this turn produced.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'm2', role: 'assistant', content: 'I proposed one question.', created_at: '2026-08-27T09:00:05.000Z',

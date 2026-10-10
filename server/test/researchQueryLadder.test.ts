@@ -15,8 +15,8 @@ describe("ResearchQueryLadderBuilder", () => {
     expect(initial.semanticQuery.qualifiers).toHaveLength(1);
     expect(afterFirstBroaden).toMatchObject({ sequence: 2, direction: "broaden" });
     // Dropping the one AND'd qualifier and adding an OR'd expansion in the
-    // same step used to jump a query's hit count by two orders of magnitude
-    // in production. The first broaden only adds expansion vocabulary.
+    // same step must not jump a query's hit count by two orders of magnitude.
+    // The first broaden only adds expansion vocabulary.
     expect(afterFirstBroaden.semanticQuery.qualifiers).toHaveLength(1);
     expect(afterFirstBroaden.semanticQuery.expansions.length).toBeGreaterThan(initial.semanticQuery.expansions.length);
     // Only once there's no more expansion vocabulary left does broaden reach

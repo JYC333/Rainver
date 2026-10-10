@@ -7,7 +7,7 @@ import { verificationTargetForTest } from "../src/modules/runs/orchestrationServ
  * resolves to nothing on it and the Run dies with "no local path registered".
  * The path under the shared workspace root is what lets it resolve one
  * (ADR 0016 section 4) — and a Conversation bound to a server Location always
- * arrives with a snapshot workspace, which is the case that used to skip it.
+ * arrives with a snapshot workspace. Do not skip resolving it.
  */
 describe("the workspace a Location-bound launch carries", () => {
   const LOC = "loc-1";

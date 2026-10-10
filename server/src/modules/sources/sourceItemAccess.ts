@@ -162,8 +162,8 @@ export function evidenceEffectiveAccessLevelSql(evidenceAlias: string, userParam
 /**
  * The ontology object types, as SQL literals, for the fail-closed guard below:
  * if an evidence row points at an ontology object, that object must be readable.
- * Derived from the registry rather than restated — the restated copy had drifted
- * to include `relationship`, a type with no entity, no table, and no writer.
+ * Derived from the registry. Do not restate it: a copy can name a type with
+ * no entity, no table, and no writer.
  */
 function ontologyObjectTypeLiterals(): string {
   return registeredEntities()

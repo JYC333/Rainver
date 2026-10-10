@@ -1513,7 +1513,7 @@ export class ProjectResearchOrchestrator {
       if (state.run_kind === "baseline") {
         await this.completeWorkflowCoverage(spaceId, projectId, workflowId, operation.id, state.partial ? "partial" : "completed");
         // The bounded pass read the newest matches and stopped. Offer the
-        // rest now that there is a finished baseline to extend from.
+        // rest. There is a finished baseline to extend from.
         await offerEarlierHistoryExtension(this.db, {
           spaceId, projectId, workflowId, userId,
           operationProgress: objectValue(operation.progress_json),
@@ -2718,10 +2718,10 @@ export class ProjectResearchOrchestrator {
    * `failed` fires once per pass (`failOperation` early-returns on a terminal
    * row), `completed` paths are reached once, and the `waiting_review` pause
    * notifies only on the transition edge (`createGate` checks the prior
-   * `stage_state`). An earlier version deduped here against any previously
-   * enqueued `(operation, status)` job, which was permanent — a retried
-   * operation's second failure, or a second distinct pause, was silently
-   * dropped forever. The `episode` (the operation's pass generation, for
+   * `stage_state`). Do not dedupe here against any previously enqueued
+   * `(operation, status)` job: that drop is permanent, so a retried
+   * operation's second failure, or a second distinct pause, never arrives.
+   * The `episode` (the operation's pass generation, for
    * `failed`) flows into the Room event key so a genuinely new episode of the
    * same status is a new Room event rather than a Room-side dedupe casualty. */
   private async notifyRoomOfOperationStatus(

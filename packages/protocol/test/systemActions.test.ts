@@ -35,10 +35,9 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
   it("validates source.channel.propose_activation as Source Channel creation parameters, not a channel reference (D5)", () => {
     // SourceChannelService.proposeActivation begins with
     // `this.create(identity, { ...body, status: "paused" })` — the body is
-    // creation parameters. Before this fix the Zod required `source_channel_id`,
-    // a field the model was never told about and that plays no role in
-    // creation, so every real call failed input validation before the
-    // executor ever ran.
+    // creation parameters. Do not require `source_channel_id`. The model is
+    // never told about it and it plays no role in creation, so every real
+    // call would fail input validation before the executor ran.
     const byId = new Map(SYSTEM_ACTION_REGISTRY.map((action) => [action.id, action]));
     const schema = byId.get("source.channel.propose_activation")!.input_schema;
     expect(schema.safeParse({ source_channel_id: "channel-1" }).success).toBe(false);

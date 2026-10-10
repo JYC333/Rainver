@@ -801,8 +801,8 @@ export const objectRelations = pgTable("object_relations", {
 	check("ck_object_relations_metadata_object", sql`jsonb_typeof(metadata_json) = 'object'::text`),
 	check("ck_object_relations_no_self", sql`(from_object_id)::text <> (to_object_id)::text`),
 	// B12F: the vocabulary is owned by `modules/ontology/linkTypes.ts`, which
-	// also declares endpoints and governance. A second closed set here could
-	// only drift from it — and did, for three values, before this change.
+	// also declares endpoints and governance. Do not add a second closed set
+	// here.
 	check("ck_object_relations_link_type_format", sql`(link_type)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text`),
 	check("ck_object_relations_status", sql`(status)::text = ANY (ARRAY[('candidate'::character varying)::text, ('active'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])`),
 ]);

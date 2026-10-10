@@ -363,9 +363,9 @@ const UNSAFE_OBJECT_PROFILE_CONFIG_KEY_TOKENS = new Set([
   "executable",
 ]);
 
-// Was a fourth hand-maintained copy of the `provenance_links.source_type`
-// list; it now defers to the single owner. The old copy silently *dropped*
-// unrecognized entries, so a divergence lost provenance without an error.
+// One owner of the `provenance_links.source_type` list. Do not keep a
+// second copy that drops unrecognized entries: a divergence then loses
+// provenance without an error.
 
 const KNOWLEDGE_ITEM_COLUMNS = `
   ki.object_id AS id, ki.space_id, so.primary_project_id AS project_id,

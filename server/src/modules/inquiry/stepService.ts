@@ -20,8 +20,8 @@ import { type NextFocusKind } from "./threadService.js";
 /**
  * Actions with a system operation behind them. Once started they keep running
  * without the user, so they move out of the single primary slot and let the
- * next action take it — which is why "wait for monitoring" is no longer a step
- * a user can choose. It was never an action; it was this state.
+ * next action take it. "Wait for monitoring" is this state, not a step a
+ * user can choose.
  */
 const BACKGROUND_STEP_KINDS: readonly NextFocusKind[] = ["search_acquisition", "design_run_experiment"];
 

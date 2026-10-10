@@ -162,8 +162,7 @@ these declarations.
 ## 7. Write path and its guards
 
 `server/src/db/spaceObjectWriter.ts` is the **only** place that builds
-`INSERT INTO space_objects`. It was introduced to consolidate 11 hand-written
-inserts. It enforces:
+`INSERT INTO space_objects`. Do not insert that row from a second caller. It enforces:
 
 - the object type is registered, and is the root or extends it
 - `requiresProjectScope` entities carry a non-null `primary_project_id`

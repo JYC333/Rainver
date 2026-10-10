@@ -630,7 +630,7 @@ describe("cross-Project task lists", () => {
     const handedToAnAgent = randomUUID();
     await makeTask({ id: mine, title: "Mine", assignedUserId: OWNER });
     // Created by me, then claimed by an Agent: the chain stops at the claim, so
-    // it is the Agent's. The predicate this replaced counted it as still mine.
+    // it is the Agent's. Do not count a claimed Task as still mine.
     await makeTask({ id: handedToAnAgent, title: "The Agent has it", createdByUserId: OWNER });
     await db.pool!.query(`UPDATE tasks SET claimed_by_agent_id = $2 WHERE id = $1`, [handedToAnAgent, AGENT]);
 
@@ -709,9 +709,8 @@ describe("who may change a Task", () => {
     const board = await getProjectBoard(db.pool!, viewer, PROJECT);
     expect(board.cards.map((card) => card.id)).toContain(task);
 
-    // Reading is not licence to change. Before this a viewer could drag any
-    // shared Task to Done, acknowledge the override, or move its Loop stage:
-    // the first thing a second household member would hit.
+    // A viewer must not drag a shared Task to Done, acknowledge the override,
+    // or move its Loop stage.
     await expect(repo.updateTask(viewer, task, { status: "ready" }))
       .rejects.toMatchObject({ statusCode: 403 });
     await expect(repo.updateTask(viewer, task, { title: "Renamed by a viewer" }))
@@ -1070,8 +1069,8 @@ describe("project updates", () => {
 
 describe("inquiry advancement in the Project's account", () => {
   // ADR 0017 §4: an Agent creates, archives and concludes without asking, so
-  // this is where the person sees it and puts it back. Before this, an Agent
-  // advancing a Thread left nothing on any Project surface at all.
+  // this is where the person sees it and puts it back. An Agent advancing a
+  // Thread leaves a row on this surface.
   const threads = () => new InquiryThreadService(db.pool!);
   const iterations = () => new InquiryIterationService(db.pool!);
   const run = { runId: "44444444-4444-4444-8444-444444444444", agentId: AGENT };

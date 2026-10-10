@@ -32,9 +32,7 @@ export type AdviceTriggerKind = (typeof ADVICE_TRIGGER_KINDS)[number];
 
 const INQUIRY_ADVICE_OUTPUT_CONTRACT = {
   type: "json_schema" as const,
-  // v2: the enum this pins lost `pause` and `wait_for_monitoring` when Next
-  // Focus became a Step record, so the identifier had to move with it rather
-  // than name a schema that is no longer what v1 described.
+  // Next Focus is a Step record. Do not pin `pause` or `wait_for_monitoring`.
   schema_id: "inquiry.next_step_advice.v2",
   strict: true as const,
   stage: "question_refinement" as const,
@@ -165,11 +163,11 @@ export class InquiryAdviceService {
   }
 
   /**
-   * A stored recommendation naming a kind the vocabulary no longer has is
-   * retired rather than rewritten: it is filtered out here, so it cannot be
-   * shown or adopted, and the next generation replaces the row. Guessing a
-   * replacement kind would put words in the model's mouth about a Thread it
-   * reasoned over under different options.
+   * A stored recommendation naming a kind the vocabulary does not have is
+   * filtered out here, so it cannot be shown or adopted, and the next
+   * generation replaces the row. Do not guess a replacement kind: that would
+   * put words in the model's mouth about a Thread it reasoned over under
+   * different options.
    */
   async getAdvice(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<InquiryThreadAdvice | null> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
