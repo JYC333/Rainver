@@ -411,10 +411,10 @@ it falls back to `HOME/.local/share/opencode`. A **bound** run still gets
 pays for it by losing `~/.gitconfig` and `~/.ssh` — a cost recorded in the
 deferred register.
 
-Redirecting `HOME` for unbound runs too was considered and rejected: it would
-have broken `git commit` (no author identity) and `git push` (no ssh config)
-for every Task run on a paired machine, which is a price the memory boundary
-does not need to pay. OpenCode's XDG redirect is the one state root **not
+Redirecting `HOME` for unbound runs breaks `git commit` (no author identity)
+and `git push` (no ssh config). Do not redirect it. That price is one every
+Task run on a paired machine would pay, and the memory boundary does not need
+it. OpenCode's XDG redirect is the one state root **not
 verified on a real host** — if it ignores `XDG_DATA_HOME`, its state stays
 machine-global. That is not the isolation claimed here. See the deferred
 register.

@@ -993,9 +993,9 @@ export class PgMemoryApplyRepository {
     memoryId: string,
     status: "archived" | "active",
   ): Promise<AppliedMemoryRow | null> {
-    // Ownership, and only ownership. Authorship was considered as a stand-in
-    // for the ownerless case — a `space_shared` entry has no owner — and
-    // rejected: those are exactly the entries other people read, so removing
+    // Ownership, and only ownership. Do not treat authorship as a stand-in
+    // for the ownerless case. A `space_shared` entry has no owner, and
+    // those are exactly the entries other people read, so removing
     // one changes what a Space knows and belongs on the proposal path with
     // every other reach change. ADR 0003 §3 is about a person's own memory.
     // Locked, and the chain with it: the status read decides what the write

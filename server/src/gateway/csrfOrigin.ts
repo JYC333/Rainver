@@ -12,7 +12,7 @@
  * matched a real browser origin, and a request-derived allowlist is exactly
  * what `FRONTEND_URL` exists to replace.
  *
- * Requiring `application/json` on writes was considered and not adopted. The
+ * Do not require `application/json` on writes. The
  * property it would buy — that a cross-origin HTML form cannot send the body,
  * since forms are limited to `x-www-form-urlencoded`, `multipart/form-data`
  * and `text/plain` — is what `Sec-Fetch-Site` already decides, and decides

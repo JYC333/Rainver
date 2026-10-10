@@ -90,7 +90,7 @@ export function isSameOriginImage(src: string | undefined): boolean {
  * URL it fetches can carry whatever the model was induced to put in it. So an
  * external image is never loaded — it renders as an ordinary link, with the
  * domain visible, the full URL on hover, and a new tab if the person decides to
- * open it (D5). Click-to-load was rejected: the click sends the same URL, so it
+ * open it (D5). Do not use click-to-load. The click sends the same URL, so it
  * only turns zero-click into one-click.
  *
  * This catches raw `<img>` HTML as well as markdown: Streamdown's default

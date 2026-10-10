@@ -1002,8 +1002,8 @@ helper.** A list must not answer something the detail page refuses.
   (`canMutateKnowledge`), which is stricter than this one, not looser;
   unifying them would widen who may edit a shared item and is left alone
   deliberately. Free-text search matches a *body*
-  only at `full` access; the title stays searchable at every level, because a
-  search that still matched a withheld body handed it back a character at a
+  only at `full` access; the title stays searchable at every level. Do not
+  match a withheld body. The search would hand it back a character at a
   time. The retrieval projection carries `owner_user_id`, not whoever created
   the row.
 - **Source decision items** — a review action that republishes an item's
