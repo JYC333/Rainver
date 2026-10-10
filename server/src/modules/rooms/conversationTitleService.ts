@@ -215,7 +215,7 @@ export class RoomConversationTitleService {
     return source.rows[0]?.content ?? null;
   }
 
-  /** Backfill old placeholder conversations without requiring another message. */
+  /** Titles conversations that still have a placeholder title, without waiting for another message. */
   async reconcilePending(limit = 100): Promise<number> {
     const rows = await this.db.query<{
       space_id: string;

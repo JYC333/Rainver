@@ -324,7 +324,7 @@ These actions are enforced exclusively via the `proposal.apply` gate
 
 ---
 
-## Reserved Actions (lifecycle_status=RESERVED, not yet wired to enforcement)
+## Reserved Actions (lifecycle_status=RESERVED, not wired to enforcement)
 
 These actions are registered in the action registry with `lifecycle_status=RESERVED` and
 `current_enforcement_point="not_implemented"`. Policy enforcement always denies reserved actions
@@ -339,15 +339,15 @@ Unimplemented reserved-action wiring:
 
 | Action | Notes |
 |--------|-------|
-| `tool_binding.enable` | Tool binding lifecycle not yet wired |
+| `tool_binding.enable` | Tool binding lifecycle not wired |
 | `context.use_personal_grant` | personal_memory_grants/ does not yet call `enforce()` |
-| `artifact.export` | Artifact export surface not yet wired |
-| `proposal.approve` | Explicit approval row recording not yet wired |
-| `memory.read_private` | Private memory read path not yet wired |
-| `memory.promote_shared` | Memory visibility promotion not yet wired |
-| `runtime_skill.execute` | Runtime skill execution not yet wired |
-| `evidence.export` | Evidence export not yet wired |
-| `note.link.create` | Note linking not yet wired |
+| `artifact.export` | Artifact export surface not wired |
+| `proposal.approve` | Explicit approval row recording not wired |
+| `memory.read_private` | Private memory read path not wired |
+| `memory.promote_shared` | Memory visibility promotion not wired |
+| `runtime_skill.execute` | Runtime skill execution not wired |
+| `evidence.export` | Evidence export not wired |
+| `note.link.create` | Note linking not wired |
 | `deployment.propose` | Reserved; deployment jobs do not use this action |
 | `deployment.execute` | Reserved; deployment jobs are instance-admin only (ADR 0020) |
 

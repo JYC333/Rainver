@@ -584,8 +584,7 @@ goes through Drizzle definitions under `server/src/db/schema/`; generated SQL
 artifacts live under `server/migrations/` and are applied only through the
 explicit server migration runner. Do not hand-edit migration SQL for schema
 changes. The server service process does not auto-migrate on startup.
-DB-persisted API-key storage remains disabled/deferred until the canonical
-schema adds that table.
+DB-persisted API-key storage is disabled. There is no `api_keys` table.
 
 **B66** — A new Agent entry point (HTTP route, tool surface, or any future
 host) is a thin adapter over `SystemActionDispatcher`

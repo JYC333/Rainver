@@ -216,7 +216,7 @@ reserved actions. The registry is **not** full RBAC/ABAC.
 | `deployment.propose` | deployment | high | require_approval |
 | `deployment.execute` | deployment | **critical** | require_approval |
 
-**Actions NOT in the registry at all** (no placeholder yet — must fail-closed as unknown):
+**Actions not in the registry** (unknown, and fail closed):
 - `agent.delegate`
 - `agent.wait_for_results`
 

@@ -8,7 +8,7 @@
 `server` is the **client-facing backend**. This document
 defines the internal structure every server-owned module follows, so
 future server features are added consistently. DB-persisted API-key storage
-remains disabled until the canonical schema adds that table.
+is disabled. There is no `api_keys` table.
 
 ## Directory ownership
 

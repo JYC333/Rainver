@@ -27,8 +27,8 @@ is recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-inp
 **Base URL:** `GET /api/v1/...`
 
 **Auth:** Session-cookie identity is current for the web app. Google OAuth is
-available when configured. Persisted API keys are feature-gated and disabled
-until the schema adds `api_keys`. The browser must not keep a leftover key in
+available when configured. Persisted API keys are feature-gated and disabled.
+There is no `api_keys` table. The browser must not keep a leftover key in
 `localStorage` or send it after logout. Internal service routes use the server
 internal token, not browser credentials. The production PWA service worker
 uses NetworkOnly for `/api/v1/*` so authenticated GET bodies are not reused

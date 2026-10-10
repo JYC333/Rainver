@@ -64,9 +64,8 @@ export function validateConfidence(value: number | null): boolean {
  * to `notes` on a fresh client. See KnowledgeModule / KnowledgeSectionHeader.
  */
 /**
- * `domains` (focus areas) is a section but deliberately not a workspace section:
- * it is parked under Knowledge until the app has a home for life-area groupings,
- * so `/knowledge` should not reopen it as a last-used destination.
+ * `domains` (focus areas) is a section and not a workspace section.
+ * `/knowledge` must not reopen it as a last-used destination.
  */
 export type KnowledgeSection = 'home' | 'notes' | 'wiki' | 'sources' | 'cards' | 'domains'
 

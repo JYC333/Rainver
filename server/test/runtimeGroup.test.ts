@@ -505,8 +505,8 @@ describe("Server runtime provisioning against PostgreSQL", () => {
     expect((await repository.get(hostId, "opencode"))?.error).toBe(INTERRUPTED_INSTALL_ERROR);
 
     // The owner was still waiting on the daemon when another process gave its
-    // claim up for lost. Its answer is the real diagnosis; the placeholder was
-    // a guess, so it must not outlive it.
+    // claim up for lost. Keep the real diagnosis. Do not leave the
+    // interrupted-install placeholder in place of it.
     await repository.fail(hostId, "opencode", "1.0.0", "daemon reported\na sha256\tmismatch");
     expect(await repository.get(hostId, "opencode")).toMatchObject({
       state: "failed",
