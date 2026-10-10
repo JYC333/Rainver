@@ -210,8 +210,8 @@ export class PromptRepository {
     validateVersionForDeployment(identity, normalized, scope.scopeType, scope.scopeId, version);
     const proposalId = optionalString(body.promoted_from_proposal_id);
     // Production requires a proposal; any label that names one must name an
-    // accepted promotion proposal for this deployment, or the ref's foreign
-    // key would refuse it after the current ref had already been archived.
+    // accepted promotion proposal for this deployment. Do not archive the
+    // current ref first. The foreign key would then refuse the new one.
     if (normalized === "production" || proposalId) {
       await this.assertAcceptedPromotionProposal(identity, row.id, versionId, scope.scopeType, scope.scopeId, normalized, proposalId);
     }

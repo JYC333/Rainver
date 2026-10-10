@@ -213,8 +213,8 @@ async function materializeAcademicPaperInTransaction(
 
   const objectId = randomUUID();
   // No slice here: the writer projects the label to the root column's width in
-  // one place. Slicing at 1024 was past `space_objects.title`'s 512, so a long
-  // paper title failed the insert rather than being shortened.
+  // one place. Do not slice at 1024. That is past `space_objects.title`'s 512,
+  // so a long paper title would fail the insert rather than be shortened.
   const title = item.title?.trim() || academic.arxivId || academic.openalexId || academic.semanticScholarId || academic.doi || "Academic paper";
   const object = buildSpaceObjectInsert({
     id: objectId,
