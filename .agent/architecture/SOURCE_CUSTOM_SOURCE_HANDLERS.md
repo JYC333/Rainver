@@ -326,9 +326,9 @@ Step catalog (`packages/protocol/src/sourceCustomSourceHandlers.ts`,
 Resource bounds: wall-clock `timeout_ms` is checked before every step and
 enforced per-request via `AbortSignal.timeout`; `max_files` bounds the total
 number of stored snapshots across `follow_link` and `download_asset`
-combined; each individual fetch is capped at `max_download_bytes` (no
-separate cumulative-bytes-across-fetches limit exists yet — the practical
-worst case is bounded by `max_files * max_download_bytes`). Exceeding
+combined; each individual fetch is capped at `max_download_bytes`. There is
+no separate cumulative-bytes-across-fetches limit. The worst case is
+`max_files * max_download_bytes`. Exceeding
 `max_output_bytes` on the final serialized output produces
 `output_too_large: true` with `raw_output_json: null`, exactly like the
 `typescript_node` runner.

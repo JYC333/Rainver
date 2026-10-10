@@ -311,11 +311,9 @@ export class PgImportedSessionRepository {
       else unchanged += 1;
     }
 
-    // ACP carries no per-record timestamp in any runtime verified so far, so
-    // in practice this always falls back to the session's own vendor
-    // timestamp — which is why the product shows one instant per session
-    // rather than a range. The MIN/MAX is kept because the column exists and a
-    // future replay that does carry times should be used when it appears.
+    // Record timestamps win when the replay has them. Otherwise the session's
+    // vendor timestamp is the instant, so the product shows one instant per
+    // session rather than a range.
     await this.db.query(
       `UPDATE imported_sessions s
           SET record_count = counts.total,

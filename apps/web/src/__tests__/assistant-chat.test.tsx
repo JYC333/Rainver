@@ -549,10 +549,9 @@ describe('AssistantChatPage conversation backends', () => {
     })
 
     // And once it resumes, the composer is still held — the request is open
-    // again, so a second message would still be a second turn. This window is
-    // the one a `sending` flag that meant "open and not blocked" left
-    // uncovered: the note is gone, so only the guard is left to refuse, and a
-    // guard the person cannot see is a message that vanishes.
+    // again, so a second message would still be a second turn. Do not treat
+    // "open and not blocked" as idle. The note is gone, so only the guard
+    // refuses, and a guard the person cannot see is a message that vanishes.
     act(() => { resume?.() })
     await waitFor(() => {
       expect(screen.queryByText(/waiting for your decision/i)).not.toBeInTheDocument()
