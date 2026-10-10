@@ -6,10 +6,11 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
-// NC/N7: notes and evidence connect both ways. The "jot a note" affordance on
-// an evidence or material card has to create the note *and* the link in one
-// step — the two-step version is why the connection never got made, and a
-// client-side two-call version would strand a note whenever the link failed.
+// Notes and evidence connect both ways. The "jot a note" affordance on
+// an evidence or material card creates the note and the link in one
+// step. Do not split it into two calls. A two-step write misses the
+// connection, and a client-side two-call version would strand a note
+// whenever the link failed.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

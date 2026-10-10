@@ -421,11 +421,11 @@ export const SYSTEM_ACTION_REGISTRY = [
   action("project.summary.brief", "Build project summary brief", "projects", "RetrievalToolService.brief", "project.summary.brief", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
   action("source.retrieval.search", "Search source material", "sources", "RetrievalToolService.search", "source.retrieval.search", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
   action("source.retrieval.brief", "Build source brief", "sources", "RetrievalToolService.brief", "source.retrieval.brief", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
-  // D8: the tool-call entry and the runtime-delegation-output entry (Path A
+  // The tool-call entry and the runtime-delegation-output entry (Path A
   // and Path B, agentGroupRuns.ts/runtimeDelegationMaterializer.ts) draft the
-  // same thing — "this Agent decided another Agent should do work" — so they
-  // validate against the exact same strict schema rather than Path A
-  // accepting anything (`objectInput`) while Path B alone was strict.
+  // same thing — "this Agent decided another Agent should do work". They
+  // validate against the same strict schema. Do not let Path A accept
+  // anything while Path B is strict.
   action("agent.delegate", "Delegate to an agent", "agent_groups", "AgentGroupRunService.spawnChildRun", "run.spawn_child", "durable", { agentToolSurface: "delegation", policyAdapter: "agent_delegate", inputSchema: RuntimeDelegationOutputItemSchema }),
   action("agent.wait_for_results", "Wait for agent results", "agent_groups", "AgentGroupRunService.waitForResults", "runtime.execute", "none", { policyResource: { resource_type: "run", resource_id_fallback: "run", check_action_approval_grant: false }, agentToolSurface: "delegation", policyAdapter: "declared_resource", inputSchema: AgentWaitForResultsInputSchema }),
   httpAction("source.recipe.plan", "Plan a Source recipe", "sources", "SourceRecipeService.planSource", "source.recipe.create", "none"),

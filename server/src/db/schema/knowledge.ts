@@ -896,9 +896,9 @@ export const notes = pgTable("notes", {
 	contentHash: varchar("content_hash", { length: 64 }),
 	updatedByUserId: varchar("updated_by_user_id", { length: 36 }),
 	updatedByRunId: varchar("updated_by_run_id", { length: 36 }),
-	// N2/N3: the system-reserved role this note plays in its Project's
-	// notebook, replacing the title-string binding the research baseline used
-	// to resolve by. Membership is owned by the registry in
+	// The system-reserved role this note plays in its Project's notebook.
+	// Do not resolve the research baseline by the title string. Membership
+	// is owned by the registry in
 	// `modules/knowledge/noteProjectRoles.ts` (B12F), so the constraint below
 	// is a format check, not a closed set.
 	//

@@ -1524,7 +1524,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // N7: "jot a note" from an evidence or material card. Creates (or appends
+  // "jot a note" from an evidence or material card. Creates (or appends
   // to) a note and makes the note_link in one call, so the connection is
   // recorded without a trip to the Notes page and back for an id.
   app.post("/api/v1/knowledge/notes/jot", async (request, reply) => {

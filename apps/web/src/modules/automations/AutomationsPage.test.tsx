@@ -141,7 +141,7 @@ describe('AutomationsPage', () => {
   })
 
   it('runs an automation on its own configured prompt, not one this person supplied', async () => {
-    // ADR 0003 §5 / D1: the server reads the configured prompt itself, and a
+    // ADR 0003 §5: the server reads the configured prompt itself, and a
     // fire that carries a prompt is stamped as the firing person asking.
     // Echoing the owner's configured text back would make every "Run now"
     // read as this person's request and take the persona write with it.

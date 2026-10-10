@@ -479,7 +479,7 @@ describe('AssistantChatPage conversation backends', () => {
     fireEvent.change(input, { target: { value: 'hello' } })
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
 
-    // D3: the same bubble carries the failure, and the steps stay — a turn
+    // The same bubble carries the failure, and the steps stay — a turn
     // that failed is the one where they matter most.
     expect(await screen.findByText('Upstream refused.')).toBeInTheDocument()
     expect(screen.getByText('write_file')).toBeInTheDocument()

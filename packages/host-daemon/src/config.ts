@@ -8,8 +8,8 @@ import { dirname, join } from "node:path";
  * Local daemon state: which control plane this machine registered with, its
  * bearer token, and the local absolute path behind every workspace this
  * machine has registered. This file is the ONLY place a workspace's real
- * path is ever written down — the control plane never sees it (ADR 0016 B64,
- * D3: `display_path` sent to the server is informational only).
+ * path is ever written down — the control plane never sees it (ADR 0016 B64;
+ * `display_path` sent to the server is informational only).
  */
 /**
  * How much of this machine a Run is allowed to see.

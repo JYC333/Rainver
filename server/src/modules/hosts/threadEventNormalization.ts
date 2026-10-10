@@ -138,14 +138,14 @@ export function createThreadEventNormalizer(): {
           tool_input_summary: toolInput,
           tool_kind: toolKind,
           status: acpToolStatus(status),
-          // A9: absorbed for claude/opencode; codex-acp currently reports none
+          // Absorbed for claude/opencode; codex-acp reports none
           // (a known adapter asymmetry, not a bug).
           tool_result_summary: toolOutput,
         },
       ];
     }
     if (update.sessionUpdate === "plan") {
-      // A9: appended as a snapshot, never mutated — a reader takes the
+      // Appended as a snapshot, never mutated — a reader takes the
       // thread's latest plan_updated event, not a running diff of them.
       return [
         ...flushTextSegment(),

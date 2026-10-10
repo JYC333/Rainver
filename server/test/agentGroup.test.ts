@@ -487,7 +487,7 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
           delegation_status: "queued",
         },
       });
-      // D8: Path B now emits the same action_invoked/action_completed pair
+      // Path B emits the same action_invoked/action_completed pair
       // the agent.delegate tool call's gateway hooks would, keyed on the same
       // action_id and the materializer's own idempotency key.
       expect(runEvents.events).toHaveLength(2);
