@@ -163,7 +163,7 @@ export async function requestRoomConversationSummary(
     if (sourceTokens < ROOM_RECENT_TOKEN_BUDGET) {
       // Nothing to summarize yet, but the watermark is still recorded: the
       // freshness sweep selects by it, and a short conversation that never
-      // moved it was re-selected on every tick forever, holding one of the
+      // moved it would be re-selected on every tick, holding one of the
       // sweep's places from the backlog behind it. The state stays as it is
       // (`idle` when new), and no job is enqueued.
       await client.query(

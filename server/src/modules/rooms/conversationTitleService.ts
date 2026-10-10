@@ -20,7 +20,7 @@ const ROOM_CONVERSATION_TITLE_TASK = "room_conversation_title";
 /**
  * Titles that mean "not titled yet". The sweep selects conversations by this
  * set, so neither the provisional title nor a generated one may land in it:
- * a title that did was re-requested — and billed — every minute.
+ * a title that lands in it is re-requested — and billed — every minute.
  */
 const PLACEHOLDER_TITLES = ["", "conversation", "new conversation"] as const;
 const PLACEHOLDER_TITLE_SQL = `lower(btrim(COALESCE(session_row.title, ''))) IN (${PLACEHOLDER_TITLES.map((title) => `'${title}'`).join(", ")})`;

@@ -1605,9 +1605,9 @@ async function buildRoomProjectStateContext(
   focusRefs: Array<{ type: "task"; id: string }> | null = null,
 ): Promise<{ text: string | null; focusTaskIds: string[]; failures: string[] }> {
   const failures: string[] = [];
-  // Two independent reads, each failing on its own. Sharing one try meant a
-  // single Area's adapter erroring dropped the focus sentence with it, so
-  // "is this one done?" got an unrelated answer — and nothing recorded that
+  // Two independent reads, each failing on its own. Do not share one try.
+  // One Area's adapter erroring would drop the focus sentence with it, so
+  // "is this one done?" would get an unrelated answer — and nothing would record that
   // anything had gone wrong. Failure still never blocks sending; it is
   // written into the dispatched message's metadata instead of a log nobody
   // reads.
