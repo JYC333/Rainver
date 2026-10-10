@@ -568,9 +568,9 @@ Thread structure stays direct and a `note_link` is navigational with no graph
 authority (B12A).
 
 Of the policy actions they name, `note.link.create` is **`reserved`**, meaning
-declared and not evaluated by any code path. It was introduced alongside the
-actions and first marked `wired_direct` on the grounds that it made the
-operation auditable. It does not: enforcement is the route's own Project ACL
+declared and not evaluated by any code path. Do not mark it `wired_direct`
+on the grounds that a policy audit would make the operation auditable.
+Enforcement is the route's own Project ACL
 and note read gate, and who performed the write is already on the canonical
 row (`note_links.created_by_user_id`), so a policy audit record would restate
 it. `inquiry.thread.create`, the other one, is `wired_direct`:

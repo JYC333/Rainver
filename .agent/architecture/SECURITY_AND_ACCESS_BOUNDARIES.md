@@ -1236,8 +1236,8 @@ The same rule reaches the *other* renderer. A Library summary or digest is
 written by a Run over ingested third-party items and is displayed through the
 Tiptap reading core, not through Streamdown — so that core takes the decision
 too, as an explicit `remoteImages` flag that is off unless the caller says
-otherwise. One renderer with one answer for both kinds of document was how a
-digest could be induced to fetch from a host the model named.
+otherwise. Do not give both kinds of document one answer. A digest could be
+induced to fetch from a host the model named.
 
 The flag is passed down rather than decided at the workspace, because
 `ReaderWorkspace` renders more than one kind of document too: a captured

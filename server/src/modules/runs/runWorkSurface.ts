@@ -43,9 +43,9 @@ export interface RunWorkSurface {
  * Which Skill a Run gets, decided from the Run itself: a conversation turn
  * (it has a Session) reads differently from a dispatched Task, and the
  * output-delivery section is offered only when `artifact.submit` was
- * actually granted. Rendering the dispatched default for every remote run
- * sent a Room agent to `artifact.submit` it was never granted and told it
- * its reply reached nobody.
+ * actually granted. Do not render the dispatched default for every remote
+ * run. A Room agent would be sent to `artifact.submit` it was not granted
+ * and told its reply reached nobody.
  */
 export function workSkillOptionsForRun(run: RunRecord): WorkSkillOptions {
   return {

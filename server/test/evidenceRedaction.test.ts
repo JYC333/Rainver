@@ -170,8 +170,9 @@ describe("run evidence redaction", () => {
 
   it("leaves no decodable JWT head when a bare token straddles the cap itself", () => {
     // The cap is a boundary of the same kind as the window's far edge. A JWT
-    // is matched only whole, so one whose second dot lies past the overscan
-    // was never redacted, and cutting at the cap kept its header and payload.
+    // is matched only whole. One whose second dot lies past the overscan is
+    // not redacted, and cutting at the cap keeps its header and payload.
+    // Do not cut a straddling token at the cap.
     const jwt = `eyJhbGciOiJIUzI1NiJ9.eyJ${"A".repeat(600)}.SIGNATURE_TAIL_abcdef`;
     const value = `${"x".repeat(MAX_EVIDENCE_TEXT_CHARS - 120)} ${jwt} trailing${"y".repeat(4000)}`;
     const redacted = redactEvidenceText(value)!;

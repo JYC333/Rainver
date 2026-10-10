@@ -69,11 +69,10 @@ unchanged by it — the Run's
 points at `list` rather than naming a fixed set. Each Run records the content
 hash of the Skill it was given.
 
-It is delivered as a file, which nothing else in this module does yet: an
-imported Open Skill is still flattened into prompt text by the Runtime Context
-gateway. Modelling it as a `SkillPackage` with a `runtime`-scoped
-`SkillBinding` is carried in [`plans/capability-shrink-plan.md`](../plans/capability-shrink-plan.md),
-whose target shape it was written against.
+It is delivered as a file. An imported Open Skill is flattened into prompt
+text by the Runtime Context gateway. Modelling that import as a `SkillPackage`
+with a `runtime`-scoped
+`SkillBinding` is deferred in [`plans/capability-shrink-plan.md`](../plans/capability-shrink-plan.md).
 
 ### Open Skill
 

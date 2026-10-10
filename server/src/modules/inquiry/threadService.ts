@@ -543,9 +543,8 @@ export class InquiryThreadService {
         [noteObjectId, identity.spaceId, identity.userId],
       );
       if (!note.rows[0]) throw new HttpError(422, "Note not found in this Space");
-      // Thread-to-Note is now an ontology edge with both endpoints inside the
-      // ontology; the half-edge table it replaces existed only because Thread
-      // was not an object.
+      // Thread-to-Note is an ontology edge. Both endpoints are ontology
+      // objects. Do not keep a half-edge table for it.
       assertLinkTypeAllowed({
         linkType: "references",
         fromObjectType: "inquiry_thread",

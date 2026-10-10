@@ -328,8 +328,8 @@ export class PgMemoryApplyRepository {
     // carries only agent-inferred provenance, and the source-monitoring gate
     // refuses that as the sole basis for an active semantic memory. The thing
     // the gate is asking for is a person's confirmation, and accepting the
-    // proposal *is* one — it simply was not written down anywhere the gate
-    // could see. Recorded here, where the accept happens, rather than at
+    // proposal *is* one. The gate cannot see a confirmation that is only
+    // implied. Recorded here, where the accept happens, rather than at
     // creation, where it would be a claim about something the person had not
     // yet done.
     //

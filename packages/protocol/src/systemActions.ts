@@ -499,8 +499,8 @@ export const SYSTEM_ACTION_REGISTRY = [
   // focus — so requiring a proposal here would gate a suggestion the system
   // made behind a review of the same suggestion.
   // The Agent's own memory, bounded rather than pre-approved (ADR 0003).
-  // Until these existed no Agent could write memory from a conversation at
-  // all, so the person was never the bottleneck there — nothing was.
+  // These two actions are how an Agent writes memory from a conversation.
+  // Do not leave only the retrieval actions. Nothing would write.
   agentAction("memory.remember", "Remember something across sessions", "memory", "PgMemoryApplyRepository.applyDirect", "memory.write", "durable", { resource_type: "memory_entry", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("memory.revise", "Revise a memory this Agent wrote", "memory", "PgMemoryApplyRepository.applyDirect", "memory.write", "durable", { resource_type: "memory_entry", resource_id_input_field: "memory_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("inquiry.adopt_next_step", "Adopt the recorded next step for an Inquiry Thread", "inquiry", "InquiryAdviceService.adoptAdvice", "inquiry.advice.adopt", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }),

@@ -24,11 +24,10 @@ import { PgMemoryProposalRepository } from "./proposalRepository.js";
  * Memory's Agent tool surface — `memory.remember` and `memory.revise`
  * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §2).
  *
- * Until these existed no Agent could write memory from a conversation at all:
- * the surface carried only `memory.retrieval.*`, and the pipelines that draft
- * memory proposals have produced none on this instance. The person was never
- * the bottleneck on what an Agent remembers — nothing was, and it did not
- * learn.
+ * These two actions are how an Agent writes memory from a conversation.
+ * `memory.retrieval.*` does not write, and the pipelines that draft memory
+ * proposals produce none on their own. Do not leave the Agent with only
+ * retrieval. Nothing would write what it learned.
  *
  * A write that stays private, normal-sensitivity and about the person in the
  * turn applies directly, as a new version carrying its run and rationale. A
