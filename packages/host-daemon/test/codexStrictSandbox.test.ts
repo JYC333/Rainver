@@ -46,9 +46,9 @@ describe("applyCodexStrictSandboxToml", () => {
 
   /**
    * A continuation line of a multi-line array starts with `[` and is not a
-   * table header. Treating it as one made the insert land above a key that was
-   * still top-level, leaving two top-level `sandbox_mode` keys — a TOML
-   * duplicate-key error, so Codex refuses to start and every strict Run fails.
+   * table header. Do not treat it as one. The insert would land above a key
+   * that is still top-level, leaving two top-level `sandbox_mode` keys, and
+   * the TOML duplicate-key error stops Codex from starting.
    */
   it("does not mistake a multi-line array's continuation for a table header", () => {
     // Both spellings: with a trailing comma, and as the final element, which
@@ -74,10 +74,10 @@ describe("applyCodexStrictSandboxToml", () => {
   });
 
   it("does not read a line inside a multi-line string as a table header", () => {
-    // Nothing inside `"""` or `'''` is syntax. A line reading `[x]` in one was
-    // taken as the first table header, which hid the real top-level key and
-    // inserted a second — the TOML duplicate-key error that stops Codex from
-    // starting. Do not treat a line inside a multi-line string as a header.
+    // Nothing inside `"""` or `'''` is syntax. Do not treat a line inside a
+    // multi-line string as a header. That hides the real top-level key and
+    // inserts a second, and the TOML duplicate-key error stops Codex from
+    // starting.
     for (const quote of ['"""', "'''"]) {
       const config = [
         `instructions = ${quote}`,

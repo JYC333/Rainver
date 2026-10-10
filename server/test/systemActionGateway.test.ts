@@ -114,7 +114,7 @@ describe("SystemActionGateway", () => {
     });
   });
 
-  it("resolves declarative policy resource ids the same way the four eliminated branches did (D4)", () => {
+  it("resolves declarative policy resource ids from the action declaration", () => {
     const run: Pick<AgentRunRecord, "id" | "project_id"> = { id: "run-1", project_id: "project-1" };
     const runWithoutProject: Pick<AgentRunRecord, "id" | "project_id"> = { id: "run-1", project_id: null };
 

@@ -74,8 +74,8 @@ async function indexedNote(noteId: string): Promise<{ title: string; content_has
 describe("shared note writer (real Postgres)", () => {
   it("indexes a Project's starter notes and files them in a stable order", async () => {
     if (!db.available) return;
-    // The Project path built its own note rows: no summary, and every note at
-    // sort_order 0, so the four starter notes were ordered by tie-break.
+    // Starter notes are indexed and filed at distinct sort orders. Do not
+    // leave every note at sort_order 0.
     await new ProjectResearchAreaService(db.pool).initializeArea(owner, PROJECT);
 
     const notes = await db.pool.query<{ id: string; summary: string | null; sort_order: number; project_role: string }>(
