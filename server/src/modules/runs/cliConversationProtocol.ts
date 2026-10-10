@@ -129,8 +129,8 @@ const AUTHENTICATE_REQUEST_ID = 2.5;
 
 /**
  * General Agent Client Protocol controller. All three conversation runtimes
- * use the same lifecycle on both server-host and remote paths; Claude's ACP
- * adapter replaced its stream-json path in P4 of the runtime replatform.
+ * use the same lifecycle on both server-host and remote paths. Claude uses
+ * its ACP adapter.
  */
 export class AcpController implements CliStdioController {
   private phase: "initialize" | "session_new" | "authenticate" | "set_config" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";

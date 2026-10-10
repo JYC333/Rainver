@@ -323,8 +323,7 @@ or the architecture doc:
 - the **deprecation path** — what deletes the old one and what triggers it.
 
 A migration state with no recorded end is a permanent duplicate. Where a clean
-cutover is possible (no running instance to migrate), prefer it — that is the
-call ADR 0016's replatform work made deliberately and twice.
+cutover is possible (no running instance to migrate), prefer it.
 
 ---
 
