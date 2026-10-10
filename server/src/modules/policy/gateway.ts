@@ -33,7 +33,7 @@ import type {
 export type Registry = ReadonlyMap<string, PolicyActionDefinition>;
 
 // ---------------------------------------------------------------------------
-// Context assembly (gateway.py _build_engine_ctx / _guard_ctx)
+// Context assembly
 // ---------------------------------------------------------------------------
 
 function buildEngineCtx(req: PolicyCheckRequest): Record<string, unknown> {
@@ -70,7 +70,7 @@ function triggerOrigin(req: PolicyCheckRequest): string {
 }
 
 // ---------------------------------------------------------------------------
-// Durable-audit requirement + failure mode (gateway.py)
+// Durable-audit requirement + failure mode
 // ---------------------------------------------------------------------------
 
 export function isDurableAuditRequired(
@@ -111,7 +111,7 @@ export function resolveFailureMode(
 }
 
 // ---------------------------------------------------------------------------
-// Audit envelope (gateway.py _build_audit_envelope)
+// Audit envelope
 // ---------------------------------------------------------------------------
 
 export function buildAuditEnvelope(
@@ -150,7 +150,7 @@ export function buildAuditEnvelope(
 }
 
 // ---------------------------------------------------------------------------
-// Decision computation (gateway.py PolicyGateway._compute_decision)
+// Decision computation
 // ---------------------------------------------------------------------------
 
 interface ComputedDecision {
@@ -254,7 +254,7 @@ export function computeDecision(
 }
 
 // ---------------------------------------------------------------------------
-// Proposal-apply gate (proposal_apply.py — pure parts)
+// Proposal-apply gate
 //
 // DB lookups (space role, the live supported-proposal-type set) are injected so
 // this stays DB-free and unit-testable. The service layer supplies them.

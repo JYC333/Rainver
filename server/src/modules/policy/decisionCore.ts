@@ -40,7 +40,7 @@ function num(value: unknown): number | null {
 }
 
 // ---------------------------------------------------------------------------
-// roles.py
+// Canonical roles
 // ---------------------------------------------------------------------------
 
 export const CANONICAL_ROLES = [
@@ -67,7 +67,7 @@ export function hasRoleAtLeast(role: string, required: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// hard_invariants.py
+// Hard invariants
 // ---------------------------------------------------------------------------
 
 const PERSISTENCE_ACTIONS = new Set([
@@ -273,7 +273,7 @@ export function checkHardInvariants(ctx: Ctx): PolicyDecision | null {
 }
 
 // ---------------------------------------------------------------------------
-// rules.py
+// Rules
 // ---------------------------------------------------------------------------
 
 type Rule = (ctx: Ctx) => PolicyDecision | null;
@@ -968,7 +968,7 @@ const BUILTIN_RULES: readonly Rule[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// engine.py
+// Decision engine
 // ---------------------------------------------------------------------------
 
 /**

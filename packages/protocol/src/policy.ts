@@ -14,7 +14,7 @@ import { z } from "zod";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 
 // ---------------------------------------------------------------------------
-// Core enums (decisions.py / actions.py)
+// Core enums
 // ---------------------------------------------------------------------------
 
 export const POLICY_DECISION_VALUES = [
@@ -1464,7 +1464,7 @@ export const POLICY_ACTION_REGISTRY = [
 export type PolicyActionId = (typeof POLICY_ACTION_REGISTRY)[number]["action"];
 
 // ---------------------------------------------------------------------------
-// Enforcement request (PolicyCheckRequest, gateway.py)
+// Enforcement request (PolicyCheckRequest)
 //
 // `context` carries bounded decision inputs (flattened into the guard ctx);
 // `metadata_json` is audit-only; `payload` is only scanned by hard invariants.
@@ -1516,7 +1516,7 @@ export const PolicyProposalApplyRequestSchema = z
   .strict();
 
 // ---------------------------------------------------------------------------
-// Decision result (PolicyDecision, decisions.py)
+// Decision result (PolicyDecision)
 // ---------------------------------------------------------------------------
 
 export const PolicyDecisionSchema = z
@@ -1547,7 +1547,7 @@ export const PolicyDecisionSchema = z
 export type PolicyDecision = z.infer<typeof PolicyDecisionSchema>;
 
 // ---------------------------------------------------------------------------
-// Durable audit envelope (audit.py PolicyAuditEnvelope → PolicyDecisionRecord)
+// Durable audit envelope (PolicyAuditEnvelope)
 //
 // This is the sanitized, audit-only record the gateway persists. metadata_json
 // is post-sanitization (no credentials/raw memory/patch bodies/stdout-stderr).
@@ -1580,7 +1580,7 @@ export const PolicyAuditEnvelopeSchema = z
 export type PolicyAuditEnvelope = z.infer<typeof PolicyAuditEnvelopeSchema>;
 
 // ---------------------------------------------------------------------------
-// Error taxonomy (exceptions.py — PolicyGateBlocked / PolicyAuditPersistError)
+// Error taxonomy (PolicyGateBlocked / PolicyAuditPersistError)
 //
 // `enforce` returns a PolicyDecision on ALLOW and raises a gate-block on
 // DENY / REQUIRE_APPROVAL; an independent fail-closed audit write failure is a
