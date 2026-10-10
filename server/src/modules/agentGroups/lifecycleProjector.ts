@@ -725,9 +725,9 @@ function completedRunResultsBlock(
  * ran: the prompt it was dispatched with — identity block, conversation
  * window, execution rules, assigned task — is still the prompt it needs. That
  * window closes at the person's message, so the replies the earlier
- * recipients produced meanwhile are appended rather than lost; replacing the
- * prompt with a "continue" instruction (the `agent.wait_for_results` resume
- * shape) sent the Agent to work with no identity and no conversation.
+ * recipients produced meanwhile are appended rather than lost. Do not replace
+ * the prompt with a "continue" instruction (the `agent.wait_for_results`
+ * resume shape). The Agent would work with no identity and no conversation.
  */
 function serializedRecipientPrompt(
   waitingRun: RunRecord,

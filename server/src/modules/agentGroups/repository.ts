@@ -500,12 +500,10 @@ export class PgAgentGroupRepository {
   }
 
   /**
-   * The manager leads, then insertion order.
+   * The manager leads, then `created_at`, then `id`.
    *
-   * `created_at, id` alone was not deterministic: a group's members are
-   * inserted in one transaction and share a timestamp, so the tiebreak fell
-   * to a random UUID and the same data came back in either order — which
-   * surfaced as a test that failed roughly one run in nine.
+   * Members inserted in one transaction share `created_at`. `id` is a UUID,
+   * not insertion order.
    */
   async listMembers(spaceId: string, groupId: string): Promise<AgentRunGroupMemberRecord[]> {
     const result = await this.db.query<AgentRunGroupMemberRecord>(

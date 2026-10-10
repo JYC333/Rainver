@@ -2349,9 +2349,9 @@ function delegatedRoomModelOverride(
         }
       : {}),
     // Always, not only when the parent had one. The parent's task is not this
-    // child's — inheriting it made a sibling waiting on this Run see the
-    // Manager's request where its own delegation instruction belongs — and
-    // leaving the key out is worse still: the child's prompt opens with its
+    // child's. Do not inherit it. A sibling waiting on this Run would see the
+    // Manager's request where its own delegation instruction belongs. Leaving
+    // the key out is worse still: the child's prompt opens with its
     // own identity block, so a Run with no task falls back to handing that
     // block to whichever Agent waits on it. A sibling is shown the task, never
     // the prompt.
