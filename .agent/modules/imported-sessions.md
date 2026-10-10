@@ -255,9 +255,8 @@ being present, and attended consent does not stand in for unattended spending
   and wrong for a caller that copies the transcript where other people read
   it. Oversight is audit, not a route to publish.
 
-  The live explicit-reference wiring that briefly existed — resolver,
-  context-authority read, delivery re-authorization — is gone. It re-resolved
-  a pointer every turn, which is the shape a reference deliberately is not.
+  There is no live wiring that re-resolves a reference every turn. A reference
+  is not that shape. Do not re-resolve it on each turn.
 
   Carrying a session into a thread is what a thread reference is for; a
   per-conversation Work Context Setup, which would pin one, stays on the

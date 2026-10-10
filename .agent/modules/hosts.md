@@ -1453,9 +1453,8 @@ server-local CLI Run Exchange is not used by the current ACP Agent path.
 **ModelProvider** spend is checked, not whether: the Run executor checks a
 server-host Run's recorded provider before it starts, and a daemon Run on
 either kind of host is checked when its proxy lease is minted — no lease exists
-without a decided spend. The `cli_profile` credential check is gone with the
-server-host CLI branch that raised it — a daemon Run spends the copy's own
-login, which no server-side profile grants.
+without a decided spend. There is no `cli_profile` credential check. A daemon
+Run spends the copy's own login, which no server-side profile grants.
 
 `resolveExecutionPort` returns a `HostDaemonExecutionAdapter` for a CLI Run on
 either kind of host, and for a CLI Run with nothing bound only when its runtime

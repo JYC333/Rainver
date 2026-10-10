@@ -1356,11 +1356,11 @@ async function launchRun(
       } else if (relocatesState) {
         baseEnv = clearStateRootEnv(process.env, runtimeKey);
         // A managed copy is launched with `HOME` pointing inside its own tree
-        // so its login never mixes with the machine's. That reason is gone
-        // once the credential is linked into the profile and the state root is
-        // the profile's own variable — and leaving it would take
+        // so its login never mixes with the machine's. Do not leave `HOME`
+        // set once the credential is linked into the profile and the state
+        // root is the profile's own variable. Leaving it would take
         // `~/.gitconfig` and `~/.ssh/config` away from exactly the runs this
-        // branch exists to keep them for.
+        // branch keeps them for.
         delete acpAdapterEnv.HOME;
       } else {
         baseEnv = clearVendorCredentialEnv(process.env, runtimeKey);

@@ -35,9 +35,9 @@ longer write it.
 `packages/protocol/src/projectWork.ts`.
 
 A **system constant**, not per-Project configuration, and one wording:
-*Frame / Plan / Act / Verify / Conclude* in every Project. Four per-mode
-wordings for the same stages were the last thing a Project "mode" did, and
-went with it ([ADR 0019](../decisions/0019-project-has-no-type-field.md)).
+*Frame / Plan / Act / Verify / Conclude* in every Project. Do not keep a
+second wording per Project mode
+([ADR 0019](../decisions/0019-project-has-no-type-field.md)).
 
 Movement is classified, not restricted. `stageTransitionKind()` reads the
 ordering to label a move `advance / regress / skip / reopen`:
