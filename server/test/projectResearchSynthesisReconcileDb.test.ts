@@ -882,9 +882,9 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     expect(after.progress_json.comparison_run_id).toBeTruthy();
     expect(after.progress_json.comparison_run_id).not.toBe("stale-failed-run-id");
     expect(after.progress_json.comparison_pending_source_item_ids).toEqual([]);
-    // Batch 1's already-accumulated results must survive the retry — the bug
-    // being fixed here wiped comparison_results_json back to [] on every
-    // retry, silently discarding real LLM output over one bad batch.
+    // Batch 1's already-accumulated results survive the retry. Do not wipe
+    // comparison_results_json on a retry. That discards real output over one
+    // bad batch.
     expect(after.progress_json.comparison_results_json).toEqual(batch1Results);
 
     const run = await db.pool.query<{ status: string; contract_snapshot_json: { workflow_input_json?: { project_research?: { source_item_ids?: string[] } } } }>(

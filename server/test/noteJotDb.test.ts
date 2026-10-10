@@ -203,8 +203,8 @@ describe("jot a note from an evidence card (real Postgres)", () => {
       [mine.id, USER],
     );
 
-    // `getNoteRow` backs every single-note read *and* mutation, so an ungated
-    // fetch meant another member could also edit and delete the note.
+    // `getNoteRow` backs every single-note read and mutation. Do not leave
+    // the fetch ungated: another member could also edit and delete the note.
     const other = { spaceId: SPACE, userId: OTHER };
     expect(await repository.getNote(other, mine.id)).toBeNull();
     await expect(repository.updateNote(other, mine.id, { title: "Taken" })).rejects.toThrow(/Note not found/);

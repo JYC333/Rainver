@@ -138,10 +138,10 @@ export class AcpController implements CliStdioController {
   private resumeHandshakeFailed = false;
   /**
    * Whether a `session/prompt` was ever sent. The runtime writes the session's
-   * transcript when it answers one, so a session that died before this — on a
-   * config option, say — leaves nothing behind to resume. Reporting its id
-   * anyway is what made the *next* turn fail with an opaque "Internal error:
-   * no rollout found", one failure after the one that actually went wrong.
+   * transcript when it answers one. A session that dies before that — on a
+   * config option, say — leaves nothing to resume. Do not report its id. The
+   * next turn would fail with "Internal error: no rollout found", one failure
+   * after the one that actually went wrong.
    */
   private prompted = false;
   /**

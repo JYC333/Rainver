@@ -3,10 +3,9 @@ import { modelSpec, registeredModelSpecs } from "../src/modules/providers/modelS
 import { resolveModelWindow } from "../src/modules/usage/modelCatalog.js";
 import { recommendedMaxOutputTokens } from "../src/modules/providers/modelOutputLimits.js";
 
-// One registry backs both the completion cap and the context window. The bug
-// this guards against is a model registered on one side only: MiniMax-M3 had
-// output guidance and no window, so Runtime Context planned it against the
-// generic 16k fallback and screening failed with required_context_overflow.
+// One registry backs both the completion cap and the context window. A model
+// registered on one side only is planned against the generic 16k fallback.
+// Do not register output guidance without a window.
 
 describe("modelSpecs", () => {
   it("registers MiniMax M3 with its published window in every common spelling", () => {

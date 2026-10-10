@@ -56,11 +56,10 @@ describe("folder-read path policy", () => {
   });
 
   /**
-   * `\b` does not fire between `_` and a letter, so a pattern written
-   * `\b(token|secret)\b` matched neither `access_token` nor `client_secret` —
-   * the two spellings most likely to appear in real source. The server's copy
-   * of this rule was fixed; this one, which runs on the daemon and feeds both
-   * the Files & Code reader and the persisted `remote_diff`, was not.
+   * `\b` does not fire between `_` and a letter. Do not write
+   * `\b(token|secret)\b`. It matches neither `access_token` nor
+   * `client_secret`. This copy runs on the daemon and feeds the Files & Code
+   * reader and the persisted `remote_diff`.
    */
   it("redacts a credential word anywhere in the name, not only at a word boundary", () => {
     const result = redactSecretLikeDiff([

@@ -114,8 +114,9 @@ describe('SourceQueryPreviewService', () => {
    * `x-api-key`, Brave's `X-Subscription-Token` — travelled to whatever origin
    * the upstream named.
    *
-   * Asserted with a credential actually resolved, because with none the two
-   * spellings produce identical arguments and the test passes against the bug.
+   * Asserted with a credential actually resolved. With none, the two
+   * spellings produce identical arguments and the test passes while the key
+   * still travels on redirect.
    */
   it('hands a resolved provider credential to the guard as a credential, not as an ordinary header', async () => {
     const seen: Array<{ headers?: Record<string, string>; credentialHeaders?: Record<string, string> }> = []

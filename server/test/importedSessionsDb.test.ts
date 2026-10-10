@@ -628,10 +628,9 @@ expect((await repository.records(SPACE, first.session.id)).records).toHaveLength
     });
 
     it("carries exactly the records that were picked, and refuses a partial match", async () => {
-      // The records branch fetches the named ids in SQL. Nothing else in the
-      // suite executes that query, and it is the one the whole-session branch
-      // was fixed away from — reading a session's worth of rows inside the
-      // transaction that holds the Room row lock, to keep a handful.
+      // The records branch fetches the named ids in SQL. Do not read a
+      // session's worth of rows inside the transaction that holds the Room
+      // row lock.
       const repository = new PgImportedSessionRepository(db.pool);
       const imported = await repository.reconcile(reconcileInput({
         records: [

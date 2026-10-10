@@ -58,7 +58,7 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
         const path = join(dir, entry);
         if (statSync(path).isDirectory()) { walk(path); continue; }
         if (!path.endsWith(".ts") || path.endsWith("runtimeAdapters/specs.ts")) continue;
-        // Subscripting the table is the bug; re-exporting or iterating it is not.
+        // Do not subscript the table. Re-exporting or iterating it is fine.
         if (/BUILTIN_RUNTIME_ADAPTER_SPECS\s*\[/.test(readFileSync(path, "utf8"))) offenders.push(path);
       }
     };

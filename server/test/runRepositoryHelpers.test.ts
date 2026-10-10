@@ -38,11 +38,10 @@ describe("runtime sandbox resolution", () => {
   it.each(["low", "medium", "high", "critical"])(
     "gives a Folder-bound %s-risk run a workspace it can write",
     (riskLevel) => {
-      // The invariant that was broken: only `read_only` narrows the bind, so
-      // leaving the low/medium floor there meant the safer a run was, the less
-      // it could do — a low-risk run could not write while a critical one
-      // could. Risk may decide how a run is contained; it must not decide
-      // whether the run can work at all.
+      // Only `read_only` narrows the bind. Risk may decide how a run is
+      // contained. It must not decide whether the run can work. Do not leave
+      // a low/medium floor that withholds a writable workspace from the
+      // safer run while a critical one can write.
       const level = resolveSandboxLevelForRuntime({
         runtimeKey: "claude_code",
         configuredLevel: "none",

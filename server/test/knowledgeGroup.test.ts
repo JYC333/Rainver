@@ -265,9 +265,9 @@ describe("knowledgeNoteScopeDb", () => {
   const db = useTestDatabase(`${import.meta.filename}#knowledgeNoteScopeDb`, { max: 2 });
 
   beforeAll(async () => {
-    // Not `|| !app`: `app` is what this hook builds, so guarding on it meant the
-    // hook returned before building it and every test in this describe took its
-    // own `!app` early return — reporting a pass without running.
+    // Not `|| !app`. `app` is what this hook builds. Do not guard on it: the
+    // hook returns before building it and every test takes its own `!app`
+    // early return, reporting a pass without running.
     if (!db.available) return;
     __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
     app = buildModuleServer(loadConfig({
