@@ -206,12 +206,10 @@ export type ProjectAttentionItem = z.infer<typeof ProjectAttentionItemSchema>;
 /**
  * A Project Operation that has not stopped, as the front page reads it.
  *
- * Pulse said "nothing is being worked on right now" while a research
- * acquisition screened 873 documents for four hours: its only source was the
- * Task board, and an Operation is not a Task. The fields are exactly what the
- * existing `researchOperationDetail` reads, so the front page renders the
- * same sentence the Research Area does instead of composing a second one —
- * and it still fetches nothing an Area owns.
+ * Pulse reads Operations as well as the Task board. An Operation is not a
+ * Task. The fields are exactly what `researchOperationDetail` reads, so the
+ * front page renders the same sentence the Research Area does. Do not compose
+ * a second sentence, and do not fetch anything an Area owns.
  */
 export const ProjectRunningOperationSchema = z.object({
   id: IdSchema,
