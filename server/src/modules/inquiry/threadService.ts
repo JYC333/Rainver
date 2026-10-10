@@ -21,11 +21,10 @@ import { recordThreadRevision } from "./threadRevisionService.js";
 import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
 
 /**
- * Actions only, in the order of the stages they belong to. The vocabulary
- * previously also carried `pause` and `wait_for_monitoring`, which are states
- * rather than actions: `pause` restated what `attention_state` already says,
- * and waiting on monitoring is what a running background step means. Offering
- * them beside "Read evidence" put two different kinds of thing in one list.
+ * Actions only, in the order of the stages they belong to. `pause` and
+ * `wait_for_monitoring` are states, not actions: pause is `attention_state`,
+ * and waiting on monitoring is a running background step. Do not offer them
+ * in this list.
  */
 export const NEXT_FOCUS_KINDS = [
   "clarify_or_decompose",

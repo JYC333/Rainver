@@ -59,13 +59,8 @@ export interface ValidationRecipePlan {
 /**
  * Where a verifier's questions are asked: a workspace on an execution host,
  * named the way every other host request names one — a Host id plus a Location
- * or a managed container, never a path (B64).
- *
- * It replaces the `sandbox_cwd` this used to carry. That was a server path,
- * which only ever existed while the server spawned CLIs itself; now that every
- * CLI Run belongs to a daemon, there is no such path to hand a verifier, and
- * the same target works on the built-in host and a paired one alike — which is
- * what makes verification available on a paired host at all.
+ * or a managed container, never a path (B64). The same target works on the
+ * built-in host and a paired one. Do not carry a server path here.
  */
 export interface VerificationTarget {
   host_id: string;

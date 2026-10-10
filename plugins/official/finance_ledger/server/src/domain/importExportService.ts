@@ -49,12 +49,10 @@ export async function importBeancountToDb(
   userId: string,
   input: ImportBeancountInput,
 ): Promise<ImportBeancountResult> {
-  // The server names the file being imported. It used to take the client's
-  // word for it, and the name is what decides which validation errors are
-  // reported back: a request naming the file `<db>` — the label this engine
-  // gives entries it loaded from the ledger — turned the "errors in your
-  // upload" list into a readout of the stored ledger's own errors, balance
-  // assertions over other members' accounts included.
+  // The server names the file being imported. Do not trust the client's name:
+  // a request naming `<db>` — the label this engine gives entries loaded from
+  // the ledger — turns the upload-error list into a readout of the stored
+  // ledger, including balance assertions over other members' accounts.
   const filename = importFilename(userId);
   const status = input.status ?? "proposed";
   const parsed = parseBeancountText(input.text, filename);

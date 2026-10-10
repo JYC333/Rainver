@@ -3,7 +3,7 @@
 Date: 2026-09-10
 Status: inventory only. Not a work queue.
 
-This file holds designs that used to live in `.agent/architecture/`,
+This file holds designs extracted from `.agent/architecture/`,
 `.agent/modules/`, `.agent/ROADMAP.md`, `.agent/ARCHITECTURE.md`,
 `.agent/GLOSSARY.md`, and `docs/` as if they were current product state.
 They are not implemented. Current-state guides now record only what the

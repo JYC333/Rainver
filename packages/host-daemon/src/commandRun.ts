@@ -12,10 +12,8 @@ import { existingTaskWorktree, taskLeaseKey, useTaskWorktree } from "./taskWorkt
 /**
  * A fixed command the control plane runs in a workspace on this host.
  *
- * The Verification Engine needs to ask a question about a workspace — did the
- * tests pass — and used to reach a Runner that only ever existed beside the
- * server. Answering it here is what makes verification available on a paired
- * host at all.
+ * The Verification Engine asks a question about a workspace — did the tests
+ * pass — on the host that holds that workspace, including a paired one.
  *
  * It is not a `launch`: no runtime, no session, no provider binding, no work
  * surface, and one answer instead of a stream. A strict host still wraps it in

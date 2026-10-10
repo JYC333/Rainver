@@ -311,9 +311,8 @@ export class RoomService {
    *
    * Always returns a Room. Since ADR 0018 decision 4 every Project is created
    * with its mainline and no path archives it, so absence is a broken
-   * invariant, not a Project nobody has started — and reporting it as 500
-   * rather than handing back a null keeps every caller free of a branch that
-   * used to exist only to be got wrong.
+   * invariant, not a Project nobody has started. Reporting a missing mainline
+   * as 500 keeps callers from handling a null.
    */
   async getProjectMainline(
     identity: RoomIdentity,

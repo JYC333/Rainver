@@ -141,9 +141,8 @@ function registerCoreLinkTypes(): void {
     });
   }
 
-  // Endpoint constraints that used to be hardcoded in the proposal applier.
-  // Declaring them here is what makes the registry authoritative rather than
-  // advisory — the applier now asks instead of re-stating them.
+  // Endpoint constraints live on the registry. The applier asks rather than
+  // restating them.
   registerLinkType({
     linkType: "affiliated_with",
     from: ["person"],

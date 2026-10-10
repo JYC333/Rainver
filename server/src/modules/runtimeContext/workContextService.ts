@@ -474,11 +474,8 @@ export function roomScopedAgentReadSql(agentAlias: string, userExpr: string, sco
 /**
  * Every explicit reference type, in one place.
  *
- * Three sites used to enumerate these independently — this resolver, the
- * context-authority read's filter, and the delivery re-authorization — and
- * adding a member to one of them left the other two silently disagreeing: a
- * pinned reference the resolver accepted was dropped by the filter and
- * rejected at delivery.
+ * Every explicit reference type, in one place. Adding a type only at a call
+ * site drops a pinned reference at delivery.
  */
 const EXPLICIT_REFERENCE_TYPES = [
   "project_brief_version",

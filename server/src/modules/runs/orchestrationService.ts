@@ -1991,12 +1991,10 @@ export class RunOrchestrationService {
           "Conversation attachments require a configured execution context.",
         );
       }
-      // A CLI run with nothing bound used to get a throwaway directory the
-      // server made for it. It executes on the instance's own host now — but
-      // only if it has a container to be an Agent's profile in: a managed
-      // workspace names a Conversation or a direct owner, which is what B68
-      // keys a runtime profile by. A run with neither has no container, and
-      // inventing a per-run one is the thing B68 forbids, since a profile that
+      // A CLI run executes on a host, and only with a container to be an
+      // Agent's profile in. A managed workspace names a Conversation or a
+      // direct owner, which is what B68 keys a runtime profile by. A run with
+      // neither has no container. Do not invent a per-run one: a profile that
       // dies with its run takes the session the next turn would resume. Such a
       // run reaches the registry's fail-closed entry instead of executing
       // somewhere undefined.
@@ -2311,15 +2309,10 @@ export class RunOrchestrationService {
         }
       }
 
-      // **Unreachable, and left standing deliberately.** Every `local_cli`
-      // adapter is a daemon run now, so this condition is false by
-      // construction — the working directory of a CLI run belongs to the
-      // daemon, resolved on that machine and, on the built-in host, wrapped in
-      // the namespace it builds. The block below is the server-host worktree
-      // and ephemeral provisioning that served the CLI the server used to
-      // spawn; it goes with `workspaceManager`'s other orchestration callers
-      // when the credential and runtime-tool modules are retired, rather than
-      // being pulled out here in the same change that made it dead.
+      // Unreachable. Every `local_cli` adapter is a daemon run, so this
+      // condition is false. A CLI run's working directory belongs to the
+      // daemon. Leave the block until `workspaceManager`'s other orchestration
+      // callers leave with it.
       if (isVendorCliAdapter(run.runtime_key) && !prepared.sandbox_cwd && !dispatchesToHostDaemon(run.runtime_key)) {
         const scope = workingDirScopeForLevel(run.required_sandbox_level);
         if (scope === "ephemeral") {
@@ -3468,10 +3461,9 @@ function cliVendor(runtimeKey: string): string {
 /**
  * `retrieval_intent` is the turn's retrieval query, not its instruction. A
  * managed run's prompt can be a whole rendered batch — Source screening sends
- * sixteen items in one prompt — and the protocol bounds the query, so a long
- * prompt used to fail envelope validation and take the entire run with it.
- * Truncate into a query rather than rejecting the turn; the bound comes from
- * the protocol schema so the two cannot drift. Truncation is the fallback for
+ * sixteen items in one prompt — and the protocol bounds the query. Truncate
+ * into a query rather than rejecting the turn; the bound comes from the
+ * protocol schema so the two cannot drift. Truncation is the fallback for
  * callers with nothing better — a caller that knows its real query passes
  * `retrieval_intent` and never reaches the slice.
  */

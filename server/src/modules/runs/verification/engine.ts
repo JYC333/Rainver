@@ -114,12 +114,9 @@ export class PgVerificationEngine {
     });
     if (declarations.length === 0) return [];
 
-    // Only when a declaration actually asks about changed files. This used to
-    // be gated by `sandbox_cwd` being null for anything but a server-host run;
-    // now that every Run names a host workspace it would send `git diff` and
-    // `git status` to that host for every Run with any acceptance criterion at
-    // all — twice, pre- and post-materialization — including on a paired
-    // machine, where they are spawns on someone's own laptop.
+    // Only when a declaration actually asks about changed files. Every Run
+    // names a host workspace; sending `git diff` and `git status` for every
+    // acceptance criterion would spawn them on a paired machine too.
     const needsChangedFiles = declarations.some((declaration) => GIT_BACKED_VERIFIERS.has(declaration.verifier_type));
     const changed = needsChangedFiles
       ? await changedFiles(input.run.id, input.execution_target, input.base_commit_sha, this.commandExecutor)
@@ -635,11 +632,8 @@ async function evaluateCommand(
 
 /**
  * Asked on the host, like every other verifier, rather than `stat`-ed here.
- *
- * This used to resolve the path against a server directory, which worked only
- * while the server owned the workspace. `test -e` through the same command
- * channel needs no second mechanism and no second set of path rules, and it is
- * the same answer on the built-in host and a paired machine.
+ * `test -e` through the same command channel needs no second path rules, and
+ * it is the same answer on the built-in host and a paired machine.
  */
 async function evaluateFileExistsAsync(
   runId: string,

@@ -44,7 +44,7 @@ export const MANAGED_CONVERSATION_ENTRYPOINT_INVENTORY = [
 export const RUNTIME_INVOCATION_INVENTORY = [
   // Bounded ProviderTask Runs go through the one shared wrapper: one bounded
   // task is one Run, whatever the key pool does behind it (ADR 0022 §2/§3).
-  // Daily Reports and Project Research each used to own a copy of it.
+  // Do not give Daily Reports or Project Research a private copy.
   providerCall("runs/boundedProviderTaskRun.ts", "completeProviderMessages", 1, "bounded_provider_task", "runs", "provider_task"),
   // A bounded one-shot over imported CLI history, owned by its module: it
   // reads records the person already imported and produces proposals, and it

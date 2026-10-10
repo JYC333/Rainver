@@ -118,8 +118,9 @@ const ReaderLink = Mark.create({
  * with no click, from the reader's IP, to a URL the model chose.
  *
  * So `remoteImages` is off unless a caller says otherwise, and with it off an
- * external source renders as a link, exactly as chat markdown does (D5). This
- * used to be one rule for both: `safeHttpUrl` alone, which accepts any host.
+ * external source renders as a link, exactly as chat markdown does (D5).
+ * Captured pages and model-authored documents do not share one image rule.
+ * `safeHttpUrl` alone accepts any host.
  */
 const ReaderImage = Node.create<{ remoteImages: boolean }>({
   name: 'image',

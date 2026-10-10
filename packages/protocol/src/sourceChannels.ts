@@ -88,8 +88,8 @@ export const SourceChannelScanStateSchema = z.object({
 
 /**
  * The values the `source_channels.capture_policy` CHECK constraint allows.
- * The read model used to declare a bare string, which is looser than both the
- * database and the create request.
+ * This enum matches the database and the create request. Do not widen it to
+ * a bare string.
  */
 export const SourceChannelCapturePolicySchema = z.enum([
   "reference_only",

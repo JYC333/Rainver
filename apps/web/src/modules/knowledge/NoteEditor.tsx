@@ -103,8 +103,8 @@ function fmt(dt: string | null | undefined) {
 }
 
 interface NoteEditorProps {
-  /** The note to edit. Which note is open is the surface's decision, not this
-   * component's — it used to read `useParams()`, which pinned it to one route. */
+  /** The note to edit. Which note is open is the surface's decision. Do not
+   * read the route here. */
   noteId: string
   /** Report the resolved/saved note so the surface's tab label and list stay in sync. */
   onNoteResolved: (note: Note) => void
@@ -337,8 +337,8 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
     if (JSON.stringify(freshDoc) !== currentJson) setEditorDocument(freshDoc)
   }, [onNoteResolved])
 
-  // Only the latest load applies: the editor stays mounted across a switch, and
-  // a slow read for the note left behind used to replace the one switched to.
+  // Only the latest load applies. The editor stays mounted across a switch.
+  // A slow read for the note left behind must not replace the one switched to.
   const loadSeqRef = useRef(0)
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current

@@ -5,10 +5,7 @@ import type { AddProviderMode, ModelFieldCopy, ProviderCapability } from './type
  * Vendor facts come from the server's registry, read through
  * `providersApi.vendors()` and threaded down from the providers page. Only
  * presentation lives here — copy, placeholders, and embedding dimension
- * options. The lists this file used to hardcode were a second, hand-maintained
- * answer to questions `VendorDescriptor` already answers, and had drifted:
- * DeepSeek was offered with no base URL to pre-fill, and a branch existed for
- * a vendor the form never showed.
+ * options. Do not hardcode vendor lists here. `VendorDescriptor` answers them.
  */
 export function providerTypeOptionsForMode(
   mode: AddProviderMode,

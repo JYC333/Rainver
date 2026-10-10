@@ -28,7 +28,7 @@ workflow layers. It is a naming boundary, not a code-renaming plan.
   execution policy and lifecycle; a RuntimeAdapterSpec is its declaration.
 - A `runtime_key` is runtime identity; an `AgentRuntimeDefinition` is what that
   key resolves to; an `AgentRuntimeProfile` is one Agent's deployment choice of
-  it. None of the three is `adapter_type`, which no longer names anything.
+  it. None of the three is named `adapter_type`. Do not add that column.
 - An `agent` Run executes through the ACP adapter on a Host; a `provider_task`
   Run is a bounded ProviderTask with Run lifecycle. A ProviderTask is not an
   Agent runtime and never acquires an Agent or Profile reference.

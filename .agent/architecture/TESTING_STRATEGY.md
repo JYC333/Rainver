@@ -193,8 +193,8 @@ before it in that worker.
 The web suite runs at full parallelism and starts a jsdom environment per file.
 Test files that touch no DOM declare `// @vitest-environment node` on their
 first line; `src/test/setup.ts` installs its DOM shims and per-test cleanup only
-where a DOM exists. `asyncUtilTimeout` is 15s there because `findBy*` used to
-give up while a lazy chunk was still transforming under load.
+where a DOM exists. `asyncUtilTimeout` is 15s so `findBy*` waits out a lazy
+chunk that is still transforming under load.
 
 Two Vitest 4 behaviors to write for: a `vi.fn()` used as a class needs a
 `function` implementation (arrow functions are not constructible), and

@@ -58,14 +58,8 @@ import { ConversationQuotaLine } from './ConversationQuotaLine'
  * One conversation, rendered wherever a conversation is read.
  *
  * The full Room page and the Project sidecar both show the same Conversation.
- * They used to do so with two implementations: the page's,
- * with action cards, run progress and continuation after a decision, and the
- * panel's, a plain list with its own send and poll. Every feature then landed
- * on one side and was missing from the other — the panel had no way to decide
- * a proposal, which is how a person ended up leaving the Project to press a
- * button. The repository's rule is to reuse the existing capability rather
- * than build a second entry with its own authority; this is that capability,
- * and both surfaces render it.
+ * One implementation. Do not give the page and the panel separate send, poll,
+ * or decision paths: a feature then exists on one side only.
  *
  * It owns what a conversation is: the messages and their paging, each turn's
  * proposals as decidable cards, the Runs a turn started and their live
@@ -1418,13 +1412,10 @@ function RoomMessageView({
 }
 
 /**
- * An Agent turn in progress, as its own message.
- *
- * A Run a person's message started used to be shown under that message — a
- * badge, a link, a status line and a box of streaming text. None of that is
- * how a conversation reads: while the Agent works there was no Agent-side
- * bubble at all, and after it replied the status stayed under the person.
- * This is the Agent speaking, in the place the Agent speaks.
+ * An Agent turn in progress, as its own message. The Agent speaks here, not
+ * under the person's message. Do not put the Run's badge, link, status, or
+ * streaming text under the person: while the Agent works there is then no
+ * Agent-side bubble, and after it replies the status stays under the person.
  */
 function RoomAgentTurn({ runId, turn, agentName, delegatedBy, run, projectId, onRetry }: {
   runId: string

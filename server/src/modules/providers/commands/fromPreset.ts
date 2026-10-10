@@ -122,9 +122,9 @@ export async function createProviderFromPreset(
   if (preset.mode === "embedding" || preset.mode === "rerank") {
     await assertCanConfigureRetrievalPreset(config, spaceId, userId);
   }
-  // Pure input validation belongs before the first write: a rejected
-  // dimension used to leave a disabled provider and its credential behind,
-  // and a cleared Space default with nothing in its place.
+  // Pure input validation belongs before the first write. A rejected dimension
+  // must not leave a disabled provider, its credential, and a cleared Space
+  // default with nothing in its place.
   const dimensions = preset.mode === "embedding" ? embeddingDimensions(preset, input) : null;
 
   const provider = await store.createProvider(

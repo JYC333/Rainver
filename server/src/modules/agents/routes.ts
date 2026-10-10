@@ -1513,9 +1513,8 @@ async function prepareChatRun(
       project_id: input.projectId ?? null,
       git_snapshot: input.hostDispatch?.git_snapshot ?? unavailableGitSnapshot(),
     },
-    // The same allowance a Room message or a delegation gets in this Project;
-    // this used to be a private three-action list from before scenario
-    // allowances existed, so a direct chat could not do what a Room could.
+    // The same allowance a Room message or a delegation gets in this Project.
+    // A direct chat must be able to do what a Room can.
     ...conversationToolGrantInput({
       project_id: input.projectId ?? null,
       has_input_resources: input.hasInputResources,

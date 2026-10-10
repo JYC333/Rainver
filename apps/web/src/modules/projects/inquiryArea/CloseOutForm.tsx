@@ -24,10 +24,8 @@ const EVALUATION_LABELS: Record<(typeof EVALUATION_STATES)[number], string> = {
  * offered rather than hidden behind a disclosure.
  *
  * Two controls. The cognitive state is a real judgement only the user can make,
- * so it stays — as one-click segments instead of a two-click menu. The Next
- * Focus dropdown that used to live here is gone: the next round's first step is
- * computed, and asking twice was the duplication that made this form feel like
- * a form.
+ * so it stays — as one-click segments instead of a two-click menu. The next
+ * round's first step is computed. Do not ask for it again here.
  */
 export function CloseOutForm({ projectId, detail, onRecorded }: {
   projectId: string

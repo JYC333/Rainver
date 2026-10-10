@@ -1,8 +1,8 @@
 # Module: Knowledge Base
 
 ## Status
-**BACKEND + FRONTEND MVP IMPLEMENTED** — Knowledge is the first-level product module
-(it replaced the old first-level "Wiki"). Backend has the canonical schema,
+**BACKEND + FRONTEND MVP IMPLEMENTED** — Knowledge is the first-level product module.
+Backend has the canonical schema,
 `/api/v1/knowledge` API, and proposal apply handlers. Frontend: `/knowledge` is a thin
 entry that redirects to the last-used workspace (default `/knowledge/notes`);
 `/knowledge/home` is an **optional** overview hub, never the forced landing. Sub-areas
@@ -234,9 +234,8 @@ Neither always-append nor always-create is right on its own: one inbox would
 bury ten papers' annotations together, and a note per thought turns the tree
 into fragments (U11).
 
-This inbox is the jot's destination, not capture's: the floating composer that
-used to append here was merged into the shell's single capture entry, whose
-Project destinations are marginalia and raw material (see
+This inbox is the jot's destination, not capture's. The shell's single capture
+entry sends Project destinations to marginalia and raw material (see
 [assistant-capture.md](assistant-capture.md)). The inbox note is still what a
 contextless `POST /api/v1/knowledge/notes/jot` appends to.
 
@@ -758,7 +757,7 @@ One read and one write check, and both are the module's own.
   only at `full` (`bodyMatchSql`). A search that matched a withheld body handed
   it back a character at a time.
 - **Purge:** `purgeDeletedNotes` deletes only notes its caller could have
-  deleted themselves. It used to be Space-wide. The candidate query, oldest
+  deleted themselves. Do not make the purge Space-wide. The candidate query, oldest
   deletion first, prefilters on the same rule — owner or `space_shared`, and
   Project write authority for a Project-bound note — because a batch of 500
   refusals is not "the next call takes the rest": the refused notes fill the

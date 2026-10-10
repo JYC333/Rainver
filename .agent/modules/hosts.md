@@ -37,11 +37,10 @@ host at each restart. The server keeps only a hash, so a lost file necessarily
 means a new token; the daemon re-reads the file on every reconnect and, unlike
 a revoked paired host, never disables itself over a rejected token.
 
-The row is `kind = 'server'`, `owner_user_id` NULL, and its status now follows
-the daemon connection like any other host's. It used to be reported
-permanently `online` because it was an in-process boundary with no heartbeat
-to be stale; that would now hide the one failure an operator most needs to
-see. It cannot be revoked (`revoke` is `kind = 'remote'`-only, and
+The row is `kind = 'server'`, `owner_user_id` NULL, and its status follows
+the daemon connection like any other host's. Do not report it permanently
+`online`: it has a heartbeat, and a standing online status hides the failure
+an operator most needs to see. It cannot be revoked (`revoke` is `kind = 'remote'`-only, and
 `/hosts/me/revoke` refuses an ownerless host), and the pairing flow never
 lists it — a pairing code always creates a `remote` row.
 
@@ -251,7 +250,8 @@ checks, then creates one Run and enqueues the durable agent job.
 A remote dispatch creates its Run synchronously, exactly as a server-host one
 does — the two differ in what they stamp on the Run (the thread, the adapter,
 the installation and the vendor session to resume), not in when the Run comes
-into being.
+into being. The Run takes `body.agent_id`, else the Task's `assigned_agent_id`.
+A Task with neither returns 422.
 
 Cancelling a remote Run goes through `PATCH /api/v1/runs/:runId/stop` like any
 other Run.
@@ -314,13 +314,11 @@ the workspace would put two Rooms back into one directory.
 **Every host-bound Agent run carries a profile**, including a run with no
 ModelProvider binding — the frame then has empty `files`, empty `env`, and only
 `profile_env` plus `login_link`, and the provider segment is the literal
-`ambient`. This is what changed in the Agent identity work
-([ADR 0003](../decisions/0003-memory-proposal-flow.md) §6): the key used to be
-`<adapter_type>/<provider_id>`, shared by every run with that adapter and
-provider on the machine, and an unbound run had no profile at all and simply
-read the machine's own `~/.claude` or `~/.codex`. Both were the leak — two
-Agents on one machine, and one Agent in two Rooms, shared one login, one
-session store, and one pile of vendor auto-memory. The CLI's own working memory
+`ambient`. The profile key is Agent × container, not
+`<adapter_type>/<provider_id>` ([ADR 0003](../decisions/0003-memory-proposal-flow.md) §6).
+Keying by adapter and provider, or launching an unbound run on the machine's
+own `~/.claude` or `~/.codex`, shares one login, one session store, and one
+pile of vendor auto-memory across Agents and Rooms. The CLI's own working memory
 is still delegated scratch that Rainver never reads, syncs or promotes; what
 keeps it from crossing a boundary is this key.
 
@@ -385,9 +383,9 @@ The daemon's own short-lived **helper** spawns take the same rule through one
 builder, `helperProcessEnv(ambient, adapterType, { keepStateRoots? })`: the
 machine's environment minus that runtime's vendor credentials. These are the
 version probe, the installer, the `login --help` capability check, the Codex
-usage probe and the ambient `session/list`. Each of them used to spread
-`process.env` whole or delete two named keys beside it — a denylist of length
-two, so a new vendor key was picked up by every one of them. `keepStateRoots`
+usage probe and the ambient `session/list`. One builder. Do not spread
+`process.env` or delete two named keys at a call site: a new vendor key is
+then picked up by every helper. `keepStateRoots`
 is the one deliberate exception: a helper that reads the machine's *own*
 history must be pointed at where that history is, and `CLAUDE_CONFIG_DIR` /
 `CODEX_HOME` / `OPENCODE_CONFIG` / `GEMINI_CONFIG_DIR` share a prefix with the
@@ -2247,15 +2245,13 @@ write — a failure with no error anywhere.
   them; a launch whose baseline capture failed falls back to tree-vs-HEAD) and
   the output directory's contents (`src/outputFiles.ts`, UTF-8 only — a
   binary deliverable is a known phase-1 gap) before sending `complete`.
-  **`RAINVER_OUTPUT_DIR` is no longer nudged via the prompt** (real-usage
-  finding, 2026-08-22): every remote dispatch is workspace-bound, and the
-  intent-to-add diff capture above already gives a brand-new file's full
-  content, so `remoteHostCliAdapter.ts` stopped instructing the agent to
-  write deliverables there — it was misdirecting ordinary workspace writes.
-  The env var and upload path stay wired (dormant unless something writes
-  there unprompted); a real, structured "information for Rainver itself"
-  channel — distinct from workspace file changes — is a deferred design
-  question, not this fix (`tasks/deferred-register.md`).
+  The prompt does not mention `RAINVER_OUTPUT_DIR`. Every remote dispatch is
+  workspace-bound, and the intent-to-add diff capture above already records a
+  new file. Do not instruct the agent to write ordinary workspace files there:
+  that sends them into an upload path nothing consumes. The env var and upload
+  path stay wired. A structured channel for information meant for Rainver
+  itself, distinct from workspace file changes, is still an open design
+  (`tasks/deferred-register.md`).
   Termination uses `process.kill(-pid, signal)` against the whole process
   group (`detached: true` at spawn), escalating a graceful `SIGTERM` to
   `SIGKILL` after a 5s grace window if the process ignores it. A `terminate`

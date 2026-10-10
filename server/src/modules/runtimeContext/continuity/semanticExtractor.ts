@@ -183,13 +183,9 @@ async function sourceConnectionIdsForRefs(
 /**
  * Who a checkpoint extraction is metered to.
  *
- * It used to name the work-context scope as a content resource
- * (`source_resource_type: "work_context_scope"`). No such resource exists —
- * a scope is not an ontology entity and has no table keyed by its id — so
- * attribution rejected every extraction with a 422 and the job failed. Because
- * attribution is resolved before the provider is called, no tokens were
- * spent; but from 2026-08-10 no semantic checkpoint was ever written, and
- * the "completed" jobs were the ones with too few events to extract.
+ * A scope is not an ontology entity and has no table keyed by its id. Do not
+ * name it as `source_resource_type`: attribution rejects the extraction with
+ * a 422 before the provider is called, and no checkpoint is written.
  *
  * A scope belongs to the person whose work context it is: the owner of its
  * latest setup, with that setup's Project when it has one. That is the

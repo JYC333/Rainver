@@ -47,8 +47,8 @@ interface EditDialogProps {
   onSaved: (updated: Project) => void
 }
 
-// General Project settings only. Research intake configuration used to share
-// this dialog; it belongs to the Research Area, which owns that state.
+// General Project settings only. Research intake configuration belongs to the
+// Research Area, which owns that state.
 function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: EditDialogProps) {
   const [name, setName] = useState(project.name)
   const [description, setDescription] = useState(project.description ?? '')
@@ -134,14 +134,11 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: E
 /**
  * Pulse: what this Project is for, and what is going on in it.
  *
- * The header and the goal line are this page's own; the situation — what
+ * The header and the goal line are this page's own. The situation — what
  * needs attention, what is moving, what was reported — is `ProjectPulse`.
- * It used to carry four more blocks: a "Next" of Mode-generated links that
- * all pointed at Areas the sidebar already lists, a "Recent activity" that
- * was the raw-material queue under another name and jumped out of the
- * Project to see more, an "In this project" that was a second copy of the
- * Areas list with counts, and a Mode selector on the front page for a thing
- * changed once. Each duplicated something on the same screen.
+ * Do not add Area links, a raw-material queue, an Area list with counts, or
+ * a mode selector here: each of those is already on this screen.
+ */
  */
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()

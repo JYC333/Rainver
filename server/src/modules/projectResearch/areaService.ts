@@ -295,11 +295,10 @@ export class ProjectResearchAreaService {
       prompt, title, baseVersion, blocks,
       material: material.rows.map((item) => JSON.stringify(item)),
     });
-    // Admitted and made durable here, performed by the worker. It used to run
-    // inline on this request: a crash between the provider answering and the
-    // block ops being applied left a succeeded Run whose edit never reached
-    // the note and which nothing would ever retry, and a transient provider
-    // failure came back as a 502 with no attempt behind it.
+    // Admitted and made durable here, performed by the worker. Do not apply
+    // the block ops on this request: a crash after the provider answers leaves
+    // a succeeded Run whose edit never reaches the note, and a transient
+    // provider failure comes back as a 502 with no attempt behind it.
     const queued = await withQueryableTransaction(this.db, async (db) => {
       const run = await new PgRunRepository(db).createQueuedProviderTaskRun({
         space_id: identity.spaceId,
@@ -636,10 +635,8 @@ export class ProjectResearchAreaService {
   }
 
   /**
-   * One-shot reconciliation for projects whose starter notes predate the role
-   * marker (N2). Title matching here is legitimate and is the only place it
-   * remains: it reconstructs the binding the old title-based resolver created,
-   * rather than being a binding of its own.
+   * Binds starter notes that have no role marker, once, by title. Title
+   * matching is legitimate only here. It is not a general resolver.
    *
    * The schema is regenerated from one baseline rather than migrated
    * incrementally, so this lives on the read path — the same place that
@@ -756,10 +753,8 @@ export class ProjectResearchAreaService {
    *
    * The work is the shared note writer's: this method only supplies what is
    * specific to a Project note — the folder, the role, and the attribution for
-   * scaffolding nobody asked for by hand. It used to assemble the root row,
-   * the extension row, the revision and the folder membership itself, and had
-   * drifted from the general path in two visible ways (no `summary`, and every
-   * note filed at `sort_order` 0).
+   * scaffolding nobody asked for by hand. Do not assemble the root row, the
+   * extension, the revision, and the folder membership here.
    */
   private async createProjectNote(scope: NoteWriteScope, input: {
     spaceId: string; projectId: string; folderId: string; title: string; doc: Record<string, unknown>;
@@ -871,8 +866,8 @@ export function registerResearchProviderTaskRuns(): void {
       triggerOrigin: run.trigger_origin ?? "manual",
       spend: { kind: "person", user_id: userId },
       // Applied before the Run goes terminal, so a terminal ad-hoc Run always
-      // has its edit on the note. The reconciler's replay stays as the safety
-      // net for Runs that reached terminal the old way.
+      // has its edit on the note. The reconciler's replay covers a Run that
+      // reached terminal without this finalize.
       finalize: async (completion, runId) => {
         await service.applyAdhocNotebookUpdate({
           spaceId: run.space_id,

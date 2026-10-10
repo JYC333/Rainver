@@ -16,12 +16,10 @@ import {
  * Admission for `agent_runtime_profiles`: the one place a Profile's deployment
  * selection is normalized, validated and written.
  *
- * It lives beside `repository.ts` rather than inside it because the same rules
- * used to exist three times there — inlined in Agent creation, again in the
- * shared normalizer, and a third time on the Space provisioning template — and
- * two near-identical 16-parameter `UPDATE`s wrote the result. The repository
- * keeps its public API and owns the Agent/AgentVersion rows; the Profile row's
- * admission and writes are owned here.
+ * It lives beside `repository.ts` rather than inside it. The repository keeps
+ * its public API and owns the Agent/AgentVersion rows; the Profile row's
+ * admission and writes are owned here. Do not inline these rules again at
+ * Agent creation and at the provisioning template.
  *
  * Nothing in this module reads a Space provisioning template or an existing
  * Run: a Profile is deployment authority, and the template is a provisioning
@@ -155,9 +153,8 @@ interface NormalizedRuntimeProfile {
  * `@rainver/protocol` owns it: the schema refuses credential-bearing keys at
  * any depth, refuses a nested key that would shadow runtime identity or an
  * immutable AgentVersion constraint, and refuses a key the *other* bag
- * authors. The server used to re-walk the same key sets beside the schema;
- * one rule, parsed at both the route boundary and here, is what keeps the two
- * answers from drifting.
+ * authors. One rule, parsed at both the route boundary and here. Do not
+ * re-walk the key sets beside the schema.
  */
 export function runtimeConfigRecord(value: unknown): Record<string, unknown> {
   return parseOptionBag(RuntimeProfileConfigJsonSchema, value, "runtime_config_json");
@@ -185,8 +182,8 @@ function parseOptionBag(
 /**
  * The secret-free projection of a stored option bag, through the canonical
  * protocol implementation. The column is `jsonb NOT NULL DEFAULT '{}'`, so a
- * non-object never reaches here and the local coercion that used to sit in
- * front of it only hid a schema violation from one reader while another threw.
+ * non-object never reaches here. Do not coerce a non-object into `{}` in
+ * front of the strip: that hides a schema violation from one reader.
  */
 export function strippedOptionBag(value: unknown): Record<string, unknown> {
   return stripSecretFieldsFromRecord(value) as Record<string, unknown>;

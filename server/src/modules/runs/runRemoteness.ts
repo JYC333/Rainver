@@ -12,30 +12,19 @@ interface RemotenessInput {
 
 /**
  * Whether an Agent runtime is handed to a Host daemon. ProviderTask execution
- * is intentionally outside this runtime-target function.
+ * is outside this function.
  *
- * This is the runtime's question, not the host's. Every `local_cli` runtime is
- * dispatched to a daemon now — the built-in host's as much as a paired
- * machine's, since the built-in host *is* a daemon. ProviderTask Runs use the
- * bounded provider-invocation lifecycle and carry no Agent runtime identity.
+ * Every `local_cli` runtime is dispatched to a daemon, the built-in host's as
+ * much as a paired machine's. `hostKind` means which machine, and whether a
+ * server-brokered credential is in play. It does not decide dispatch.
  *
- * That distinction decides more than where the process starts. A run handed to
- * a daemon receives its authorized Runtime Context through ACP, while the
- * `rainver` work surface separately provides live action reachability. For a
- * persistent HostThread, Runtime Context's event cursor is bound to that same
- * opaque vendor session; no server-local CLI state directory is involved.
- * Sandbox-level escalation is also host-owned because the daemon builds the
- * namespace. ProviderTask Runs remain bounded in-process invocations.
+ * A daemon Run receives Runtime Context through ACP. The `rainver` work
+ * surface is a separate live-action channel. For a persistent HostThread, the
+ * event cursor is bound to that vendor session. The daemon builds the
+ * namespace. ProviderTask Runs stay bounded in-process invocations.
  *
- * It used to take a `hostKind` and answer false for the server host. That was
- * the same question when the server host was an in-process boundary; it is the
- * wrong one now that it is a daemon like any other, and `hostKind` is left
- * meaning only *which machine* — which is still what decides whether a
- * server-brokered credential is in play.
- *
- * Callers that were three separate expressions once disagreed: the preflight
- * was corrected and the read model was not, which denied a provider that had
- * in fact been used. One function, so that cannot recur.
+ * Callers must share this function. Separate expressions disagreed once: the
+ * preflight was corrected and the read model was not.
  */
 export function dispatchesToHostDaemon(runtimeKey: string | null | undefined): boolean {
   return getRuntimeAdapterSpec(runtimeKey ?? undefined)?.executor_family === "local_cli";

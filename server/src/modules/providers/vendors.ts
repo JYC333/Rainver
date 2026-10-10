@@ -6,10 +6,10 @@
  * described to whichever chat implementation is in use is that adapter's
  * concern and lives with it.
  *
- * `model_providers.provider_type` used to hold a wire protocol — MiniMax was
- * stored as `anthropic` because it speaks the Anthropic protocol. That loses
- * the fact a credential actually carries: an API key is issued by a vendor,
- * and the base URL is a routing detail a gateway or mirror may change.
+ * `provider_type` is vendor identity, not the wire protocol. MiniMax speaks
+ * the Anthropic protocol and is still MiniMax: an API key is issued by a
+ * vendor, and the base URL is a routing detail a gateway or mirror may change.
+ * Do not store the protocol in this column.
  *
  * Vendor identity is what selects a capability profile, and what the chat
  * adapter resolves its own rate table from, so it has to be recorded rather

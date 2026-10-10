@@ -10,22 +10,17 @@ import { sanitizeFailure } from "./ambientRedaction.js";
 /**
  * What one copy's subscription has left, read on the host that holds it.
  *
- * This used to run beside the server, against a credential the broker had
- * copied into a profile directory it owned. Credentials live with the copy now
- * (ADR 0016 §7), so the control plane has nothing left to read — asking the
- * host is the only way to answer "how much of this subscription is gone".
- * Vendor-specific by necessity: a quota is only readable the way its vendor
- * exposes it. What crosses back is percentages and reset times; the token is
- * read here, spent against the vendor's own endpoint, and never returned,
- * logged, or written anywhere else.
+ * Credentials live with the copy (ADR 0016 §7), so the control plane cannot
+ * read the quota itself. Vendor-specific by necessity. What crosses back is
+ * percentages and reset times; the token is read here, spent against the
+ * vendor's own endpoint, and never returned, logged, or written anywhere else.
  */
 const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
 /**
  * Codex's own machine-readable endpoint, read-only and never-approve so the
- * probe cannot act. `-a untrusted` was ported from the deleted server-side
- * reader and this Codex rejects it outright ("possible values: on-request,
- * never"), which cost the whole probe.
+ * probe cannot act. Codex rejects `-a untrusted` ("possible values: on-request,
+ * never"); `never` is the value that keeps the probe from acting.
  */
 const CODEX_APP_SERVER_ARGS = ["-s", "read-only", "-a", "never", "app-server"];
 

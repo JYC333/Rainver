@@ -28,9 +28,7 @@ export const workspaceLocations = pgTable("workspace_locations", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	// Denormalized from `project_folders.space_id` (write-once, a Folder never
 	// changes Space) so the per-space `root_path` uniqueness constraint below
-	// can be a same-table partial unique index instead of a cross-table trigger
-	// — the same reason the old Folder-level host discriminator existed before
-	// this table.
+	// can be a same-table partial unique index instead of a cross-table trigger.
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectFolderId: varchar("project_folder_id", { length: 36 }).notNull(),
 	executionHostId: varchar("execution_host_id", { length: 36 }).notNull(),

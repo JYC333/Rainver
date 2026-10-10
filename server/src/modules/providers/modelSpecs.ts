@@ -1,13 +1,10 @@
 /**
  * The single registry of per-model limits.
  *
- * A model's limits used to live in two unrelated places — output guidance here
- * in Providers, context-window sizing in the Usage model catalog — so adding a
- * model meant editing both and forgetting one was silent. It was: MiniMax-M3
- * had output guidance but no window, so Runtime Context planned every MiniMax
- * run against the generic 16k fallback and Project Research screening failed
- * with `required_context_overflow` on a model whose real window is half a
- * million tokens. One registry, one entry per model family.
+ * A model's limits live in one registry. Adding a model means one entry.
+ * A model with output guidance and no window makes Runtime Context plan
+ * against the generic 16k fallback, and Project Research screening then fails
+ * with `required_context_overflow` on a model whose real window is much larger.
  *
  * Entries match by pattern, not exact id, so provider-prefixed spellings
  * (`minimax/MiniMax-M3`) and family variants (`-highspeed`, `-lightning`) are

@@ -381,8 +381,8 @@ export function registerFinanceLedgerRoutes(
       });
 
       try {
-        // One transaction: a posting refused part way, or a post that does
-        // not balance, used to leave a draft nobody could remove.
+        // One transaction. A posting refused part way, or a post that does not
+        // balance, must not leave a draft.
         // Lock before allocating a directive sequence. Waiting for the book
         // only at posting can deadlock an import on an uncommitted sequence.
         const posted = await withLockedBook(db, identity.spaceId, book.id, async (tx) => {

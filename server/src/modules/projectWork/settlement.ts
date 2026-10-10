@@ -223,9 +223,8 @@ export function outcomeForRun(
  * Runs inside the caller's transaction. A terminal transition cannot race a
  * new Run in behind the decision, because this writes the Task row and the
  * dispatch admission takes `SELECT … FOR UPDATE` on that same row — under
- * READ COMMITTED the two serialize. (It used to say the caller held a
- * host-thread queue lock; that queue is gone, and the invariant now rests on
- * the Task row alone.)
+ * READ COMMITTED the two serialize. The invariant rests on the Task row.
+ * Do not add a second lock for it.
  */
 export async function settleTasksForRun(
   db: Queryable,

@@ -24,11 +24,8 @@ interface ResearchOperationRowProps {
 }
 
 /**
- * One compact row per research workflow's operation — this is where multiple
- * concurrently running/pending research searches live now that a Project
- * can have more than one (previously Overview only ever showed a single
- * selected workflow's progress, which doesn't scale once every Question or
- * Hypothesis Thread can start its own).
+ * One compact row per research workflow's operation. A Project can have more
+ * than one running or pending search.
  */
 export function ResearchOperationRow({
   operation, workflow, thread, checkpoints, busyAction, reconciling,

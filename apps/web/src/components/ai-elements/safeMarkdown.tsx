@@ -98,8 +98,8 @@ export function isSameOriginImage(src: string | undefined): boolean {
  * written HTML is parsed into real elements and both kinds of image arrive
  * here. `skipHtml` does not catch it — it visits `raw` nodes after the unified
  * run, and `rehype-raw` has already consumed them into elements, so it finds
- * none and silently does nothing. That is why the prop was removed rather than
- * trusted, and why what stands between model-written HTML and the DOM is the
+ * none and silently does nothing. Do not trust `skipHtml` for this. What
+ * stands between model-written HTML and the DOM is the
  * sanitize schema (see {@link SAFE_SANITIZE_SCHEMA}), not a skip flag.
  */
 export function MarkdownImage({ src, alt, title, node: _node, ...props }: ComponentProps<'img'> & { node?: unknown }) {

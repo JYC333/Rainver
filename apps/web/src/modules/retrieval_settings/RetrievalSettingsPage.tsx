@@ -122,10 +122,8 @@ type TaskPolicyMap = Partial<Record<RetrievalTask, ProviderTaskPolicyOut>>
 /**
  * Which providers may serve a retrieval task. The capability is the server's —
  * `providerSupportsTask` derives the same answer from the same registry — so
- * this reads it rather than restating it. These three predicates used to be
- * hardcoded lists identical to the server's, which meant a vendor change had to
- * be made in both places or the page would offer a provider the PUT rejects,
- * or hide one it would have accepted.
+ * this reads it rather than restating it. Do not hardcode the vendor lists:
+ * a second list offers a provider the PUT rejects, or hides one it accepts.
  */
 function providerFilterFor(
   kind: RetrievalTaskKind,

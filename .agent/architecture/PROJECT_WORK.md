@@ -145,8 +145,8 @@ attempt and the Supervisor creates the next one, so settling on it would
 settle mid-retry. `task_runs.role ∈ planning, review, merge` are not
 execution (`merge`: a done Task's conflict-resolution Run, which settles
 nothing about the Task): a
-planning Run (*Ask Agent to plan*) does not advance the work, and a successful
-plan closing its Task was the most wrong answer the old projection could give.
+planning Run (*Ask Agent to plan*) does not advance the work. A successful
+plan must not close its Task.
 
 **Decided** additionally requires the latest Run to carry a `run_finalizations`
 row, unless it is `cancelled`. Finalization is where the evaluation is bridged
@@ -212,30 +212,13 @@ existing workspace file leaves the declaration absent and uses
 edit or a `task.report` alone cannot satisfy a declared file output; a Run with
 an output-delivery surface must declare and leave the file for collection.
 
-### What this replaced
-
-`bool_and(terminal) AND NOT bool_or(failure)` over **every Run the Task ever
-had**, with two defects pulling in opposite directions:
-
-- `bool_or` never expired, so one failed attempt made a Task permanently
-  unclosable: every later success still saw the old failure and wrote `blocked`
-  again. Re-running after a failure is the normal case, which is why this read
-  as a permanent state rather than a transient one.
-- Three of the four statuses it counted as failure are not failures.
-
-And the status it should have counted it could not see: `waiting_for_review` is
-what the Supervisor writes when it stops retrying, and it was absent from the
-terminal set — so a Run parked for a human decision settled nothing and left
-its Task in `in_progress` with no sign a person was needed.
-
 ## 5. Who is interrupted
 
 One responsible party per Task, resolved as a chain read whole, in **one**
 place (`responsibility.ts`) because four surfaces ask it — the attention
 adapter ("interrupt whom"), the Board ("whose card"), `/me/tasks` and
-`/tasks?assigned_to_me` ("what is mine"). Two of those last three carried their
-own narrower definition before P2, and one of them counted a Task an Agent had
-claimed as still yours:
+`/tasks?assigned_to_me` ("what is mine"). Do not give any of them a narrower
+chain: an Agent that claimed a Task is still the responsible party.
 
 ```
 claimed_by_user → claimed_by_agent → assigned_user → assigned_agent

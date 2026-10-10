@@ -170,8 +170,7 @@ export function assertSameProject(
   targetProjectId: string,
 ): void {
   if (sourceProjectId && sourceProjectId === targetProjectId) return;
-  // A reference into another Project is a non-goal, and it is the one
-  // containment the removed `imported_session` resolver used to enforce.
+  // A reference into another Project is a non-goal.
   throw new HttpError(422, "A reference must come from the same Project");
 }
 

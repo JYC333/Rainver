@@ -17,7 +17,7 @@ import { BlockList, isIP } from "node:net";
  *
  * This is the one list. The host daemon's egress proxy and the control plane's
  * own outbound fetches both judge by it, so a range added here closes both at
- * once — they used to be two copies kept in step by a comment.
+ * once. Do not keep a second copy in the daemon or the control plane.
  */
 function buildBlockList(): BlockList {
   const list = new BlockList();

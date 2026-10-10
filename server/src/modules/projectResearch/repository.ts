@@ -136,8 +136,7 @@ function screeningMaterialIdentitySql(alias = "si"): string {
  *
  * The screening review shows a Source item's title, URI and author, so the
  * *list* reads what that person may read: a Project member is not automatically
- * a reader of every item a scan pulled in, and this surface used to list them
- * all by Project alone.
+ * a reader of every item a scan pulled in. Do not list them by Project alone.
  *
  * The batch's counts are a different question and take `null`. Scoping them too
  * made the approval gate answer about the reviewer instead of about the work: a

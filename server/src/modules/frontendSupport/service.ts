@@ -544,10 +544,8 @@ export class PgFrontendSupportService {
   }
 
   private async runtimeStatus(spaceId: string): Promise<HomeSummaryOut["runtime_status"]> {
-    // What this Space can actually dispatch to. It used to read the retired
-    // `runtime_tool_bindings` table, which described server-installed CLIs;
-    // since ADR 0016 a runtime is configured by an Agent profile naming an
-    // execution host and a copy on it.
+    // What this Space can dispatch to: an Agent profile naming an execution
+    // host and a copy on it (ADR 0016).
     const result = await this.db.query<{ runtime_key: string }>(
       `SELECT DISTINCT profile.runtime_key
          FROM agent_runtime_profiles profile
@@ -600,10 +598,8 @@ export class PgFrontendSupportService {
       due_connections: string | number;
     }>(
       `SELECT
-         -- Triage moved from source_items.status to per-user library_status, so
-         -- there is no longer an item-level "open" flag. Home stays space-scoped:
-         -- an item is open while nobody in the space has dismissed it, which is
-         -- what the old status IN ('new','triaged','selected') meant.
+         -- Open is not an item-level status. Home stays space-scoped: an item
+         -- is open while nobody in the space has dismissed it.
          (SELECT count(*)::text FROM source_items si
            WHERE si.space_id = $1 AND si.deleted_at IS NULL
              AND NOT EXISTS (

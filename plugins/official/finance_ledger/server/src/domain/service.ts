@@ -210,11 +210,8 @@ export class FinanceLedgerService {
   /** Only the owner of a personal account may change its visibility. */
   /**
    * One answer for every account this person may not change: not found.
-   *
-   * It used to give three — "Account not found", "Shared accounts are always
-   * visible to the space", "Only the account owner can change its visibility" —
-   * all as 403, which told a stranger that a given id exists and whether it is
-   * someone's personal account.
+   * Do not distinguish missing, shared, and not-owner. That tells a stranger
+   * the id exists and whether it is personal.
    */
   async setAccountVisibility(
     db: Queryable,

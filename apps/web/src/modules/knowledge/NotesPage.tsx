@@ -91,7 +91,7 @@ export default function NotesPage({ scope }: NotesPageProps) {
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null)
 
   const [notes, setNotes] = useState<NoteSummary[]>([])
-  // Every note in the space, used to nest notes under their folder in the tree.
+  // Every note in the space, nested under its folder in the tree.
   const [allNotes, setAllNotes] = useState<NoteSummary[]>([])
   const [collapsedCollections, setCollapsedCollections] = useState<Set<string>>(() => new Set())
   const [resolvedTitles, setResolvedTitles] = useState<Record<string, string>>({})

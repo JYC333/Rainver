@@ -2235,13 +2235,9 @@ function effectiveInputConfig(rule: SourcePostProcessingRuleRow): SourcePostProc
 /**
  * How much prompt one screening run may spend, in characters.
  *
- * This used to be a flat 48k — a figure from when every model was assumed to
- * have a ~16k context window. On a model with a half-million-token window it
- * trimmed a sixteen-item intake to four items per run, and because the trim is
- * silent the leftovers came back as fresh recovery batches: one research pass
- * turned into five screening runs and the reviewer was asked to approve the
- * same intake more than once. The window is the real constraint, so read it
- * from the model registry.
+ * The window is the model's, read from the model registry. A flat character
+ * cap silently splits one intake into repeated screening runs and asks the
+ * reviewer to approve the same intake more than once.
  */
 export function promptBudgetCharsFor(model: string | null): number {
   if (!model) return SOURCE_POST_PROCESSING_PROMPT_BUDGET_FLOOR_CHARS;
@@ -2458,19 +2454,17 @@ function contextRefKey(
 /**
  * How widely a Proposal that quotes several Source items may be published.
  *
- * The narrowest of what it quotes. A run that summarised one restricted
- * candidate alongside ten shared ones used to publish the lot at
- * `space_shared`, which is the copy-across-a-boundary the item's own gate
- * exists to prevent.
+ * The narrowest of what it quotes. One restricted candidate beside shared
+ * ones must not publish the lot at `space_shared`.
  */
 function narrowestItemVisibility(items: readonly { visibility: string; access_level?: string | null }[]): string {
   const order = ["private", "selected_users", "space_shared"];
   let narrowest = order.length - 1;
   for (const item of items) {
     const index = order.indexOf(item.visibility);
-    // An unrecognised value is treated as the narrowest there is, not as a
-    // value narrower than all of them: `indexOf` returns -1, which used to win
-    // the comparison and then be rejected by `ck_proposals_visibility`.
+    // An unrecognised value is the narrowest known level. `indexOf` returns
+    // -1 for it; treating -1 as narrower than every known level then fails
+    // `ck_proposals_visibility`.
     narrowest = Math.min(narrowest, index === -1 ? 0 : index);
     // A `space_shared` item served at `summary` is withheld from most readers;
     // republishing its excerpt Space-wide is that withholding undone.

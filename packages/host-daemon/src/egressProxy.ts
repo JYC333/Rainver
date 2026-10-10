@@ -233,10 +233,9 @@ export async function startEgressProxy(
     const host = rawHost.startsWith("[") && rawHost.endsWith("]") ? rawHost.slice(1, -1) : rawHost;
     const port = separator > 0 ? Number(target.slice(separator + 1)) : 443;
     const at = new Date().toISOString();
-    // Validated before anything is recorded: a non-integer port used to be
-    // written into the log as `NaN`, which serializes as null, which the
-    // `complete` frame's schema rejects — discarding the whole frame, leaving
-    // the Run running forever and never releasing its concurrency slot.
+    // Validate before recording. A non-integer port logged as `NaN` serializes
+    // as null, the `complete` frame's schema rejects it, and the Run never
+    // releases its concurrency slot.
     if (!host || !Number.isInteger(port) || port <= 0 || port > 65_535) {
       record(grant.runId, { allowed: false, host: host || "(malformed)", port: 0, reason: "Malformed CONNECT target.", at });
       return refuse(client, 400, `${target} is not a host and port this proxy can dial.`);

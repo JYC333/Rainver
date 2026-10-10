@@ -41,8 +41,7 @@ function GlobalNotesPage() {
 }
 
 /**
- * Knowledge module shell. First-level "Knowledge" replaces the old first-level
- * "Wiki": Notes (working knowledge) and Wiki (canonical knowledge) are peer
+ * Knowledge module shell. Notes (working knowledge) and Wiki (canonical knowledge) are peer
  * sub-areas alongside Sources and Cards. Cross-section navigation is the
  * breadcrumb switcher in each page header (KnowledgeSectionHeader) — there is no
  * Knowledge scene sidebar or tab strip. Each section owns its own layout; the

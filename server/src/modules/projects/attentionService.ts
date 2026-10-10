@@ -52,9 +52,7 @@ const projectOperationsAttentionAdapter: ProjectAttentionAdapter = {
       due_at: null,
       blocking_refs: [],
       // The Research Area's Runs tab renders the operation's own progress
-      // row, including its Checkpoint decide controls. (The Operations Area
-      // that used to is retired: everything else on it was a Space-level
-      // object filtered to the Project.)
+      // row, including its Checkpoint decide controls.
       action_descriptors: [{ label: "Review", href: `/projects/${projectId}/research?tab=runs&open=${row.id}` }],
       href: `/projects/${projectId}/research?tab=runs&open=${row.id}`,
     }));

@@ -1110,11 +1110,9 @@ function FinancePage({ host }: { host: FinanceWebHost }) {
   }
 
   return (
-    // Keyed by the book so switching books gives this view fresh state.
-    // It used to reset that state from an effect on `[book.id]`, which also
-    // ran on mount — a click that landed between first paint and that effect
-    // (opening the transaction panel, selecting an account) was silently
-    // undone, and under load the tests caught it.
+    // Keyed by the book so switching books gives this view fresh state. Do not
+    // reset that state from an effect on `book.id`: the effect also runs on
+    // mount and undoes a click that landed first.
     <FinanceLedgerView
       key={activeBook.id}
       api={api}

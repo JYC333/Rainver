@@ -125,11 +125,9 @@ export class InquiryGraphService {
   /**
    * The Project graph.
    *
-   * This used to union an Inquiry-specific projection with the
-   * `space_objects`/`object_relations` one, because Threads lived outside the
-   * ontology and the generic projection could not see them. They are ontology
-   * objects now, so the generic projection already covers them — keeping the
-   * union would double every Thread node.
+   * Threads are ontology objects, so the generic `space_objects` /
+   * `object_relations` projection already covers them. Do not union a second
+   * Inquiry projection: every Thread node would appear twice.
    */
   async getCombinedProjectGraph(
     identity: SpaceUserIdentity,

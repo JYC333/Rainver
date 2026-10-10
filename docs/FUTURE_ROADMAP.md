@@ -1,6 +1,6 @@
 # Future Roadmap
 
-Unimplemented designs that used to live in this file are in
+Unimplemented designs are in
 [`.agent/plans/unimplemented-from-guides.md`](../.agent/plans/unimplemented-from-guides.md).
 
 Current-state sources:

@@ -614,12 +614,9 @@ export class ProjectResearchOrchestrator {
     const workflowState = objectValue(workflow.state_json);
     const monitoring = objectValue(workflowState.monitoring);
     if (monitoring.active !== true) throw new HttpError(409, "Historical extension requires a completed baseline with active monitoring");
-    // An "all available" baseline used to be refused here as having nothing
-    // earlier to reach. That stopped being true when the acquisition became
-    // bounded: the walk is newest-first and stops at its item budget, so the
-    // whole point of the cap is that earlier history remains. What actually
-    // has nothing left is coverage that already reaches the floor, and the
-    // range checks below say so on their own terms.
+    // An "all available" baseline can still have earlier history: the walk is
+    // newest-first and stops at its item budget. Coverage that already reaches
+    // the floor is what has nothing left, and the range checks below say so.
     if (coverageReachesFloor(workflowState)) {
       throw new HttpError(409, "This research workflow already covers the earliest available history");
     }
@@ -2701,12 +2698,8 @@ export class ProjectResearchOrchestrator {
    * every operation not started via `research.start_acquisition`.
    *
    * All three variants (`failed`, `completed`, `waiting_review`) go through
-   * here. The last two became reachable with the checkpoint reform: before
-   * it, a Room-started acquisition that finished or paused told
-   * the Room nothing, and the user had to discover it from the web UI's
-   * Operation surface — which is precisely the interruption the reform set out
-   * to remove, so removing the gates without wiring these would have made the
-   * Room *less* informative, not more.
+   * here, including a Room-started acquisition that finishes or pauses.
+   * Omitting the finished and paused variants leaves the Room silent.
    *
    * Enqueues a job via `this.db` rather than posting the Room message
    * directly. `failOperation` is called from action-node handlers that

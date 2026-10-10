@@ -4,14 +4,9 @@ import type { EntityLink, NoteStatus, NoteSummary } from '../../types/api'
 export const ROOT_PARENT = '__root__'
 
 /**
- * Where a notes surface lives.
- *
- * `NotesPage` used to hardcode `/knowledge/notes` at four `navigate` sites and
- * this module at two more. That was the whole of its coupling to a route — the
- * other ~850 lines take no position on where the surface is mounted. Naming the
- * scope makes a second entry point (a Project's notes) a caller decision rather
- * than a second implementation, which is what let the two note surfaces diverge
- * before.
+ * Where a notes surface lives. The scope is a caller decision, so a Project's
+ * notes is not a second implementation. Do not hardcode `/knowledge/notes`
+ * inside the page.
  */
 export interface NotesSurfaceScope {
   /** Space-relative base path of the surface, e.g. `/knowledge/notes`. */

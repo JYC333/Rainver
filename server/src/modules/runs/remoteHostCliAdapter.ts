@@ -514,11 +514,9 @@ async function runRemoteHostCliAdapter(
     }
   }
 
-  // How this run reports back. Offered whenever the Run was granted any tool
-  // at all: an agent dispatched with a tool surface and no way to reach it is
-  // exactly the gap that per-vendor MCP configuration used to fill on the
-  // server host and never filled here. A Run granted nothing gets no command
-  // rather than one that would refuse everything.
+  // How this run reports back. Offered whenever the Run was granted any tool.
+  // A Run granted nothing gets no command rather than one that would refuse
+  // everything.
   //
   // The grants come from the Run's own persisted snapshot, the same source
   // `SystemActionDispatcher` enforces against — never from the dispatch
@@ -898,18 +896,13 @@ async function runRemoteHostCliAdapter(
 }
 
 /**
- * control-center-phase2-plan.md P3 (closure review): every one of the four
- * early-return failure paths above the `run_started` status event
- * (line ~144) used to return via bare `remoteFailure` with no thread event
- * at all — a Run could reach a terminal DB status
- * (`orchestrationService.ts`) while `host_thread_events` stayed completely
- * empty for it. `ThreadConversation.tsx`'s poll only learns a run finished
- * from a `status` event in that same stream, so those failures left the
- * conversation UI stuck showing the run as still active indefinitely.
- * Awaited, matching the terminal `run_succeeded`/`run_failed`/`run_timeout`
- * emissions further down this file (not the per-chunk fire-and-forget
- * pattern) — the same "a poller right at the terminal transition must not
- * observe a truncated conversation" reasoning applies here too.
+ * Early failure paths must write a thread status event and await it before
+ * returning. The conversation poll learns that a run finished only from a
+ * `status` event in `host_thread_events`. A terminal DB status with an empty
+ * event stream leaves the UI showing the run as still active. Match the
+ * terminal `run_succeeded` / `run_failed` / `run_timeout` emissions further
+ * down: a poller at the terminal transition must not observe a truncated
+ * conversation.
  */
 /**
  * Whether this host is the instance's built-in strict one. Read from the row

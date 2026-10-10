@@ -81,12 +81,9 @@ export async function writeNote(db: Queryable, input: {
   const normalized = input.content.kind === "doc" && input.content.plainText !== undefined
     ? (input.content.plainText ?? "")
     : normalizePmText(doc);
-  // Refs accumulate across a note's whole life, so a write has to start from
-  // what the note already cited. `notes.refs_json` used to be that carrier — a
-  // second copy of a list `note_revisions` already keeps per version, kept in
-  // step by hand and read by nothing else (N8). The latest revision is the
-  // same accumulator with one owner, and it is the row rollback restores from,
-  // so the two can no longer disagree.
+  // Refs accumulate across a note's whole life, so a write starts from the
+  // latest revision. That row is the one owner, and it is the row rollback
+  // restores from. Do not keep a second copy on `notes`.
   const previous = await db.query<{ refs_json: unknown }>(
     `SELECT refs_json FROM note_revisions WHERE note_id=$1 AND space_id=$2 ORDER BY version DESC LIMIT 1`,
     [input.noteId, input.spaceId],

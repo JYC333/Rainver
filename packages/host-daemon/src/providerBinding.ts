@@ -154,10 +154,8 @@ export function clearVendorCredentialEnv(ambient: NodeJS.ProcessEnv, runtimeKey:
  * any business picking up an `ANTHROPIC_API_KEY` that happens to be exported —
  * a probe that did would bill an account nobody asked it to, and an ACP
  * `session/list` that did would read sessions under a different identity than
- * the one the daemon is logged in as.
- *
- * Each of these used to spread `process.env` whole, or delete two named keys
- * beside it. One builder rather than a hand-written subset per call site.
+ * the one the daemon is logged in as. One builder, shared by every helper.
+ * Do not spread `process.env` at a call site.
  *
  * @param runtimeKey the runtime this helper serves, or `""` for one that
  * serves none (an installer), which drops every vendor prefix.

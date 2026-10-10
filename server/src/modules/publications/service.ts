@@ -441,8 +441,8 @@ function importOut(row: ImportRow, viewerUserId: string) {
     publication_version: row.publication_version,
     snapshot_hash: row.snapshot_hash,
     imported_resource_type: row.imported_resource_type,
-    // The copy is the importer's private resource; the same rule as
-    // `publicationListOut`, which the idempotent branch used to bypass.
+    // The same visibility rule as `publicationListOut`. The idempotent branch
+    // must apply it too.
     imported_resource_id: row.imported_by_user_id === viewerUserId ? row.imported_resource_id : null,
     imported_by_user_id: row.imported_by_user_id,
     created_at: dateIso(row.created_at),

@@ -94,8 +94,7 @@ export interface ManagedAssistantPreparation {
  * Where to send someone whose Space has no backend for its Assistant yet.
  *
  * Both destinations are real work: add a ModelProvider, or log a CLI in on an
- * execution host. The second used to be a server-side credential profile and
- * is now the Command Center's host card.
+ * execution host. The second is the host card.
  */
 export function setupTargetsForMissingBackend(): Array<"model_providers" | "execution_hosts"> {
   return ["model_providers", "execution_hosts"];

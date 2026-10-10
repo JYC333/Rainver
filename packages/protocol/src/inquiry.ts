@@ -23,10 +23,10 @@ export const InquiryAttentionStateSchema = z.enum([
 ]);
 export type InquiryAttentionState = z.infer<typeof InquiryAttentionStateSchema>;
 
-// Actions only, ordered by stage. `pause` and `wait_for_monitoring` were
-// states wearing an action's clothing and were removed with the step model:
-// pausing is an `attention_state` change, and waiting on monitoring is what a
-// running background step already means.
+// Actions only, ordered by stage. `pause` and `wait_for_monitoring` are not
+// actions: pausing is an `attention_state` change, and waiting on monitoring
+// is what a running background step already means. Do not add them back as
+// next-focus kinds.
 export const InquiryNextFocusKindSchema = z.enum([
   "clarify_or_decompose",
   "search_acquisition",

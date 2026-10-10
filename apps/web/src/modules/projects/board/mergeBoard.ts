@@ -78,11 +78,9 @@ function same(left: unknown, right: unknown): boolean {
 
 /**
  * Moves one card between lanes locally, so a drag lands where it was dropped
- * instead of waiting out a round trip.
- *
- * The move used to re-read the Board through the loading path, which replaced
- * the whole page with a skeleton and painted it again — the card appeared to
- * jump back before arriving. Only the dragged card and the two lane counts it
+ * instead of waiting out a round trip. Do not re-read the Board through the
+ * loading path: that replaces the page with a skeleton and the card jumps.
+ * Only the dragged card and the two lane counts it changes are touched here;
  * changes are touched here; the read that follows reconciles through
  * `mergeBoard`, so anything the server decided differently still arrives.
  */

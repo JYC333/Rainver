@@ -3,15 +3,11 @@ import { cardSourceTypes, contextIncludableItemTypes, entityDefinition } from ".
 import { linkTypeDefinition } from "./linkTypes.js";
 
 /**
- * Registry-backed validation for the closed sets that used to be database
- * CHECK constraints.
+ * Registry-backed validation for the closed sets the database only format-checks.
  *
- * P2 demoted those CHECKs to format constraints on the grounds that the
- * registry owns the vocabulary (B12F). That is only true once something
- * actually asks the registry — a demoted constraint with no replacement is
- * strictly worse than the constraint it replaced. This module is that
- * replacement, and it is why the interface declarations are load-bearing
- * rather than documentation.
+ * B12F says the registry owns the vocabulary. A format constraint with nothing
+ * asking the registry is not that ownership. This module is that ask, and it
+ * is why the interface declarations are load-bearing rather than documentation.
  */
 
 /** Endpoint-aware link type check, also enforcing the declared governance. */

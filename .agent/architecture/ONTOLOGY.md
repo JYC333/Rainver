@@ -123,8 +123,8 @@ Closed-set validation is in the application layer, not in database CHECK
 constraints. The database keeps **format** constraints only
 (`^[a-z][a-z0-9_]{0,63}$` on `link_type`, an open `object_type`). This is safe
 only because something actually asks the registry: `ontology/validation.ts` is
-that replacement, and `ontologyRegistry.test.ts` asserts it rejects everything
-the demoted CHECKs used to reject.
+that replacement, and `ontologyRegistry.test.ts` asserts it rejects values
+outside the registry.
 
 The code/data boundary:
 

@@ -4,25 +4,16 @@ import type { HostLaunchIsolation } from "@rainver/protocol";
 
 /**
  * The strict-mode namespace: one rootless bubblewrap mount/PID namespace per
- * Run, ported from `sandbox/runner.mjs`'s `buildNamespaceCommand`.
+ * Run. A `strict` host wraps every Run; a `trusted` host spawns natively and
+ * never reaches this file.
  *
- * ADR 0016 says the server host and a paired personal host are the same thing,
- * and this is where that becomes true: the isolation that used to be a
- * property of a separate Runner service colocated with the server is now a
- * trust mode of the one daemon. A `strict` host wraps every Run; a `trusted`
- * host spawns natively and never reaches this file.
- *
- * **One deliberate deviation from the Runner it replaces.** The Runner mapped
- * every authority root onto a canonical target (`/workspace`, `/home/sandbox`,
- * `/runtime-tool`) because the server addressed mounts by managed id and never
- * knew a real path. The daemon is the opposite: it is the only component that
- * resolves paths at all (B64), and every value it has already materialized for
- * the Run — `RAINVER_CLI`, `RAINVER_OUTPUT_DIR`, a runtime profile's state-root
- * variables, a managed copy's manifest command — is an absolute path on this
- * machine. So each path is bound **at its own path** rather than remapped. The
- * containment property is unchanged (an empty root plus an explicit allowlist);
- * what is dropped is a path translation that would have to be undone again in
- * every environment variable the daemon writes.
+ * Bind each path at its own path. The daemon is the only component that
+ * resolves paths (B64), and the values it has already materialized —
+ * `RAINVER_CLI`, `RAINVER_OUTPUT_DIR`, a runtime profile's state-root
+ * variables, a managed copy's manifest command — are absolute paths on this
+ * machine. Remapping them onto canonical targets would have to be undone in
+ * every environment variable the daemon writes. Containment is an empty root
+ * plus an explicit allowlist.
  */
 export interface StrictBind {
   path: string;

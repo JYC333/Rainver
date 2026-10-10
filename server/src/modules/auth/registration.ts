@@ -32,9 +32,9 @@ const ACTIVE_INTENT_STATES = "('issued', 'claimed', 'provisioning')";
 export const PERSONAL_SPACE_NAME_SUFFIX = "'s Personal Space";
 /**
  * The longest display name registration accepts: it must fit `users.display_name`
- * and, with the suffix, `spaces.name` (both varchar(256)). A longer name used to
- * pass the route, create the pending identity, and fail provisioning on every
- * retry until the intent expired.
+ * and, with the suffix, `spaces.name` (both varchar(256)). A longer name
+ * passes the route, creates the pending identity, and then fails provisioning
+ * on every retry until the intent expires.
  */
 export const REGISTRATION_DISPLAY_NAME_MAX = 256 - PERSONAL_SPACE_NAME_SUFFIX.length;
 

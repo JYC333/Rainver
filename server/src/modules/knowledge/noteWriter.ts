@@ -462,9 +462,9 @@ export async function addNotePlacement(
  *   widening).
  *
  * A Project change also invalidates any baseline role scoped to the old one —
- * a note cannot hold a slot in a Project it no longer belongs to. That guard
- * used to run only when `primary_project_id` was set explicitly through the
- * note update, so a drag carried the role along; it runs here too now.
+ * a note cannot hold a slot in a Project it no longer belongs to. The guard
+ * runs for every Project change, including a drag. Do not limit it to an
+ * explicit `primary_project_id` on the note update.
  */
 /**
  * The client's cue to ask rather than to show an error: it re-issues the
@@ -614,14 +614,11 @@ async function insertNotePlacement(
 }
 
 /**
- * Assigns or clears a note's Project notebook role (N2/N3).
+ * Assigns or clears a note's Project notebook role.
  *
- * Three code paths used to write `notes.project_role`: this one, the starter
- * note creator, and the one-shot title adoption. Only this one validated the
- * role against the registry and displaced the previous holder, which the
- * partial unique index would otherwise reject — and a silent second baseline
- * is exactly the failure the marker exists to prevent. All three now come
- * here.
+ * This is the only writer of `notes.project_role`. It validates the role
+ * against the registry and displaces the previous holder. A second writer
+ * hits the partial unique index, or leaves a silent second baseline.
  *
  * The role needs a Project: a note with no `primary_project_id` has no
  * Project to hold a role in. Displacing the previous holder is a write to

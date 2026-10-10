@@ -3,14 +3,11 @@ import { useSpace } from '../../contexts/SpaceContext'
 import HostsPanel from './HostsPanel'
 
 /**
- * The machines you have paired, and what runs on them.
- *
- * This page used to be two things: a dispatch composer with a work stream —
- * a third conversation surface, with its own message queue and its own
- * account of what an Agent was doing — and the host list. Work is started
- * from a Task or from a Room now, and a turn is read where the conversation
- * is (`modules/conversation`), so what remains is host management: pairing,
- * provider bindings, the login terminal, host Agents and their directories.
+ * The machines you have paired, and what runs on them: pairing, provider
+ * bindings, the login terminal, host Agents and their directories. Work is
+ * started from a Task or a Room. A turn is read where the conversation is
+ * (`modules/conversation`). Do not add a dispatch composer or a second
+ * conversation surface here.
  */
 export default function CommandCenterPage() {
   const { activeSpaceId, activeSpaceName, preferredSpaceId, spaces } = useSpace()

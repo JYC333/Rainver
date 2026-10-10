@@ -955,9 +955,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       let socketClosed = false;
       // The `close` event is the last thing a closing socket does: its close
       // frame has already been exchanged and `readyState` left OPEN by then.
-      // A hello that finished authenticating in that gap used to record the
-      // heartbeat and take it back; it now sees the socket going and writes
-      // nothing.
+      // A hello that finishes authenticating in that gap must see the socket
+      // going and write nothing.
       const socketGone = () => socketClosed || socket.readyState !== socket.OPEN;
       // Which machine this connection is, learned at hello and reused by every
       // later acknowledgement: the probe list a daemon is told to install from

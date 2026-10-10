@@ -13,12 +13,10 @@ export interface ContentResourceDefinition {
   publishable: boolean;
 }
 
-// Derived from the ontology entity registry (ADR 0012 decision 6): this list
-// used to be a third, independently maintained type universe alongside the
-// retrieval enum and the graph projection's assumptions, at a granularity that
-// made cross-validation impossible. `space_object` appears once and covers
-// every ontology subtype, which is the granularity the read gate actually
-// works at.
+// Derived from the ontology entity registry (ADR 0012 decision 6). Do not
+// keep a third type list beside the retrieval enum. `space_object` appears
+// once and covers every ontology subtype, which is the granularity the read
+// gate works at.
 //
 // Derived on each read rather than snapshotted at module load: B12F/B12I say
 // modules — including plugins — register their own entities, and a plugin that

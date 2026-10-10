@@ -29,11 +29,10 @@ export const PROVIDER_TASK_RUN_JOB_TYPE = "provider_task_run";
  *
  * The counterpart of `agent_run` for the other `execution_kind`: the request
  * path admits the Run, makes it durable `queued` and enqueues this job, and
- * the worker performs the bounded call. Doing it on the request path instead
- * — which is what the Research ad-hoc analysis used to do — gives the task no
- * worker retry, no drain admission, and no recovery: a crash between the
- * provider answering and its output being applied left a Run nobody would
- * ever finish.
+ * the worker performs the bounded call. Doing it on the request path gives
+ * the task no worker retry, no drain admission, and no recovery: a crash
+ * between the provider answering and its output being applied leaves a Run
+ * nobody will finish.
  *
  * The handler knows nothing about any domain's prompt. It loads the Run and
  * its frozen contract and asks the owning domain, through this registry, to
@@ -125,9 +124,9 @@ async function handleProviderTaskRun(
   // has already been called off.
   if (isTerminalRun(run.status) || run.status === "cancelling") {
     // The terminal reconcilers are enqueued here too, not only after this
-    // handler settles the Run: a retry that finds the Run already terminal
-    // used to return before reaching them, so a nudge lost to a failed
-    // enqueue was never retried. They are idempotent on the Run.
+    // handler settles the Run. A retry that finds the Run already terminal
+    // must still reach them: they are idempotent on the Run, and a nudge lost
+    // to a failed enqueue is otherwise never retried.
     if (isTerminalRun(run.status)) {
       await enqueueRunTerminalReconcilers(db, {
         space_id: job.space_id,

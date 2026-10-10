@@ -726,8 +726,7 @@ function rotationReason(previous: unknown, next: BindingFingerprint): CliRotatio
   const before = record(previous) as Partial<BindingFingerprint>;
   if (hash(before.runtime) !== hash(next.runtime)) {
     const oldRuntime = record(before.runtime);
-    // A different copy on the host is a different login, which is what the
-    // brokered credential profile used to stand for.
+    // A different copy on the host is a different login.
     if (oldRuntime.runtime_installation !== next.runtime.runtime_installation) return "credential_changed";
     if (hash(oldRuntime.sandbox_profile_ref) !== hash(next.runtime.sandbox_profile_ref)) return "sandbox_changed";
     return "runtime_changed";

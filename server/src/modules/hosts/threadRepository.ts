@@ -2,11 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 
 /**
- * ADR 0016 D14: a host thread pins a run-file-lifecycle conversation to one
- * WorkspaceLocation (execution-topology-and-project-control-plane-plan.md
- * P1 — previously a (host, project_folder) pair directly). See
- * `server/src/db/schema/hostThreads.ts` for the invariants this row
- * encodes.
+ * A host thread pins a run-file-lifecycle conversation to one
+ * WorkspaceLocation. See `server/src/db/schema/hostThreads.ts` for the
+ * invariants this row encodes.
  */
 export interface HostThread {
   id: string;
@@ -379,12 +377,10 @@ export class PgHostThreadRepository {
   }
 
   /**
-   * Close a direct-chat thread. `pendingArchive` used to mean "this thread has
-   * a managed workspace worth archiving"; it now means "there is host state to
-   * archive at all", which is true of every host-bound direct thread, because
-   * the Agent's runtime profile is archived whether or not the cwd was
-   * Rainver's to manage. Whether the workspace goes with it is decided at the
-   * request, not here.
+   * Close a direct-chat thread. `pendingArchive` means there is host state to
+   * archive, which is true of every host-bound direct thread: the Agent's
+   * runtime profile is archived whether or not the cwd was Rainver's to
+   * manage. Whether the workspace goes with it is decided at the request.
    */
   async closeDirectAgent(agentId: string, userId: string, pendingArchive = false): Promise<void> {
     await this.db.query(

@@ -60,7 +60,7 @@ export function summarizeBackfillFailures(rows: FailedBackfillRow[]): BackfillFa
       retryable: diagnostics.retryable === true,
       failure_kind: stringValue(diagnostics.failure_kind),
       // Named apart from `error_code` below, which is the Source-layer error
-      // code; these two describe different layers and used to be conflated.
+      // code. These two describe different layers. Do not store them in one field.
       transport_error_name: stringValue(diagnostics.error_name),
       transport_error_code: stringValue(diagnostics.error_code),
       elapsed_ms: integerValue(diagnostics.elapsed_ms),
@@ -85,8 +85,8 @@ export function summarizeBackfillFailures(rows: FailedBackfillRow[]): BackfillFa
     .map(String));
   const attempts = Math.max(0, ...failedSources.map((source) => source.automatic_attempts));
   const providerLabel = providers.join(", ") || "a source provider";
-  // "could not be reached" used to cover timeouts too, which sends the reader
-  // to check connectivity for a provider that was answering the whole time.
+  // A timeout is not "could not be reached". That wording sends the reader to
+  // check connectivity for a provider that was answering.
   const timedOut = failedSources.some((source) => source.failure_kind === "timeout");
   const reason = statuses.length > 0
     ? ` returned HTTP ${statuses.join("/")}`

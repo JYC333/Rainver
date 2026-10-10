@@ -252,11 +252,9 @@ export const tasks = pgTable("tasks", {
 	check("ck_tasks_role", sql`task_role IN ('source', 'subtask')`),
 	// `waiting_for_review` aligns the product work item with the two levels
 	// below it, which already had it: a Run the Supervisor stopped retrying and
-	// a Plan Node awaiting a decision both sit in `waiting_for_review`, and
-	// before this the Task above them had nowhere to show that. A Task whose
-	// only Run is parked for review used to stay `in_progress` forever, so the
-	// one state that means "a person has to look at this" was invisible exactly
-	// where a person would look for it.
+	// a Plan Node awaiting a decision both sit in `waiting_for_review`, and the
+	// Task above them shows that. A Task whose only Run is parked for review
+	// is `waiting_for_review`, not `in_progress`.
 	check("ck_tasks_status", sql`status IN ('inbox', 'ready', 'in_progress', 'waiting_for_review', 'blocked', 'done', 'cancelled')`),
 	check("ck_tasks_column_requires_board", sql`column_id IS NULL OR board_id IS NOT NULL`),
 ]);

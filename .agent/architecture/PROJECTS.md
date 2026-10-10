@@ -268,12 +268,12 @@ Overview surface either.
 Screening criteria are generic with one declared extension point. `include_keywords`,
 `exclude_keywords`, the date range and `required_evidence_fields` apply to any
 domain. `source_restrictions` is where material may come from — journals,
-outlets and sites are one concept, so it replaced the academic-only `venues`.
+outlets and sites are one concept (`source_restrictions`).
 Domain-specific axes live in `domain_criteria_json`, whose **legal keys come from
 the extraction profiles the Project's active source bindings name**: writing a
 key no bound profile declares is refused with the legal set named, rather than
-accepted and ignored. `academic_paper_v1` declares `methods`, which is what that
-column used to be; `generic_document_v1` declares none, so a Project screening
+accepted and ignored. `academic_paper_v1` declares `methods`.
+`generic_document_v1` declares none, so a Project screening
 only web material has no domain axis to screen on. This is the middle path
 between a fixed paper-shaped column every domain carries and an unconstrained
 JSON bag nobody can validate.
@@ -412,9 +412,9 @@ Every write path — user save, seeding, monitoring, ad-hoc analysis, rollback �
 goes through the shared note writer (`knowledge/noteWriter.ts`), which bumps
 the optimistic version, records a full-content row in `note_revisions`
 (source, block-op diff, user/run attribution), and refreshes the retrieval
-projection. The last of those used to be the caller's job, and only the
-user-facing route did it: a "current understanding" an agent had maintained for
-weeks stayed stale in search until a human saved it by hand. Starter notes are
+projection. Every path refreshes retrieval, including agent writes. Do not
+leave that to the caller: a note an agent maintains then stays stale in search
+until a human saves it. Starter notes are
 created through the same writer as any other note rather than by a second
 implementation of the same insert. AI edits are expressed as block-level ops (`append` / `insert` /
 `replace` / `delete` against top-level Tiptap blocks), so untouched blocks are
@@ -427,9 +427,9 @@ of merging blindly.
 The first completed synthesis seeds only empty version-1 role-carrying notes.
 Later report snapshots never overwrite evolved notes; legacy projects with
 reports but no notebook are seeded from the latest non-rejected report on first
-Area initialization. Area initialization also adopts pre-role starter notes by
-title once — the only legitimate title match left, because it reconstructs the
-binding the old resolver created rather than being a binding of its own. The
+Area initialization. Area initialization also adopts starter notes that have
+no role marker, once, by title. Title matching is legitimate only for that
+adoption. It is not a general binding. The
 two notebook analysis entries — Ask-AI (`research.adhoc_analyze`) and notebook
 chat (`research.ask`) — are bounded single-shot structured generations with no
 tools and no turns of their own. Under ADR 0022 they are ProviderTask
@@ -450,10 +450,10 @@ contract and the resolved provider/model on its contract, enqueues one
 `provider_task_run` job, and answers `{ run_id, job_id, status: "queued" }`.
 The worker rebuilds the request from that contract — never from the job payload,
 so a re-resolved space default cannot change what a queued Run runs on — and
-applies the block ops before the Run goes terminal. It used to run inline on the
-request: a provider failure surfaced as a 502 with no worker retry behind it,
-and a crash between the Run going terminal and the ops being applied left an
-edit nothing would ever finish. Ask-AI's output contract is a `notebook_update`
+applies the block ops before the Run goes terminal. Do not apply them on the
+request: a provider failure then surfaces as a 502 with no worker retry, and a
+crash between the Run going terminal and the ops being applied leaves an edit
+nothing will finish. Ask-AI's output contract is a `notebook_update`
 ops document, applied through the same applier the research reconciler uses, so
 the ops land on the target note as an `ai_adhoc` revision attributed to the
 bounded Run; that applier is idempotent on the Run, so the reconciler remains a

@@ -596,7 +596,7 @@ None of these gates may be bypassed. No secret material is resolved before `runt
 
 `server/src/modules/providers` resolves server-owned ModelProvider and managed
 subscription credentials. Host daemons link CLI copy login state into isolated
-Agent profiles; the old CLI broker remains only pending its API retirement.
+Agent profiles. CLI login is not resolved through the server credential grants.
 
 - Resolves credentials through active-space grants: ModelProvider API keys from
   encrypted user-owned `Credential` rows. Host CLI login is resolved on the

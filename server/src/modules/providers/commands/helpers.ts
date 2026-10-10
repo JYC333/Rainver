@@ -9,9 +9,7 @@ import {
 
 /**
  * Vendor identity, credentialing, and published endpoints all come from the
- * registry. These used to be three hand-maintained lists here, next to a fourth
- * in the web client and a fifth in the provider-task table — which is how the
- * copies drifted.
+ * registry. Do not keep a second list here or in the web client.
  */
 const PROVIDER_TYPES = new Set(listProviderVendors().map((vendor) => vendor.id));
 const CLOUD_PROVIDER_TYPES = new Set(

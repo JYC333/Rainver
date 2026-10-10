@@ -52,7 +52,7 @@ export const experimentVersions = pgTable("experiment_versions", {
 	definitionId: varchar("definition_id", { length: 36 }).notNull(),
 	version: integer().notNull(),
 	// "manual": no execution config, the Run is a human-recorded observation.
-	// "managed_code_comparison": the old Campaign's config shape, carried in
+	// "managed_code_comparison": execution config carried in
 	// config_json (project_folder_id, editable/protected scope, setup_commands,
 	// run_command, metric_parser, time_budget_seconds, timeout_seconds,
 	// resource_budget) — see runService.ts for the exact keys and validation.

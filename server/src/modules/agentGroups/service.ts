@@ -1708,20 +1708,16 @@ export async function prepareHostConversationDispatch(input: {
   if (hostKind === "remote" && target.host_owner_user_id !== input.userId) {
     throw new HttpError(403, `Room agent '${input.agentId}' can only be triggered by its host owner`);
   }
-  // One predicate for both kinds. `server` used to skip the staleness term:
-  // `markOffline` only fires on a WebSocket close, so a control plane that
-  // restarted while `sandbox-runner` was down left `status = 'online'` standing
-  // against a heartbeat hours old, and the trigger passed on a host that was
-  // not there.
+  // Same predicate for both host kinds. `markOffline` only fires on a
+  // WebSocket close, so a restart can leave `status = 'online'` against a
+  // stale heartbeat. Do not skip the staleness term for the built-in host.
   const hostOnline = "host_online" in target
     ? target.host_online
     : hostIsOnline({ kind: hostKind, status: target.host_status, last_heartbeat_at: target.last_heartbeat_at });
   const executionReady = "execution_ready" in target ? target.execution_ready : true;
-  // Checked for every host, the built-in one included. It used to be waved
-  // through for `server` because a server-host run spawned a CLI the server
-  // managed; the built-in host runs the copies its daemon installed and has no
-  // vendor CLI on PATH, so skipping the check here is what would let a Room
-  // turn dispatch to a runtime that is not there and fail at the spawn.
+  // The built-in host runs the copies its daemon installed and has no vendor
+  // CLI on PATH. Do not skip the installation check for it: a Room turn would
+  // dispatch to a runtime that is not there and fail at the spawn.
   const runtimeAvailable = hostInstallationIds(target.capabilities_json, input.backend.runtime_key)
     .includes(input.backend.runtime_installation!);
   if (!hostOnline || !executionReady || !runtimeAvailable) {

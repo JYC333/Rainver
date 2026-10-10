@@ -12,11 +12,9 @@ interface SourceProviderIdentity {
 /**
  * How the request failed, as three genuinely different operator actions.
  *
- * `network` used to absorb timeouts too, and that cost real diagnosis time: a
- * provider that answered slowly and a provider that could not be reached at all
- * were recorded identically, with `upstream_status: null` in both cases. They
- * are not the same problem — one is fixed by asking for less or waiting longer,
- * the other by looking at connectivity.
+ * `timeout` and `network` are different operator actions. A slow answer is
+ * fixed by asking for less or waiting longer; an unreachable provider is a
+ * connectivity problem. Do not record both as `network` with a null status.
  */
 export type SourceFetchFailureKind = "upstream_http" | "timeout" | "network";
 

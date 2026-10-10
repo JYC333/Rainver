@@ -8,25 +8,20 @@ import { sessions } from "./sessions.js";
 import { artifacts } from "./artifacts.js";
 
 /**
- * ADR 0016 D14: a host thread pins a run-file-lifecycle conversation to one
- * WorkspaceLocation (execution-topology-and-project-control-plane-plan.md
- * P1 — previously a (host, project_folder) pair) — the vendor CLI's own
+ * A host thread pins a conversation to one WorkspaceLocation. The vendor CLI's
  * session store lives on that Location's disk, so continuity cannot cross
- * Locations. The first dispatch in a thread starts a fresh vendor session;
- * a follow-up dispatch passes this thread's id and resumes
- * `vendor_session_id`. `status` flips to `session_reset` (from `active`)
- * when the daemon reports the vendor session is gone and the run had to
- * restart fresh — the UI surfaces this rather than silently resuming into a
- * new, unrelated session.
+ * Locations. The first dispatch in a thread starts a fresh vendor session; a
+ * follow-up dispatch passes this thread's id and resumes `vendor_session_id`.
+ * `status` flips to `session_reset` (from `active`) when the daemon reports
+ * the vendor session is gone and the run had to restart fresh — the UI
+ * surfaces this rather than silently resuming into a new, unrelated session.
  *
- * D9 generalises the former task-only table without creating a second session
- * authority. Legacy task rows may have a null task_id because the old thread
- * row did not store its Task owner; their messages remain the authoritative
- * recoverable link. A Task-shaped row may carry task_id, while direct and
- * Conversation-shaped rows carry their own explicit container identity.
- * The existing host_task_thread_id columns on messages, events, and runs are
- * intentionally retained as the run-side thread reference. Conversation
- * rows in this table are keyed by `(session_id, agent_id)` and never by Room.
+ * `task_id` stays nullable. A Task-shaped row may carry it; direct and
+ * Conversation-shaped rows carry their own container identity. Do not require
+ * `task_id`: existing rows omit it, and their messages remain the recoverable
+ * link. Do not add a second session table. The `host_task_thread_id` columns
+ * on messages, events, and runs are the run-side thread reference.
+ * Conversation rows are keyed by `(session_id, agent_id)` and never by Room.
  * Room membership is derived through `sessions`.
  */
 export const hostThreads = pgTable("host_threads", {

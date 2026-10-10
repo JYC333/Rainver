@@ -665,9 +665,9 @@ export default function ChatPanel({
 }
 
 /**
- * One choice per runtime profile. A CLI backend used to fan out into one
- * choice per brokered credential profile; a CLI now runs on an execution host
- * with its own login, so the profile names the whole choice.
+ * One choice per runtime profile. A CLI runs on an execution host with its own
+ * login, so the profile names the whole choice. Do not fan one CLI out into a
+ * choice per credential profile.
  */
 function flattenBackendChoices(options: ConversationBackendOption[]): BackendChoice[] {
   return options.map<BackendChoice>(option => {

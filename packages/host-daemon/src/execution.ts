@@ -245,9 +245,8 @@ export function substituteAcpInput(
   placeholders: Record<string, string>,
   paths: Record<string, string>,
 ): string {
-  // Legacy commands still send plain-text stdin. Preserve the old placeholder
-  // contract for those payloads; only parsed ACP JSON needs field-scoped
-  // substitution to keep user-owned text opaque.
+  // Plain-text stdin still uses the placeholder contract. Only parsed ACP JSON
+  // is field-scoped, so user-owned text stays opaque.
   if (!value.trim().startsWith("{")) return substitutePlaceholders(value, placeholders);
   let parsed: unknown;
   try { parsed = JSON.parse(value); } catch { return substitutePlaceholders(value, placeholders); }
@@ -1406,10 +1405,9 @@ async function launchRun(
   const strict = config.trust === "strict";
   if (strict && frame.runtime_key === "codex_cli") {
     // This Run's own profile — the Agent × container one (`profileDir`), never
-    // the login home. `profileDir` is set in the same branch that resolves
-    // `loginHome`, so the old third fallback could not be reached — and had it
-    // been, this would have rewritten the config the managed login shares
-    // across every Agent and every Room on this installation.
+    // the login home. Writing the login home would rewrite the config the
+    // managed login shares across every Agent and every Room on this
+    // installation.
     const codexHome = derivedEnv.CODEX_HOME
       ?? (profileDir ? join(profileDir, ".codex") : null);
     if (codexHome) {

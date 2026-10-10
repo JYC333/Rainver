@@ -134,7 +134,7 @@ export class ProjectResearchRetryService<TRead, TSetup> {
       // queueComparison reloads and mutates the operation's persisted state
       // itself (see MonitoringCoordinator.queueComparison) — it takes only
       // ids, not `state`, so mutating the local `state` object here has no
-      // effect and previously read as if it reset something it doesn't.
+      // effect. Do not treat it as a reset.
       await this.ports.queueComparison({
         spaceId: identity.spaceId,
         userId: identity.userId,

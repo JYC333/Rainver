@@ -108,15 +108,9 @@ export class PgRoomRosterRepository {
               -- its runtime profile always, and the shared Conversation cwd
               -- when it was the last one out. Deliberately the same condition
               -- findManagedWorkspaceRestoreTarget matches on, and no more.
-              --
-              -- It used to require a managed workspace_mode and a heartbeat
-              -- entry reporting an archived workspace, which was wrong twice.
-              -- The common case archives only the profile — one Agent leaves
-              -- while others stay — and the heartbeat reports no profiles at
-              -- all. Worse, a conversation heartbeat entry carries no agent_id
-              -- by contract, so matching one against a.id was never true and
-              -- this flag was always false: the offer never appeared for any
-              -- Room specialist.
+              -- Archive of the profile alone must still offer restore. A
+              -- conversation heartbeat entry carries no agent_id, so do not
+              -- match one against a.id: the offer would never appear.
               --
               -- Every clause below is findManagedWorkspaceRestoreTarget's,
               -- including the host's owner and revoked checks: offering a

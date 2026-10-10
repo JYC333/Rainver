@@ -966,9 +966,9 @@ export class PgMemoryApplyRepository {
    * A person archiving or restoring their own memory
    * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §3).
    *
-   * The owner deciding what their own memory holds needs no approval from
-   * anyone — the proposal that used to stand here was the person queueing a
-   * request to themselves. Someone else's entry keeps the proposal route.
+   * The owner deciding what their own memory holds needs no approval. Someone
+   * else's entry keeps the proposal route. Do not open a proposal for the
+   * owner to approve their own write.
    *
    * Returns null when the entry is not the caller's, so the route can fall
    * back rather than reporting a memory they may not know exists.

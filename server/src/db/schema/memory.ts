@@ -263,9 +263,9 @@ export const provenanceLinks = pgTable("provenance_links", {
 		}),
 	check("ck_provenance_links_source_trust", sql`(source_trust IS NULL) OR ((source_trust)::text = ANY (ARRAY[('user_confirmed'::character varying)::text, ('internal_system'::character varying)::text, ('trusted_external'::character varying)::text, ('untrusted_external'::character varying)::text, ('agent_inferred'::character varying)::text]))`),
 	// B12F: membership is a `provenanceSourceable` declaration on the entity
-	// registry, resolved through `isProvenanceSourceType`. The closed set that
-	// used to live here was one of four copies — this CHECK plus three Sets, two
-	// of which silently *dropped* unrecognized entries, so a divergence lost
-	// provenance without an error. `target_type` still carries no constraint.
+	// registry, resolved through `isProvenanceSourceType`. The column keeps a
+	// format constraint only. Do not restore a closed-set CHECK here, and do
+	// not keep a private Set that drops unrecognized entries: that loses
+	// provenance with no error. `target_type` still carries no constraint.
 	check("ck_provenance_links_source_type_format", sql`(source_type)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text`),
 ]);

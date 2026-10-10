@@ -961,17 +961,10 @@ export class PgTaskRepository {
   }
 
   /**
-   * The remote-host half of the merged dispatch endpoint (D5).
-   *
-   * It creates one Run synchronously, exactly as the server branch above
-   * does. The Profile is the deployment authority; this path adds only the
-   * Host thread and vendor session continuity data.
-   *
-   * It used to enqueue a message on the Task's HostThread and let a queue
-   * create the Run once nothing blocked it. That queue existed for the
-   * Command Center's thread page, which paused it on any non-success and
-   * offered a Resume button; with the page gone nothing could resume one, so
-   * a remote Task run whose predecessor failed would have sat queued forever.
+   * The remote-host half of task-run dispatch. It creates one Run
+   * synchronously, exactly as the server branch above does. The Profile is
+   * the deployment authority; this path adds only the Host thread and vendor
+   * session continuity data.
    */
   private async prepareRemoteTaskRun(
     client: Queryable,

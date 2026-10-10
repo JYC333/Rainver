@@ -376,9 +376,9 @@ const proposalInputs:Record<string,z.ZodType>={
     proposed_content: z.string().min(1),
     supersedes_knowledge_item_id: z.string().min(1).optional(),
   }).passthrough(),
-  // Scope is the caller's to set. It used to be a server constant nobody
-  // could reach, so "only read the last year" or "500 is fine" had no way
-  // through — the only adjustment available was cancelling and starting over.
+  // Scope is the caller's to set. Do not replace it with a server constant:
+  // the caller then has no way to say "only the last year" or "500 is enough"
+  // except cancelling and starting over.
   "research.start_acquisition": z.object({
     thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
     intent_note: z.string().trim().min(1).max(2000).optional(),

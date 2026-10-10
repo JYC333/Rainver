@@ -42,13 +42,13 @@ export type RemoteProviderBindingFrame = HostLaunchProviderBinding;
  * session the next turn is about to resume, and every turn after the first
  * fails with the runtime reporting no such conversation.
  *
- * It is not machine-global either, which is what it used to be: keyed by
- * adapter and provider alone, every Agent on a machine shared one login,
- * one session store, and one pile of vendor auto-memory, and an unbound run
- * simply used the machine's own `~/.claude`. Keying by Agent × container is
- * what makes "the Agent is the memory boundary, the Conversation is the
- * context boundary" true of the substrate as well as of Rainver's own
- * Memory ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §6).
+ * It is not machine-global either. Keying by adapter and provider alone would
+ * share one login, one session store, and one pile of vendor auto-memory
+ * across every Agent, and an unbound run would use the machine's own
+ * `~/.claude`. Keying by Agent × container is what makes "the Agent is the
+ * memory boundary, the Conversation is the context boundary" true of the
+ * substrate as well as of Rainver's own Memory
+ * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §6).
  *
  * The container is the Conversation for a Room turn, the owner for a direct
  * chat, and the WorkspaceLocation for everything else — a Task thread, an
@@ -162,12 +162,11 @@ export function runtimeProfileKey(
 /**
  * The profile frame for a run with no ModelProvider binding.
  *
- * There used to be none: an unbound run was launched with the machine's own
- * environment, so its CLI read `~/.claude` — one login, one session store and
- * one pile of vendor auto-memory shared by every Agent on the machine. This
- * gives it the same profile a bound run gets, minus the lease: no `files`, no
- * `env`, only the state-root variables and a link to the one credential file
- * this installation was logged in with.
+ * An unbound run gets the same profile shape as a bound run, minus the lease:
+ * no `files`, no `env`, only the state-root variables and a link to the one
+ * credential file this installation was logged in with. Do not launch it on
+ * the machine's own `~/.claude`; that shares one login and session store
+ * across every Agent.
  *
  * The link, rather than a token in the environment: passing the credential
  * through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean Rainver read

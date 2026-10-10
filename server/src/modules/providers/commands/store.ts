@@ -128,10 +128,9 @@ function grantOut(row: {
 
 /**
  * Which vendor capability each retrieval task needs. The capability itself is
- * the vendor registry's, read here rather than restated: this table used to
- * repeat the per-vendor lists, which made it a second answer to a question
- * `VendorDescriptor` already answers — and a silently divergent one the moment
- * a vendor changed.
+ * the vendor registry's, read here rather than restated. Do not repeat the
+ * per-vendor lists: `VendorDescriptor` already answers this, and a second
+ * copy diverges the moment a vendor changes.
  *
  * Query rewrite and synthesis are chat calls, and exclude a vendor reachable
  * only through a managed subscription. That exclusion is about the credential

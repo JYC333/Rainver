@@ -513,9 +513,8 @@ export default function AgentGroupsPage() {
             ) : isProjectScoped && rooms.length === 0 ? (
               // Since every Project is created with its mainline (ADR 0018
               // decision 4), a Project showing none has failed to load them.
-              // The button that used to be here created a Room, which would
-              // now mean a second shared one beside the mainline it could not
-              // see.
+              // Do not offer a button that creates a Room: that would be a
+              // second shared one beside the mainline.
               <>
                 <p className="text-sm">Could not load this Project's conversations.</p>
                 <Button

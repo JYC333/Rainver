@@ -62,10 +62,10 @@ export interface ActiveLocationWithHost extends WorkspaceLocationRow {
 }
 
 /**
- * The host daemon's legacy workspace-list contract. A daemon lists logical
- * workspace registrations, while execution is now backed by a Location row;
- * keep the old field names and join the Folder identity fields here rather
- * than leaking the internal Location vocabulary onto the daemon wire.
+ * The host daemon's workspace-list contract. A daemon lists logical workspace
+ * registrations. Execution is a Location row. The wire keeps the daemon's
+ * field names; Folder identity is joined here. Do not put Location vocabulary
+ * on the daemon wire.
  */
 interface HostWorkspaceOut {
   id: string;
@@ -505,12 +505,9 @@ export function assertServerHostLocation(location: Pick<WorkspaceLocationRow, "e
 }
 
 /**
- * Shared by the sandbox/code-patch/proposal-apply call sites that used to
- * fetch a Folder and call `assertServerHostFolder` +
- * `projectFolderAbsoluteRoot` directly — all three only ever resolved a
- * Folder's single active host-bound path. `allow_external_root` and other logical-repo policy fields
- * still come from the Folder row itself; this only replaces the physical
- * path half.
+ * Resolves a Folder's single active host-bound path for sandbox, code-patch,
+ * and proposal-apply. `allow_external_root` and other logical-repo policy
+ * fields still come from the Folder row; this returns only the physical path.
  */
 export async function resolveActiveServerHostLocation(
   db: Queryable,

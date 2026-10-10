@@ -1,7 +1,6 @@
 # Non-Goals and Disabled Surfaces
 
-Current absences and product-scope refusals. Unimplemented designs that
-used to live here are in
+Current absences and product-scope refusals. Unimplemented designs are in
 [../plans/unimplemented-from-guides.md](../plans/unimplemented-from-guides.md).
 
 ## Currently Disabled or Not Implemented

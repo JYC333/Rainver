@@ -460,10 +460,10 @@ export function FocusResearchWorkbench({
   )
   const initialIntakeDraft = objectValue(displayWorkflow?.state_json.draft)
   const initialIntakeSaved = initialIntakeDraft.status === 'saved' || emptyInitialSearchOperation !== null
-  // An "all available" baseline used to be excluded as having nothing
-  // earlier to reach. The acquisition is bounded now — it buys the newest N
-  // matches and stops — so earlier history is exactly what it left, and the
-  // server decides on coverage rather than on the history mode's name.
+  // An "all available" baseline can still have earlier history. The acquisition
+  // buys the newest N matches and stops. The server decides on coverage, not
+  // on the history mode's name. Do not refuse the baseline for having nothing
+  // earlier.
   const canExtendHistory = Boolean(activeWorkflow && !historicalBackfillActive && initialSearchOperation?.status === 'completed' && monitoring.active === true && earliestCoverage)
   const pinnedThread = Array.isArray(activeWorkflow?.state_json.thread_scope)
     ? activeWorkflow?.state_json.thread_scope[0] as Record<string, unknown> | undefined
@@ -518,10 +518,8 @@ export function FocusResearchWorkbench({
     savedSetupDiffers: emptyInitialSearchOperation !== null
       && savedSetupDiffersFromOperation(serializeResearchSetupDraft(researchSetupDraft), emptyInitialSearchOperation),
   })
-  // The search-setup Modal now always targets a specific, already-defined
-  // Inquiry Thread — without one linked yet there is nothing valid to
-  // configure inside it, so every entry point that used to open it routes to
-  // Inquiry instead, the same way a missing question already did.
+  // The search-setup modal targets a specific Inquiry Thread. Without one
+  // linked there is nothing to configure, so entry points go to Inquiry.
   function openSetup() {
     if (!currentThread) onEditQuestion()
     else setResearchSetupOpen(true)

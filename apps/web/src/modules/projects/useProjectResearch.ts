@@ -111,11 +111,7 @@ interface ProjectResearchController {
 
 /**
  * Every piece of Project Research state, its handlers, and its polling.
- *
- * This used to live inside ProjectDetailPage, which meant the Project Overview
- * fetched workflows, checkpoints, the evidence matrix, reports, scan summaries,
- * providers and Inquiry Threads on every visit in order to render a workbench
- * that the Research Area already owned a route for. Research is an Area; the
+ * Research is an Area. Do not mount this hook on the Project Overview.
  * Overview is an aggregation layer over Areas and does not host one.
  */
 function legacyResearchWorkflowKey(projectId: string): string {

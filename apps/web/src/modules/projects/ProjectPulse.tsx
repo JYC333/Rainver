@@ -150,12 +150,9 @@ export default function ProjectPulse({
     .sort((a, b) => b.active_run_count - a.active_run_count)
     .slice(0, 6)
 
-  // One list, whatever the work is. A Task moving and a research Operation
-  // screening nine hundred documents are both "in progress"; only the first
-  // used to appear here, so a Project running for hours read as idle.
-  // Operations are work too, and the overview already carries the unfinished
-  // ones — reading only the Board is why a research acquisition screening
-  // nine hundred documents showed up here as "nothing is being worked on".
+  // One list, whatever the work is. A Task and a research Operation are both
+  // in progress. Reading only the Board makes a long research acquisition
+  // look idle. The overview already carries the unfinished operations.
   const running = overview?.in_progress ?? []
   const nothingRunning = moving.length === 0 && running.length === 0
 

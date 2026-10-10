@@ -28,9 +28,9 @@ export async function countThreadsOpenedInTurn(
   provenance: ThreadEventProvenance,
 ): Promise<number> {
   const batchKey = threadEventBatchKey("thread.created", provenance);
-  // Unreachable from the one caller, which always has a Run — but a bound
-  // standing where a gate used to stand refuses when it cannot count, rather
-  // than skipping. A future caller without a batch is one this cannot see.
+  // Unreachable from the one caller, which always has a Run. A missing batch
+  // key refuses rather than skipping: a caller without a batch is one this
+  // cannot see.
   if (!batchKey) return Number.POSITIVE_INFINITY;
   const result = await db.query<{ total: string }>(
     `SELECT count(*)::text AS total

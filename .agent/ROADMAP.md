@@ -1,7 +1,6 @@
 # Roadmap
 
-This file records **shipped** foundations. Unimplemented ideas that used to
-live here are in
+This file records **shipped** foundations. Unimplemented ideas are in
 [plans/unimplemented-from-guides.md](plans/unimplemented-from-guides.md).
 Work is pulled from [plans/backlog.md](plans/backlog.md) or
 [tasks/deferred-register.md](tasks/deferred-register.md).

@@ -68,11 +68,10 @@ export const RuntimeProfileOptionsJsonSchema = SecretFreeJsonRecordSchema.superR
 /**
  * Which of the two Profile option bags authors a key.
  *
- * A Profile carries two untyped bags, and a key present in both used to be
- * resolved by a silent precedence in whichever reader happened to look
- * (`runtime_config_json.tools ?? runtime_policy_json.tools`). The plan's rule
- * is that a key has one authoring authority, so admission refuses to store it
- * in the bag that does not own it and the precedence never arises.
+ * A Profile carries two untyped bags. A key has one authoring bag. Admission
+ * refuses to store it in the other, so a reader never has to pick
+ * `runtime_config_json.tools ?? runtime_policy_json.tools`. Do not resolve a
+ * key present in both by silent precedence.
  *
  * Only keys with a live reader are listed. `runtime_config_json` owns the
  * candidate-shape keys the routing filter reads; `runtime_policy_json` owns

@@ -376,11 +376,8 @@ export const ChatTurnCompletionSchema = z
     error: z.string().nullish(),
     error_code: z.string().nullish(),
     assistant_message: AssistantMessageSchema.nullish(),
-    // The named schema, not a second copy of it. The copy that used to stand
-    // here was byte-identical until one of them gained a field, at which point
-    // the declared wire contract for this frame said a field the sender emits
-    // does not exist — and a `.parse()` would have stripped it, handing an
-    // owner-only card to every viewer.
+    // The named schema, not a second copy of it. A second copy drifts, and
+    // `.parse()` then strips a field the sender emits.
     action_previews: z.array(ActionPreviewSchema).optional(),
     ...SecretResponseGuards,
   })

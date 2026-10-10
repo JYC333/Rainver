@@ -111,9 +111,7 @@ const REDACTION_OVERSCAN_CHARS = 256;
 
 export function redactEvidenceText(value: string | null | undefined): string | null {
   if (value == null) return null;
-  // Truncate before scanning. Only what is kept is ever persisted, so scanning
-  // the part about to be thrown away buys nothing and costs the scan — a 1 MiB
-  // error string used to be matched in full before this line ran.
+  // Truncate before scanning. Only what is kept is ever persisted.
   if (value.length <= MAX_EVIDENCE_TEXT_CHARS) return redactSecretPatterns(value);
   const scanned = redactSecretPatterns(value.slice(0, MAX_EVIDENCE_TEXT_CHARS + REDACTION_OVERSCAN_CHARS));
   // Cutting inside the scanned window is mostly safe — a secret that fit in it

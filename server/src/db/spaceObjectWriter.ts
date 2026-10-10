@@ -87,9 +87,8 @@ export function buildSpaceObjectInsert(input: SpaceObjectInsert, paramOffset = 0
   }
 
   // The root title is a projection of the domain's label, so truncating it is
-  // correct where failing the insert is not. Callers used to slice at their
-  // own widths — one of them at 1024, past this column's 512 — which turned a
-  // long label into a write error instead of a shortened display string.
+  // correct where failing the insert is not. Slice at this column's width.
+  // A caller that slices past 512 turns a long label into a write error.
   const title = input.title.trim();
   if (!title) throw new SpaceObjectWriteError("A space object requires a non-empty title");
   const projectedTitle = title.length > TITLE_MAX_LENGTH ? title.slice(0, TITLE_MAX_LENGTH) : title;

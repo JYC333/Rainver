@@ -1,6 +1,6 @@
 # Memory and Context Roadmap
 
-Unimplemented extension paths that used to live in this file are in
+Unimplemented extension paths are in
 [`.agent/plans/unimplemented-from-guides.md`](../.agent/plans/unimplemented-from-guides.md)
 §9.
 

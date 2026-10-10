@@ -14,18 +14,13 @@ import { useAppTranslation } from '../i18n'
 const URL_RE = /^https?:\/\/\S+$/i
 
 /**
- * The one capture affordance, everywhere.
+ * The one capture affordance, everywhere. Do not add a second floating button
+ * for another pipeline: the moment a thought arrives is when its category is
+ * not yet known.
  *
- * There used to be two floating buttons at the same corner — a global one
- * writing raw activity to the Personal Space and a Project one appending
- * straight into a note — and the overlap was the visible symptom of a real
- * split: two pipelines competing for one gesture. They are one entry now,
- * because the moment a thought arrives is exactly when its category is not yet
- * known, and classifying before typing is the friction capture exists to remove.
- *
- * So the destination is chosen *after* the box is open, defaults are inferred
- * from where the text came from rather than what it says, and every default is
- * one click from being overridden.
+ * The destination is chosen after the box is open, defaults are inferred from
+ * where the text came from rather than what it says, and every default is one
+ * click from being overridden.
  */
 export function FloatingQuickCapture() {
   const { t } = useAppTranslation()

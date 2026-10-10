@@ -38,11 +38,7 @@ export class ProjectOverviewService {
     if (!project) throw new HttpError(404, "Project not found");
 
     // What the front page, the shell and the Assistant all read: the goal,
-    // whether there is one, and what needs attention. There used to be a
-    // per-Mode "projection" (a state summary and next-action links that all
-    // pointed at Areas the sidebar lists) and a per-entity summary row set
-    // (the Areas list again, with counts). Nothing consumed either once the
-    // front page stopped duplicating the sidebar, so they are gone.
+    // whether there is one, and what needs attention.
     // Room dispatch calls this with its transaction Client. Keep the reads
     // in their existing order so no two queries are queued on one Client.
     const brief = await this.kernel.getActiveBriefVersion(identity, projectId);

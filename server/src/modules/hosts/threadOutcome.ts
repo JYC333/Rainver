@@ -5,22 +5,11 @@ import { runOutputResult } from "../runs/orchestrationResults.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 
 /**
- * control-center-phase2-plan.md P1: moved out of the (now-async) dispatch
- * route handler into the `agent_run` job handler, which is the only place
- * that still sees the run reach a terminal state — mirrors the
- * `finalizeChatTurn` precedent of a generic post-terminal hook gated on a
- * run shape (`agentRunHandler.ts`).
- *
- * It records the vendor session the run came back with, and says so in the
- * Room when a resume was attempted and came back empty — a context reset is
- * something the person needs to know about, because the Agent has forgotten
- * what they were doing.
- *
- * It used to drive a per-thread message queue from here as well. That queue
- * existed for the Command Center's thread page; with the page gone nothing
- * could resume a paused one, so a remote Task run whose predecessor failed
- * would have sat queued forever. A remote Task run is admitted like a server
- * one now — one Run, created synchronously.
+ * Post-terminal hook for a host-thread Run, called from the `agent_run` job
+ * handler. It records the vendor session the run came back with, and says so
+ * in the Room when a resume was attempted and came back empty — a context
+ * reset is something the person needs to know about, because the Agent has
+ * forgotten what they were doing.
  */
 export async function recordHostThreadOutcome(
   config: ServerConfig,

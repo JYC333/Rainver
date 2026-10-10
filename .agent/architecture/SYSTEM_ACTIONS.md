@@ -55,7 +55,7 @@ builds the gateway's executor
   `dispatch()` and `listGrantedDefinitions()` are its call surface. Runtime delegation
   materialization (Path B, below) is the one deliberate exception: it runs
   after the Run has already terminated, when a run-scoped in-flight dispatch
-  is no longer meaningful, so it does not call `SystemActionDispatcher` at
+  does not apply, so it does not call `SystemActionDispatcher` at
   all — it independently checks the same grant snapshot and shares the
   schema and audit-event shape, but its own code is the dispatch path for
   that one case.
@@ -404,13 +404,9 @@ see it — a note's origin-Room filter is what replaces "private to the speaker"
 there, and a persona's gate is §5. They are also the one action family
 registered for a Run with **no** instructing person, because §5 lets an
 unattended Run revise a persona; everything else the family can do refuses
-there with a reason rather than being invisible. (A group with
-no Room previously declared no capabilities at all, so its Agent could call
-nothing whatever its own permissions said.) They are the same shape applied to
+there with a reason rather than being invisible. They are the same shape applied to
 memory
-([ADR 0003](../decisions/0003-memory-proposal-flow.md)). Before them no Agent
-could write memory from a conversation at all, so the person was not the
-bottleneck on what it learned — nothing was. A write that stays `private`,
+([ADR 0003](../decisions/0003-memory-proposal-flow.md)). A write that stays `private`,
 `normal`-sensitivity and about the person in the turn applies through
 `PgMemoryApplyRepository.applyDirect` as a new version with
 `created_by = agent:<id>`, `approved_by = null` and the run, session and
@@ -518,7 +514,7 @@ cannot override a hard-invariant decision, and its use is consumed atomically
 only by the proposal apply transaction.
 
 The decision and an `authorization_request_reconcile` job commit together.
-While the old execution lock remains held, the reconciler durably returns its
+While the execution lock remains held, the reconciler durably returns its
 Job to `pending` with a bounded future `scheduled_at` and restores the claim's
 attempt budget instead of burning attempts in the worker loop. After release,
 approval requeues the same Run exactly once; rejection uses canonical Run
@@ -718,11 +714,10 @@ overlap, idempotency, and the Operation it produces are that method's
 already. The offer is made at completion rather than at the start because
 that is when there is a baseline to extend from; the start message already
 says how much matched and how much this pass reads, so nothing about the size
-waits for it. One standing offer per workflow. `startHistoricalBackfill` used
-to refuse an `all_available` baseline outright as having nothing earlier to
-reach; that stopped being true when the acquisition became bounded, so it now
-refuses only coverage that already reaches the floor (and the front end's
-`canExtendHistory` no longer tests the history mode's name either).
+waits for it. One standing offer per workflow. `startHistoricalBackfill`
+refuses only coverage that already reaches the floor. An `all_available`
+baseline can still have earlier history. `canExtendHistory` tests coverage,
+not the history mode's name.
 
 The same number bounds a daily incremental update, which answers differently:
 it does not ask. `triggerIncremental` takes at most that many scanned items
@@ -733,13 +728,12 @@ visible. A cadence that runs daily drains its own backlog; a question nobody
 is awake to answer would not.
 
 The Thread's own statement is the authoritative question. Assessment
-legitimately rewrites the question it plans queries from (translating or
-narrowing it), so `resolveResearchThreadScope` no longer compares the
-strategy's text with the Thread's — text equality rejected the pipeline's own
-output and made `research.start_acquisition` unable to start once a single
-word changed. It checks provenance instead: the strategy's research-context
-version must belong to an assessment session for this Thread. A strategy built
-for a *different* Question is still a 409.
+rewrites the question it plans queries from (translating or narrowing it).
+`resolveResearchThreadScope` checks provenance: the strategy's research-context
+version must belong to an assessment session for this Thread. Do not compare
+the strategy's text with the Thread's: text equality rejects the pipeline's
+own output and `research.start_acquisition` cannot start after one word
+changes. A strategy built for a different Question is still a 409.
 
 A run that stops before `startInitialIntake` records the attempt as a
 terminal `failed` research Operation (`progress_json.run_kind =

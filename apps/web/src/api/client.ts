@@ -3591,9 +3591,8 @@ interface ProviderTaskPolicyPutRequest {
 }
 
 /**
- * The server-owned vendor registry. The client reads these facts rather than
- * keeping its own copy of them — the two used to be maintained by hand on both
- * sides, and had already drifted.
+ * The server-owned vendor registry. The client reads these facts. Do not keep
+ * a second copy.
  */
 export interface ProviderVendorOut {
   id: ProviderType

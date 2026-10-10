@@ -174,14 +174,9 @@ export class PgKnowledgeRepository {
   constructor(private readonly db: Queryable) {}
 
   /**
-   * Counts for the Knowledge overview — every one of them gated.
-   *
-   * Three of these four used to filter on `space_id` alone while the fourth
-   * applied the content gate, which is the shape an oversight takes rather than
-   * a decision: whoever added the claim count gated it and did not backfill the
-   * older three. A count is a weaker leak than a list — no titles, no bodies —
-   * but it is still an answer about content the viewer cannot open, and "47
-   * notes" next to twelve openable ones is also just wrong as a number.
+   * Counts for the Knowledge overview — every one of them gated. A count is a
+   * weaker leak than a list and is still an answer about content the viewer
+   * cannot open. Do not filter any of them on `space_id` alone.
    */
   async summary(identity: SpaceUserIdentity): Promise<Record<string, unknown>> {
     const [notes, wiki, sources, claims] = await Promise.all([
