@@ -1229,8 +1229,7 @@ Streamdown's default pipeline *is* `rehype-raw` → `rehype-sanitize` →
 help: it visits `raw` nodes after the unified run and `rehype-raw` has already
 consumed them, so it finds none and silently does nothing. Do not trust
 `skipHtml`. What stands between model-written HTML and the DOM
-is the sanitize schema, which is why tightening it is the fix above and not a
-precaution. An image the instance serves itself still renders inline.
+is the sanitize schema. That schema is the boundary, not a precaution. An image the instance serves itself still renders inline.
 
 The same rule reaches the *other* renderer. A Library summary or digest is
 written by a Run over ingested third-party items and is displayed through the
