@@ -106,24 +106,24 @@ The closed, code-declared kind of a `space_objects` row (`knowledge_item`,
 gating, and which interfaces apply. Declared in the ontology registry, not in
 per-space data.
 
-**Object Profile** (was `object_kind`)
+**Object Profile**
 A per-space, governed configuration layer *under* one Object Type: label,
-field schema, extraction/retrieval policy, and UI config. Renamed from "kind"
-because `type` and `kind` are near-synonyms in English while these are
-different layers. A profile changes presentation and defaults; it can never
-create a new Object Type or move a row across domain ownership.
+field schema, extraction/retrieval policy, and UI config. It is not an Object
+Type. `type` and `kind` are near-synonyms in English; these are different
+layers. A profile changes presentation and defaults; it can never create a
+new Object Type or move a row across domain ownership.
 
-**Link Type** (was `relation_type`)
+**Link Type**
 A code-declared edge type on `object_relations`, carrying its legal endpoint
-Object Types and its governance level (direct write or proposal-gated). The
-term became accurate only once endpoints were declared and constrained; before
-that the column was an unconstrained string.
+Object Types and its governance level (direct write or proposal-gated).
+Endpoints are declared and constrained. Do not treat the column as an
+unconstrained string.
 
 **Interface**
 A declared capability of an Object Type: `ContentAccessible`, `Retrievable`,
 `Graphable`, `Evidenceable`, `Governed`. Declared in the ontology registry; a
-declaration must be backed by an implementation. Replaces the previously
-parallel per-mechanism type lists.
+declaration must be backed by an implementation. One registry. Do not keep a
+second per-mechanism type list.
 
 **Aggregate Root**
 A domain table with independent identity, cross-domain references, or its own

@@ -64,9 +64,8 @@ source refs for audit and content-demotion disclosure. Context Events and
 checkpoints never promote content into Memory; promotion is a write under ADR
 0003, and one that carries no rationale of its own is a proposal.
 
-The retired Context Builder/Compiler/Prepare service, Context Snapshots/Digests,
-manual context attachments, chat candidate bundle, and vendor context files are
-not Memory responsibilities and must not be reintroduced.
+Context compilation, snapshots, manual attachments, and vendor context files
+are not Memory responsibilities. Do not reintroduce them here.
 
 ## Main write flows
 

@@ -119,9 +119,9 @@ export class WorkContextService {
   async create(identity: SpaceUserIdentity, raw: unknown): Promise<Record<string, unknown>> {
     const parsed = protocol.WorkContextSetupWriteRequestSchema.safeParse(raw);
     if (!parsed.success) throw new HttpError(422, "Invalid Work Context Setup: only typed object references and preferences are accepted");
-    // One entry per reference: the planner hashes an explicit item from its
-    // reference and refuses a duplicate id, so a Setup that pinned the same
-    // object twice failed every execution in its scope until it was replaced.
+    // One entry per reference. The planner hashes an explicit item from its
+    // reference and refuses a duplicate id. Do not store the same object
+    // twice: every execution in that scope fails.
     const requested = {
       ...parsed.data,
       pinned_refs: uniqueRefs(parsed.data.pinned_refs),

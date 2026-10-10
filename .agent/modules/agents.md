@@ -60,7 +60,7 @@ Agent                    — the runtime instance
     → AgentRuntimeProfile    — mutable named runtime binding; snapshotted onto each Run
 ```
 
-Rules (clean model — no old paths):
+Rules:
 - A **template is a factory**, never executed. No `Run` / model-call path reads a
   template spec.
 - **Agent behavior always comes from** `Agent.current_version_id` →

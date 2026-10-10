@@ -164,11 +164,8 @@ describe("providers read authority", () => {
       expect.arrayContaining(["cohere_embedding", "cohere_rerank", "minimax"]),
     );
 
-    // The retired names are no longer claimed as static siblings, so they now
-    // match the provider-detail parametric route and 404 as unknown provider
-    // ids. That is the same answer any unknown id gets — deliberately not a
-    // special case for two deleted names, which would be a compatibility alias
-    // wearing a different hat.
+    // Unknown ids 404. Do not special-case a deleted name: that would be a
+    // compatibility alias.
     for (const url of ["/api/v1/providers/catalog", "/api/v1/providers/litellm-providers"]) {
       const retired = await app.inject({ method: "GET", url });
       expect(retired.statusCode, url).toBe(404);

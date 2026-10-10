@@ -3278,9 +3278,8 @@ export const projectResearchApi = {
   createChecklistItem: (projectId: string, text: string) => post<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist`, { text }),
   updateChecklistItem: (projectId: string, itemId: string, body: Partial<Pick<ResearchChecklistItem, 'text' | 'status' | 'sort_order'>>) => patch<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`, body),
   deleteChecklistItem: (projectId: string, itemId: string) => del<{ id: string }>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`),
-  // `section_key` is a legacy field name accepted for backward compatibility
-  // (see areaService.ts askAi): a known starter-note key maps to its
-  // title; any other value is used as a literal note title.
+  // `section_key` is accepted (see areaService.ts askAi): a registered role
+  // resolves to the note holding that role; any other value is a literal title.
   // Enqueues a bounded `provider_task` Run and answers 201 `queued`. The note is
   // NOT updated when this resolves: a `provider_task_run` job applies the block
   // ops and then marks the Run terminal, so a caller may only report that the

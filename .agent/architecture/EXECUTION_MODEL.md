@@ -303,7 +303,7 @@ RunEvent records the structured phase-level evidence spine of a run:
 
 | event_type | Meaning |
 |---|---|
-| `context_compiled` | Legacy evidence name retained by the event taxonomy; current Agent Runs record accepted Runtime Context Delivery and Invocation Snapshot evidence instead |
+| `context_compiled` | Retained event name. Current Agent Runs record accepted Runtime Context Delivery and Invocation Snapshot evidence |
 | `runtime_selected` | Runtime adapter resolved; sandbox level decided |
 | `credential_granted` | Credentials resolved for adapter |
 | `sandbox_created` | Worktree sandbox created |

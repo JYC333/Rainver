@@ -553,10 +553,9 @@ ObjectRelation:                       # governed FK-backed graph layer
                                     # declared in modules/ontology/linkTypes.ts.
                                     # The database keeps a format constraint only;
                                     # the registry owns membership (B12F).
-                                    # Renamed from relation_type on ontology edges
-                                    # only — memory_relations.relation_type and
+                                    # memory_relations.relation_type and
                                     # knowledge_item_sources.relation_type are
-                                    # deliberately separate vocabularies (B12A).
+                                    # separate vocabularies (B12A).
   confidence
   status                            # candidate|active|rejected|archived;
                                     # create packets accept candidate|active only

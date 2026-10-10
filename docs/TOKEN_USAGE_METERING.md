@@ -42,7 +42,7 @@ All future usage checks, summaries, budget decisions, thresholds, routing
 history, and monitoring must read `token_usage_events` through the usage
 repository. Run- or attempt-level rows are lifecycle records only; do not add
 token accounting fields to them, read accounting from `output_json`, or issue
-feature-local queries against a legacy snapshot. A new run-scoped projection
+feature-local queries against a snapshot. A new run-scoped projection
 belongs in `PgUsageRepository` so normalization, null handling, and ledger
 semantics stay centralized.
 

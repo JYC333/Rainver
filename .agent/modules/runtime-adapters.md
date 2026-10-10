@@ -142,10 +142,10 @@ its `openai_compatible_base_url` with an `openai`-route lease as
 (`provider_protocol_unsupported`) before a lease is minted. The OpenCode
 provider id is `rainver_provider` either way. Retrieval egress classification
 (`runtimeProviderEgressDestination`) reads the same resolution. An OpenCode
-profile bound, before this rule, to an Anthropic-protocol Provider that has
-only an OpenAI-compatible URL now fails its dispatch with
+profile bound to an Anthropic-protocol Provider that has
+only an OpenAI-compatible URL fails its dispatch with
 `claude_compatible_base_url_required` and is greyed out in the Provider
-selector; the fix is to add the Provider's Claude-compatible URL or bind a
+selector; add the Provider's Claude-compatible URL or bind a
 different Provider. Nothing rewrites such a binding automatically.
 
 Provider authorization, credential spend, network policy and lease lifecycle

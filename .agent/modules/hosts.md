@@ -355,9 +355,8 @@ rules applies, and they are deliberately different:
 
 - `provider_lease` — B67 in full. The machine contributes nothing to which
   backend, credential or upstream the runtime reaches, so the ambient
-  environment is rebuilt from `filterAmbientEnv`'s allowlist. Unchanged from
-  before this phase, including its stated cost: a bound run cannot see
-  `~/.gitconfig` or `~/.ssh`.
+  environment is rebuilt from `filterAmbientEnv`'s allowlist. A bound run
+  cannot see `~/.gitconfig` or `~/.ssh`.
 - `host_login` — B67's closing rule stands: a run with no binding is not
   affected. It keeps `HOME` and therefore `~/.gitconfig` and `~/.ssh/config`,
   the proxy variables, and the language toolchains a paired machine needs.
@@ -410,15 +409,15 @@ roots for OpenCode, whose data directory is `$XDG_DATA_HOME/opencode` before
 it falls back to `HOME/.local/share/opencode`. A **bound** run still gets
 `HOME: "."`, because B67 wants the machine contributing nothing at all, and
 pays for it by losing `~/.gitconfig` and `~/.ssh` — a cost recorded in the
-deferred register and unchanged by this phase.
+deferred register.
 
 Redirecting `HOME` for unbound runs too was considered and rejected: it would
 have broken `git commit` (no author identity) and `git push` (no ssh config)
 for every Task run on a paired machine, which is a price the memory boundary
 does not need to pay. OpenCode's XDG redirect is the one state root **not
 verified on a real host** — if it ignores `XDG_DATA_HOME`, its state stays
-machine-global, which is no worse than before this phase but is not the
-isolation claimed here. See the deferred register.
+machine-global. That is not the isolation claimed here. See the deferred
+register.
 
 This granularity extends the HostThread's opaque `vendor_session_id` to the
 Runtime Context cursor. The HostThread and Runtime Context binding must resume
@@ -1159,13 +1158,10 @@ silently leaving a UTF-8 replacement.
 A pending run survives a brief WS drop: `HostConnectionRegistry` tracks
 pending runs by `run_id` (not nested per-connection) and gives a reconnect
 `RECONNECT_GRACE_MS` (60s) to resume the same in-flight run before failing it
-as `host_disconnected`. This is a narrower reading of the retired phase-1
-plan §5's "interruption semantics" bullet than the plan's
-full wording — a disconnect that outlasts the grace window still resolves as
-an ordinary run failure, not a distinct `interrupted` run status with its own
-reconciliation-on-reconnect lifecycle (adding a new terminal run status would
-touch retry policy, the supervisor, and finalization across the whole run
-subsystem). See the deferred register.
+as `host_disconnected`. A disconnect past the grace window is an ordinary run
+failure. Do not add a distinct `interrupted` status: that would touch retry
+policy, the supervisor, and finalization across the run subsystem. See the
+deferred register.
 
 ## Host threads (D14, `server/src/modules/hosts/threadRepository.ts`)
 
@@ -1205,13 +1201,12 @@ stop, a runtime silent before it initialized) leaves the session in place. A
 Run that reports on a session the thread has since retired (dispatched before
 a rotation or reset, run after it — held for the subscription window, say)
 records only that it was the last Run: the retired session is never written
-back, nor its identity digest or occupancy. Clearing rather than preserving the id matters: retrying an
-already-broken vendor session id forever was a real P3 discovery-review bug,
-fixed before this landed. **Since the phase-2 event-pipeline work**, it is called
+back, nor its identity digest or occupancy. Clearing the id matters: retrying
+an already-broken vendor session id does not recover the session. It is called
 from `agentRunHandler.ts`'s `handleAgentRun` (via
 `server/src/modules/hosts/threadOutcome.ts`'s `recordHostThreadOutcome`)
-once the dispatched Run's `agent_run` job reaches terminal — not from the
-dispatch route itself, which no longer waits around for that. A reset it
+once the dispatched Run's `agent_run` job reaches terminal. The dispatch route
+does not wait for that. A reset it
 concludes is said in the Room once per Run that proved it (the notice carries
 `host_thread_run_id`); the thread keeps its id across resets and the explicit
 reset writes the same `session_reset` event, so a thread-wide check would have
@@ -1327,9 +1322,9 @@ conversation across every run/turn dispatched into it; enforced by
 
 This is a sibling table to `run_events`, not a new `run_events.event_type`
 value — that table's CHECK constraint is a closed vocabulary built for the
-server-host semantic-event stream (`tool_call_started`, etc.), has no
-`assistant_text`/`diagnostic` concept, and (before this phase) had no
-incremental-write path for a remote run at all.
+server-host semantic-event stream (`tool_call_started`, etc.) and has no
+`assistant_text` or `diagnostic` concept. A remote run does not write that
+table incrementally.
 
 `RemoteHostExecutionAdapter` (`remoteHostCliAdapter.ts`) normalizes and
 persists events as stdout/stderr chunks arrive — a `thread_event_sink`
@@ -2208,8 +2203,8 @@ write — a failure with no error anywhere.
   path map. `--local-only` skips remote revocation with an explicit warning.
 - `rainver-host workspace add <path> --project <project_id> [--name <name>]`
   — registers a pre-existing local directory (no mkdir/clone/scan, unlike the
-  server-host `create` flow). Requires an explicit `project_id` in phase 1 —
-  no cross-space "my projects" picker exists yet.
+  server-host `create` flow). Requires an explicit `project_id`. There is no
+  cross-space project picker.
 - `rainver-host workspace list` / `workspace remove <id>`.
 - The private `dist/daemon.js` systemd entrypoint opens the WS connection, sends
   `hello`, including workspace status reports, then `heartbeat` once on

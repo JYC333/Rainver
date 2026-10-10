@@ -10,8 +10,7 @@ How the web client talks to `/api/v1`. Unknown paths return the local
 404 catch-all.
 
 The Files & Code recovery-draft and lazy message-owned input-resource contract
-is recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-input-resources.md)
-and is now the shipped behavior.
+is recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-input-resources.md).
 
 ## Owns
 - REST API conventions (request/response shape, error format, pagination)

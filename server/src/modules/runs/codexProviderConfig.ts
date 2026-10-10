@@ -30,18 +30,13 @@ export function codexModelCatalog(
       slug: model,
       display_name: model,
       description: providerName,
-      // Codex encodes effort into the model id it works with (`model[effort]`)
-      // and sends it upstream as a request parameter — it is the *model's*
-      // reasoning, not a harness behaviour. Declaring only "none" here, which
-      // this did, told Codex that every bound provider's model cannot reason
-      // at all: `applyModelChange` resolves effort from these levels, so a
-      // reasoning model like MiniMax-M3 was pinned to `model[none]` on every
-      // bound run.
-      //
-      // We cannot know which levels a given third-party endpoint honours, so
-      // the choice is between deciding "off" on its behalf and letting it
-      // answer for itself. It answers for itself. `medium` matches Codex's own
-      // fallback, so a provider that ignores the parameter behaves as before.
+      // Codex encodes effort into the model id (`model[effort]`) and sends it
+      // upstream as a request parameter. It is the model's reasoning.
+      // Do not declare only "none": `applyModelChange` resolves effort from
+      // these levels, and a reasoning model would be pinned to `model[none]`
+      // on every bound run. Which levels a third-party endpoint honours is
+      // unknown, so the provider answers for itself. `medium` matches Codex's
+      // own fallback.
       default_reasoning_level: "medium",
       supported_reasoning_levels: [
         { effort: "low", description: "Less reasoning, faster and cheaper" },

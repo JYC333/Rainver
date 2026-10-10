@@ -127,11 +127,10 @@ describe("server runner applies the migration chain", () => {
     expect(events).toContain("tool_name text");
   });
 
-  // The epoch baseline is generated from `src/db/schema/`, not dumped from a
-  // migrated pre-epoch database. A dump carries catalog names the Drizzle
-  // definitions do not mention — including NOT NULL constraints still named
-  // after the retired `adapter_type` column — so `schema:check` could never
-  // see them and every new instance would be created carrying them.
+  // The baseline is generated from `src/db/schema/`. Do not dump it from a
+  // migrated database: catalog names the definitions do not declare, including
+  // leftover NOT NULL constraint names, would ship on every new instance and
+  // `schema:check` would not see them.
   it("is generated from the Drizzle schema, not dumped from a migrated database", () => {
     const sql = readFileSync(join(MIGRATIONS_DIR, "0000_baseline.sql"), "utf8");
     expect(sql).not.toContain("PostgreSQL database dump");
