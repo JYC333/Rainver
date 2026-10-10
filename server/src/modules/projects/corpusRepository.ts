@@ -487,9 +487,9 @@ export class ProjectCorpusRepository {
     const now = new Date().toISOString();
     // read_status is passed twice (once for the plain SET, once for the CASE
     // comparison) rather than reusing one parameter
-    // number: this pg version/driver combination raises "inconsistent types
+    // number. This pg version/driver combination raises "inconsistent types
     // deduced for parameter" when the same parameter is referenced more
-    // than once in a statement (reproduced independently of this change).
+    // than once in a statement.
     await this.db.query(
       `UPDATE project_corpus_items
           SET role = $4,

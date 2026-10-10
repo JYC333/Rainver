@@ -794,7 +794,7 @@ export function ConversationSurface({
         ...(focusRefs ? { focus_refs: focusRefs } : {}),
         // A turn already running does not refuse this: the message waits for
         // it and is sent when it ends. Attachments are claimed at send, so a
-        // message with any is sent now or refused as before.
+        // message with any is sent now or refused.
         ...(effectiveInputParts.length === 0 ? { queue: true } : {}),
       })
       if ('queued' in dispatched) {

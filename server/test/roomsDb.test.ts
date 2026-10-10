@@ -3127,7 +3127,7 @@ describe("Room workflow (real Postgres)", () => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Queue");
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Start." });
-      // Without queue the taken turn is refused, as before.
+      // Without queue the taken turn is refused.
       await expect(service.sendMessage(owner, created.room.id, conversation.id, { content: "Also this." }))
         .rejects.toMatchObject({
           statusCode: 409,

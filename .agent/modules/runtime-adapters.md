@@ -57,7 +57,7 @@ vendor session keeps its working state for the answer, which is the person's
 next message. A vendor CLI's own interactive question is translated into that
 shape rather than approved or treated as a failure. A
 `session/request_permission` is a tool permission and is pre-authorized
-through `runPermissionPolicy.ts` as before, unless the runtime's
+through `runPermissionPolicy.ts`, unless the runtime's
 `RuntimeAdapterSpec.interaction.question_detector` says that shape is a
 question (Claude Code: a request naming no `toolCall`). A question — that, an
 `elicitation/create` form, or any other interactive method except the

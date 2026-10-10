@@ -673,10 +673,10 @@ export class AcpController implements CliStdioController {
       return;
     }
     // Cast against the SDK's own `PermissionOption` schema type rather than
-    // trusting the wire shape by convention — `optionId`/`kind` still go
+    // trusting the wire shape by convention. `optionId`/`kind` still go
     // through the same defensive `stringField` extraction as every other
-    // field on this generically-typed message, so a malformed entry behaves
-    // exactly as before, just checked against an authoritative shape.
+    // field on this generically-typed message. A malformed entry is refused
+    // on that shape.
     const rawOptions = Array.isArray(params.options) ? (params.options as PermissionOption[]) : [];
     const decision = decidePermission(rawOptions.map((option) => ({
       option_id: stringField(record(option), "optionId"),

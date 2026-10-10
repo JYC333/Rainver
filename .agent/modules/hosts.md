@@ -605,7 +605,7 @@ sends a heartbeat immediately after the ack rather than an interval later.
 A host can carry more than one copy of a runtime, and every ACP adapter is
 handled the same way — the builtin CLIs and enabled registry agents alike:
 
-- **`own`** — the machine's PATH install, driven as before (bundled
+- **`own`** — the machine's PATH install (bundled
   `claude-agent-acp`/`codex-acp` for Claude/Codex, the vendor binary for
   OpenCode). Detected by `--version`; never installed, upgraded, or
   reconfigured by the daemon. Its login state is the machine's.
