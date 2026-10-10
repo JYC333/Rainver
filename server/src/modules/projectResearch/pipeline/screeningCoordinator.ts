@@ -49,8 +49,8 @@ export interface ProjectResearchScreeningPorts {
     state: ResearchOperationState,
     steps: ResearchStepOverride[],
   ): Promise<void>;
-  /** Continues past a checkpoint the reform waived, on the same path a human
-   * approval takes — see `createGate`. */
+  /** Continues past a waived checkpoint, on the same path a human approval
+   * takes — see `createGate`. */
   resumeAfterCheckpoint(
     operation: ScreeningOperationRow,
     workflowId: string,

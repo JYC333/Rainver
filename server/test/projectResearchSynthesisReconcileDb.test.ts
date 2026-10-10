@@ -324,8 +324,8 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
-    // Checkpoint reform: idea_review records the synthesis
-    // result without gating on it, so the operation is still active here.
+    // idea_review records the synthesis result and does not gate on it, so the
+    // operation is still active here.
     expect(operation.rows[0]).toMatchObject({ status: "active", progress_json: { current_stage: "idea_review" } });
     const reports = await db.pool.query<{ synthesis_run_id: string }>(`SELECT synthesis_run_id FROM project_research_reports WHERE operation_id=$1`, [OPERATION]);
     expect(reports.rows).toEqual([{ synthesis_run_id: seeded.candidateRunId }]);

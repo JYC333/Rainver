@@ -6,8 +6,9 @@ import type { LinkType } from "@rainver/protocol";
  * ADR 0012 decision 3 — governance is a property of the **edge**, not of the
  * table. `Thread decomposes_into Thread` is a structural action a user takes
  * directly; `Claim contradicts Claim` is a semantic assertion that needs
- * review. Expressing that as "which table the row lives in" is what produced
- * the duplicate `inquiry_thread_relations` table in the first place.
+ * review. Governance is a property of the edge. Do not express it as which
+ * table the row lives in. That produces a second `inquiry_thread_relations`
+ * table.
  *
  * B12F — this lives in code, not in per-space data, because each declaration
  * has to be honoured by an implementation: a `proposal` link type needs an

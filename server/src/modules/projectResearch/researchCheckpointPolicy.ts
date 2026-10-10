@@ -24,12 +24,11 @@ export const BLOCKING_CHECKPOINT_TYPES: ReadonlySet<string> = new Set(["manuscri
  * How large a screened corpus may be and still flow into synthesis with no
  * human in the loop.
  *
- * This is the budget half of the reform. Removing the gate removes the only
- * place a user saw "N papers matched" before paying for a synthesis over all
- * of them, so the protection has to move from a prompt to a limit: under it,
- * the operation continues unattended; over it, the operation stops and says
- * why, which is a report the user acts on rather than a question they answer
- * on every ordinary run.
+ * The corpus-size limit. That is where the user sees how many items matched
+ * before a synthesis over all of them. Do not drop the gate. Under the limit
+ * the operation continues unattended. Over it the operation stops and says
+ * why. That is a report the user acts on, not a question they answer on every
+ * ordinary run.
  *
  * It is deliberately not the acquisition limit (`history.max_items`, default
  * 10_000): that caps how much material is *collected*, which is cheap, while

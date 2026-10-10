@@ -2454,12 +2454,11 @@ export class RunOrchestrationService {
     // because a caller can supply that and a thrown Exchange would fail the
     // whole run at preparation.
     //
-    // With every CLI run on a daemon, nothing reaches the rest of this
-    // function: the Exchange was a CLI-only mechanism. What replaced it for a
-    // dispatched Run is the diff and the files the daemon uploads from
-    // `$RAINVER_OUTPUT_DIR`, which `recordOutputArtifacts` matches against the
-    // Task's declared outputs. The body below is removed with the rest of the
-    // server-host CLI machinery rather than in the change that made it dead.
+    // A daemon Run returns here. Its outputs are the diff and the files it
+    // uploads from `$RAINVER_OUTPUT_DIR`, which `recordOutputArtifacts`
+    // matches against the Task's declared outputs. Do not prepare an Exchange
+    // for it. The Exchange is a pair of directories the server stages, and a
+    // daemon Run has no such pair.
     if (dispatchesToHostDaemon(run.runtime_key)) return;
     if (!isVendorCliAdapter(run.runtime_key) || !prepared.sandbox_cwd) return;
     const executionPort = prepared.execution_port ?? this.serverExecutionPort;

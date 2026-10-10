@@ -18,11 +18,9 @@ export async function upsertPendingResearchCheckpoint(
   },
 ): Promise<string> {
   // A checkpoint is one decision point in one operation, so it exists at most
-  // once per (workflow, type, operation) — in any status. Matching only
-  // *pending* rows meant a reconcile tick firing after the user decided found
-  // nothing and minted a second pending gate for work that was already
-  // approved: the operation moved on to synthesis while the reviewer was left
-  // with a fresh screening gate to approve again.
+  // once per (workflow, type, operation), in any status. Do not match only
+  // pending rows. A tick after the user decided would find nothing and mint
+  // a second pending gate for work already approved.
   const existing = await db.query<{ id: string; status: string }>(
     `SELECT id, status FROM project_research_checkpoints
       WHERE space_id=$1 AND project_id=$2 AND workflow_id=$3

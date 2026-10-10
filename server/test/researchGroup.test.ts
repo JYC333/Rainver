@@ -22,9 +22,8 @@ import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 describe("researchCheckpointPolicy", () => {
-  // The checkpoint reform's decision table. These assertions are
-  // the product decision written down: changing one means the reform changed,
-  // not that a test needs updating.
+  // The checkpoint policy decision table. These assertions are the product
+  // decision. Changing one changes the decision.
 
   describe("research checkpoint policy", () => {
     it("keeps a blocking gate only for the external-facing manuscript step", () => {

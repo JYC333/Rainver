@@ -130,12 +130,9 @@ export class RelocationService {
       }
       // The Space gate applies to *other people's* content, not your own.
       //
-      // Taking your own misfiled thought back out is the remedy that makes
-      // capture's inferred defaults acceptable in the first place — a paste
-      // defaults to the Project's team-visible raw material, and if that guess
-      // cannot be undone the guess should never have been made. Gating it
-      // behind a Space setting that is off by default would remove exactly the
-      // capability the outward direction exists for.
+      // Taking your own misfiled thought back out is allowed. A paste defaults
+      // to the Project's team-visible raw material, and that guess has to be
+      // undoable. Do not gate it behind a Space setting that is off by default.
       //
       // Someone else's content is the case the setting is for: a second holder
       // outside the boundary, which is the Space's decision to permit.

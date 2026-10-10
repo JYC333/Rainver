@@ -476,7 +476,7 @@ export class FinanceLedgerService {
     spaceId: string,
     bookId: string,
     accountId: string,
-    /** Required: an optional viewer meant a caller that omitted it read any account. */
+    /** Required. Do not omit the viewer: a caller that omits it would read any account. */
     viewerUserId: string,
   ): Promise<FinancePostingRow[]> {
     const account = await this.repository.findAccountForViewer(db, spaceId, bookId, accountId, viewerUserId);

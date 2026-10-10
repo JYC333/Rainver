@@ -75,10 +75,9 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
  * top-level navigation from any host under the same registrable domain sends
  * exactly that, with no `Origin` and with the `SameSite=Lax` cookie attached.
  *
- * And a request carrying neither header, plus none of this client's own, is
- * refused rather than allowed: a top-level cross-site navigation in a browser
- * that sends no `Sec-Fetch-Site` carries no `Origin` either, and allowing that
- * case is exactly the hole this closes.
+ * A request carrying neither header, plus none of this client's own, is
+ * refused. Do not allow it. A top-level cross-site navigation that sends no
+ * `Sec-Fetch-Site` also carries no `Origin`.
  *
  * A route whose only effect is its response must not use this — it would refuse
  * an ordinary cross-origin read for no reason.

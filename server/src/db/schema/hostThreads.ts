@@ -12,9 +12,9 @@ import { artifacts } from "./artifacts.js";
  * session store lives on that Location's disk, so continuity cannot cross
  * Locations. The first dispatch in a thread starts a fresh vendor session; a
  * follow-up dispatch passes this thread's id and resumes `vendor_session_id`.
- * `status` flips to `session_reset` (from `active`) when the daemon reports
- * the vendor session is gone and the run had to restart fresh — the UI
- * surfaces this rather than silently resuming into a new, unrelated session.
+ * `status` flips to `session_reset` when the daemon reports the vendor
+ * session is gone and the run starts fresh. The UI surfaces this. Do not
+ * silently resume into a new, unrelated session.
  *
  * `task_id` stays nullable. A Task-shaped row may carry it; direct and
  * Conversation-shaped rows carry their own container identity. Do not require

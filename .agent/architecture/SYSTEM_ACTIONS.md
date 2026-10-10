@@ -271,8 +271,8 @@ specialist investigation, starting a tracked research acquisition, and
 stopping one are all execution on an already-accepted Thread, not the
 agent-drafted structure/content write ADR 0003 gates. Cancel is in the list so
 a Room notification about running research always has a matching in-Room
-action; a report the user can only act on by leaving for the web UI is the
-interruption the reform removed, moved rather than deleted. It exists because a Room's roster
+action. Do not leave a report the user can only act on by leaving for the
+web UI. It exists because a Room's roster
 is fixed at creation and no product surface edits `tool_permissions_json` at
 all, so binding Room conversation to Agent permissions means a Room built
 around a differently configured Agent silently does nothing, with nowhere for
@@ -784,9 +784,9 @@ from the jobs worker where the process registry lives: its Runs (found by the
 by `project_id` for the index), its screening batch jobs, its source backfill
 plans (the acquisition itself — the segment scheduler never consults the
 Operation's status), and its pass Execution. It also waives the Operation's
-still-pending checkpoints: pre-reform the checkpoint decision *was* the stop
-lever, so stopping resolved the row as a side effect, and a surviving pending
-gate would keep the web UI advertising a review whose approval no-ops. A Run
+still-pending checkpoints. Stopping waives them. A surviving pending gate
+keeps the web UI advertising a review whose approval no-ops. Do not leave the
+checkpoint as the stop lever. A Run
 that answers `cancelling` (kill requested, process exit unconfirmed) defers
 the job for a later retry rather than being counted as cancelled. Managed API
 Runs register their AbortController in the same process-wide execution

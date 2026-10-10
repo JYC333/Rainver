@@ -206,9 +206,9 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
           WHERE space_id=$1 AND machine_result_json->>'operation_id'=$2`,
         [SPACE, operationId],
       );
-      // Checkpoint reform: idea_review is recorded but does not
-      // hold the operation, so it is waived at creation and
-      // `reconcileIdeaReviewStage` carries the operation on from there.
+      // idea_review is recorded and does not hold the operation. It is waived
+      // at creation and `reconcileIdeaReviewStage` carries the operation on
+      // from there.
       expect(checkpoint.rows).toContainEqual({
         checkpoint_type: "idea_review",
         status: "waived",

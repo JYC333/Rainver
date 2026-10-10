@@ -316,8 +316,8 @@ async function materializeReport(context: ActionNodeContext): Promise<ActionNode
     },
   });
 
-  // Checkpoint reform: `idea_review` records what synthesis produced but no
-  // longer holds the operation. The outcome is written first and the waive
+  // `idea_review` records what synthesis produced and does not hold the
+  // operation. The outcome is written first and the waive
   // follows it, so a dropped outcome write cannot leave a waived checkpoint
   // with nothing behind it; `reconcileIdeaReviewStage` picks up the waived
   // checkpoint on its next tick and resumes from there, so the completion

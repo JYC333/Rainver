@@ -12,11 +12,10 @@ import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../src/modules/projectRese
 import { upsertPendingResearchCheckpoint } from "../src/modules/projectResearch/checkpointWriter.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
-// Real-Postgres coverage for the checkpoint reform at the screening
-// step: the checkpoint row still records what the machine concluded, but it
-// only stops the workflow when the corpus is too big to synthesize
-// unattended. Uses a real database because the reform's whole effect is on a
-// persisted checkpoint row's status.
+// The screening checkpoint records what the machine concluded. It stops the
+// workflow only when the corpus is too big to synthesize unattended. The
+// effect is on a persisted checkpoint row's status, so this uses a real
+// database.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -95,7 +94,7 @@ async function checkpointRow(): Promise<{ status: string; user_decision: string 
   return row.rows[0];
 }
 
-describe("screening gate reform (real Postgres)", () => {
+describe("screening gate when the corpus fits the budget (real Postgres)", () => {
   it("records the checkpoint and continues when the corpus fits the budget", async () => {
     if (!db.available) return;
     const portsValue = ports();
@@ -104,8 +103,8 @@ describe("screening gate reform (real Postgres)", () => {
 
     await coordinator.createGate(operationRow(), next);
 
-    // The record survives — the reform removed the interruption, not the
-    // evidence of what screening concluded.
+    // The record survives. The checkpoint is waived. Waiving drops the
+    // interruption and keeps what screening concluded.
     expect(await checkpointRow()).toMatchObject({ status: "waived", user_decision: null, decided_by_user_id: null });
     expect(next.stage_state).toBe("running");
     expect(portsValue.resumeAfterCheckpoint).toHaveBeenCalledWith(expect.anything(), WORKFLOW, expect.any(String));

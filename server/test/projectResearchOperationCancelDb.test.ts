@@ -17,11 +17,8 @@ import { projectResearchModule } from "../src/modules/projectResearch/index.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
-// Real-Postgres coverage for the research cancel: stopping a running
-// research Operation. The reform removes the blocking checkpoints that were
-// the only way to stop one, so this is the control that replaces them, and
-// what it has to guarantee is that "stopped" means the Operation cannot start
-// another pass *and* that the request to kill in-flight work is durable.
+// Stopping a running research Operation. "Stopped" means the Operation cannot
+// start another pass and the request to kill in-flight work is durable.
 
 const CONFIG = loadConfig({});
 const SPACE = "11111111-1111-4111-8111-111111111111";
