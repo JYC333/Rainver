@@ -18,11 +18,8 @@ import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("projectResearchSynthesisOnlyExecutionDb", () => {
-  // Real-Postgres coverage for the synthesis_only vertical slice migrated to
-  // execution-per-pass WorkflowExecution authority: the
-  // Dedicated synthesis-only WorkflowExecution coverage. All Project Research
-  // run kinds now use execution-per-pass authority; this file exercises the
-  // specialized two-node report-snapshot pass.
+  // Real-Postgres coverage for synthesis_only. Each pass is its own
+  // WorkflowExecution. This file exercises the two-node report-snapshot pass.
 
   const CATALOG_ROOT = join(process.cwd(), "..", "catalog");
   const SPACE = "11111111-1111-4111-8111-111111111111";

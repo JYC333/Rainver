@@ -7,8 +7,7 @@ import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { InquiryIterationService } from "../src/modules/inquiry/iterationService.js";
 import { InquirySignalService } from "../src/modules/inquiry/signalService.js";
 
-// Real-Postgres coverage for the Signals/Candidates/Review/Delta
-// vertical slice.
+// Real-Postgres coverage for Signals, Candidates, Review, and Delta.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

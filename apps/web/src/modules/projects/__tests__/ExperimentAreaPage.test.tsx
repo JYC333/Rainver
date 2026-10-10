@@ -97,7 +97,7 @@ describe('ExperimentAreaPage', () => {
     expect(screen.queryByRole('button', { name: /link hypothesis/i })).not.toBeInTheDocument()
   })
 
-  it('loads the manual Experiment vertical slice and creates a protocol Version', async () => {
+  it('loads the manual Experiment surface and creates a protocol Version', async () => {
     vi.mocked(experimentsApi.createVersion).mockResolvedValue({
       id: 'version-1', definition_id: DEFINITION.id, version: 1, executor_type: 'manual',
       config: {}, planned_summary: 'Manual observation protocol', status: 'draft',

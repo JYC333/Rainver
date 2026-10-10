@@ -10,7 +10,7 @@ import { InquiryIterationService } from "../src/modules/inquiry/iterationService
 import { completeBackgroundStep } from "../src/modules/inquiry/stepService.js";
 import { DecisionCaseService } from "../src/modules/decisions/caseService.js";
 
-// Real-Postgres coverage for the Inquiry Core vertical slice: Thread
+// Real-Postgres coverage for Inquiry: Thread
 // creation, working relations, Note links, the cognitive Iteration command,
 // the Definition Revision command, and the work-management command's
 // boundary from both of those. See ADR 0011.
