@@ -43,7 +43,7 @@ import {
 } from "./remoteProviderBinding.js";
 
 /**
- * ADR 0016 P3: the remote-host counterpart to `executeVendorCliAdapter` —
+ * The remote-host counterpart to `executeVendorCliAdapter` (ADR 0016) —
  * deliberately a separate, much smaller function rather than a branch
  * inside it. `executeVendorCliAdapter` is credential- and provider-coupled
  * throughout (grant → sandbox config → provider binding, each with its own

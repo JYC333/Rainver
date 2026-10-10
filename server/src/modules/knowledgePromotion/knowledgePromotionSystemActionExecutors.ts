@@ -7,7 +7,7 @@ import { runVisibility } from "../runs/runInputEnvelope.js";
 import { KnowledgePromotionCandidateService } from "./candidateService.js";
 
 /**
- * `inquiry.promote_knowledge` (action authority consolidation plan, P1.3).
+ * `inquiry.promote_knowledge`.
  * Combines Candidate creation and an immediate promote decision into one
  * call, so a conversational instruction produces one reviewable Proposal.
  */

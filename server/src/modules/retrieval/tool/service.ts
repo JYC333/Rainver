@@ -20,7 +20,7 @@ import type { RetrievalSearchService } from "../index.js";
  *    read (the search service's per-viewer revalidate gate does the enforcement).
  *  - **Every call passes the policy gateway as the agent/run actor, before this
  *    service ever runs.** `SystemActionGateway`'s dispatch step is the single
- *    enforcement point (action authority consolidation plan, D6/D7); this
+ *    enforcement point; this
  *    service performs no policy check and writes no `policy_decision_records`
  *    row of its own — it is a plain executor, like every other domain
  *    service the gateway calls after enforcement passes.

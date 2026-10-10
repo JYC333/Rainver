@@ -6,8 +6,7 @@ import { projects } from "./projects.js";
 import { validationRecipes } from "./tasks.js";
 
 /**
- * execution-topology D2: the logical file/code resource — a repository
- * file/code resource — a repository identity, not a physical checkout.
+ * The logical file/code resource: a repository identity, not a physical checkout.
  * Filesystem path and host live on `workspace_locations`. A Folder may have
  * several physical checkouts on different ExecutionHosts. This row carries
  * no filesystem path. Do not put `host_id` or `root_path` back on it.

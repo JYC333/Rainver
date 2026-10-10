@@ -720,7 +720,7 @@ describe("the executor band", () => {
    *
    * The cases above prove the rule and the domain writes; the executors are
    * where the Project scope, the actor, and the idempotency key are actually
-   * composed, and every P3 blocker but one lived exactly here.
+   * composed. Do not compose them anywhere else.
    */
   function executorsFor(overrides: Record<string, unknown> = {}) {
     const executors = new Map<SystemActionId, SystemActionExecutor>();

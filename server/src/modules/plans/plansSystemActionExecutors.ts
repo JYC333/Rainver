@@ -5,7 +5,7 @@ import type { SystemActionExecutor } from "../systemActions/gateway.js";
 import type { AgentRunRecord } from "../runs/repository.js";
 import { PgPlanRepository } from "./repository.js";
 
-/** `task.plan.propose` (action authority consolidation plan, P1.5). */
+/** `task.plan.propose`. */
 export function registerPlansSystemActionExecutors(
   executors: Map<SystemActionId, SystemActionExecutor>,
   config: ServerConfig,

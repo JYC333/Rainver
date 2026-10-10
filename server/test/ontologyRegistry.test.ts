@@ -141,7 +141,8 @@ describe("ontology registry", () => {
   });
 
   it("keeps the ontology root's active predicate on the timestamp, not a status column", () => {
-    // P1 moved domain status off the root; the gate must not reach for it again.
+    // Domain status is not on the root. The gate reads the timestamp. Do not
+    // reach for a status column.
     expect(resolveContentAccessible("space_object")?.activePredicate?.("so")).toBe("so.deleted_at IS NULL");
   });
 

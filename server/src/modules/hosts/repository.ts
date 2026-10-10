@@ -212,8 +212,7 @@ export class PgHostRepository {
    * Windows-native + WSL case: two hosts, one physical device) — omitted,
    * a fresh Machine is auto-created and named after the host, matching the
    * common case where each personal host is its own device. There is no
-   * "pick or create a Machine" UI yet (P1.10 is grouping/display only, per
-   * the plan); this parameter exists so that flow has somewhere to land
+   * pick-or-create Machine UI. This parameter is where that flow lands
    * without a further schema change.
    */
   async issuePairingCode(
@@ -399,7 +398,7 @@ export class PgHostRepository {
 
   /**
    * A host may only upload artifacts for a Run bound to that same host — this
-   * is the only authorization check the upload endpoints need (ADR 0016 P3):
+   * is the only authorization check the upload endpoints need (ADR 0016):
    * the bearer token already proves "this daemon", this proves "for one of
    * its own Runs". Managed profiles have no Workspace Location, so the
    * profile binding is the second authorization path below.

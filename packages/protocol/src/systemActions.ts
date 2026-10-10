@@ -74,8 +74,7 @@ const ZodSchemaValue = z.custom<z.ZodType>(
 );
 
 /**
- * Declarative resource resolution for the generic policy adapter (action
- * authority consolidation plan, D4). An action carrying this needs no
+ * Declarative resource resolution for the generic policy adapter. An action carrying this needs no
  * hand-written `if (definition.id === ...)` branch in
  * `enforcePolicyForAction`: the generic adapter reads `resource_type` (or
  * falls back to the action's own `owning_module`), reads `resource_id` from

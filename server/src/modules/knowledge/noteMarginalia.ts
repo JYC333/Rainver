@@ -118,7 +118,7 @@ export async function appendMarginalia(
       }
       // The first block the append introduced. A capture whose text contains a
       // blank line becomes several blocks; the anchor is where it starts, and
-      // P2b's preview offers the rest as the blocks that follow it.
+      // the preview offers the rest as the blocks that follow it.
       return {
         note_id: existing.note_id,
         note_title: existing.title,

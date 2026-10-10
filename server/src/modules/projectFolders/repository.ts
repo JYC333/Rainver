@@ -227,7 +227,7 @@ export class PgProjectFolderRepository {
     const now = new Date().toISOString();
     // This flow (mkdir/clone/scan under `workspaceRoot`) only ever creates a
     // folder on the server host — remote-host workspace registration is a
-    // separate daemon-driven path (P1's hosts module), not this endpoint.
+    // separate daemon-driven path, not this endpoint.
     const serverHostId = await new PgHostRepository(this.db).ensureServerHostId();
     const folder = await withTransactionIfPool(this.db, async (db) => {
       if (isPrimary) await demotePrimary(db, identity.spaceId, projectId);

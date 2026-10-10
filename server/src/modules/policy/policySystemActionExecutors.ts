@@ -5,7 +5,7 @@ import type { SystemActionExecutor } from "../systemActions/gateway.js";
 import type { AgentRunRecord } from "../runs/repository.js";
 import { AuthorizationRequestService } from "./authorizationRequestService.js";
 
-/** `authorization.request` (action authority consolidation plan, P1.5). */
+/** `authorization.request`. */
 export function registerPolicySystemActionExecutors(
   executors: Map<SystemActionId, SystemActionExecutor>,
   config: ServerConfig,

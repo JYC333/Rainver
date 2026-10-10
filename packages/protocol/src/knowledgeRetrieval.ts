@@ -308,7 +308,7 @@ export const RetrievalEvalRankAttributionSchema = z
   })
   .strict();
 
-// P2 eval/explain artifact input. This shape is intentionally aggregate-only:
+// Eval/explain artifact input. This shape is aggregate-only:
 // no candidate ids, titles, snippets, or arbitrary content fields are accepted.
 export const RetrievalEvalReportRequestSchema = z
   .object({

@@ -297,8 +297,8 @@ interface RunCodePatchCollectorPort {
 export type HostKind = "server" | "remote";
 
 /**
- * ADR 0016 / execution-topology plan P1: the run-file-lifecycle seam a Run's
- * execution is bound to — prepare/cleanup the workspace, run exchange, and
+ * The run-file-lifecycle seam a Run's execution is bound to (ADR 0016):
+ * prepare/cleanup the workspace, run exchange, and
  * code-patch collection — selected once per run from its Location's Host
  * kind (`resolveExecutionPort`, below). `ServerHostExecutionAdapter` wraps
  * the existing sandbox/exchange/code-patch pieces; `RemoteHostExecutionAdapter`
@@ -332,7 +332,7 @@ export class ServerHostExecutionAdapter implements HostExecutionPort {
 }
 
 /**
- * ADR 0016 P1: a remote run always dispatches with `required_sandbox_level:
+ * A remote run always dispatches with `required_sandbox_level:
  * "none"` (the dispatch endpoint's job), so `workingDirScopeForLevel`
  * naturally skips every local-filesystem branch in `prepareRuntimeContext` —
  * `sandbox_cwd`/`cleanup`/`exchange` never get set, so `workspaceManager`/
@@ -889,7 +889,7 @@ export class RunOrchestrationService {
       const contextBoundRunning = applyEffectiveWorkContextBindings(running, effectiveBindings);
       await this.markDelegatedRunRunningBestEffort(contextBoundRunning);
 
-      // ADR 0016 P3: resolved once, here, rather than separately inside
+      // Resolved once, here (ADR 0016), rather than separately inside
       // `enforceRuntimePolicy` and `prepareRuntimeContext` — both need to
       // agree on the same host_kind for the same run, and re-querying
       // per-caller risks the two disagreeing under a concurrent host change.

@@ -409,7 +409,7 @@ describe("executeRemoteHostCliAdapter", () => {
     await expect(execution).resolves.toMatchObject({ success: true, exit_code: 0 });
   });
 
-  it("records a permission pre-authorization as a human-readable diagnostic thread event (P0.4/D7)", async () => {
+  it("records a permission pre-authorization as a human-readable diagnostic thread event", async () => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();
     registry.registerConnection("host-1", sink);

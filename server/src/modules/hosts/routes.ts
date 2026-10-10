@@ -320,9 +320,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
 
 
-  // Static catalog of ACP runtime definitions and their dispatch eligibility
-  // (P3, C6):
-  // the single source of truth the frontend reads instead of hardcoding the
+  // Static catalog of ACP runtime definitions and their dispatch eligibility.
+  // The single source of truth the frontend reads instead of hardcoding the
   // same ACP-only eligibility rule the dispatch endpoint above already
   // enforces. No per-user or per-space data — session-authenticated only for
   // consistency with the rest of this module.

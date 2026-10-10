@@ -10,14 +10,12 @@ import {
 } from "../src/modules/knowledge/noteProjectRoles.js";
 
 /**
- * The guardrail the plan asks for: nothing may resolve a project's baseline
- * note by matching its title.
+ * Nothing may resolve a project's baseline note by matching its title.
  *
- * The failure this prevents is specific and was live. `notebookNotes.ts`
- * selected `WHERE so.title = 'Current understanding'`, so renaming that note
- * removed the research comparison's baseline and the comparison degraded
- * silently. A single re-introduced literal is enough to bring the whole defect
- * back, which is why this is a source scan rather than a behaviour test — a
+ * Do not select `WHERE so.title = 'Current understanding'`. Renaming that
+ * note would drop the research comparison's baseline and the comparison
+ * would degrade with no error. A single re-introduced literal brings that
+ * back, so this is a source scan rather than a behaviour test — a
  * behaviour test only covers the call path someone remembered to write one for.
  */
 

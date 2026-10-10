@@ -37,8 +37,8 @@ export const runs = pgTable("runs", {
 	// queries); read `workspace_location_id` when the physical execution
 	// site matters.
 	projectFolderId: varchar("project_folder_id", { length: 36 }),
-	// D3: where this Run actually executed. Null for a Run that predates P1
-	// or that was never bound to a specific Location. No `host_id` column —
+	// D3: where this Run actually executed. Null when the Run was never bound
+	// to a specific Location. No `host_id` column —
 	// fully determined by the Location, which never changes host.
 	workspaceLocationId: varchar("workspace_location_id", { length: 36 }),
 	// D5: `sandboxed` (server host, full isolation) or `trusted_host`

@@ -25,8 +25,8 @@ export interface RuntimeDelegationMaterializerPort {
 /**
  * Runtime delegation output ("Path B" — an Agent ending its turn with a
  * structured `delegations` array) and the `agent.delegate` tool call
- * ("Path A") both mean "this Agent decided another Agent should do work"
- * (action authority consolidation plan, D8). Both now check the same grant
+ * ("Path A") both mean "this Agent decided another Agent should do work".
+ * Both check the same grant
  * — an Agent configured without `agent.delegate` cannot reach
  * `spawnChildRun` from either path — and emit the same `action_invoked`/
  * `action_completed` RunEvents once past that gate, so Agent configuration

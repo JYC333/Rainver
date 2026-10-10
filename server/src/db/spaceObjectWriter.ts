@@ -9,7 +9,7 @@
  * so that the root row and its extension row are written in one statement.
  * Turning those into two round trips would trade atomicity for tidiness.
  *
- * P2.7 added the B12H rules. They live here rather than at each call site
+ * The B12H rules live here rather than at each call site,
  * because a rule enforced in eleven places is a rule that will be missed in the
  * twelfth — and the miss is silent, producing an object that is readable by the
  * wrong people or untraceable to whoever made it.

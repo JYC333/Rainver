@@ -1288,7 +1288,7 @@ explicit restore when the heartbeat reports `archived_available`; restore
 never restores the vendor session. Archives older than 30 days are swept by
 the daemon on heartbeat.
 
-## Thread events (P1, `server/src/modules/hosts/threadEventRepository.ts` /
+## Thread events (`server/src/modules/hosts/threadEventRepository.ts` /
 `threadEventNormalization.ts`)
 
 `host_thread_events` is the normalized, per-thread conversation log —

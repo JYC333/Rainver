@@ -7,9 +7,8 @@ import { SourceChannelService } from "./channels/sourceChannelService.js";
 import { SourceBackfillPlanningService } from "./sourceBackfillService.js";
 
 /**
- * `source.channel.propose_activation` and `source.backfill.propose_start`
- * (action authority consolidation plan, P1.4). Both draft a reviewable
- * Proposal; durable mutation happens only through the owning applier after
+ * `source.channel.propose_activation` and `source.backfill.propose_start`.
+ * Both draft a reviewable Proposal; durable mutation happens only through the owning applier after
  * acceptance.
  */
 export function registerSourcesSystemActionExecutors(

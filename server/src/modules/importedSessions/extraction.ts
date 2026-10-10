@@ -9,7 +9,7 @@
  * and inventing one to satisfy a lookup would be contorting the mechanism to
  * fit rather than reusing it.
  *
- * Two rules the output has to obey, both from the plan and both load-bearing:
+ * Two rules the output has to obey:
  *
  * - Only sessions the person marked shared feed this. The Brief has no
  *   per-object visibility, so a private session's content would reach every
