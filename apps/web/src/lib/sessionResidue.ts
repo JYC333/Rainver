@@ -80,11 +80,10 @@ export async function clearAuthenticatedBrowserState(): Promise<void> {
 /**
  * Runs once at boot, before the app asks who is signed in.
  *
- * The service worker must not cache authenticated API bodies, and does not —
- * but a cache written by an older build, or left behind when a tab was closed
- * mid-logout, outlives the code that stopped writing it. Deleting it
- * unconditionally costs one cache miss on something that was never
- * supposed to be there.
+ * The service worker must not cache authenticated API bodies, and does not.
+ * A cache from an older build, or from a tab closed mid-logout, can still be
+ * there. Deleting it unconditionally costs one cache miss on something that
+ * should not be there.
  */
 export function dropApiCacheAtBoot(): void {
   void dropApiCache()

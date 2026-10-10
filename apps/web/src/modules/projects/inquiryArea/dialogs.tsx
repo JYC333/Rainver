@@ -10,9 +10,8 @@ import {
 } from '../../../components/ui/dialog'
 
 /**
- * Replaces the `window.prompt` calls this Area used for reasons and free-text
- * decisions: those bypassed validation, could not explain what the value was
- * for, and rendered outside the app's own styling.
+ * Reasons and free-text decisions. The dialog validates the value, says what
+ * it is for, and uses the app's own styling. Do not use `window.prompt`.
  */
 export function ReasonDialog({ open, onOpenChange, title, description, label, placeholder, required, confirmLabel, onConfirm }: {
   open: boolean

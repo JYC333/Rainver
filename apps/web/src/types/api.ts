@@ -567,8 +567,7 @@ export type KnowledgeLinkType =
   | 'updates'
 export type KnowledgeRelationStatus = 'candidate' | 'active' | 'rejected' | 'archived'
 /**
- * Also re-exported rather than restated, and for the same reason: the local
- * copy had gone stale in exactly the same place, missing `inquiry_thread`.
+ * Re-exported rather than restated. Do not keep a local copy of the list.
  */
 export const SPACE_OBJECT_PROFILE_KEYS_BY_BASE_OBJECT_TYPE: Record<RetrievalObjectType, readonly string[]> =
   OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE
