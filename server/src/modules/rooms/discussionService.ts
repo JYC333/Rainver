@@ -540,8 +540,8 @@ export class RoomDiscussionService {
           });
           return;
         }
-        // Legacy unmarked sends can still feed an active discussion while
-        // its wave waits; the explicit ordinary-message choice cannot.
+        // An unmarked send still feeds an active discussion while its wave
+        // waits. The explicit ordinary-message choice does not.
         if (prior.shape !== "debate") {
           await discussions.update(spaceId, prior.id, { heldMentions: mergeHeld(prior.held_mentions, targets) });
           return;

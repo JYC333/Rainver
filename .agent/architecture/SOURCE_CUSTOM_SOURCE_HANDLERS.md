@@ -26,7 +26,7 @@ Level 1/2/3 split: new configurable source creation now goes through
 Level 2 Source Recipes first, while generated/template handler expansion stays
 frozen as the Level 3 advanced fallback.
 
-## Level 3 Freeze (2026-07-01)
+## Level 3 generated handlers
 
 Generated/template handler work (`typescript_node`) is **frozen** as the
 Level 3 advanced fallback:
@@ -450,7 +450,7 @@ Repair auto-activates only when:
 Otherwise a proposal is created before activation:
 
 - envelope unchanged but Space policy requires review →
-  `custom_source_repair_activation` (see "Phase 6 Proposal Payloads" below);
+  `custom_source_repair_activation` (see "Proposal payloads" below);
 - envelope broadened (new/changed network origins, credential request,
   browader capture/retention, larger limits, language change, disabled log
   redaction) → the same `custom_source_policy_delta`/
@@ -513,7 +513,7 @@ activation with a `credential_ref` set is treated as within-envelope only
 when Space policy's `credentialed_sources_allowed` is `true`; otherwise (or
 when an already-active connection's credential changes) it creates a
 `custom_source_credentialed_source` proposal, exactly as already described
-above. Repair (Phase 9) is unaffected — a repaired version keeps whatever
+above. A repair keeps whatever
 `credential_ref` the active version already had unless the repair request
 changes the connection's credential, at which point the same
 `evaluateCustomSourceActivation` delta logic decides proposal-vs-auto-apply.
@@ -522,17 +522,13 @@ Credential rotation/deletion and a UI for creating or selecting a Custom
 Source credential are not implemented (API/service layer only).
 See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11.
 
-## Phase 1 Schema Design (implemented in Phase 2)
+## Schema in the baseline
 
-This section records the schema shape consolidated into
-`server/migrations/0000_baseline.sql`. There was no historical data or
-deployed system when these Sources changes landed, so the declarative pipeline
-and Source Recipe schema are part of the frozen baseline rather
-than kept as separate incremental migration files. Once a real deployment has
-applied `0001`, later schema changes must be added as ordered incremental
-migrations.
+The declarative pipeline and Source Recipe schema live in
+`server/migrations/0000_baseline.sql`. Later schema changes are ordered
+incremental migrations after `0001`.
 
-`source_connections` gains nullable/defaulted implementation columns:
+`source_connections` has these implementation columns:
 
 - `handler_kind varchar` — `built_in` (default), `generated_custom`, or
   `recipe`.
@@ -608,12 +604,11 @@ Shared wire DTOs and the handler `input.json`/`output.json` contract live in
 Source Recipe wire DTOs live in
 `packages/protocol/src/sourceRecipes.ts`.
 
-No Project-owned source schema is added anywhere in this design, and no
-fields are added to Knowledge `sources`.
+Knowledge `sources` does not carry a Project-owned source schema.
 
-## Phase 6 Proposal Payloads
+## Proposal payloads
 
-Phase 6 ("Policy and proposals") is implemented by
+Implemented by
 `server/src/modules/sources/customSources/customSourceProposalApplier.ts`,
 `server/src/modules/proposals/payloadSchemas.ts`, and
 `CustomSourceCreateFlowService.activateHandler`.
@@ -672,11 +667,11 @@ approval-required deltas. First activation compares capture/retention against
 the Space defaults; later activations compare against the active approved
 handler version.
 
-## Operations (Phase 12)
+## Operations
 
-Status: implemented — rate limiting, artifact retention, and an observability
-read model. No Instance Settings UI change or alerting integration; the new
-hard limits are read-only via the existing
+Rate limiting, artifact retention, and an observability read model. No
+Instance Settings UI change or alerting integration. The hard limits are
+read-only via the existing
 `GET /api/v1/sources/custom-source-settings/instance` response.
 
 **Diagnosing a broken or blocked Custom Source** — one call answers it:

@@ -62,29 +62,21 @@ function failedHostAction(type: HostActionType, error: string): AnyHostActionRes
       : { ok: false, changed: false, error };
 }
 /**
- * ADR 0016 P3: tracks which hosts currently hold a live WebSocket connection
- * and lets server code (the dispatch path, `RemoteWsCliCommandExecutor`)
- * push job frames to a specific daemon and correlate its replies back to the
- * run that triggered them. A process-wide singleton, same reasoning as
- * `sharedCliProcessRegistry` (`server/src/modules/runs/processRegistry.ts`):
- * it must be the same instance across every request path in this process,
- * since the connection lives only in this process's memory (audit report
- * §5.6's accepted single-process assumption for phase 1).
+ * Tracks which hosts currently hold a live WebSocket connection and lets
+ * server code push job frames to a specific daemon and correlate its replies
+ * back to the run that triggered them. One instance for this process: the
+ * connection lives only in this process's memory, so every request path must
+ * share it.
  *
  * Pending runs are tracked by run_id, not nested inside the connection
- * object, and survive a reconnect within `RECONNECT_GRACE_MS`
- * (control-center-plan.md §5: "an interrupted connection while a run is
- * active keeps the process alive"). A brief WS blip — laptop sleep/wake, a
- * flaky network — must not permanently fail a run whose daemon-side process
- * is still running and will report its real outcome once reconnected.
+ * object, and survive a reconnect within `RECONNECT_GRACE_MS`. A brief
+ * disconnect must not fail a run whose daemon-side process is still running
+ * and will report its real outcome once reconnected.
  *
- * Narrower than the plan's full "interruption semantics" bullet: a
- * disconnect that outlasts the grace window still resolves the pending run
- * as a normal failure (`host_disconnected`), not a distinct `interrupted`
- * run status with its own reconciliation-on-reconnect lifecycle — adding a
- * new terminal run status would touch retry policy, the supervisor, and
- * finalization across the whole run subsystem, out of proportion for this
- * phase. See `.agent/tasks/deferred-register.md`.
+ * A disconnect that outlasts the grace window resolves the pending run as
+ * `host_disconnected`. Do not add a distinct `interrupted` run status for
+ * that. Retry policy, the supervisor, and finalization key off the existing
+ * terminal statuses.
  */
 
 export interface HostFrameSink {
@@ -103,26 +95,18 @@ interface PendingRun {
   onOutput?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
   /**
-   * ACP runtime replatform P2: fires once the daemon confirms the run is
-   * registered and its child process spawned. A bidirectional-protocol
-   * caller must wait for this before sending the first `stdin` frame — see
-   * the `launched` frame's doc comment in `packages/host-daemon/src/execution.ts`.
+   * Fires once the daemon confirms the run is registered and its child
+   * process spawned. A bidirectional-protocol caller must wait for this
+   * before sending the first `stdin` frame.
    */
   onLaunched?: () => void;
   resolveComplete: (result: HostRunCompletion) => void;
   graceTimer: ReturnType<typeof setTimeout> | null;
   /**
-   * ACP runtime replatform P2 (discovery review fix): a controller-driven
-   * run depends on live outbound `stdin`/`stdin_close` traffic for the
-   * entire run, unlike the one-shot launch path this registry's grace-period
-   * tolerance was originally built for. Without this queue, a `stdin` frame
-   * sent during the same brief blip the grace timer already tolerates for
-   * `output`/`complete` would be silently dropped — the daemon-side agent
-   * and the controller would each wait on a message that never arrives,
-   * stalling the run until its full timeout instead of a few seconds.
-   * Queued frames are redelivered in order once `registerConnection` sees
-   * this host reconnect, mirroring the same "a blip must not lose this run's
-   * state" tolerance already applied to the grace timer above.
+   * A controller-driven run needs live `stdin` / `stdin_close` for the whole
+   * run. A frame sent while the host is briefly offline is queued and
+   * redelivered in order when it reconnects. Do not drop it: the daemon and
+   * the controller would each wait on a message that never arrives.
    */
   pendingStdin: Array<{ type: "stdin"; value: string } | { type: "stdin_close" }>;
   /**
@@ -1104,7 +1088,7 @@ export class HostConnectionRegistry {
     this.currentDispatch(hostId, runId, launchId)?.onOutput?.(chunk);
   }
 
-  /** Routes a daemon's `stderr` frame the same way `receiveOutput` routes `output` (C5: full live stream, not just a failure tail). */
+  /** Routes a daemon's `stderr` frame the same way `receiveOutput` routes `output`: the live stream, not only a failure tail. */
   receiveStderr(hostId: string, runId: string, chunk: string, launchId: string): void {
     this.currentDispatch(hostId, runId, launchId)?.onStderr?.(chunk);
   }

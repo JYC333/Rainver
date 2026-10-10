@@ -896,8 +896,7 @@ export class RetrievalSearchService {
     const objectProfileParam = objectProfileFilterParam(objectProfiles);
     // ts_rank_cd normalization flag 1 divides the rank by 1 + log(document
     // length): a BM25-style length penalty so a long page that merely mentions
-    // the terms does not outrank a focused page (W5 interim BM25 stance — full
-    // BM25 via pg_search is deferred, see the roadmap doc). It composes with the
+    // the terms does not outrank a focused page. It composes with the
     // per-arm max-pool and the title-phrase boost.
     const result = await this.db.query<RetrievalCandidateRow>(
       `WITH matches AS (

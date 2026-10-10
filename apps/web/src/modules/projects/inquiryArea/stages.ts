@@ -70,9 +70,9 @@ function completedThisRound(steps: InquiryThreadStep[], stage: StageId): boolean
  * steps by the time it would count.
  *
  * Abandoning is the third action, and it has to be excluded. An abandoned step
- * keeps `iteration_id` null and so stays in the round, which meant glancing at
- * a stage and immediately switching away marked it finished for the rest of the
- * round, with nothing the user could do to take it back.
+ * keeps `iteration_id` null and so stays in the round. Do not count it as
+ * engaged: glancing at a stage and switching away would mark it finished for
+ * the rest of the round, with nothing the user could do to take it back.
  */
 function engagedThisRound(steps: InquiryThreadStep[], stage: StageId): boolean {
   return steps.some(step =>
@@ -83,10 +83,9 @@ function engagedThisRound(steps: InquiryThreadStep[], stage: StageId): boolean {
  * A system operation for this stage is running right now.
  *
  * Only background steps qualify. A primary step is the user's attention, not
- * work in flight: nothing ends one until the round does, so a spinner on it
- * could never stop — a Thread that had once opened Clarify sat ticked and
- * spinning at the same time for the rest of the round. Where the user is
- * standing is what the Current badge says.
+ * work in flight. Do not put a spinner on a primary step: nothing ends one
+ * until the round does, so it would stay ticked and spinning together.
+ * Where the user is standing is what the Current badge says.
  */
 function isRunning(steps: InquiryThreadStep[], stage: StageId): boolean {
   return steps.some(step =>
@@ -98,9 +97,9 @@ function isRunning(steps: InquiryThreadStep[], stage: StageId): boolean {
  * This round produced what the stage exists for. Only this earns a tick.
  *
  * Where a stage has an observable product, that product is the test and the
- * user's attention is not: Clarify counted a started step, so the tick landed
- * the moment its action was launched, before the wording had been near the
- * assessment workspace. Writing up and landing have no observable of their own
+ * user's attention is not. Do not tick Clarify because a step started: the
+ * tick would land before the wording had been near the assessment workspace.
+ * Writing up and landing have no observable of their own
  * — the user going and doing them is the only evidence there is — so those two
  * still read the step.
  *

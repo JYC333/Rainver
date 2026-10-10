@@ -5,11 +5,9 @@ import {
   type CanonicalModelUsage,
   type CanonicalUsage,
 } from "@rainver/protocol";
-// D6 (twice-corrected, execution-topology-and-project-control-plane-plan.md
-// §6): the phase dispatcher below stays hand-rolled — no SDK hook reproduces
-// its tested start()-independent, phase-named anomaly handling — but its
-// wire shapes are checked against the SDK's own authoritative schema types
-// here, rather than trusted by convention alone.
+// The phase dispatcher stays hand-rolled. No SDK hook reproduces its
+// start()-independent, phase-named anomaly handling. Wire shapes are
+// checked against the SDK's schema types.
 import type { PermissionOption, ContentBlock } from "@agentclientprotocol/sdk";
 export type { ContentBlock } from "@agentclientprotocol/sdk";
 import { usageFromAcp } from "./cliRuntimeMeasurement.js";

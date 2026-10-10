@@ -95,9 +95,8 @@ function openHostSocket(endpoint: string, token: string): WebSocket {
  *
  * This is the only place a control-plane frame becomes a typed value. There
  * is no field-by-field rebuild after it: a handler receives the parsed frame
- * itself, so a field the contract carries cannot be left behind on the way
- * — which is exactly how `provider_binding` and then `work_surface` each
- * shipped inert once, when this daemon copied frames by hand.
+ * itself, so a field the contract carries cannot be left behind. Do not
+ * copy a frame field by field.
  *
  * A frame that does not parse is reported, not thrown: throwing inside the
  * socket listener would take the whole daemon down, losing the reporting
@@ -190,10 +189,8 @@ function toAmbientImportRequest(
 /**
  * Persistent outbound connection: register/hello, heartbeat, and job
  * dispatch — launch/stream/terminate/upload/complete, delegated to
- * `execution.ts` (`RemoteHostExecutionAdapter`'s daemon-side counterpart;
- * see control-center-plan.md §5). This function does not return; it runs
- * until the process is killed, exactly like a systemd/launchd-managed
- * service is expected to.
+ * `execution.ts`. This function does not return; it runs until the process
+ * is killed, the way a service managed by systemd or launchd does.
  */
 export async function runService(options: { log?: (line: string) => void } = {}): Promise<void> {
   const log = options.log ?? ((line: string) => console.log(`[rainver-host] ${line}`));
@@ -225,10 +222,8 @@ export async function runService(options: { log?: (line: string) => void } = {})
   let reconnectDelay = RECONNECT_BASE_DELAY_MS;
   let reconnectCeiling = RECONNECT_MAX_DELAY_MS;
   let reportedOutdated = false;
-  // A run outlives a single WebSocket connection (§5 — "an interrupted
-  // connection while a run is active keeps the process alive"); see
-  // `ReconnectableFrameSink`'s doc comment for why this can't be a plain
-  // per-connection closure.
+  // A run outlives a single WebSocket connection. See
+  // `ReconnectableFrameSink`: this cannot be a plain per-connection closure.
   const sink = new ReconnectableFrameSink();
 
   for (;;) {
@@ -367,11 +362,11 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
 
     socket.addEventListener("open", () => {
       void currentWorkspaces().then((ws) => helloInfo(ws, runtimeProbes, log)).then((info) => {
-        // Reclaims the directories of runs this daemon is no longer executing
-        // — their outputs, their work surface, and the per-run profile an
-        // older layout put there. A run still launching, running, or uploading
-        // is held out of the sweep by `execution.ts`; a vendor profile is
-        // shared per adapter and provider and lives elsewhere, untouched.
+        // Reclaims the directories of runs this daemon is not executing:
+        // their outputs and their work surface. A run still launching,
+        // running, or uploading is held out of the sweep by `execution.ts`.
+        // A vendor profile is shared per adapter and provider and lives
+        // elsewhere.
         void sweepStaleRunProfiles().then((removed) => {
           if (removed > 0) log(`removed ${removed} finished run director${removed === 1 ? "y" : "ies"}`);
         }).catch(() => {});

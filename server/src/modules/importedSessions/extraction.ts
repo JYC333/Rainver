@@ -426,9 +426,9 @@ export class ImportedHistoryExtractionService {
     const decisions = input.decisions.map((entry) => entry.text);
     // One extraction's Brief proposal per Project at a time. `FOR UPDATE`
     // below cannot lock a proposal that does not exist yet, so two overlapping
-    // extractions would each find nothing pending and each create one —
-    // restoring exactly the silent-loss this merge exists to prevent. The key
-    // is the one the Project's own definition path already uses, and it is
+    // extractions would each find nothing pending and each create one. Two
+    // pending proposals silently drop each other's decisions. The key is the
+    // one the Project's own definition path already uses, and it is
     // re-entrant within a transaction, so nesting cannot deadlock.
     await db.query(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
@@ -442,11 +442,10 @@ export class ImportedHistoryExtractionService {
     // overwrites it. The agent path avoids this with its own reuse guard,
     // which is keyed on an agent id this caller does not have.
     //
-    // Deliberately not scoped to this user. A Project with two paired machines
-    // has two people extracting into it — the case this feature exists for —
-    // and a per-user query finds nothing, creates a second proposal, and loses
-    // the first person's decisions exactly as before. What is merged is
-    // additive (decisions, constraints, citations); the goal is untouched.
+    // Not scoped to this user. A Project with two paired machines has two
+    // people extracting into it. A per-user query finds nothing, creates a
+    // second proposal, and loses the first person's decisions. What is merged
+    // is additive (decisions, constraints, citations); the goal is untouched.
     const pending = await db.query<{ id: string; payload_json: Record<string, unknown> }>(
       `SELECT id, payload_json FROM proposals
         WHERE space_id = $1 AND project_id = $2 AND proposal_type = 'project_brief_publish'
