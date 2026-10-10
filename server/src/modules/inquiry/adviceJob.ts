@@ -40,8 +40,8 @@ export async function queueAdviceForFocusedThread(
     // Lock every active job before touching advice. The worker's claim uses
     // FOR UPDATE SKIP LOCKED, so it either claimed before this statement (and
     // we see its new status) or skips the row until we cancel it. Generation's
-    // persistence guard takes the same job-then-advice lock order, preventing
-    // the former job/advice deadlock.
+    // persistence guard takes the same job-then-advice lock order. Do not lock
+    // advice before the job. That order deadlocks.
     await tx.query(
       `SELECT id FROM jobs
         WHERE job_type = $1 AND space_id = $2

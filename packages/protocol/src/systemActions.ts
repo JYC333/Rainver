@@ -682,10 +682,9 @@ function internalAction<const Id extends string>(id:Id,title:string,owningModule
 /**
  * The actions that apply to an ontology object type (ADR 0012 decision 8).
  *
- * This is the mechanism `applies_to` was added for: a surface rendering an
- * object — or a selection inside one — asks the registry what it can offer
- * rather than hard-coding a menu. An action with no `applies_to` is not
- * object-bound and never appears here.
+ * `applies_to` is how a surface rendering an object — or a selection inside
+ * one — asks the registry what it can offer. Do not hard-code that menu. An
+ * action with no `applies_to` is not object-bound and never appears here.
  */
 export function systemActionsForObjectType(objectType: string): readonly SystemActionDefinition[] {
   return SYSTEM_ACTION_REGISTRY.filter((definition) => definition.applies_to?.includes(objectType));

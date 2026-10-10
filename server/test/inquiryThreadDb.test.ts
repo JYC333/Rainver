@@ -826,9 +826,8 @@ describe("Inquiry Core (real Postgres)", () => {
     }
   });
 
-  // P3 boundary tests: a Thread is an ontology object now, so it inherits the
-  // read gate instead of relying on Project membership alone. These assert the
-  // three B12H-adjacent guarantees the migration is supposed to buy.
+  // A Thread is an ontology object. It inherits the read gate. Do not rely on
+  // Project membership alone.
   it("gives a recovered Thread the ontology root's governance columns", async () => {
     if (!db.available) return;
     const thread = await new InquiryThreadService(db.pool).createThread(ownerIdentity(), PROJECT, {

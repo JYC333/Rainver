@@ -64,9 +64,9 @@ describe("space object writer B12H rules", () => {
   });
 
   it("requires a Project on a Project-owned object type", () => {
-    // A null Project does not narrow access — the scope predicate treats it as
-    // "no Project restriction", leaving only visibility. P3 attached Inquiry
-    // Thread to the root, so the rule declared ahead of time now fires.
+    // A null Project does not narrow access. The scope predicate treats it as
+    // no Project restriction, leaving only visibility. Inquiry Thread and
+    // research workflow require a Project. Do not omit it.
     expect(entityDefinition("inquiry_thread")?.requiresProjectScope).toBe(true);
     expect(entityDefinition("research_workflow")?.requiresProjectScope).toBe(true);
     expect(() => buildSpaceObjectInsert({ ...VALID, objectType: "inquiry_thread" }))

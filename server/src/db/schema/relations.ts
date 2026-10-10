@@ -17,11 +17,9 @@ export const relationPeople = pgTable("relation_people", {
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	pronouns: varchar({ length: 32 }),
 	headline: varchar({ length: 256 }),
-	// Domain lifecycle state, moved off `space_objects` (B12D). Person and
-	// Organization fell in the unconstrained ELSE arm of the former
-	// `ck_space_objects_status_by_type`, so this vocabulary is stated here for
-	// the first time; it matches observed usage in `relations/repository.ts`
-	// (created active, archived on delete, filtered against deleted).
+	// Domain lifecycle state lives here, not on `space_objects` (B12D). The
+	// vocabulary matches `relations/repository.ts`: created active, archived
+	// on delete, filtered against deleted.
 	status: varchar({ length: 32 }).default('active').notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),

@@ -210,7 +210,7 @@ export const RetrievalBriefResponseSchema = z
   .passthrough();
 export type RetrievalBriefResponse = z.infer<typeof RetrievalBriefResponseSchema>;
 
-// ── Maintenance scan (W7, "context review cycle"): a READ-ONLY, batched report of review
+// ── Maintenance scan: a READ-ONLY, batched report of review
 // candidates over the derived projection — duplicates, orphan pages, thin pages,
 // and suggested relations. It never writes canonical data; acting on a finding
 // stays on the existing proposal/approval flow.
@@ -554,7 +554,7 @@ export const SpaceRetrievalSettingsSchema = z.object({
   query_rewrite_default: z.boolean(),
   use_query_cache: z.boolean(),
   include_trace: z.boolean(),
-  // W9 egress governance: when false, this space's indexed content is never sent
+  // When false, this space's indexed content is never sent
   // to a model provider (embedding / rerank / synthesis); those stages are
   // skipped and retrieval degrades to the deterministic arms. Default true.
   external_egress_enabled: z.boolean(),

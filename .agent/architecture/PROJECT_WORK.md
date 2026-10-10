@@ -445,12 +445,12 @@ unattended root launder a gated write through a specialist. And the attended
 set is an allowlist (`manual`) rather than a denylist, so a new origin is gated
 until someone decides it should not be.
 
-`require_approval` here is a **refusal**, not a prompt: nothing in P3 produces
-an unattended Project write, because the Steward that would is P6. When that
-lands, the right shape for `task.create` under an autonomous origin is a
-proposal — the person sees the draft cards — rather than an approval dialog.
-Until then the gate is a closed door with nothing behind it, which is the
-correct state for a capability that has no caller.
+`require_approval` here is a **refusal**, not a prompt. Nothing produces an
+unattended Project write. There is no Steward to make one. When that exists,
+the right shape for `task.create` under an autonomous origin is a proposal —
+the person sees the draft cards — rather than an approval dialog. Until then
+the gate is a closed door with nothing behind it, which is the correct state
+for a capability that has no caller.
 
 Two definitions — one "manual" and one "autonomous" — were the alternative, and
 would have meant two schemas, two executors, and two places to forget one.
@@ -493,8 +493,8 @@ the current widening. A Task-domain change, recorded rather than done.
   transfer is the intended starting point.
 - **Steward autonomy.** Event-triggered wake-up on `task.run_settled` /
   `task.reported`, with per-Project autonomy settings (level, budget, wake
-  policy). Not a Steward *binding* — P5 already fixes the Agent identity, one
-  instance per Project. Under an autonomous origin `task.create` becomes a
+  policy). The Agent identity is one instance per Project. Under an
+  autonomous origin `task.create` becomes a
   proposal rather than a write, which is what the `unattended_project_write`
   rule in `decisionCore.ts` already anticipates.
 - **Roadmap and dependencies.** Milestone nodes and a live `task_dependencies`

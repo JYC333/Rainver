@@ -9,7 +9,7 @@ import { candidateKey } from "./searchInternals.js";
 import type { RevalidatedObject, ScoredCandidate } from "./types.js";
 
 /**
- * Context Brief synthesis (W6 of the context-layer roadmap).
+ * Context Brief synthesis.
  *
  * Ask Space is the context layer over raw retrieval: a synthesized, CITED
  * answer plus a gap analysis ("what the compiled context does not cover"). rainver

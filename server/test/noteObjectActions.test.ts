@@ -6,13 +6,9 @@ import { entityDefinition } from "../src/modules/ontology/entities.js";
  * NE: the first object-bound actions, and the mechanism `applies_to` exists
  * for (ADR 0012 decision 8).
  *
- * The decision's binding half was deferred during P5 on a specific ground:
- * registering these would mean "adding policy actions and widening the agent's
- * callable surface, which is a product decision about capability exposure".
- * The first half is unavoidable and done deliberately; the second does not
- * apply, because all three are user-invoked from a selection and none is
- * `agent_tool` visible. These assertions pin that distinction, so making one
- * agent-callable later has to be a deliberate edit that fails here first.
+ * All three are user-invoked from a selection. None is `agent_tool` visible.
+ * Do not make one agent-callable without failing here first. That would widen
+ * the callable surface, which is a product decision about capability exposure.
  */
 
 const NOTE_ACTION_IDS = [
@@ -44,8 +40,8 @@ describe("note object actions", () => {
   it("keeps promotion behind the proposal gate and the other two direct", async () => {
     const { SYSTEM_ACTION_REGISTRY } = await import("@rainver/protocol");
     const byId = new Map(SYSTEM_ACTION_REGISTRY.map((entry) => [entry.id, entry]));
-    // ND: promotion proposes. P2 confirmed Thread structure stays a direct
-    // write, and a note_link is navigational (N4) — so those two are direct.
+    // Promotion proposes. Thread structure and a note link are direct writes.
+    // Do not put those two behind a proposal.
     expect(byId.get("note.promote_to_knowledge")?.side_effects).toBe("proposal");
     expect(byId.get("note.raise_as_question")?.side_effects).toBe("durable");
     expect(byId.get("note.link_to_evidence")?.side_effects).toBe("durable");

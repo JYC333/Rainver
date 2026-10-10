@@ -13,9 +13,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 /**
  * The frames a stream sends, typed as the contract types them.
  *
- * `unknown` here is what let a fixture omit `blocked_on` while the schema
- * required it — the field was added to the turn and to the frame, and the
- * tests that were supposed to prove it kept compiling without it.
+ * Do not type this `unknown`. A fixture could omit `blocked_on` while the
+ * schema requires it, and the tests would still compile. The turn and the
+ * frame both carry the field.
  */
 function sse(frames: Array<{ event: string; data: TurnStreamFrame }>): Response {
   return new Response(

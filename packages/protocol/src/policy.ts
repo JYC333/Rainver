@@ -1165,8 +1165,8 @@ export const POLICY_ACTION_REGISTRY = [
   // means here and for the nine other actions that carry it.
   {
     // NE: raising a passage of a note as a Question. Direct-write, matching
-    // the Thread create route it calls — P2 confirmed Thread structure stays
-    // direct rather than moving behind a proposal.
+    // the Thread create route it calls. Thread structure stays a direct write.
+    // Do not move it behind a proposal.
     action: "inquiry.thread.create",
     // The Project, not the Thread: there is no Thread yet to authorize
     // against, and writing into a Project is the authority being checked —

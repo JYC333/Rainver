@@ -25,7 +25,7 @@ interface ProviderSynthesizerOptions {
   surface?: string | null;
   /** Test/integration seam for resolving the registry-backed system prompt. */
   systemPromptResolver?: SynthesisSystemPromptResolver | null;
-  /** W9 egress policy; when egress is disabled the synthesizer sends nothing. */
+  /** When egress is disabled the synthesizer sends nothing. */
   egressPolicy?: RetrievalEgressPolicy;
   /** Who the searches this helper serves spend for. */
   spend: CredentialSpendBasis;

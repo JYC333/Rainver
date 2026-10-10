@@ -1180,7 +1180,7 @@ describe("RunOrchestrationService", () => {
     expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
 
-  it("never touches the local workspace manager for a run bound to a remote-host Folder, regardless of its sandbox level (ADR 0016 P2/P3)", async () => {
+  it("never touches the local workspace manager for a run bound to a remote-host Folder, regardless of its sandbox level", async () => {
     const repo = new FakeRepo();
     repo.run = run({
       runtime_key: "codex_cli",
@@ -1225,7 +1225,7 @@ describe("RunOrchestrationService", () => {
     expect(workspaceManager.calls).toEqual([]);
   });
 
-  it("routes a supported (ACP) adapter's remote-host run to the remote branch with no local sandbox prep (ADR 0016 P3)", async () => {
+  it("routes a supported (ACP) adapter's remote-host run to the remote branch with no local sandbox prep", async () => {
     const repo = new FakeRepo();
     repo.run = run({
       runtime_key: "claude_code",

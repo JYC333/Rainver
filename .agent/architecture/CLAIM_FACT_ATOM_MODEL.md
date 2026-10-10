@@ -197,8 +197,8 @@ Keep the taxonomy small. Aliases, subtypes, or metadata can live on extension
 tables until a repeated product need justifies promotion.
 
 Domain status is **not** on `space_objects` (ADR 0012 / B12D, B12E). Each
-extension table owns its own `status` column and constraint; the former shared
-column, its index, and its `object_type`-branching CHECK are gone. The ten
+extension table owns its own `status` column and constraint. Do not put a
+status column, index, or `object_type`-branching CHECK on `space_objects`. The ten
 extension tables that own a status are `knowledge_items`
 (`draft|active|superseded|archived|deleted`), `notes`
 (`active|archived|deleted`), `sources`

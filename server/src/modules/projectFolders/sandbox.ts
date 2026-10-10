@@ -71,7 +71,7 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     if (!folder) {
       throw new HttpError(404, "Project Folder not found");
     }
-    // ADR 0016 P1: sandbox provisioning (worktree/read-only/managed dir) is
+    // ADR 0016: sandbox provisioning (worktree/read-only/managed dir) is
     // server-host-only. Resolve the Run-bound Location, not the Folder's
     // mutable active Location; remote-host Runs are rejected before any
     // local filesystem path is resolved.

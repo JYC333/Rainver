@@ -340,7 +340,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Maintenance scan (W7 "context review cycle"): a read-only, batched report of review
+  // Maintenance scan: a read-only, batched report of review
   // candidates (duplicates, orphans, thin pages, suggested relations) over the
   // derived projection. It writes NOTHING canonical — acting on a finding stays
   // on the proposal/approval flow. Owner/admin only, and every finding is

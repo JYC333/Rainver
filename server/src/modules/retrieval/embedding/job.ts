@@ -160,7 +160,7 @@ export function registerRetrievalEmbeddingHandler(
     const result = await service.backfillSpace(spaceId, {
       batchLimit,
       embeddingDimensions: retrievalSettings.embeddingDimensions,
-      // W9: skip provider egress entirely when the space disables it.
+      // Skip provider egress entirely when the space disables it.
       externalEgressEnabled: retrievalSettings.externalEgressEnabled,
     });
     return result as unknown as Record<string, unknown>;

@@ -153,8 +153,8 @@ touching disk. The last two are unreachable for a remote-host row today (no
 Run can currently produce a `code_patch` proposal against one, since proposal
 creation only happens downstream of the already-guarded sandbox-prep path),
 but the guard is placed at the point of disk access rather than relied on as
-an emergent property of the call graph — a future P2/P3 change to how
-proposals get created cannot silently reopen this.
+an emergent property of the call graph. A later change to how proposals get
+created must not silently reopen disk access.
 
 ## REST surface (`server/src/modules/hosts/routes.ts`)
 

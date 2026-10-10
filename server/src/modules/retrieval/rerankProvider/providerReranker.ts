@@ -27,7 +27,7 @@ interface ProviderRerankerOptions {
   surface?: string | null;
   /** Test/integration seam for resolving the registry-backed system prompt. */
   systemPromptResolver?: RerankSystemPromptResolver | null;
-  /** W9 egress policy; when egress is disabled the reranker sends nothing. */
+  /** When egress is disabled the reranker sends nothing. */
   egressPolicy?: RetrievalEgressPolicy;
   /** Who the searches this helper serves spend for. */
   spend: CredentialSpendBasis;

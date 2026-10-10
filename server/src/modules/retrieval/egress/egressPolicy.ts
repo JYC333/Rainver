@@ -2,8 +2,7 @@
  * Provider-egress policy for retrieval content.
  *
  * Sending a retrieval object's text to a model provider (for embedding, rerank,
- * or synthesis) is egress. W9 turns the former allow-all seam into a real
- * capability: a per-space switch (`external_egress_enabled`) lets a space mark
+ * or synthesis) is egress. A per-space switch (`external_egress_enabled`) lets a space mark
  * its content "do not send to external providers". Local providers and internal
  * processing can still be allowed without enabling external API egress.
  *
@@ -60,7 +59,7 @@ export interface RetrievalSourceEgressPolicy {
   allow_external_model_egress: boolean;
 }
 
-/** Default policy: egress permitted (preserves pre-W9 behavior when unspecified). */
+/** Default policy when the caller names none: egress permitted. */
 export const ALLOW_ALL_EGRESS: RetrievalEgressPolicy = { externalEgressEnabled: true };
 
 export function retrievalEgressAllowed(

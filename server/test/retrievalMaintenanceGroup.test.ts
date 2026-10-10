@@ -10,7 +10,7 @@ import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("retrievalMaintenanceDb", () => {
-  // W7 maintenance scan over real Postgres. Proves the scan finds the batched
+  // Maintenance scan over real Postgres. The scan finds the batched
   // review-candidate kinds (duplicate / orphan / thin / relation_suggestion),
   // clusters duplicates, is access-safe (a private object owned by another user is
   // never surfaced — and a duplicate cluster that loses a member to revalidation is

@@ -19,9 +19,9 @@ function __setProviderHttpClientForTests(client: ProviderHttpClient | null): voi
   setRawProviderHttpClientForTests(client ? piAiHttpClient(client) : null);
 }
 
-// W9 egress governance. The per-space switch is enforced at the shared seam:
-// when external egress is disabled, external model providers are blocked, while
-// local providers and in-process handling can still be used.
+// The per-space switch is enforced at the shared seam. When external egress is
+// disabled, external model providers are blocked, while local providers and
+// in-process handling can still be used.
 
 // A store that fails the test if any provider interaction is attempted.
 const throwingStore = new Proxy({ resolveUsageAttribution: resolveTestUsageAttribution }, {
@@ -51,7 +51,7 @@ afterEach(() => {
 });
 
 describe("retrievalEgressAllowed", () => {
-  it("allows by default (no policy ⇒ pre-W9 behavior)", () => {
+  it("allows by default when no policy is passed", () => {
     expect(retrievalEgressAllowed({ object_type: "knowledge_item", object_id: "x" })).toBe(true);
     expect(retrievalEgressAllowed({ object_type: "memory_entry", object_id: "x" }, ALLOW_ALL_EGRESS)).toBe(true);
   });

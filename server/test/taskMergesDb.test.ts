@@ -33,8 +33,8 @@ import { registerTasksProjectIntegration } from "../src/modules/tasks/projectInt
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 
 /**
- * A done Task's branch reaching the main branch (ADR 0016 §11, P2/P3 of the
- * Task branch plan), driven through the real `task_merge` job, the real
+ * A done Task's branch reaching the main branch (ADR 0016 §11), driven through
+ * the real `task_merge` job, the real
  * `done` writes and — for a conflict — the real admission of the Agent's
  * resolution Run, against a host that answers each merge step as scripted.
  */

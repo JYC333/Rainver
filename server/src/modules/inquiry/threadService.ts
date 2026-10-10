@@ -485,12 +485,11 @@ export class InquiryThreadService {
    * Composes the two writes that already exist rather than adding a third
    * path: the Thread is created exactly as the Inquiry surface creates one,
    * and the link back to the note is the same `references` edge `linkNote`
-   * writes. Both are direct writes — P2 confirmed Thread structure stays
-   * direct rather than moving behind a proposal.
+   * writes. Both are direct writes. Do not move Thread structure behind a
+   * proposal.
    *
    * The link is what makes the action worth having. Without it the Question
-   * would be a retyped sentence with no way back to the reasoning it came
-   * from, which is the disconnection this plan exists to fix.
+   * is a retyped sentence with no way back to the reasoning it came from.
    */
   async raiseNoteAsQuestion(
     identity: SpaceUserIdentity,

@@ -135,7 +135,7 @@ async function resolveIdentity(
   return null;
 }
 
-/** Exported for the hosts module's dispatch endpoint (ADR 0016 P3), which executes a Run through the same orchestration wiring as every other Run entrypoint. */
+/** Exported for the hosts module's dispatch endpoint, which executes a Run through the same orchestration wiring as every other Run entrypoint. */
 function commandServices(context: ModuleContext): RunsCommandServices {
   if (servicesFactoryOverride) return servicesFactoryOverride(context);
   return buildRunOrchestration(context.config);

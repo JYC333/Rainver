@@ -25,8 +25,8 @@ class AgentGroupServiceDb {
     // First, because a query's own FROM identifies it no matter what
     // predicates it embeds. The delegation reads carry the Run predicate
     // inline, which names `room_read_run` and `runs` — so the arms below,
-    // which key on those, answered the delegation queries with a row of the
-    // wrong shape once the Room term was added to them.
+    // which key on those, would answer the delegation queries with a row of the
+    // wrong shape. Match `FROM run_delegations` first.
     if (sql.includes("FROM run_delegations")) {
       return { rows: [], rowCount: 0 };
     }

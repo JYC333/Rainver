@@ -294,7 +294,7 @@ describe("Retrieval bench: relational recall (real Postgres)", () => {
     });
   });
 
-  it("walks two hops: a neighbor-of-a-neighbor is recalled (W4 multi-hop)", async () => {
+  it("walks two hops: a neighbor-of-a-neighbor is recalled", async () => {
     if (!db.available) return;
     // anchor → mid → far. Only anchor matches lexically; "far" is reachable only
     // by a 2-hop traversal through "mid".

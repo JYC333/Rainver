@@ -591,7 +591,7 @@ function activeObjectClause(alias: string): string {
   // Graph projection is polymorphic over every object type, so it reads status
   // through the shared scalar helper rather than joining one extension table.
   // Note this is deliberately not `archived_at IS NULL`: those are not
-  // equivalent (ADR 0012 / P1 notes).
+  // equivalent (ADR 0012).
   return `${alias}.deleted_at IS NULL AND ${objectStatusScalarSql(alias)} NOT IN ('archived', 'deleted')`;
 }
 

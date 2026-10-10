@@ -185,7 +185,7 @@ describe("executionTopologyDb", () => {
     );
   });
 
-  describe("P1 execution topology database invariants", () => {
+  describe("execution topology database invariants", () => {
     it("keeps Machine, Host, Location readiness, and daemon heartbeat distinct", async (ctx) => {
       if (!db.available || !db.pool) return ctx.skip();
       const hosts = new PgHostRepository(db.pool);

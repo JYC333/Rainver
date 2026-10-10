@@ -262,7 +262,7 @@ export class PgWorkspaceLocationRepository {
     return result.rows.map((row) => ({ ...row, created_at: dateIso(row.created_at) }));
   }
 
-  /** `workspace remove`: scoped to the calling host's own token, exactly like `unregisterForHost` before P1. */
+  /** `workspace remove`: scoped to the calling host's own token. */
   async unregisterForHost(hostId: string, locationId: string): Promise<boolean> {
     const result = await this.db.query(
       `DELETE FROM workspace_locations WHERE id = $1 AND execution_host_id = $2 AND execution_host_kind = 'remote'`,
@@ -491,9 +491,8 @@ export interface WorkspaceLocationHeartbeat {
 }
 
 /**
- * ADR 0016 / B62-B64, moved from `project_folders` to `workspace_locations`
- * in P1: a remote Location has no server-side path at all — `root_path` is
- * always NULL for it (schema-enforced,
+ * ADR 0016 / B62-B64. A remote Location has no server-side path. `root_path`
+ * is always NULL for it (schema-enforced,
  * `ck_workspace_locations_remote_no_root_path`).
  */
 export function assertServerHostLocation(location: Pick<WorkspaceLocationRow, "execution_host_kind">): void {

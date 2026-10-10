@@ -15,9 +15,9 @@ import {
 import { EMBED_DIMENSIONS } from "../src/modules/retrieval/embedding/config.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
-// W9 egress governance on real Postgres: the per-space switch round-trips through
-// the settings store, and when disabled the embedding backfill sends NOTHING to a
-// provider (no chunk is embedded), so the vector arm has no data to use.
+// The per-space switch round-trips through the settings store on real Postgres.
+// When it is disabled, the embedding backfill sends nothing to a provider, so
+// the vector arm has no data to use.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 

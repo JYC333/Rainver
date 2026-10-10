@@ -264,9 +264,9 @@ through the built-in extraction worker.
 ## Declarative Pipeline Model
 
 A compatibility handler execution model, `language: "declarative_pipeline_v1"`,
-can still exist beside `typescript_node` rows for advanced/history cases. It was added because the
-`typescript_node` template generator's real customization surface is a single
-CSS class name (list vs. single-page mode); it cannot paginate, follow a list
+can still exist beside `typescript_node` rows. The `typescript_node` template
+generator's customization surface is a single CSS class name (list vs.
+single-page mode). It cannot paginate, follow a list
 item's own link, download a non-HTML asset, or capture per-item snapshots in
 list mode. New recipe-like sources are represented by
 Level 2 `source_recipe_versions`. Any `declarative_pipeline_v1` handler

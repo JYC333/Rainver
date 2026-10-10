@@ -65,11 +65,10 @@ export class RetrievalEmbeddingBackfillService {
     opts: { batchLimit?: number; embeddingDimensions?: number; externalEgressEnabled?: boolean } = {},
   ): Promise<BackfillResult> {
     const embeddingDimensions = opts.embeddingDimensions ?? DEFAULT_EMBED_DIMENSIONS;
-    // W9 egress gate: if the space disables external egress, embedding (which
-    // sends chunk text to a provider) is skipped entirely — no chunks are even
-    // claimed, and the vector arm degrades to the deterministic arms. The caller
-    // (the job handler) resolves the space switch; default-allow keeps the
-    // service decoupled and matches the pre-W9 behavior for direct callers.
+    // If the space disables external egress, embedding (which sends chunk text
+    // to a provider) is skipped entirely. No chunks are claimed, and the
+    // vector arm degrades to the deterministic arms. The job handler resolves
+    // the space switch. A direct caller that omits it allows egress.
     const egressPolicy: RetrievalEgressPolicy = { externalEgressEnabled: opts.externalEgressEnabled ?? true };
     if (!egressPolicy.externalEgressEnabled) {
       return { scanned: 0, embedded: 0, skipped: 0, model: null };
