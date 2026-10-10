@@ -160,11 +160,10 @@ describe("the Run tool surface", () => {
   });
 
   /**
-   * The surface moved from `/internal` to `/api/v1` because a paired host's
-   * children reach the instance through its public URL, and production nginx
-   * forwards `/api/` and the host WebSocket and nothing else. What has to hold
-   * after the move is that the `/api/` conventions — the CSRF origin hook and
-   * identity resolution — do not refuse a caller that has no cookie and no
+   * The surface is under `/api/v1`. A paired host's children reach the
+   * instance through its public URL, and production nginx forwards `/api/`
+   * and the host WebSocket and nothing else. The CSRF origin hook and
+   * identity resolution must not refuse a caller that has no cookie and no
    * `Origin`, only the Run's own bearer.
    */
   it("serves a cookie-less caller that carries only the Run bearer", async (ctx) => {

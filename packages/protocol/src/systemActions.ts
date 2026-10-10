@@ -490,8 +490,9 @@ export const SYSTEM_ACTION_REGISTRY = [
   // The deterministic way for an Agent to learn a Thread's id: a read that
   // returns the Project's active Threads with their ids, so the id a later
   // thread-bound action carries is copied from a tool result, never composed
-  // by the model from the statement (which is how a made-up slug reached
-  // research.start_acquisition and failed as an opaque 404).
+  // by the model from the statement. A made-up slug fails
+  // `research.start_acquisition` as an opaque 404. Copy the id from this
+  // tool result.
   action("inquiry.list_threads", "List this Project's active Inquiry Threads with their ids", "inquiry", "InquiryThreadService.listThreads", "inquiry.thread.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["inquiry.list_threads"] }),
   // Adopting the system's own recorded next step, on the user's say-so. It
   // writes only what the Inquiry Area's Adopt button writes — the Thread's

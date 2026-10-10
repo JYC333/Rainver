@@ -153,13 +153,12 @@ describe("run evidence redaction", () => {
   });
 
   it('leaves no half a credential at either truncation boundary', () => {
-    // Two boundaries can fall inside a secret, and each one hid the next.
-    // Cutting at the cap before scanning left the head of a secret straddling
-    // the cap — the overscan answered that. But redaction *shrinks* the text,
-    // so a window that comes back under the cap is kept whole and its far edge
-    // becomes a second boundary of the same kind. Measured at the time: a JWT
-    // cut four characters into its signature kept a payload that decodes to
-    // the subject's identity.
+    // Two boundaries can fall inside a secret, and each one hides the next.
+    // Cutting at the cap before scanning leaves the head of a secret straddling
+    // the cap. The overscan covers that. But redaction shrinks the text, so a
+    // window that comes back under the cap is kept whole and its far edge is a
+    // second boundary of the same kind. A JWT cut four characters into its
+    // signature keeps a payload that decodes to the subject's identity.
     const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTQyIiwiZW1haWwiOiJ2aWN0aW1AZXhhbXBsZS5jb20ifQ.SIGNATURE_TAIL';
     const shrinking = ` api_key="${'S'.repeat(200)}" `.repeat(3);
     for (let nudge = -8; nudge <= 48; nudge += 4) {

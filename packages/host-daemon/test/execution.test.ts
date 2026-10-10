@@ -852,9 +852,9 @@ describe("a retry that reuses the run id", () => {
 /**
  * The refusal is the thing nobody can otherwise explain: the CLI sees a 403
  * from a proxy it did not choose, and the reason lives on the host. It reaches
- * the Run's history only if the completion frame carries it, and that link had
- * no test — which is how a real `npm install`, refused and logged by the
- * daemon, still produced no `egress_refused` event.
+ * the Run's history only if the completion frame carries it. A refused
+ * command the daemon logged still produces no `egress_refused` event unless
+ * that frame carries the refusal.
  */
 describe("what a Run reports about its egress", () => {
   afterEach(() => { setEgressProxy(null); });

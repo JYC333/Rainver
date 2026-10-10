@@ -141,8 +141,8 @@ export const BlockIds = Extension.create({
           // at the top level of a doc that is already the child's position, but
           // only because the doc node itself is not counted. Resolving through
           // `child(index)` and accumulating `nodeSize` is the arithmetic that
-          // stays correct, and `setNodeMarkup` on a wrong position throws
-          // rather than misbehaving quietly — which is how this was caught.
+          // stays correct. `setNodeMarkup` on a wrong position throws rather
+          // than misbehaving quietly.
           let pos = 0
           for (let index = 0; index < newState.doc.childCount; index += 1) {
             const node = newState.doc.child(index)

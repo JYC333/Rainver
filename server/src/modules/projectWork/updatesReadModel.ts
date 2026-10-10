@@ -229,9 +229,9 @@ function toUpdate(row: UpdateRow): Omit<ProjectWorkUpdate, "members"> {
 /**
  * One turn's writes of one kind, collapsed into one update.
  *
- * A decomposition the person asked for is one thing that happened; six rows of
- * it is the per-item ceremony ADR 0017 removed from the approval queue
- * arriving again in the feed. Members keep their own undo so any single one
+ * A decomposition the person asked for is one thing that happened. Do not
+ * emit one row per item. That is the per-item ceremony the feed must not
+ * repeat. Members keep their own undo so any single one
  * can still be reversed; the fold itself offers none: undoing the whole batch
  * and undoing the one that was wrong are different decisions.
  *

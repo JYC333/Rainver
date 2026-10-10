@@ -139,17 +139,17 @@ describe("page size ladder and deadline", () => {
 
   it("scales the deadline with the size of the answer requested", () => {
     expect(backfillFetchTimeoutMs(10)).toBeLessThan(backfillFetchTimeoutMs(100));
-    // The 12s flat budget could not cover a 100-row page that legitimately
-    // needed ~30s, which is how a provider 500 was recorded as unreachable.
+    // A 100-row page can legitimately need about 30s. Do not give it a flat
+    // 12s budget. A slow page would be recorded as unreachable.
     expect(backfillFetchTimeoutMs(100)).toBeGreaterThanOrEqual(30_000);
     expect(backfillFetchTimeoutMs(10_000)).toBe(BACKFILL_FETCH_MAX_TIMEOUT_MS);
   });
 });
 
 /**
- * The failure this exists for: a broad boolean query at 100 rows made arXiv
- * answer 5xx after ~30s, the segment failed outright, and Research went on to
- * report "no relevant sources" over a corpus missing that provider entirely.
+ * A broad boolean query at 100 rows can make arXiv answer 5xx after about
+ * 30s. Narrow the page. Do not fail the segment outright. Research would
+ * report no relevant sources over a corpus missing that provider.
  */
 describe("history page narrowing", () => {
   const okResponse = { status: 200, ok: true, notModified: false, headers: new Headers(), contentType: "application/xml", isText: true, isPdf: false, text: "<feed/>", bytes: null };

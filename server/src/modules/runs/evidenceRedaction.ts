@@ -135,13 +135,13 @@ export function redactEvidenceText(value: string | null | undefined): string | n
  * was scanned, or where a shape matched only whole may have run out of the
  * window.
  *
- * Two boundaries can fall inside a secret, and each one hid the next. Cutting
- * at the cap before scanning left the head of a secret straddling the cap,
- * which no pattern is long enough to recognise — the overscan answered that.
+ * Two boundaries can fall inside a secret, and each one hides the next. Cutting
+ * at the cap before scanning leaves the head of a secret straddling the cap,
+ * which no pattern is long enough to recognise. The overscan covers that.
  * But redaction *shrinks* the text, so a window that comes back under the cap
  * is kept whole, and its far edge is a second boundary of exactly the same
- * kind. Measured at the time: a JWT cut four characters into its signature kept
- * a payload that decodes to the subject's identity. And a JWT whose second dot
+ * kind. A JWT cut four characters into its signature keeps a payload that
+ * decodes to the subject's identity. And a JWT whose second dot
  * lies past the overscan is matched nowhere, so the cap itself is a third.
  *
  * So this cut backs off through whatever a credential is made of, leaving text

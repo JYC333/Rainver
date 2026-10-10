@@ -12,8 +12,8 @@ import type {
 /**
  * Pure, stateless helpers for the retrieval search pipeline: RRF fusion, the
  * over-fetch bound, visibility collection, result shaping, and evidence mapping.
- * Extracted from `searchService` so the service file stays focused on the
- * orchestration + the arm SQL. Nothing here touches the database or `this`.
+ * They live here so `searchService` stays on the orchestration and the arm SQL.
+ * Nothing here touches the database or `this`.
  */
 
 const RRF_K = 60;

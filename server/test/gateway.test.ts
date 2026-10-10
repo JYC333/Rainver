@@ -169,9 +169,9 @@ describe("safe header access", () => {
       SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
       SERVER_LOG_LEVEL: "info",
     });
-    // Only `logStream`: passing `logger` too takes the override branch and the
-    // stream is ignored, which is how a test like this reads as passing while
-    // asserting nothing.
+    // Pass only `logStream`. Passing `logger` too takes the override branch
+    // and the stream is ignored, so this test would pass while asserting
+    // nothing.
     const app = createServerApp(config, { logStream: stream });
     registerGatewayConventions(app, config);
     app.get("/api/v1/logging-probe", async (request, reply) => {

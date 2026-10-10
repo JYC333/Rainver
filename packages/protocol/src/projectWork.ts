@@ -462,10 +462,9 @@ const ProjectWorkUpdateBaseSchema = z.object({
 
 export const ProjectWorkUpdateSchema = ProjectWorkUpdateBaseSchema.extend({
   /**
-   * One turn's writes of one kind, collapsed. Six sub-questions created by one
-   * decomposition are one thing that happened, and six rows of it is the
-   * per-item ceremony ADR 0017 removed from the approval queue arriving again
-   * in the feed. Null when the update stands alone; members carry their own
+   * One turn's writes of one kind, collapsed. A decomposition is one thing
+   * that happened. Do not emit one row per item. That is the per-item ceremony
+   * the feed must not repeat. Null when the update stands alone; members carry their own
    * undo, the fold carries none.
    */
   members: z.array(ProjectWorkUpdateBaseSchema).nullable(),

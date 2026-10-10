@@ -459,15 +459,15 @@ async function assertSessionNotLooping(
 ): Promise<void> {
   // A conversation with no Room has no session — a group carrying one without
   // a Room is refused — so counting only by session would leave the surface
-  // that reaches those Agents unbounded, which is the one thing this exists to
-  // prevent. Where there is no session the Run is the loop's boundary.
+  // that reaches those Agents unbounded. Do not count only by session. Where
+  // there is no session the Run is the loop's boundary.
   const scope = run.session_id
     ? { column: "p.evidence_json->>'session_id'", value: run.session_id, sessions: true }
     : { column: "p.source_id", value: run.id, sessions: false };
   // Both branches count. A loop that asks for space-shared memory, or one
   // running under a `requires_proposal` Agent, produces proposals instead of
-  // entries — and an unbounded pile of those is the hundred rows to approve
-  // this exists to prevent, not an escape from it.
+  // entries. Do not leave that pile unbounded. Counting proposals is the
+  // limit, not an escape from it.
   //
   // Only what still stands is counted: a revision supersedes the version it
   // replaced, so ordinary correction does not walk toward the limit, and

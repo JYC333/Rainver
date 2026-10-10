@@ -1178,9 +1178,8 @@ describe("inquiry advancement in the Project's account", () => {
 
     const listed = await getProjectUpdates(db.pool!, owner, PROJECT, null);
     const fold = listed.items.find((item) => item.event_kind === "thread.created");
-    // One decomposition is one thing that happened. Three rows of it is the
-    // per-item ceremony ADR 0017 removed from the approval queue, arriving
-    // again in the feed.
+    // One decomposition is one thing that happened. Do not emit one row per
+    // item. That is the per-item ceremony the feed must not repeat.
     expect(fold).toMatchObject({ summary: "Opened 3 questions", subject: null, undo: null });
     expect(fold!.members).toHaveLength(3);
     expect(fold!.members!.every((member) => member.undo?.action === "archive_thread")).toBe(true);

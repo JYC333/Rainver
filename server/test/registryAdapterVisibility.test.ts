@@ -11,9 +11,8 @@ import { RuntimeKeySchema } from "@rainver/protocol";
 /**
  * An ACP agent enabled from the registry is a runtime adapter like any other,
  * but it is never in `BUILTIN_RUNTIME_ADAPTER_SPECS` — it is published into
- * the dynamic catalog at boot. Reading the builtin table directly therefore
- * makes it invisible, which is how "Unknown runtime_key" came back for a
- * Cursor agent the operator had enabled and installed on a host.
+ * the dynamic catalog at boot. Do not read the builtin table for it. The
+ * agent is invisible there, and dispatch answers "Unknown runtime_key".
  */
 const CURSOR = {
   id: "cursor",

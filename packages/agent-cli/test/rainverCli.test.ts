@@ -19,9 +19,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 /**
  * The built entry when there is one, the source otherwise.
  *
- * Production stages and resolves `dist/rainver.js`, so a suite that only ever
- * ran the TypeScript source would leave the shipped artifact untested — and CI
- * builds this package before running these tests for exactly that reason.
+ * Production stages and resolves `dist/rainver.js`. Prefer that file when it
+ * exists. A suite that only runs the TypeScript source does not test the
+ * artifact CI builds.
  */
 const BUILT = fileURLToPath(new URL("../dist/rainver.js", import.meta.url));
 const CLI = existsSync(BUILT)

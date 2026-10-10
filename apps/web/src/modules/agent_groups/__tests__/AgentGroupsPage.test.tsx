@@ -2268,8 +2268,8 @@ describe('Rooms page', () => {
 
   it('carries a whole thread into a new one, shows the draft, and lets it be dropped', async () => {
     // The header action holds a `thread` pick for the next thread. A draft
-    // has to be visible to be a draft, and droppable: an invisible pick with
-    // no way out is the failure this exists to close.
+    // has to be visible to be a draft, and droppable. Do not leave the pick
+    // invisible or without a way to drop it.
     vi.mocked(roomsApi.messages).mockResolvedValue(polarsMessages as never)
     vi.mocked(roomsApi.sendMessage).mockResolvedValue({
       message: { id: 'm-2', session_id: 'session-new', role: 'user', content: 'Next', metadata_json: {} },
