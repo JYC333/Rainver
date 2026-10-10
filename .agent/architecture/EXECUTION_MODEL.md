@@ -342,7 +342,7 @@ RunEvent statuses: `pending`, `running`, `succeeded`, `failed`, `skipped`, `warn
 
 **RunEvent vs RunStep:** RunStep is the coarse lifecycle replay spine. RunEvent is the structured evidence spine used for classification. RunEvent references RunStep, Artifact, Proposal — it does not replace them.
 
-**Append-only:** RunEvent rows are never updated or deleted. `event_index` is MAX()+1 scoped to `(space_id, run_id)`, allocated under a per-Run PostgreSQL transaction advisory lock (`PgRunRepository.appendRunEvent`), because two writers append to one Run at once — the orchestrator's runtime event sink and a tool call's own HTTP request through `SystemActionDispatcher` — and unserialized MAX()+1 collided on `uq_run_events_space_run_event_index`, silently dropping an event. RunStep keeps the documented MAX()+1 distributed-writer risk.
+**Append-only:** RunEvent rows are never updated or deleted. `event_index` is MAX()+1 scoped to `(space_id, run_id)`, allocated under a per-Run PostgreSQL transaction advisory lock (`PgRunRepository.appendRunEvent`). Two writers append to one Run at once — the orchestrator's runtime event sink and a tool call's own HTTP request through `SystemActionDispatcher`. Do not append without that lock. Unserialized MAX()+1 collides on `uq_run_events_space_run_event_index` and drops an event. RunStep keeps the documented MAX()+1 distributed-writer risk.
 
 **Best-effort writes:** `RunOrchestrationService.appendRunEventBestEffort()` wraps instrumentation points in a try/catch that swallows the failure. A RunEvent write failure must not poison Run terminal-state commits, artifact persistence, proposal creation, or evaluation creation.
 

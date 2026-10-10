@@ -181,7 +181,7 @@ export default function ProjectChatSidecar() {
         setConversations(page.items)
         if (page.items.length === 0) setRuntimeOpen(true)
         // Remembered per Room, not per Project: the id names a conversation
-        // *in* a Room, and a stale one matching nothing silently fell back.
+        // *in* a Room. Do not fall back when a stale id matches nothing.
         const remembered = readStored(conversationKey(mainline.room.id))
         const chosen = page.items.find(item => item.id === remembered) ?? page.items[0]
         setSessionId(chosen?.id ?? '')

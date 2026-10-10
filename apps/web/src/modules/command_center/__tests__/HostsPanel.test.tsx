@@ -91,9 +91,9 @@ describe('HostsPanel', () => {
   })
 
   it('marks a loaded Server Runtime status as stale when the next read fails', async () => {
-    // The panel keeps the last good status on a failed read, so the "could not
-    // load" branch is unreachable once one has landed and the badge silently
-    // claimed to be current. The indicator is what says otherwise.
+    // The panel keeps the last good status on a failed read. Do not leave the
+    // "could not load" branch unreachable once one has landed, or the badge
+    // would claim to be current. The indicator is what says otherwise.
     vi.useFakeTimers()
     try {
       render(<HostsPanel />)

@@ -44,10 +44,8 @@ export type ActionNodeHandler = (context: ActionNodeContext) => Promise<ActionNo
  * Deterministic-handler dispatch for `node_kind: "action"` Workflow Execution
  * nodes: system operations that do not spawn an LLM
  * run. Mirrors `ProposalApplierRegistry`'s upsert-by-key registration so
- * modules can register at init time regardless of load order, and so a test
- * reset never leaves the registry silently empty (see the equivalent fix to
- * `registerBuiltInAttentionAdapters` for why a "registered once" guard is the
- * wrong pattern here).
+ * modules can register at init time regardless of load order. Do not guard
+ * with "registered once". A test reset would leave the registry empty.
  */
 class ActionNodeHandlerRegistry {
   private readonly handlers = new Map<string, { handler: ActionNodeHandler; owner: string }>();

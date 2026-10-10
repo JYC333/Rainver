@@ -209,8 +209,8 @@ export class PgImportedSessionRepository {
     let sessionId = existing.rows[0]?.id ?? null;
     if (sessionId) {
       // Visibility is not re-applied here: it is the person's decision on the
-      // session, and a later sync inheriting the Location default would
-      // silently re-share something they had made private.
+      // session. Do not inherit the Location default on a later sync. It
+      // would re-share a session the person made private.
       await this.db.query(
         `UPDATE imported_sessions
             SET title = COALESCE($2, title),

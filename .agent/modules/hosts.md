@@ -371,8 +371,8 @@ rules applies, and they are deliberately different:
   how gcloud and a GCS toolchain authenticate in a Task run, and Claude Code
   reads neither. The XDG set is named rather than prefixed on purpose:
   `XDG_RUNTIME_DIR` is how a git credential helper reaches the keyring and how
-  rootless podman finds its socket, so dropping it would break a Task run that
-  pushes or builds — the same class of regression as moving `HOME`. The
+  rootless podman finds its socket. Do not drop it. A Task run that pushes or
+  builds would break, the same way moving `HOME` breaks them. The
   credential set matters as much as the state roots: this run exists to spend
   the owner's *subscription*, linked into its profile, and a runtime that
   prefers an ambient `ANTHROPIC_API_KEY` bills an API account instead — B67's

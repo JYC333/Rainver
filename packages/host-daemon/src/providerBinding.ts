@@ -105,8 +105,8 @@ const HOST_LOGIN_DROPPED_PREFIXES_BY_RUNTIME: Record<string, readonly string[]> 
 /**
  * The XDG **roots** by name, not the whole `XDG_` prefix. `XDG_RUNTIME_DIR` is
  * how a git credential helper reaches the keyring and how rootless podman
- * finds its socket, and dropping it would break a Task run that pushes or
- * builds — the same class of regression as moving `HOME`.
+ * finds its socket. Do not drop it. A Task run that pushes or builds would
+ * break, the same way moving `HOME` breaks them.
  */
 const HOST_LOGIN_DROPPED_KEYS = new Set([
   "XDG_DATA_HOME",

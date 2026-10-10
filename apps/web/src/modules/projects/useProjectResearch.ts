@@ -361,11 +361,10 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
     ? researchWorkflowForThread(researchWorkflows, newSearchThread.id)
     : null, [newSearchThread, researchWorkflows])
   const newSearchDraft = useMemo(() => {
-    // Question definition happens on the Thread's own Inquiry page — whatever
-    // wording/assessment was confirmed there lives on a `not_started` draft
-    // Workflow already linked to this Thread by its canonical
-    // `primary_thread_id`. Without finding it, this dialog would reopen as if
-    // nothing had been refined yet.
+    // Question definition happens on the Thread's own Inquiry page. The
+    // confirmed wording lives on a `not_started` draft Workflow already
+    // linked to this Thread by its canonical `primary_thread_id`. Do not
+    // reopen this dialog as if nothing has been refined.
     const base = researchSetupDraftFromWorkflow(newSearchWorkflow, newSearchThread?.statement ?? '', [], evidenceMatrix.length)
     return newSearchThread ? { ...base, thread_id: newSearchThread.id } : base
   }, [newSearchThread, newSearchWorkflow, evidenceMatrix.length])

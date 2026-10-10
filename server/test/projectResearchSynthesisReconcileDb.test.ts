@@ -1071,8 +1071,8 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: batch1,
     } } });
     // Every entry is fabricated — none of batch1's real ids appear anywhere
-    // in the response (the MiniMax-M3 incident this models: a run returning
-    // comparisons for papers that were never sent and don't exist).
+    // in the response. The run returned comparisons for papers that were
+    // never sent and do not exist.
     await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, ["run-1", JSON.stringify({
       comparisons: [
         { source_item_id: randomUUID(), stance: "supports", detail: "Fabricated paper unrelated to this batch.", affected_sections: ["understanding"] },
