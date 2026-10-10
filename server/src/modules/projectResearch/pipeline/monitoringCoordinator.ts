@@ -686,10 +686,10 @@ export class ProjectResearchMonitoringCoordinator {
             state.comparison_failed_source_item_ids = [...(state.comparison_failed_source_item_ids ?? []), ...unmatched];
           }
           // The model matched *nothing* in this batch — a stronger signal
-          // than one bad entry that batching itself isn't working right now
-          // (observed: a model fabricating comparisons for items that were
-          // never sent and don't exist). Drop to one-at-a-time for every
-          // item still left, not just this batch's leftovers.
+          // than one bad entry that batching itself isn't working right now.
+          // The model fabricated comparisons for items that were never sent
+          // and do not exist. Drop to one-at-a-time for every item still
+          // left, not just this batch's leftovers.
           if (matched.length === 0) state.comparison_degraded = true;
         }
         // A solo (one-at-a-time) retry that still didn't match is simply

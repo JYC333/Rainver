@@ -310,9 +310,9 @@ describe("PgSessionRepository against real Postgres", () => {
     expect(page).toHaveLength(20);
     expect(page!.at(-1)!.content).toBe("body 4999");
 
-    // The cost of a page must not scale with the conversation. A read that
-    // walked `parent_message_id` per page touched ~15000 buffers here; the
-    // materialized path answers the same page from the index.
+    // The cost of a page must not scale with the conversation. Do not walk
+    // `parent_message_id` per page. The materialized path answers the same
+    // page from the index.
     const plan = await db.pool.query<{ "QUERY PLAN": string }>(
       `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
        SELECT m.id FROM messages m

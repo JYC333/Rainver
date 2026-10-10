@@ -14,8 +14,7 @@ import type { ModuleContext, ServerModule } from "../../src/gateway/routeRegistr
  *
  * Route tests register the modules they exercise. Do not call `buildServer`:
  * it registers all ~70 modules and loads the whole backend graph per test
- * file — measured at ~6s of module collection for each such file, several
- * times the tests themselves.
+ * file, several times the tests themselves.
  * The gateway conventions, body handling, and catch-all are the real ones, so
  * status codes and envelopes are the same as through `buildServer`; only
  * routes from other modules are absent, and a request to one is a 404 here.

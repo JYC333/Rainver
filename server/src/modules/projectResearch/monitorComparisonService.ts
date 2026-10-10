@@ -277,11 +277,10 @@ export class ProjectResearchMonitorComparisonService {
 /**
  * Extracts whatever valid, matching comparisons the model actually produced
  * — it never throws for content problems. A model occasionally drops,
- * duplicates, or invents a source_item_id (observed: a run fabricating 8
- * comparisons for material that was never sent and does not exist); discarding
- * an entire batch's worth of otherwise-good analysis over one bad entry, or
- * failing the whole monitoring operation over it, is worse than the
- * problem. The caller (see ProjectResearchMonitoringCoordinator) is
+ * duplicates, or invents a source_item_id for material that was never sent
+ * and does not exist. Do not discard an entire batch's otherwise-good
+ * analysis over one bad entry, and do not fail the whole monitoring
+ * operation over it. The caller (see ProjectResearchMonitoringCoordinator) is
  * responsible for noticing which of `expectedSourceItemIds` didn't get a
  * match and routing those to a one-at-a-time retry.
  */

@@ -18,11 +18,10 @@ export function getDbPool(databaseUrl: string): Pool {
     pool = new Pool({
       connectionString: databaseUrl,
       // A single page load can fan out 15-20 concurrent requests (each
-      // making 1-3 queries); at max=4 those queued for a free connection in
-      // batches, adding real wall-clock latency even after each individual
-      // query got fast (observed: 16 concurrent 50ms queries took ~270ms
-      // instead of ~50ms). Postgres defaults to max_connections=100 and this
-      // process is normally the only client, so there's ample headroom.
+      // making 1-3 queries). Do not cap the pool at 4. Those requests queue
+      // for a free connection and the page waits on the queue after each
+      // query is already fast. Postgres defaults to max_connections=100 and
+      // this process is normally the only client, so there's ample headroom.
       max: 20,
       // Surface connectivity problems as request-time errors, not hangs.
       connectionTimeoutMillis: 5_000,
@@ -30,9 +29,8 @@ export function getDbPool(databaseUrl: string): Pool {
       // queries build many small correlated subqueries (one per row) whose
       // *estimated* cost crosses jit_above_cost even though actual execution
       // touches almost no rows. Postgres then spends seconds JIT-compiling
-      // expression code for a query that runs in milliseconds without it
-      // (observed: a 63-row evidence-matrix query went from ~2.8s to
-      // ~150ms with JIT off, no query change). Passed as a startup
+      // expression code for a query that runs in milliseconds without it.
+      // Do not leave JIT on for these. Passed as a startup
       // parameter so it applies to every physical connection with no extra
       // per-connection round trip.
       options: "-c jit=off",

@@ -4,8 +4,9 @@ import { defineConfig } from "vitest/config";
 
 // Files that `vi.mock()` a module must run in their own worker: without
 // isolation a mock stays registered for every file that follows in that
-// worker. Everything else shares one module graph per worker, which is the
-// difference between ~520s and ~60s of module evaluation across the suite.
+// worker. Everything else shares one module graph per worker. Do not isolate
+// the files that do not mock. Module evaluation across the suite would
+// dominate the run.
 function listTestFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);

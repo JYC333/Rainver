@@ -958,15 +958,13 @@ export class PgSessionRepository {
    *
    * - **Inside a transaction** a collision is unrecoverable — the failed
    *   statement poisons the transaction, so every retry returns 25P02 and the
-   *   caller's whole unit of work is lost. The lock has to *prevent* it, and
-   *   here it does: measured 16 concurrent transactional appends completing
-   *   with zero retries and no duplicate position.
+   *   caller's whole unit of work is lost. The lock has to prevent it.
    * - **On a pool** this lock does nothing: each statement is its own
    *   transaction, so it is released before the insert runs. Nothing is
    *   poisoned there either, so `uq_messages_branch_position` plus
    *   `withBranchPositionRetry` handle the collision. The extra round trip
-   *   buys nothing on that path and is
-   *   kept only because the method cannot tell which kind of client it has.
+   *   buys nothing on that path. It stays because the method cannot tell
+   *   which kind of client it has.
    */
   private async lockConversationForAppend(spaceId: string, sessionId: string): Promise<boolean> {
     const locked = await this.db.query(
