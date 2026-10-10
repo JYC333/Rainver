@@ -450,12 +450,11 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
 /**
  * The workspace a verifier runs in, with the built-in host's path folded in.
  *
- * The same merge a launch needs, and for the same reason: the daemon on the
- * built-in host never ran `workspace add`, so a Location id alone resolves to
- * nothing there. A snapshot workspace names the Location without a path, and
- * taking it as-is made every verification on that host come back "no local
- * path registered" — reported, after two relabellings, as a Run that failed
- * its acceptance checks.
+ * The same merge a launch needs. The daemon on the built-in host never ran
+ * `workspace add`, so a Location id alone resolves to nothing there. A
+ * snapshot workspace names the Location without a path. Do not take it as-is.
+ * Every verification on that host would come back "no local path registered"
+ * and the Run would fail its acceptance checks.
  */
 function workspaceForVerification(port: HostExecutionPort): LaunchWorkspace | null {
   const relative = port.workspaceRelativePath ?? null;
@@ -941,7 +940,8 @@ export class RunOrchestrationService {
       // fresh `COALESCE(MAX+1, 0)` read per INSERT, so two overlapping
       // un-awaited calls for the same run can read the same max and collide
       // on `uq_run_events_space_run_event_index`. `serializeCalls`
-      // (routeUtils/common.ts) closes that race.
+      // (routeUtils/common.ts) orders them. Do not append those events
+      // concurrently.
       // No database-level lock is needed on top of it: run_events' uniqueness
       // is per-run, and tryAcquireExecutionLock already guarantees only one
       // process executes a given run, so this in-process chain is the whole
