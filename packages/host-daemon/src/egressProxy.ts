@@ -226,9 +226,9 @@ export async function startEgressProxy(
       return refuse(client, 407, "This Run is not authorized to use the host's egress proxy.");
     }
     const separator = target.lastIndexOf(":");
-    // `[::1]:443` is how a client writes an IPv6 literal; without stripping the
-    // brackets the host is never recognised as an address at all — which both
-    // broke every IPv6 target and skipped the block list for it.
+    // `[::1]:443` is how a client writes an IPv6 literal. Do not leave the
+    // brackets on. The host is never recognised as an address, so every IPv6
+    // target fails and the block list is skipped for it.
     const rawHost = separator > 0 ? target.slice(0, separator) : target;
     const host = rawHost.startsWith("[") && rawHost.endsWith("]") ? rawHost.slice(1, -1) : rawHost;
     const port = separator > 0 ? Number(target.slice(separator + 1)) : 443;

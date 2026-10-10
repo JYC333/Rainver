@@ -124,8 +124,8 @@ describe("a session option that disappears once the model is chosen", () => {
 /**
  * A session the runtime never answered a prompt in has no transcript on disk,
  * so resuming it fails with "no rollout found" — reported as an opaque
- * "Internal error" one turn *after* the one that actually broke. Verified on
- * the built-in host: the rollout file appears only for the turn that prompted.
+ * "Internal error" one turn after the turn that failed. The rollout file
+ * appears only for the turn that prompted.
  */
 describe("the vendor session a failed turn leaves behind", () => {
   const reachSession = (config: Parameters<typeof createCliConversationController>[0]["session_config"]) => {

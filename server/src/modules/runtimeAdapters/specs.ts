@@ -363,7 +363,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       permission_bypass_arg_template: [],
       permission_bypass_policy_key: "allow_permission_bypass",
     },
-    // claude-agent-acp 0.70 (read 2026-09-24): AskUserQuestion becomes a form
+    // claude-agent-acp 0.70: AskUserQuestion becomes a form
     // elicitation — one question in `message`, several as `question_<n>`
     // fields with the question in `description`.
     interaction: {
@@ -445,7 +445,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     // Codex's `mode` defaults to `agent`, which keeps its own sandbox and
     // approval gate. Inside the strict namespace that gate has nothing left to
     // protect and its policy makes the Run's own workspace read-only, so the
-    // one boundary is ours. Verified on the built-in host 2026-09-08.
+    // one boundary is ours.
     strict_session_config: [{ id: "mode", type: "select", value: "agent-full-access", category: "mode" }],
     model: {
       supports_model_override: false,
@@ -453,7 +453,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       provider_api: "openai_compatible",
     },
     permissions: { supports_permission_bypass: false },
-    // codex-acp 1.12 (read 2026-09-24): request_user_input becomes a form
+    // codex-acp 1.12: request_user_input becomes a form
     // elicitation whose generic `message` is "Codex needs your input to
     // continue."; each question is a field whose `title` is the question.
     interaction: {
