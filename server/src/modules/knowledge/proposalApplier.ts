@@ -339,7 +339,8 @@ const VALID_CLAIM_SOURCE_TRUST_LEVELS = new Set([
 
 
 // The ontology registry, the same set proposal creation validates against
-// (B12G); a second copy here let a proposal be accepted that could never apply.
+// (B12G). Do not keep a second copy here. A proposal could be accepted that
+// can never apply.
 const VALID_OBJECT_PROFILE_BASE_TYPES = new Set<string>(retrievableEntityTypes());
 const CREATE_OBJECT_PROFILE_STATUSES = new Set(["draft", "active"]);
 const OBJECT_PROFILE_RELATION_HINT_DIRECTIONS = new Set(["from", "to", "either"]);

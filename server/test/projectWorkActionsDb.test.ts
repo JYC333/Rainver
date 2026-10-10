@@ -805,8 +805,8 @@ describe("the executor band", () => {
 
   it("refuses a Project the model named that is not the Run's", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // Taking the Project from the input let an Agent write into one the person
-    // it acts for is not a member of.
+    // Do not take the Project from the input. An Agent could write into one
+    // the person it acts for is not a member of.
     const { executors } = executorsFor();
     await expect(executors.get("task.create" as SystemActionId)!(
       { project_id: OTHER_PROJECT, title: "Elsewhere" },
