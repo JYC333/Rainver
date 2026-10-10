@@ -1,8 +1,7 @@
 # Sources Custom Source Handlers
 
-Status: implemented through Phase 8 backend create-flow/proposal integration,
-first scan-job integration, and the Level 2 Source Recipe
-compatibility/test flow (2026-07-01). The schema, read models, runner, deterministic handler
+Status: backend create-flow, proposal integration, scan jobs, and the Level 2
+Source Recipe path are implemented. The schema, read models, runner, deterministic handler
 generation, fixture tests, inside-envelope activation, handler-run history,
 manual/scheduled scan queueing, trusted endpoint fetch path, Custom Source
 proposal payloads/appliers, Source Recipe plan/create/dry-run/activate
@@ -175,8 +174,7 @@ The implemented settings API keeps that ownership split explicit:
 
 ## Runner Expectations
 
-The first implementation should prefer TypeScript/Node handlers. Python may be
-evaluated later, but it increases dependency and environment risk.
+The runner executes TypeScript/Node handlers. Python handlers are not implemented.
 
 The runner must execute generated code in a separate process with a temporary
 sandbox, minimal environment, controlled network, no repository write access, no
@@ -187,7 +185,7 @@ treated as active isolation until it is implemented.
 If runner support is disabled or unavailable, Custom Source execution fails
 closed.
 
-### Phase 4 implementation status
+### Runner
 
 `server/src/modules/sources/customSources/customSourceRunner.ts` implements: separate
 OS-process execution (`node:child_process.spawn`, `shell: false`), a
@@ -232,7 +230,7 @@ verifies via `realpath` that the fully resolved path — including any
 symlinked intermediate directory under `files/` — stays inside the
 sandbox `files/` root, before the materializer ever reads or copies it.
 
-### Phase 5 implementation status
+### Create flow
 
 `server/src/modules/sources/customSources/customSourceCreateFlowService.ts` implements the
 backend draft -> generate-handler -> test-handler -> activate flow. Handler
@@ -360,8 +358,8 @@ Execution dispatch: `customSourceHandlerExecution.ts`'s
 `testHandler` and the scan worker's `runOne` — `typescript_node` resolves the
 stored source artifact and runs `CustomSourceRunner`; `declarative_pipeline_v1`
 parses `manifest_json.pipeline` and runs `runCustomSourcePipeline`. Both
-return the same `CustomSourceRunnerResult` shape, so the Phase 3 contract
-validator and materializer are unchanged and shared by both models.
+return the same `CustomSourceRunnerResult` shape, so the contract
+validator and materializer are shared by both models.
 
 Schema: `source_handler_versions.language`'s `CHECK` constraint in
 `server/migrations/0000_baseline.sql` allows both `typescript_node` and
@@ -370,9 +368,9 @@ Schema: `source_handler_versions.language`'s `CHECK` constraint in
 
 ## Level 2 Source Recipes
 
-Status: implemented through Phase 8 (`server/src/modules/sources/sourceRecipes/`,
+Status: `server/src/modules/sources/sourceRecipes/`,
 `server/src/modules/sources/sourceRecipeRoutes.ts`, and the compatibility
-bridge; backend only, with no web page wired to it).
+bridge. Backend only; no web page calls these APIs.
 
 Source Recipes are the normal configurable source path. They do not execute
 generated code. A recipe version stores structured JSON over a fixed primitive
@@ -715,8 +713,8 @@ broken by this job. Only the artifact (file + `artifacts` row) and
 is kept for audit/history. `declarative_pipeline_v1` versions have no
 artifact to prune (their pipeline definition lives in `manifest_json`).
 
-**Fail-closed behavior** (already covered by existing tests, listed here for
-an operator's reference, not newly added by Phase 12): runner disabled
+**Fail-closed behavior** (covered by the runner tests, listed here for
+an operator's reference): runner disabled
 (`runner_disabled`), handler language not in the instance allowlist
 (`language_not_allowed`), and browser automation/shell/dependency
 installation requests (unconditionally refused regardless of instance

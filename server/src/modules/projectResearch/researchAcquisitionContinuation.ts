@@ -2,8 +2,8 @@ import type { ConversationContinuationRegistry, ProposalContinuation } from "../
 import type { Queryable } from "../routeUtils/common.js";
 
 /**
- * Room continuations for the `research.start_acquisition` pipeline
- * (room-advancement-reliability-plan Phase 4). Two event kinds:
+ * Room continuations for the `research.start_acquisition` pipeline.
+ * Two event kinds:
  *
  * - `research_pipeline_outcome` (key = `<thread id>:<pipeline job id>`, so a
  *   retry reports its own outcome instead of being answered with the previous

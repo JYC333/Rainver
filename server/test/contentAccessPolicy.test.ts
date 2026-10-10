@@ -53,8 +53,8 @@ describe("content access policy matrix (member/grant, no oversight)", () => {
     ["space_shared", "full", GRANTEE, [grant("summary")], "full"],
     ["selected_users", "full", MEMBER, [], "deny"],
     ["selected_users", "full", GRANTEE, [grant("full")], "full"],
-    // selected_users grants are authoritative — no longer narrowed by the
-    // resource's own access_level (semantic change vs. the pre-upgrade model).
+    // selected_users grants are authoritative. The resource's own access_level
+    // does not narrow them.
     ["selected_users", "summary", GRANTEE, [grant("full")], "full"],
     ["selected_users", "full", GRANTEE, [grant("summary")], "summary"],
   ] as const)(

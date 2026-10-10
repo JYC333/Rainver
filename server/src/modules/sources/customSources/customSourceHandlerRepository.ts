@@ -451,7 +451,7 @@ export class PgCustomSourceHandlerRepository {
   /**
    * Combined Source Detail read model: active handler version (if any),
    * most recent run, repair status, recent run failure-class breakdown, and
-   * any pending proposal blocking activation. Phase 12 hardening: this is
+   * any pending proposal blocking activation. This is
    * the single read call an operator/admin needs to answer "why is this
    * source disabled, blocked, or proposal-gated" without cross-referencing
    * `handler-versions`/`handler-runs`/`proposals` separately.

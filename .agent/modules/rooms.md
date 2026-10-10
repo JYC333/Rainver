@@ -207,8 +207,7 @@ Room conversation summaries:
   research-execution tool its Room allowance currently grants, not to ask
   which part to start or turn the instruction into another confirmation
   loop. Two tools are granted: `agent.delegate` to an available Research
-  specialist for an ad hoc investigation, and `research.start_acquisition`
-  (plan Phase 4) to start a tracked, monitored acquisition Workflow directly
+  specialist for an ad hoc investigation, and   `research.start_acquisition` to start a tracked, monitored acquisition Workflow directly
   — a background pipeline (question assessment → query evaluation → strategy
   materialization/activation → initial intake) that reports back through the
   same completion-event mechanism `agent.delegate` uses. The two are not
@@ -223,7 +222,7 @@ Room conversation summaries:
   posts a `ConversationContinuationRegistry` event continuation
   (`agent_delegation_result`) the moment nothing is left waiting on that
   child, so the Room does not go silent just because the Manager chose not
-  to block (plan Phase 3). A child that changed files carries its `[Changes]`
+  to block. A child that changed files carries its `[Changes]`
   block (file list with counts and a `rainver://artifacts/<id>` link, never
   the patch) in the delegation result itself — in a Room only, since only a
   Room turn has the resource tools to follow the link — so the `delegation_result`
@@ -541,7 +540,7 @@ The send freezes saved/draft bytes into an immutable message resource without
 putting the body in the prompt. The Agent reads that resource lazily through
 the Run-scoped `input_resource.read/search` tools.
 
-## Project state context (Phase A)
+## Project state context
 
 `RoomService.sendMessage` builds a domain-neutral "Project state" text block
 once per dispatch (`buildRoomProjectStateContext`, `rooms/service.ts`) from
@@ -551,8 +550,7 @@ and the Task the person is looking at, see `PROJECT_WORK.md`), and prefixes it o
 every recipient run's prompt (`roomRunPrompt`,
 `agentGroups/service.ts`). It never reads a specific domain's tables and fails
 open to no prefix on any error, so a Project state read never blocks sending a
-message. This is the mechanism behind the retired conversational-advancement
-plan's decision 3: the Room agent's contract stays domain-neutral, and a Mode/domain extends what the
+message. The Room agent's contract stays domain-neutral, and a Mode/domain extends what the
 agent knows by registering with the Overview/attention registries, not by the
 Room learning about it.
 
@@ -564,8 +562,7 @@ Room agents are explicitly instructed not to collapse these two states.
 
 Agent-drafted changes that still wait for a person (see
 `project.propose_definition` and `inquiry.promote_knowledge` in
-`architecture/SYSTEM_ACTIONS.md`; opening a Thread and recording a conclusion
-no longer do) surface back
+`architecture/SYSTEM_ACTIONS.md`) surface back
 into the conversation as an inline Proposal review card
 (`modules/conversation/ActionPreviewCard.tsx`, used by Room, Project sidecar,
 and direct Agent chat), reusing
@@ -815,7 +812,7 @@ scrolls messages inside a viewport-height card; Project state remains a narrow
 supporting rail. Runtime/backend controls are collapsed under Run settings so
 they do not compete with the message history and composer.
 
-## Project state panel (Phase B)
+## Project state panel
 
 `AgentGroupsPage.tsx`'s Room view renders `RoomProjectStatePanel` beside the
 conversation, fetched once per Room load via the same
@@ -828,18 +825,12 @@ fetch failure degrades to
 awareness, not a second command surface — the panel has no actions of its
 own, only links out.
 
-The Inquiry kind→stage vocabulary (`StageId`, `STAGE_ORDER`, `STAGE_LABELS`,
-`STAGE_HELP`, `STAGE_FOR_KIND`, `kindsInStage`) moved from
-`apps/web/src/modules/projects/inquiryArea/stages.ts` into
-`packages/protocol/src/inquiry.ts` (as `Inquiry*`-prefixed exports;
-`stages.ts` re-exports the original names as aliases so its four page
-consumers are unchanged) so a future non-frontend consumer of this
-classification — a per-Thread "stage" line in the Room's Project state
-context, or a Project-level stage rollup — shares one definition instead of a
-second copy. No such consumer exists yet: a Project-level stage rollup was
-scoped out of Phase B (it would need new aggregation across a Project's open
-Threads, which is not the "small mapping move" this phase is) and stays a
-deferred item pending real usage evidence.
+The Inquiry kind→stage vocabulary lives in `packages/protocol/src/inquiry.ts`
+(`InquiryStageId`, `INQUIRY_STAGE_ORDER`, `INQUIRY_STAGE_LABELS`,
+`INQUIRY_STAGE_HELP`, `INQUIRY_STAGE_FOR_KIND`, `inquiryKindsInStage`).
+`apps/web/src/modules/projects/inquiryArea/stages.ts` re-exports those as
+`StageId`, `STAGE_ORDER`, `STAGE_LABELS`, `STAGE_HELP`, `STAGE_FOR_KIND`.
+Do not keep a second copy of that vocabulary.
 
 ## Thread References
 

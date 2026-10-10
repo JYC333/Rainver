@@ -52,7 +52,7 @@ import {
 } from "../capturePolicy.js";
 
 /**
- * Phase 5 create-flow: draft -> generate -> test -> activate. Owns every
+ * Create-flow: draft -> generate -> test -> activate. Owns every
  * write to `source_handler_versions` and the `source_connections` handler
  * pointers; `customSourceHandlerRepository.ts` stays a read model.
  *
@@ -515,7 +515,7 @@ export class CustomSourceCreateFlowService {
   // --- internals ---
 
   /**
-   * Phase 12 hardening: bounds how often one connection can trigger a real
+   * Bounds how often one connection can trigger a real
    * handler generation (a validation pass, an artifact write, and — for
    * repair — a fixture test run against the live/fixture endpoint). Repair
    * goes through this same check since it calls `generateHandler`

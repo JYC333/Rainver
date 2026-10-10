@@ -12,8 +12,7 @@ import { ResearchOperationCancelService } from "./researchOperationCancel.js";
 import { assertProjectReadable } from "../projects/access.js";
 
 /**
- * `research.start_acquisition` (action authority consolidation plan, P1.3;
- * originally room-advancement-reliability-plan Phase 4): unlike a generic
+ * `research.start_acquisition`: unlike a generic
  * proposal executor, this is direct-execution, so the executor calls
  * `ResearchAcquisitionService` rather than a proposal service. Room origin
  * is resolved from the Run's own agent-group membership — the same lookup

@@ -472,8 +472,8 @@ System-level delegation runs through ACP Agent Runs inside an
 `AgentRunGroup`: `agent.delegate` and `agent.wait_for_results` are exposed
 through the Rainver work surface and policy boundary. A runtime may also create
 runtime-internal subagents, which are not represented as Rainver Agent Runs and
-do not receive independent Run attribution. The Host-daemon path currently
-skips the legacy subagent-deny config writer; therefore its static capability
+do not receive independent Run attribution. The Host-daemon path does not
+apply a vendor subagent-deny declaration, so its static capability
 declarations do not prove that runtime-internal delegation is disabled. CLI
 candidates remain at their low effective-trust baseline until a restriction is
 actually applied and verified at the Host boundary.

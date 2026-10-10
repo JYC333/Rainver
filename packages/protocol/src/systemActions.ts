@@ -522,11 +522,10 @@ export const SYSTEM_ACTION_REGISTRY = [
   // compares it for equality (see `acceptAgentProposalIfGranted`), and this
   // action is not wired into that auto-apply path in this phase.
   gatedProposalAction("inquiry.promote_knowledge", "Propose promoting a concluded Inquiry round to Knowledge", "inquiry", "KnowledgePromotionCandidateService.proposeFromThreadForAgent", "inquiry.knowledge.promote", "knowledge_create", "exposure"),
-  // Direct execution, no proposal gate (room-advancement-reliability-plan
-  // Phase 4) — the Thread was already human-accepted at creation; starting
-  // acquisition on it is execution, not an agent-drafted structure/content
-  // write. The human confirmation gate is replaced by hard idempotency
-  // guards in the acquisition service.
+  // Direct execution, no proposal gate. The Thread was already
+  // human-accepted at creation, so starting acquisition on it is execution,
+  // not an agent-drafted structure/content write. Idempotency guards in the
+  // acquisition service are the confirmation.
   agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
   // The symmetric stop for the action above. Direct execution for the same
   // reason: a stop that waits on a proposal review is not a stop.

@@ -29,7 +29,7 @@ describe("researchAcquisitionPipelineDb", () => {
   const CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 
   // Real-Postgres coverage for the background pipeline behind
-  // `research.start_acquisition` (room-advancement-reliability-plan Phase 4):
+  // `research.start_acquisition`:
   // bare accepted Thread -> a running Operation, with the FINER-assessment
   // gate and the Room continuation events. Only the live LLM (question
   // assessment) and live multi-provider search (query evaluation) are faked —
@@ -438,8 +438,8 @@ describe("researchAcquisitionPipelineDb", () => {
 });
 
 describe("researchAcquisitionServiceDb", () => {
-  // Real-Postgres coverage for the synchronous half of `research.start_acquisition`
-  // (room-advancement-reliability-plan Phase 4): Thread validation, the
+  // Real-Postgres coverage for the synchronous half of `research.start_acquisition`.
+  // Thread validation, the
   // "already starting" idempotency guard, and the enqueued job payload shape.
   // The pipeline itself (assessment -> evaluate -> activate -> startInitialIntake)
   // is covered in researchAcquisitionPipelineDb.test.ts.

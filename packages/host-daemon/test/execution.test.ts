@@ -537,9 +537,9 @@ describe("handleLaunch", () => {
 });
 
 describe("handleLaunch with a provider binding", () => {
-  // The end of the path that shipped inert once: the frame arrives, and the
-  // child either runs against the backend the control plane chose or against
-  // this machine's own login. Only the spawned environment can tell them apart.
+  // The frame arrives, and the child either runs against the backend the
+  // control plane chose or against this machine's own login. Only the spawned
+  // environment can tell them apart.
   it("runs the child against the injected backend and none of this machine's", async () => {
     const { frames, send, complete } = collectSend();
     process.env.ANTHROPIC_API_KEY = "sk-this-machine";

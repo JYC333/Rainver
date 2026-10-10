@@ -15,7 +15,7 @@ the product schema. Runtime selection uses the Agent's selected/default
 `AgentRuntimeProfile`, which is snapshotted onto each Run.
 
 Do not treat declarative subagent-control or trust metadata as enforcement.
-The current Host-daemon launch does not apply the legacy server-local deny
+The Host-daemon launch does not apply a server-local deny
 configuration; those claims do not raise the effective trust level. Rainver
 still owns tool grants, policy decisions and the Host isolation boundary.
 

@@ -21,10 +21,9 @@
  *   reference, limits). Selector/step changes live in `recipe_json` and are
  *   never a permission delta; policy review only compares the envelope.
  * - The bounded dry-run result and per-step execution trace.
- * - The `source_runs` product read model. Decision (Phase 2): `source_runs`
- *   starts as a read model over `extraction_jobs` and `source_handler_runs`
- *   (plus recipe dry-run results stored on recipe versions), not a physical
- *   table. It becomes a table only if the union query proves insufficient.
+ * - The `source_runs` product read model. It is a read model over
+ *   `extraction_jobs` and `source_handler_runs` (plus recipe dry-run results
+ *   stored on recipe versions), not a physical table.
  *
  * Recipe output items reuse `CustomSourceHandlerOutputItemSchema`; both
  * levels materialize through the same server-side contract validator and

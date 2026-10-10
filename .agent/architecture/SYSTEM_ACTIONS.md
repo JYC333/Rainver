@@ -743,7 +743,7 @@ for rather than living only in `jobs.result_json`. Every domain failure
 reports its own message; there is no catch-all remap of 409s.
 
 Completion reports back through the `ConversationContinuationRegistry` event
-side (Phase 3): `research_pipeline_outcome` (keyed by `<thread id>:<pipeline
+side: `research_pipeline_outcome` (keyed by `<thread id>:<pipeline
 job id>`, so each run reports its own outcome and a retry is never silently
 answered with the previous attempt's message) covers
 acquisition started, the question failing its FINER assessment (a first-class

@@ -208,7 +208,7 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
   })
 
   it('shows a repair state, and writes nothing, when the saved default Provider is gone', async () => {
-    // Plan Phase 4 §4: a deleted or disabled Provider must produce a visible
+    // A deleted or disabled Provider must produce a visible
     // repair state for future provisioning, never a silent native fallback.
     listMock.mockResolvedValue([])
     // The server derives the repair state from the grant ∧ enabled join that

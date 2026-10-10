@@ -102,12 +102,12 @@ interface SearchInput {
   /** Managed-run agent id. Source connection consent may restrict agent access. */
   agentId?: string | null;
   /**
-   * Opt in to conservative adaptive return (§2.4): trim the visible tail at a
+   * Opt in to conservative adaptive return: trim the visible tail at a
    * sharp score cliff so a precise answer is not padded with weak results. Never
    * grows the set; defaults off (the caller/surface opts in).
    */
   adaptiveReturn?: boolean;
-  /** Runtime ranking mechanics that have passed calibration and shipped for the space. */
+  /** Runtime ranking mechanics that have passed calibration and are active for the space. */
   rankingConfig?: RetrievalRuntimeRankingConfig;
   /** Internal audit classification for callers that reuse search as a read subroutine. */
   auditAccessType?: string;
@@ -240,7 +240,7 @@ export interface RetrievalSearchServiceOptions {
   // query string (no candidate content, no access surface); the original query
   // is always searched, so rewrite only adds recall and degrades safely.
   queryRewriter?: QueryRewriter;
-  // Post-revalidate synthesizer for buildBrief (W6). Like the reranker, it only
+  // Post-revalidate synthesizer for buildBrief. Like the reranker, it only
   // ever sees live-revalidated content; when absent or failing, buildBrief still
   // returns the sources + the deterministic gap analysis (no LLM answer).
   synthesizer?: Synthesizer;
@@ -329,12 +329,12 @@ export class RetrievalSearchService {
   }
 
   /**
-   * Build a Context Brief (W6): the same revalidated, ranked sources as `search`,
+   * Build a Context Brief: the same revalidated, ranked sources as `search`,
    * plus an optional synthesized + cited answer and a gap analysis. The synthesis
    * stage is optional and skippable — with no synthesizer (or on failure) the
    * brief still returns the sources and the deterministic gap analysis. Citations
-   * are validated against the surfaced sources; gap findings are advisory output
-   * (W7 consumes them as review candidates), never silent canonical writes.
+   * are validated against the surfaced sources; gap findings are advisory output,
+   * never silent canonical writes.
    */
   async buildBrief(input: SearchInput): Promise<RetrievalBriefResponse> {
     const c = this.deriveControls(input);
@@ -494,7 +494,7 @@ export class RetrievalSearchService {
 
     // Graph recall seeds from every DIRECT match the viewer can actually read
     // (exact + lexical + vector), not just exact-title hits — so relational recall
-    // works for free-text queries too (W4). Seeds are revalidated here and the
+    // works for free-text queries too. Seeds are revalidated here and the
     // traversal revalidates every hop, so a non-visible seed/intermediate node can
     // never surface its neighbors (invariant 4); expansion starts only from
     // visible nodes. The cache is reused by the post-fusion revalidation below.
@@ -559,7 +559,7 @@ export class RetrievalSearchService {
       controls.runtimeRankingConfig,
       trace,
     );
-    // §2.8 aggregate telemetry: the ranking-stage score distribution over the
+    // Aggregate telemetry: the ranking-stage score distribution over the
     // visible set, plus boost-axis attribution. Counts only — no ids/titles.
     trace.score_buckets = scoreBucketHistogram(visible);
     if (Object.keys(rankingTelemetry.boost_attribution).length > 0) {
@@ -588,7 +588,7 @@ export class RetrievalSearchService {
         candidates: visible,
       });
     }
-    // Adaptive return (§2.4): opt-in trim of the visible tail at a sharp score
+    // Adaptive return: opt-in trim of the visible tail at a sharp score
     // cliff, after rerank/feedback have settled the final order.
     if (controls.adaptiveReturn) {
       visible = applyAdaptiveReturn(visible, trace);
@@ -964,7 +964,7 @@ export class RetrievalSearchService {
   }
 
   /**
-   * Bounded, breadth-first multi-hop graph recall (W4). Starting from the visible
+   * Bounded, breadth-first multi-hop graph recall. Starting from the visible
    * seeds, it walks typed `retrieval_edges` up to `GRAPH_MAX_HOPS`, surfacing each
    * neighbor as a first-class candidate (fused into RRF, not just a boost).
    *
@@ -1349,7 +1349,7 @@ export class RetrievalSearchService {
     // The `nearest` CTE computes pgvector cosine distance, narrowing by space,
     // object type, and embedding_dimensions, over-fetches chunks, dedups to the
     // best chunk per object, then joins retrieval_objects only for the final
-    // set's title. For ANN-indexed dimensions (W5) it casts to `halfvec` with a
+    // set's title. For ANN-indexed dimensions it casts to `halfvec` with a
     // CONSTANT dimension and a literal `embedding_dimensions = D` predicate so the
     // partial HNSW index (ix_retrieval_chunks_embedding_hnsw_D) is used; other
     // dimensions fall back to the exact `vector` scan. `queryDimensions` is a
@@ -1430,7 +1430,7 @@ export class RetrievalSearchService {
       updatedAt: row.updated_at ?? null,
       sourceConnectionIds: sourceConnectionIdsFromJson(row.source_connection_ids_json),
       // Carried separately from evidence.confidence for the post-RRF cosine blend
-      // (§2.3), since fusion may overwrite this candidate's evidence.
+      // since fusion may overwrite this candidate's evidence.
       vectorSimilarity: similarityFromDistance(Number(row.distance)),
     }));
   }
@@ -1575,7 +1575,7 @@ export class RetrievalSearchService {
     // (invariant 1). `visible` should always have a cache entry (collectVisible kept
     // exactly those); the guard is defensive so a future cache change can't leak the
     // projection text or throw mid-search.
-    // §2.6 token budget: truncate per-candidate text and stop sending text once the
+    // Token budget: truncate per-candidate text and stop sending text once the
     // running total reaches the payload cap, so a few very long revalidated texts
     // cannot blow the provider payload. Truncates only already-visible text.
     const perItemCap = this.rerankConfig.maxCandidateTextChars;
@@ -1748,7 +1748,7 @@ function objectProfileMatches(
   return Boolean(candidate.objectProfile && objectProfiles.includes(candidate.objectProfile));
 }
 
-/** Aggregate-safe histogram of the visible candidates' final scores (§2.8). */
+/** Aggregate-safe histogram of the visible candidates' final scores. */
 function scoreBucketHistogram(visible: readonly ScoredCandidate[]): Record<string, number> {
   const buckets: Record<string, number> = {};
   for (const candidate of visible) {
@@ -1758,7 +1758,7 @@ function scoreBucketHistogram(visible: readonly ScoredCandidate[]): Record<strin
   return buckets;
 }
 
-/** Count windowed candidates whose position changed after rerank (§2.8 aggregate). */
+/** Count windowed candidates whose position changed after rerank. */
 function countMoved(
   before: readonly ScoredCandidate[],
   after: readonly ScoredCandidate[],

@@ -865,9 +865,8 @@ describe("which runs get a runtime profile at all", () => {
 });
 
 describe("executeRemoteHostCliAdapter with a bound run", () => {
-  // The other end of the path that shipped inert: what the server actually
-  // puts on the wire, and whether the lease it issued stops working when the
-  // run ends.
+  // What the server puts on the wire, and whether the lease it issued stops
+  // working when the run ends.
   it("fails closed when the selected Runtime Profile provider is no longer available", async () => {
     setProviderProxyBaseUrlForProcess("http://server:8021", "http://control-plane:8021");
     // A removed Profile provider must not silently substitute the host's

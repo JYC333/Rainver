@@ -6,7 +6,7 @@
  * Credential pools: a provider holds 1→N encrypted Credentials
  * through `model_provider_credentials` rows. The primary credential
  * (`model_providers.credential_id`) is lazily enrolled as the position-0 pool
- * member, so pre-pool rows keep working without a data migration and all
+ * member, so a provider that only has `credential_id` keeps resolving, and all
  * rotation/health state lives in one place. Failure state is self-healing:
  * a failed key gets `cooldown_until` (never a permanent dead flag), and
  * selection simply skips cooling keys. `healthy=false` marks auth-class
@@ -313,7 +313,8 @@ class PgProviderCommandStore implements ProviderCommandStore {
 
   /**
    * Ensure the primary credential (`model_providers.credential_id`)
-   * has a position-0 pool row, so pre-pool providers keep working and all
+   * has a position-0 pool row, so a provider that only has `credential_id`
+   * keeps resolving and all
    * health state is tracked uniformly.
    */
   private async enrollPrimaryCredential(row: ProviderRow): Promise<void> {

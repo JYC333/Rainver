@@ -45,10 +45,8 @@ const RUN_TERMINAL_SQL_LIST = HARD_TERMINAL_RUN_STATUSES.map((status) => `'${sta
  * - **The pass Execution** — left `queued`/`running` it stays a live pass
  *   nothing will ever finish.
  *
- * Cancel also resolves the Operation's still-pending checkpoints: pre-reform
- * the checkpoint decision *was* the stop lever, so stopping resolved the row
- * as a side effect; with an independent cancel, a surviving pending gate
- * keeps the web UI advertising a review whose approval would no-op.
+ * Cancel also resolves the Operation's still-pending checkpoints. A surviving
+ * pending gate keeps the web UI advertising a review whose approval would no-op.
  *
  * Everything here is idempotent by construction: `cancelRun` skips Runs that
  * already reached terminal, and every UPDATE is filtered on non-terminal

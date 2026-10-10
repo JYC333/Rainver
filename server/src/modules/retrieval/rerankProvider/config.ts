@@ -1,5 +1,5 @@
 /**
- * Hybrid-retrieval (Phase 2, step 8) reranking configuration.
+ * Hybrid-retrieval reranking configuration.
  *
  * The reranker is a space-setting-gated, skippable LLM stage. It routes through the same
  * provider task-policy + credential channel (ADR 0008) as the other auxiliary

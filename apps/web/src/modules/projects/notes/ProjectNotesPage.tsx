@@ -40,7 +40,7 @@ export default function ProjectNotesPage() {
     setProviders([])
     setError(null)
     // The folder is created on first visit rather than at project creation, so
-    // a Project made before this surface existed still has one when opened.
+    // opening a Project always has one.
     void Promise.all([
       notesCollectionsApi.ensureForProject(projectId),
       providersApi.list().catch(() => [] as ModelProviderOut[]),

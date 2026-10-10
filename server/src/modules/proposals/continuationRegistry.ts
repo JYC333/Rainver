@@ -40,7 +40,7 @@ type ProposalContinuationHandler = (input: {
 }) => Promise<ProposalContinuation> | ProposalContinuation;
 
 /**
- * A domain-completion event (plan Phase 3) — the registry's second trigger
+ * A domain-completion event — the registry's second trigger
  * source alongside a resolved Proposal. `kind` selects the registered
  * handler; `key` is the idempotency key the caller uses to dedupe repeated
  * reconciliation of the same completion (e.g. a delegation id, an

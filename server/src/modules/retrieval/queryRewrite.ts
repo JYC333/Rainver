@@ -1,7 +1,7 @@
 import { normalizeAlias } from "./normalize.js";
 
 /**
- * Pre-recall query rewriting stage (Phase 2, step 8).
+ * Pre-recall query rewriting stage.
  *
  * Query rewriting is a NON-deterministic LLM stage that operates on the query
  * STRING ONLY — it never touches candidate content, so it has no access-control

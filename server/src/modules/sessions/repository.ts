@@ -914,9 +914,9 @@ export class PgSessionRepository {
     return result.rows[0] ? messageToOut(result.rows[0]) : null;
   }
 
-  /** The event-triggered sibling of `findRoomProposalContinuation` (plan
-   * Phase 3): dedupes a domain-completion continuation by (event kind,
-   * event key) instead of a Proposal id. */
+  /** The event-triggered sibling of `findRoomProposalContinuation`. Dedupes a
+   * domain-completion continuation by (event kind, event key) instead of a
+   * Proposal id. */
   async findRoomEventContinuation(
     spaceId: string,
     userId: string,

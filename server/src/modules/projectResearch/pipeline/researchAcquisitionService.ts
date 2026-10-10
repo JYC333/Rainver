@@ -27,7 +27,7 @@ type StartResearchAcquisitionResult =
   | { status: "already_starting"; thread_id: string };
 
 /**
- * The synchronous half of `research.start_acquisition` (Phase 4): validates
+ * The synchronous half of `research.start_acquisition`: validates
  * the target Thread, applies the "already starting" idempotency guard, and
  * enqueues the background pipeline job. It does not itself run any stage of
  * the pipeline (assessment, evaluate, activate, startInitialIntake) — those

@@ -3,7 +3,7 @@ import { ConversationContinuationRegistry } from "../src/modules/proposals/conti
 import { registerResearchAcquisitionContinuation } from "../src/modules/projectResearch/researchAcquisitionContinuation.js";
 
 // Pure-unit coverage for the continuation handlers behind
-// `research.start_acquisition` (room-advancement-reliability-plan Phase 4).
+// `research.start_acquisition`.
 // The real-Postgres pipeline test (researchAcquisitionPipelineDb.test.ts)
 // exercises the pipeline calling into this registry; full end-to-end message
 // posting additionally requires a working conversation backend (an

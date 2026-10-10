@@ -163,9 +163,7 @@ export class SpaceAssistantService {
   /**
    * Bring every seed-following Assistant up to the current seed.
    *
-   * Without this a seed change reached a Project's Assistant only when someone
-   * next created a Room there — so a prompt shipped in one release stayed
-   * unapplied on every Assistant that already existed. Runs at boot, once;
+   * A seed change applies to Assistants that already exist. Runs at boot, once;
    * it is idempotent (an instance already at the seed produces no version) and
    * it skips, rather than fails on, an instance whose Project has no eligible
    * backend for its owner. A detached instance is left alone by the same rule

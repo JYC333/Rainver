@@ -28,12 +28,9 @@ const TURN_BUSY_RETRY_DELAY_MS = 2_000;
 
 /**
  * Default provider set and search budget for a Room-invoked acquisition
- * start (no per-call tuning surface — room-advancement-reliability-plan
- * Phase 4 decision 5). Mirrors `ResearchSetupDialog`'s own untouched
- * defaults: `web_search` is deliberately excluded, since there is no single
- * unambiguous credential to select on the model's behalf. Auto-selecting
- * these per invocation is a recorded follow-up (backlog R1.2), not this
- * phase.
+ * start. There is no per-call tuning surface. Mirrors `ResearchSetupDialog`'s
+ * untouched defaults: `web_search` is deliberately excluded, since there is no
+ * single unambiguous credential to select on the model's behalf.
  */
 const DEFAULT_PROVIDERS: Array<"arxiv" | "openalex" | "semantic_scholar" | "web_search"> = ["arxiv", "openalex"];
 const DEFAULT_CANDIDATE_BUDGET = 1000;
@@ -70,7 +67,7 @@ interface PipelinePayload {
  * false for anything that should fall through to the job queue's own
  * attempt/backoff retry. Semantic failures are never auto-retried — retrying
  * a bad question or a genuine 409 conflict a hundred times does not change
- * the outcome (plan Phase 4 decision 5). */
+ * the outcome. */
 function isDomainError(error: unknown): error is HttpError {
   return error instanceof HttpError && error.statusCode < 500;
 }

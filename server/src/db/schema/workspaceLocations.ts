@@ -83,8 +83,7 @@ export const workspaceLocations = pgTable("workspace_locations", {
 	// A Folder has one and only one dispatchable checkout. Historical and newly
 	// discovered copies remain archived/stale until an explicit promotion.
 	uniqueIndex("uq_workspace_locations_one_active_per_folder").using("btree", table.projectFolderId.asc().nullsLast()).where(sql`status = 'active'`),
-	// Carries forward `project_folders`' pre-P1 invariant (`uq_project_folders_space_root_path`):
-	// two Locations in the same Space must not claim the same server-host path.
+	// Two Locations in the same Space must not claim the same server-host path.
 	uniqueIndex("uq_workspace_locations_space_root_path").using(
 		"btree",
 		table.spaceId.asc().nullsLast(),

@@ -20,9 +20,9 @@ import { hasDeclaration } from "./linkTypes.js";
  */
 /**
  * What a proposal-creating seam is handed. Stated here rather than typed as a
- * bag so a mismatch between this module and its host is a compile error: the
- * seams were originally cast through `as never`, which would have accepted a
- * transposed argument or a changed return silently.
+ * bag so a mismatch between this module and its host is a compile error.
+ * Do not cast this through `as never`: that would accept a transposed
+ * argument or a changed return silently.
  */
 interface OntologyProposalInput {
   proposalType: string;

@@ -24,8 +24,7 @@ database authority. ACP Agent prompts receive authorized context through
 Runtime Context Delivery, not by serializing the whole envelope into a second
 prompt channel.
 
-The legacy server-local CLI Run Exchange is not used by current Agent Runs:
-selectable Agent runtimes execute through ACP on a Host daemon. Declared output
+Selectable Agent runtimes execute through ACP on a Host daemon. Declared output
 artifacts are collected from the execution Host and checked against the Run's
 output contract. Missing or invalid required outputs fail the Run; undeclared
 files cannot satisfy a declaration.
@@ -380,10 +379,9 @@ enabled `ValidationRecipe`/profile checks, adapter output, materialization
 summaries, and the live sandbox. Supported deterministic checks are
 `command`, `test`, `lint`, `typecheck`, `file_exists`, `file_changed`,
 `diff_scope`, `artifact_exists`, `artifact_schema`, `output_schema`,
-`proposal_created`, and `no_forbidden_change`. Code-patch collection now
+`proposal_created`, and `no_forbidden_change`. Code-patch collection
 records structural validation metadata and the engine verifies changed files
-and forbidden-path boundaries; the proposal payload no longer claims that
-patch validation is skipped.
+and forbidden-path boundaries.
 
 Command execution and Git inspection use the typed `command_run` host frame,
 with one workspace identity and recipe argv. There is no shell or ambient
@@ -406,7 +404,7 @@ space-scoped result read model.
 
 `runs` is the logical execution record; `run_attempts` is the physical
 execution record. The first dispatch claims a pre-created queued attempt when
-available, while legacy runs are backfilled as attempt 1. A retry never creates
+available. A Run with no attempt row is recorded as attempt 1. A retry never creates
 a second logical Run: it records the completed attempt, writes an idempotent
 `run_supervisor_decisions` row, and queues the next attempt. When C2 has a
 persisted fallback chain, the next untried eligible profile is selected and
@@ -462,8 +460,8 @@ The runtime registry exposes `AgentRuntimeDefinition`s for selectable ACP
 runtimes. One `AcpRuntimeAdapter` and `AcpController` implement Agent execution;
 runtime definitions provide command, installation, backend and capability
 facts. Static runtime capability declarations are not dynamic conformance
-evidence. In particular, the Host-daemon path does not currently apply the
-legacy generated subagent-deny config, so local CLI candidates stay at low
+evidence. The Host-daemon path does not apply a vendor subagent-deny
+declaration, so local CLI candidates stay at low
 effective trust until that control is enforced at the Host boundary.
 
 Workflow definitions are versioned through the evolvable-asset control plane.
@@ -500,8 +498,8 @@ over-ceiling quota refuses admission. The decision callback, domain-budget
 check, Run/link creation, and audit persistence share one transaction.
 Autonomous execution permission snapshots remove `authorization.request` and
 all side-effecting system actions, so unattended work cannot park itself for a
-new interactive grant. A scheduled recovery task cancels any legacy/unexpected
-autonomous Run that nevertheless remains `waiting_for_review` beyond one hour.
+new interactive grant. A scheduled recovery task cancels an autonomous
+Run that remains `waiting_for_review` beyond one hour.
 
 ## Run model config (`resolved_model`)
 

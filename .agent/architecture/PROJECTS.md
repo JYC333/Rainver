@@ -236,24 +236,11 @@ Those records describe readiness or work progress after initialization. The
 Overview exposes this distinction as `definition_status`; a Project may be
 initialized while nothing is under way yet.
 
-There was a **Project Template** here, and its removal is worth recording
-because the concept was rescued twice before it was retired. It began as a
-project type carrying `sections` and `starter_workflow_template_keys`; R1
-deleted those workflow templates for changing no concrete behaviour, leaving a
-descriptor nothing consumed. It was then re-purposed as a source-binding
-bundle, justified as *the only thing that writes a `profile_key` into a
-binding's `extraction_policy_json`* — true at the time, and falsified shortly
-afterwards when the Project Sources surface gained its own extraction-profile
-selector for new and existing bindings, with a registry default behind it.
-Nobody noticed the justification had expired. A later pass stripped its
-Primary Mode and `sections`, leaving a pack that saved roughly three clicks in
-the Sources Area and only when the Space already held matching connections.
-
-Every job it ever held has another home: classification is derived from the
+Creating a Project does not install a template. Classification comes from the
 goal and the Project's contents (ADR 0019); starting shape is each Area's
 empty state; extraction profiles are chosen per binding in Project Sources;
-Workflows are started explicitly. Nothing should reintroduce a creation-time
-preset without first naming which of these it is not.
+Workflows are started explicitly. Do not add a creation-time preset that
+bundles those choices.
 
 Academic research is a set of Sources and an extraction profile, not a project
 type. Binding active arXiv and OpenAlex channels with the `academic_paper_v1`
@@ -425,8 +412,8 @@ whose base version was overtaken degrades to a clearly labeled append instead
 of merging blindly.
 
 The first completed synthesis seeds only empty version-1 role-carrying notes.
-Later report snapshots never overwrite evolved notes; legacy projects with
-reports but no notebook are seeded from the latest non-rejected report on first
+Later report snapshots never overwrite evolved notes. A project with
+reports but no notebook is seeded from the latest non-rejected report on first
 Area initialization. Area initialization also adopts starter notes that have
 no role marker, once, by title. Title matching is legitimate only for that
 adoption. It is not a general binding. The

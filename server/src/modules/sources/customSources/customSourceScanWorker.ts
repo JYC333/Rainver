@@ -310,7 +310,7 @@ async function recordRunFailure(db: Queryable, run: QueuedRunRow, error: unknown
 }
 
 /**
- * Phase 9 automatic repair trigger ("repeated handler failures"). Only moves
+ * Automatic repair trigger for repeated handler failures. Only moves
  * `ok` -> `repair_required` (never touches `repair_pending`/`disabled` — those
  * require the explicit repair/proposal flow or admin action) and clears
  * `repair_required` back to `ok` the moment a run succeeds again.

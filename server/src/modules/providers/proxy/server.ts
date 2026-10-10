@@ -87,7 +87,7 @@ export async function startProviderProxyServer(
   server.on("connect", (request, client, head) => handleSubscriptionConnect(request, client, head));
 
   const host = config.providerProxyListenHost;
-  // Port 0 keeps the historical OS-assigned port. A published, therefore
+  // Port 0 is the OS-assigned port. A published, therefore
   // fixed, port is what makes the proxy reachable from a paired execution
   // host, so the deployment opts in rather than the port moving on restart.
   await listen(server, host, config.providerProxyPort);

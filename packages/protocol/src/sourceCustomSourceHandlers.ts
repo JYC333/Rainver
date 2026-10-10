@@ -507,7 +507,7 @@ export const CustomSourceSettingsDTOSchema = z
   })
   .passthrough();
 
-// --- Custom Source credential channel (Phase 10) ---
+// --- Custom Source credential channel ---
 //
 // A third credential class alongside ModelProvider API keys and CLI login
 // state (`.agent/architecture/CREDENTIAL_STORAGE.md`). The plaintext secret

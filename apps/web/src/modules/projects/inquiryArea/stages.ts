@@ -16,12 +16,11 @@ import type {
  * user has to maintain, which is the class of problem this surface exists to
  * remove.
  *
- * The kind→stage vocabulary itself (`StageId`, `STAGE_ORDER`, `STAGE_LABELS`,
- * `STAGE_HELP`, `STAGE_FOR_KIND`, `kindsInStage`) lives in
- * `@rainver/protocol` (plan Phase B) so a future non-frontend consumer —
- * today, none — shares this file's exact classification instead of a second
- * copy. Everything below this point is this page's own derived-state
- * presentation logic and stays here; only the static vocabulary moved.
+ * The kind→stage vocabulary (`InquiryStageId`, `INQUIRY_STAGE_ORDER`,
+ * `INQUIRY_STAGE_LABELS`, `INQUIRY_STAGE_HELP`, `INQUIRY_STAGE_FOR_KIND`,
+ * `inquiryKindsInStage`) lives in `@rainver/protocol`. This file re-exports
+ * the page names and owns the derived-state presentation. Do not keep a
+ * second copy of the vocabulary.
  */
 export type StageId = InquiryStageId
 export const STAGE_ORDER = INQUIRY_STAGE_ORDER

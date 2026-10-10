@@ -1,8 +1,8 @@
 /**
- * Hybrid-retrieval (Phase 2) embedding configuration.
+ * Hybrid-retrieval embedding configuration.
  *
  * Spaces can choose their embedding dimensions for model experimentation. The
- * default preserves the original retrieval index behavior.
+ * default matches the retrieval index.
  */
 export const DEFAULT_EMBED_DIMENSIONS = 2560;
 export const EMBED_DIMENSIONS = DEFAULT_EMBED_DIMENSIONS;

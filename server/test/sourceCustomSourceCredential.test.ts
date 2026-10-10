@@ -13,7 +13,7 @@ import { CustomSourceCredentialService } from "../src/modules/sources/customSour
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { publicAddressGuard } from "./support/outboundGuard.js";
 
-// Real-Postgres integration tests for Phase 10 (Custom Source credentials).
+// Real-Postgres integration tests for Custom Source credentials.
 // Skips gracefully when Docker is unavailable.
 
 const SPACE_A = "space-a";

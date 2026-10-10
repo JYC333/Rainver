@@ -234,7 +234,7 @@ describe('HostExecutionTargetPicker', () => {
   })
 
   it('says the Server Runtime is still installing rather than that a login is needed', async () => {
-    // Plan "Default path" §3: while Rainver's provisioner is still working,
+    // While Rainver's provisioner is still working,
     // an Agent surface shows installing/failed/incompatible — never a login
     // prompt for a copy that does not exist yet.
     mockedApi.executionTargets.mockResolvedValue({ targets: [SERVER_TARGET] })

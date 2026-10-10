@@ -270,10 +270,10 @@ function spaceObjectAccessLevelSql(userExpr: string): string {
 /**
  * A free-text search term matched against a body, for a reader who may read it.
  *
- * Phase 2 stopped serving bodies to a `summary`-level reader, but a search that
- * still *matched* on the body handed the same content back a character at a
- * time: ask for "password: a", "password: b", and the hit list answers. The
- * title stays searchable at every level; the body is searchable only at `full`.
+ * A `summary`-level reader is not served the body. Search must not match on
+ * it either: asking for "password: a", then "password: b", would hand the
+ * body back a character at a time. The title stays searchable at every level;
+ * the body is searchable only at `full`.
  */
 export function bodyMatchSql(bodyExpr: string, slot: string, userExpr: string): string {
   return `(${spaceObjectAccessLevelSql(userExpr)}) = 'full' AND ${bodyExpr} ILIKE ${slot}`;

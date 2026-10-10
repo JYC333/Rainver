@@ -238,9 +238,8 @@ describe('InquiryAreaPage', () => {
   })
 
   it('keeps recommending while a step is in progress, instead of falling silent', async () => {
-    // The old card replaced its guidance with the chosen step, which is exactly
-    // when the system knows the most. A step in progress and a different
-    // recommendation must both be on screen.
+    // Do not replace the guidance with the chosen step. A step in progress and
+    // a different recommendation must both be on screen.
     vi.mocked(inquiryApi.getThread).mockResolvedValue({
       ...QUESTION_DETAIL, attention_state: 'focused', next_focus_kind: 'synthesize',
     })

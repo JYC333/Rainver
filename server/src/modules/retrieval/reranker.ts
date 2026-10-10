@@ -3,7 +3,7 @@ import type { RetrievalEgressPolicy } from "./egress/egressPolicy.js";
 import type { ScoredCandidate } from "./types.js";
 
 /**
- * Post-fusion, post-revalidate reranking stage (Phase 2, step 8).
+ * Post-fusion, post-revalidate reranking stage.
  *
  * The reranker is a NON-deterministic LLM stage. Two contracts make it safe to
  * layer on top of the deterministic recall arms:

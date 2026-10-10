@@ -261,8 +261,7 @@ export class PgProjectFolderRepository {
           now,
         ],
       );
-      // execution-topology-and-project-control-plane-plan.md P1 / D2: this
-      // flow's single physical checkout is this Folder's one active Location.
+      // This flow's single physical checkout is this Folder's one active Location.
       await new PgWorkspaceLocationRepository(db).create({
         spaceId: identity.spaceId,
         projectFolderId: id,
@@ -563,19 +562,15 @@ export class PgProjectFolderRepository {
    * Called with the host's owner as `userId`; write access to the target
    * Project is still required, exactly as the server-host `create` flow.
    *
-   * execution-topology-and-project-control-plane-plan.md P1 / D2: creates a
-   * logical Folder *and* its one remote Location together, keeping the
-   * daemon's `workspace add` UX exactly as it was pre-P1 (one call, one
-   * result). The returned `id` is the **Location's** id, not the Folder's —
+   * Creates a logical Folder and its one remote Location together: one call,
+   * one result. The returned `id` is the **Location's** id, not the Folder's —
    * the host daemon's wire protocol uses `workspace_location_id`, and this
    * value pins a task thread and a Run to one execution site. Registering a
-   * *second* Location for an
+   * second Location for an
    * existing Folder (the same repo checked out on another host) is
    * `addWorkspaceLocation`, not this method — this one always creates a
-   * fresh Folder, matching the daemon CLI's current one-shot `workspace add`
-   * command, which does not yet offer "attach to an existing Folder"
-   * (deferred with real Windows+WSL hardware, per the plan's P1
-   * acceptance section).
+   * fresh Folder. The daemon CLI's `workspace add` does not attach to an
+   * existing Folder.
    */
   async createRemoteWorkspace(
     projectId: string,

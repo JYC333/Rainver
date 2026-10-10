@@ -30,7 +30,7 @@ export type ProbeHostKind = "server" | "remote";
  * here, on a daemon's hello.
  *
  * The one exception is the Server Host's OpenCode, which the release pins
- * (ADR 0022, Phase 2 §1): the release constant answers here so that the
+ * (ADR 0022): the release constant answers here so that the
  * install path has a single resolved distribution to send, instead of a
  * second branch deciding the same thing again at the route.
  */

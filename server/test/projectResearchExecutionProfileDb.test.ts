@@ -72,8 +72,7 @@ describe("ProjectResearchExecutionProfileService managed agent capabilities (rea
     expect(freshlyCreated.rows[0]!.capabilities_json).not.toContain("research.adhoc_analyze");
     expect(freshlyCreated.rows[0]!.capabilities_json).not.toContain("research.ask");
 
-    // Simulate a space provisioned before research.monitor_compare existed —
-    // the historical narrow capability list.
+    // A space whose capability list does not include research.monitor_compare.
     await db.pool.query(
       `UPDATE agent_versions SET capabilities_json=$2::jsonb WHERE id=$1`,
       [agentRow.rows[0]!.current_version_id, JSON.stringify([

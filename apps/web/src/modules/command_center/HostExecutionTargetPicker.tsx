@@ -23,7 +23,7 @@ export interface HostExecutionSelection {
 /**
  * What Rainver's own provisioner is doing to the Server Runtime's pinned copy.
  *
- * Plan "Default path" §3: an Agent surface says installing, failed/retry or
+ * An Agent surface says installing, failed/retry or
  * incompatible — never "login required" — while the copy is not yet usable.
  * Returns null once the installed copy is the pinned one and healthy.
  */

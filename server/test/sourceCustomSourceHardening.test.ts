@@ -14,7 +14,7 @@ import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSo
 import { pruneSupersededCustomSourceHandlerArtifacts } from "../src/modules/sources/customSources/customSourceArtifactRetention.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
 
-// Real-Postgres integration tests for Phase 12 (rate limiting, artifact
+// Real-Postgres integration tests for rate limiting, artifact
 // retention, and observability). Skips gracefully when Docker is unavailable.
 
 const SPACE_A = "space-a";

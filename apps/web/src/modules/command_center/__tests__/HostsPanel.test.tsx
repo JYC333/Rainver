@@ -369,9 +369,8 @@ describe('HostsPanel', () => {
 
 /**
  * The host card is where a copy's subscription and its upgrade history are
- * acted on. None of it had a test, and the rollback button shipped unreachable
- * because the server dropped `rollback_version` on the way in — a defect one
- * assertion here would have caught.
+ * acted on. The rollback control must send `rollback_version`. Dropping that
+ * field makes the button do nothing.
  */
 describe('HostAgentRow subscription and upgrade controls', () => {
   const CLAUDE_HOST = {

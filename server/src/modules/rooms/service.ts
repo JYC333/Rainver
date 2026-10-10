@@ -1022,8 +1022,7 @@ export class RoomService {
   }
 
   /**
-   * The domain-completion-event sibling of `continueAfterProposal` (plan
-   * Phase 3, second continuation-registry trigger source). Takes an
+   * The domain-completion-event sibling of `continueAfterProposal`. Takes an
    * already-open transaction `client` rather than opening its own: the
    * caller is always a domain reconciler (e.g.
    * `AgentGroupRunLifecycleProjector`) already inside a transaction that

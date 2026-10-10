@@ -225,14 +225,7 @@ export const RunEventStatusSchema = z.enum(RUN_EVENT_STATUS_VALUES);
 /**
  * Codes a Run's failure is known to carry. Descriptive, not a gate:
  * `RunExecutionErrorCodeSchema` below accepts any non-empty string, and
- * historical rows keep whatever they were written with.
- *
- * Pruned 2026-09-08 with ADR 0016's unified host: `cli_stall_timeout`,
- * `credential_metadata_missing`, `missing_runtime_credential`,
- * `runtime_tool_version_unavailable` and `sandbox_creation_failed` all
- * belonged to the deleted server-side CLI line — the credential broker, the
- * runtime-tool catalog and the server-owned sandbox. Their remote twins
- * (`runtime_stall_timeout`, `runtime_removed`) carry those failures now.
+ * a row keeps the code it was written with.
  */
 export const RUN_EXECUTION_ERROR_CODES = [
   "adapter_nonzero_exit",

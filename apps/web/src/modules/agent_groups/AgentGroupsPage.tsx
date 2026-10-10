@@ -204,7 +204,7 @@ export default function AgentGroupsPage() {
             limit: String(LIST_PAGE_SIZE),
           })
         : Promise.resolve({ items: [] as ProjectFolder[] }),
-      // Ambient Project state beside the conversation (plan Phase B): the
+      // Ambient Project state beside the conversation: the
       // same Overview contract the Project Overview page renders, never a
       // Room-specific read. A failure here should not block the Room from
       // loading.

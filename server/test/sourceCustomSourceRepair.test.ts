@@ -14,8 +14,7 @@ import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSo
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 
-// Real-Postgres integration tests for Phase 9 (repair/rollback), matching
-// the project-wide preference for real DB tests over fakes.
+// Real-Postgres integration tests for repair and rollback.
 // Skips gracefully when Docker is unavailable.
 
 const SPACE_A = "space-a";

@@ -5,7 +5,7 @@ import type { RetrievalObjectType } from "@rainver/protocol";
  * Reusable recall@k harness for the retrieval substrate. It runs a set of golden
  * query→expected-id cases through a `RetrievalSearchService` and reports recall.
  *
- * Purpose (Phase 2 prerequisite): the deterministic recall arms are gated on
+ * The deterministic recall arms are gated on
  * this so a ranking change — a source-tier boost, a reranker, a vector arm —
  * cannot silently drop a golden result. The recall arms are deterministic, so
  * curated cases assert exact recall (== 1). Non-deterministic ranking stages

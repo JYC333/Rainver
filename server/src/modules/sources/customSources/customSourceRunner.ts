@@ -49,7 +49,7 @@ export interface CustomSourceRunnerCompletedResult {
   /** Redacted, byte-capped combined stdout/stderr. */
   logs: string;
   logs_truncated: boolean;
-  /** Raw (unparsed, unvalidated) contents of the sandbox output.json, or null if the handler never wrote one or output_too_large is true. Phase 3's contract validator must run on this before any Source write. */
+  /** Raw (unparsed, unvalidated) contents of the sandbox output.json, or null if the handler never wrote one or output_too_large is true. The contract validator must run on this before any Source write. */
   raw_output_json: string | null;
   /** True when the handler wrote an output.json larger than the effective max_output_bytes limit; it was never read into memory and raw_output_json is null. */
   output_too_large: boolean;
@@ -86,9 +86,8 @@ export function evaluateCustomSourceRunnerBlockReason(
 ): CustomSourceRunnerBlockReason | null {
   if (!settings.runner_enabled) return "runner_disabled";
   if (!settings.allowed_languages.includes(policyEnvelope.language)) return "language_not_allowed";
-  // Phase 4 acceptance: browser automation, shell, and dependency installation
-  // remain disabled unconditionally, regardless of instance availability flags
-  // (those flags are for a later phase's proposal-gated enablement).
+  // Browser automation, shell, and dependency installation stay disabled
+  // unconditionally. Instance availability flags do not turn them on.
   if (policyEnvelope.browser_automation_enabled) return "browser_automation_requested";
   if (policyEnvelope.shell_enabled) return "shell_requested";
   if (policyEnvelope.dependency_installation_enabled) return "dependency_installation_requested";

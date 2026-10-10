@@ -76,7 +76,7 @@ describe("applyCodexStrictSandboxToml", () => {
     // Nothing inside `"""` or `'''` is syntax. A line reading `[x]` in one was
     // taken as the first table header, which hid the real top-level key and
     // inserted a second — the TOML duplicate-key error that stops Codex from
-    // starting. The pre-Phase-8 code got this right by accident.
+    // starting. Do not treat a line inside a multi-line string as a header.
     for (const quote of ['"""', "'''"]) {
       const config = [
         `instructions = ${quote}`,

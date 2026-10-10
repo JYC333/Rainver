@@ -64,7 +64,7 @@ and triggers the pg@9 deprecation warning.
 Accepted Delivery preparation derives `runs.has_context_taint` and
 `runs.context_taint_json` from authorized source ownership/visibility before
 adapter execution. Safe Invocation Snapshots retain the source refs consumed by
-content-demotion disclosure; no legacy Context Snapshot table or compatibility
+content-demotion disclosure. There is no Context Snapshot table or compatibility
 column exists.
 
 Explicit fused cross-Space storage is also one critical transaction. It locks
@@ -323,10 +323,9 @@ successful commit and never participate in the critical write outcome.
   and schema drift. See `server/migrations/README.md` and B59.
   Maintenance-marked migrations are deliberately refused by the live-start
   path once an instance already has an applied release; the offline migration
-  path applies them during a coordinated cutover. The completed authentication
-  foundation is part of the current `0000_baseline.sql` directly: the
-  provisional auth add/correct/drop migrations were retired by ADR 0023, with
-  no legacy backfill, dual read, or compatibility path.
+  path applies them during a coordinated cutover. Authentication lives in
+  the current `0000_baseline.sql`. There is no separate auth backfill, dual
+  read, or compatibility path (ADR 0023).
   `ops/scripts/start.sh` never generates a migration; it applies the committed
   chain, so a host running the stack needs Docker but no Node toolchain.
 - Authentication provisioning is a transaction-owned boundary: Better Auth may
@@ -627,7 +626,7 @@ custom SQL for structural drift.
 
 **Schema representation notes:**
 - Content column defaults are storage backstops, not creation policy. Eight
-  legacy defaults remain `space_shared` (`activity_records`, `artifacts`,
+  column defaults are `space_shared` (`activity_records`, `artifacts`,
   `imported_sessions`, `space_objects`, `knowledge_promotion_candidates`,
   `proposals`, `runs`, `tasks`) and five remain `private`
   (`extracted_evidence`, `reader_annotations`, `source_connections`,

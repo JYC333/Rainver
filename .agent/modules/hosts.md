@@ -552,17 +552,11 @@ which: `runtime_timeout` when the whole run budget elapsed, and
 budget. Both carry how long the runtime had been silent. The stall budget is
 one rule for both execution paths (`runs/stallTimeout.ts`): five minutes by
 default, `adapter_config.stall_timeout_seconds` per dispatch, never longer
-than the run budget. The remote path briefly used a third of the run budget
-instead — 100s for the default — which killed legitimate turns in the middle
-of a long tool call, since a runtime busy inside one emits nothing until it
-returns; the Run then retried from scratch on the same run id. The remote path
-originally accepted the option and never implemented it, so a runtime that went
-quiet — an OpenCode turn waiting on a free-tier model that never answered —
-burned the entire timeout and then reported only that it "timed out", which is
-equally true of a run that worked the whole time. Both codes are retryable.
-Their server-host twins `cli_adapter_timeout` and `cli_stall_timeout` went with
-the sandbox line (ADR 0016): nothing emits them, and the retry set no longer
-lists them.
+than the run budget. Do not derive the stall budget as a fraction of the run
+budget: a runtime busy inside one tool call emits nothing until it returns.
+Do not drop the stall timeout: a runtime that goes quiet must fail as
+`runtime_stall_timeout`, distinct from `runtime_timeout`. Both codes are
+retryable. Nothing emits `cli_adapter_timeout` or `cli_stall_timeout`.
 
 A bound run tells its runtime which model over ACP
 (`session/set_config_option`), and the value is the binding's resolved model
@@ -1363,9 +1357,8 @@ uniqueness is per-run and `tryAcquireExecutionLock` already guarantees one
 process per run. `host_thread_events`' cursor is per-**thread**, spanning
 every run dispatched into it, so the in-process chain alone is not enough —
 a `createSerializedThreadEventSink` instance is scoped to one Run, and two
-concurrently active Runs on the same thread (not currently prevented by
-anything in phase 1 — Phase P2's queue is what will make this scenario rare
-in practice) would each hold an independent chain and could still race.
+concurrently active Runs on the same thread (the dispatch does not prevent
+two) would each hold an independent chain and could still race.
 `PgHostThreadEventRepository.append()` closes that gap at the database
 level: the whole batch runs inside one transaction holding
 `pg_advisory_xact_lock(hashtext('host_thread_events:' || threadId))`, so its

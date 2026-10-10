@@ -401,11 +401,8 @@ async function runRemoteHostCliAdapter(
       sandbox_cwd: REMOTE_HOST_ACP_CWD_PLACEHOLDER,
       resume_session_id: input.resume_session_id,
       required_sandbox_level: null,
-      // See renderCliCommand's doc comment: no server-local path exists to
-      // check, and faking one would be security theater, not enforcement.
-      // Known gap, not silently ignored — see hosts.md and the deferred
-      // register: a real remote deny-config would need the daemon to write
-      // it into its own workspace, which phase 1 does not do.
+      // No server-local path exists to check, and faking one would not enforce
+      // anything. This path does not write a deny config into the daemon workspace.
       skip_subagent_disable_check: true,
     });
   } catch (error) {
@@ -420,10 +417,8 @@ async function runRemoteHostCliAdapter(
 
   const argv = [...rendered.argv];
   if (spec.permissions.supports_permission_bypass && spec.permissions.permission_bypass_arg_template) {
-    // Trusted-host default (D1): auto-approve edits/commands in the
-    // workspace — headless execution has no human to answer a permission
-    // prompt. P4's dispatch composer exposes this as a per-dispatch choice;
-    // phase 1 always takes this default.
+    // Headless execution has no person to answer a permission prompt, so
+    // this always passes the bypass arguments.
     argv.push(...spec.permissions.permission_bypass_arg_template);
   }
 

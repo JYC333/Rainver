@@ -573,7 +573,7 @@ class FakeClient {
 }
 
 function projectorFor(state: FakeState, quotaSource?: QuotaSource): AgentGroupRunLifecycleProjector {
-  // Every fixture group in this file has room_id: null, so the Phase 3
+  // Every fixture group in this file has room_id: null, so the
   // Room-notification path (which needs a real ServerConfig only to
   // construct RoomService) always short-circuits before touching config.
   return new AgentGroupRunLifecycleProjector(new FakePool(state) as unknown as Pool, {} as ServerConfig, quotaSource);

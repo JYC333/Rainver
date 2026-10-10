@@ -975,7 +975,6 @@ describe("runs repositories against real PostgreSQL", () => {
     const target = await seedJob({ job_type: "agent_run", status: "pending" });
 
     const claimed = await jobs.claimNextAgentRun("worker-1");
-    // The old "column reference \"id\" is ambiguous" defect threw here.
     expect(claimed?.id).toBe(target);
     expect(claimed?.status).toBe("claimed");
     expect(claimed?.claimed_by).toBe("worker-1");

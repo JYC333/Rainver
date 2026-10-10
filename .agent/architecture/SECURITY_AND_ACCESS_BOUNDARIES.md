@@ -597,7 +597,7 @@ project membership inside the memory adapter's `revalidate` gate, in addition to
   project fails closed.
 
 The gate covers **all user-facing memory read surfaces**: the retrieval surfaces
-(adapter `revalidate`) and the legacy `PgMemoryReadRepository` paths (`GET /memory`,
+(adapter `revalidate`) and the `PgMemoryReadRepository` paths (`GET /memory`,
 `GET /memory/{id}`, `POST /memory/search`, batched after `canReadMemory`).
 Membership is managed via the projects module
 (`GET/POST /api/v1/projects/{id}/members`, `DELETE …/members/{userId}`; add/remove
@@ -989,8 +989,8 @@ this arrangement exists to prevent.
   the context window and the agent-group timeline all leave it out; the group a
   continuation opens is named after the event, not after the machine's own
   prompt.
-- **Notes and Knowledge** — one read (the content predicate plus the Phase 2
-  access level) and one write check, `assertWritableSpaceObject`: anything but
+- **Notes and Knowledge** — one read (the content predicate plus the
+  disclosure access level) and one write check, `assertWritableSpaceObject`: anything but
   `space_shared` belongs to its owner, a Project-bound object also needs writer
   authority in that Project, and a reader served the object at `summary` may not
   replace the body they are not shown. Readable is not writable — a
@@ -1429,30 +1429,27 @@ browse would refuse; Learning Space-global `project_id IS NULL` visibility;
 Home summary counts as Space-wide oracles (the failed-Job error preview beside those
 counts is the viewer's own, as `GET /jobs/:id` is).
 
-The 2026-09-11 security remediation sequence fixed the findings of the three
-reviews above by mechanism rather than by patch: one summary-withholding type,
+One summary-withholding type,
 one authorizer per kind of shared command, one credential-spend authorizer, one
 persona-write rule, one outbound HTTP guard, one read predicate per data class,
 one spawn-environment builder, and one place that decides what a browser may
 fetch and keep.
 
-It closed three of the leftovers listed above. The dev Vite `/internal` proxy
-now forwards only `/internal/hosts/ws`, which is what production nginx forwards,
-so dev no longer exposes routes production does not. Cookie-authenticated
-writes, and the GETs whose effects reach past their response, now take a
-`Sec-Fetch-Site` term beside the `Origin` check. And chat markdown no longer
-loads an external image at all.
+The dev Vite `/internal` proxy forwards only `/internal/hosts/ws`, which is
+what production nginx forwards. Cookie-authenticated writes, and the GETs whose
+effects reach past their response, take a `Sec-Fetch-Site` term beside the
+`Origin` check. Chat markdown does not load an external image.
 
-Accepted leftovers from this sequence: CSP `style-src 'unsafe-inline'` stays,
+Accepted gaps: CSP `style-src 'unsafe-inline'` stays,
 because the UI library writes inline styles and a nonce needs a request context
 a static file server does not have. CSRF is still Origin plus `Sec-Fetch-Site`
 plus `SameSite=Lax`, with no token. A ModelProvider `base_url` may still name a
 private address (D2). An external *link* in chat can still carry data in its URL
 when a person clicks it — rendering cannot close that, because the root is
 prompt injection into the model's output, and the link is shown with its
-confirmation step rather than removed; external *images* no longer load on their
+confirmation step rather than removed; external *images* do not load on their
 own (D5). A trusted image-host allowlist is deferred (O3) until a real need
-appears — and it is now the thing that would let `img-src` drop `https:` again.
+appears — and that allowlist is what would let `img-src` drop `https:` again.
 
 Two more, found by the integration review and recorded rather than fixed, both
 outside what this plan set out to do. **Knowledge body search has a hit/miss

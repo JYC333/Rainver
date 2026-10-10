@@ -363,9 +363,8 @@ export function escapeLikePattern(value: string): string {
  * callback must not crash its un-awaited caller via an unhandled
  * rejection); a caller that needs to know a batch actually landed should
  * `await` the returned promise and check separately, not rely on rejection.
- * `control-center-phase2-plan.md` P1: built for `host_thread_events` writes
- * and the pre-existing `run_events` semantic-event sink, which had the
- * identical race, found via this same phase's own test coverage.
+ * Built for `host_thread_events` writes and the `run_events` semantic-event
+ * sink, which have the same read-then-write race.
  */
 export function serializeCalls<TArg>(
   fn: (arg: TArg) => Promise<unknown>,

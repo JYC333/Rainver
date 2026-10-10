@@ -222,8 +222,8 @@ export class AcpController implements CliStdioController {
   // see localCliExecution.ts). This body stays fully synchronous: every
   // `send()` this method needs to produce still happens before it returns,
   // preserving the ~58 existing synchronous test call sites that assert on
-  // `send()` output with no `await` at the call site (execution-topology-
-  // and-project-control-plane-plan.md §6 D6, twice-corrected there).
+  // `send()` output with no `await` at the call site. Do not make this body
+  // actually await: those call sites would stop compiling.
   // eslint-disable-next-line @typescript-eslint/require-await
   async receive(message: Record<string, unknown>, send: Send, closeStdin: () => void): Promise<void> {
     if (message.jsonrpc !== "2.0") {

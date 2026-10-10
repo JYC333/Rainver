@@ -4,7 +4,7 @@ import { withDbTransaction, type Pool } from "../../routeUtils/common.js";
 import { resolveStoredArtifactPath } from "./artifactStoragePath.js";
 
 /**
- * Phase 12 hardening: bounds unbounded growth of stored `typescript_node`
+ * Bounds growth of stored `typescript_node`
  * handler source artifacts (`artifact_type = 'source_custom_source_handler_code'`)
  * across repeated repair cycles. `declarative_pipeline_v1` versions never
  * have a `handler_artifact_id` (their pipeline definition lives in

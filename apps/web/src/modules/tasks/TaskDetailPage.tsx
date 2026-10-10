@@ -294,7 +294,7 @@ export default function TaskDetailPage() {
               />
             </div>
           )}
-          {/* Phase 4 gate: the default path needs no runtime form. The picker
+          {/* The default path needs no runtime form. The picker
               appears only when the Agent actually has more than one enabled
               Profile to choose between. */}
           {runtimeProfiles.length > 1 && (

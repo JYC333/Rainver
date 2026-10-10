@@ -26,7 +26,7 @@ interface RepairableConnection {
 }
 
 /**
- * Phase 9: repair (regenerate + retest + auto-activate-or-propose) and
+ * Repair (regenerate + retest + auto-activate-or-propose) and
  * rollback. Repair never mutates the active version in place — it always
  * produces a new draft version through the same `generateHandler`/
  * `testHandler` path `CustomSourceCreateFlowService` already exposes, then
@@ -134,7 +134,7 @@ export class CustomSourceRepairService {
   }
 
   /**
-   * A 429 from the Phase 12 generate-rate-limit is a transient throttle, not
+   * A 429 from the generate rate limit is a transient throttle, not
    * a real generation/test/activation failure — flipping repair_status to
    * `repair_required` for it would mislead `getHandlerSummary`'s
    * `repair_status` field (and any operator/dashboard reading it) into

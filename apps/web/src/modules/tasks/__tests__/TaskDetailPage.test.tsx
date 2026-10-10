@@ -89,7 +89,7 @@ beforeEach(() => {
 
 describe('TaskDetailPage — runtime profile on the default path', () => {
   it('queues a run with no runtime form and no runtime_profile_id when the Agent has one Profile', async () => {
-    // Phase 4 gate: the default path needs no runtime form, and the Run must
+    // The default path needs no runtime form, and the Run must
     // be recorded as a `default` selection rather than an explicit one.
     mocked.listRuntimeProfiles.mockResolvedValue([profile({})])
     renderPage()

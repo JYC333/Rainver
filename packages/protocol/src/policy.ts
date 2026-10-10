@@ -1215,11 +1215,10 @@ export const POLICY_ACTION_REGISTRY = [
     record_failure_mode: "best_effort",
   },
   {
-    // Direct execution, no proposal gate (room-advancement-reliability-plan
-    // Phase 4): the Inquiry Thread was already human-accepted at creation,
-    // so starting acquisition on it is execution, not the agent-drafted
-    // structure/content write ADR 0003 gates. The human confirmation gate is
-    // replaced by hard idempotency guards in the acquisition service itself.
+    // Direct execution, no proposal gate: the Inquiry Thread was already
+    // human-accepted at creation, so starting acquisition on it is execution,
+    // not the agent-drafted structure/content write ADR 0003 gates. Idempotency
+    // guards in the acquisition service are the confirmation.
     action: "research.acquisition.start",
     resource_type: "inquiry_thread",
     default_risk_level: "medium",

@@ -927,11 +927,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
 
 
-  // hello/heartbeat (phase 1) plus job dispatch/output/complete (phase 3,
-  // ADR 0016 D9's RemoteHostExecutionAdapter). This handler stays dumb by
-  // design: it authenticates, records liveness, and routes frames to/from
-  // `sharedHostConnectionRegistry` — vendor stdout parsing, argv rendering,
-  // and diff/artifact handling all live outside this file.
+  // Hello, heartbeat, job dispatch, output, and complete. This handler
+  // authenticates, records liveness, and routes frames to and from
+  // `sharedHostConnectionRegistry`. Vendor stdout parsing, argv rendering,
+  // and diff/artifact handling live outside this file.
   app.register(async (scoped) => {
     scoped.get("/internal/hosts/ws", {
       websocket: true,

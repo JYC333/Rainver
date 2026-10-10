@@ -5,12 +5,11 @@
  * config supplied at draft time (`list_selector`) is enough to produce a
  * genuinely source-specific handler without pulling the full agent/workspace
  * Run pipeline into this feature. See
- * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md` (Level 3 fallback;
- * frozen).
+ * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md` (Level 3 fallback).
  *
  * The generated handler never calls `fetch`/`http`/`net` itself — the
  * sandbox bootstrap in `customSourceRunner.ts` unconditionally blocks those
- * APIs (Phase 4 shipped "blocked network", not a controlled fetch channel).
+ * APIs. There is no controlled fetch channel.
  * Instead, trusted server code (`customSourceCreateFlowService.ts` /
  * `customSourceScanWorker.ts`) fetches `endpoint_url` itself and embeds the
  * fetched (or fixture) HTML directly into `input.json` as

@@ -1,8 +1,8 @@
 # Beancount Core Parity Matrix
 
-Status: living parity tracker. Phase 0 audit through Phase 8 (validation
-rules, DB-backed importer/exporter, proposal appliers, REST API) are
-implemented. Re-audited against the upstream master (v3) branch on 2026-07-02:
+Status: living parity tracker. Validation rules, the DB-backed
+importer and exporter, proposal appliers, and the REST API are implemented.
+Re-audited against the upstream master (v3) branch on 2026-07-02:
 `core/data.py`, `core/flags.py`, `core/convert.py`, `core/interpolate.py`,
 `ops/validation.py`, `ops/balance.py`, `ops/pad.py`.
 
@@ -38,26 +38,26 @@ repository without an explicit license decision.
 - `deferred` - not implemented yet, intentionally listed.
 - `not_applicable` - deliberately outside Rainver's runtime responsibility.
 
-## Phase Mapping
+## Coverage
 
-- Phase 1 implements value objects: `Amount`, `Cost`, `CostSpec`, `Position`,
+- Value objects: `Amount`, `Cost`, `CostSpec`, `Position`,
   `Inventory`, and `Booking`.
-- Phase 2 implements PostgreSQL storage for the directive stream.
-- Phase 3 implements repository/service methods over the stored stream.
-- Phase 4 implements the initial engine pipeline: load, normalize, sort,
+- PostgreSQL storage for the directive stream.
+- Repository and service methods over the stored stream.
+- Engine pipeline: load, normalize, sort,
   interpolate limited incomplete postings, validate, and export domain entries.
-- Phase 5 implements the committed-ledger validation set mirroring
+- Committed-ledger validation mirroring
   `ops/validation.py` plus weight-based transaction balancing
   (`core/convert.get_weight`), inferred tolerances (`core/interpolate.py`,
   `ops/balance.py`), subtree balance assertions, and pad-at-pad-date
   semantics (`ops/pad.py`).
-- Phase 6 implements the DB-backed importer (deduplicated
+- DB-backed importer (deduplicated
   `finance_import_sources`, default `proposed` status, full directive-stream
   persistence including cost/price/metadata/tag-meta stacks) and the exporter
   covering every stored core directive with a `finance_exports` audit row.
-- Phase 7 implements proposal appliers `finance_ledger.post_directive` and
+- Proposal appliers `finance_ledger.post_directive` and
   `finance_ledger.post_import_batch` with apply-time revalidation.
-- Phase 8 implements the `/api/v1/finance` route surface behind
+- The `/api/v1/finance` route surface behind
   `ctx.http.pluginGuard()`.
 
 ## Matrix
@@ -99,7 +99,7 @@ repository without an explicit license decision.
 | `Cost` | `core/position.py` | Immutable TypeScript `Cost` | `finance_postings.cost_*` | Formatter/exporter emits cost blocks | `financeLedgerValueObjects.test.ts` | implemented |
 | `CostSpec` | `core/position.py` | Immutable TypeScript `CostSpec` for unresolved lots | `finance_postings.cost_spec_*` or nullable cost columns | Stored/exported; full booking deferred | `financeLedgerValueObjects.test.ts` | partial |
 | `Position` | `core/position.py` | Immutable TypeScript `Position` | Reconstructed from postings | Inventory and formatter use it | `financeLedgerValueObjects.test.ts` | implemented |
-| `Inventory` | `core/inventory.py` | TypeScript inventory grouped by unit currency and cost key | Recomputed from directive stream, not primary storage | Balance computation returns inventory summaries | `financeLedgerValueObjects.test.ts` and Phase 4 tests | partial |
+| `Inventory` | `core/inventory.py` | TypeScript inventory grouped by unit currency and cost key | Recomputed from directive stream, not primary storage | Balance computation returns inventory summaries | `financeLedgerValueObjects.test.ts` and the engine pipeline tests | partial |
 | `Booking.STRICT` | `core/data.py`, `core/inventory.py` | Booking enum | `finance_accounts.booking_method` | Stored; strict ambiguity enforcement limited | `financeLedgerValueObjects.test.ts` | partial |
 | `Booking.STRICT_WITH_SIZE` | `core/data.py` | Booking enum | `finance_accounts.booking_method` | Stored/exported; full lot matching deferred | `financeLedgerValueObjects.test.ts` | stored_export_only |
 | `Booking.NONE` | `core/data.py` | Booking enum | `finance_accounts.booking_method` | Stored/exported; mixed inventory accepted only in explicit paths | `financeLedgerValueObjects.test.ts` | partial |

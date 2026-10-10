@@ -3,20 +3,18 @@ import { normalizeTextForSearch } from "./normalize.js";
 import type { EvidenceKind, ScoredCandidate } from "./types.js";
 
 /**
- * Deterministic ranking signals applied after RRF fusion (Phase 2, step 7).
+ * Deterministic ranking signals applied after RRF fusion.
  *
  * Every signal here is **access-neutral**: it is computed only from the
  * candidate's OWN canonical metadata/evidence — its object type, its own match
  * kind, its own surfaced relation type, its own `updated_at`, whether the query
  * phrase appears in its OWN title, and its own fused score for the floor gate.
  * None reads any other object, so a boost can never reveal the existence or
- * scale of objects the viewer cannot read (invariant 2). Cross-object signals
- * (backlink / graph degree, co-citation) are intentionally deferred because they
- * would require counting edges from objects that may be invisible to the viewer —
- * making them access-safe needs per-viewer visible-edge counting, a separate task.
+ * scale of objects the viewer cannot read (invariant 2). Do not count edges
+ * from objects the viewer cannot read: backlink, graph degree, and
+ * co-citation need per-viewer visible-edge counting before they can be a signal.
  *
- * Weights are conservative placeholders. Real tuning needs real relevance
- * signal (usage logs); until then these only mildly reorder and never gate.
+ * Weights are conservative. They mildly reorder and never gate.
  */
 export interface RankingSignalConfig {
   /** Per-object-type multiplier (source/canonical tier). Missing type = 1. */

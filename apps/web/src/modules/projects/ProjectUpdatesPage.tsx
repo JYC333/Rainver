@@ -204,8 +204,7 @@ type UpdateRow = NonNullable<ProjectWorkUpdate['members']>[number]
 
 /**
  * Who did it, what it was about, and when. The subject is whatever kind of
- * thing the update names — Tasks were the only kind until an Agent started
- * advancing Threads directly.
+ * thing the update names.
  */
 function subjectHref(projectId: string, subject: NonNullable<UpdateRow['subject']>): string | null {
   switch (subject.type) {

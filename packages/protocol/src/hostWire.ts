@@ -6,9 +6,8 @@
  * ends parse inbound frames with these schemas and type outbound frames
  * against them, so a field exists in exactly one place. Do not rebuild a
  * frame by hand from untyped JSON on either side. A field this contract
- * drops must leave the senders in the same change. `provider_binding`,
- * `server_url`, and `work_surface` each shipped with one side still sending
- * a name the other had stopped reading.
+ * drops must leave the senders in the same change. Do not drop a field on
+ * one side while the other still sends it.
  *
  * Objects are not `.strict()`: an unknown field is dropped, not fatal. What
  * guards against a field being *lost* is that neither side names fields by

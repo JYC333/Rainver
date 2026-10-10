@@ -28,7 +28,7 @@ import { upsertCanonicalEvidence } from "../evidenceIdentity.js";
  * `.agent/architecture/DATABASE_AND_TRANSACTIONS.md#external-call-boundary`
  * for why file copies are not held inside a long-lived transaction.
  *
- * Acceptance (Phase 3): an invalid output never reaches any Source write —
+ * An invalid output never reaches any Source write —
  * `validateCustomSourceHandlerOutput` runs to completion before the first
  * INSERT. A valid output writes only Source objects and artifacts.
  */

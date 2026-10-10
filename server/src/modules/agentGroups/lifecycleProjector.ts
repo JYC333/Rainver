@@ -172,9 +172,9 @@ export class AgentGroupRunLifecycleProjector {
   }
 
   /**
-   * Fixes "delegate 完成了却没有后续" (plan Phase 3): when the Manager
-   * replied and ended its turn without calling `agent.wait_for_results`,
-   * nothing else notices this delegation finishing. The caller only invokes
+   * When the Manager replied and ended its turn without calling
+   * `agent.wait_for_results`, nothing else notices this delegation finishing.
+   * The caller only invokes
    * this when nothing was waiting on the completed run before
    * `queueWaitingDependencyRunsIfReady` ran — the waiting case already
    * resumes through that path and must not also get this duplicate one.

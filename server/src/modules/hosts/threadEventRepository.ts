@@ -65,15 +65,13 @@ export class PgHostThreadEventRepository {
    * what the previous row in this same call just committed — the same
    * per-row-sequential approach `PgRunRepository.appendRunEvent` uses for
    * `run_events`. Call volume per chunk is small (a handful of normalized
-   * events per stdout push), so the extra round trips are not a concern in
-   * phase 1.
+   * events per stdout push), so the extra round trips are not a concern.
    *
    * `createSerializedThreadEventSink` already serializes every call made
    * through one sink instance, but a sink is constructed per Run
    * (`orchestrationService.ts`), not per thread — two Runs concurrently
    * active on the same thread would still each hold their own independent
-   * promise chain and race this method's `event_index` read (discovery
-   * review, P1). A `pg_advisory_xact_lock` keyed on the thread — held for
+   * promise chain and race this method's `event_index` read. A `pg_advisory_xact_lock` keyed on the thread — held for
    * this whole batch, across every event, not just one INSERT — closes that
    * gap at the database level regardless of how many processes or sink
    * instances are writing: whichever writer gets the lock first commits its
