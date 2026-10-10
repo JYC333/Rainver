@@ -11,9 +11,8 @@
  *
  * Objects are not `.strict()`: an unknown field is dropped, not fatal. What
  * guards against a field being *lost* is that neither side names fields by
- * hand any more. Both ends ship from this repository together, so there is no
- * older peer to stay compatible with and nothing here is optional for that
- * reason.
+ * hand. Both ends ship from this repository together, so there is no older
+ * peer to stay compatible with and nothing here is optional for that reason.
  *
  * Wire shapes only. What a daemon does with a frame — resolving a Location to
  * a path, choosing a profile directory — is the daemon's, and the server's

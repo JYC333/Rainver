@@ -2,7 +2,7 @@
  * Run-scope ephemeral sandbox: a system-provisioned throwaway working directory
  * for a file-access CLI adapter that has no persistent workspace bound. This is
  * the first rung of the working-directory scope ladder (none -> ephemeral ->
- * session -> project -> worktree); `worktree` is now owned by the workspace
+ * session -> project -> worktree). A worktree is owned by the workspace
  * manager in `modules/projectFolders/sandbox.ts`.
  *
  * The directory lives under the shared sandbox root (same root as worktrees),

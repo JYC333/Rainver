@@ -28,10 +28,9 @@ interface PermissionDecision {
 
 /**
  * Headless dispatch has no human in the loop, so the only reachable decision
- * is a pre-authorized allow — but it is now a named, recorded fact rather
- * than a silent default. An option counts only if it names a non-empty
- * `option_id`; a same-kind option missing one is treated as absent, exactly
- * as the pre-extraction inline logic did.
+ * is a pre-authorized allow, and it is a named, recorded fact. Do not treat
+ * it as a silent default. An option counts only if it names a non-empty
+ * `option_id`; a same-kind option missing one is treated as absent.
  */
 export function decidePermission(options: PermissionOptionInput[]): PermissionDecision {
   const allowOption = options.find((option) => option.kind === "allow_once" && option.option_id)

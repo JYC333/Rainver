@@ -1231,9 +1231,9 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
     }
 
     it("uses the same silence budget as the server-host path", () => {
-      // A third of the run budget (100s by default) killed legitimate turns
-      // in the middle of a long tool call, which emits nothing until it
-      // returns; the rule is now the one the server-host path has had.
+      // A third of the run budget (100s by default) would kill a legitimate
+      // turn in the middle of a long tool call, which emits nothing until it
+      // returns. The budget is the server-host path's: 300s of a 900s run.
       expect(stallTimeoutSeconds(undefined, 900)).toBe(300);
       expect(stallTimeoutSeconds({ stall_timeout_seconds: 60 }, 900)).toBe(60);
       // Never larger than the deadline it lives inside.

@@ -2052,9 +2052,9 @@ export class RunOrchestrationService {
     const rootPath = row.rows[0]?.root_path;
     if (!rootPath) return null;
     const relative = relativePath(this.config.workspaceRoot, rootPath);
-    // Outside the instance's own root is not a server Location any more
-    // (ADR 0016 §4 removed that escape hatch); refusing to name it is better
-    // than sending a path the daemon would rightly reject.
+    // A path outside the instance's own root is not a server Location
+    // (ADR 0016 §4). Do not name it. Sending it would hand the daemon a path
+    // it rejects.
     return relative && !relative.startsWith("..") && !isAbsolute(relative) ? relative : null;
   }
 

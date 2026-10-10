@@ -109,8 +109,8 @@ describe("work loop stages", () => {
     for (const stage of WORK_LOOP_STAGE_KEYS) {
       expect(WORK_LOOP_STAGE_LABELS[stage], stage).toBeTruthy();
     }
-    // The keys are the docs' vocabulary, so they are the labels too; there is
-    // no per-Project set to pick from any more (ADR 0019).
+    // The keys are the docs' vocabulary, so they are the labels too. There is
+    // no per-Project label set (ADR 0019).
     expect(workLoopStageLabel("verify")).toBe("Verify");
     expect(workLoopStageLabel("frame")).toBe("Frame");
   });

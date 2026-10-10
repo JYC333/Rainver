@@ -153,8 +153,8 @@ export class SpaceAssistantService {
       );
       const service = new SpaceAssistantService(client, pool);
       for (const { id: agentId } of assistants.rows) {
-        // No CLI runtime is provisionable on the server any more, so every
-        // server-CLI profile a past release created is now unrunnable.
+        // No CLI runtime is provisionable on the server. A server-CLI profile
+        // cannot run, including one already stored. Disable it.
         await service.disableUnavailableCliProfiles(spaceId, agentId);
       }
     });

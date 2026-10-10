@@ -651,7 +651,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "failed" });
 
-    // A provider 5xx is now worth a narrower ask before the segment is failed:
+    // A provider 5xx asks a narrower page before the segment is failed:
     // three rungs of the page ladder, each retried once inside the fetch.
     expect(fetchMock).toHaveBeenCalledTimes(6);
     const requestedPageSizes = fetchMock.mock.calls.map(call =>

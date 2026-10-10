@@ -704,8 +704,8 @@ export class PgKnowledgeRepository {
    * one; a dedicated column or table would be a third provenance mechanism.
    * `provenance_links` already answers this exact question — a knowledge
    * item's `source_refs` are read from it with `target_type = 'knowledge'` —
-   * so `note` joins a vocabulary that is now owned in one place rather than
-   * copied into three.
+   * so `note` joins that one vocabulary. Do not copy the list into a second
+   * place.
    *
    * The Note keeps its content. Promotion is not a move.
    */

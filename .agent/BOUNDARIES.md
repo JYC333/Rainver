@@ -402,10 +402,10 @@ how a CLI runtime picks a backend:
   (`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, and a
   runtime's settings file that can itself export environment). Pointing the
   run at a control-plane-provided profile directory is part of the binding,
-  not an optional extra, and since ADR 0016 there is exactly one place that
-  happens: **the daemon, on the host that runs it**. Nothing on the control
-  plane materializes a profile any more — there is no broker temp HOME and no
-  server-side sandbox cwd to write into, because a CLI does not execute here.
+  not an optional extra. Exactly one place does that: **the daemon, on the
+  host that runs it** (ADR 0016). Nothing on the control plane materializes a
+  profile. There is no broker temp HOME and no server-side sandbox cwd to
+  write into, because a CLI does not execute here.
   The daemon creates a per-(Agent × container × adapter × provider) profile
   directory (B68) and sets every state-root variable the runtime's login spec
   names so the vendor's config resolves inside it, for both host kinds alike.

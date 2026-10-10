@@ -1490,7 +1490,7 @@ async function mergedCorpusItemId(
 
 /**
  * Archives the Source-backed corpus rows that no active Project Source link
- * backs any more. Routing calls it after each link change; the binding
+ * still backs. Routing calls it after each link change; the binding
  * close paths call it after archiving a binding's links, so a paused or
  * deleted binding takes its corpus rows with it (corpus `status` is link
  * lifecycle).

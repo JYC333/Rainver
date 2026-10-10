@@ -209,8 +209,8 @@ export class EvolvableAssetEvaluationRepository {
         now,
       ],
     );
-    // Recording an evaluation run against a still-candidate version means
-    // review/evaluation is now in progress — advance it to 'testing'.
+    // Recording an evaluation run against a still-candidate version advances
+    // it to 'testing'.
     if (version.status === "candidate") {
       await this.db.query(`UPDATE evolvable_asset_versions SET status = 'testing', updated_at = $3 WHERE asset_id = $1 AND id = $2`, [
         assetId,
