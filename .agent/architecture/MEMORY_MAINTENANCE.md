@@ -200,8 +200,8 @@ The response counters mean:
 - `candidate_limit`: requested SQL candidate limit.
 - `candidates_examined`: visible rows examined after Memory and project filters
   within that bounded SQL window.
-- `scanned`: currently equal to `candidates_examined`; kept for compatibility
-  with other maintenance report shapes.
+- `scanned`: equal to `candidates_examined`, so other maintenance report shapes
+  read the same counter.
 
 Older memories outside the bounded recent-update window can be missed unless the
 caller uses `scan_mode = full`. Full scan is page-at-a-time at the service

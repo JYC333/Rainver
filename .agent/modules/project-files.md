@@ -3,9 +3,9 @@
 ## Status
 Implemented. Files & Code is a Project-local Area, not a global operator console.
 
-The shipped full-file editor, recovery drafts, and message-owned lazy input
+The editor, recovery drafts, and message-owned lazy input
 resources are recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-input-resources.md).
-This module guide describes the post-integration behavior.
+This module guide describes the current behavior.
 
 ## Purpose
 Project-local interface for browsing and editing a Project Folder's files with CodeMirror 6,
@@ -25,7 +25,7 @@ filesystem directly.
   unregister, scan)
 
 ## Does Not Own
-- Sandbox creation (sandbox module)
+- Run sandbox provisioning. Run preparation calls `projectFolders/sandbox.ts`; it is not a Files & Code write.
 - Proposal storage (proposals module)
 - Memory display (memory module)
 - Agent run dispatch (agents module)

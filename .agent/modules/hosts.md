@@ -120,7 +120,7 @@ Workspace Location paths only after validating the launch's explicit access set;
 it never accepts an absolute path from the browser or launch payload. Current
 Files & Code attachments are database-backed immutable message resources, so
 they do not materialize as Host temporary files and do not enter this path
-resolver. Legacy live-folder links retain the existing containment checks: for
+resolver. Live-folder links use these containment checks: for
 the built-in Host, Location paths are relative to the shared instance workspace
 root and checked lexically and by canonical `realpath`; a paired Host uses only
 its registered local path map.

@@ -21,7 +21,6 @@ surfaces use the capability framework read model exposed through
 - Automation, schedules, or cron triggers.
 - Capability marketplace installation.
 - Repository clone/install flows.
-- Legacy catalog product routes (`/api/v1/capabilities*`).
 - Agent-produced capability updates.
 - Proposal approval decisions for code or capability changes (the proposals
   module decides; this module creates the proposals and applies accepted ones).
