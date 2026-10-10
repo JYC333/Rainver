@@ -155,9 +155,9 @@ export interface NoteProjectRoleInput {
  * cases are load-bearing:
  *
  * - **Given a pool**, this opens the transaction and reindexes after it
- *   commits, on the pool. A projection failure is then logged and dropped,
- *   which is what we want: the index is derived and rebuildable, so losing a
- *   refresh must not undo a write the user already saw succeed.
+ *   commits, on the pool. A projection failure is logged and dropped. The
+ *   index is derived and rebuildable, so losing a refresh must not undo a
+ *   write the user already saw succeed.
  * - **Given an already checked-out client** — `withQueryableTransaction` joins
  *   rather than nests, and several callers (report materialization, area
  *   initialization) are already inside someone's transaction — there is no

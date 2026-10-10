@@ -53,8 +53,8 @@ const MODEL_SPECS: Array<{ pattern: RegExp; spec: ModelSpec }> = [
   },
   // MiniMax M2 family (M2, M2.1, M2.5, M2.7 and their -highspeed/-lightning
   // variants): 204800-token window covering input and output together.
-  // MiniMax publishes no per-request output default for these, so we don't
-  // invent one — callers keep whatever budget they set.
+  // MiniMax publishes no per-request output default for these. Do not
+  // invent one. Callers keep whatever budget they set.
   {
     pattern: /(^|\/)minimax-m2/i,
     spec: {

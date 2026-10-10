@@ -180,7 +180,7 @@ export const BlockIds = Extension.create({
             // node and re-validates its content, so a document the reader can
             // display but the schema considers irregular — markdown that put an
             // image where a paragraph expects inline content, say — would throw
-            // here purely because we wanted to add an attribute to it.
+            // on an attribute write. Do not use `setNodeMarkup` for this.
             try {
               transaction.setNodeAttribute(entry.pos, BLOCK_ID_ATTR, entry.id)
             } catch {
