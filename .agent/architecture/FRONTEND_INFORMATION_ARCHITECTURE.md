@@ -202,11 +202,11 @@ Two stable tiers plus per-scene context (`src/core/navigation.tsx`, `src/compone
   layout — notably the backend-driven Notes collection tree, which would collide with a
   persistent section sidebar or tab strip. The Notes tree is local to the Notes section
   and is never a global nav tier; PARA is only the default initialization template.
-  `Domains` (`/knowledge/domains`, focus areas) is one of these sections. It sits here
-  because the app's groupings are functional — capture, knowledge, agents, dev — while a
-  focus area is a life-area grouping. The placement is not a claim that a focus area
-  is knowledge, and it is the reason Domains is not in `KNOWLEDGE_WORKSPACE_SECTIONS`
-  (it is a parked destination, not one `/knowledge` should reopen by default).
+  `Domains` (`/knowledge/domains`, focus areas) is one of these sections.
+  The app's groupings are functional — capture, knowledge, agents, dev — and a
+  focus area is a life-area grouping. The placement is not a claim that a focus
+  area is knowledge. Domains is not in `KNOWLEDGE_WORKSPACE_SECTIONS`, so
+  `/knowledge` does not reopen it by default.
 - **Right Inspector** — scene/object-specific and owned by individual pages, never an
   app-level feature menu.
 

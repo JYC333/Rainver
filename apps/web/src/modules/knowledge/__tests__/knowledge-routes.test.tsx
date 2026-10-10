@@ -231,11 +231,9 @@ describe('Knowledge section switcher catalog', () => {
     expect(KNOWLEDGE_SECTIONS.map(s => s.label)).toEqual(['Knowledge Home', 'Notes', 'Wiki', 'Sources', 'Cards', 'Domains'])
   })
 
-  // Domains is a focus-area surface parked under Knowledge because the section
-  // taxonomy is functional and has no home for a life-area grouping yet. Its
-  // placement is a stopgap; that it is *reachable* is not — this renders the
-  // route. A splat mount with no nested Routes is invisible to an assertion
-  // on the catalog constant.
+  // Domains is a focus-area surface under Knowledge, and it has its own route.
+  // A splat mount with no nested Routes is invisible to an assertion on the
+  // catalog constant.
   it('renders Domains at its own route', async () => {
     expect(KNOWLEDGE_SECTIONS.find(s => s.id === 'domains')?.to).toBe('/knowledge/domains')
     renderAt('/spaces/personal-1/knowledge/domains')
