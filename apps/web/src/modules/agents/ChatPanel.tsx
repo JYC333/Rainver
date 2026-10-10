@@ -166,7 +166,7 @@ export default function ChatPanel({
           artifactRefs: Array.isArray(m.metadata_json?.artifact_refs) ? m.metadata_json.artifact_refs.filter((value): value is string => typeof value === 'string') : undefined,
           runId: m.run_id ?? undefined,
           runIds: uniqueRunIds(m.run_id, m.metadata_json?.retry_run_ids),
-          // The turn behind a saved reply, so D3's fold survives a reload
+          // The turn behind a saved reply, so the fold survives a reload
           // rather than existing only in the session that watched it stream.
           //
           // Through `settledTurn` like every other settle: the turn supplies

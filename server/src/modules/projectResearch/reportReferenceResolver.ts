@@ -73,7 +73,7 @@ export async function resolveResearchReportReferences(db: Queryable, identity: S
   return { content: sanitize(content), resolved: [...groups.values()] };
 }
 
-/** The persistent materialization label, or the positional fallback for legacy reports. */
+/** The persistent materialization label, or the positional fallback when a report has none. */
 function entryLabel(ref: Record<string, unknown>, positionalIndex: number): string {
   const id = ref.reference_id;
   return typeof id === "string" && id.trim() ? id.trim() : `ref-${positionalIndex}`;

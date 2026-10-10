@@ -65,12 +65,11 @@ export async function resolveNotebookNote(
    * reader of every note filed under that Project.
    *
    * `null` is the standing and monitor comparison jobs, which read the
-   * Project's baseline to build the Project's own report. Accepted leftover:
-   * that report's Run is created for a Project writer, so a member who gave
-   * their own `private` note the `understanding` role has its body reach that
-   * person's Run. Unchanged here — these paths had no viewer at all before —
-   * and recorded rather than tightened, because the baseline role is a Project
-   * fixture and narrowing it would silently empty the comparison instead.
+   * Project's baseline to build the Project's own report. That report's Run
+   * is created for a Project writer, so a member who gave their own `private`
+   * note the `understanding` role has its body reach that person's Run. Do
+   * not narrow this read: the baseline role is a Project fixture, and an
+   * empty comparison would be the result.
    */
   viewerUserId: string | null,
 ): Promise<NotebookNoteResolution> {

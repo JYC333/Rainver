@@ -113,7 +113,7 @@ describe("executeRemoteHostCliAdapter", () => {
     // events leaves the conversation with no signal that it finished. Do not
     // skip the sink on an early return. These early returns share
     // `remoteFailureWithEvent`.
-    // ACP runtime replatform P3: codex_cli is remote-eligible now (it speaks
+    // codex_cli is remote-eligible (it speaks
     // ACP, like opencode), so gemini_cli (still implementation_status
     // "planned") is the adapter that exercises this particular early return.
     const threadEventSink = vi.fn().mockResolvedValue(undefined);
@@ -160,7 +160,7 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(result.error_code).not.toBe("conversation_input_unavailable");
   });
 
-  it("drives opencode's ACP controller over the daemon's duplex stdin frames and reports success (ACP runtime replatform P2)", async () => {
+  it("drives opencode's ACP controller over the daemon's duplex stdin frames and reports success", async () => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();
     registry.registerConnection("host-1", sink);

@@ -46,13 +46,12 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// a future provider title from turning event persistence into a Run failure.
 	toolName: text("tool_name"),
 	toolInputSummary: text("tool_input_summary"),
-	// ACP runtime replatform P3 (A9): tool_call.kind (execute/edit/read/...),
+	// tool_call.kind (execute/edit/read/...),
 	// initially set on tool_activity_started and patchable by finished updates.
 	toolKind: varchar("tool_kind", { length: 32 }),
-	// ACP runtime replatform P3 (A9): bounded tool-result content, set on
-	// tool_activity_finished only. Populated for claude and opencode;
-	// codex-acp currently reports no result content (a known adapter asymmetry,
-	// not a bug — see the ACP runtime replatform plan §4).
+	// Bounded tool-result content, set on
+	// tool_activity_finished only. Populated for claude and opencode.
+	// codex-acp reports no result content. That is an adapter difference.
 	toolResultSummary: text("tool_result_summary"),
 	// tool activity: 'pending' | 'succeeded' | 'failed' | 'in_progress' (ACP's
 	// non-terminal status, absorbed as a same-shaped update — not a new

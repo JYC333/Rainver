@@ -31,7 +31,7 @@ const REMOTE_HOST = {
 }
 
 const CLAUDE_ADAPTER = { runtime_key: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true, reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false, provider_api: 'claude_compatible' as const }
-// ACP runtime replatform P3: codex_cli's own executable is the pinned
+// codex_cli's own executable is the pinned
 // codex-acp adapter, not the vendor `codex` binary a host's capability probe
 // reports — capability_probe carries that distinction.
 const CODEX_ADAPTER = { runtime_key: 'codex_cli', display_name: 'Codex', command: 'codex-acp', capability_probe: 'codex', remote_eligible: true, reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false, provider_api: 'openai_compatible' as const }
@@ -113,7 +113,7 @@ describe('HostsPanel', () => {
   })
 
   it('shows versions on installed Agent rows and omits uninstalled runtime badges', async () => {
-    // ACP runtime replatform P3: codex_cli is remote-eligible now (its own
+    // codex_cli is remote-eligible (its own
     // adapter is codex-acp), so a still-genuinely-ineligible adapter
     // (gemini_cli, implementation_status "planned") exercises this case.
     const GEMINI_ADAPTER = { runtime_key: 'gemini_cli', display_name: 'Gemini CLI', command: 'gemini', capability_probe: 'gemini', remote_eligible: false, supports_runtime_native: false, supports_model_provider: false }

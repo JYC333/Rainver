@@ -1506,9 +1506,8 @@ describe("Room workflow (real Postgres)", () => {
     // SpaceAssistantService's provisioning (triggered by Room creation for
     // agent-1, a system_assistant) can reconcile a fresh agent_version and
     // repoint agents.current_version_id once a real runtime tool is
-    // installed — it no longer necessarily stays the fixture's original
-    // 'version-1', so compare against whatever the current pointer actually
-    // is rather than that hardcoded literal.
+    // installed. Compare against the current pointer, not the fixture
+    // literal 'version-1'.
     const currentAgentVersion = await db.pool.query<{ current_version_id: string }>(
       `SELECT current_version_id FROM agents WHERE space_id='space-1' AND id='agent-1'`,
     );
@@ -6870,7 +6869,7 @@ describe("Room workflow (real Postgres)", () => {
 
   it("always has a mainline to answer with, and still says who may write in it", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
-    // "A Project with no Room" is no longer a state (ADR 0018 decision 4), so
+    // A Project is created with its mainline Room (ADR 0018 decision 4), so
     // the panel has nothing to branch on. `viewer_can_write` is still needed,
     // but not for speaking: user-2 is a Project viewer who may read *and*
     // speak — mainline membership follows Project membership and the send

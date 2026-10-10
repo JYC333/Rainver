@@ -236,8 +236,8 @@ export class ProjectResearchAreaService {
     if (!this.config) throw new HttpError(500, "Research execution is unavailable");
     const prompt = text(body.prompt, 4000);
     if (!prompt) throw new HttpError(422, "prompt is required");
-    // `section_key` is a legacy field name (kept for the existing Reading
-    // List "compare selected material" caller): a registered role resolves to
+    // `section_key` is accepted (the Reading List "compare selected material"
+    // caller sends it): a registered role resolves to
     // whichever note holds that role, whatever its title now is; any other
     // value is a literal note title, created if it doesn't exist yet.
     const requested = optionalString(body.section_key) ?? "understanding";

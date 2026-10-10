@@ -107,8 +107,7 @@ export function registerErrorEnvelopeHandler(app: FastifyInstance): void {
           };
     const requestId = resolveRequestId(request);
     // Keep the response generic, but log the server-side cause at error level.
-    // The previous implementation put the useful error only at debug level,
-    // which made production failures look indistinguishable from one another.
+    // Do not log it only at debug: production failures then look the same.
     request.log.error(
       {
         err,

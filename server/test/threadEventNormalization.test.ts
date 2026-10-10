@@ -28,7 +28,7 @@ describe("createThreadEventNormalizer", () => {
     expect(normalizer.pushAcpTextDelta("ld\n")).toEqual([{ event_type: "assistant_text", text: "Hello world\n" }]);
   });
 
-  it("emits tool_activity_started with tool_kind from an ACP tool_call update (ACP runtime replatform P3, A9)", () => {
+  it("emits tool_activity_started with tool_kind from an ACP tool_call update", () => {
     const normalizer = createThreadEventNormalizer();
     const drafts = normalizer.pushAcpProtocolEvent({
       method: "session/update",

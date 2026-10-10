@@ -1089,21 +1089,15 @@ real-time event layer (none exists).
 Job dispatch/execution frames (`RemoteHostExecutionAdapter` in
 `server/src/modules/runs/remoteHostCliAdapter.ts`): `launch` (server → daemon,
 rendered argv + timeout), `stdin` (server → daemon, one frame per ACP
-JSON-RPC message — the ACP runtime replatform's P2 duplex extension to this
-protocol; stdin is no longer written once and closed), `output`/`complete`
+JSON-RPC message. Stdin stays open across the session), `output`/`complete`
 (daemon → server, routed through `sharedHostConnectionRegistry`
 (`server/src/modules/hosts/connectionRegistry.ts`) to whichever
 `RemoteWsCliCommandExecutor` call is awaiting that run), `terminate` (server →
 daemon, cancel closures registered the same way `SandboxRunnerCliCommandExecutor`
 registers them for the server-host path). Every adapter (`claude_code`,
-`codex_cli`, `opencode`) can run remotely now — all three speak ACP, a
+`codex_cli`, `opencode`) can run remotely — all three speak ACP, a
 bidirectional JSON-RPC protocol the duplex `stdin`/`output` frame pair
 carries natively.
-
-The daemon-supervised HTTP/SSE runtime endpoints sketched in 2026-08-21 were
-superseded 2026-08-22 before anything was built, in favor of the duplex-frame
-ACP extension above (the ACP runtime replatform plan, P1-P5, complete and
-retired 2026-08-23; ledger in git history).
 
 A `launch` the daemon queues behind another writer of its Location is
 answered with `waiting_for_workspace` (same nonce) before its `launched`; see

@@ -790,8 +790,7 @@ expect((await repository.records(SPACE, first.session.id)).records).toHaveLength
       const owner = { spaceId: SPACE, userId: OWNER };
 
       // Until a summary exists a whole-session reference refuses and points at
-      // the records — the honest answer, rather than a truncated transcript
-      // shipped under the name "summary".
+      // the records. Do not return a truncated transcript as a summary.
       await expect(resolveThreadReferenceForTest(owner, { kind: "imported_session", id: imported.session.id }))
         .rejects.toMatchObject({ responseBody: { code: "reference_summary_unavailable" } });
 

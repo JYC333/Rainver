@@ -621,8 +621,8 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     const operation = (await db.pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(operation).toMatchObject({ status: "completed", progress_json: { current_stage: "complete", monitoring_active: true } });
     expect((await db.pool.query(`SELECT stance,comparison_detail FROM research_evidence_cards WHERE source_item_id=$1`, [sourceItem])).rows[0]).toEqual({ stance: "contradicts", comparison_detail: "No effect under stronger controls." });
-    // The notebook is untouched — monitoring no longer co-edits it directly;
-    // disruptive comparisons instead raise an Evidence Signal (plan section 18.2).
+    // The notebook is untouched. Monitoring does not edit it. A disruptive
+    // comparison raises an Evidence Signal.
     const section = (await db.pool.query(`SELECT version FROM notes WHERE object_id=$1`, [understandingId])).rows[0];
     expect(section).toMatchObject({ version: 1 });
     expect(await latestRefs(understandingId)).toEqual([]);

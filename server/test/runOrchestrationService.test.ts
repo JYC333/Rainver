@@ -70,10 +70,8 @@ function invocationDelivery(prompt = "Say hello"): InvocationDelivery {
 }
 
 /**
- * ACP runtime replatform P3: codex_cli drives the general AcpController now
- * (CodexAppServerController's bespoke NDJSON-RPC handshake is deleted) — this
- * helper drives a single ACP turn to completion, same as it did for the old
- * protocol, just speaking session/new + session/prompt instead.
+ * codex_cli drives the general AcpController. This helper drives a single
+ * ACP turn to completion: session/new, then session/prompt.
  */
 async function completeCodexProtocol(
   controller: CliStdioController | undefined,

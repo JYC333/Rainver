@@ -77,11 +77,10 @@ export async function recordTaskCreated(
  *
  * **A missing evaluation is recorded, not refused.** An evaluation comes from
  * an execution Run's review, and most Tasks never have one — work done inside
- * a turn has none at all — so it was in `missing` for essentially every Task
- * on the board. A prompt that fires on every close is not a gate: it trains
- * the person to click through, and it buries the one reason that is a claim
- * about deliverables under one that is only a process step. It still travels
- * in `overridden`, so the record says the Task closed without a review.
+ * a turn has none at all. Do not prompt on every close: that trains the
+ * person to click through, and it buries the deliverable reason under a
+ * process step. A missing evaluation still travels in `overridden`, so the
+ * record says the Task closed without a review.
  *
  * Runs before the row is written, so a refused close leaves nothing behind.
  */

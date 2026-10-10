@@ -49,8 +49,8 @@ describe("space object writer", () => {
 });
 
 // B12H, enforced in one place so it cannot be forgotten at one of the eleven
-// call sites. Each of these was a silent defect before: an unattributable
-// object, or one whose Project gate was simply absent.
+// call sites. An object needs created-by provenance, and a Project-scoped
+// object needs its Project gate.
 describe("space object writer B12H rules", () => {
   it("rejects an object with no created-by provenance", () => {
     const { createdByUserId: _omitted, ...withoutProvenance } = VALID;

@@ -55,9 +55,9 @@ export async function seedSpaceOwnerProject(
  * The mainline Room a Project is created with (ADR 0018 decision 4).
  *
  * Part of the Project seed rather than an opt-in, because in production a
- * Project without one cannot exist — a fixture that omitted it would be
- * testing a state the system no longer has, and `getProjectMainline` now
- * reports its absence as a broken invariant rather than an empty Project.
+ * Project without one cannot exist. A fixture that omitted it would not be
+ * a state the product has, and `getProjectMainline` reports its absence as
+ * a broken invariant.
  *
  * No conversation and no manager Agent: both arrive with the first message.
  */

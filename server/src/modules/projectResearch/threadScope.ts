@@ -31,7 +31,7 @@ interface ResearchThreadDriftResult {
 
 /**
  * The pinned Inquiry Thread is the sole Question authority for a research
- * Workflow — Project.current_focus and the legacy research profile are
+ * Workflow. Project.current_focus and the research profile are
  * presentation/setup state, never compared here.
  */
 export async function checkPinnedThreadDrift(

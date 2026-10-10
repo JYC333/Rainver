@@ -70,7 +70,7 @@ import {
  * (see `packages/host-daemon/src/execution.ts`).
  */
 /**
- * ACP runtime replatform P2: the daemon knows the real workspace path for a
+ * The daemon knows the real workspace path for a
  * run (it resolved it to spawn the process); the server never does (ADR 0016
  * B64). An ACP session still needs to name its `cwd` — both as an argv token
  * (opencode's `headless_command_template`) and inside the controller's own

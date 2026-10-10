@@ -3194,7 +3194,7 @@ export interface HostRuntimeDefinitionOption {
   runtime_key: string
   display_name: string
   command: string
-  /** ACP runtime replatform P3: the vendor binary a host's capability probe actually reports (may differ from `command`). */
+  /** The vendor binary a host's capability probe actually reports (may differ from `command`). */
   capability_probe: string
   remote_eligible: boolean
   /** The ACP registry entry this adapter's managed copy is installed from, when it has one. */

@@ -102,7 +102,7 @@ export interface RuntimeAdapterSpec {
     interactive_command_template?: string[];
     protocol?: "acp";
     /**
-     * ACP runtime replatform P3: the daemon-probed vendor binary name to
+     * The daemon-probed vendor binary name to
      * check `capabilities_json.runtimes` against for remote eligibility,
      * when it differs from `executable.command`. An ACP adapter package
      * (e.g. `codex-acp`) is our own bundled client, not something a trusted
@@ -313,7 +313,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     },
     delegation_controllability: "runtime_config",
     structured_output: "native_event_stream",
-    // ACP runtime replatform P4: Claude's opaque ACP session id is resumed by
+    // Claude's opaque ACP session id is resumed by
     // the general AcpController, not by vendor-specific `--resume` argv.
     checkpoint_resume: "runtime_session",
     cancellation_reliability: "best_effort",
@@ -402,12 +402,11 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     subagent_disable_mechanism: "unknown",
     delegation_controllability: "unknown",
     structured_output: "unknown",
-    // ACP runtime replatform P3: codex resumes an opaque session id through
-    // `session/resume` (A7) — the general AcpController, not a bespoke
+    // Codex resumes an opaque session id through
+    // `session/resume` — the general AcpController, not a bespoke
     // thread/resume RPC. The server keeps the corresponding `.codex` state in
     // the conversation's isolated HOME; each turn's usage is per-turn
-    // already (session/prompt's own result.usage), no baseline subtraction
-    // needed the way the deleted codex_app_server controller required.
+    // already (session/prompt's own result.usage). No baseline subtraction.
     checkpoint_resume: "runtime_session",
     cancellation_reliability: "best_effort",
     observability_level: "opaque",

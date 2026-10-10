@@ -7,7 +7,7 @@ export type PerspectiveType = 'space-scoped' | 'personal' | 'neutral'
 /**
  * Where an app entry originates.
  *
- * built_in       — shipped with the core bundle, always present.
+ * built_in       — included in the core bundle, always present.
  * official_plugin — an official optional module (developed by rainver maintainers,
  *                  installed/enabled via the official plugin control plane).
  *                  These entries are NOT capabilities. See OFFICIAL_OPTIONAL_MODULES.md.

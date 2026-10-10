@@ -2617,7 +2617,7 @@ export class ProjectResearchOrchestrator {
     const pinned = scope[0];
     if (!pinned) return true;
     // The pinned Inquiry Thread is the sole Question authority for this
-    // Workflow. Project.current_focus and the legacy research profile are
+    // Workflow. Project.current_focus and the research profile are
     // presentation/setup state; comparing either here would let selecting a
     // different Workflow incorrectly stall this one.
     return (await checkPinnedThreadDrift(this.db, spaceId, projectId, pinned)).drifted;

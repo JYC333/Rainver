@@ -7,8 +7,7 @@ import { dropApiCacheAtBoot } from './lib/sessionResidue'
 import './index.css'
 
 // `autoUpdate` alone only installs a new service worker; the page already on
-// screen keeps running the old bundle until someone reloads, so a deploy
-// looked like "nothing changed" until a hard refresh. Registering through the
+// screen keeps the previous bundle until it reloads. Registering through the
 // virtual module reloads the page once the new worker takes control.
 registerSW({ immediate: true })
 

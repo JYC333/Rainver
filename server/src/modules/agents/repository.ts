@@ -1375,11 +1375,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     // A version somebody else authored is not the seed's to overwrite. The
     // instance keeps its identity fields in step and stops there.
     //
-    // An unmarked version that is nevertheless identical to what the seed
-    // produces is adopted rather than treated as divergence: it predates the
-    // mark and provably nobody has changed it. Where an unmarked version
-    // *differs*, a legacy drift and a person's edit are indistinguishable, and
-    // declining to overwrite is the safe direction.
+    // An unmarked version identical to the seed is adopted. Where an unmarked
+    // version differs, do not overwrite it: a seed drift and a person's edit
+    // cannot be told apart.
     if (current && input.followsSeedKey && current.follows_seed_key !== input.followsSeedKey) {
       if (equal && current.follows_seed_key === null) {
         // Adopt only an *unmarked* version. One already carrying a different

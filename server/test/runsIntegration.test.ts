@@ -722,8 +722,8 @@ describe("runs repositories against real PostgreSQL", () => {
     });
     expect(step.step_index).toBe(0);
 
-    // The original defect wrote a worker-id string (>36 chars, not an Actor) to
-    // actor_id; varchar(36) rejects it.
+    // actor_id is an Actor id. A worker-id string is longer than 36 characters
+    // and is not an Actor; varchar(36) rejects it.
     await expect(
       repo.createRunStep({
         run_id: runId,

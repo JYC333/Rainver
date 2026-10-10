@@ -27,7 +27,7 @@ export function createVendorEventNormalizer(runtimeKey: string): {
   const toolCalls = createAcpToolCallLifecycle();
 
   const push = (event: Record<string, unknown>, occurredAt: string): RuntimeSemanticEvent[] => {
-    // ACP runtime replatform P3/P4: all conversation runtimes speak the same
+    // All conversation runtimes speak the same
     // session/update vocabulary. This branch is protocol-shaped, not
     // vendor-specific.
     if (!isAcpRuntimeAdapter(runtimeKey) || event.method !== "session/update") return [];

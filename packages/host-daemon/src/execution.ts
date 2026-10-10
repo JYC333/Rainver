@@ -174,15 +174,15 @@ export function launchFailureMessage(input: {
 }
 
 /**
- * ACP runtime replatform P2 (A2): the daemon must not become a vendor
+ * The daemon must not become a vendor
  * protocol translator. Raw placeholder substitution remains for argv and
- * legacy non-ACP values; structured ACP JSON goes through `substituteAcpInput`,
+ * non-ACP values; structured ACP JSON goes through `substituteAcpInput`,
  * which changes only the protocol's `cwd` fields and server-issued resource
  * links, never user text, filenames, or snapshot bodies.
  */
 export { REMOTE_CWD_PLACEHOLDER };
 
-/** Substitute placeholders in an argv value or legacy non-ACP payload. */
+/** Substitute placeholders in an argv value or a non-ACP payload. */
 export function substituteCwd(value: string, cwd: string): string {
   return substitutePlaceholders(value, { [REMOTE_CWD_PLACEHOLDER]: cwd });
 }
@@ -198,7 +198,7 @@ function substitutePlaceholders(value: string, placeholders: Record<string, stri
 
 /**
  * Resolve only the ACP ResourceLink URI owned by a conversation input part.
- * CWD and Skill placeholders retain their legacy handling; new resources use
+ * CWD and Skill placeholders keep their own substitution; new resources use
  * parsed JSON fields so a filename or snapshot body containing the same token
  * can never be rewritten accidentally.
  */
@@ -287,7 +287,7 @@ export function substituteAcpInput(
 }
 
 /**
- * ACP runtime replatform P3/P4: the bundled ACP adapter commands are not
+ * The bundled ACP adapter commands are not
  * binaries a trusted host has on PATH — they are pinned dependencies of THIS
  * package (an ACP adapter is our client, not the vendor runtime). The daemon
  * resolves its own installed copy and spawns it through `node` rather than
@@ -1548,7 +1548,7 @@ async function launchRun(
   // is still being torn down; the newest dispatch owns the id from here.
   activeRuns.set(frame.run_id, active);
   activeLaunches.set(active.launchId, { runId: frame.run_id, active });
-  // ACP runtime replatform P2: the server must not write a `stdin` frame
+  // The server must not write a `stdin` frame
   // (e.g. a controller's `initialize` request) until it knows this run is
   // actually registered here — `launch` and any immediately-following
   // `stdin` frame are two separate WS messages, and this handler reaches

@@ -466,13 +466,13 @@ describe("handleLaunch", () => {
     expect(done.exit_code).not.toBe(0);
   }, 10000);
 
-  it("resolves codex_cli's ACP adapter to this daemon's own installed, on-disk entrypoint (ACP runtime replatform P3)", () => {
+  it("resolves codex_cli's ACP adapter to this daemon's own installed, on-disk entrypoint", () => {
     const entrypoint = resolveAcpEntrypoint("codex-acp");
     expect(entrypoint).not.toBeNull();
     expect(existsSync(entrypoint!)).toBe(true);
   });
 
-  it("resolves Claude's bundled ACP adapter to this daemon's own entrypoint (ACP runtime replatform P4)", () => {
+  it("resolves Claude's bundled ACP adapter to this daemon's own entrypoint", () => {
     const entrypoint = resolveAcpEntrypoint("claude-agent-acp");
     expect(entrypoint).not.toBeNull();
     expect(existsSync(entrypoint!)).toBe(true);

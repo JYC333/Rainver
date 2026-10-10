@@ -179,7 +179,7 @@ describe("runtimeEventNormalization", () => {
       expect((events[0]!.metadata_json as Record<string, unknown>).tool_name).toBe("Read file");
     });
 
-    it("normalizes ACP tool lifecycle updates for codex_cli too (ACP runtime replatform P3)", () => {
+  it("normalizes ACP tool lifecycle updates for codex_cli too", () => {
       const events = normalizeVendorEvents("codex_cli", [
         {
           jsonrpc: "2.0",

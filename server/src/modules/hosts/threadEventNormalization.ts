@@ -99,7 +99,7 @@ export function createThreadEventNormalizer(): {
           tool_call_id: lifecycle.callId,
           tool_name: toolName,
           tool_input_summary: summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS),
-          // ACP runtime replatform P3 (A9): the 9-category kind is what
+          // The 9-category kind is what
           // makes claude/codex/opencode tool rows comparable in the UI.
           tool_kind: stringValue(update.kind),
           tool_result_summary: summarizeToolResultContent(update.content)
@@ -199,7 +199,7 @@ function summarizeJson(value: unknown, maxChars: number): string | null {
 }
 
 /**
- * ACP runtime replatform P3 (A9): only the "content" tool-call-content
+ * Only the "content" tool-call-content
  * variant is absorbed — text an agent explicitly reported as a tool's
  * result. The "diff" variant is declined by design (the daemon's own
  * `git diff HEAD` captures the workspace's true state, including changes the

@@ -6,7 +6,7 @@ import { builtinHostServerUrl } from "./controlPlaneUrl.js";
 import { PgHostRepository } from "./repository.js";
 
 /**
- * The built-in host's registration credential (plan decision 4).
+ * The built-in host's registration credential.
  *
  * The instance's own execution host is not a machine anyone pairs: it is a
  * container of this deployment, and a pairing code — a one-time secret typed

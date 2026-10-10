@@ -8,8 +8,8 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Fixed workspace roots remain immovable at the server boundary. Project-backed
-// folders are different: they retain protected destructive actions but can be
-// reparented so legacy projects can be organized under the Projects root.
+// folders retain protected destructive actions but can be reparented under the
+// Projects root.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

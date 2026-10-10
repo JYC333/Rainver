@@ -307,9 +307,8 @@ describe("Inquiry Core (real Postgres)", () => {
       }),
     ).rejects.toMatchObject({ statusCode: 422 });
 
-    // Focusing a Thread no longer demands that a next step be named first.
-    // That demand was the reason the UI made users pick from a menu before
-    // they could put a Thread in Focus at all.
+    // Focusing a Thread does not require a next step first. Do not make Focus
+    // wait on a menu pick.
     const bare = await iterationSvc.updateWork(identity, PROJECT, question.id as string, {
       attention_state: "focused",
     });
@@ -743,9 +742,8 @@ describe("Inquiry Core (real Postgres)", () => {
       statement: "B",
       primary_parent_id: a.id,
     });
-    // The success path, exercised before the cycle case: only the rejection was
-    // covered, so a query in the successful branch could reference a column that
-    // no longer exists and the suite would still pass.
+    // The success path runs before the cycle case. A query in the successful
+    // branch that names a missing column has to fail here.
     const c = await threads.createThread(ownerIdentity(), PROJECT, { kind: "question", statement: "C" });
     const reparented = await threads.setPrimaryParent(ownerIdentity(), PROJECT, c.id as string, a.id as string);
     expect(reparented).toMatchObject({ id: c.id, primary_parent_id: a.id });
@@ -909,8 +907,8 @@ describe("Inquiry Core (real Postgres)", () => {
     const visibleBefore = await threadSvc.listThreads(viewerIdentity(), PROJECT);
     expect(visibleBefore.map((row) => row.id)).toContain(thread.id);
 
-    // Per-object visibility is what the ontology adds; Project membership alone
-    // no longer decides who sees a Thread.
+    // Who sees a Thread is per-object visibility. Project membership alone
+    // does not decide it.
     await db.pool.query(
       `UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`,
       [thread.id as string, SPACE],

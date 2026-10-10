@@ -279,8 +279,9 @@ export function researchOperationSteps(operation: ProjectOperation): Array<{ tit
   const currentIndex = researchStageIndex(stage)
   return fallback.map((fallbackTitle, index) => {
     const persisted = operation.steps?.find(step => step.seq === index)
-    // Classification is model work, not yet the human screening review.
-    // Keep legacy persisted step titles, but clarify the live phase.
+    // The screening step is model work until a person is waiting to review.
+    // A persisted title stays, except that live screening step, which reads
+    // "Screen materials".
     const title = index === 2 && stage === 'screening' && operation.status !== 'waiting_review'
       ? 'Screen materials'
       : persisted?.title ?? fallbackTitle

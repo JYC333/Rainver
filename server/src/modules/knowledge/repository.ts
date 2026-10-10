@@ -2475,13 +2475,9 @@ export class PgKnowledgeRepository {
   /**
    * The shared lookup behind every single-note read *and* mutation.
    *
-   * It applies the read gate, which the list path has always applied and this
-   * did not: a private note was absent from the list and returned by a direct
-   * fetch, and because `updateNote` / `deleteNote` / `rollbackNote` all gate on
-   * this row's existence, it was also editable by anyone in the Space. The same
-   * defect class the ontology audit fixed for `requireCase` and
-   * `definitionRow`; gating here means a caller cannot mutate what it cannot
-   * see.
+   * It applies the read gate. `updateNote`, `deleteNote`, and `rollbackNote`
+   * all gate on this row's existence, so a caller cannot mutate a note it
+   * cannot see.
    */
   private async getNoteRow(identity: SpaceUserIdentity, noteId: string): Promise<WithAccessLevel<NoteRow> | null> {
     const result = await this.db.query<WithAccessLevel<NoteRow>>(
@@ -2623,11 +2619,8 @@ function buildNoteWhere(
     params.push(value);
     return `$${params.length}`;
   };
-  // The list was gated by Space membership alone: `getNoteRow` applies the
-  // content gate but this did not, so every note in the Space was listable by
-  // any member regardless of owner, visibility, or Project — the note bodies
-  // and titles with them. A list that leaks what a detail read refuses is the
-  // same defect the ontology audit fixed for `requireCase`, one level up.
+  // The list uses the same content gate as `getNoteRow`. A list that returns
+  // what a detail read refuses would publish every note in the Space.
   clauses.push(contentReadSql("space_object", "so", add(identity.userId)));
   clauses.push(filters.status ? `n.status = ${add(filters.status)}` : "n.status <> 'deleted'");
   if (filters.projectId) clauses.push(`so.primary_project_id = ${add(filters.projectId)}`);

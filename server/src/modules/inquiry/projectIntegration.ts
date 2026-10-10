@@ -24,12 +24,9 @@ const FOCUS_LABELS: Record<string, string> = {
 /**
  * The next step the system worked out, where the person will see it.
  *
- * Advice is generated the moment a search finishes and written to
- * `inquiry_thread_advice` — good advice, with its reasoning. It rendered in
- * exactly one place: the Inquiry Area's stage workspace, for the one Thread
- * you had selected. So a finished four-hour search ended with the Project
- * front page saying nothing about what to do next, and the Room's Agent
- * inventing a question of its own because it could not read this either.
+ * Advice is written to `inquiry_thread_advice` when a search finishes, with
+ * its reasoning. The Project front page and the Room read it, not only the
+ * Inquiry Area stage workspace of the selected Thread.
  *
  * Stale advice (the Thread changed under it) is left out rather than shown
  * with a caveat: a recommendation about a question that no longer reads that

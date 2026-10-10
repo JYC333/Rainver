@@ -248,7 +248,7 @@ function templateVersionToOut(template: TemplateSpec): Record<string, unknown> &
     template_id: template.id,
     version: optionalString(doc.version) ?? "v1",
     // Template system prompts are managed by catalog/prompts and resolved by
-    // prompt asset key at create time. Do not expose the legacy template.yaml
+    // prompt asset key at create time. Do not expose the template.yaml
     // copy as an editable default.
     system_prompt: null,
     context_policy_json: objectValue(doc.context_policy),

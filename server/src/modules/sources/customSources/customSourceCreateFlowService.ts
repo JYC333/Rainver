@@ -284,8 +284,7 @@ export class CustomSourceCreateFlowService {
         // Without this catch, a dispatcher-level failure (e.g. a stored
         // pipeline definition that no longer passes schema validation, or a
         // missing source artifact) would propagate uncaught and leave the
-        // `source_handler_runs` row stuck in 'running' forever — see the
-        // pipeline-model review that found this gap.
+        // `source_handler_runs` row stuck in 'running' forever.
         return this.recordTestOutcome(identity, connectionId, versionId, runId, {
           status: "failed",
           failure_class: "handler_execution_error",

@@ -193,9 +193,9 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
         `SELECT status, progress_json->>'current_stage' AS current_stage FROM project_operations WHERE id=$1`,
         [operationId],
       );
-      // Checkpoint reform: reaching idea_review no longer means
-      // waiting on anybody, so the operation stays active rather than
-      // advertising a review that will never be asked for.
+      // Reaching idea_review does not mean waiting on anybody, so the
+      // operation stays active rather than advertising a review that will
+      // never be asked for.
       expect(finalOperation.rows[0]).toEqual({ status: "active", current_stage: "idea_review" });
 
       const report = await db.pool.query<{ synthesis_run_id: string; run_kind: string; status: string }>(

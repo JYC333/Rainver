@@ -190,8 +190,7 @@ describe("what a strict Run is given besides its workspace", () => {
  *
  * This is where a shared execution host's isolation is decided — the
  * environment, the HOME, the binds — and none of it is observable from a test
- * that would have to spawn `bwrap` to see it. Each assertion here stands for a
- * defect that was in the first cut of this phase.
+ * that would have to spawn `bwrap` to see it.
  */
 describe("planning a strict launch", () => {
   const plan = (overrides: Partial<Parameters<typeof planStrictLaunch>[0]> = {}) => planStrictLaunch({ egress: {},

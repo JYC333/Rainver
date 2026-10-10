@@ -307,9 +307,8 @@ describe("Research Area (real Postgres)", () => {
     expect(result.signalIds).toHaveLength(2);
     expect((await db.pool.query(`SELECT supports_count,contradicts_count,new_direction_count FROM research_scan_summaries WHERE operation_id=$1`, [operation])).rows[0])
       .toEqual({ supports_count: 1, contradicts_count: 1, new_direction_count: 0 });
-    // The notebook is untouched — monitoring no longer co-edits it directly.
-    // Resolved by role, and refs read from the note's latest revision: the
-    // title binding and `notes.refs_json` are both gone (NA, N8).
+    // The notebook is untouched. Monitoring does not edit it. Notes are
+    // resolved by role, and refs are read from the note's latest revision.
     const section = (await db.pool.query(
       `SELECT n.version, n.plain_text, nr.refs_json
          FROM notes n
@@ -458,9 +457,9 @@ describe("Research Area (real Postgres)", () => {
       section_key: "understanding",
       execution: { model_provider_id: PROVIDER },
     });
-    // Admitted and made durable on the request, performed by the worker: the
-    // request path no longer holds a provider call open, and a crash can no
-    // longer strand a succeeded Run whose edit never reached the note.
+    // Admitted and made durable on the request, performed by the worker. Do
+    // not hold a provider call on the request path: a crash must not leave a
+    // succeeded Run whose edit never reached the note.
     expect(edited).toMatchObject({ daily_limit: 20, daily_used: 1, status: "queued" });
     const queuedRun = (await db.pool.query<{
       status: string; model_provider_id: string | null; provider_task_control_id: string | null; started_at: string | null;
