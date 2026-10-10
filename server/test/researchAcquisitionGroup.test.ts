@@ -259,10 +259,10 @@ describe("researchAcquisitionPipelineDb", () => {
 
     it("starts when assessment rephrased the question, keeping the Thread's own statement authoritative", async () => {
       if (!db.available) return;
-      // Assessment rewriting the question is the pipeline working, not drift:
-      // comparing the strategy's text with the Thread's rejected the
-      // pipeline's own output, so `research.start_acquisition` could never
-      // start once a single word changed. Provenance decides instead — the
+      // Assessment rewriting the question is the pipeline working, not drift.
+      // Do not compare the strategy's text with the Thread's. That would
+      // reject the pipeline's own output, so `research.start_acquisition`
+      // could never start once a single word changed. Provenance decides — the
       // strategy came from an assessment of this Thread.
       __setQuestionRefineInvokerForTests(refiningAssessmentInvoker());
       const statement = "agent memory 应该按什么维度分类？";

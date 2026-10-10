@@ -67,8 +67,8 @@ describe("source fetch failure classification", () => {
   /**
    * A host that resolves nowhere and a host inside this instance's own network
    * are the same failure here, on purpose: the outbound boundary answers both
-   * with one message, and the persisted diagnostics must not reintroduce the
-   * distinction the message removed. Both are reported as a connectivity
+   * with one message. Do not reintroduce a distinction the message does not
+   * make. Both are reported as a connectivity
    * problem — still distinct from a provider that answered slowly — and both
    * carry no error code.
    */

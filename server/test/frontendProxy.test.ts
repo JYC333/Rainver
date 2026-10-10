@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 
 // The production web image is the only public entrypoint of a hosted
 // instance, so what its nginx forwards to the server is a security boundary
-// as much as a routing table. Pinned here because the first hosted instance
-// found the gap the hard way: the daemon's WebSocket path fell through to the
-// SPA fallback and every pairing died with a 1006 before hello.
+// as much as a routing table. The daemon's WebSocket path must be forwarded.
+// Do not let it fall through to the SPA fallback. Pairing would die with a
+// 1006 before hello.
 const webDir = join(import.meta.dirname, "..", "..", "apps", "web");
 const nginxConf = readFileSync(join(webDir, "nginx.conf"), "utf8");
 const securityHeaders = readFileSync(join(webDir, "security-headers.conf"), "utf8");
