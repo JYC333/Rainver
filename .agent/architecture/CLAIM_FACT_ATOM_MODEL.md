@@ -88,7 +88,8 @@ still describe a claim, but a durable fact/claim atom needs different behavior:
 
 ### `object_relations` is the relation root
 
-`object_relations` replaced the older polymorphic and per-domain relation tables.
+`object_relations` is the relation root. Do not add a polymorphic or
+per-domain relation table beside it.
 Relation proposals resolve to FK-backed `space_objects` endpoints, and retrieval
 uses `retrieval_edges` only as a rebuildable projection of active
 `object_relations` plus curated source links. A relation proposal names both

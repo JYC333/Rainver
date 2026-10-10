@@ -14,9 +14,8 @@ The Project's **Conversations** page is where they are read, and
 settings and full transcript — reached from that list. There is no
 cross-Project Rooms index and no Rooms entry in the top navigation: a Room is
 a visibility boundary rather than a place, so a picker in front of it would
-charge every reader for a layer most Projects never use. This replaced the old
-Project Chat surface and the hardcoded default-Assistant chat entry — neither
-exists anymore.
+charge every reader for a layer most Projects never use. There is no Project
+Chat surface and no hardcoded default-Assistant chat entry.
 
 A Room does not create a new orchestration mechanism. Every message opens one
 `agent_run_group` as one collaboration task (see `modules/agents.md` and
@@ -1065,9 +1064,9 @@ addresses are named in a `not_admitted` notice, never silently dropped.
 able to steer a running discussion, and a mid-turn injection into the vendor
 session is deferred (deferred register), so the message enters at the next
 turn boundary — the running turn finishes first — and every later turn sees
-it. The same queue replaced the plain `409` outside discussions. The queue is
-its own table rather than a hidden message in the tree, so nothing that reads
-the message tree has to filter it out.
+it. The queue also covers a message outside a discussion. Do not answer that
+with a plain `409`. The queue is its own table rather than a hidden message
+in the tree, so nothing that reads the message tree has to filter it out.
 `POST …/messages` with `queue: true` (the client's default for a message
 without attachments) returns 202 with the queued message when another turn
 holds the conversation, or when earlier messages are still waiting (a queued

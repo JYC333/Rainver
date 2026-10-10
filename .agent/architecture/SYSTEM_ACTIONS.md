@@ -765,8 +765,7 @@ the screening budget, then finish — and a bare operation id would make
 
 ## `research.cancel_acquisition`
 
-The symmetric stop for the action above, and the control that replaced the
-blocking checkpoints. Direct execution, not
+The symmetric stop for the action above. Direct execution, not
 proposal-gated, for the same reason as its counterpart plus one of its own: a
 stop that waits on a review is not a stop while a Run keeps spending.
 

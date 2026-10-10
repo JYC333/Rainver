@@ -50,9 +50,9 @@ beforeEach(async () => {
      )`,
     [now],
   );
-  // A CLI profile names a host and a copy on it: since ADR 0016 there is no
-  // server-side installation for one to fall back to, so a profile without a
-  // host is offered as no backend at all.
+  // A CLI profile names a host and a copy on it. There is no server-side
+  // installation to fall back to, so a profile without a host is offered as
+  // no backend at all.
   await db.pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
      VALUES ('machine-1', NULL, 'Instance', 'server', $1, $1)`,

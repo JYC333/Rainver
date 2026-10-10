@@ -250,8 +250,8 @@ export class PgConversationBackendRepository {
       const hostBound = Boolean(
         profile.execution_host_id && profile.workspace_mode && profile.runtime_installation,
       );
-      // A CLI profile that names no execution host runs nowhere: since ADR
-      // 0016 there is no server-side copy of a vendor CLI to fall back to.
+      // A CLI profile that names no execution host runs nowhere. There is no
+      // server-side copy of a vendor CLI to fall back to.
       if (!hostBound && isLocalCliRuntimeAdapter(profile.runtime_key)) return [];
       const providerAvailable =
         profile.model_provider_id !== null &&
